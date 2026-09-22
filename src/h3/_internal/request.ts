@@ -1,7 +1,9 @@
 import { ReactorError } from "../../errors.js";
 import { checkedString } from "../../protobuf.js";
-import { referenceLimits, requestSeconds } from "../profile.js";
+import type { UploadReference } from "../../wire.generated.js";
+import { metadataMaxChars, referenceLimits, requestSeconds } from "../profile.js";
 import type { Request, ValidatedReference } from "../types.js";
+import type { CommandArgs } from "./contracts.js";
 import { captureReference, plain } from "./references.js";
 
 export interface CapturedRequest extends Omit<Request, "references"> {
@@ -70,35 +72,29 @@ export const captureRequest = (input: Request, maxPromptBytes: number): Captured
       ? {}
       : { position: nonnegative(request.position, "position") }),
     ...(request.continueFrom === undefined ? {} : { continueFrom: clipId(request.continueFrom) }),
-    ...(request.metadata === undefined ? {} : { metadata: checkedString(request.metadata, 2000) }),
+    ...(request.metadata === undefined
+      ? {}
+      : { metadata: checkedString(request.metadata, metadataMaxChars) }),
   });
 };
 
-interface Metadata {
-  readonly namespace: string;
-  readonly submission: string;
-  readonly caller: string;
-}
-/** Namespaced acceptance metadata is not a claim about the provider's own state. */
-export const encodeMetadata = (namespace: string, submission: string, caller = ""): string => {
-  const value = JSON.stringify({ reactor_effect_h3: 1, namespace, submission, caller });
-  if (Array.from(value).length > 2000)
-    return bad("Metadata including acceptance identity exceeds 2000 characters");
-  return value;
-};
-export const decodeMetadata = (value: string): Metadata | undefined => {
-  try {
-    const object: unknown = JSON.parse(value);
-    const fields = plain(object, ["reactor_effect_h3", "namespace", "submission", "caller"]);
-    if (
-      fields.reactor_effect_h3 !== 1 ||
-      typeof fields.namespace !== "string" ||
-      typeof fields.submission !== "string" ||
-      typeof fields.caller !== "string"
-    )
-      return undefined;
-    return { namespace: fields.namespace, submission: fields.submission, caller: fields.caller };
-  } catch {
-    return undefined;
-  }
-};
+/** Project validated, captured input once; no reference validation or host IO happens here. */
+export const enqueueArguments = (
+  request: CapturedRequest,
+  files: readonly UploadReference[],
+  metadata: string,
+): CommandArgs<"enqueue"> =>
+  Object.freeze({
+    prompt: request.prompt,
+    reference_images: files.map((file) => ({
+      upload_id: file.upload_id,
+      name: file.name,
+      mime_type: file.mime_type,
+      size: Number(file.size),
+    })),
+    metadata,
+    ...(request.seconds === undefined ? {} : { seconds: request.seconds }),
+    ...(request.seed === undefined ? {} : { seed: request.seed }),
+    ...(request.position === undefined ? {} : { position: request.position }),
+    ...(request.continueFrom === undefined ? {} : { continue_from_clip_id: request.continueFrom }),
+  });

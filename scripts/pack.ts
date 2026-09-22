@@ -3,15 +3,17 @@ import {
   appendFileSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import * as pathPosix from "node:path/posix";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -25,6 +27,7 @@ interface Manifest {
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
+  readonly overrides?: Readonly<Record<string, string>>;
 }
 
 interface PackFile {
@@ -88,7 +91,15 @@ const compilerPackages = [
 
 // Every run owns a new directory. Preserve previous delivery/evidence archives;
 // the package below can only originate from this run's successful source build.
-const node = process.env.NODE_BINARY ?? "node";
+// Resolve the selected Node once before entering deliberately stripped fixture
+// environments. An NVM installation must not rely on PATH surviving isolation.
+const node = realpathSync(
+  run(process.env.NODE_BINARY ?? "node", ["-p", "process.execPath"], root).trim(),
+);
+const bun = process.env.BUN_BINARY ?? process.execPath;
+const installer = process.env.PACK_INSTALLER ?? "npm";
+if (installer !== "npm" && installer !== "bun") fail("PACK_INSTALLER must be npm or bun");
+console.log(`consumer-installer ${installer}`);
 run(node, ["scripts/build.mjs"], root);
 
 const packed = JSON.parse(
@@ -97,16 +108,37 @@ const packed = JSON.parse(
 if (packed.length !== 1) fail("npm pack did not produce exactly one package");
 const pack = packed[0] ?? fail("npm pack returned no package record");
 const tarball = join(packDirectory, pack.filename);
+console.log(`pack-created ${relative(root, tarball)}`);
 const files = new Set(pack.files.map((entry) => entry.path));
 if (!existsSync(tarball)) fail(`tarball does not exist: ${tarball}`);
+const tarballSha256 = createHash("sha256").update(readFileSync(tarball)).digest("hex");
+let installTarball = tarball;
+if (installer === "bun") {
+  // Stable archive names can retain stale Bun cache entries. A content-addressed
+  // alias preserves the exact bytes without copying or pruning any cache.
+  installTarball = join(packDirectory, `reactor-effect-client-${tarballSha256}.tgz`);
+  linkSync(tarball, installTarball);
+}
 for (const path of files) {
   if (isAbsolute(path) || path.split("/").some((part) => part === ".." || part.length === 0))
     fail(`invalid tarball entry ${path}`);
 }
 const unpacked = join(packDirectory, "unpacked");
 mkdirSync(unpacked);
-run("tar", ["-xzf", tarball, "-C", unpacked], root);
+try {
+  run("tar", ["-xzf", tarball, "-C", unpacked], root);
+} catch (error) {
+  // Preserve the archive and failure, but not a new partial extraction that
+  // would make the next disk-constrained qualification attempt fail sooner.
+  if (process.env.KEEP_PACK_TMP !== "1") rmSync(unpacked, { recursive: true, force: true });
+  throw error;
+}
 const packaged = (path: string): Buffer => readFileSync(join(unpacked, "package", path));
+for (const path of readdirSync(join(root, "examples"), { recursive: true, encoding: "utf8" })) {
+  const entry = `examples/${path.split(sep).join("/")}`;
+  if (path.endsWith(".mts") && !files.has(entry))
+    fail(`tarball omitted documentation source ${entry}`);
+}
 
 for (const required of [
   "package.json",
@@ -307,22 +339,110 @@ for (const expected of (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
 const isolated = mkdtempSync(join(tmpdir(), "reactor-effect-pack-"));
 const keep = process.env.KEEP_PACK_TMP === "1";
 const fixture = (name: string): string => join(fixtureRoot, name);
+// The archived source examples are small. Capture them before releasing this
+// run's disposable extraction; retaining full native copies alongside each
+// independent install needlessly raises the package gate's peak disk usage.
+const exampleSources = new Map(
+  [...files]
+    .filter((path) => path.startsWith("examples/") && path.endsWith(".mts"))
+    .map((path) => [path, packaged(path)] as const),
+);
+const fileSha256 = Object.fromEntries(
+  [...files]
+    .sort()
+    .map((path) => [path, createHash("sha256").update(packaged(path)).digest("hex")]),
+);
+if (!keep) rmSync(unpacked, { recursive: true, force: true });
 
-const initConsumer = (name: string): string => {
+// Compile the archived documentation examples, never a workspace copy. All
+// portable examples participate in every profile; host examples are explicit.
+const stageExamples = (directory: string, host?: "node" | "browser"): readonly string[] => {
+  const paths = [...files]
+    .filter(
+      (path) =>
+        path.endsWith(".mts") &&
+        (path.startsWith("examples/portable/") ||
+          (host !== undefined && path.startsWith(`examples/${host}/`))),
+    )
+    .sort();
+  if (
+    !paths.includes("examples/portable/simulation.mts") ||
+    (host !== undefined && !paths.includes(`examples/${host}/session.mts`))
+  )
+    fail(`tarball omitted the ${host ?? "portable"} documentation examples`);
+  for (const path of paths) {
+    const destination = join(directory, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(
+      destination,
+      exampleSources.get(path) ?? fail(`missing archived example ${path}`),
+    );
+  }
+  return paths;
+};
+
+const releaseConsumer = (directory: string): void => {
+  // The three complete checks remain independent, but need not retain three
+  // installed trees concurrently. Only this run's successful consumer is removed.
+  if (!keep) rmSync(directory, { recursive: true, force: true });
+};
+
+const initConsumer = (name: string, overrides?: Readonly<Record<string, string>>): string => {
   const directory = join(isolated, name);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     join(directory, "package.json"),
-    JSON.stringify({ private: true, type: "module" }, null, 2),
+    JSON.stringify(
+      { private: true, type: "module", ...(overrides === undefined ? {} : { overrides }) },
+      null,
+      2,
+    ),
   );
   copyFileSync(fixture("resolution-guard.mjs"), join(directory, "resolution-guard.mjs"));
   return directory;
 };
 
 const install = (directory: string, packages: readonly string[], omitOptional: boolean): void => {
-  const args = ["install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"];
+  const effectVersion =
+    manifest.peerDependencies?.effect ?? fail("consumer requires the SDK's exact Effect peer");
+  const command = installer === "bun" ? bun : "npm";
+  const args =
+    installer === "bun"
+      ? [
+          "--no-env-file",
+          "add",
+          "--ignore-scripts",
+          "--exact",
+          "--linker=hoisted",
+          `--backend=${process.platform === "darwin" ? "clonefile" : "hardlink"}`,
+        ]
+      : ["install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"];
   if (omitOptional) args.push("--omit=optional");
-  run("npm", [...args, ...packages], directory);
+  const installed = execute(
+    command,
+    [
+      ...args,
+      `effect@${effectVersion}`,
+      ...packages.map((path) => (path === tarball ? installTarball : path)),
+    ],
+    directory,
+  );
+  writeFileSync(
+    join(packDirectory, `install-${relative(isolated, directory)}.log`),
+    `${installed.stdout ?? ""}${installed.stderr ?? ""}`,
+  );
+  if (installed.error !== undefined) throw installed.error;
+  if (installed.status !== 0)
+    fail(`${installer} install failed in ${directory}\n${installed.stdout}${installed.stderr}`);
+  for (const [path, expected] of Object.entries(fileSha256)) {
+    const installedPath = join(directory, "node_modules", manifest.name, path);
+    if (
+      !existsSync(installedPath) ||
+      createHash("sha256").update(readFileSync(installedPath)).digest("hex") !== expected
+    )
+      fail(`installed SDK differs from the exact archive: ${path}`);
+  }
+  console.log(`installed-sdk-identity ${relative(isolated, directory)} ${files.size} files`);
   if (!existsSync(join(directory, "node_modules", compilerPlatform, "package.json")))
     fail(`isolated consumer is missing its compiler platform package ${compilerPlatform}`);
   if (omitOptional && existsSync(join(directory, "node_modules", "koffi")))
@@ -354,9 +474,10 @@ const typecheck = (
   sourceName: string,
   compilerOptions: Record<string, unknown>,
   allowEffectNodeGlobal = false,
+  examples: readonly string[] = [],
 ): void => {
   copyFileSync(fixture(sourceName), join(directory, sourceName));
-  let include = [sourceName];
+  let include = [sourceName, ...examples];
   const writeConfig = () =>
     writeFileSync(
       join(directory, "tsconfig.json"),
@@ -365,7 +486,7 @@ const typecheck = (
   writeConfig();
 
   const bare = execute(
-    "node",
+    node,
     ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"],
     directory,
   );
@@ -386,18 +507,52 @@ const typecheck = (
       fixture("effect-node-globals.d.mts"),
       join(directory, "effect-node-globals.d.mts"),
     );
-    include = [sourceName, "effect-node-globals.d.mts"];
+    include = [...include, "effect-node-globals.d.mts"];
     writeConfig();
     console.log("effect-no-dom-exception TextDecoderOptions (effect@4.0.0-rc.115)");
   }
 
-  run("node", ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"], directory);
+  run(node, ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"], directory);
   const trace = run(
-    "node",
+    node,
     ["node_modules/typescript/bin/tsc", "--noEmit", "--traceResolution", "-p", "tsconfig.json"],
     directory,
   );
   assertTraceInside(trace, directory);
+  writeFileSync(join(packDirectory, `types-${relative(isolated, directory)}.trace.log`), trace);
+  if (examples.length > 0) {
+    run(
+      node,
+      [
+        "node_modules/typescript/bin/tsc",
+        "-p",
+        "tsconfig.json",
+        "--rootDir",
+        ".",
+        "--outDir",
+        "compiled-examples",
+      ],
+      directory,
+    );
+    for (const path of examples) {
+      if (!existsSync(join(directory, "compiled-examples", path.replace(/\.mts$/, ".mjs"))))
+        fail(`documentation example was not emitted: ${path}`);
+    }
+    console.log(`installed-examples-compiled ${relative(isolated, directory)} ${examples.length}`);
+  }
+};
+
+const nodeCompilerOptions = {
+  target: "ES2022",
+  module: "NodeNext",
+  moduleResolution: "NodeNext",
+  lib: ["ES2023", "ESNext.Disposable"],
+  strict: true,
+  skipLibCheck: false,
+  exactOptionalPropertyTypes: true,
+  noUncheckedIndexedAccess: true,
+  types: ["node"],
+  typeRoots: ["./node_modules/@types"],
 };
 
 const checkRuntimeFixtures = (directory: string, names: readonly string[]): void => {
@@ -433,7 +588,7 @@ try {
   install(portable, [tarball, ...compilerPackages, `@types/node@${nodeTypesVersion}`], true);
   copyFileSync(fixture("portable-import.mjs"), join(portable, "portable-import.mjs"));
   const portableOutput = run(
-    "node",
+    node,
     ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
     portable,
     {
@@ -464,29 +619,33 @@ try {
     "simulation-smoke.mjs",
     "resolution-guard.mjs",
   ]);
-  typecheck(
-    portable,
-    "node-consumer.mts",
-    {
-      target: "ES2022",
-      module: "NodeNext",
-      moduleResolution: "NodeNext",
-      lib: ["ES2023", "ESNext.Disposable"],
-      strict: true,
-      skipLibCheck: false,
-      exactOptionalPropertyTypes: true,
-      noUncheckedIndexedAccess: true,
-      types: ["node"],
-      typeRoots: ["./node_modules/@types"],
-    },
-    true,
-  );
+  typecheck(portable, "node-consumer.mts", nodeCompilerOptions, true, stageExamples(portable));
+  copyFileSync(fixture("example-smoke.mjs"), join(portable, "example-smoke.mjs"));
+  const simulationExample = join(portable, "compiled-examples/examples/portable/simulation.mjs");
+  for (const [runtime, command, args] of [
+    ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
+    ["Bun", bun, ["--no-env-file"]],
+  ] as const) {
+    const output = run(command, [...args, "example-smoke.mjs", simulationExample], portable, {
+      ...process.env,
+      PACK_CONSUMER_ROOT: portable,
+      PACK_DENY_NATIVE: "1",
+      NODE_PATH: "",
+    });
+    if (!output.includes("compiled-example-ok"))
+      fail(`${runtime} installed example did not complete`);
+    console.log(`${runtime} ${output.trim()}`);
+  }
+  checkRuntimeFixtures(portable, ["example-smoke.mjs"]);
+  copyFileSync(fixture("browser-bundle-smoke.mjs"), join(portable, "browser-bundle-smoke.mjs"));
+  checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"]);
+  releaseConsumer(portable);
 
   const browser = initConsumer("browser");
   install(browser, [tarball, ...compilerPackages], true);
   copyFileSync(fixture("browser-import.mjs"), join(browser, "browser-import.mjs"));
   const browserOutput = run(
-    "node",
+    node,
     ["--experimental-loader", "./resolution-guard.mjs", "browser-import.mjs"],
     browser,
     {
@@ -497,7 +656,6 @@ try {
     },
   );
   if (!browserOutput.includes("browser-import-ok")) fail("browser import smoke did not complete");
-  const bun = process.env.BUN_BINARY ?? process.execPath;
   run(
     bun,
     [
@@ -512,22 +670,45 @@ try {
   const browserBundle = readFileSync(join(browser, "browser-bundle.js"), "utf8");
   if (/koffi|reactor_effect_peer_|native-bridge|native-peer/.test(browserBundle))
     fail("installed browser bundle includes a native implementation");
-  typecheck(browser, "browser-consumer.mts", {
-    target: "ES2022",
-    module: "NodeNext",
-    moduleResolution: "NodeNext",
-    lib: ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
-    strict: true,
-    skipLibCheck: false,
-    exactOptionalPropertyTypes: true,
-    noUncheckedIndexedAccess: true,
-    types: [],
-  });
+  copyFileSync(fixture("browser-bundle-smoke.mjs"), join(browser, "browser-bundle-smoke.mjs"));
+  const hostlessOutput = run(
+    node,
+    ["browser-bundle-smoke.mjs", join(browser, "browser-bundle.js")],
+    browser,
+    { ...process.env, NODE_PATH: "" },
+  );
+  if (!hostlessOutput.includes("browser-import-ok"))
+    fail("installed browser bundle requires Node Buffer or did not complete");
+  typecheck(
+    browser,
+    "browser-consumer.mts",
+    {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      lib: ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
+      strict: true,
+      skipLibCheck: false,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      types: [],
+    },
+    false,
+    stageExamples(browser, "browser"),
+  );
+  releaseConsumer(browser);
 
-  const native = initConsumer("native");
   const nodePlatformVersion =
     manifest.devDependencies?.["@effect/platform-node"] ??
     fail("native fixture needs the pinned Node Effect platform");
+  const nodeSharedVersion =
+    manifest.overrides?.["@effect/platform-node-shared"] ??
+    fail("native fixture needs the pinned shared Node Effect platform");
+  if (nodeSharedVersion !== manifest.peerDependencies?.effect)
+    fail("native fixture must retain the workspace's shared-platform Effect pin");
+  // npm applies overrides only at the consumer root. The platform's prerelease
+  // caret range otherwise admits a later shared platform and a second Effect.
+  const native = initConsumer("native", { "@effect/platform-node-shared": nodeSharedVersion });
   install(
     native,
     [
@@ -538,9 +719,35 @@ try {
     ],
     false,
   );
+  const nativeDependencies = run(
+    "npm",
+    ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
+    native,
+  );
+  writeFileSync(join(packDirectory, "native-dependencies.json"), nativeDependencies);
+  interface DependencyTree {
+    readonly version?: string;
+    readonly dependencies?: Readonly<Record<string, DependencyTree>>;
+  }
+  const checkEffectVersions = (tree: DependencyTree): void => {
+    for (const [name, dependency] of Object.entries(tree.dependencies ?? {})) {
+      if (
+        (name === "effect" ||
+          name === "@effect/platform-node" ||
+          name === "@effect/platform-node-shared") &&
+        dependency.version !== nodeSharedVersion
+      )
+        fail(
+          `isolated native fixture resolved ${name}@${dependency.version}, expected ${nodeSharedVersion}`,
+        );
+      checkEffectVersions(dependency);
+    }
+  };
+  checkEffectVersions(JSON.parse(nativeDependencies) as DependencyTree);
+  console.log(`installed-native-effect-stack ${nodeSharedVersion}`);
   copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
   const nativeOutput = run(
-    "node",
+    node,
     ["--experimental-loader", "./resolution-guard.mjs", "native-preflight.mjs"],
     native,
     {
@@ -555,12 +762,13 @@ try {
     fail("installed native preflight did not complete");
   checkRuntimeFixtures(native, ["native-preflight.mjs", "resolution-guard.mjs"]);
   console.log(nativeOutput.trim());
+  typecheck(native, "node-consumer.mts", nodeCompilerOptions, true, stageExamples(native, "node"));
+  releaseConsumer(native);
 
   console.log(`pack-smoke-ok ${packedManifest.name}@${packedManifest.version}`);
   console.log(`tarball ${relative(root, tarball)}`);
   console.log(`exports ${Object.keys(packedManifest.exports ?? {}).length}`);
   console.log(`native-source ${nativeSource}`);
-  const tarballSha256 = createHash("sha256").update(readFileSync(tarball)).digest("hex");
   console.log(`tarball-sha256 ${tarballSha256}`);
   const identityPath = join(packDirectory, "package-identity.json");
   writeFileSync(
@@ -571,10 +779,12 @@ try {
         version: packedManifest.version,
         tarball: pack.filename,
         sha256: tarballSha256,
+        installer,
         exports: canonicalExports,
         nativeSourceSha256: nativeSource,
         native: Object.fromEntries(identities),
         files: [...files].sort(),
+        fileSha256,
       },
       null,
       2,

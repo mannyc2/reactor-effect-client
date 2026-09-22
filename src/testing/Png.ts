@@ -1,4 +1,27 @@
-import { deflateSync } from "node:zlib";
+import { encodeBase64 } from "effect/Encoding";
+
+/** Opaque black fixture pixels need no general-purpose compressor. Stored
+ * DEFLATE blocks (RFC 1951 §3.2.4) keep this synchronous helper host-neutral. */
+const zeroPixels = (size: number): Uint8Array => {
+  const raw = new Uint8Array(size);
+  const blocks = Math.max(1, Math.ceil(raw.length / 65535));
+  const output = new Uint8Array(2 + raw.length + blocks * 5 + 4);
+  const view = new DataView(output.buffer);
+  output.set([0x78, 0x01]); // RFC 1950: DEFLATE, no preset dictionary.
+  let cursor = 2;
+  for (let block = 0, offset = 0; block < blocks; block++) {
+    const length = Math.min(65535, raw.length - offset);
+    output[cursor] = block === blocks - 1 ? 1 : 0;
+    view.setUint16(cursor + 1, length, true);
+    view.setUint16(cursor + 3, length ^ 0xffff, true);
+    // The freshly allocated payload is already zero, including each row's filter byte.
+    cursor += 5 + length;
+    offset += length;
+  }
+  // Adler-32 for N zero bytes: s1 = 1, s2 = N mod 65521.
+  view.setUint32(cursor, (raw.length % 65521) * 65536 + 1);
+  return output;
+};
 
 export const pngBytes = (width: number, height: number): Uint8Array => {
   const crcTable = new Uint32Array(256).map((_, n) => {
@@ -29,8 +52,7 @@ export const pngBytes = (width: number, height: number): Uint8Array => {
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const raw = new Uint8Array(height * (1 + width * 3));
-  const idat = chunk("IDAT", new Uint8Array(deflateSync(raw)));
+  const idat = chunk("IDAT", zeroPixels(height * (1 + width * 3)));
   const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const parts = [signature, chunk("IHDR", ihdr), idat, chunk("IEND", new Uint8Array())];
   const total = parts.reduce((n, p) => n + p.length, 0);
@@ -43,5 +65,4 @@ export const pngBytes = (width: number, height: number): Uint8Array => {
   return out;
 };
 
-export const dataUri = (bytes: Uint8Array) =>
-  `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
+export const dataUri = (bytes: Uint8Array) => `data:image/png;base64,${encodeBase64(bytes)}`;

@@ -18,9 +18,12 @@ export const referenceLimits = Object.freeze({
   minAspect: 0.25,
   maxAspect: 4,
 });
+/** Adapter limits shared by request capture, reference validation and profile declarations. */
+export const metadataMaxChars = 2_000;
+export const imageMimeTypes = Object.freeze(["image/jpeg", "image/png", "image/webp"] as const);
 
 /** Shared H3 timing data and explicit defaults used by offline orchestration. */
-export type CanvasAspect = "16:9" | "1:1" | "9:16" | "4:3";
+export type CanvasAspect = keyof typeof canvases;
 
 export interface ModelProfile {
   /** Wire model name passed to the SDK. */
@@ -80,9 +83,9 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
     maxPixels: referenceLimits.maxPixels,
     minAspect: referenceLimits.minAspect,
     maxAspect: referenceLimits.maxAspect,
-    mimeTypes: ["image/jpeg", "image/png", "image/webp"],
+    mimeTypes: [...imageMimeTypes],
   },
-  metadataMaxChars: 2_000,
+  metadataMaxChars,
   canvases: Object.entries(canvases).map(([aspect, size]) => ({
     aspect: aspect as CanvasAspect,
     ...size,

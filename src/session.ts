@@ -10,10 +10,8 @@ import * as Stream from "effect/Stream";
 import { errorOf, positiveLimit, ReactorError } from "./errors.js";
 import { nonempty, uint32, structFromObject, objectFromStruct } from "./json.js";
 import type { JsonObject } from "./json.js";
-import { terminal } from "./contract.js";
-import type { Descriptor, IceCandidate, Mapping, Track } from "./contract.js";
+import type { Track } from "./contract.js";
 import { CoordinatorClient } from "./coordinator/_internal/client.js";
-import type { Termination } from "./coordinator/_internal/client.js";
 import { Correlator } from "./correlation.js";
 import { Observations } from "./observation.js";
 import type { Peer, PeerEvent, MediaTrack } from "./PeerTypes.js";
@@ -22,7 +20,6 @@ import { StatsSampler } from "./stats.js";
 import type { Statistics } from "./stats.js";
 
 import type {
-  Status,
   SessionOptions,
   CloseReport,
   Snapshot,
@@ -40,6 +37,11 @@ import { CommandFailure } from "./session/commands.js";
 import type { CommandContext } from "./session/commands.js";
 import type { MediaGeneration, RawMedia, TrackGeneration } from "./session/media.js";
 import { captureUploads } from "./session/_internal/uploads.js";
+import { SessionLifecycle } from "./session/_internal/lifecycle.js";
+import type { Connection, ReadyConnection } from "./session/_internal/lifecycle.js";
+import { isKnownRemote, RemoteSession } from "./session/_internal/remote.js";
+import type { KnownRemote } from "./session/_internal/remote.js";
+import { cleanupSession } from "./session/_internal/cleanup.js";
 export type {
   Status,
   SessionOptions,
@@ -50,53 +52,6 @@ export type {
   UploadProgress,
   Uploaded,
 } from "./SessionTypes.js";
-const transitions: Record<Status, readonly Status[]> = {
-  idle: ["connecting", "closing"],
-  connecting: ["waiting", "disconnected", "closing"],
-  waiting: ["ready", "disconnected", "closing"],
-  ready: ["connecting", "disconnected", "closing"],
-  disconnected: ["connecting", "closing"],
-  closing: ["closed"],
-  closed: [],
-};
-interface KnownRemote {
-  readonly ownership: "owned" | "attached";
-  readonly id: string;
-  descriptor?: Descriptor;
-  connectionId?: number;
-}
-type Remote = { readonly ownership: "allocating" | "unknown" } | KnownRemote;
-const known = (remote: Remote | undefined): remote is KnownRemote =>
-  remote?.ownership === "owned" || remote?.ownership === "attached";
-interface Connection {
-  readonly generation: bigint;
-  readonly scope: Scope.Closeable;
-  readonly peer: Peer;
-  readonly ready: Deferred.Deferred<void, ReactorError>;
-  readonly failed: Deferred.Deferred<never, ReactorError>;
-  readonly iceWake: Queue.Queue<void, ReactorError>;
-  readonly iceBuffer: IceCandidate[];
-  iceBytes: number;
-  iceDone: boolean;
-  finalSent: boolean;
-  peerConnected: boolean;
-  controlOpen: boolean;
-  dataOpen: boolean;
-  connectionId?: number;
-  failure?: ReactorError;
-  mapping: readonly Mapping[];
-  negotiated?: ReadyState["remote"];
-  readonly paused: Set<string>;
-  readonly claimed: Set<string>;
-  readonly sending: Map<string, MediaTrack>;
-  readonly pendingClaims: Map<string, string>;
-  readonly trackBusy: Set<string>;
-}
-interface ReadyConnection extends Connection {
-  readonly negotiated: ReadyState["remote"];
-}
-const isNegotiated = (connection: Connection): connection is ReadyConnection =>
-  connection.negotiated !== undefined;
 const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> =>
   Effect.try({ try: body, catch: errorOf });
 const withDeadline = <A, R>(
@@ -114,17 +69,15 @@ const withDeadline = <A, R>(
 /** The canonical Reactor state and wire engine for both public host exports.
  * Platform and peer dependencies are supplied by the configured client factory. */
 export class Session {
-  private status: Status = "idle";
-  private generation = 0n;
-  private remote: Remote | undefined;
-  private connection: Connection | undefined;
-  private readonly root = Scope.makeUnsafe();
+  private readonly lifecycle = new SessionLifecycle((status) =>
+    this.emit({ _tag: "Status", status }),
+  );
+  private readonly remote = new RemoteSession();
   private readonly data: Correlator<CommandReply>;
   private readonly control: Correlator<ControlReply>;
   private readonly observations = new Observations<SessionEvent>();
   private sequence = 0n;
   private readonly sampler = new StatsSampler();
-  private lastError: ReactorError | undefined;
   private closeGate: Deferred.Deferred<CloseReport> | undefined;
   private closeReport: CloseReport | undefined;
   private readonly received = new Set<string>();
@@ -134,7 +87,6 @@ export class Session {
   private readonly readyTimeout: number;
   private readonly heartbeat: number;
   private readonly uploadBound: number;
-  private readonly closing = Deferred.makeUnsafe<never, ReactorError>();
   readonly http: CoordinatorClient;
   constructor(
     readonly options: SessionOptions,
@@ -169,10 +121,10 @@ export class Session {
     this.control = new Correlator("ctrl", options.maxPending ?? 128, options.requestNamespace);
   }
   get snapshot(): Snapshot {
-    const r = this.remote,
-      c = this.connection;
+    const r = this.remote.current,
+      c = this.lifecycle.connection;
     const details = {
-      generation: this.generation,
+      generation: this.lifecycle.generation,
       pending: Object.freeze({ data: this.data.size, control: this.control.size }),
       pausedLocally: Object.freeze([...(c?.paused ?? [])]),
       claimedTracks: Object.freeze([...(c?.claimed ?? [])]),
@@ -180,20 +132,20 @@ export class Session {
       unresolvedPublications: Object.freeze([...(c?.pendingClaims.values() ?? [])]),
       observationOverflows: this.observations.overflowCount,
       subscribers: this.observations.size,
-      ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
+      ...(this.lifecycle.lastError === undefined ? {} : { lastError: this.lifecycle.lastError }),
       ...(this.closeReport === undefined ? {} : { close: this.closeReport }),
     };
-    if (this.status === "ready")
+    if (this.lifecycle.status === "ready")
       return Object.freeze({ ...details, status: "ready", remote: this.currentReady().negotiated });
     return Object.freeze({
       ...details,
-      status: this.status,
+      status: this.lifecycle.status,
       ...(r === undefined
         ? {}
         : {
             remote: Object.freeze({
               ownership: r.ownership,
-              ...(known(r)
+              ...(isKnownRemote(r)
                 ? {
                     sessionId: r.id,
                     ...(r.descriptor === undefined ? {} : { descriptor: r.descriptor }),
@@ -233,40 +185,18 @@ export class Session {
   }
   private emit(event: EventPayload, bytes?: number): void {
     this.observations.emit(
-      { ...event, sequence: ++this.sequence, generation: this.generation },
+      { ...event, sequence: ++this.sequence, generation: this.lifecycle.generation },
       bytes,
     );
   }
-  private transition(status: Status): void {
-    if (this.status === status) return;
-    if (!transitions[this.status].includes(status))
-      throw new ReactorError("InvalidState", `illegal transition ${this.status} -> ${status}`);
-    this.status = status;
-    this.emit({ _tag: "Status", status });
-  }
   private assertCurrent(c: Connection): void {
-    if (c.failure !== undefined) throw c.failure;
-    if (this.connection !== c || this.status === "closing" || this.status === "closed")
-      throw new ReactorError("Aborted", "retired connection generation", {
-        generation: c.generation,
-      });
+    this.lifecycle.assertCurrent(c);
   }
   private currentReady(): ReadyConnection {
-    const c = this.connection;
-    if (this.status === "closing" || this.status === "closed") {
-      throw new ReactorError("Closed", "session is closed", { outcome: "not-submitted" });
-    }
-    if (this.status !== "ready" || c === undefined)
-      throw new ReactorError("InvalidState", `operation requires ready, not ${this.status}`, {
-        outcome: "not-submitted",
-      });
-    this.assertCurrent(c);
-    if (!isNegotiated(c)) throw new Error("ready connection has no negotiated descriptor");
-    return c;
+    return this.lifecycle.currentReady();
   }
   private currentRemote(): KnownRemote {
-    if (!known(this.remote)) throw new ReactorError("InvalidState", "no known session id");
-    return this.remote;
+    return this.remote.requireKnown();
   }
   private fail(c: Connection, error: ReactorError): void {
     if (c.failure !== undefined) return;
@@ -283,11 +213,8 @@ export class Session {
     c.iceBytes = 0;
     c.claimed.clear();
     c.paused.clear();
-    if (this.connection === c) this.received.clear();
-    if (this.connection === c && this.status !== "closing" && this.status !== "closed") {
-      this.lastError = error;
-      this.received.clear();
-      this.transition("disconnected");
+    if (this.lifecycle.connection === c) this.received.clear();
+    if (this.lifecycle.disconnect(c, error)) {
       this.emit({ _tag: "Diagnostic", error });
     }
   }
@@ -302,18 +229,8 @@ export class Session {
       Effect.mapError((e) => c.failure ?? e),
     );
   }
-  private readyGate(c: Connection): void {
-    if (c.peerConnected && c.controlOpen && c.dataOpen && c.failure === undefined)
-      Deferred.doneUnsafe(c.ready, Effect.void);
-  }
   private onPeer(c: Connection, event: PeerEvent): void {
-    if (
-      this.connection !== c ||
-      c.failure !== undefined ||
-      this.status === "closing" ||
-      this.status === "closed"
-    )
-      return;
+    if (!this.lifecycle.accepts(c)) return;
     switch (event.type) {
       case "state":
         if (event.state === "failed" || event.state === "disconnected" || event.state === "closed")
@@ -325,7 +242,7 @@ export class Session {
           );
         else {
           c.peerConnected = event.state === "connected";
-          this.readyGate(c);
+          c.readyGate();
         }
         break;
       case "channel":
@@ -335,7 +252,7 @@ export class Session {
         }
         if (event.channel === "control") c.controlOpen = true;
         else c.dataOpen = true;
-        this.readyGate(c);
+        c.readyGate();
         break;
       case "ice":
         if (event.candidate === undefined) c.iceDone = true;
@@ -524,50 +441,14 @@ export class Session {
   private begin(reconnect: boolean): Effect.Effect<Connection, ReactorError> {
     const self = this;
     return Effect.gen(function* () {
-      const previous = self.connection;
+      const previous = self.lifecycle.connection;
       const c = yield* pure(() => {
-        if (
-          reconnect
-            ? self.status !== "ready" && self.status !== "disconnected"
-            : self.status !== "idle"
-        )
-          throw new ReactorError(
-            "InvalidState",
-            `${reconnect ? "reconnect" : "connect"} while ${self.status}`,
-          );
-        if (reconnect && !known(self.remote))
-          throw new ReactorError("InvalidState", "cannot reconnect without a known session");
-        const generation = ++self.generation,
-          scope = Scope.forkUnsafe(self.root),
-          peer = self.makePeer();
-        // Queue creation is a synchronous Effect and allocates no asynchronous work.
-        const iceWake = Effect.runSync(Queue.dropping<void, ReactorError>(1));
-        const connection: Connection = {
-          generation,
-          scope,
-          peer,
-          ready: Deferred.makeUnsafe(),
-          failed: Deferred.makeUnsafe(),
-          iceWake,
-          iceBuffer: [],
-          iceBytes: 0,
-          iceDone: false,
-          finalSent: false,
-          peerConnected: false,
-          controlOpen: false,
-          dataOpen: false,
-          mapping: [],
-          paused: new Set(),
-          claimed: new Set(),
-          sending: new Map(),
-          pendingClaims: new Map(),
-          trackBusy: new Set(),
-        };
-        self.connection = connection;
+        const connection = self.lifecycle.begin(reconnect, self.remote.isKnown, () =>
+          self.makePeer(),
+        );
         self.sampler.reset();
         self.received.clear();
-        self.lastError = undefined;
-        self.transition("connecting");
+        self.lifecycle.transition("connecting");
         return connection;
       });
       yield* Scope.addFinalizer(
@@ -590,59 +471,14 @@ export class Session {
   }
   /** Allocate or identify one remote session, without opening a peer connection. */
   allocate(): Effect.Effect<string, ReactorError> {
-    const self = this;
-    return Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        if (self.status === "closed" || self.status === "closing")
-          return yield* Effect.fail(
-            new ReactorError("Closed", "session is closed", { outcome: "not-submitted" }),
-          );
-        if (known(self.remote)) return self.remote.id;
-        if (self.remote !== undefined)
-          return yield* Effect.fail(
-            new ReactorError(
-              "InvalidState",
-              "session allocation is already pending or unresolved",
-              { outcome: "unknown" },
-            ),
-          );
-        const intent = self.options.intent;
-        if (intent._tag === "Attach") {
-          self.remote = {
-            ownership: "attached",
-            id: intent.sessionId,
-            ...(intent.connectionId === undefined ? {} : { connectionId: intent.connectionId }),
-          };
-          return self.remote.id;
-        }
-        self.remote = { ownership: "allocating" };
-        return yield* restore(
-          self.http
-            .create(intent.model, intent.extraArgs)
-            .pipe(Effect.raceFirst(Deferred.await(self.closing))),
-        ).pipe(
-          Effect.map((descriptor) => {
-            self.remote = { ownership: "owned", id: descriptor.session_id, descriptor };
-            return descriptor.session_id;
-          }),
-          Effect.onExit((exit) =>
-            Exit.isFailure(exit)
-              ? Effect.sync(() => {
-                  if (self.remote?.ownership === "allocating")
-                    self.remote = { ownership: "unknown" };
-                })
-              : Effect.void,
-          ),
-        );
-      }),
-    );
+    return this.remote.allocate(this.options, this.http, this.lifecycle);
   }
 
   get id(): string | undefined {
-    return known(this.remote) ? this.remote.id : undefined;
+    return this.remote.id;
   }
   get rawMedia(): RawMedia | undefined {
-    return this.connection?.peer.rawMedia;
+    return this.lifecycle.connection?.peer.rawMedia;
   }
 
   readyState(): Effect.Effect<ReadyState, ReactorError> {
@@ -721,7 +557,7 @@ export class Session {
       const work = Effect.gen(function* () {
         if (!reconnect) yield* self.guard(c, self.allocate());
         self.assertCurrent(c);
-        self.transition("waiting");
+        self.lifecycle.transition("waiting");
         const remote = self.currentRemote();
         const descriptor = yield* self.guard(
           c,
@@ -798,7 +634,7 @@ export class Session {
           descriptor: readyDescriptor,
           connectionId: c.connectionId,
         });
-        self.transition("ready");
+        self.lifecycle.transition("ready");
         if (self.options.autoResumeTracks ?? self.options.intent._tag === "Create")
           for (const track of capabilities.tracks)
             if (track.direction === "recvonly") {
@@ -825,7 +661,7 @@ export class Session {
         Effect.onExit((exit) =>
           Exit.isFailure(exit)
             ? Effect.gen(function* () {
-                if (self.remote?.ownership === "allocating") self.remote = { ownership: "unknown" };
+                self.remote.allocationLost();
                 const error = Cause.findError(exit.cause);
                 self.fail(
                   c,
@@ -1406,98 +1242,21 @@ export class Session {
         const gate = Deferred.makeUnsafe<CloseReport>();
         self.closeGate = gate;
         return Effect.gen(function* () {
-          self.transition("closing");
+          self.lifecycle.transition("closing");
           Deferred.doneUnsafe(
-            self.closing,
+            self.lifecycle.closing,
             Effect.fail(new ReactorError("Closed", "session closing")),
           );
-          const localErrors: ReactorError[] = [],
-            unpublishSubmitted: string[] = [];
-          const c = self.connection;
-          if (c !== undefined && c.failure === undefined)
-            for (const name of c.claimed) {
-              const result = yield* Effect.exit(
-                withDeadline(
-                  Effect.suspend(() =>
-                    c.peer.send(
-                      "control",
-                      W.ControlClientMessage.encode({
-                        request_id: "",
-                        kind: 3,
-                        payload: { case: "unpublish_track", value: { name } },
-                      }),
-                    ),
-                  ),
-                  Math.min(1000, self.commandTimeout),
-                  "close unpublish",
-                ),
-              );
-              if (Exit.isSuccess(result)) unpublishSubmitted.push(name);
-              else {
-                // One failing finalizer must not prevent peer shutdown or the
-                // independent attempt to terminate an owned remote session.
-                const failure = Cause.findError(result.cause);
-                localErrors.push(
-                  failure._tag === "Success" && failure.success instanceof ReactorError
-                    ? failure.success
-                    : new ReactorError("Shutdown", "publication cleanup failed", {
-                        detail: result.cause,
-                      }),
-                );
-              }
-            }
-          if (c !== undefined) {
-            try {
-              self.fail(c, new ReactorError("Aborted", "session closed"));
-            } catch (error) {
-              localErrors.push(errorOf(error));
-            }
-          }
-          const shutdown = yield* Effect.exit(Scope.close(self.root, Exit.void));
-          if (Exit.isFailure(shutdown))
-            localErrors.push(
-              new ReactorError("Shutdown", "local cleanup did not complete cleanly", {
-                detail: shutdown.cause,
-              }),
-            );
-          const remote = self.remote;
-          let termination: Termination = {
-            attempted: false,
-            responseReceived: false,
-            confirmed: false,
-            evidence: null,
-            deleteStatus: null,
-            state: null,
-          };
-          if (known(remote) && remote.ownership === "owned") {
-            const result = yield* Effect.exit(Effect.suspend(() => self.http.terminate(remote.id)));
-            termination = Exit.isSuccess(result)
-              ? result.value
-              : {
-                  attempted: true,
-                  responseReceived: false,
-                  confirmed: false,
-                  evidence: null,
-                  deleteStatus: null,
-                  state: null,
-                  error: new ReactorError("Shutdown", "remote cleanup did not complete", {
-                    detail: result.cause,
-                    sessionId: remote.id,
-                    outcome: "unknown",
-                  }),
-                };
-          }
-          const report: CloseReport = Object.freeze({
-            localClosed: localErrors.length === 0,
-            allocation: remote === undefined ? "none" : known(remote) ? "known" : "unknown",
-            ...(known(remote) ? { ownership: remote.ownership, sessionId: remote.id } : {}),
-            remote: termination,
-            unpublishSubmitted: Object.freeze(unpublishSubmitted),
-            unresolvedPublications: Object.freeze([...(c?.pendingClaims.values() ?? [])]),
-            localErrors: Object.freeze(localErrors),
+          const report = yield* cleanupSession({
+            connection: self.lifecycle.connection,
+            scope: self.lifecycle.scope,
+            remote: self.remote,
+            http: self.http,
+            commandTimeout: self.commandTimeout,
+            retire: (connection, error) => self.fail(connection, error),
           });
           self.closeReport = report;
-          self.transition("closed");
+          self.lifecycle.transition("closed");
           self.observations.end();
           Deferred.doneUnsafe(gate, Effect.succeed(report));
           try {
@@ -1511,10 +1270,6 @@ export class Session {
     );
   }
   isKnownTerminal(): boolean {
-    return (
-      known(this.remote) &&
-      this.remote.descriptor !== undefined &&
-      terminal(this.remote.descriptor.state)
-    );
+    return this.remote.isKnownTerminal();
   }
 }

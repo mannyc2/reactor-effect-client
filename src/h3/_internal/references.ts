@@ -1,11 +1,11 @@
 import * as Effect from "effect/Effect";
 import { ReactorError } from "../../errors.js";
 import type { UploadReference } from "../../wire.generated.js";
-import { referenceLimits } from "../profile.js";
+import { imageMimeTypes, referenceLimits } from "../profile.js";
 import type { Reference, ValidatedReference } from "../types.js";
 
 interface ImageFacts {
-  readonly mimeType: "image/png" | "image/jpeg" | "image/webp";
+  readonly mimeType: ValidatedReference["mimeType"];
   readonly width: number;
   readonly height: number;
 }
@@ -149,7 +149,7 @@ export const checkedUpload = (input: unknown): UploadReference => {
     typeof file.name !== "string" ||
     file.name.length === 0 ||
     file.name.length > 1024 ||
-    !["image/png", "image/jpeg", "image/webp"].includes(String(file.mime_type)) ||
+    !(imageMimeTypes as readonly string[]).includes(String(file.mime_type)) ||
     typeof file.size !== "bigint" ||
     file.size <= 0n ||
     file.size > BigInt(referenceLimits.maxBytes)

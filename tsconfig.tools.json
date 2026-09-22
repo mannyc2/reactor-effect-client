@@ -11,6 +11,12 @@
     },
     "noEmit": true
   },
-  "include": ["scripts/**/*.ts", "scripts/**/*.mjs", "native/stage.mjs", "vitest.config.ts"],
+  "include": [
+    "scripts/**/*.ts",
+    "scripts/**/*.mjs",
+    "test/architecture.test.mjs",
+    "native/stage.mjs",
+    "vitest.config.ts"
+  ],
   "exclude": []
 }

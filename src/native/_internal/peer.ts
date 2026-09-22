@@ -3,10 +3,10 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { AudioFrame, RawMedia, MediaPressure, VideoFrame } from "../../session/media.js";
-import type { IceCandidate, Mapping, Track } from "../../contract.js";
+import type { IceCandidate, IceServer, Mapping, Track } from "../../contract.js";
 import { errorOf, ReactorError, ErrorCode } from "../../errors.js";
 import { Observations } from "../../observation.js";
-import type { Channel, Peer, PeerEvent, Prepared } from "../../PeerTypes.js";
+import type { Channel, MediaTrack, Peer, PeerEvent, PeerState, Prepared } from "../../PeerTypes.js";
 import {
   encodeNativeJson,
   encodeNativeText,
@@ -16,7 +16,7 @@ import {
   type NativePoll,
 } from "./bridge.js";
 
-const stateValues = new Set<RTCPeerConnectionState>([
+const stateValues = new Set<PeerState>([
   "new",
   "connecting",
   "connected",
@@ -103,7 +103,7 @@ const parsePrepared = (value: unknown): Prepared => {
 };
 
 const iceServers = (
-  servers: readonly RTCIceServer[],
+  servers: readonly IceServer[],
 ): readonly {
   readonly urls: readonly string[];
   readonly username: string;
@@ -140,9 +140,9 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
   switch (type) {
     case "state": {
       const state = string(header.state, "state");
-      if (!stateValues.has(state as RTCPeerConnectionState))
+      if (!stateValues.has(state as PeerState))
         throw new ReactorError("Protocol", `native peer reported unknown state ${state}`);
-      return { type: "state", state: state as RTCPeerConnectionState };
+      return { type: "state", state: state as PeerState };
     }
     case "channel": {
       const channel = string(header.channel, "channel");
@@ -455,7 +455,7 @@ export class NativePeer implements Peer {
   }
 
   prepare(
-    servers: readonly RTCIceServer[],
+    servers: readonly IceServer[],
     tracks: readonly Track[],
     emit: (event: PeerEvent) => void,
   ): Effect.Effect<Prepared, ReactorError, Scope.Scope> {
@@ -540,7 +540,7 @@ export class NativePeer implements Peer {
     );
   }
 
-  lease(): MediaStreamTrack {
+  lease(): MediaTrack {
     throw new ReactorError(
       "UnsupportedCapability",
       "native WebRTC exposes owned decoded samples, not browser MediaStreamTrack leases",

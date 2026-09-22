@@ -8,6 +8,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "examples",
     "native/include",
     "native/Cargo.toml",
     "native/Cargo.lock",
@@ -83,11 +84,13 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/typecheck.mjs",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts integration vitest.config.ts",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts integration examples vitest.config.ts",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "generate:wire": "python3 scripts/generate-wire.py",
     "generate:check": "python3 scripts/generate-wire.py --check",
+    "check:architecture": "node scripts/architecture.mjs",
+    "check:examples": "node scripts/examples.mjs",
     "test": "bun run test:portable",
     "test:portable": "bun --no-env-file scripts/test.ts portable",
     "test:native": "bun --no-env-file scripts/test.ts native",

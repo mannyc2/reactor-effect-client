@@ -1,131 +1,9 @@
 import { ReactorError } from "../../errors.js";
 import { isRecord, jsonObject } from "../../json.js";
-import { documentedVersion, modelName, source } from "../profile.js";
+import { documentedVersion, modelName, referenceLimits, source } from "../profile.js";
 import type { Contract } from "../types.js";
-
-type Kind = "string" | "number" | "integer" | "boolean" | "object" | "array";
-interface Shape {
-  readonly type: Kind;
-  readonly nullable?: boolean;
-  readonly fields?: Readonly<Record<string, Shape>>;
-  readonly required?: readonly string[];
-  readonly items?: Shape;
-}
-const text: Shape = { type: "string" },
-  integer: Shape = { type: "integer" },
-  number: Shape = { type: "number" },
-  boolean: Shape = { type: "boolean" };
-const object = (
-  fields: Readonly<Record<string, Shape>>,
-  required: readonly string[] = Object.keys(fields),
-): Shape => ({ type: "object", fields, required });
-const array = (items: Shape): Shape => ({ type: "array", items });
-const optional = (shape: Shape): Shape => ({ ...shape, nullable: true });
-const upload = object({ upload_id: text, name: text, mime_type: text, size: integer });
-const clip = object({
-  clip_id: text,
-  prompt: text,
-  metadata: text,
-  frames: integer,
-  seconds: number,
-  seed: integer,
-  ready: boolean,
-});
-const queue = object({ generation: array(clip), playout: array(clip), history: array(clip) });
-const state = object({
-  clip_seconds: number,
-  clip_seconds_min: number,
-  clip_seconds_max: number,
-  seed: integer,
-  autoplay: boolean,
-  flush_on_clip_end: boolean,
-  aspect: text,
-  width: integer,
-  height: integer,
-  playing: boolean,
-  playing_clip_id: optional(text),
-  generation_queued: integer,
-  generation_capacity: integer,
-  playout_queued: integer,
-  playout_capacity: integer,
-  clips_played: integer,
-  seconds_sent: number,
-  valid_commands: array(text),
-});
-const replies: Readonly<Record<string, Shape>> = {
-  clip_queued: object({ clip }),
-  clip_moved: object({ clip, queue: text, position: integer }),
-  clip_popped: object({ clip }),
-  clip_generated: object({ clip }),
-  clip_failed: object({ clip, reason: text }),
-  clip_started: object({ clip }),
-  clip_finished: object({ clip, seconds_sent: number }),
-  clip_stopped: object({ clip, seconds_sent: number }),
-  queue_update: queue,
-  state_update: state,
-  command_error: object({ command: text, reason: text }),
-  seed_accepted: object({ seed: integer }),
-  clip_length_accepted: object({ clip_seconds: number, frames: integer }),
-  canvas_accepted: object({ aspect: text, width: integer, height: integer }),
-  autoplay_accepted: object({ enabled: boolean }),
-  flush_accepted: object({ enabled: boolean }),
-  session_reset: object({ cleared_clips: integer, was_playing: boolean }),
-};
-const commands: Readonly<
-  Record<
-    string,
-    { readonly args: Shape; readonly supplied: readonly string[]; readonly reply: string | null }
-  >
-> = {
-  enqueue: {
-    args: object(
-      {
-        prompt: text,
-        reference_images: optional(array(upload)),
-        seconds: optional(number),
-        seed: optional(integer),
-        position: optional(integer),
-        metadata: text,
-        continue_from_clip_id: text,
-      },
-      [],
-    ),
-    supplied: ["prompt", "reference_images", "metadata"],
-    reply: "clip_queued",
-  },
-  move: {
-    args: object({ clip_id: text, position: integer }, []),
-    supplied: ["clip_id", "position"],
-    reply: "clip_moved",
-  },
-  pop: { args: object({ clip_id: text }, []), supplied: ["clip_id"], reply: "clip_popped" },
-  play: { args: object({ clip_id: text }, []), supplied: ["clip_id"], reply: null },
-  stop: { args: object({}, []), supplied: [], reply: null },
-  set_seed: { args: object({ seed: integer }, []), supplied: ["seed"], reply: "seed_accepted" },
-  set_clip_seconds: {
-    args: object({ seconds: number }, []),
-    supplied: ["seconds"],
-    reply: "clip_length_accepted",
-  },
-  set_canvas: {
-    args: object({ aspect: text }, []),
-    supplied: ["aspect"],
-    reply: "canvas_accepted",
-  },
-  set_autoplay: {
-    args: object({ enabled: boolean }, []),
-    supplied: ["enabled"],
-    reply: "autoplay_accepted",
-  },
-  set_flush_on_clip_end: {
-    args: object({ enabled: boolean }, []),
-    supplied: ["enabled"],
-    reply: "flush_accepted",
-  },
-  get_queue: { args: object({}, []), supplied: [], reply: "queue_update" },
-  get_state: { args: object({}, []), supplied: [], reply: "state_update" },
-  reset: { args: object({}, []), supplied: [], reply: "session_reset" },
-};
+import { deploymentCommands, messageShapes } from "./contracts.js";
+import type { Shape } from "./contracts.js";
 
 const incompatible = (location: string): never => {
   throw new ReactorError(
@@ -195,7 +73,7 @@ export const validateDeployment = (input: unknown): Contract => {
       if (
         location === "command enqueue.reference_images" &&
         ((typeof actual.minItems === "number" && actual.minItems > 0) ||
-          (typeof actual.maxItems === "number" && actual.maxItems < 9))
+          (typeof actual.maxItems === "number" && actual.maxItems < referenceLimits.maxImages))
       )
         return incompatible("command enqueue.reference_images count bounds");
       if (expected.items !== undefined)
@@ -220,14 +98,15 @@ export const validateDeployment = (input: unknown): Contract => {
   const paths = record(doc.paths, "command paths"),
     webhooks = record(doc.webhooks, "message webhooks");
   const messageSchemas = new Map<string, unknown>();
-  for (const [name, shape] of Object.entries(replies)) {
+  for (const [name, shape] of Object.entries(messageShapes)) {
     const post = record(record(webhooks[name], `message ${name}`).post, `message ${name}`);
     if (post.operationId !== name) return incompatible(`message ${name} operationId`);
     const schema = bodySchema(post.requestBody, `message ${name}`);
     check(schema, shape, `message ${name}`);
     messageSchemas.set(name, schema);
   }
-  for (const [name, command] of Object.entries(commands)) {
+  for (const command of deploymentCommands) {
+    const { name } = command;
     const post = record(
       record(paths[`/events/${name}`], `command ${name}`).post,
       `command ${name}`,
@@ -245,7 +124,7 @@ export const validateDeployment = (input: unknown): Contract => {
         return incompatible(`command ${name} bodyless acceptance`);
     } else {
       const schema = bodySchema(responses["200"], `command ${name} response`);
-      check(schema, replies[command.reply]!, `message ${command.reply}`);
+      check(schema, messageShapes[command.reply], `message ${command.reply}`);
       const expected = record(messageSchemas.get(command.reply), `message ${command.reply}`),
         response = record(schema, `command ${name}`);
       if (typeof expected.$ref === "string" && response.$ref !== expected.$ref)

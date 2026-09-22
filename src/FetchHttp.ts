@@ -18,7 +18,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const fetch = yield* FetchHttpClient.Fetch;
     return HttpClient.make((request, url, signal) => {
-      const send = (body: BodyInit | undefined) =>
+      const send = (body: RequestInit["body"]) =>
         Effect.tryPromise({
           try: () =>
             fetch(url, {
@@ -64,7 +64,7 @@ export const layer = Layer.effect(
 
       switch (request.body._tag) {
         case "Raw":
-          return send(request.body.body as BodyInit);
+          return send(request.body.body as RequestInit["body"]);
         case "Uint8Array":
           return send(new Uint8Array(request.body.body));
         case "FormData":

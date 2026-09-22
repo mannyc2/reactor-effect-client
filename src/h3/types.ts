@@ -15,8 +15,9 @@ import type {
   Queue,
   State,
 } from "./messages.js";
+import type { CanvasAspect, documentedVersion, imageMimeTypes, modelName } from "./profile.js";
 
-export type Aspect = "16:9" | "1:1" | "9:16" | "4:3";
+export type Aspect = CanvasAspect;
 export type Reference =
   | { readonly _tag: "Bytes"; readonly bytes: Uint8Array }
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
@@ -26,7 +27,7 @@ declare const validatedReference: unique symbol;
 export interface ValidatedReference {
   readonly [validatedReference]: true;
   readonly _tag: "ValidatedReference";
-  readonly mimeType: "image/png" | "image/jpeg" | "image/webp";
+  readonly mimeType: (typeof imageMimeTypes)[number];
   readonly size: number;
   readonly width: number | null;
   readonly height: number | null;
@@ -44,8 +45,8 @@ export interface Request {
 }
 
 export interface Contract {
-  readonly modelName: "reactor/h3-reference-to-video-turbo-realtime";
-  readonly documentedVersion: "0.5.5";
+  readonly modelName: typeof modelName;
+  readonly documentedVersion: typeof documentedVersion;
   readonly source: string;
   readonly subset: "prompt-and-images";
   readonly deployment: { readonly title: string | null; readonly version: string | null };

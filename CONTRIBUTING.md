@@ -22,15 +22,19 @@ Do not commit credentials, JWTs, API keys, session exports, generated media, nat
 
 ## Repository boundaries
 
-- `src/session/` exposes the canonical factory and session contract; `src/session.ts` owns protocol correlation, generations, cancellation accounting, and cleanup. `src/coordinator/` owns HTTP allocation/inspection/termination operations.
+- `src/session/` exposes the canonical factory and session contract; `src/session.ts` keeps wire correlation and dispatch/cancellation accounting. Its concrete `_internal/lifecycle.ts`, `remote.ts` and `cleanup.ts` modules own generation/phase admission, allocation evidence and ordered cleanup respectively. `src/coordinator/` owns HTTP allocation/inspection/termination operations.
 - `src/PeerFactory.ts` supplies the transport capability through Effect dependency injection. `src/browser/` and `src/native/` select host peers and expose media bound to one session generation.
-- `src/h3/` consumes the canonical session and owns model schema validation, provider observations, controls, and acceptance evidence. It introduces no implicit playback, flush, reset, reconnect, filesystem, or path policy.
+- `src/h3/` consumes the canonical session and owns model schema validation, provider observations, controls, and acceptance evidence. `_internal/contracts.ts` is the command/argument/reply authority and projects deployment shapes from the existing message schemas; `_internal/evidence.ts` owns pure evidence matching, not correlation lifetime. It introduces no implicit playback, flush, reset, reconnect, filesystem, or path policy.
 - `src/orchestration/` owns opt-in routing, scheduling, renewal, and recovering media. `src/Submission.ts` and `src/Sequence.ts` supply its bounded commit and affinity primitives. Keep persona, pricing, and show policy in the application.
 - `src/simulation/` implements an unpaid source behind the production orchestration contract. `src/testing/` exports reusable test utilities; private fixtures remain under `test/`.
 
 The package has exactly eight public exports: the root, `browser`, `native`, `h3`, `orchestration`, `simulation`, `testing`, and `wire`. Directory entry points use `src/<name>/index.ts`; the root and generated wire facade use `src/index.ts` and `src/wire.ts`. Internal file layout does not create additional supported deep imports. Update the corresponding isolated pack consumers whenever a public contract changes.
 
 Prefer concrete modules over generic helper layers. Expected operational failures belong in typed Effect error channels; defects and impossible invariants should remain defects rather than being turned into generic recoverable errors.
+
+`bun run check:architecture` parses source imports with the pinned TypeScript compiler. It rejects upward policy dependencies, host crossings, undeclared dependencies, nonliteral loads, missing/case-mismatched source targets and runtime import cycles. Type-only edges still obey layer boundaries but do not create initialization cycles. The public export map and Effect rc.115 pins are checked as contracts, not inferred from directory discovery.
+
+`tsconfig.platform.node.json` checks the native/portable source closure without DOM types; `tsconfig.platform.browser.json` checks browser/portable source without Node types. Both join `bun run typecheck`. Public `/testing` utilities must remain host-neutral too. Its synchronous PNG fixture uses uncompressed stored blocks and portable Base64 rather than Node zlib/Buffer; image content, not compression bytes, is the fixture contract.
 
 ## Validation
 
@@ -42,6 +46,8 @@ TypeScript/package gate:
 bun run typecheck
 bun run build
 bun run lint
+bun run check:architecture
+bun run check:examples
 bun run test:portable
 bun run native:build # Stage if missing or the native source identity changed.
 bun run test:native
@@ -49,7 +55,7 @@ bun run test:integration
 bun run test:pack
 ```
 
-The pack smoke builds a real npm tarball, installs it into isolated consumers, checks the exact eight exports and declaration/import closure, compiles separate Node-without-DOM and browser-without-Node type consumers, verifies portable imports do not reach Koffi/native code, and exercises simulation plus native preflight from the installed tarball. Each run retains its exact tarball and package identity under `.check/pack-*`; preserve a qualified archive when handing off a release candidate.
+The pack smoke builds a real npm tarball, installs it into isolated consumers, checks the exact eight exports and declaration/import closure, compiles separate Node-without-DOM and browser-without-Node type consumers, verifies portable imports do not reach Koffi/native code, and exercises simulation plus native preflight from the installed tarball. The archived [examples](./examples/README.md) are emitted and checked again against those installations; only the offline simulation runs. Each run retains its exact tarball, package identity and consumer resolution traces under `.check/pack-*`; preserve a qualified archive when handing off a release candidate. Successfully checked temporary consumer trees are released sequentially unless `KEEP_PACK_TMP=1`; previous delivery directories are never removed.
 
 The `native` and `integration` projects run through `scripts/test.ts` with Node/Vitest and use staged native libraries. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. `scripts/build.mjs`, browser integration, and pack validation mutate the shared `dist` directory; serialize them in a shared checkout.
 

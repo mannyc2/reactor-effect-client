@@ -3,7 +3,13 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 let failed = false;
-for (const config of ["tsconfig.json", "tsconfig.tools.json", "tsconfig.integration.json"]) {
+for (const config of [
+  "tsconfig.json",
+  "tsconfig.tools.json",
+  "tsconfig.integration.json",
+  "tsconfig.platform.node.json",
+  "tsconfig.platform.browser.json",
+]) {
   console.log(`typecheck ${config}`);
   const result = spawnSync(
     process.execPath,

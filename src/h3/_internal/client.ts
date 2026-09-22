@@ -7,14 +7,13 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { errorOf, positiveLimit, ReactorError } from "../../errors.js";
-import type { JsonObject } from "../../json.js";
 import { Observations } from "../../observation.js";
 import { CommandFailure } from "../../session/commands.js";
 import type { CommandReply, Session, SessionEvent } from "../../session/index.js";
 import * as Submission from "../../Submission.js";
 import type { UploadReference } from "../../wire.generated.js";
 import { decodeMessage } from "../messages.js";
-import type { Clip, DecodedMessage, MessageType, Payload } from "../messages.js";
+import type { Clip, DecodedMessage, Payload } from "../messages.js";
 import { canvases } from "../profile.js";
 import type {
   Acceptance,
@@ -25,16 +24,19 @@ import type {
   ProviderEvent,
   Reply,
 } from "../types.js";
+import { Commands } from "./contracts.js";
+import type {
+  CommandArgs,
+  CommandName,
+  ControlCommand,
+  ReplyCommand,
+  ReplyType,
+} from "./contracts.js";
 import { validateDeployment } from "./deployment.js";
+import { acceptanceFor, encodeMetadata, submissionFromMetadata } from "./evidence.js";
+import type { AcceptanceIdentity } from "./evidence.js";
 import { checkedUpload, referenceMaterial } from "./references.js";
-import {
-  captureRequest,
-  clipId,
-  decodeMetadata,
-  encodeMetadata,
-  nonnegative,
-  seconds,
-} from "./request.js";
+import { captureRequest, clipId, enqueueArguments, nonnegative, seconds } from "./request.js";
 import type { CapturedRequest } from "./request.js";
 import { ProviderState } from "./state.js";
 
@@ -98,11 +100,7 @@ const sizeOf = (input: unknown): number => {
   return bytes;
 };
 
-interface PendingAcceptance {
-  readonly id: string;
-  readonly metadata: string;
-  readonly prompt: string;
-  readonly generation: bigint;
+interface PendingAcceptance extends AcceptanceIdentity {
   readonly deferred: Deferred.Deferred<Acceptance, ReactorError>;
 }
 type ObservationResult = DecodedMessage | undefined;
@@ -198,16 +196,12 @@ const build = (
     );
 
     const accept = (clip: Clip, source: CommandReply): void => {
-      const annotation = decodeMetadata(clip.metadata);
-      if (annotation === undefined || annotation.namespace !== namespace) return;
-      const entry = pending.get(annotation.submission);
-      if (
-        entry === undefined ||
-        entry.generation !== source.generation ||
-        entry.metadata !== clip.metadata ||
-        entry.prompt !== clip.prompt
-      )
-        return;
+      const id = submissionFromMetadata(namespace, clip.metadata);
+      if (id === undefined) return;
+      const entry = pending.get(id);
+      if (entry === undefined) return;
+      const acceptance = acceptanceFor(entry, clip, source);
+      if (acceptance === undefined) return;
       const previous = acceptances.get(entry.id);
       if (previous !== undefined) {
         if (previous.clip.clip_id !== clip.clip_id)
@@ -218,19 +212,6 @@ const build = (
           );
         return;
       }
-      const acceptance: Acceptance = Object.freeze({
-        submissionId: entry.id,
-        clip,
-        evidence: Object.freeze({
-          kind:
-            source.kind === "message" &&
-            source.type === "clip_queued" &&
-            source.correlation === "matched"
-              ? "correlated"
-              : "metadata",
-          source,
-        }),
-      });
       if (acceptances.size >= limits.acceptances) {
         const first = acceptances.keys().next();
         if (!first.done) acceptances.delete(first.value);
@@ -373,7 +354,7 @@ const build = (
           ),
         );
       });
-    const call = (operation: string, args: JsonObject, needsFacts = true) =>
+    const call = <K extends CommandName>(operation: K, args: CommandArgs<K>, needsFacts = true) =>
       Effect.gen(function* () {
         yield* active(operation, needsFacts);
         const source = yield* session.command(operation, args, undefined, limits.command);
@@ -386,25 +367,28 @@ const build = (
           return yield* Effect.fail(rejected(operation, source));
         return { source, message };
       });
-    const named = <K extends MessageType>(
-      operation: string,
-      args: JsonObject,
-      expected: K,
+    const named = <K extends ReplyCommand>(
+      operation: K,
+      args: CommandArgs<K>,
       needsFacts = true,
-    ): Effect.Effect<Reply<K>, CommandFailure> =>
-      call(operation, args, needsFacts).pipe(
+    ): Effect.Effect<Reply<ReplyType<K>>, CommandFailure> => {
+      const expected = Commands[operation].reply;
+      return call(operation, args, needsFacts).pipe(
         Effect.flatMap(({ source, message }) =>
           message?.type === expected
-            ? Effect.succeed(Object.freeze({ value: message.data as Payload<K>, source }))
+            ? Effect.succeed(
+                Object.freeze({ value: message.data as Payload<ReplyType<K>>, source }),
+              )
             : Effect.fail(
                 uncertain(operation, source, `H3 ${operation} did not return ${expected}`),
               ),
         ),
       );
+    };
     const checked = <A>(operation: string, value: () => A) =>
       pure(value).pipe(Effect.mapError((error) => localFailure(operation, error)));
-    const getState = named("get_state", {}, "state_update", false);
-    const getQueue = named("get_queue", {}, "queue_update", false);
+    const getState = named("get_state", {}, false);
+    const getQueue = named("get_queue", {}, false);
     const refresh = getState.pipe(
       Effect.andThen(getQueue),
       Effect.flatMap((reply) =>
@@ -423,9 +407,9 @@ const build = (
             ),
       ),
     );
-    const control = (
-      operation: "play" | "stop",
-      args: JsonObject,
+    const control = <K extends ControlCommand>(
+      operation: K,
+      args: CommandArgs<K>,
     ): Effect.Effect<ControlResult, CommandFailure> =>
       call(operation, args).pipe(
         Effect.flatMap(({ source, message }) =>
@@ -502,22 +486,7 @@ const build = (
           );
           files.push(file);
         }
-        const args: JsonObject = Object.freeze({
-          prompt: request.prompt,
-          reference_images: files.map((file) => ({
-            upload_id: file.upload_id,
-            name: file.name,
-            mime_type: file.mime_type,
-            size: Number(file.size),
-          })),
-          metadata,
-          ...(request.seconds === undefined ? {} : { seconds: request.seconds }),
-          ...(request.seed === undefined ? {} : { seed: request.seed }),
-          ...(request.position === undefined ? {} : { position: request.position }),
-          ...(request.continueFrom === undefined
-            ? {}
-            : { continue_from_clip_id: request.continueFrom }),
-        });
+        const args = enqueueArguments(request, files, metadata);
         return { args, generation: before.transportGeneration };
       });
 
@@ -748,7 +717,7 @@ const build = (
       refresh,
       pop: (id) =>
         checked("pop", () => clipId(id)).pipe(
-          Effect.flatMap((id) => named("pop", { clip_id: id }, "clip_popped")),
+          Effect.flatMap((id) => named("pop", { clip_id: id })),
           Effect.flatMap((reply) =>
             reply.value.clip.clip_id === id
               ? Effect.succeed(reply)
@@ -760,7 +729,7 @@ const build = (
           clip_id: clipId(id),
           position: nonnegative(position, "position"),
         })).pipe(
-          Effect.flatMap((args) => named("move", args, "clip_moved")),
+          Effect.flatMap((args) => named("move", args)),
           Effect.flatMap((reply) =>
             reply.value.clip.clip_id === id
               ? Effect.succeed(reply)
@@ -774,33 +743,31 @@ const build = (
       stop: control("stop", {}),
       setSeed: (value) =>
         checked("set_seed", () => nonnegative(value, "seed")).pipe(
-          Effect.flatMap((seed) => named("set_seed", { seed }, "seed_accepted")),
+          Effect.flatMap((seed) => named("set_seed", { seed })),
         ),
       setClipSeconds: (value) =>
         checked("set_clip_seconds", () => seconds(value)).pipe(
-          Effect.flatMap((seconds) =>
-            named("set_clip_seconds", { seconds }, "clip_length_accepted"),
-          ),
+          Effect.flatMap((seconds) => named("set_clip_seconds", { seconds })),
         ),
       setCanvas: (aspect) =>
         checked("set_canvas", () => {
           if (!Object.hasOwn(canvases, aspect))
             throw new ReactorError("InvalidInput", "Unsupported H3 canvas aspect");
           return { aspect };
-        }).pipe(Effect.flatMap((args) => named("set_canvas", args, "canvas_accepted"))),
+        }).pipe(Effect.flatMap((args) => named("set_canvas", args))),
       setAutoplay: (enabled) =>
         checked("set_autoplay", () => {
           if (typeof enabled !== "boolean")
             throw new ReactorError("InvalidInput", "Autoplay must be boolean");
           return { enabled };
-        }).pipe(Effect.flatMap((args) => named("set_autoplay", args, "autoplay_accepted"))),
+        }).pipe(Effect.flatMap((args) => named("set_autoplay", args))),
       setFlushOnClipEnd: (enabled) =>
         checked("set_flush_on_clip_end", () => {
           if (typeof enabled !== "boolean")
             throw new ReactorError("InvalidInput", "Flush setting must be boolean");
           return { enabled };
-        }).pipe(Effect.flatMap((args) => named("set_flush_on_clip_end", args, "flush_accepted"))),
-      reset: named("reset", {}, "session_reset"),
+        }).pipe(Effect.flatMap((args) => named("set_flush_on_clip_end", args))),
+      reset: named("reset", {}),
     };
     return Object.freeze(provider);
   });

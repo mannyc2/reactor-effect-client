@@ -1,5 +1,12 @@
 # reactor-effect-client
 
+Checked-in [compiled examples](./examples/README.md) cover canonical sessions,
+Node and browser host composition, H3 acceptance evidence, explicit renewal and
+offline simulation. `bun run verify --profile portable` checks architecture and
+separate host source closures, compiles those examples, and executes only the
+unpaid simulation. Final package qualification recompiles the archived examples
+inside isolated installed consumers rather than resolving this workspace.
+
 An independent Effect SDK for scoped Reactor sessions, H3 provider state, host media, and explicit orchestration.
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. Browser and native entry points select host capabilities. H3 consumes that same session and exposes provider state. Applications opt into the separate orchestration and simulation surfaces when they need scheduling, sequence affinity, or renewal.

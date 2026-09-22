@@ -6,6 +6,8 @@ import * as Browser from "reactor-effect-client/browser";
 import * as H3 from "reactor-effect-client/h3";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Simulation from "reactor-effect-client/simulation";
+import * as Testing from "reactor-effect-client/testing";
+import * as Wire from "reactor-effect-client/wire";
 
 declare const factory: Effect.Success<ReturnType<typeof Browser.make>>;
 declare const session: Root.Session;
@@ -15,3 +17,6 @@ const provider: Effect.Effect<H3.Provider, Root.ReactorError, Crypto.Crypto | Sc
 const track = Effect.flatMap(Browser.media(session), (media) => media.track("video"));
 const browserTrack: Effect.Effect<MediaStreamTrack, Root.ReactorError, Scope.Scope> = track;
 void [Root.make, H3, Orchestration, Simulation, sameSession, provider, browserTrack];
+const fixtureBytes: Uint8Array = Testing.pngBytes(2, 2);
+const fixtureUri: string = Testing.dataUri(fixtureBytes);
+void [Wire.ControlClientMessage, fixtureUri];

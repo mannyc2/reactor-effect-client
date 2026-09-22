@@ -18,7 +18,16 @@ for (let index = 0; index < args.length; index++) {
 
 // CI/release and local callers share exactly these package commands. Runtime
 // test discovery lives in bunfig/Vitest projects, not in this orchestration.
-const portable = ["generate:check", "format:check", "typecheck", "lint", "build", "test:portable"];
+const portable = [
+  "generate:check",
+  "format:check",
+  "typecheck",
+  "lint",
+  "check:architecture",
+  "build",
+  "check:examples",
+  "test:portable",
+];
 const native = ["native:build", "native:test", "test:integration"];
 const packaging = ["test:pack"];
 const profiles: Readonly<Record<string, readonly string[]>> = {

@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
+    "types": [],
+    "noEmit": true
+  },
+  "include": [
+    "src/index.ts",
+    "src/browser/index.ts",
+    "src/h3/index.ts",
+    "src/orchestration/index.ts",
+    "src/simulation/index.ts",
+    "src/testing/index.ts",
+    "src/wire.ts"
+  ]
+}
