@@ -1,0 +1,726 @@
+{
+  "oracle": "google.protobuf 6.33.6",
+  "vectors": [
+    {
+      "name": "source-command-and-full-width-upload",
+      "type": "reactor_wire.v1.DataClientMessage",
+      "hex": "0a19646174615f3138343436373434303733373039353531363135100152ae010a0a7365745f70726f6d707412710a1b0a095f5f70726f746f5f5f120e2a0c0a0a0a0473616665120220010a260a056172726179121d321b0a0220010a0220000a0911000000000000f43f0a0232000a022a000a0a0a046e756c6c120208000a1e0a0670726f6d707412141a126120636174202f20e78cab20f09fa7aa0a001a2d0a05696d61676512240a0475705f391207e59bbe2e706e671a09696d6167652f706e6720ffffffffffffffff7f",
+      "semantic": {
+        "request_id": "data_18446744073709551615",
+        "kind": 1,
+        "payload": {
+          "case": "command",
+          "value": {
+            "type": "set_prompt",
+            "data": {
+              "fields": {
+                "null": {
+                  "kind": {
+                    "case": "null_value",
+                    "value": 0
+                  }
+                },
+                "array": {
+                  "kind": {
+                    "case": "list_value",
+                    "value": {
+                      "values": [
+                        {
+                          "kind": {
+                            "case": "bool_value",
+                            "value": true
+                          }
+                        },
+                        {
+                          "kind": {
+                            "case": "bool_value",
+                            "value": false
+                          }
+                        },
+                        {
+                          "kind": {
+                            "case": "number_value",
+                            "value": 1.25
+                          }
+                        },
+                        {
+                          "kind": {
+                            "case": "list_value",
+                            "value": {
+                              "values": []
+                            }
+                          }
+                        },
+                        {
+                          "kind": {
+                            "case": "struct_value",
+                            "value": {
+                              "fields": {}
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "prompt": {
+                  "kind": {
+                    "case": "string_value",
+                    "value": "a cat / 猫 🧪\n\u0000"
+                  }
+                },
+                "__proto__": {
+                  "kind": {
+                    "case": "struct_value",
+                    "value": {
+                      "fields": {
+                        "safe": {
+                          "kind": {
+                            "case": "bool_value",
+                            "value": true
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "uploads": {
+              "image": {
+                "upload_id": "up_9",
+                "name": "图.png",
+                "mime_type": "image/png",
+                "size": "9223372036854775807"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "bodyless",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a06646174615f311002",
+      "semantic": {
+        "request_id": "data_1",
+        "kind": 2
+      }
+    },
+    {
+      "name": "message-absent-data",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a06646174615f31100252080a06726573756c74",
+      "semantic": {
+        "request_id": "data_1",
+        "kind": 2,
+        "payload": {
+          "case": "message",
+          "value": {
+            "type": "result"
+          }
+        }
+      }
+    },
+    {
+      "name": "message-empty-data",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a06646174615f311002520a0a06726573756c741200",
+      "semantic": {
+        "request_id": "data_1",
+        "kind": 2,
+        "payload": {
+          "case": "message",
+          "value": {
+            "type": "result",
+            "data": {
+              "fields": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "message-null-field",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a06646174615f31100252180a06726573756c74120e0a0c0a06616e7377657212020800",
+      "semantic": {
+        "request_id": "data_1",
+        "kind": 2,
+        "payload": {
+          "case": "message",
+          "value": {
+            "type": "result",
+            "data": {
+              "fields": {
+                "answer": {
+                  "kind": {
+                    "case": "null_value",
+                    "value": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "error",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a06646174615f311002c2021f0a10494e56414c49445f415247554d454e54120b696e76616c696420e78cab",
+      "semantic": {
+        "request_id": "data_1",
+        "kind": 2,
+        "payload": {
+          "case": "error",
+          "value": {
+            "code": "INVALID_ARGUMENT",
+            "message": "invalid 猫"
+          }
+        }
+      }
+    },
+    {
+      "name": "unknown-enum-and-unknown-varint-group",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "0a15646174615f3930303731393932353437343039393310b101a006ffffffffffffffffff01ab060d01020304ac06",
+      "semantic": {
+        "request_id": "data_9007199254740993",
+        "kind": 177
+      }
+    },
+    {
+      "name": "negative-unknown-enum",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "10efffffffffffffffff01",
+      "semantic": {
+        "request_id": "",
+        "kind": -17
+      }
+    },
+    {
+      "name": "control-client-ping",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110015200",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "ping",
+          "value": {}
+        }
+      }
+    },
+    {
+      "name": "control-client-request_schema",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110015a00",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "request_schema",
+          "value": {}
+        }
+      }
+    },
+    {
+      "name": "control-client-file_uploaded",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f31100162310a0475705f31120466696c651a186170706c69636174696f6e2f6f637465742d73747265616d2080808080808080808001",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "file_uploaded",
+          "value": {
+            "upload_id": "up_1",
+            "name": "file",
+            "mime_type": "application/octet-stream",
+            "size": "-9223372036854775808"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-request_clip",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110016a090952b81e85eb511a40",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "request_clip",
+          "value": {
+            "duration_seconds": 6.58
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-request_recording",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110017200",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "request_recording",
+          "value": {}
+        }
+      }
+    },
+    {
+      "name": "control-client-publish_track",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110017a0d0a0b696e7075745f617564696f",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "publish_track",
+          "value": {
+            "name": "input_audio"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-pause_track",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f31100182010d0a0b696e7075745f617564696f",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "pause_track",
+          "value": {
+            "name": "input_audio"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-resume_track",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f3110018a010d0a0b696e7075745f617564696f",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "resume_track",
+          "value": {
+            "name": "input_audio"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-unpublish_track",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f31100192010d0a0b696e7075745f617564696f",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "unpublish_track",
+          "value": {
+            "name": "input_audio"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-client-error",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "0a066374726c5f311001c202160a0943414e43454c4c4544120963616e63656c6c6564",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 1,
+        "payload": {
+          "case": "error",
+          "value": {
+            "code": "CANCELLED",
+            "message": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-model_schema",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f31100252230a210a120a076f70656e61706912071a05332e312e300a0b0a05706174687312022a00",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "model_schema",
+          "value": {
+            "openapi": {
+              "fields": {
+                "openapi": {
+                  "kind": {
+                    "case": "string_value",
+                    "value": "3.1.0"
+                  }
+                },
+                "paths": {
+                  "kind": {
+                    "case": "struct_value",
+                    "value": {
+                      "fields": {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-clip_ready",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f3110025a4b0a08736573735f6162631204736e617019000000000000f43f2152b81e85eb511f402952b81e85eb511f4030ffffffffffffffff7f3a142f636c6970732f736573735f6162632e6d337538",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "clip_ready",
+          "value": {
+            "session_id": "sess_abc",
+            "kind": "snap",
+            "start_marker": 1.25,
+            "end_marker": 7.83,
+            "now_marker": 7.83,
+            "predicted_ready_at_ms": "9223372036854775807",
+            "playlist_url": "/clips/sess_abc.m3u8"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-clip_failed",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f31100262130a115265636f726465722064697361626c6564",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "clip_failed",
+          "value": {
+            "reason": "Recorder disabled"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-moderation",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f3110026a2b0a047761726e1204746578741a0a7365745f70726f6d70742201612206e5ae89e585a82a066e6f74696365",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "moderation",
+          "value": {
+            "action": "warn",
+            "input_kind": "text",
+            "command": "set_prompt",
+            "categories": [
+              "a",
+              "安全"
+            ],
+            "message": "notice"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-publish_track",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f311002720d0a0b696e7075745f617564696f",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "publish_track",
+          "value": {
+            "name": "input_audio"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-server-error",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "0a066374726c5f311002c202130a08494e5445524e414c12076661696c757265",
+      "semantic": {
+        "request_id": "ctrl_1",
+        "kind": 2,
+        "payload": {
+          "case": "error",
+          "value": {
+            "code": "INTERNAL",
+            "message": "failure"
+          }
+        }
+      }
+    },
+    {
+      "name": "empty-envelope-DataClientMessage",
+      "type": "reactor_wire.v1.DataClientMessage",
+      "hex": "",
+      "semantic": {
+        "request_id": "",
+        "kind": 0
+      }
+    },
+    {
+      "name": "empty-envelope-DataServerMessage",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "",
+      "semantic": {
+        "request_id": "",
+        "kind": 0
+      }
+    },
+    {
+      "name": "empty-envelope-ControlClientMessage",
+      "type": "reactor_wire.v1.ControlClientMessage",
+      "hex": "",
+      "semantic": {
+        "request_id": "",
+        "kind": 0
+      }
+    },
+    {
+      "name": "empty-envelope-ControlServerMessage",
+      "type": "reactor_wire.v1.ControlServerMessage",
+      "hex": "",
+      "semantic": {
+        "request_id": "",
+        "kind": 0
+      }
+    },
+    {
+      "name": "struct-unset-nonfinite-and-negative-zero",
+      "type": "google.protobuf.Struct",
+      "hex": "0a100a03696e66120911000000000000f07f0a100a036e616e120911000000000000f87f0a1a0a0d6e656761746976652d7a65726f12091100000000000000800a090a05756e7365741200",
+      "semantic": {
+        "fields": {
+          "negative-zero": {
+            "kind": {
+              "case": "number_value",
+              "value": {
+                "$number": "-0"
+              }
+            }
+          },
+          "nan": {
+            "kind": {
+              "case": "number_value",
+              "value": {
+                "$number": "NaN"
+              }
+            }
+          },
+          "inf": {
+            "kind": {
+              "case": "number_value",
+              "value": {
+                "$number": "+Infinity"
+              }
+            }
+          },
+          "unset": {}
+        }
+      }
+    },
+    {
+      "name": "scalar-negative-zero",
+      "type": "reactor_wire.v1.RequestClip",
+      "hex": "090000000000000080",
+      "semantic": {
+        "duration_seconds": {
+          "$number": "-0"
+        }
+      }
+    },
+    {
+      "name": "int64--9223372036854775808",
+      "type": "reactor_wire.v1.UploadReference",
+      "hex": "2080808080808080808001",
+      "semantic": {
+        "upload_id": "",
+        "name": "",
+        "mime_type": "",
+        "size": "-9223372036854775808"
+      }
+    },
+    {
+      "name": "int64--1",
+      "type": "reactor_wire.v1.UploadReference",
+      "hex": "20ffffffffffffffffff01",
+      "semantic": {
+        "upload_id": "",
+        "name": "",
+        "mime_type": "",
+        "size": "-1"
+      }
+    },
+    {
+      "name": "int64-0",
+      "type": "reactor_wire.v1.UploadReference",
+      "hex": "",
+      "semantic": {
+        "upload_id": "",
+        "name": "",
+        "mime_type": "",
+        "size": "0"
+      }
+    },
+    {
+      "name": "int64-9007199254740993",
+      "type": "reactor_wire.v1.UploadReference",
+      "hex": "208180808080808010",
+      "semantic": {
+        "upload_id": "",
+        "name": "",
+        "mime_type": "",
+        "size": "9007199254740993"
+      }
+    },
+    {
+      "name": "int64-9223372036854775807",
+      "type": "reactor_wire.v1.UploadReference",
+      "hex": "20ffffffffffffffff7f",
+      "semantic": {
+        "upload_id": "",
+        "name": "",
+        "mime_type": "",
+        "size": "9223372036854775807"
+      }
+    },
+    {
+      "name": "same-oneof-message-merge",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "521d0a06726573756c7412130a110a046c656674120911000000000000f03f521612140a120a0572696768741209110000000000000040",
+      "semantic": {
+        "request_id": "",
+        "kind": 0,
+        "payload": {
+          "case": "message",
+          "value": {
+            "type": "result",
+            "data": {
+              "fields": {
+                "left": {
+                  "kind": {
+                    "case": "number_value",
+                    "value": 1.0
+                  }
+                },
+                "right": {
+                  "kind": {
+                    "case": "number_value",
+                    "value": 2.0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "different-oneof-last-case-wins",
+      "type": "reactor_wire.v1.DataServerMessage",
+      "hex": "521d0a06726573756c7412130a110a046c656674120911000000000000f03fc2020a0a085245504c41434544",
+      "semantic": {
+        "request_id": "",
+        "kind": 0,
+        "payload": {
+          "case": "error",
+          "value": {
+            "code": "REPLACED",
+            "message": ""
+          }
+        }
+      }
+    },
+    {
+      "name": "map-last-value-wins",
+      "type": "reactor_wire.v1.Command",
+      "hex": "1a120a05696d616765120912056669727374200b1a0f0a05696d616765120612046c617374",
+      "semantic": {
+        "type": "",
+        "uploads": {
+          "image": {
+            "upload_id": "",
+            "name": "last",
+            "mime_type": "",
+            "size": "0"
+          }
+        }
+      }
+    },
+    {
+      "name": "map-entry-missing-value",
+      "type": "reactor_wire.v1.Command",
+      "hex": "1a070a05696d616765",
+      "semantic": {
+        "type": "",
+        "uploads": {
+          "image": {
+            "upload_id": "",
+            "name": "",
+            "mime_type": "",
+            "size": "0"
+          }
+        }
+      }
+    },
+    {
+      "name": "map-entry-default-key",
+      "type": "reactor_wire.v1.Command",
+      "hex": "1a0f120d120b64656661756c742d6b6579",
+      "semantic": {
+        "type": "",
+        "uploads": {
+          "": {
+            "upload_id": "",
+            "name": "default-key",
+            "mime_type": "",
+            "size": "0"
+          }
+        }
+      }
+    },
+    {
+      "name": "singular-struct-merge",
+      "type": "reactor_wire.v1.ModelMessage",
+      "hex": "12140a120a056669727374120911000000000000f03f12150a130a067365636f6e641209110000000000000040",
+      "semantic": {
+        "type": "",
+        "data": {
+          "fields": {
+            "second": {
+              "kind": {
+                "case": "number_value",
+                "value": 2.0
+              }
+            },
+            "first": {
+              "kind": {
+                "case": "number_value",
+                "value": 1.0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

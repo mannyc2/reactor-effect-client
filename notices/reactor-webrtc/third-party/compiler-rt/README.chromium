@@ -1,0 +1,15 @@
+Name: compiler-rt
+Short Name: compiler-rt
+URL: https://compiler-rt.llvm.org/
+Version: N/A
+Revision: 242e3a3fe72644e47bfd432ed03bcd5b38360309
+Update Mechanism: Autoroll
+License: NCSA, Apache-with-LLVM-Exception, MIT
+License File: src/LICENSE.TXT
+Security Critical: yes
+Shipped: yes
+CPEPrefix: cpe:/a:llvm:compiler-rt
+
+Description:
+
+compiler-rt for Chromium.

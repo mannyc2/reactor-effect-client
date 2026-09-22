@@ -1,0 +1,5 @@
+# Preserve exact upstream redistribution texts, including original whitespace.
+notices/reactor-webrtc/third-party/*/LICENSE* -whitespace
+notices/reactor-webrtc/third-party/*/COPYING -whitespace
+notices/reactor-webrtc/third-party/*/PATENTS -whitespace
+notices/reactor-webrtc/third-party/*/README.chromium -whitespace

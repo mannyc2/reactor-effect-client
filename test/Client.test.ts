@@ -1,0 +1,113 @@
+import { expect, test } from "bun:test";
+import { Effect, Exit, Layer, Redacted, Scope } from "effect";
+import * as Http from "effect/unstable/http/HttpClient";
+import * as Response from "effect/unstable/http/HttpClientResponse";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as Client from "../src/Client.js";
+import { PeerFactory } from "../src/PeerFactory.js";
+import { ReactorError } from "../src/errors.js";
+
+const fixture = () => {
+  const open = new Set<string>();
+  const calls: string[] = [];
+  let allocated = 0, peers = 0;
+  const platform = Http.make((request, url) => Effect.sync(() => {
+    calls.push(`${request.method} ${url.pathname}`);
+    if (url.pathname === "/sessions" && request.method === "POST") {
+      const id = `session-${++allocated}`;
+      open.add(id);
+      return Response.fromWeb(request, globalThis.Response.json({ session_id: id, state: "WAITING" }));
+    }
+    const id = url.pathname.split("/").at(-1)!;
+    if (request.method === "DELETE") {
+      open.delete(id);
+      return Response.fromWeb(request, new globalThis.Response(null, { status: 204 }));
+    }
+    return Response.fromWeb(request, open.has(id)
+      ? globalThis.Response.json({ session_id: id, state: "WAITING" })
+      : new globalThis.Response(null, { status: 404 }));
+  }));
+  const dependencies = Layer.mergeAll(
+    Layer.succeed(Http.HttpClient, platform),
+    NodeCrypto.layer,
+    Layer.succeed(PeerFactory, {
+      check: Effect.void,
+      make: () => { peers++; throw new ReactorError("InvalidState", "unexpected connection in allocation test"); },
+    }),
+  );
+  return { open, calls, get peers() { return peers; }, dependencies };
+};
+
+test("a shared Client allocates independent sessions without opening peers", async () => {
+  const fake = fixture();
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const client = yield* Client.make();
+    const firstScope = yield* Scope.make();
+    const secondScope = yield* Scope.make();
+    const first = yield* client.create({ model: "selected/model" }).pipe(Scope.provide(firstScope));
+    const second = yield* client.create({ model: "selected/model" }).pipe(Scope.provide(secondScope));
+    expect(first.id).not.toBe(second.id);
+    expect(fake.peers).toBe(0);
+    expect(first.ownership).toBe("owned");
+    expect(fake.open.size).toBe(2);
+    yield* Scope.close(firstScope, Exit.void);
+    expect(fake.open.has(first.id)).toBe(false);
+    expect(fake.open.has(second.id)).toBe(true);
+    yield* Scope.close(secondScope, Exit.void);
+  })).pipe(Effect.provide(fake.dependencies)));
+  expect(fake.open.size).toBe(0);
+});
+
+test("owned allocation is cleaned up when the caller fails before connect", async () => {
+  const fake = fixture();
+  const result = await Effect.runPromise(Effect.exit(Effect.scoped(Effect.gen(function* () {
+    const client = yield* Client.make();
+    yield* client.create({ model: "selected/model", jwt: Redacted.make("fixture-token") });
+    return yield* Effect.fail("supervisor registration failed");
+  })).pipe(Effect.provide(fake.dependencies))));
+  expect(Exit.isFailure(result)).toBe(true);
+  expect(fake.open.size).toBe(0);
+  expect(fake.calls).toEqual(["POST /sessions", "DELETE /sessions/session-1", "GET /sessions/session-1"]);
+});
+
+test("closing an attached session does not clear or terminate the remote owner", async () => {
+  const fake = fixture(); fake.open.add("existing-session");
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const client = yield* Client.make();
+    const attached = yield* client.attach({ sessionId: "existing-session" });
+    expect(attached.ownership).toBe("attached");
+    const report = yield* attached.close;
+    expect(report.remote.attempted).toBe(false);
+    expect(report.localClosed).toBe(true);
+  })).pipe(Effect.provide(fake.dependencies)));
+  expect(fake.open.has("existing-session")).toBe(true);
+  expect(fake.calls).toEqual([]);
+});
+
+test("preflight refuses an unsupported peer before remote allocation", async () => {
+  const fake = fixture();
+  const result = await Effect.runPromise(Effect.result(Effect.scoped(Effect.gen(function* () {
+    const client = yield* Client.make();
+    return yield* client.create({ model: "selected/model" });
+  })).pipe(
+    Effect.provideService(PeerFactory, {
+      check: Effect.fail(new ReactorError("UnsupportedHost", "fixture platform", { outcome: "not-submitted" })),
+      make: () => { throw new Error("must not allocate"); },
+    }),
+    Effect.provide(fake.dependencies),
+  )));
+  expect(result._tag).toBe("Failure");
+  if (result._tag === "Failure") expect(result.failure.code).toBe("UnsupportedHost");
+  expect(fake.calls).toEqual([]);
+});
+
+test("invalid JS input fails through the typed channel before allocation", async () => {
+  const fake = fixture();
+  const result = await Effect.runPromise(Effect.result(Effect.scoped(Effect.gen(function* () {
+    const client = yield* Client.make();
+    return yield* client.create(null as unknown as Client.CreateOptions);
+  })).pipe(Effect.provide(fake.dependencies))));
+  expect(result._tag).toBe("Failure");
+  if (result._tag === "Failure") expect(result.failure.code).toBe("InvalidInput");
+  expect(fake.calls).toEqual([]);
+});

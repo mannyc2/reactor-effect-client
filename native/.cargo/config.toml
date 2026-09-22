@@ -1,0 +1,5 @@
+[env]
+# reactor-webrtc's published macOS libwebrtc artifacts target macOS 13.0.
+# Preserve an explicitly newer caller target while preventing Cargo's older
+# default from producing an invalid final link.
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }

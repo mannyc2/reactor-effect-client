@@ -1,0 +1,164 @@
+{
+  "name": "reactor-effect-client",
+  "version": "0.1.0",
+  "description": "Scoped Reactor sessions, model engines and media over Effect Platform",
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "bun@1.4.2",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "native/include",
+    "native/Cargo.toml",
+    "native/Cargo.lock",
+    "native/build.rs",
+    "native/.cargo/config.toml",
+    "native/src",
+    "native/README.md",
+    "LICENSE",
+    "NOTICE",
+    "notices",
+    "README.md",
+    "native/Dockerfile"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts",
+      "import": "./dist/wire.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "import": "./dist/http.js"
+    },
+    "./media": {
+      "types": "./dist/media.d.ts",
+      "import": "./dist/media.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.js"
+    },
+    "./Client": {
+      "types": "./dist/Client.d.ts",
+      "import": "./dist/Client.js"
+    },
+    "./Model": {
+      "types": "./dist/Model.d.ts",
+      "import": "./dist/Model.js"
+    },
+    "./Sessions": {
+      "types": "./dist/Sessions.d.ts",
+      "import": "./dist/Sessions.js"
+    },
+    "./Clip": {
+      "types": "./dist/Clip.d.ts",
+      "import": "./dist/Clip.js"
+    },
+    "./ModelProfile": {
+      "types": "./dist/ModelProfile.d.ts",
+      "import": "./dist/ModelProfile.js"
+    },
+    "./h3": {
+      "types": "./dist/h3.d.ts",
+      "import": "./dist/h3.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.js"
+    },
+    "./engine/Engine": {
+      "types": "./dist/engine/Engine.d.ts",
+      "import": "./dist/engine/Engine.js"
+    },
+    "./engine/Session": {
+      "types": "./dist/engine/Session.d.ts",
+      "import": "./dist/engine/Session.js"
+    },
+    "./engine/Renewing": {
+      "types": "./dist/engine/Renewing.d.ts",
+      "import": "./dist/engine/Renewing.js"
+    },
+    "./engine/SimulatedTransport": {
+      "types": "./dist/engine/SimulatedTransport.d.ts",
+      "import": "./dist/engine/SimulatedTransport.js"
+    },
+    "./engine/References": {
+      "types": "./dist/engine/References.d.ts",
+      "import": "./dist/engine/References.js"
+    },
+    "./Submission": {
+      "types": "./dist/Submission.d.ts",
+      "import": "./dist/Submission.js"
+    },
+    "./Sequence": {
+      "types": "./dist/Sequence.d.ts",
+      "import": "./dist/Sequence.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
+    "./testing/Faults": {
+      "types": "./dist/testing/Faults.d.ts",
+      "import": "./dist/testing/Faults.js"
+    },
+    "./testing/Png": {
+      "types": "./dist/testing/Png.d.ts",
+      "import": "./dist/testing/Png.js"
+    },
+    "./FetchHttp": {
+      "types": "./dist/FetchHttp.d.ts",
+      "import": "./dist/FetchHttp.js"
+    },
+    "./PeerFactory": {
+      "types": "./dist/PeerFactory.d.ts",
+      "import": "./dist/PeerFactory.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0-rc.115"
+  },
+  "optionalDependencies": {
+    "koffi": "3.2.1"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-rc.115",
+    "@effect/platform-node": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.0.0-rc.115",
+    "@effect/vitest": "4.0.0-rc.115",
+    "@types/node": "22.20.2",
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0",
+    "oxlint": "1.81.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts",
+    "test": "bun --no-env-file scripts/test.ts",
+    "verify": "bun run typecheck && bun run build && bun run lint && bun run test && bun run test:pack",
+    "test:pack": "bun --no-env-file scripts/pack.ts",
+    "native:build": "sh scripts/native-build.sh",
+    "native:test": "sh scripts/native-test.sh",
+    "native:linux-x64": "sh scripts/native-linux-x64.sh"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.115"
+  }
+}

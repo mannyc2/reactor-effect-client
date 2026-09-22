@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js-smoke:
+    name: JS smoke (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        node: ["22.14.0", "24"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+
+      - name: Lint
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == '24'
+        run: bun run lint
+
+      - name: Node portable import smoke
+        run: node --input-type=module -e 'await import("./dist/index.js"); await import("./dist/Client.js"); await import("./dist/Sessions.js"); await import("./dist/h3.js"); console.log(process.version)'
+
+      - name: Bun portable import smoke
+        run: bun --no-env-file -e 'await import("./dist/index.js"); await import("./dist/Client.js"); await import("./dist/Sessions.js"); await import("./dist/h3.js"); console.log(Bun.version)'
+
+  native:
+    name: Native (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            library: libreactor_effect_native.so
+          - os: macos-15
+            platform: darwin-arm64
+            library: libreactor_effect_native.dylib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Set up Rust 1.90
+        shell: bash
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component clippy
+          rustup override set 1.90.0
+          rustc --version
+          cargo --version
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang zstd
+
+      - name: Ensure macOS zstd is available
+        if: runner.os == 'macOS'
+        shell: bash
+        run: command -v zstd >/dev/null || brew install zstd
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Native qualification
+        run: ./scripts/native-test.sh
+
+      - name: Full Bun test suite with native artifact present
+        run: bun run test
+
+      - name: Stage native artifact
+        run: ./scripts/native-package.sh native/target/release/${{ matrix.library }} ${{ matrix.platform }}
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.platform }}
+          path: dist/native/${{ matrix.platform }}/${{ matrix.library }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: npm pack/install smoke
+    runs-on: ubuntu-24.04
+    needs: [js-smoke, native]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build package JavaScript and declarations
+        run: bun run build
+
+      - name: Download Linux native artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: native-linux-x64
+          path: dist/native/linux-x64
+
+      - name: Download macOS native artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: native-darwin-arm64
+          path: dist/native/darwin-arm64
+
+      - name: Clean npm pack/install validation
+        env:
+          PACK_EXPECT_NATIVE_PLATFORMS: linux-x64,darwin-arm64
+        run: bun --no-env-file scripts/pack.ts
+
+      - name: Upload validated npm tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: .check/pack/*.tgz
+          if-no-files-found: error
+          retention-days: 7
