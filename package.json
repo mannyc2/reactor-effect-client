@@ -4,6 +4,10 @@
   "description": "Scoped Reactor sessions, H3 provider state, media and explicit orchestration over Effect",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git"
+  },
   "packageManager": "bun@1.4.2",
   "sideEffects": false,
   "files": [
@@ -84,13 +88,14 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/typecheck.mjs",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts integration examples vitest.config.ts",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts integration examples release-tools vitest.config.ts",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "generate:wire": "python3 scripts/generate-wire.py",
     "generate:check": "python3 scripts/generate-wire.py --check",
     "check:architecture": "node scripts/architecture.mjs",
     "check:examples": "node scripts/examples.mjs",
+    "check:release": "node node_modules/typescript/bin/tsc -p release-tools/tsconfig.json --noEmit && bun --no-env-file test ./release-tools/test",
     "test": "bun run test:portable",
     "test:portable": "bun --no-env-file scripts/test.ts portable",
     "test:native": "bun --no-env-file scripts/test.ts native",
@@ -103,7 +108,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "provenance": true
+    "provenance": false
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.115"

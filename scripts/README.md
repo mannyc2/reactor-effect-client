@@ -1,5 +1,12 @@
 # Verification
 
+Release tooling has its own private, locked workspace. Install it with
+`bun install --cwd release-tools --frozen-lockfile --ignore-scripts` and validate
+it with `bun run check:release`. Main CI binds successful package checks to a
+flat retained artifact; the ts-release workflow promotes that artifact without
+building it again. Preparation and publication are separate manual runs. See
+`release-tools/README.md` for credentials, explicit authorization and recovery.
+
 `bun run verify` runs the same checks used by the CI and release jobs: wire
 regeneration, formatting, all TypeScript projects, lint, architecture, build, compiled examples, portable runtime
 imports and tests, native staging and tests, real local browser/native WebRTC,

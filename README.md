@@ -13,6 +13,11 @@ One canonical `Session` owns each allocation or attachment, its commands, connec
 
 This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
 
+Release automation uses a pinned ts-release application to promote CI-qualified
+archives. Preparation and publication are separate manual operations; neither
+rebuilds native libraries or modifies the qualified archive. Maintainer setup
+and recovery are documented in `release-tools/README.md` in the repository.
+
 ## Install
 
 The package name is `reactor-effect-client`. It has a peer dependency on Effect `4.0.0-rc.115` and an optional native FFI dependency on Koffi. This repository has not published a release; install the validated local tarball until a release exists.

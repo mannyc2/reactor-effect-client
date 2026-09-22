@@ -5,5 +5,10 @@
     "typescript/no-explicit-any": "error",
     "typescript/no-this-alias": "off"
   },
-  "ignorePatterns": ["dist/**", "native/target/**", "node_modules/**"]
+  "ignorePatterns": [
+    "dist/**",
+    "native/target/**",
+    "node_modules/**",
+    "release-tools/node_modules/**"
+  ]
 }
