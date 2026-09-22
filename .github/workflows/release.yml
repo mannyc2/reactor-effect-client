@@ -109,9 +109,11 @@ jobs:
           rustup toolchain install 1.90.0 --profile minimal --component clippy
           rustup override set 1.90.0
 
-      - name: Install Linux native build tools
+      - name: Install Linux LLVM 21 native toolchain
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang zstd
+        run: |
+          sudo ./native/install-linux-toolchain.sh
+          sudo apt-get install -y --no-install-recommends zstd
 
       - name: Ensure macOS zstd is available
         if: runner.os == 'macOS'

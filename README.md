@@ -131,13 +131,15 @@ Effect `4.0.0-rc.115` itself references the global `TextDecoderOptions` type in 
 The repository distinguishes tests that have actually run from build recipes and provider claims.
 
 - macOS arm64 native qualification ran locally on September 22, 2026: 8 Rust native tests, clippy with warnings denied, a release build, and 8 JavaScript native boundary tests passed. The Rust loopback used real local libwebrtc ICE/DTLS/SCTP, ordered binary channels, real video encode/decode, PCM, metadata, stats, direction/bitrate controls, and callback quiescence. A separate compiled test ABI drove the JavaScript `SessionClient` media parser and cancellation bounds.
-- The Linux x64 Docker build is reproducible and digest-pinned, but it was not executed locally because no existing Docker daemon/context was available. CI is intended to execute the Linux and macOS native matrix.
-- Local iteration used Bun 1.4.0. The separately downloaded pinned Bun 1.4.2 binary stalled during startup in this Mac host harness, so that local environment did not establish Bun 1.4.2 runtime evidence. CI pins 1.4.2 explicitly.
-- No paid generation, hosted Reactor media generation, TURN-relay interoperability, or browser-to-native wire interoperability was exercised by the local native tests. Those remain separate integration evidence.
+- Linux x64 qualification also ran on September 22, 2026, inside an isolated Debian 12 container in a task-owned Lima VM, using Rosetta for x86_64 execution on the arm64 Mac. Rust 1.90.0, Clang 21.1.8, all 8 native Rust tests, clippy with warnings denied, the release build, and all 8 JavaScript ABI/parser/session tests passed. The shared library loaded through the public native entry point in the pinned Node 24.14.1 Bookworm runtime and Bun 1.4.2 with glibc 2.36. This is Linux x64 userspace execution under translation, not qualification on physical x64 hardware.
+- The Linux check reproduced a build-recipe failure with Bookworm's default Clang 14: it cannot compile the pinned WebRTC libc++ headers. The source-build recipes now explicitly select Clang 21. The opt-in installer verified the LLVM signing-key fingerprint and ran successfully in the private Debian container; ordinary native build scripts never install system packages.
+- A real Chrome 153 browser loaded the browser bundle and exchanged exact binary messages over both channels with the SDK browser peer and the native bridge. Browser-generated media decoded natively as changing 160x96 BGRA frames and mono 48 kHz PCM. A separate run through a loopback-only Coturn 4.18.0 fixture proved selected relay-to-relay UDP connectivity, both binary channels, and decoded audio/video. These checks use `scripts/browser-native.sh`; native cleanup failures fail the check.
+- Local Mac iteration still used Bun 1.4.0 because the task-local Bun 1.4.2 binary stalled before JavaScript execution in that host harness. Linux runtime preflight did execute Bun 1.4.2 successfully. CI pins 1.4.2 explicitly.
+- No paid or hosted Reactor generation was run. The local relay test does not prove hosted TURN credentials, Internet NAT/firewall traversal, or sustained production behavior. Chrome did not originate Reactor's custom frame metadata; that extension remains covered by the native/native loopback, not the browser test. Browser-to-native media was exercised; native-to-browser media publication was not.
 
 ## Build from source
 
-The TypeScript workspace uses Bun and TypeScript. Native code requires Rust 1.90, clang, curl, tar/zstd, and the platform link dependencies described in [`native/README.md`](./native/README.md).
+The TypeScript workspace uses Bun and TypeScript. Native code requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar/zstd, and the platform link dependencies described in [`native/README.md`](./native/README.md).
 
 ```sh
 bun install --frozen-lockfile
@@ -161,6 +163,14 @@ The isolated Linux x64 recipe requires an explicit Docker context and never chan
 ```sh
 DOCKER_CONTEXT=my-context ./scripts/native-linux-x64.sh
 ```
+
+Local browser/native qualification uses an existing Chrome/Chromium executable and the staged native library:
+
+```sh
+./scripts/browser-native.sh
+```
+
+Set `BUN_BINARY` or `BROWSER_EXECUTABLE` when the tested executables are not on the default path. The optional local relay fixture is explicit: set `BROWSER_NATIVE_FORCE_RELAY=1` together with `BROWSER_NATIVE_TURN_URL`, `BROWSER_NATIVE_TURN_USERNAME`, and `BROWSER_NATIVE_TURN_PASSWORD`. The runner verifies the selected relay candidates rather than treating candidate gathering as proof. Supply a local test TURN server; this command neither starts a TURN service nor contacts Reactor.
 
 ## Contributing and security
 

@@ -12,7 +12,7 @@ Required for the TypeScript workspace:
 - Node.js 22 or newer for npm/package-consumer checks;
 - the checked-in `bun.lock`.
 
-Native development additionally requires Rust 1.90, clang/clang++, curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum.
+Native development additionally requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [native/README.md](./native/README.md); ordinary build commands never install system packages.
 
 ```sh
 bun install --frozen-lockfile
@@ -64,6 +64,10 @@ DOCKER_CONTEXT=my-context ./scripts/native-linux-x64.sh
 Never start, stop, restart, or switch a developer's Docker daemon/context as part of a repository script.
 
 Provider/live validation is separate evidence. Tests using local fakes can prove SDK ownership and scheduling semantics; they cannot prove hosted model behavior, provider billing, TURN relay behavior, or browser/native interoperability. Do not spend money or run paid generation for routine contributions.
+
+`./scripts/browser-native.sh` exercises a real local Chrome/native connection after the native library has been staged in `dist/native/`. It checks both binary channels, decoded changing video, PCM audio, browser import isolation, and resource cleanup. It does not allocate a Reactor session. `BUN_BINARY` and `BROWSER_EXECUTABLE` select explicitly managed test executables.
+
+For a local TURN fixture, supply `BROWSER_NATIVE_FORCE_RELAY=1` plus `BROWSER_NATIVE_TURN_URL`, `BROWSER_NATIVE_TURN_USERNAME`, and `BROWSER_NATIVE_TURN_PASSWORD`. The test requires selected relay candidates and media delivery; candidate gathering alone cannot pass. Use a loopback-only test server, not hosted credentials. Standard Chrome output does not carry Reactor's custom frame metadata, so retain the native/native metadata test separately.
 
 ## Native changes
 

@@ -15,6 +15,7 @@
     "native/.cargo/config.toml",
     "native/src",
     "native/README.md",
+    "native/install-linux-toolchain.sh",
     "LICENSE",
     "NOTICE",
     "notices",

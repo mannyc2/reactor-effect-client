@@ -90,9 +90,11 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install Linux native build tools
+      - name: Install Linux LLVM 21 native toolchain
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang zstd
+        run: |
+          sudo ./native/install-linux-toolchain.sh
+          sudo apt-get install -y --no-install-recommends zstd
 
       - name: Ensure macOS zstd is available
         if: runner.os == 'macOS'
@@ -105,11 +107,15 @@ jobs:
       - name: Native qualification
         run: ./scripts/native-test.sh
 
-      - name: Full Bun test suite with native artifact present
-        run: bun run test
-
       - name: Stage native artifact
         run: ./scripts/native-package.sh native/target/release/${{ matrix.library }} ${{ matrix.platform }}
+
+      - name: Local browser/native WebRTC qualification
+        if: matrix.platform == 'darwin-arm64'
+        run: ./scripts/browser-native.sh
+
+      - name: Full Bun test suite with native artifact present
+        run: bun run test
 
       - name: Upload native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

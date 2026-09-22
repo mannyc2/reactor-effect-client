@@ -37,6 +37,31 @@ and verifies the published SHA-256 before linking. macOS prebuilts target macOS
 13.0 or later. The script uses the checked-in Cargo configuration and stages
 the result under `dist/native/<platform>-<arch>/`.
 
+Linux native builds require LLVM/Clang 21. The pinned libwebrtc prebuilt ships
+the matching libc++ headers, and older distro Clang releases are not a supported
+compiler for this native bridge. `scripts/native-build.sh` and
+`scripts/native-test.sh` never install system packages: on Linux they use an
+explicit `CC`/`CXX` when supplied, otherwise they require `clang-21` and
+`clang++-21` on `PATH` and fail with a toolchain-specific error if unavailable.
+macOS compiler selection is unchanged.
+
+For opted-in Debian 12 (bookworm) or Ubuntu 24.04 (noble) build environments,
+the package includes an explicit root-only installer:
+
+```sh
+sudo ./native/install-linux-toolchain.sh
+```
+
+The installer uses the official apt.llvm.org LLVM 21 repository, verifies the
+repository signing key fingerprint
+`6084F3CF814B57C1CF12EFD515CF4D18AF4F7421` before adding the repository, and
+installs only the `clang-21` toolchain package after its bootstrap HTTPS/GPG
+requirements. The pinned libwebrtc artifact supplies the libc++/libc++abi
+headers and static archives used by the glue build, so system libc++ packages
+are intentionally not installed. The installer does not invoke `sudo` itself
+and is only called explicitly by Docker/CI recipes; ordinary local build/test
+scripts never modify the host package set.
+
 Local qualification is credential-free:
 
 ```sh
@@ -56,8 +81,9 @@ package runtime layout, `dist/native/<platform>-<arch>/`. For example:
 ```
 
 Linux x64 has a reproducible container build that starts from the npm package
-source, installs Rust 1.90 plus clang/curl/tar/zstd, runs the native Rust tests
-and clippy, and exports only the resulting shared library. It requires an
+source, installs Rust 1.90 plus the package-owned LLVM 21 recipe and auxiliary
+archive tools, runs the native Rust tests and clippy, and exports only the
+resulting shared library. It requires an
 explicit Docker context so the script never changes the caller's active context:
 
 ```sh
