@@ -108,7 +108,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "provenance": false
+    "provenance": true
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.115"

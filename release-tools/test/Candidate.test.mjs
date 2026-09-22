@@ -12,15 +12,20 @@ import { test } from "bun:test";
 import { Effect, Result } from "effect";
 import { createPlan } from "@mannyc1/ts-release";
 import * as Npm from "@mannyc1/ts-release-npm";
-import { loadCandidate } from "../application.mjs";
-import { prepareCandidate } from "../prepare.mjs";
 import { validatePackageIdentity } from "../model.mjs";
-import { digest, prepared, withFixture, writeJson } from "./Fixture.mjs";
+import {
+  digest,
+  prepared,
+  withFixture,
+  writeJson,
+  loadOffline,
+  prepareOffline,
+} from "./Fixture.mjs";
 
 test("prepare and load retain the exact qualified archive, both native identities and one npm operation", () =>
   withFixture(async (fixture) => {
     const { identity, input } = await prepared(fixture);
-    const loaded = await Effect.runPromise(loadCandidate(input));
+    const loaded = await Effect.runPromise(loadOffline(input));
     const { intent, bundle, plan } = loaded;
     assert.equal(
       identity.bundleSha256,
@@ -33,8 +38,8 @@ test("prepare and load retain the exact qualified archive, both native identitie
     assert.equal(intent.name, "reactor-effect-client");
     assert.equal(intent.version, "0.2.0");
     assert.equal(intent.initialTag, "latest");
-    assert.equal(intent.authorization._tag, "TokenAuthorization");
-    assert.equal(intent.provenance._tag, "NoProvenance");
+    assert.equal(intent.authorization._tag, "TrustedAuthorization");
+    assert.equal(intent.provenance._tag, "GitHubActionsProvenance");
     assert.equal(intent.shasum, digest(fixture.bytes, "sha1"));
     assert.equal(
       intent.integrity,
@@ -44,6 +49,7 @@ test("prepare and load retain the exact qualified archive, both native identitie
       "package-identity.json",
       "qualification.json",
       "reactor-effect-client-0.2.0.tgz",
+      "reactor-effect-client-0.2.0.tgz.sigstore.json",
     ]);
     assert.deepEqual(
       Buffer.from(await Effect.runPromise(loaded.readContent(intent.tarball.content))),
@@ -75,7 +81,7 @@ test("prereleases select next rather than latest without changing their bytes", 
   withFixture(
     async (fixture) => {
       const { input } = await prepared(fixture);
-      const loaded = await Effect.runPromise(loadCandidate(input));
+      const loaded = await Effect.runPromise(loadOffline(input));
       assert.equal(loaded.intent.initialTag, "next");
       assert.equal(loaded.intent.version, "0.2.0-rc.1");
       assert.equal(loaded.intent.tarball.content.sha256, digest(fixture.bytes));
@@ -87,11 +93,11 @@ test("a candidate destination cannot be overwritten and unchanged preparation st
   withFixture(async (fixture) => {
     const { identity, input } = await prepared(fixture);
     const before = readFileSync(join(fixture.candidateDirectory, "plan.json"));
-    await assert.rejects(Effect.runPromise(prepareCandidate(fixture.options)), /destination/);
+    await assert.rejects(Effect.runPromise(prepareOffline(fixture.options)), /destination/);
     assert.deepEqual(readFileSync(join(fixture.candidateDirectory, "plan.json")), before);
-    assert.equal((await Effect.runPromise(loadCandidate(input))).plan.planId, identity.planId);
+    assert.equal((await Effect.runPromise(loadOffline(input))).plan.planId, identity.planId);
     const other = await Effect.runPromise(
-      prepareCandidate({
+      prepareOffline({
         ...fixture.options,
         candidateDirectory: join(fixture.directory, "second-candidate"),
       }),
@@ -144,7 +150,7 @@ for (const [name, change] of invalidQualifications)
     withFixture(async (fixture) => {
       change(fixture);
       writeJson(fixture.qualificationPath, fixture.qualification);
-      await assert.rejects(Effect.runPromise(prepareCandidate(fixture.options)), /qualification/);
+      await assert.rejects(Effect.runPromise(prepareOffline(fixture.options)), /qualification/);
       assert.equal(existsSync(fixture.candidateDirectory), false);
     }));
 
@@ -155,7 +161,7 @@ test("preparation detects changed incoming bytes even at the same filename and l
     assert.ok(last !== undefined);
     changed[changed.length - 1] = last ^ 1;
     writeFileSync(fixture.tarballPath, changed);
-    await assert.rejects(Effect.runPromise(prepareCandidate(fixture.options)), /qualification/);
+    await assert.rejects(Effect.runPromise(prepareOffline(fixture.options)), /qualification/);
     assert.equal(existsSync(fixture.candidateDirectory), false);
   }));
 
@@ -189,8 +195,8 @@ const invalidManifests = [
   ["a different version", { version: "0.2.1" }],
   ["private publication", { private: true }],
   [
-    "provenance requested by the archive",
-    { publishConfig: { access: "public", provenance: true } },
+    "provenance disabled by the archive",
+    { publishConfig: { access: "public", provenance: false } },
   ],
   [
     "another registry",
@@ -201,7 +207,7 @@ for (const [name, manifest] of invalidManifests)
   test(`the real npm provider rejects ${name} before a publishable candidate is retained`, () =>
     withFixture(
       async (fixture) => {
-        const result = await Effect.runPromise(Effect.result(prepareCandidate(fixture.options)));
+        const result = await Effect.runPromise(Effect.result(prepareOffline(fixture.options)));
         assert.ok(Result.isFailure(result));
         assert.equal(result.failure._tag, "ReleaseError");
         assert.match(result.failure.code, /^(npm|reactor-release-npm)/);
@@ -224,13 +230,13 @@ for (const file of ["bundle.json", "plan.json", "identity.json"])
         else value.applicationCommit = "4".repeat(40);
         writeJson(path, value);
       }
-      await assert.rejects(Effect.runPromise(loadCandidate(input)));
+      await assert.rejects(Effect.runPromise(loadOffline(input)));
     }));
 
 test("loading refuses same-size owned byte corruption and symlink substitutions", () =>
   withFixture(async (fixture) => {
     const { input } = await prepared(fixture);
-    const loaded = await Effect.runPromise(loadCandidate(input));
+    const loaded = await Effect.runPromise(loadOffline(input));
     const path = join(fixture.candidateDirectory, "content", loaded.intent.tarball.content.sha256);
     const changed = Buffer.from(fixture.bytes);
     const last = changed.at(-1);
@@ -238,7 +244,7 @@ test("loading refuses same-size owned byte corruption and symlink substitutions"
     changed[changed.length - 1] = last ^ 1;
     chmodSync(path, 0o600);
     writeFileSync(path, changed);
-    await assert.rejects(Effect.runPromise(loadCandidate(input)));
+    await assert.rejects(Effect.runPromise(loadOffline(input)));
     const alias = join(fixture.directory, "bundle-alias.json");
     symlinkSync(join(fixture.candidateDirectory, "bundle.json"), alias);
     const { readBytes } = await import("../model.mjs");
@@ -248,7 +254,7 @@ test("loading refuses same-size owned byte corruption and symlink substitutions"
 test("a validly rehashed Plan still cannot change the application's npm principal or journal", () =>
   withFixture(async (fixture) => {
     const { identity, input } = await prepared(fixture);
-    const loaded = await Effect.runPromise(loadCandidate(input));
+    const loaded = await Effect.runPromise(loadOffline(input));
     const otherPrincipal = await Effect.runPromise(
       Npm.publish(
         new Npm.PublishIntent({
@@ -270,7 +276,7 @@ test("a validly rehashed Plan still cannot change the application's npm principa
         planId: plan.planId,
       });
       const result = await Effect.runPromise(
-        Effect.result(loadCandidate({ ...input, planId: plan.planId })),
+        Effect.result(loadOffline({ ...input, planId: plan.planId })),
       );
       assert.ok(Result.isFailure(result));
       assert.equal(result.failure.code, "reactor-release-publication-policy");

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { Effect, Schema } from "effect";
 import { ReleaseError } from "@mannyc1/ts-release";
+import * as Npm from "@mannyc1/ts-release-npm";
 
 export const repository = "mannyc2/reactor-effect-client";
 export const packageName = "reactor-effect-client";
@@ -59,14 +60,16 @@ export const PackageIdentity = Schema.Struct({
   fileSha256: Schema.Record(Schema.String, digest),
 });
 export const CandidateIdentity = Schema.Struct({
-  format: Schema.Literal("reactor-ts-release/v1"),
+  format: Schema.Literal("reactor-ts-release/v2"),
   applicationCommit: commit,
   bundleSha256: digest,
   planId: digest,
   qualification: Qualification,
+  provenance: Npm.ProvenanceSource,
 });
 export const ApplicationInput = Schema.Struct({
   candidateDirectory: text,
+  candidateRunId: runId,
   bundleSha256: digest,
   planId: digest,
   applicationCommit: commit,

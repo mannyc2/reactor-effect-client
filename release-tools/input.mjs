@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import { Schema } from "effect";
 import { CandidateIdentity, readBytes, reject, repository, validateRun } from "./model.mjs";
 
-/** @param {unknown} raw @param {{ ciRun: unknown, ciRunId: string, applicationCommit: string, mode: string, confirmation: string, candidateDirectory: string }} options */
+/** @param {unknown} raw @param {{ ciRun: unknown, ciRunId: string, candidateRunId: string, applicationCommit: string, mode: string, confirmation: string, candidateDirectory: string }} options */
 export const makeInput = (raw, options) => {
   const saved = Schema.decodeUnknownSync(CandidateIdentity, { onExcessProperty: "error" })(raw);
   const run = validateRun(options.ciRun, options.ciRunId, "ci");
   if (
     saved.qualification.ciRunId !== options.ciRunId ||
+    saved.provenance.runId !== options.candidateRunId ||
     saved.qualification.sourceCommit !== run.head_sha ||
     saved.applicationCommit !== options.applicationCommit
   )
@@ -24,6 +25,7 @@ export const makeInput = (raw, options) => {
     reject("Explicit package/version publication confirmation is required");
   return {
     candidateDirectory: resolve(options.candidateDirectory),
+    candidateRunId: options.candidateRunId,
     bundleSha256: saved.bundleSha256,
     planId: saved.planId,
     applicationCommit: saved.applicationCommit,
@@ -48,14 +50,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     {
       ciRun: JSON.parse(readBytes(runFile).toString()),
       ciRunId: process.env.CI_RUN_ID ?? "",
+      candidateRunId: process.env.CANDIDATE_RUN_ID ?? "",
       applicationCommit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
       mode: process.env.RELEASE_MODE ?? "",
       confirmation: process.env.CONFIRM ?? "",
       candidateDirectory,
     },
   );
-  if (input.authorize && !process.env.NPM_TOKEN)
-    reject("Configure NPM_TOKEN before requesting publication");
   writeFileSync(destination, JSON.stringify(input, null, 2) + "\n", { flag: "wx", mode: 0o600 });
   if (process.env.GITHUB_OUTPUT)
     appendFileSync(process.env.GITHUB_OUTPUT, `application-input=${JSON.stringify(input)}\n`);

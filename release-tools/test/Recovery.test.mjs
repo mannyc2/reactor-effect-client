@@ -3,13 +3,12 @@ import { test } from "bun:test";
 import { Effect, Result } from "effect";
 import { Host, createPlan, observeRelease, runRelease } from "@mannyc1/ts-release";
 import * as Npm from "@mannyc1/ts-release-npm";
-import { loadCandidate } from "../application.mjs";
 import { visibility } from "../report.mjs";
-import { prepared, withFixture } from "./Fixture.mjs";
+import { prepared, withFixture, loadOffline, verifyOffline } from "./Fixture.mjs";
 
 /** Exercise the real npm provider and core with only in-memory I/O capabilities.
  * No application factory, HTTP transport, Git process or credentials are opened.
- * @param {Effect.Success<ReturnType<typeof loadCandidate>>} candidate
+ * @param {Effect.Success<ReturnType<typeof loadOffline>>} candidate
  * @param {number} responseStatus */
 const offlineHost = (candidate, responseStatus) => {
   /** @type {import("@mannyc1/ts-release").JournalEvent[]} */
@@ -76,6 +75,7 @@ const offlineHost = (candidate, responseStatus) => {
       bundle: candidate.bundle,
       readContent: candidate.readContent,
       read,
+      verifyProvenance: verifyOffline,
     });
     const provider = providers.find((entry) => entry.definitionId === "npm.publish");
     assert.ok(provider);
@@ -119,7 +119,7 @@ const offlineHost = (candidate, responseStatus) => {
 test("unauthorized execution and observation can record evidence but never dispatch", () =>
   withFixture(async (fixture) => {
     const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadCandidate(input));
+    const candidate = await Effect.runPromise(loadOffline(input));
     const ports = offlineHost(candidate, 200);
     const result = await Effect.runPromise(
       runRelease({ plan: candidate.plan, authorize: false }).pipe(
@@ -145,7 +145,7 @@ test("unauthorized execution and observation can record evidence but never dispa
 test("an ambiguous npm response followed by 404 cannot replay or escape through a new Plan", () =>
   withFixture(async (fixture) => {
     const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadCandidate(input));
+    const candidate = await Effect.runPromise(loadOffline(input));
     const ports = offlineHost(candidate, 503);
     const first = await Effect.runPromise(
       runRelease({ plan: candidate.plan, authorize: true }).pipe(
@@ -196,7 +196,7 @@ test("an ambiguous npm response followed by 404 cannot replay or escape through 
 test("a real npm receipt is satisfied while visibility waits for matching registry observations", () =>
   withFixture(async (fixture) => {
     const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadCandidate(input));
+    const candidate = await Effect.runPromise(loadOffline(input));
     const ports = offlineHost(candidate, 201);
     const operationIds = candidate.plan.operations.map((operation) => operation.operationId);
     const accepted = await Effect.runPromise(

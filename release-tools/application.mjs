@@ -7,6 +7,7 @@ import { sameData } from "@mannyc1/ts-release/http";
 import {
   fileContentOwner,
   makeHttpRead,
+  makeGithubTrustedPublisherHost,
   makeHttpTransport,
   openGitJournal,
 } from "@mannyc1/ts-release/node";
@@ -19,17 +20,18 @@ import {
   journalId,
   journalRemote,
   packageName,
-  principal,
   readBytes,
   reject,
   releaseFailure,
   sha256,
   validatePackageIdentity,
 } from "./model.mjs";
+import { authorization, verifyProvenance, workflowRef } from "./provenance.mjs";
 
 /** Admit saved bytes and one npm operation before acquiring any credentials or journal.
- * @param {unknown} raw */
-export const loadCandidate = (raw) =>
+ * @param {unknown} raw
+ * @param {Npm.VerifyProvenance} [verify] */
+export const loadCandidate = (raw, verify = verifyProvenance) =>
   Effect.gen(function* () {
     const input = yield* checked("input", () =>
       Schema.decodeUnknownSync(ApplicationInput, { onExcessProperty: "error" })(raw),
@@ -46,6 +48,7 @@ export const loadCandidate = (raw) =>
         identity.planId !== input.planId ||
         identity.applicationCommit !== input.applicationCommit ||
         identity.qualification.ciRunId !== input.ciRunId ||
+        identity.provenance.runId !== input.candidateRunId ||
         identity.qualification.sourceCommit !== input.sourceCommit
       )
         reject("Candidate identity does not match the selected preparation");
@@ -68,8 +71,14 @@ export const loadCandidate = (raw) =>
     const qualificationFile = bundle.artifacts.find(
       (file) => file.logicalName === "qualification.json",
     );
+    const provenanceFile = bundle.artifacts.find(
+      (file) =>
+        file.logicalName ===
+        `${packageName}-${saved.identity.qualification.version}.tgz.sigstore.json`,
+    );
     if (
-      bundle.artifacts.length !== 3 ||
+      bundle.artifacts.length !== 4 ||
+      provenanceFile?._tag !== "OwnedFile" ||
       archive?._tag !== "OwnedFile" ||
       identityFile?._tag !== "OwnedFile" ||
       qualificationFile?._tag !== "OwnedFile"
@@ -92,7 +101,12 @@ export const loadCandidate = (raw) =>
     });
     const noRead = () =>
       checked("admission-network", () => reject("Admission cannot contact the registry"));
-    const providers = Npm.definitions({ bundle, readContent, read: noRead });
+    const providers = Npm.definitions({
+      bundle,
+      readContent,
+      read: noRead,
+      verifyProvenance: verify,
+    });
     const planValue = yield* checked("plan", () =>
       JSON.parse(readBytes(join(directory, "plan.json")).toString()),
     );
@@ -115,9 +129,15 @@ export const loadCandidate = (raw) =>
         !sameData(intent.tarball, archive) ||
         intent.access !== "public" ||
         intent.initialTag !== (intent.version.includes("-") ? "next" : "latest") ||
-        intent.authorization._tag !== "TokenAuthorization" ||
-        intent.authorization.principal !== principal ||
-        intent.provenance._tag !== "NoProvenance"
+        !sameData(intent.authorization, authorization) ||
+        intent.provenance._tag !== "GitHubActionsProvenance" ||
+        !sameData(intent.provenance.bundle, provenanceFile) ||
+        !sameData(intent.provenance.source, saved.identity.provenance) ||
+        intent.provenance.source.sourceCommit !== input.sourceCommit ||
+        intent.provenance.source.sourceCommit !== input.applicationCommit ||
+        intent.provenance.source.sourceRef !== workflowRef ||
+        intent.provenance.source.eventName !== "workflow_dispatch" ||
+        intent.provenance.source.runnerEnvironment !== "github-hosted"
       )
         reject("Publication destination, bytes, authentication or policy changed");
       return { intent, operation };
@@ -132,34 +152,43 @@ export const loadCandidate = (raw) =>
     return { input, bundle, plan, intent, readContent };
   });
 
+/** Keep read/observe credential-free and acquire npm OIDC only for the admitted write.
+ * @param {import("@mannyc1/ts-release/http").CredentialBinding} binding
+ * @param {{ intent: Npm.PublishIntent, authorize: boolean, trusted: import("@mannyc1/ts-release/http").TrustedPublisherHost }} options */
+export const npmCredentials = (binding, options) =>
+  Effect.gen(function* () {
+    const selected = yield* Npm.authorizationBinding(binding);
+    yield* checked("credential-binding", () => {
+      if (
+        selected.packageName !== packageName ||
+        !sameData(selected.authorization, authorization) ||
+        !sameData(selected.authorization, options.intent.authorization)
+      )
+        reject("Credential request is outside this release");
+    });
+    if (binding.method === "GET" || binding.method === "HEAD") return {};
+    if (!options.authorize || binding.method !== "PUT" || !binding.bodyDigest)
+      return yield* checked("authorization", () => reject("Publication was not authorized"));
+    return yield* Npm.authorizeTrusted({ authorization, packageName, binding }, options.trusted);
+  });
+
 /** @type {import("@mannyc1/ts-release/node").CreateApplication} */
 export const createApplication = (raw) =>
   Effect.gen(function* () {
     const { input, bundle, plan, intent, readContent } = yield* loadCandidate(raw);
     const bounds = { timeoutMilliseconds: 30_000, maximumResponseBytes: 16 * 1024 * 1024 };
     /** @type {import("@mannyc1/ts-release/http").ResolveCredentials} */
-    const credentials = Effect.fn(function* (binding) {
-      const selected = yield* Npm.authorizationBinding(binding);
-      yield* checked("credential-binding", () => {
-        if (
-          selected.packageName !== packageName ||
-          !sameData(selected.authorization, intent.authorization)
-        )
-          reject("Credential request is outside this release");
+    const credentials = (binding) =>
+      npmCredentials(binding, {
+        intent,
+        authorize: input.authorize,
+        trusted: makeGithubTrustedPublisherHost(bounds),
       });
-      if (binding.method === "GET" || binding.method === "HEAD") return {};
-      if (!input.authorize)
-        return yield* checked("authorization", () => reject("Publication was not authorized"));
-      return yield* Npm.authorizeToken({
-        authorization: new Npm.TokenAuthorization({ principal }),
-        binding,
-        token: yield* secret("NPM_TOKEN"),
-      });
-    });
     const providers = Npm.definitions({
       bundle,
       readContent,
       read: makeHttpRead({ ...bounds, credentials }),
+      verifyProvenance,
     });
     const store = yield* openGitJournal({
       remote: journalRemote,
