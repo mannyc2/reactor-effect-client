@@ -31,6 +31,7 @@ import type { AudioFrame, MediaPressure, VideoFrame } from "../../src/session/me
 import * as Submission from "../../src/Submission.js";
 import * as TestPlatform from "../../testing/Platform.js";
 import { fixtureClip } from "../h3/ProviderSession.js";
+import { signals } from "./Signals.js";
 
 export type Services =
   | Scope.Scope
@@ -163,12 +164,21 @@ export interface SourceScript {
   readonly pressure?: (generation: bigint) => Effect.Effect<MediaPressure, ReactorError>;
 }
 
+type LifecycleEvent =
+  | { readonly _tag: "Dispatched"; readonly index: number }
+  | { readonly _tag: "ResultKnown"; readonly index: number }
+  | { readonly _tag: "Accounted"; readonly index: number }
+  | { readonly _tag: "Reconnecting"; readonly attempt: number }
+  | { readonly _tag: "Closed" }
+  | { readonly _tag: "Finalized" };
+
 /** A physical Source fixture, with no router, renewal policy or H3 reducer. */
 export const sourceFixture = (id: string, script: SourceScript = {}) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const events = new Observations<EngineEvent>();
     const closedSignal = yield* Deferred.make<void>();
+    const lifecycle = signals<LifecycleEvent>();
     const generations: FixtureGeneration[] = [];
     let state = script.initial ?? readyState();
     let pressure = { ...cleanPressure };
@@ -236,6 +246,7 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
               Effect.gen(function* () {
                 sends.push(plan);
                 const dispatchIndex = sends.length;
+                lifecycle.record({ _tag: "Dispatched", index: dispatchIndex });
                 const accept = Effect.sync(() => {
                   const clip = {
                     ...record(`${id}/clip/${dispatchIndex}`, plan.request.durationSeconds),
@@ -265,8 +276,10 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
                   ),
                 );
                 results++;
+                lifecycle.record({ _tag: "ResultKnown", index: dispatchIndex });
                 if (script.result !== undefined) yield* script.result(plan, result);
                 if (hooks.result !== undefined) yield* hooks.result(submissionId, result);
+                lifecycle.record({ _tag: "Accounted", index: dispatchIndex });
                 return yield* Result.isSuccess(result)
                   ? Effect.succeed(result.success)
                   : Effect.fail(result.failure);
@@ -275,6 +288,7 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
         }),
       reconnect: Effect.gen(function* () {
         reconnects++;
+        lifecycle.record({ _tag: "Reconnecting", attempt: reconnects });
         yield* script.reconnect ?? Effect.void;
         active = yield* nextGeneration;
       }),
@@ -312,6 +326,7 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
           closed = true;
           closes++;
           yield* Deferred.succeed(closedSignal, undefined);
+          lifecycle.record({ _tag: "Closed" });
           yield* script.close ?? Effect.void;
           events.end();
         }
@@ -321,10 +336,12 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         finalized = true;
+        lifecycle.record({ _tag: "Finalized" });
       }),
     );
     return {
       source,
+      lifecycle,
       plans,
       sends,
       controls,

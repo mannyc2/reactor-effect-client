@@ -1,16 +1,18 @@
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
 import * as Renewal from "../../src/orchestration/renewal.js";
-import { sourceFixture, until } from "./SourceFixture.js";
+import { sourceFixture } from "./SourceFixture.js";
 import type { SourceFixture, SourceScript } from "./SourceFixture.js";
+import { signals } from "./Signals.js";
 
 export const renewalFixture = (
   script: (index: number) => SourceScript = () => ({}),
   options: Omit<Renewal.Options, "open" | "onRenewal"> = {},
 ) =>
   Effect.gen(function* () {
-    const sources: SourceFixture[] = [],
-      renewals: Renewal.Renewal[] = [];
+    const sources: SourceFixture[] = [];
+    const recorded = signals<Renewal.Renewal>();
+    const renewals = recorded.values;
     const handle = yield* Renewal.make({
       leadSeconds: 0.5,
       reconnectTimeoutMs: 50,
@@ -22,17 +24,11 @@ export const renewalFixture = (
       }),
       onRenewal: (event) =>
         Effect.sync(() => {
-          renewals.push(event);
+          recorded.record(event);
         }),
     });
     const warm = TestClock.adjust(600).pipe(
-      Effect.andThen(
-        until(
-          () => renewals.some((event) => event._tag === "Prepared"),
-          TestClock.adjust(100),
-          "replacement was never prepared",
-        ),
-      ),
+      Effect.andThen(recorded.wait((event) => event._tag === "Prepared")),
     );
-    return { handle, sources, renewals, warm };
+    return { handle, sources, renewals, warm, awaitRenewal: recorded.wait };
   });

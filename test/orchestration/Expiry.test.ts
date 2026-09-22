@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { renewalFixture } from "./RenewalFixture.js";
-import { gate, member, readyState, record, runClock, until } from "./SourceFixture.js";
+import { gate, member, readyState, record, runClock } from "./SourceFixture.js";
 
 test("expiry settles a committed pending member as unknown before sequence retirement and never replays it", () =>
   runClock(
     Effect.gen(function* () {
       const entered = yield* gate();
-      const { handle, sources, renewals, warm } = yield* renewalFixture((index) =>
+      const { handle, sources, awaitRenewal, warm } = yield* renewalFixture((index) =>
         index === 0
           ? {
               execute: (plan, accept) =>
@@ -26,10 +26,7 @@ test("expiry settles a committed pending member as unknown before sequence retir
       yield* entered.wait;
       expect((yield* handle.sequences.get("pending-at-expiry"))?.pendingCount).toBe(1);
       yield* TestClock.adjust(600);
-      yield* until(
-        () => renewals.some((event) => event._tag === "Replaced"),
-        TestClock.adjust(100),
-      );
+      yield* awaitRenewal((event) => event._tag === "Replaced");
       const outcome = yield* Fiber.join(pending);
       expect(Result.isFailure(outcome) && outcome.failure.context.outcome).toBe("unknown");
       const sequence = yield* handle.sequences.get("pending-at-expiry");

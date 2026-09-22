@@ -1,23 +1,26 @@
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
-import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
-import * as Stream from "effect/Stream";
 import { ReactorError, errorOf } from "../errors.js";
 import { Observations } from "../observation.js";
 import * as Sequence from "../Sequence.js";
 import * as Submission from "../Submission.js";
 import { CommandFailure } from "../session/commands.js";
 import { AcquisitionFailure } from "../session/index.js";
-import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
+import type { MediaPressure } from "../session/media.js";
+import * as MediaBuffer from "./media-buffer.js";
+import * as SourceSlot from "./source-slot.js";
+import type { SourceSlot as Slot } from "./source-slot.js";
+import { canHandoff, decideRenewal } from "./renewal-state.js";
 import { PolicyFailure, captureRequest } from "./request.js";
 import type { ClipId } from "./request.js";
 import { emptyState, isIdle } from "./queries.js";
@@ -29,7 +32,6 @@ import type {
   EngineShape,
   EngineState,
   HandleShape,
-  MediaSource,
   MediaState,
   Source,
   SourceCleanup,
@@ -82,29 +84,10 @@ export type Renewal =
     }
   | { readonly _tag: "Failed"; readonly reason: string };
 
-interface Slot {
-  readonly source: Source;
-  readonly scope: Scope.Closeable;
-  readonly openedAt: number;
-  readonly maxSeconds: number;
-  readonly accepted: Set<ClipId>;
-  readonly started: Set<ClipId>;
-  readonly submissions: Set<Submission.Submission<ClipId, CommandFailure>>;
-  readonly closeGate: Semaphore.Semaphore;
-  media: MediaSource;
-  mediaScope: Scope.Closeable | undefined;
-  closed: boolean;
-  recovering: boolean;
-  indeterminate: boolean;
-  requiresReplacement: boolean;
-  inFlight: number;
-  settled: Deferred.Deferred<void>;
-  expectedFrames: number;
-  receivedFrames: number;
-  receivedAudioSamples: number;
-  /** Completed receiver generations contribute to the whole source's drop evidence. */
-  retiredDrops: { readonly video: bigint | null; readonly audio: bigint | null };
-}
+type Replacement =
+  | { readonly _tag: "Absent" }
+  | { readonly _tag: "Opening"; readonly fiber: Fiber.Fiber<Slot, ReactorError> }
+  | { readonly _tag: "Ready"; readonly slot: Slot };
 
 /**
  * Explicit application policy for renewal, sequence affinity and continuous
@@ -127,8 +110,7 @@ export const make = <R>(
       Effect.mapError((cause) => errorOf(cause, "InvalidInput")),
     );
     const events = new Observations<EngineEvent>();
-    const video = yield* Queue.unbounded<VideoFrame, ReactorError | Cause.Done>();
-    const audio = yield* Queue.unbounded<AudioFrame, ReactorError | Cause.Done>();
+    const buffer = yield* MediaBuffer.make;
     const fatal = yield* Deferred.make<ReactorError>();
     const slots = new Map<string, Slot>();
     const cleanups: SourceCleanup[] = [];
@@ -148,8 +130,7 @@ export const make = <R>(
       return yield* Effect.fail(new ReactorError("InvalidInput", "Invalid orchestration bounds"));
     }
     let current: Slot | undefined;
-    let next: Slot | undefined;
-    let opening: Fiber.Fiber<Slot, ReactorError> | undefined;
+    let replacement: Replacement = { _tag: "Absent" };
     let opened = 0;
     let openFailures = 0;
     let retryAt = 0;
@@ -158,10 +139,6 @@ export const make = <R>(
     let finalReport: CleanupReport | undefined;
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorError | undefined;
-    let queuedFrames = 0;
-    let queuedSamples = 0;
-    let queuedAudioFrames = 0;
-    let queuedVideoBytes = 0;
     let submissionSequence = 0n;
 
     const observe = (event: Renewal) => options.onRenewal?.(event) ?? Effect.void;
@@ -174,11 +151,17 @@ export const make = <R>(
         // Publish the failed state and queues before waking a failure waiter.
         mediaState = { _tag: "Failed", cause };
         emit({ _tag: "SessionFailed", failure: cause });
-        Queue.failCauseUnsafe(video, Cause.fail(cause));
-        Queue.failCauseUnsafe(audio, Cause.fail(cause));
+        buffer.fail(cause);
         Deferred.doneUnsafe(fatal, Effect.succeed(cause));
         return observe({ _tag: "Failed", reason: cause.message });
       });
+    // Every asynchronous activation uses this final fence. Closed/failed state
+    // cannot be replaced by a reconnect or autoplay operation that finished late.
+    const publishReady = (slot: Slot): boolean => {
+      if (closing || slot.closed || slot !== current || terminalFailure !== undefined) return false;
+      mediaState = { _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation };
+      return true;
+    };
     const recordCleanup = (cleanup: SourceCleanup): void => {
       if (seenCleanups.has(cleanup.lease)) return;
       seenCleanups.add(cleanup.lease);
@@ -190,93 +173,10 @@ export const make = <R>(
           entries.some((entry) => entry.owner === slot.source.id && entry.status === "open"),
         ),
       );
-    const expired = (slot: Slot): boolean =>
-      clock.currentTimeMillisUnsafe() - slot.openedAt >= slot.maxSeconds * 1000;
-    const recoveryBudget = (slot: Slot): number =>
-      Math.min(
-        reconnectTimeout,
-        Math.max(1, slot.maxSeconds * 1000 - (clock.currentTimeMillisUnsafe() - slot.openedAt)),
-      );
-    const sumDrops = (retained: bigint | null, latest: bigint | null): bigint | null =>
-      retained === null || latest === null ? null : retained + latest;
-    const retired = (slot: Slot) =>
-      Effect.gen(function* () {
-        const pressure = yield* Effect.result(
-          slot.media.pressure.pipe(Effect.timeout(recoveryBudget(slot))),
-        );
-        return {
-          sessionId: slot.source.id,
-          ageSeconds: Math.max(0, (clock.currentTimeMillisUnsafe() - slot.openedAt) / 1000),
-          tail: {
-            video: {
-              framesPerSecond: slot.media.videoFramesPerSecond,
-              expectedFrames: slot.expectedFrames,
-              receivedFrames: slot.receivedFrames,
-              status:
-                slot.expectedFrames === 0
-                  ? ("not-started" as const)
-                  : slot.receivedFrames >= slot.expectedFrames
-                    ? ("count-complete" as const)
-                    : ("incomplete" as const),
-            },
-            audio: { receivedSamples: slot.receivedAudioSamples, status: "unverified" as const },
-            sourceDrops: Result.isSuccess(pressure)
-              ? {
-                  video: sumDrops(slot.retiredDrops.video, pressure.success.droppedVideo),
-                  audio: sumDrops(slot.retiredDrops.audio, pressure.success.droppedAudio),
-                }
-              : { video: null, audio: null },
-            forwarded: { queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples },
-          },
-        };
-      });
-
-    const awaitCommitted = (slot: Slot, budget = reconnectTimeout): Effect.Effect<void> =>
-      Effect.suspend(() =>
-        Effect.all(
-          [
-            Deferred.await(slot.settled),
-            // The result hook runs inside physical execution. Its signal alone
-            // cannot prove that execution has returned its immutable outcome yet.
-            // Every retained handle was registered at commit, so submit only joins
-            // its existing owner; inert preparation is never dispatched here.
-            Effect.forEach([...slot.submissions], (submission) => Effect.exit(submission.submit), {
-              concurrency: "unbounded",
-              discard: true,
-            }),
-          ],
-          { concurrency: "unbounded", discard: true },
-        ),
-      ).pipe(
-        Effect.interruptible,
-        Effect.timeoutOrElse({
-          duration: budget,
-          orElse: () =>
-            Effect.sync(() => {
-              slot.indeterminate = true;
-            }),
-        }),
-      );
-
-    const closeSlot = (slot: Slot): Effect.Effect<void> =>
-      slot.closeGate.withPermit(
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            if (slot.closed) return;
-            slot.closed = true;
-            if (slot.mediaScope !== undefined) yield* Scope.close(slot.mediaScope, Exit.void);
-            // Closing the lease wakes protocol waiters with their established dispatch
-            // evidence. Give the committed owner time to record those outcomes before
-            // retiring its surrounding application scope. The remote lifetime has
-            // ended; local bookkeeping retains its own bounded cleanup budget.
-            recordCleanup(yield* slot.source.close);
-            yield* awaitCommitted(slot);
-            yield* affinity.retire(slot.source.id);
-            yield* Scope.close(slot.scope, Exit.void);
-            slot.submissions.clear();
-          }),
-        ),
-      );
+    const expired = (slot: Slot) => slot.expired();
+    const recoveryBudget = (slot: Slot) => slot.recoveryBudget();
+    const retired = (slot: Slot) => slot.retired(buffer.forwarded);
+    const closeSlot = (slot: Slot) => slot.close;
 
     const replace = (slot: Slot, cause: ReactorError): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -298,35 +198,33 @@ export const make = <R>(
           lostClips: lost.length,
           ...tail,
         });
-        if (slot === next) next = undefined;
+        if (replacement._tag === "Ready" && replacement.slot === slot)
+          replacement = { _tag: "Absent" };
         if (slot !== current) return;
-        if (next === undefined) {
-          next = yield* opening === undefined ? acquire : Fiber.join(opening);
-          opening = undefined;
+        const pending = replacement;
+        const selected =
+          pending._tag === "Ready"
+            ? pending.slot
+            : yield* pending._tag === "Opening" ? Fiber.join(pending.fiber) : acquire;
+        replacement = { _tag: "Absent" };
+        if (closing || terminalFailure !== undefined) {
+          yield* selected.close;
+          return;
         }
-        current = next;
-        next = undefined;
+        current = selected;
         yield* current.source.setAutoplay(autoplay);
-        if (terminalFailure === undefined)
-          mediaState = {
-            _tag: "Ready",
-            sessionId: current.source.id,
-            generation: current.media.generation,
-          };
+        if (!publishReady(current)) return;
         yield* log("Replaced lost session; local queue resumes on the new connection");
       }).pipe(Effect.catch((failure) => fail(errorOf(failure, "Disconnected"))));
 
-    const recover = (
-      slot: Slot,
-      cause: ReactorError,
-      mode: "reconnect" | "replace",
-    ): Effect.Effect<void> =>
+    const recover = (slot: Slot, cause: ReactorError): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
         if (slot === current) mediaState = { _tag: "Recovering", sessionId: slot.source.id, cause };
         yield* observe({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
-        yield* awaitCommitted(slot, recoveryBudget(slot));
-        if (mode === "replace" || slot.requiresReplacement || slot.indeterminate || expired(slot)) {
+        yield* slot.joinCommitted(recoveryBudget(slot));
+        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.needsReplacement()) {
           yield* replace(slot, cause);
           return;
         }
@@ -344,7 +242,8 @@ export const make = <R>(
           );
           return;
         }
-        if (slot.mediaScope !== undefined) yield* Scope.close(slot.mediaScope, Exit.void);
+        yield* slot.closeMedia;
+        if (slot.closed || closing || terminalFailure !== undefined) return;
         const connected = yield* Effect.result(
           slot.source.reconnect.pipe(
             Effect.timeoutOrElse({
@@ -356,11 +255,12 @@ export const make = <R>(
             }),
           ),
         );
+        if (slot.closed || closing || terminalFailure !== undefined) return;
         if (Result.isFailure(connected)) {
           yield* replace(slot, connected.failure);
           return;
         }
-        if (slot.requiresReplacement || slot.indeterminate || expired(slot)) {
+        if (slot.needsReplacement()) {
           yield* replace(slot, cause);
           return;
         }
@@ -376,34 +276,20 @@ export const make = <R>(
         const restarted = yield* Effect.result(
           Effect.gen(function* () {
             const media = yield* slot.source.media;
-            if (media.generation <= slot.media.generation)
-              return yield* Effect.fail(
-                new ReactorError("Protocol", "Reconnect did not acquire a new media generation"),
-              );
-            slot.retiredDrops = {
-              video: sumDrops(
-                slot.retiredDrops.video,
-                Result.isSuccess(previousPressure) ? previousPressure.success.droppedVideo : null,
-              ),
-              audio: sumDrops(
-                slot.retiredDrops.audio,
-                Result.isSuccess(previousPressure) ? previousPressure.success.droppedAudio : null,
-              ),
-            };
-            return yield* startMedia(slot, media);
+            yield* slot.replaceMedia(media, previousPressure);
+            return yield* startMedia(slot);
           }),
         );
+        if (slot.closed || closing || terminalFailure !== undefined) return;
         if (Result.isFailure(restarted)) {
           yield* replace(slot, restarted.failure);
           return;
         }
-        slot.recovering = false;
-        if (slot === current && terminalFailure === undefined)
-          mediaState = {
-            _tag: "Ready",
-            sessionId: slot.source.id,
-            generation: slot.media.generation,
-          };
+        if (slot.needsReplacement() || !slot.recovered()) {
+          yield* replace(slot, cause);
+          return;
+        }
+        if (slot === current && !publishReady(slot)) return;
         yield* observe({
           _tag: "Reconnected",
           sessionId: slot.source.id,
@@ -418,70 +304,31 @@ export const make = <R>(
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
-        if (mode === "replace") slot.requiresReplacement = true;
-        if (slot.recovering) return;
-        slot.recovering = true;
-        yield* recover(slot, cause, mode).pipe(commands.withPermit, Effect.forkIn(scope));
+        if (!slot.beginRecovery(mode)) return;
+        yield* recover(slot, cause).pipe(commands.withPermit, Effect.forkIn(scope));
       });
 
-    const startMedia = (slot: Slot, acquired?: MediaSource): Effect.Effect<void, ReactorError> =>
-      Effect.gen(function* () {
-        slot.media = acquired ?? (yield* slot.source.media);
-        const mediaScope = yield* Scope.fork(slot.scope);
-        slot.mediaScope = mediaScope;
-        const generation = slot.media.generation;
-        const lost = (cause: ReactorError) =>
-          slot.closed || slot.media.generation !== generation || closing
-            ? Effect.void
-            : scheduleRecovery(slot, cause, "reconnect");
-        yield* slot.media.video.pipe(
-          Stream.runForEach((frame) =>
-            Effect.gen(function* () {
-              if (
-                slot !== current ||
-                slot.closed ||
-                slot.media.generation !== generation ||
-                terminalFailure !== undefined
-              )
-                return;
-              slot.receivedFrames++;
-              if (queuedFrames >= 96)
-                return yield* fail(
-                  new ReactorError("Overflow", "Orchestration video receiver overflow"),
-                );
-              queuedFrames++;
-              queuedVideoBytes += frame.data.byteLength + frame.metadata.byteLength;
-              yield* Queue.offer(video, frame);
-            }),
-          ),
-          Effect.andThen(lost(new ReactorError("Disconnected", "Video generation ended"))),
-          Effect.catch(lost),
-          Effect.forkIn(mediaScope),
-        );
-        yield* slot.media.audio.pipe(
-          Stream.runForEach((frame) =>
-            Effect.gen(function* () {
-              if (
-                slot !== current ||
-                slot.closed ||
-                slot.media.generation !== generation ||
-                terminalFailure !== undefined
-              )
-                return;
-              if (queuedSamples + frame.samples.length > 48_000 * 4)
-                return yield* fail(
-                  new ReactorError("Overflow", "Orchestration audio receiver overflow"),
-                );
-              slot.receivedAudioSamples += frame.samples.length;
-              queuedSamples += frame.samples.length;
-              queuedAudioFrames++;
-              yield* Queue.offer(audio, frame);
-            }),
-          ),
-          Effect.andThen(lost(new ReactorError("Disconnected", "Audio generation ended"))),
-          Effect.catch(lost),
-          Effect.forkIn(mediaScope),
-        );
+    const startMedia = (slot: Slot): Effect.Effect<void> =>
+      slot.startMedia({
+        video: (frame) =>
+          Effect.suspend(() => {
+            if (slot !== current || terminalFailure !== undefined) return Effect.void;
+            slot.recordVideo();
+            return buffer.offerVideo(frame).pipe(Effect.catch(fail));
+          }),
+        audio: (frame) =>
+          Effect.suspend(() => {
+            if (slot !== current || terminalFailure !== undefined) return Effect.void;
+            return buffer.offerAudio(frame).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  slot.recordAudio(frame.samples.length);
+                }),
+              ),
+              Effect.catch(fail),
+            );
+          }),
+        lost: (cause) => (closing ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
       });
 
     const acquire: Effect.Effect<Slot, ReactorError> = Effect.uninterruptibleMask((restore) =>
@@ -495,11 +342,10 @@ export const make = <R>(
         let acquiredSource: Source | undefined;
         return yield* restore(
           Effect.gen(function* () {
-            // Captured contexts contain the caller's Scope at runtime even when R
-            // omits it statically. Install the child inside that captured environment.
+            // Replace the captured Scope explicitly in one context operation.
+            // Dependency provision order cannot move resources to the caller's owner.
             const value = yield* options.open.pipe(
-              Scope.provide(owned),
-              Effect.provideContext(context),
+              Effect.provideContext(Context.add(context, Scope.Scope, owned)),
               Effect.timeoutOrElse({
                 duration: "30 seconds",
                 orElse: () =>
@@ -524,51 +370,29 @@ export const make = <R>(
                 ),
               );
             const media = yield* value.source.media;
-            const settled = yield* Deferred.make<void>();
-            yield* Deferred.succeed(settled, undefined);
-            const slot: Slot = {
+            const slot = yield* SourceSlot.make({
               source: value.source,
               scope: owned,
-              maxSeconds: value.maxSeconds,
-              openedAt: clock.currentTimeMillisUnsafe(),
-              accepted: new Set(),
-              submissions: new Set(),
-              started: new Set(),
-              closeGate: yield* Semaphore.make(1),
               media,
-              mediaScope: undefined,
-              closed: false,
-              recovering: false,
-              indeterminate: false,
-              requiresReplacement: false,
-              inFlight: 0,
-              settled,
-              expectedFrames: 0,
-              receivedFrames: 0,
-              receivedAudioSamples: 0,
-              retiredDrops: { video: 0n, audio: 0n },
-            };
+              openedAt: clock.currentTimeMillisUnsafe(),
+              maxSeconds: value.maxSeconds,
+              cleanupBudgetMs: reconnectTimeout,
+              recordCleanup,
+              retireSequences: affinity.retire(value.source.id).pipe(Effect.asVoid),
+            });
             acquired = slot;
             slots.set(slot.source.id, slot);
             opened++;
             yield* slot.source.setAutoplay(false);
-            yield* slot.source.events.pipe(
-              Stream.runForEach((event) =>
-                Effect.gen(function* () {
-                  if (slot.closed) return;
+            yield* slot.observe(
+              (event) =>
+                Effect.suspend(() => {
                   if (event._tag === "SessionFailed")
-                    return yield* scheduleRecovery(slot, event.failure, "replace");
-                  if (event._tag === "Started" && !slot.started.has(event.clipId)) {
-                    slot.started.add(event.clipId);
-                    slot.expectedFrames += Math.round(
-                      event.durationSeconds * slot.media.videoFramesPerSecond,
-                    );
-                  }
+                    return scheduleRecovery(slot, event.failure, "replace");
                   if (event._tag !== "Starved" || slot === current) emit(event);
+                  return Effect.void;
                 }),
-              ),
-              Effect.catch((cause) => scheduleRecovery(slot, cause, "replace")),
-              Effect.forkIn(owned),
+              (cause) => scheduleRecovery(slot, cause, "replace"),
             );
             yield* startMedia(slot);
             yield* observe({
@@ -604,10 +428,9 @@ export const make = <R>(
         Effect.gen(function* () {
           if (finalReport !== undefined) return finalReport;
           closing = true;
-          if (opening !== undefined) yield* Fiber.interrupt(opening);
+          if (replacement._tag === "Opening") yield* Fiber.interrupt(replacement.fiber);
           yield* Effect.forEach([...slots.values()], closeSlot, { discard: true });
-          Queue.endUnsafe(video);
-          Queue.endUnsafe(audio);
+          buffer.end();
           events.end();
           mediaState = { _tag: "Closed" };
           finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
@@ -667,6 +490,7 @@ export const make = <R>(
         );
         const binding =
           request.sequence === undefined ? undefined : yield* affinity.get(request.sequence.id);
+        const next = replacement._tag === "Ready" ? replacement.slot : undefined;
         const preferred =
           next !== undefined && current !== undefined && !(yield* openSequences(current))
             ? next
@@ -725,35 +549,25 @@ export const make = <R>(
                             return yield* Effect.die(
                               new Error("Source committed before returning its inert submission"),
                             );
-                          for (const previous of target.submissions) {
-                            if ((yield* previous.state)._tag === "Completed")
-                              target.submissions.delete(previous);
-                          }
-                          if (target.submissions.size >= 4096)
-                            return yield* Effect.fail(
-                              new PolicyFailure(
-                                "submission_capacity",
-                                "Committed source submissions reached their bound",
-                              ),
-                            );
-                          if (sequence !== undefined) {
-                            yield* affinity
-                              .bind(sequence.id, target.source.id)
-                              .pipe(Effect.mapError(sequenceError));
-                            yield* affinity
-                              .begin(sequence.id, sequence.memberId ?? submissionId)
-                              .pipe(Effect.mapError(sequenceError));
-                          }
-                          if (target.inFlight++ === 0) target.settled = Deferred.makeUnsafe<void>();
-                          target.submissions.add(active);
+                          yield* target.register(
+                            active,
+                            Effect.gen(function* () {
+                              if (sequence !== undefined) {
+                                yield* affinity
+                                  .bind(sequence.id, target.source.id)
+                                  .pipe(Effect.mapError(sequenceError));
+                                yield* affinity
+                                  .begin(sequence.id, sequence.memberId ?? submissionId)
+                                  .pipe(Effect.mapError(sequenceError));
+                              }
+                            }),
+                          );
                         }),
                       ),
                     ),
                   result: (submissionId, result) =>
                     Effect.gen(function* () {
-                      if (Result.isSuccess(result)) target.accepted.add(result.success);
-                      else if (result.failure.context.outcome === "unknown")
-                        target.indeterminate = true;
+                      target.recordResult(result);
                       if (sequence !== undefined) {
                         const memberId = sequence.memberId ?? submissionId;
                         const account = Result.isSuccess(result)
@@ -769,7 +583,7 @@ export const make = <R>(
                         yield* account.pipe(
                           Effect.catch((cause) =>
                             Effect.gen(function* () {
-                              target.indeterminate = true;
+                              target.markIndeterminate();
                               yield* affinity.retire(target.source.id);
                               yield* fail(
                                 new ReactorError(
@@ -782,8 +596,7 @@ export const make = <R>(
                           ),
                         );
                       }
-                      if (--target.inFlight === 0)
-                        yield* Deferred.succeed(target.settled, undefined);
+                      target.finishAccounting();
                       if (
                         Result.isFailure(result) &&
                         result.failure.context.outcome === "unknown"
@@ -801,7 +614,7 @@ export const make = <R>(
                 selected.state.pipe(
                   Effect.flatMap((state) =>
                     Effect.sync(() => {
-                      if (state._tag === "Completed") activeOwner?.submissions.delete(selected);
+                      if (state._tag === "Completed") activeOwner?.forgetCompleted(selected);
                       if (state._tag === "Prepared" && active === selected) {
                         active = undefined;
                         activeOwner = undefined;
@@ -983,12 +796,12 @@ export const make = <R>(
             (yield* Deferred.isDone(fatal))
           )
             return;
-          if (opening !== undefined) {
-            const result = opening.pollUnsafe();
+          if (replacement._tag === "Opening") {
+            const result = replacement.fiber.pollUnsafe();
             if (result !== undefined) {
-              opening = undefined;
+              replacement = { _tag: "Absent" };
               if (Exit.isSuccess(result)) {
-                next = result.value;
+                replacement = { _tag: "Ready", slot: result.value };
                 openFailures = 0;
                 yield* log("Prepared the next session for renewal");
                 yield* observe({ _tag: "Prepared" });
@@ -1007,34 +820,33 @@ export const make = <R>(
               }
             }
           }
-          const age = (clock.currentTimeMillisUnsafe() - current.openedAt) / 1000;
-          // The remote lifetime is a hard boundary even with an open sequence or
-          // incomplete media. Closing first lets the physical commit owner retain
-          // unknown outcomes before sequence retirement; no work is replayed.
-          if (age >= current.maxSeconds) {
-            yield* replace(
-              current,
-              new ReactorError("TerminalSession", "Source lifetime limit reached", {
-                operation: "renewal",
-              }),
-            );
-            return;
+          const decision = decideRenewal({
+            running: !closing && terminalFailure === undefined,
+            now: clock.currentTimeMillisUnsafe(),
+            current,
+            replacement: replacement._tag === "Ready" ? replacement.slot.phase : replacement._tag,
+            leadSeconds,
+            retryAt,
+          });
+          switch (decision) {
+            case "Retain":
+              return;
+            case "Expire":
+              yield* replace(
+                current,
+                new ReactorError("TerminalSession", "Source lifetime limit reached", {
+                  operation: "renewal",
+                }),
+              );
+              return;
+            case "Prepare":
+              replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
+              return;
+            case "InspectHandoff":
+              break;
           }
-          if (
-            next === undefined &&
-            opening === undefined &&
-            age >= current.maxSeconds - leadSeconds &&
-            clock.currentTimeMillisUnsafe() >= retryAt
-          ) {
-            opening = yield* acquire.pipe(Effect.forkIn(scope));
-          }
-          if (
-            next === undefined ||
-            next.closed ||
-            next.recovering ||
-            (yield* openSequences(current))
-          )
-            return;
+          const next = replacement._tag === "Ready" ? replacement.slot : undefined;
+          if (next === undefined || (yield* openSequences(current))) return;
           const oldState = yield* current.source.state;
           const nextState = yield* next.source.state;
           if (
@@ -1045,22 +857,23 @@ export const make = <R>(
             return;
           const tail = yield* retired(current);
           if (
-            tail.tail.video.status === "incomplete" ||
-            tail.tail.sourceDrops.video !== 0n ||
-            tail.tail.sourceDrops.audio !== 0n
+            !canHandoff({
+              sequenceOpen: false,
+              currentIdle: isIdle(oldState),
+              replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
+              video: tail.tail.video.status,
+              droppedVideo: tail.tail.sourceDrops.video,
+              droppedAudio: tail.tail.sourceDrops.audio,
+            })
           )
             return;
           const old = current;
           current = next;
-          next = undefined;
+          replacement = { _tag: "Absent" };
           yield* current.source.setAutoplay(autoplay);
-          if (terminalFailure === undefined)
-            mediaState = {
-              _tag: "Ready",
-              sessionId: current.source.id,
-              generation: current.media.generation,
-            };
+          const activated = publishReady(current);
           yield* closeSlot(old);
+          if (!activated) return;
           yield* observe({ _tag: "Switched", ...tail });
           yield* log("Switched prepared sessions at a sequence boundary");
         }),
@@ -1072,45 +885,24 @@ export const make = <R>(
       if (current === undefined)
         return Effect.fail(new ReactorError("InvalidState", "No active media source"));
       const owner = current;
-      return owner.media.pressure.pipe(
-        Effect.flatMap((source) => {
-          const droppedVideo = sumDrops(owner.retiredDrops.video, source.droppedVideo);
-          const droppedAudio = sumDrops(owner.retiredDrops.audio, source.droppedAudio);
-          if (droppedVideo === null || droppedAudio === null)
-            return Effect.fail(
-              new ReactorError("InvalidState", "Retired media generation drop totals are unknown"),
-            );
-          return Effect.succeed({
+      return owner.pressure.pipe(
+        Effect.map((source) => {
+          const queued = buffer.pressure();
+          return {
             ...source,
             closed: closing,
-            queuedVideo: source.queuedVideo + queuedFrames,
-            queuedAudio: source.queuedAudio + queuedAudioFrames,
-            queuedBytes: source.queuedBytes + queuedVideoBytes + queuedSamples * 2,
-            droppedVideo,
-            droppedAudio,
-          });
+            queuedVideo: source.queuedVideo + queued.queuedVideo,
+            queuedAudio: source.queuedAudio + queued.queuedAudio,
+            queuedBytes: source.queuedBytes + queued.queuedBytes,
+          };
         }),
       );
     });
     return {
       engine,
       media: {
-        video: Stream.fromQueue(video).pipe(
-          Stream.tap((frame) =>
-            Effect.sync(() => {
-              queuedFrames--;
-              queuedVideoBytes -= frame.data.byteLength + frame.metadata.byteLength;
-            }),
-          ),
-        ),
-        audio: Stream.fromQueue(audio).pipe(
-          Stream.tap((frame) =>
-            Effect.sync(() => {
-              queuedSamples -= frame.samples.length;
-              queuedAudioFrames--;
-            }),
-          ),
-        ),
+        video: buffer.video,
+        audio: buffer.audio,
         pressure,
         videoFramesPerSecond: current.media.videoFramesPerSecond,
       },
