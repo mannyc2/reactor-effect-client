@@ -4,33 +4,72 @@ import { TestClock } from "effect/testing";
 import { StatsSampler } from "../src/stats.js";
 import { assert, equal, run, test, throws } from "./harness.js";
 import { makeSession, withFixture } from "./fixtures.js";
-const pair = (sent: number | bigint, received: number | bigint) => ({ id: "pair", type: "candidate-pair", nominated: true, state: "succeeded", bytesSent: sent, bytesReceived: received });
+const pair = (sent: number | bigint, received: number | bigint) => ({
+  id: "pair",
+  type: "candidate-pair",
+  nominated: true,
+  state: "succeeded",
+  bytesSent: sent,
+  bytesReceived: received,
+});
 test("stats policy: real counter rates use elapsed time and a minimum observation interval", () => {
-  const s = new StatsSampler(); equal(s.sample([pair(0, 0)], 1n, 0).rates, undefined);
+  const s = new StatsSampler();
+  equal(s.sample([pair(0, 0)], 1n, 0).rates, undefined);
   equal(s.sample([pair(10, 20)], 1n, 100).rates, undefined);
-  equal(s.sample([pair(1000, 2000)], 1n, 1000).rates, { sentBitsPerSecond: 8000, receivedBitsPerSecond: 16000, intervalMs: 1000 });
+  equal(s.sample([pair(1000, 2000)], 1n, 1000).rates, {
+    sentBitsPerSecond: 8000,
+    receivedBitsPerSecond: 16000,
+    intervalMs: 1000,
+  });
 });
 test("stats policy: generation changes and decreasing counters reset the rate baseline", () => {
-  const s = new StatsSampler(); s.sample([pair(100, 100)], 1n, 0);
+  const s = new StatsSampler();
+  s.sample([pair(100, 100)], 1n, 0);
   equal(s.sample([pair(200, 200)], 2n, 1000).rates, undefined);
-  equal(s.sample([pair(0, 0)], 2n, 2000).rates, undefined); s.reset();
+  equal(s.sample([pair(0, 0)], 2n, 2000).rates, undefined);
+  s.reset();
   equal(s.sample([pair(1, 1)], 2n, 3000).rates, undefined);
 });
 test("stats policy: unsafe numeric counters are flagged, never reconstructed as precise bigint", () => {
   const sample = new StatsSampler().sample([pair(Number.MAX_SAFE_INTEGER + 1, 0)], 1n, 0);
-  equal(sample.pair?.bytesSent, undefined); assert(sample.warnings.length > 0);
+  equal(sample.pair?.bytesSent, undefined);
+  assert(sample.warnings.length > 0);
 });
 test("stats policy: signed packet-loss correction is preserved without a negative loss ratio", () => {
-  const sample = new StatsSampler().sample([pair(0, 0), { type: "inbound-rtp", kind: "video", packetsLost: -3, packetsReceived: 40, jitter: 0.01, framesPerSecond: 20 }], 1n, 0);
-  equal(sample.totalPacketsLost, -3n); equal(sample.lossRatio, 0); equal(sample.jitterSeconds, 0.01); equal(sample.framesPerSecond, 20);
+  const sample = new StatsSampler().sample(
+    [
+      pair(0, 0),
+      {
+        type: "inbound-rtp",
+        kind: "video",
+        packetsLost: -3,
+        packetsReceived: 40,
+        jitter: 0.01,
+        framesPerSecond: 20,
+      },
+    ],
+    1n,
+    0,
+  );
+  equal(sample.totalPacketsLost, -3n);
+  equal(sample.lossRatio, 0);
+  equal(sample.jitterSeconds, 0.01);
+  equal(sample.framesPerSecond, 20);
 });
 test("stats policy: missing nominated succeeded pair is explicit and bounded input is validated", () => {
   const sampler = new StatsSampler();
   assert(sampler.sample([{ ...pair(1, 1), nominated: false }], 1n, 0).warnings.length > 0);
-  throws(() => sampler.sample(Array.from({ length: 4097 }, () => ({})), 1n, 0), "Protocol");
+  throws(
+    () =>
+      sampler.sample(
+        Array.from({ length: 4097 }, () => ({})),
+        1n,
+        0,
+      ),
+    "Protocol",
+  );
   throws(() => sampler.sample([], 1n, NaN), "Protocol");
 });
-
 
 test("session stats use the injected monotonic clock across wall jumps and reconnect reset", () =>
   withFixture(async (fixture) => {
@@ -84,7 +123,9 @@ test("session stats use the injected monotonic clock across wall jumps and recon
           afterReconnectSecond,
         };
       });
-      const observed = await Effect.runPromise(observations.pipe(Effect.provide(TestClock.layer())));
+      const observed = await Effect.runPromise(
+        observations.pipe(Effect.provide(TestClock.layer())),
+      );
       const expectedRates = {
         sentBitsPerSecond: 8000,
         receivedBitsPerSecond: 16000,
@@ -111,5 +152,4 @@ test("session stats use the injected monotonic clock across wall jumps and recon
     } finally {
       await run(session.close());
     }
-  }),
-);
+  }));

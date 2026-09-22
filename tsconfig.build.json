@@ -3,17 +3,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src/**/*.ts"
-  ],
-  "exclude": [
-    "src/bun.ts",
-    "src/bun-peer.ts",
-    "src/bun-media.ts",
-    "src/owned-webrtc"
-  ]
+  "include": ["src/**/*.ts"],
+  "exclude": []
 }

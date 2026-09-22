@@ -35,6 +35,8 @@ enum ReactorEffectChannel {
 };
 
 uint32_t reactor_effect_abi_version(void);
+/* Static source/build identity of this loaded image; never free the pointer. */
+const char *reactor_effect_build_identity(void);
 
 ReactorEffectPeer *reactor_effect_peer_create(void);
 
@@ -63,7 +65,10 @@ int reactor_effect_peer_send(
 /*
  * Poll packets are [u32 little-endian header length][UTF-8 JSON header][payload].
  * A zero-capacity call returns BUFFER_TOO_SMALL with the required packet size and
- * leaves the packet queued. timeout_ms == 0 is a nonblocking poll.
+ * retains that exact packet until copy or close. Retained packets count toward
+ * item and byte bounds and cannot be evicted by producer pressure. Each queue
+ * permits one reader across probe/copy; the host must serialize that pair.
+ * timeout_ms == 0 is a nonblocking poll.
  */
 int reactor_effect_peer_poll_event(
     ReactorEffectPeer *peer,
@@ -99,7 +104,11 @@ int reactor_effect_peer_shutdown(
     size_t error_cap,
     size_t *error_len);
 
-/* Safe fallback: performs shutdown if needed, then frees the opaque handle. */
+/*
+ * Performs shutdown if needed, then frees the opaque handle. The host must
+ * first join EVERY foreign call using this handle, including work still queued
+ * in its FFI executor. Native owner shutdown alone does not establish that.
+ */
 void reactor_effect_peer_destroy(ReactorEffectPeer *peer);
 
 #ifdef __cplusplus

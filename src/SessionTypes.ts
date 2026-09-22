@@ -1,20 +1,34 @@
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { Descriptor } from "./contract.js";
-import type { HttpOptions, Termination } from "./http.js";
+import type { Capabilities, Descriptor } from "./contract.js";
+import type { HttpOptions, Termination } from "./coordinator/_internal/client.js";
 import type { Correlation } from "./correlation.js";
 import type { ReactorError } from "./errors.js";
 import type { Json, JsonObject } from "./json.js";
 import type * as W from "./wire.generated.js";
 
-export type Status = "idle" | "connecting" | "waiting" | "ready" | "disconnected" | "closing" | "closed";
+export type Status =
+  | "idle"
+  | "connecting"
+  | "waiting"
+  | "ready"
+  | "disconnected"
+  | "closing"
+  | "closed";
 export type Ownership = "owned" | "attached" | "allocating" | "unknown";
 
+/** Constructed by the acquisition boundary after validating operation-specific input. */
+export type AcquisitionIntent =
+  | {
+      readonly _tag: "Create";
+      readonly model: { readonly name: string; readonly version?: string };
+      readonly extraArgs?: Json;
+    }
+  | { readonly _tag: "Attach"; readonly sessionId: string; readonly connectionId?: number };
+
 export interface SessionOptions extends HttpOptions {
-  readonly model?: { readonly name: string; readonly version?: string };
-  readonly attach?: { readonly sessionId: string; readonly connectionId?: number };
-  readonly extraArgs?: Json;
+  readonly intent: AcquisitionIntent;
   readonly readyTimeoutMs?: number;
   readonly connectTimeoutMs?: number;
   readonly commandTimeoutMs?: number;
@@ -39,15 +53,24 @@ export interface CloseReport {
   readonly localErrors: readonly ReactorError[];
 }
 
-export interface Snapshot {
-  readonly status: Status;
+export interface ReadyDescriptor extends Descriptor {
+  readonly capabilities: Capabilities;
+  readonly selected_transport: { readonly protocol: string; readonly version: string };
+}
+
+export interface ReadyState {
+  readonly status: "ready";
   readonly generation: bigint;
-  readonly remote?: {
-    readonly ownership: Ownership;
-    readonly sessionId?: string;
-    readonly descriptor?: Descriptor;
-    readonly connectionId?: number;
+  readonly remote: {
+    readonly ownership: "owned" | "attached";
+    readonly sessionId: string;
+    readonly descriptor: ReadyDescriptor;
+    readonly connectionId: number;
   };
+}
+
+interface SnapshotDetails {
+  readonly generation: bigint;
   readonly pending: { readonly data: number; readonly control: number };
   readonly pausedLocally: readonly string[];
   readonly claimedTracks: readonly string[];
@@ -59,20 +82,67 @@ export interface Snapshot {
   readonly close?: CloseReport;
 }
 
-export type CommandReply =
-  | { readonly kind: "ack"; readonly raw: W.DataServerMessage }
-  | { readonly kind: "message"; readonly type: string; readonly data?: JsonObject; readonly raw: W.DataServerMessage };
+export type Snapshot = SnapshotDetails &
+  (
+    | ReadyState
+    | {
+        readonly status: Exclude<Status, "ready">;
+        readonly remote?: {
+          readonly ownership: Ownership;
+          readonly sessionId?: string;
+          readonly descriptor?: Descriptor;
+          readonly connectionId?: number;
+        };
+      }
+  );
+
+export interface Attribution {
+  readonly requestId: string;
+  readonly sequence: bigint;
+  readonly generation: bigint;
+  readonly correlation: Correlation;
+}
+
+/** The command result and its observation are the same attributed object. */
+export type CommandReply = Attribution & {
+  readonly _tag: "Model";
+  readonly outcome: "replied";
+} & (
+    | { readonly kind: "ack"; readonly raw: W.DataServerMessage }
+    | {
+        readonly kind: "message";
+        readonly type: string;
+        readonly data?: JsonObject;
+        readonly raw: W.DataServerMessage;
+      }
+  );
 
 export type EventPayload =
-  | { readonly type: "status"; readonly status: Status }
-  | { readonly type: "model"; readonly reply: CommandReply; readonly correlation: Correlation }
-  | { readonly type: "control"; readonly message: W.ControlServerMessage; readonly correlation: Correlation }
-  | { readonly type: "track"; readonly name: string; readonly mid: string }
-  | { readonly type: "decoded"; readonly kind: "audio" | "video"; readonly name: string; readonly mid: string }
-  | { readonly type: "diagnostic"; readonly error: ReactorError }
-  | { readonly type: "upload"; readonly progress: UploadProgress };
+  | { readonly _tag: "Status"; readonly status: Status }
+  | {
+      readonly _tag: "CommandError";
+      readonly error: ReactorError;
+      readonly requestId: string;
+      readonly correlation: Correlation;
+    }
+  | {
+      readonly _tag: "Control";
+      readonly message: W.ControlServerMessage;
+      readonly correlation: Correlation;
+    }
+  | { readonly _tag: "Track"; readonly name: string; readonly mid: string }
+  | {
+      readonly _tag: "Decoded";
+      readonly kind: "audio" | "video";
+      readonly name: string;
+      readonly mid: string;
+    }
+  | { readonly _tag: "Diagnostic"; readonly error: ReactorError }
+  | { readonly _tag: "Upload"; readonly progress: UploadProgress };
 
-export type SessionEvent = EventPayload & { readonly sequence: bigint; readonly generation: bigint };
+export type SessionEvent =
+  | CommandReply
+  | (EventPayload & { readonly sequence: bigint; readonly generation: bigint });
 export interface UploadProgress {
   readonly allocation: "not-requested" | "unknown" | "confirmed";
   readonly transfer: "not-requested" | "unknown" | "confirmed";
@@ -92,5 +162,7 @@ export interface Observation {
   readonly revision: bigint;
   readonly events: Stream.Stream<SessionEvent, ReactorError>;
 }
-export type Observe = (options?: { readonly capacity?: number; readonly maxBytes?: number }) =>
-  Effect.Effect<Observation, ReactorError, Scope.Scope>;
+export type Observe = (options?: {
+  readonly capacity?: number;
+  readonly maxBytes?: number;
+}) => Effect.Effect<Observation, ReactorError, Scope.Scope>;

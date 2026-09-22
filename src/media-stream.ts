@@ -7,12 +7,26 @@ import type { ReactorError } from "./errors.js";
 export const fromOwnedReadableStream = <A>(options: {
   readonly evaluate: () => ReadableStream<A>;
   readonly onError: (error: unknown) => ReactorError;
-}): Stream.Stream<A, ReactorError> => Stream.unwrap(Effect.gen(function* () {
-  const reader = yield* Effect.acquireRelease(Effect.try({ try: () => options.evaluate().getReader(), catch: options.onError }),
-    (reader) => Effect.promise(async () => {
-      try { await reader.cancel(); } catch { /* Underlying media finalizer still runs on stream error. */ }
-      finally { reader.releaseLock(); }
-    }));
-  return Stream.unfold(undefined, () => Effect.tryPromise({ try: () => reader.read(), catch: options.onError }).pipe(
-    Effect.map((next) => next.done ? undefined : [next.value, undefined] as const)));
-}));
+}): Stream.Stream<A, ReactorError> =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const reader = yield* Effect.acquireRelease(
+        Effect.try({ try: () => options.evaluate().getReader(), catch: options.onError }),
+        (reader) =>
+          Effect.promise(async () => {
+            try {
+              await reader.cancel();
+            } catch {
+              /* Underlying media finalizer still runs on stream error. */
+            } finally {
+              reader.releaseLock();
+            }
+          }),
+      );
+      return Stream.unfold(undefined, () =>
+        Effect.tryPromise({ try: () => reader.read(), catch: options.onError }).pipe(
+          Effect.map((next) => (next.done ? undefined : ([next.value, undefined] as const))),
+        ),
+      );
+    }),
+  );

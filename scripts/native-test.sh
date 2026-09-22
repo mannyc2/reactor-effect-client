@@ -21,7 +21,9 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 
 # Apply the native deployment target even when invoked from the SDK root.
+cargo fmt --manifest-path native/Cargo.toml -- --check
 cargo test --config native/.cargo/config.toml --locked --manifest-path native/Cargo.toml -- --nocapture
 cargo clippy --config native/.cargo/config.toml --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
-cargo build --config native/.cargo/config.toml --locked --manifest-path native/Cargo.toml --release
-node node_modules/vitest/vitest.mjs run test/native-abi.test.ts test/native-parser.test.ts test/native-session.test.ts
+# The preceding native:build owns staging. Tests load only the staged artifact
+# and reject a missing or mismatched identity instead of rebuilding another copy.
+"${NODE_BINARY:-node}" node_modules/vitest/vitest.mjs run --project native

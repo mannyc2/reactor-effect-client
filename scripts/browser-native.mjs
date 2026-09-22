@@ -4,30 +4,45 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { checkNativeBridge, NativeBridge, NativeCall, encodeNativeJson } from "../dist/native-bridge.js";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Native from "reactor-effect-client/native";
+import { FetchHttp, ReactorError } from "reactor-effect-client";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = resolve(process.argv[2] ?? join(root, ".check/browser-native/browser.js"));
-const libraryName = process.platform === "darwin" ? "libreactor_effect_native.dylib" : process.platform === "win32" ? "reactor_effect_native.dll" : "libreactor_effect_native.so";
-const libraryPath = join(root, "dist/native", `${process.platform}-${process.arch}`, libraryName);
-const expectedBrowserToNative = { control: [0xb1, 0x01, 0x02], data: [0xb2, 0x03, 0x04, 0x05] };
-const nativeToBrowser = { control: [0xa1, 0x10, 0x11], data: [0xa2, 0x20, 0x21, 0x22] };
-
-const fail = (message) => { throw new Error(`browser/native integration: ${message}`); };
+/** @param {string} message @returns {never} */
+const fail = (message) => {
+  throw new Error(`browser/native integration: ${message}`);
+};
+/** @type {(value: unknown, message: string) => asserts value} */
+const assert = (value, message) => {
+  if (!value) fail(message);
+};
 const forceRelay = process.env.BROWSER_NATIVE_FORCE_RELAY === "1";
 const turnUrl = process.env.BROWSER_NATIVE_TURN_URL ?? "";
 const turnUsername = process.env.BROWSER_NATIVE_TURN_USERNAME ?? "";
 const turnPassword = process.env.BROWSER_NATIVE_TURN_PASSWORD ?? "";
 const configuredTurn = [turnUrl, turnUsername, turnPassword].some((value) => value.length > 0);
-if (process.env.BROWSER_NATIVE_FORCE_RELAY !== undefined && process.env.BROWSER_NATIVE_FORCE_RELAY !== "0" && process.env.BROWSER_NATIVE_FORCE_RELAY !== "1")
+if (
+  process.env.BROWSER_NATIVE_FORCE_RELAY !== undefined &&
+  !["0", "1"].includes(process.env.BROWSER_NATIVE_FORCE_RELAY)
+)
   fail("BROWSER_NATIVE_FORCE_RELAY must be 0 or 1");
-if (!forceRelay && configuredTurn) fail("TURN fixture credentials require BROWSER_NATIVE_FORCE_RELAY=1");
-if (forceRelay && (!/^turns?:/i.test(turnUrl) || turnUsername.length === 0 || turnPassword.length === 0))
-  fail("forced TURN requires BROWSER_NATIVE_TURN_URL (turn:/turns:), BROWSER_NATIVE_TURN_USERNAME and BROWSER_NATIVE_TURN_PASSWORD");
-const nativeIceServers = forceRelay ? [{ urls: [turnUrl], username: turnUsername, credential: turnPassword }] : [];
-const browserFixture = forceRelay
-  ? { forceRelay: true, iceServers: [{ urls: turnUrl, username: turnUsername, credential: turnPassword }] }
-  : { forceRelay: false, iceServers: [] };
+if (!forceRelay && configuredTurn)
+  fail("TURN fixture credentials require BROWSER_NATIVE_FORCE_RELAY=1");
+if (
+  forceRelay &&
+  (!/^turns?:/i.test(turnUrl) || turnUsername.length === 0 || turnPassword.length === 0)
+)
+  fail("forced TURN requires a TURN URL, username and password");
+const iceServers = forceRelay
+  ? [{ urls: [turnUrl], username: turnUsername, credential: turnPassword }]
+  : [];
+const browserFixture = { forceRelay, iceServers };
+/** @param {() => boolean} check @param {number} timeoutMs @param {string} label */
 const waitUntil = async (check, timeoutMs, label) => {
   const end = Date.now() + timeoutMs;
   while (!check()) {
@@ -35,294 +50,585 @@ const waitUntil = async (check, timeoutMs, label) => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
 };
-const bytesEqual = (actual, expected) => Array.isArray(actual) && actual.length === expected.length && actual.every((value, index) => value === expected[index]);
-const fnv = (bytes) => { let value = 2166136261; for (const byte of bytes) value = Math.imul(value ^ byte, 16777619); return (value >>> 0).toString(16); };
-const pcmRms = (payload) => {
-  if (payload.length === 0 || payload.length % 2 !== 0) return 0;
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  let sum = 0, count = 0;
-  for (let offset = 0; offset < payload.byteLength; offset += 2) { const value = view.getInt16(offset, true) / 32768; sum += value * value; count++; }
-  return Math.sqrt(sum / Math.max(count, 1));
+/** @param {Uint8Array} bytes */
+const fnv = (bytes) => {
+  let value = 2166136261;
+  for (const byte of bytes) value = Math.imul(value ^ byte, 16777619);
+  return (value >>> 0).toString(16);
 };
-
+/** @param {Int16Array} samples */
+const pcmRms = (samples) => {
+  let sum = 0;
+  for (const sample of samples) sum += (sample / 32768) ** 2;
+  return Math.sqrt(sum / Math.max(samples.length, 1));
+};
 const browserExecutable = () => {
-  const requested = process.env.BROWSER_EXECUTABLE;
-  const candidates = [requested,
+  const candidates = [
+    process.env.BROWSER_EXECUTABLE,
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
-  ].filter((value) => typeof value === "string" && value.length > 0);
-  return candidates.find((candidate) => existsSync(candidate)) ?? fail(`no reusable Chrome/Chromium executable found; checked ${candidates.join(", ")}`);
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ]
+    .filter((value) => typeof value === "string")
+    .filter((value) => value.length > 0);
+  return (
+    candidates.find((candidate) => existsSync(candidate)) ??
+    fail("no reusable Chrome/Chromium executable found")
+  );
 };
-
-if (!existsSync(bundle)) fail(`browser bundle missing: ${bundle}`);
-if (!existsSync(libraryPath)) fail(`release native bridge missing: ${libraryPath}`);
-let bridge;
+assert(existsSync(bundle), `browser bundle missing: ${bundle}`);
+const browserJs = readFileSync(bundle);
+const page = Buffer.from(
+  "<!doctype html><meta charset=utf-8><title>Reactor public session local qualification</title><script type=module src=/browser.js></script>",
+);
+const sessionId = "sess_native_browser_fixture";
+const tracks = [
+  { name: "browser_video", kind: "video", direction: "recvonly" },
+  { name: "browser_audio", kind: "audio", direction: "recvonly" },
+];
+/** @typedef {{localCandidateType?: string, remoteCandidateType?: string}} SelectedPair */
+/** @typedef {{ok: true, localPeer: object, native: {relay?: {selected?: SelectedPair}}} | {ok: false, error: string}} BrowserReport */
+/** @typedef {{sdp_offer: string, track_mapping: import("../src/contract.js").Mapping[]}} OfferRequest */
+/** @typedef {{candidates: import("../src/contract.js").IceCandidate[], is_final?: boolean}} IceRequest */
+/** @typedef {{sdp: string, mapping: import("../src/contract.js").Mapping[], fixture: typeof browserFixture}} Prepared */
+/** @type {Prepared | undefined} */
 let prepared;
-
+/** @type {string | undefined} */
+let answer;
+let remoteClosed = false,
+  deletes = 0,
+  allocations = 0;
+/** @type {RTCIceCandidateInit[]} */
 const nativeCandidates = [];
-let nativeRelayCandidates = 0;
-let nativeFilteredCandidates = 0;
-let nativeIceComplete = false;
-const nativeChannels = new Set();
-const browserMessages = new Map();
-const videoFrames = [];
-const videoHashes = new Set();
-let metadataBytes = 0;
-let metadataFrames = 0;
-let maxAudioRms = 0;
-let audioPackets = 0;
+let nativeRelayCandidates = 0,
+  nativeFilteredCandidates = 0,
+  nativeIceComplete = false;
+/** @type {ReactorError | undefined} */
 let nativeFailure;
+/** @type {BrowserReport | undefined} */
 let browserReport;
-let browserClosed = false;
-let finish = false;
-let stopping = false;
-
-const pumpEvents = async () => {
-  try {
-    while (!stopping) {
-      if (bridge === undefined) fail("native event pump started before bridge acquisition");
-      const result = await bridge.pollEvent(100);
-      if (result._tag === "Again") continue;
-      if (result._tag === "Closed") return;
-      const header = result.packet.header;
-      if (header.type === "ice") {
-        if (header.candidate === undefined || header.candidate === null) nativeIceComplete = true;
-        else {
-          const candidate = header.candidate;
-          const relay = typeof candidate.candidate === "string" && /(?:^|\s)typ relay(?:\s|$)/i.test(candidate.candidate);
-          if (relay) nativeRelayCandidates++;
-          if (forceRelay && !relay) { nativeFilteredCandidates++; continue; }
-          nativeCandidates.push({
-            candidate: candidate.candidate,
-            ...(candidate.sdp_mid == null ? {} : { sdpMid: candidate.sdp_mid }),
-            ...(candidate.sdp_mline_index == null ? {} : { sdpMLineIndex: candidate.sdp_mline_index }),
-          });
-        }
-      } else if (header.type === "channel" && header.open === true) nativeChannels.add(header.channel);
-      else if (header.type === "message") browserMessages.set(header.channel, [...result.packet.payload]);
-      else if (header.type === "error") nativeFailure = new Error(`native event error ${header.code ?? "Native"}: ${header.message ?? "unknown"}`);
-    }
-  } catch (error) { if (!stopping) nativeFailure = error instanceof Error ? error : new Error(String(error)); }
-};
-const pumpVideo = async () => {
-  try {
-    while (!stopping) {
-      if (bridge === undefined) fail("native video pump started before bridge acquisition");
-      const result = await bridge.pollVideo(100);
-      if (result._tag === "Again") continue;
-      if (result._tag === "Closed") return;
-      const header = result.packet.header;
-      if (header.type !== "video" || header.format !== "BGRA") fail("native video poll returned unexpected packet");
-      const dataLength = Number(header.dataLength), metadataLength = Number(header.metadataLength);
-      if (header.width !== 160 || header.height !== 96 || dataLength !== 160 * 96 * 4 || dataLength + metadataLength !== result.packet.payload.length) fail("native decoded video shape mismatch");
-      videoFrames.push({ frameId: String(header.frameId), timestampMicros: String(header.timestampMicros), metadataLength });
-      videoHashes.add(fnv(result.packet.payload.subarray(0, dataLength)));
-      metadataBytes += metadataLength;
-      if (metadataLength > 0) metadataFrames++;
-    }
-  } catch (error) { if (!stopping) nativeFailure = error instanceof Error ? error : new Error(String(error)); }
-};
-const pumpAudio = async () => {
-  try {
-    while (!stopping) {
-      if (bridge === undefined) fail("native audio pump started before bridge acquisition");
-      const result = await bridge.pollAudio(100);
-      if (result._tag === "Again") continue;
-      if (result._tag === "Closed") return;
-      const header = result.packet.header;
-      if (header.type !== "audio" || header.format !== "s16le" || header.sampleRate !== 48000 || header.channels !== 1) fail(`native decoded audio shape mismatch: ${JSON.stringify(header)}`);
-      audioPackets++;
-      maxAudioRms = Math.max(maxAudioRms, pcmRms(result.packet.payload));
-    }
-  } catch (error) { if (!stopping) nativeFailure = error instanceof Error ? error : new Error(String(error)); }
-};
-
+/** @returns {BrowserReport | undefined} */
+const reportNow = () => browserReport;
+let browserClosed = false,
+  finish = false,
+  stopping = false;
+let videoFrames = 0,
+  metadataBytes = 0,
+  metadataFrames = 0,
+  audioPackets = 0,
+  maxAudioRms = 0;
+const videoHashes = new Set();
+/** @type {import("../src/session/media.js").VideoFrame | undefined} */
+let firstVideo;
+/** @type {string | undefined} */
+let firstVideoHash;
+/** @type {import("node:http").Server | undefined} */
+let server;
+/** @type {string | undefined} */
+let profile;
+/** @type {import("node:child_process").ChildProcess | undefined} */
+let browser;
+/** @typedef {{code: number | null, signal: NodeJS.Signals | null} | {error: Error}} BrowserExit */
+/** @type {BrowserExit | undefined} */
+let browserExit;
+/** @type {Error | undefined} */
+let browserSpawnError;
+/** @type {((value: BrowserExit) => void) | undefined} */
+let resolveBrowserExit;
+let browserStderr = "";
+/** @type {Promise<BrowserExit> | undefined} */
+let browserExitPromise;
+const descriptor = () => ({
+  session_id: sessionId,
+  state: remoteClosed ? "CLOSED" : "ACTIVE",
+  capabilities: {
+    protocol_version: "1.0",
+    tracks,
+    commands: [
+      { name: "ack", schema: {} },
+      { name: "echo", schema: {} },
+    ],
+  },
+  selected_transport: { protocol: "webrtc", version: "1.0" },
+});
+/** @param {import("node:http").IncomingMessage} request @returns {Promise<unknown>} */
 const readJson = async (request) => {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  const text = Buffer.concat(chunks).toString("utf8");
-  return text.length === 0 ? undefined : JSON.parse(text);
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    assert(length <= 2 * 1024 * 1024, "fixture HTTP body exceeded its bound");
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks).toString("utf8");
+  return body.length === 0 ? undefined : JSON.parse(body);
 };
+/** @param {import("node:http").ServerResponse} response @param {number} status @param {unknown} value */
 const sendJson = (response, status, value) => {
-  const body = Buffer.from(JSON.stringify(value));
-  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": body.length, "Cache-Control": "no-store" });
+  const body = Buffer.from(
+    JSON.stringify(value, (_key, entry) => (typeof entry === "bigint" ? String(entry) : entry)),
+  );
+  response.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+  });
   response.end(body);
 };
-const page = Buffer.from("<!doctype html><meta charset=utf-8><title>reactor browser/native local qualification</title><script type=module src=/browser.js></script>");
-const browserJs = readFileSync(bundle);
-let server;
-let profile;
-let browser;
-let browserExit;
-let browserSpawnError;
-let resolveBrowserExit;
-let browserExitPromise;
-let browserStderr = "";
-let eventTask;
-let videoTask;
-let audioTask;
-let summary;
-let runError;
-
+/** @param {import("node:http").IncomingMessage} request @param {import("node:http").ServerResponse} response */
 const requestHandler = async (request, response) => {
   try {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (request.method === "GET" && url.pathname === "/") { response.writeHead(200, { "Content-Type": "text/html", "Content-Length": page.length }); response.end(page); return; }
-    if (request.method === "GET" && url.pathname === "/browser.js") { response.writeHead(200, { "Content-Type": "text/javascript", "Content-Length": browserJs.length, "Cache-Control": "no-store" }); response.end(browserJs); return; }
-    if (request.method === "GET" && url.pathname === "/native-offer") { sendJson(response, 200, { ...prepared, fixture: browserFixture }); return; }
-    if (request.method === "GET" && url.pathname === "/native-ice") {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1"),
+      path = url.pathname;
+    if (request.method === "GET" && path === "/") {
+      response.writeHead(200, { "Content-Type": "text/html", "Content-Length": page.length });
+      response.end(page);
+      return;
+    }
+    if (request.method === "GET" && path === "/browser.js") {
+      response.writeHead(200, {
+        "Content-Type": "text/javascript",
+        "Content-Length": browserJs.length,
+        "Cache-Control": "no-store",
+      });
+      response.end(browserJs);
+      return;
+    }
+    if (path === "/sessions" && request.method === "POST") {
+      allocations++;
+      sendJson(response, 200, descriptor());
+      return;
+    }
+    if (path === `/sessions/${sessionId}`) {
+      if (request.method === "DELETE") {
+        remoteClosed = true;
+        deletes++;
+        sendJson(response, 202, {});
+        return;
+      }
+      sendJson(response, 200, descriptor());
+      return;
+    }
+    if (path.endsWith("/ice_servers")) {
+      sendJson(response, 200, { ice_servers: iceServers });
+      return;
+    }
+    if (path.endsWith("/connections")) {
+      sendJson(response, 200, { connection_id: 1001 });
+      return;
+    }
+    if (path.endsWith("/sdp_params")) {
+      if (request.method === "GET") {
+        if (browserReport?.ok === false) {
+          sendJson(response, 500, { error: "browser fixture failed before answering" });
+          return;
+        }
+        sendJson(
+          response,
+          answer === undefined ? 202 : 200,
+          answer === undefined ? {} : { sdp_answer: answer },
+        );
+        return;
+      }
+      const body = /** @type {OfferRequest} */ (await readJson(request));
+      assert(
+        typeof body?.sdp_offer === "string" && Array.isArray(body?.track_mapping),
+        "public native owner submitted invalid SDP/mapping",
+      );
+      prepared = { sdp: body.sdp_offer, mapping: body.track_mapping, fixture: browserFixture };
+      sendJson(response, 200, {});
+      return;
+    }
+    if (path.endsWith("/ice_candidates")) {
+      const body = /** @type {IceRequest} */ (await readJson(request));
+      assert(Array.isArray(body?.candidates), "native owner omitted ICE candidate batch");
+      for (const candidate of body.candidates) {
+        const relay = /(?:^|\s)typ relay(?:\s|$)/i.test(candidate.candidate);
+        if (relay) nativeRelayCandidates++;
+        if (forceRelay && !relay) {
+          nativeFilteredCandidates++;
+          continue;
+        }
+        assert(nativeCandidates.length < 1024, "native candidate fixture bound exceeded");
+        nativeCandidates.push({
+          candidate: candidate.candidate,
+          ...(candidate.sdp_mid == null ? {} : { sdpMid: candidate.sdp_mid }),
+          ...(candidate.sdp_mline_index == null
+            ? {}
+            : { sdpMLineIndex: candidate.sdp_mline_index }),
+        });
+      }
+      nativeIceComplete ||= body.is_final === true;
+      sendJson(response, 200, {});
+      return;
+    }
+    if (path === "/native-offer") {
+      sendJson(response, prepared === undefined ? 202 : 200, prepared ?? {});
+      return;
+    }
+    if (path === "/native-ice") {
       const cursor = Number(url.searchParams.get("cursor") ?? "0");
-      if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > nativeCandidates.length) { sendJson(response, 400, { error: "invalid ICE cursor" }); return; }
-      sendJson(response, 200, { candidates: nativeCandidates.slice(cursor), complete: nativeIceComplete }); return;
+      assert(
+        Number.isSafeInteger(cursor) && cursor >= 0 && cursor <= nativeCandidates.length,
+        "invalid ICE cursor",
+      );
+      sendJson(response, 200, {
+        candidates: nativeCandidates.slice(cursor),
+        complete: nativeIceComplete,
+      });
+      return;
     }
-    if (request.method === "POST" && url.pathname === "/native-answer") {
-      const body = await readJson(request);
-      if (body === null || typeof body !== "object" || typeof body.sdp !== "string") { sendJson(response, 400, { error: "missing SDP" }); return; }
-      if (bridge === undefined) fail("native bridge unavailable while applying browser answer");
-      await bridge.call(NativeCall.Answer, new TextEncoder().encode(body.sdp));
-      sendJson(response, 200, { applied: true }); return;
+    if (path === "/native-answer" && request.method === "POST") {
+      const body = /** @type {{sdp: string}} */ (await readJson(request));
+      assert(typeof body?.sdp === "string", "browser omitted answer SDP");
+      answer = body.sdp;
+      sendJson(response, 200, { stored: true });
+      return;
     }
-    if (request.method === "POST" && url.pathname === "/browser-report") { browserReport = await readJson(request); sendJson(response, 200, { stored: true }); return; }
-    if (request.method === "POST" && url.pathname === "/browser-closed") { browserClosed = true; sendJson(response, 200, { stored: true }); return; }
-    if (request.method === "GET" && url.pathname === "/finish") { sendJson(response, 200, { finish }); return; }
-    sendJson(response, 404, { error: "not found" });
-  } catch (error) { sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) }); }
-};
-
-try {
-  await checkNativeBridge(libraryPath);
-  bridge = new NativeBridge(libraryPath);
-  prepared = await bridge.call(NativeCall.Prepare, encodeNativeJson({
-    servers: nativeIceServers,
-    tracks: [
-      { name: "browser_video", kind: "video", direction: "recvonly" },
-      { name: "browser_audio", kind: "audio", direction: "recvonly" },
-    ],
-  }));
-  if (prepared === null || typeof prepared !== "object" || typeof prepared.sdp !== "string" || !Array.isArray(prepared.mapping)) fail("native prepare returned invalid offer");
-
-  server = createServer(requestHandler);
-  await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
-  const address = server.address();
-  if (address === null || typeof address === "string") fail("local HTTP server did not bind an IPv4 port");
-  const url = `http://127.0.0.1:${address.port}/`;
-  profile = mkdtempSync(join(tmpdir(), "reactor-browser-native-"));
-  const chrome = browserExecutable();
-  browser = spawn(chrome, [
-    "--headless=new", "--autoplay-policy=no-user-gesture-required", "--disable-background-networking", "--disable-component-update",
-    "--disable-default-apps", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--metrics-recording-only",
-    "--disable-features=WebRtcHideLocalIpsWithMdns", `--user-data-dir=${profile}`, url,
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-  browserExitPromise = new Promise((resolveExit) => { resolveBrowserExit = resolveExit; });
-  browser.stderr?.setEncoding("utf8");
-  browser.stderr?.on("data", (chunk) => { browserStderr = `${browserStderr}${chunk}`.slice(-16_384); });
-  browser.on("error", (error) => { browserSpawnError ??= error; resolveBrowserExit?.({ error }); });
-  browser.on("exit", (code, signal) => { browserExit = { code, signal }; resolveBrowserExit?.(browserExit); });
-
-  eventTask = pumpEvents();
-  videoTask = pumpVideo();
-  audioTask = pumpAudio();
-
-  await waitUntil(() => nativeFailure !== undefined || browserSpawnError !== undefined || nativeChannels.size === 2 || browserExit !== undefined, 15_000, "native data channels open");
-  if (nativeFailure !== undefined) throw nativeFailure;
-  if (browserSpawnError !== undefined) fail(`Chrome spawn failed: ${browserSpawnError.message}`);
-  if (browserExit !== undefined) fail(`Chrome exited before native channels opened (${JSON.stringify(browserExit)}): ${browserStderr}`);
-  await bridge.send("control", Uint8Array.from(nativeToBrowser.control));
-  await bridge.send("data", Uint8Array.from(nativeToBrowser.data));
-
-  await waitUntil(() => nativeFailure !== undefined || browserSpawnError !== undefined || browserReport !== undefined || browserExit !== undefined, 10_000, "browser report");
-  if (nativeFailure !== undefined) throw nativeFailure;
-  if (browserSpawnError !== undefined) fail(`Chrome spawn failed: ${browserSpawnError.message}`);
-  if (browserExit !== undefined && browserReport === undefined) fail(`Chrome exited before reporting (${JSON.stringify(browserExit)}): ${browserStderr}`);
-  if (browserReport?.ok !== true) fail(`browser qualification failed: ${browserReport?.error ?? JSON.stringify(browserReport)}`);
-
-  await waitUntil(() => nativeFailure !== undefined || (
-    bytesEqual(browserMessages.get("control"), expectedBrowserToNative.control) && bytesEqual(browserMessages.get("data"), expectedBrowserToNative.data) &&
-    videoFrames.length >= 12 && videoHashes.size >= 3 && audioPackets >= 12 && maxAudioRms > 0.001
-  ), 12_000, "native browser messages and decoded media");
-  if (nativeFailure !== undefined) throw nativeFailure;
-
-  let relayEvidence;
-  if (forceRelay) {
-    if (nativeRelayCandidates === 0) fail("forced TURN gathered no native relay candidate");
-    const stats = await bridge.call(NativeCall.Stats);
-    if (!Array.isArray(stats)) fail("native stats response is not an array");
-    const entries = new Map(stats.filter((entry) => entry !== null && typeof entry === "object" && typeof entry.id === "string").map((entry) => [entry.id, entry]));
-    const pairs = stats.filter((entry) => entry !== null && typeof entry === "object" && entry.type === "candidate-pair" && entry.state === "succeeded" && entry.nominated === true && entry.writable === true);
-    if (pairs.length === 0) fail("native stats omitted nominated writable succeeded ICE pair");
-    const nativePairs = pairs.map((pair) => {
-      if (typeof pair.id !== "string" || typeof pair.localCandidateId !== "string") fail("native active ICE pair omitted ids");
-      const local = entries.get(pair.localCandidateId);
-      if (local === undefined || local.candidateType !== "relay") fail(`native active ICE pair local candidate is not relay: ${local?.candidateType ?? "missing"}`);
-      return { pairId: pair.id, localCandidateId: pair.localCandidateId, localCandidateType: local.candidateType, relayProtocol: local.relayProtocol ?? "" };
-    });
-    const browserRelay = browserReport?.native?.relay;
-    if (browserRelay?.forced !== true || browserRelay.selected?.localCandidateType !== "relay" || browserRelay.selected?.remoteCandidateType !== "relay")
-      fail(`browser selected pair did not prove relay/relay: ${JSON.stringify(browserRelay)}`);
-    relayEvidence = {
-      forced: true,
-      native: { activePairs: nativePairs, gatheredRelayCandidates: nativeRelayCandidates, filteredNonRelayCandidates: nativeFilteredCandidates },
-      browser: browserRelay.selected,
-    };
+    if (path === "/browser-report" && request.method === "POST") {
+      browserReport = /** @type {BrowserReport} */ (await readJson(request));
+      sendJson(response, 200, { stored: true });
+      return;
+    }
+    if (path === "/browser-closed" && request.method === "POST") {
+      browserClosed = true;
+      sendJson(response, 200, { stored: true });
+      return;
+    }
+    if (path === "/finish") {
+      sendJson(response, 200, { finish });
+      return;
+    }
+    sendJson(response, 404, { error: "unhandled local fixture route" });
+  } catch (error) {
+    sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
   }
-
-  finish = true;
-  await waitUntil(() => browserClosed || browserExit !== undefined, 5000, "browser cleanup report");
-
+};
+const hostFailure = () => {
+  if (nativeFailure !== undefined) throw nativeFailure;
+  if (browserSpawnError !== undefined) throw browserSpawnError;
+  if (browserReport?.ok === false) fail(`browser qualification failed: ${browserReport.error}`);
+  if (browserExit !== undefined && !browserClosed)
+    fail(`Chrome exited before cleanup: ${JSON.stringify(browserExit)}; ${browserStderr}`);
+};
+/** @template T @param {() => T} run @returns {Effect.Effect<T, ReactorError>} */
+const testEffect = (run) =>
+  Effect.try({
+    try: run,
+    catch: (cause) =>
+      new ReactorError("Protocol", "public native media fixture assertion failed", {
+        detail: cause,
+      }),
+  });
+/** @template T @param {Stream.Stream<T, ReactorError>} source @param {(frame: T) => void} visit @returns {Effect.Effect<void>} */
+const joinMedia = (source, visit) =>
+  source.pipe(
+    Stream.runForEach((frame) => testEffect(() => visit(frame))),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        if (!stopping) nativeFailure ??= error;
+      }),
+    ),
+  );
+let summary, runError;
+try {
+  const fixtureServer = createServer(requestHandler);
+  server = fixtureServer;
+  await new Promise((resolveListen, rejectListen) => {
+    fixtureServer.once("error", rejectListen);
+    fixtureServer.listen(0, "127.0.0.1", () => resolveListen(undefined));
+  });
+  const address = server.address();
+  assert(address !== null && typeof address !== "string", "fixture server did not bind IPv4");
+  const url = `http://127.0.0.1:${address.port}`;
+  profile = mkdtempSync(join(tmpdir(), "reactor-public-browser-native-"));
+  const chrome = browserExecutable();
+  browser = spawn(
+    chrome,
+    [
+      "--headless=new",
+      "--autoplay-policy=no-user-gesture-required",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--metrics-recording-only",
+      "--disable-features=WebRtcHideLocalIpsWithMdns",
+      "--disable-dev-shm-usage",
+      ...(process.env.BROWSER_NATIVE_NO_SANDBOX === "1" ? ["--no-sandbox"] : []),
+      `--user-data-dir=${profile}`,
+      `${url}/`,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  browserExitPromise = new Promise((resolveExit) => {
+    resolveBrowserExit = resolveExit;
+  });
+  browser.stderr?.setEncoding("utf8");
+  browser.stderr?.on("data", (chunk) => {
+    browserStderr = `${browserStderr}${chunk}`.slice(-16_384);
+  });
+  browser.on("error", (error) => {
+    browserSpawnError ??= error;
+    resolveBrowserExit?.({ error });
+  });
+  browser.on("exit", (code, signal) => {
+    browserExit = { code, signal };
+    resolveBrowserExit?.(browserExit);
+  });
+  const result = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const factory = yield* Native.make({
+          apiUrl: url,
+          sdpPoll: { attempts: 200, initialMs: 50, maxMs: 200 },
+          session: { connectTimeoutMs: 45_000, readyTimeoutMs: 45_000, commandTimeoutMs: 5000 },
+        });
+        const session = yield* factory.createConnected({ model: "fixture/native-browser" });
+        const ready = yield* session.ready;
+        assert(ready.remote.ownership === "owned", "native public session lost ownership");
+        /** @type {import("../src/SessionTypes.js").CommandReply[]} */
+        const events = [];
+        yield* Effect.forkScoped(
+          session.events().pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                if (event._tag === "Model") {
+                  assert(events.length < 64, "model observation fixture bound exceeded");
+                  events.push(event);
+                }
+              }),
+            ),
+          ),
+        );
+        const media = yield* Native.media(session);
+        assert(
+          media.generation === ready.generation,
+          "native public media did not capture ready generation",
+        );
+        yield* Effect.forkScoped(
+          joinMedia(media.video("browser_video"), (frame) => {
+            assert(
+              frame._tag === "VideoFrame" &&
+                frame.width === 160 &&
+                frame.height === 96 &&
+                frame.data.length === 160 * 96 * 4,
+              "native decoded video shape mismatch",
+            );
+            assert(
+              typeof frame.frameId === "bigint" && typeof frame.timestampMicros === "bigint",
+              "native video lost 64-bit metadata",
+            );
+            const hash = fnv(frame.data);
+            if (videoHashes.size < 256) videoHashes.add(hash);
+            videoFrames++;
+            metadataBytes += frame.metadata.length;
+            if (frame.metadata.length > 0) metadataFrames++;
+            if (firstVideo === undefined) {
+              firstVideo = frame;
+              firstVideoHash = hash;
+            }
+          }),
+        );
+        yield* Effect.forkScoped(
+          joinMedia(media.audio("browser_audio"), (frame) => {
+            assert(
+              frame._tag === "AudioFrame" && frame.sampleRate === 48000 && frame.channels === 1,
+              "native decoded PCM shape mismatch",
+            );
+            audioPackets++;
+            maxAudioRms = Math.max(maxAudioRms, pcmRms(frame.samples));
+          }),
+        );
+        yield* Effect.yieldNow;
+        const schema = yield* session.schema;
+        const ack = yield* session.command("ack", {});
+        const reply = yield* session.command("echo", { bytes: [0xa2, 0x20, 0x21, 0x22] });
+        yield* Effect.promise(() =>
+          waitUntil(
+            () => events.includes(ack) && events.includes(reply),
+            1000,
+            "native model observation delivery",
+          ),
+        );
+        assert(schema.openapi?.openapi === "3.1.0", "native control channel lost schema response");
+        assert(
+          ack.kind === "ack" && reply.kind === "message" && reply.type === "echo",
+          "native command lost ACK/reply distinction",
+        );
+        assert(
+          events.includes(ack) && events.includes(reply),
+          "native return/event attribution is not the same object",
+        );
+        assert(
+          ack.sequence < reply.sequence && reply.generation === ready.generation,
+          "native reply sequence/generation invalid",
+        );
+        assert(
+          JSON.stringify(reply.data) === JSON.stringify({ bytes: [0xa2, 0x20, 0x21, 0x22] }),
+          "native echo data changed",
+        );
+        yield* Effect.promise(() =>
+          waitUntil(
+            () => {
+              hostFailure();
+              return (
+                browserReport !== undefined &&
+                videoFrames >= 12 &&
+                videoHashes.size >= 3 &&
+                audioPackets >= 12 &&
+                maxAudioRms > 0.001
+              );
+            },
+            15_000,
+            "public native/browser messages and decoded media",
+          ),
+        );
+        hostFailure();
+        const statistics = yield* session.stats;
+        let relay;
+        if (forceRelay) {
+          assert(nativeRelayCandidates > 0, "native gathered no relay candidates");
+          assert(
+            statistics.pair?.localCandidateType === "relay" &&
+              statistics.pair?.remoteCandidateType === "relay",
+            "native active nominated/succeeded pair is not relay/relay",
+          );
+          const report = reportNow();
+          assert(report?.ok === true, "browser omitted successful relay report");
+          const selected = report.native.relay?.selected;
+          assert(
+            selected?.localCandidateType === "relay" && selected?.remoteCandidateType === "relay",
+            "browser selected ICE pair is not relay/relay",
+          );
+          relay = {
+            forced: true,
+            native: statistics.pair,
+            browser: selected,
+            gatheredRelayCandidates: nativeRelayCandidates,
+            filteredNonRelayCandidates: nativeFilteredCandidates,
+            writableProof: "bidirectional SCTP plus decoded RTP",
+          };
+        }
+        const pressure = yield* media.snapshot;
+        stopping = true;
+        const close = yield* session.close;
+        assert(
+          close.localClosed && close.localErrors.length === 0 && close.remote.confirmed,
+          "native joined cleanup/remote confirmation failed",
+        );
+        assert(
+          deletes === 1 && allocations === 1,
+          "native session ownership did not allocate/terminate exactly once",
+        );
+        assert(
+          firstVideo !== undefined && fnv(firstVideo.data) === firstVideoHash,
+          "decoded frame bytes did not survive native destruction",
+        );
+        finish = true;
+        yield* Effect.promise(() =>
+          waitUntil(
+            () => browserClosed || browserExit !== undefined,
+            5000,
+            "browser cleanup report",
+          ),
+        );
+        assert(browserClosed, "browser fixture did not join its media cleanup");
+        return {
+          generation: String(ready.generation),
+          schema: schema.openapi.openapi,
+          ack: ack.kind,
+          reply: reply.kind,
+          sameAttributedObjects: true,
+          close,
+          pressure,
+          relay,
+        };
+      }),
+    ).pipe(Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer))),
+  );
+  const identity = JSON.parse(
+    readFileSync(
+      join(root, "dist/native", `${process.platform}-${process.arch}`, "native-identity.json"),
+      "utf8",
+    ),
+  );
+  const report = reportNow();
+  assert(report?.ok === true, "browser omitted its successful public session report");
   summary = [
     "browser-native-ok",
+    `host ${process.platform}-${process.arch}`,
     `browser ${chrome}`,
-    `browser-local ${JSON.stringify(browserReport.localPeer)}`,
-    `browser-native ${JSON.stringify(browserReport.native)}`,
-    `native-channels ${[...nativeChannels].sort().join(",")}`,
-    `native-browser-messages control=${JSON.stringify(browserMessages.get("control"))} data=${JSON.stringify(browserMessages.get("data"))}`,
-    `native-video frames=${videoFrames.length} distinctHashes=${videoHashes.size} metadataFrames=${metadataFrames} metadataBytes=${metadataBytes}`,
+    `native-artifact sha256=${identity.sha256} sourceSha256=${identity.build.sourceSha256} abi=${identity.build.abiVersion}`,
+    `browser-public ${JSON.stringify(report.localPeer)}`,
+    `browser-native ${JSON.stringify(report.native)}`,
+    `native-public ${JSON.stringify(result, (_key, value) => (typeof value === "bigint" ? String(value) : value))}`,
+    `native-video frames=${videoFrames} distinctHashes=${videoHashes.size} metadataFrames=${metadataFrames} metadataBytes=${metadataBytes}`,
     `native-audio packets=${audioPackets} maxRms=${maxAudioRms.toFixed(6)}`,
-    `turn-relay ${relayEvidence === undefined ? "disabled" : JSON.stringify(relayEvidence)}`,
-    `metadata-limit ${metadataBytes === 0 ? "standards browser emitted no Reactor custom frame metadata; decoded A/V remains genuine" : "browser/native path delivered Reactor frame metadata"}`,
+    `turn-relay ${forceRelay ? "qualified through public session statistics and media" : "disabled"}`,
+    `metadata-limit ${metadataBytes === 0 ? "standards browser emitted no Reactor custom frame metadata; decoded A/V is real" : "custom frame metadata delivered"}`,
   ];
 } catch (error) {
   runError = error;
 }
-
 const cleanupErrors = [];
 try {
   finish = true;
   stopping = true;
-  const tasks = [eventTask, videoTask, audioTask].filter((task) => task !== undefined);
-  if (tasks.length > 0) await Promise.allSettled(tasks);
-  if (bridge !== undefined) {
-    try { await bridge.shutdown(); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error(String(error))); }
-  }
   if (browser !== undefined && browserSpawnError === undefined && browserExit === undefined) {
     browser.kill("SIGTERM");
-    await Promise.race([browserExitPromise, new Promise((resolveDelay) => setTimeout(resolveDelay, 1000))]);
+    await Promise.race([
+      browserExitPromise,
+      new Promise((resolveDelay) => setTimeout(resolveDelay, 1000)),
+    ]);
   }
   if (browser !== undefined && browserSpawnError === undefined && browserExit === undefined) {
     browser.kill("SIGKILL");
-    await Promise.race([browserExitPromise, new Promise((resolveDelay) => setTimeout(resolveDelay, 2000))]);
+    await Promise.race([
+      browserExitPromise,
+      new Promise((resolveDelay) => setTimeout(resolveDelay, 2000)),
+    ]);
   }
-  if (browser !== undefined && browserSpawnError === undefined && browserExit === undefined) cleanupErrors.push(new Error("Chrome did not exit after bounded TERM/KILL cleanup"));
+  if (browser !== undefined && browserSpawnError === undefined && browserExit === undefined)
+    cleanupErrors.push(new Error("Chrome did not join bounded TERM/KILL cleanup"));
 } catch (error) {
-  cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+  cleanupErrors.push(error);
 } finally {
   if (server !== undefined) {
-    try { server.closeAllConnections?.(); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error(String(error))); }
+    const fixtureServer = server;
     try {
-      await new Promise((resolveClose, rejectClose) => server.close((error) => {
-        if (error !== undefined && error.code !== "ERR_SERVER_NOT_RUNNING") rejectClose(error);
-        else resolveClose();
-      }));
-    } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error(String(error))); }
+      fixtureServer.closeAllConnections?.();
+      await new Promise((resolveClose, rejectClose) =>
+        fixtureServer.close((error) =>
+          error === undefined ? resolveClose(undefined) : rejectClose(error),
+        ),
+      );
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
   if (profile !== undefined) {
-    try { rmSync(profile, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error(String(error))); }
+    try {
+      rmSync(profile, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
 }
-
-if (runError !== undefined && cleanupErrors.length > 0) throw new AggregateError([runError, ...cleanupErrors], "browser/native integration failed and cleanup also failed");
-if (runError !== undefined) throw runError;
-if (cleanupErrors.length === 1) throw cleanupErrors[0];
-if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "browser/native integration cleanup failed");
+if (runError !== undefined) {
+  const report = reportNow();
+  if (report?.ok === false) console.error(`browser-failure ${report.error}`);
+  if (cleanupErrors.length > 0)
+    throw new AggregateError(
+      [runError, ...cleanupErrors],
+      "browser/native qualification and cleanup failed",
+    );
+  throw runError;
+}
+if (cleanupErrors.length > 0)
+  throw new AggregateError(cleanupErrors, "browser/native cleanup failed");
 for (const line of summary ?? []) console.log(line);

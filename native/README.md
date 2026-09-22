@@ -6,10 +6,18 @@ revision. Reactor session ownership, HTTP, command correlation, cancellation,
 and model policy stay in the TypeScript SDK.
 
 The bridge owns one libwebrtc peer on a Rust thread. libwebrtc callbacks copy
-their data into bounded Rust queues; they never invoke JavaScript. `close()`
-fences new callback admission immediately. `shutdown()` drops the native peer,
-waits for in-flight callback guards to leave, joins the owner thread, and only
-then permits the opaque handle to be freed.
+their data into bounded Rust queues; they never invoke JavaScript. ABI 2 retains
+the exact packet selected by a size probe until it is copied or the queue is
+closed. Its bytes and item still count toward the queue limits. Producer
+pressure may evict other queued media; it cannot change the reader's packet.
+
+`close()` fences new callback and host-call admission immediately. The host
+registers every operation before dispatching to Koffi and keeps that ownership
+until the foreign call actually returns, even when its Effect waiter is
+interrupted. `shutdown()` drains those active and queued foreign calls, joins
+the Rust owner and callback guards, then destroys the handle once. The C ABI
+requires other hosts to perform the same foreign-call drain before destruction.
+Joining the Rust owner alone cannot observe calls queued in a host executor.
 
 The transport provides STUN/TURN ICE configuration, two reliable ordered
 binary data channels (`control` and `data`), transceiver direction and bitrate
@@ -35,7 +43,19 @@ Build and stage the current host artifact with:
 The pinned `reactor-webrtc-sys` build downloads its matching libwebrtc prebuilt
 and verifies the published SHA-256 before linking. macOS prebuilts target macOS
 13.0 or later. The script uses the checked-in Cargo configuration and stages
-the result under `dist/native/<platform>-<arch>/`.
+the result under `dist/native/<platform>-<arch>/`. `native/stage.mjs` is the single
+staging owner. It verifies the library's embedded ABI, target, release profile
+and source SHA-256 against the current native build inputs, then writes the
+binary and `native-identity.json` with its SHA-256 and build identity. The source
+identity covers the Cargo manifest/lock, build script, Cargo configuration, C
+header and Rust source; build identity also records compiler versions and
+relevant build flags. A stale binary is rejected before it can be staged.
+
+Native tests and normal installed-package preflight use this staged artifact.
+Preflight verifies the binary hash and compares its loaded build identity with
+the sidecar. There is no fallback to `native/target/debug` or `release`. Explicit
+`libraryPath` overrides still support managed deployments and ABI fixtures;
+their caller owns artifact provenance.
 
 Linux native builds require LLVM/Clang 21. The pinned libwebrtc prebuilt ships
 the matching libc++ headers, and older distro Clang releases are not a supported
@@ -72,6 +92,14 @@ The loopback test negotiates two local peers and exercises real libwebrtc
 ICE/DTLS/SCTP, both binary channels, video encode/decode, PCM audio,
 per-frame metadata, stream stats, direction changes, bitrate controls, and
 callback quiescence. It does not contact Reactor or generate paid media.
+
+Additional tests force differently sized media eviction between the size probe
+and copying calls, and block foreign calls while interrupting their Effect
+waiters. The lifetime fixture drains queued calls while one active call remains
+held, verifies that shutdown/destruction have not run, then releases the final
+call and verifies one destruction. Its tombstone reports unsafe ordering
+without intentionally dereferencing freed memory. These checks establish
+ownership and ordering; they do not claim an observed heap-corruption incident.
 
 `scripts/native-package.sh` stages an already-built shared library under the
 package runtime layout, `dist/native/<platform>-<arch>/`. For example:

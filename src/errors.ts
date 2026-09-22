@@ -1,10 +1,26 @@
 import * as Schema from "effect/Schema";
 
 export const ErrorCode = Schema.Literals([
-  "InvalidInput", "Protocol", "Http", "VersionMismatch", "UnsupportedHost",
-  "UnsupportedCapability", "InvalidState", "TerminalSession", "Timeout",
-  "Disconnected", "Aborted", "Overflow", "Remote", "UnexpectedReply", "Upload",
-  "RecorderDisabled", "Native", "Closed", "AlreadyReading", "Shutdown",
+  "InvalidInput",
+  "Protocol",
+  "Http",
+  "VersionMismatch",
+  "UnsupportedHost",
+  "UnsupportedCapability",
+  "InvalidState",
+  "TerminalSession",
+  "Timeout",
+  "Disconnected",
+  "Aborted",
+  "Overflow",
+  "Remote",
+  "UnexpectedReply",
+  "Upload",
+  "RecorderDisabled",
+  "Native",
+  "Closed",
+  "AlreadyReading",
+  "Shutdown",
 ]);
 export type ErrorCode = typeof ErrorCode.Type;
 export type RemoteOutcome = "not-submitted" | "unknown" | "replied";
@@ -63,23 +79,41 @@ export class ReactorError extends Schema.TaggedError<ReactorError>(
       _tag: this._tag,
       code: this.code,
       message: this.message,
-      context: { ...context, ...(generation === undefined ? {} : { generation: String(generation) }) },
-      ...(this.nativeError === undefined ? {} : {
-        provider: { code: this.nativeError.code, operation: this.nativeError.operation, status: this.nativeError.status },
-      }),
+      context: {
+        ...context,
+        ...(generation === undefined ? {} : { generation: String(generation) }),
+      },
+      ...(this.nativeError === undefined
+        ? {}
+        : {
+            provider: {
+              code: this.nativeError.code,
+              operation: this.nativeError.operation,
+              status: this.nativeError.status,
+            },
+          }),
     };
   }
 }
 
 /** Keep the original cause for deliberate inspection without including it in the message. */
-export const errorOf = (cause: unknown, code: ErrorCode = "Protocol", operation?: string): ReactorError =>
-  cause instanceof ReactorError ? cause : new ReactorError(code, operation === undefined ? code : `${operation} failed`, {
-    ...(operation === undefined ? {} : { operation }), detail: cause,
-  });
+export const errorOf = (
+  cause: unknown,
+  code: ErrorCode = "Protocol",
+  operation?: string,
+): ReactorError =>
+  cause instanceof ReactorError
+    ? cause
+    : new ReactorError(code, operation === undefined ? code : `${operation} failed`, {
+        ...(operation === undefined ? {} : { operation }),
+        detail: cause,
+      });
 
 export const positiveLimit = (value: number, name: string, maximum = 0x7fffffff): number => {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
-    throw new ReactorError("InvalidInput", `${name} must be an integer in 1..${maximum}`, { outcome: "not-submitted" });
+    throw new ReactorError("InvalidInput", `${name} must be an integer in 1..${maximum}`, {
+      outcome: "not-submitted",
+    });
   }
   return value;
 };

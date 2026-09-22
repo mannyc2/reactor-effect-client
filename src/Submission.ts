@@ -38,36 +38,48 @@ export interface Options<P, A, E> {
  * the supplied scope owns committed execution. No registry entry exists merely
  * because a caller holds a prepared Submission.
  */
-export const make = <P, A, E>(options: Options<P, A, E>): Effect.Effect<Submission<A, E>, never, Scope.Scope> =>
+export const make = <P, A, E>(
+  options: Options<P, A, E>,
+): Effect.Effect<Submission<A, E>, never, Scope.Scope> =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const gate = yield* Semaphore.make(1);
     let committed: Fiber.Fiber<A, E> | undefined;
     let state: State<A, E> = { _tag: "Prepared" };
 
-    const acquire = gate.withPermit(Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
-      if (committed !== undefined) return committed;
-      // A provisional scope owns locks/staging acquired during preparation. It
-      // is closed on cancellation or transferred with the committed execution.
-      const provisional = yield* Scope.fork(scope);
-      let transferred = false;
-      return yield* Effect.gen(function* () {
-        const prepared = yield* restore(options.prepare.pipe(Scope.provide(provisional)));
-        if (options.commit !== undefined) yield* options.commit(prepared);
-        // The fork and ownership transfer form one small commit. The execution
-        // itself is interruptible by the session scope, never by a waiting caller.
-        state = { _tag: "Committed" };
-        const fiber = yield* Effect.suspend(() => options.execute(prepared)).pipe(
-          Effect.interruptible,
-          Effect.onExit((exit) => Scope.close(provisional, exit)),
-          Effect.onExit((exit) => Effect.sync(() => { state = { _tag: "Completed", exit }; })),
-          Effect.forkIn(scope, { startImmediately: true }),
-        );
-        committed = fiber;
-        transferred = true;
-        return fiber;
-      }).pipe(Effect.onExit((exit) => transferred ? Effect.void : Scope.close(provisional, exit)));
-    })));
+    const acquire = gate.withPermit(
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (committed !== undefined) return committed;
+          // A provisional scope owns locks/staging acquired during preparation. It
+          // is closed on cancellation or transferred with the committed execution.
+          const provisional = yield* Scope.fork(scope);
+          let transferred = false;
+          return yield* Effect.gen(function* () {
+            const prepared = yield* restore(options.prepare.pipe(Scope.provide(provisional)));
+            if (options.commit !== undefined) yield* options.commit(prepared);
+            // The fork and ownership transfer form one small commit. The execution
+            // itself is interruptible by the session scope, never by a waiting caller.
+            state = { _tag: "Committed" };
+            const fiber = yield* Effect.suspend(() => options.execute(prepared)).pipe(
+              Effect.interruptible,
+              Effect.onExit((exit) => Scope.close(provisional, exit)),
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  state = { _tag: "Completed", exit };
+                }),
+              ),
+              Effect.forkIn(scope, { startImmediately: true }),
+            );
+            committed = fiber;
+            transferred = true;
+            return fiber;
+          }).pipe(
+            Effect.onExit((exit) => (transferred ? Effect.void : Scope.close(provisional, exit))),
+          );
+        }),
+      ),
+    );
 
     return {
       id: options.id,
@@ -75,3 +87,19 @@ export const make = <P, A, E>(options: Options<P, A, E>): Effect.Effect<Submissi
       state: Effect.sync(() => state),
     };
   });
+
+/** Project a result without adding preparation, execution, or commit ownership. */
+export const map = <A, B, E>(
+  submission: Submission<A, E>,
+  project: (value: A) => B,
+): Submission<B, E> => ({
+  id: submission.id,
+  submit: submission.submit.pipe(Effect.map(project)),
+  state: submission.state.pipe(
+    Effect.map((state): State<B, E> =>
+      state._tag === "Completed"
+        ? { _tag: "Completed", exit: Exit.map(state.exit, project) }
+        : state,
+    ),
+  ),
+});

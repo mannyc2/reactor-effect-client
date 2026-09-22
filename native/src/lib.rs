@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 const STATUS_OK: i32 = 0;
 const STATUS_AGAIN: i32 = 1;
 const STATUS_BUFFER_TOO_SMALL: i32 = 2;
@@ -166,8 +166,18 @@ struct PacketQueue {
 
 struct PacketQueueInner {
     packets: VecDeque<Vec<u8>>,
+    // A size probe transfers the front packet into the reader's retained slot.
+    // Producers may evict queued media, but must never replace this packet.
+    // Retained packets count toward both bounds until copy or close.
+    retained: Option<Vec<u8>>,
     bytes: usize,
     closed: bool,
+}
+
+impl PacketQueueInner {
+    fn len(&self) -> usize {
+        self.packets.len() + usize::from(self.retained.is_some())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,6 +192,7 @@ impl PacketQueue {
         Self {
             inner: Mutex::new(PacketQueueInner {
                 packets: VecDeque::new(),
+                retained: None,
                 bytes: 0,
                 closed: false,
             }),
@@ -197,7 +208,7 @@ impl PacketQueue {
             return PushResult::Closed;
         }
         if packet.len() > self.max_bytes
-            || inner.packets.len() >= self.max_items
+            || inner.len() >= self.max_items
             || inner.bytes.saturating_add(packet.len()) > self.max_bytes
         {
             return PushResult::Overflow;
@@ -214,8 +225,15 @@ impl PacketQueue {
             return;
         }
         inner.packets.clear();
-        inner.bytes = packet.len();
-        inner.packets.push_back(packet);
+        inner.bytes = inner.retained.as_ref().map_or(0, Vec::len);
+        // The critical-event queue has room for its small terminal diagnostic
+        // even with one maximum-sized transport event retained by its reader.
+        if inner.len() < self.max_items
+            && inner.bytes.saturating_add(packet.len()) <= self.max_bytes
+        {
+            inner.bytes += packet.len();
+            inner.packets.push_back(packet);
+        }
         self.wake.notify_all();
     }
 
@@ -223,6 +241,7 @@ impl PacketQueue {
         let mut inner = lock(&self.inner);
         inner.closed = true;
         inner.packets.clear();
+        inner.retained = None;
         inner.bytes = 0;
         self.wake.notify_all();
     }
@@ -230,7 +249,7 @@ impl PacketQueue {
     fn snapshot(&self) -> QueueSnapshot {
         let inner = lock(&self.inner);
         QueueSnapshot {
-            queued: inner.packets.len(),
+            queued: inner.len(),
             bytes: inner.bytes,
             closed: inner.closed,
         }
@@ -240,11 +259,14 @@ impl PacketQueue {
         let started = Instant::now();
         let mut inner = lock(&self.inner);
         loop {
-            if let Some(packet) = inner.packets.front() {
+            if inner.retained.is_none() {
+                inner.retained = inner.packets.pop_front();
+            }
+            if let Some(packet) = inner.retained.as_ref() {
                 if capacity < packet.len() {
                     return PollResult::Need(packet.len());
                 }
-                let packet = inner.packets.pop_front().expect("front exists");
+                let packet = inner.retained.take().expect("retained packet exists");
                 inner.bytes -= packet.len();
                 return PollResult::Packet(packet);
             }
@@ -297,23 +319,31 @@ impl MediaQueue {
     }
 
     fn push_drop_oldest(&self, packet: Vec<u8>) {
-        self.counters.observed.fetch_add(1, Ordering::Relaxed);
         let mut inner = lock(&self.queue.inner);
         if inner.closed {
             return;
         }
+        self.counters.observed.fetch_add(1, Ordering::Relaxed);
         if packet.len() > self.queue.max_bytes {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
         while !inner.packets.is_empty()
-            && (inner.packets.len() >= self.queue.max_items
+            && (inner.len() >= self.queue.max_items
                 || inner.bytes.saturating_add(packet.len()) > self.queue.max_bytes)
         {
             if let Some(old) = inner.packets.pop_front() {
                 inner.bytes -= old.len();
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        // A reader can occupy the remaining budget. Drop incoming media rather
+        // than evict retained bytes or exceed either queue bound.
+        if inner.len() >= self.queue.max_items
+            || inner.bytes.saturating_add(packet.len()) > self.queue.max_bytes
+        {
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
         }
         inner.bytes += packet.len();
         inner.packets.push_back(packet);
@@ -338,7 +368,7 @@ impl MediaQueue {
 
     fn close(&self) {
         let mut inner = lock(&self.queue.inner);
-        let discarded = inner.packets.len() as u64;
+        let discarded = inner.len() as u64;
         if discarded != 0 {
             self.counters
                 .dropped
@@ -346,6 +376,7 @@ impl MediaQueue {
         }
         inner.closed = true;
         inner.packets.clear();
+        inner.retained = None;
         inner.bytes = 0;
         self.queue.wake.notify_all();
     }
@@ -1230,6 +1261,20 @@ pub extern "C" fn reactor_effect_abi_version() -> u32 {
     ABI_VERSION
 }
 
+// A unique marker makes the same identity inspectable without executing a
+// foreign-platform library during package staging. The exported function lets
+// runtime preflight compare the loaded image with that inspected artifact.
+static BUILD_IDENTITY: &str = concat!(
+    "reactor-effect-native:build-identity:",
+    env!("REACTOR_EFFECT_BUILD_IDENTITY"),
+    ":end\0"
+);
+
+#[no_mangle]
+pub extern "C" fn reactor_effect_build_identity() -> *const std::ffi::c_char {
+    BUILD_IDENTITY.as_ptr().cast()
+}
+
 #[no_mangle]
 pub extern "C" fn reactor_effect_peer_create() -> *mut ReactorEffectPeer {
     catch_unwind(AssertUnwindSafe(|| {
@@ -1446,7 +1491,9 @@ pub unsafe extern "C" fn reactor_effect_peer_shutdown(
 ///
 /// # Safety
 /// `peer` must be null or a handle returned by [`reactor_effect_peer_create`]
-/// that has not already been passed to this function.
+/// that has not already been passed to this function. All foreign calls using
+/// the handle, including calls queued in a host FFI executor, must have returned.
+/// Joining the native owner alone does not establish that host-side condition.
 pub unsafe extern "C" fn reactor_effect_peer_destroy(peer: *mut ReactorEffectPeer) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if peer.is_null() {
@@ -1467,7 +1514,7 @@ unsafe fn ffi_poll(
 ) -> i32 {
     ffi_status(|| {
         let peer = peer_ref(peer)?;
-        if out_len.is_null() {
+        if out_len.is_null() || (out_cap != 0 && out.is_null()) {
             return Err(FfiError::Invalid);
         }
         match queue(peer).poll(Duration::from_millis(timeout_ms as u64), out_cap) {
@@ -1720,6 +1767,73 @@ mod tests {
     }
 
     #[test]
+    fn media_probe_owns_packet_across_differently_sized_eviction() {
+        // Both directions matter: a larger successor formerly failed the copy,
+        // while a smaller successor changed the size after JS allocated output.
+        for (first_size, replacement_size) in [(8, 13), (13, 8)] {
+            let queue = MediaQueue::new(2, 32);
+            queue.push_drop_oldest(vec![1; first_size]);
+            queue.push_drop_oldest(vec![2; 7]);
+            assert!(matches!(
+                queue.queue.poll(Duration::ZERO, 0),
+                PollResult::Need(size) if size == first_size
+            ));
+
+            // The producer runs between the size probe and the copying call.
+            queue.push_drop_oldest(vec![3; replacement_size]);
+            assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 1);
+            let snapshot = queue.queue.snapshot();
+            assert_eq!(snapshot.queued, 2);
+            assert_eq!(snapshot.bytes, first_size + replacement_size);
+            match queue.queue.poll(Duration::ZERO, first_size) {
+                PollResult::Packet(bytes) => assert_eq!(bytes, vec![1; first_size]),
+                _ => panic!("producer evicted a packet already retained by a reader"),
+            }
+            match queue.queue.poll(Duration::ZERO, replacement_size) {
+                PollResult::Packet(bytes) => assert_eq!(bytes, vec![3; replacement_size]),
+                _ => panic!("replacement packet was lost or reordered"),
+            }
+        }
+    }
+
+    #[test]
+    fn retained_media_stays_within_capacity_and_close_discards_it() {
+        let queue = MediaQueue::new(1, 8);
+        queue.push_drop_oldest(vec![1; 8]);
+        assert!(matches!(
+            queue.queue.poll(Duration::ZERO, 0),
+            PollResult::Need(8)
+        ));
+        queue.push_drop_oldest(vec![2; 7]);
+        assert_eq!(queue.queue.snapshot().bytes, 8);
+        assert_eq!(queue.queue.snapshot().queued, 1);
+        assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 1);
+        queue.close();
+        assert_eq!(queue.queue.snapshot().bytes, 0);
+        assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 2);
+        assert!(matches!(
+            queue.queue.poll(Duration::ZERO, 8),
+            PollResult::Closed
+        ));
+    }
+
+    #[test]
+    fn critical_overflow_preserves_a_probed_packet_before_the_diagnostic() {
+        let queue = PacketQueue::new(2, 128);
+        assert!(matches!(queue.push(vec![1; 7]), PushResult::Accepted));
+        assert!(matches!(queue.poll(Duration::ZERO, 0), PollResult::Need(7)));
+        queue.replace_with(vec![2; 13]);
+        match queue.poll(Duration::ZERO, 7) {
+            PollResult::Packet(bytes) => assert_eq!(bytes, vec![1; 7]),
+            _ => panic!("critical overflow invalidated a reader's retained packet"),
+        }
+        match queue.poll(Duration::ZERO, 13) {
+            PollResult::Packet(bytes) => assert_eq!(bytes, vec![2; 13]),
+            _ => panic!("critical overflow lost its diagnostic"),
+        }
+    }
+
+    #[test]
     fn packet_queue_size_probe_retains_packet_and_fifo_order() {
         let queue = PacketQueue::new(4, 128);
         assert!(matches!(queue.push(vec![1, 2, 3]), PushResult::Accepted));
@@ -1748,7 +1862,10 @@ mod tests {
         shared.emit(json!({ "type": "overflow-trigger" }), &[]);
         assert!(!gate.accepting.load(Ordering::Acquire));
         let snapshot = shared.events.snapshot();
-        assert_eq!(snapshot.queued, 1, "overflow must collapse critical backlog");
+        assert_eq!(
+            snapshot.queued, 1,
+            "overflow must collapse critical backlog"
+        );
         match shared.events.poll(Duration::ZERO, 4096) {
             PollResult::Packet(packet) => {
                 let (header, payload) = packet_parts(&packet);
@@ -1767,7 +1884,10 @@ mod tests {
             assert!(!peer.is_null());
             let packet = packet(json!({ "type": "message", "channel": "control" }), b"abc");
             let peer_ref = &*peer;
-            assert!(matches!(peer_ref.shared.events.push(packet.clone()), PushResult::Accepted));
+            assert!(matches!(
+                peer_ref.shared.events.push(packet.clone()),
+                PushResult::Accepted
+            ));
 
             let mut required = 0usize;
             let status = reactor_effect_peer_poll_event(peer, 0, ptr::null_mut(), 0, &mut required);
@@ -1787,6 +1907,49 @@ mod tests {
             assert_eq!(copied, packet.len());
             assert_eq!(output, packet);
             reactor_effect_peer_destroy(peer);
+        }
+    }
+
+    #[test]
+    fn c_abi_video_probe_survives_producer_eviction_between_calls() {
+        for (first_size, replacement_size) in [(8, 13), (13, 8)] {
+            unsafe {
+                let peer = reactor_effect_peer_create();
+                assert!(!peer.is_null());
+                let inner = &*peer;
+                let media = &inner.shared.video;
+                let first = packet(json!({ "type": "fixture" }), &vec![1; first_size]);
+                let replacement = packet(json!({ "type": "fixture" }), &vec![3; replacement_size]);
+                media.push_drop_oldest(first.clone());
+                // Fill the production queue to capacity before retaining its
+                // first packet through the exported C ABI.
+                for _ in 1..8 {
+                    media.push_drop_oldest(packet(json!({ "type": "fixture" }), &[2; 7]));
+                }
+                let mut required = 0;
+                assert_eq!(
+                    reactor_effect_peer_poll_video(peer, 0, ptr::null_mut(), 0, &mut required),
+                    STATUS_BUFFER_TOO_SMALL
+                );
+                assert_eq!(required, first.len());
+                media.push_drop_oldest(replacement);
+                assert_eq!(media.counters.dropped.load(Ordering::Relaxed), 1);
+                let mut copied = 0;
+                let mut output = vec![0; required];
+                assert_eq!(
+                    reactor_effect_peer_poll_video(
+                        peer,
+                        0,
+                        output.as_mut_ptr(),
+                        output.len(),
+                        &mut copied
+                    ),
+                    STATUS_OK
+                );
+                assert_eq!(copied, first.len());
+                assert_eq!(output, first);
+                reactor_effect_peer_destroy(peer);
+            }
         }
     }
 
@@ -1818,7 +1981,8 @@ mod tests {
                 &mut response_len,
             );
             assert_eq!(status, STATUS_CLOSED);
-            let error: Value = serde_json::from_slice(&response[..response_len]).expect("closed JSON");
+            let error: Value =
+                serde_json::from_slice(&response[..response_len]).expect("closed JSON");
             assert_eq!(error["code"], "Closed");
 
             let mut send_error = vec![0u8; ERROR_BUFFER_MIN];
@@ -1833,7 +1997,8 @@ mod tests {
                 &mut send_error_len,
             );
             assert_eq!(status, STATUS_CLOSED);
-            let error: Value = serde_json::from_slice(&send_error[..send_error_len]).expect("closed send JSON");
+            let error: Value =
+                serde_json::from_slice(&send_error[..send_error_len]).expect("closed send JSON");
             assert_eq!(error["code"], "Closed");
 
             let mut poll_len = usize::MAX;

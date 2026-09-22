@@ -13,9 +13,10 @@ RUN apt-get update \
         zstd \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup component add clippy
+RUN rustup component add clippy rustfmt
 
 COPY native/Cargo.toml native/Cargo.lock native/build.rs ./native/
+COPY native/.cargo/config.toml ./native/.cargo/config.toml
 COPY native/src ./native/src
 COPY native/include ./native/include
 
@@ -25,6 +26,7 @@ ENV CARGO_TARGET_DIR=/target \
 
 # reactor-webrtc-sys downloads the pinned Linux x64 libwebrtc prebuilt,
 # verifies its published SHA-256, and compiles its C++ glue with pinned LLVM 21.
+RUN cargo fmt --manifest-path native/Cargo.toml -- --check
 RUN cargo test --locked --manifest-path native/Cargo.toml -- --nocapture
 RUN cargo clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
 RUN cargo build --locked --manifest-path native/Cargo.toml --release

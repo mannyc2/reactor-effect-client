@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node", "bun"],
+    "rootDir": ".",
+    "paths": {
+      "reactor-effect-client": ["./src/index.ts"],
+      "reactor-effect-client/native": ["./src/native/index.ts"]
+    },
+    "noEmit": true
+  },
+  "include": ["scripts/**/*.ts", "scripts/**/*.mjs", "native/stage.mjs", "vitest.config.ts"],
+  "exclude": []
+}

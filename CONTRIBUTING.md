@@ -22,13 +22,13 @@ Do not commit credentials, JWTs, API keys, session exports, generated media, nat
 
 ## Repository boundaries
 
-- `src/Client.ts` and the protocol session own allocation, correlation, reconnect, cancellation accounting and cleanup semantics.
-- `src/PeerFactory.ts` selects a transport capability through Effect dependency injection.
-- `src/browser.ts` and `src/native*.ts` own host-specific WebRTC behavior.
-- `src/engine/` owns reusable clip-engine behavior. Keep application scheduling, persona, pricing policy and show semantics outside it.
-- `src/h3.ts`, `Clip.ts` and `ModelProfile.ts` adapt H3 model semantics without choosing a transport.
-- `Submission.ts` and `Sequence.ts` are reusable ownership/correlation primitives. Preserve their bounded and explicit unknown-outcome behavior.
-- `testing/` is the only public test-utility surface. Private fixtures stay under `test/`.
+- `src/session/` exposes the canonical factory and session contract; `src/session.ts` owns protocol correlation, generations, cancellation accounting, and cleanup. `src/coordinator/` owns HTTP allocation/inspection/termination operations.
+- `src/PeerFactory.ts` supplies the transport capability through Effect dependency injection. `src/browser/` and `src/native/` select host peers and expose media bound to one session generation.
+- `src/h3/` consumes the canonical session and owns model schema validation, provider observations, controls, and acceptance evidence. It introduces no implicit playback, flush, reset, reconnect, filesystem, or path policy.
+- `src/orchestration/` owns opt-in routing, scheduling, renewal, and recovering media. `src/Submission.ts` and `src/Sequence.ts` supply its bounded commit and affinity primitives. Keep persona, pricing, and show policy in the application.
+- `src/simulation/` implements an unpaid source behind the production orchestration contract. `src/testing/` exports reusable test utilities; private fixtures remain under `test/`.
+
+The package has exactly eight public exports: the root, `browser`, `native`, `h3`, `orchestration`, `simulation`, `testing`, and `wire`. Directory entry points use `src/<name>/index.ts`; the root and generated wire facade use `src/index.ts` and `src/wire.ts`. Internal file layout does not create additional supported deep imports. Update the corresponding isolated pack consumers whenever a public contract changes.
 
 Prefer concrete modules over generic helper layers. Expected operational failures belong in typed Effect error channels; defects and impossible invariants should remain defects rather than being turned into generic recoverable errors.
 
@@ -42,20 +42,25 @@ TypeScript/package gate:
 bun run typecheck
 bun run build
 bun run lint
-bun run native:build
-bun run test
+bun run test:portable
+bun run native:build # Stage if missing or the native source identity changed.
+bun run test:native
+bun run test:integration
 bun run test:pack
 ```
 
-The pack smoke builds a real npm tarball, installs it into isolated consumers, checks export/declaration/import closure, compiles separate Node-without-DOM and browser-without-Node type consumers, verifies portable imports do not reach Koffi/native code, and runs native preflight from the installed tarball.
+The pack smoke builds a real npm tarball, installs it into isolated consumers, checks the exact eight exports and declaration/import closure, compiles separate Node-without-DOM and browser-without-Node type consumers, verifies portable imports do not reach Koffi/native code, and exercises simulation plus native preflight from the installed tarball. Each run retains its exact tarball and package identity under `.check/pack-*`; preserve a qualified archive when handing off a release candidate.
+
+The `native` and `integration` projects run through `scripts/test.ts` with Node/Vitest and use staged native libraries. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. `scripts/build.mjs`, browser integration, and pack validation mutate the shared `dist` directory; serialize them in a shared checkout.
 
 Native changes:
 
 ```sh
+./scripts/native-build.sh
 ./scripts/native-test.sh
 ```
 
-This runs the Rust tests, clippy with warnings denied, a release build and the JavaScript native ABI/parser/session-boundary tests. For Linux x64 use an explicit existing Docker context:
+The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, then runs the JavaScript native ABI/parser/session-boundary tests against the staged artifact. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
 
 ```sh
 DOCKER_CONTEXT=my-context ./scripts/native-linux-x64.sh

@@ -28,8 +28,4 @@ if [ ! -f "$source" ]; then
   exit 1
 fi
 
-destination=$root/dist/native/$platform
-mkdir -p "$destination"
-cp "$source" "$destination/$library"
-
-echo "$destination/$library"
+exec "${NODE_BINARY:-node}" "$root/native/stage.mjs" "$source" "$platform"

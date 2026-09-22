@@ -2,6 +2,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
 
 if [ "$(uname -s)" = Linux ]; then
   cc=${CC:-clang-21}
@@ -30,4 +31,5 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "unsupported native build host: $(uname -s)-$(uname -m)" >&2; exit 2 ;;
 esac
 
-"$root/scripts/native-package.sh" "native/target/release/$library" "$platform"
+target=${CARGO_TARGET_DIR:-$root/native/target}
+"$root/scripts/native-package.sh" "$target/release/$library" "$platform"

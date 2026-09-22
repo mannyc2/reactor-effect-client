@@ -35,24 +35,16 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      - name: Set up pinned wire generator runtime
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13.5"
+
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Build
-        run: bun run build
-
-      - name: Lint
-        if: matrix.os == 'ubuntu-24.04' && matrix.node == '24'
-        run: bun run lint
-
-      - name: Node portable import smoke
-        run: node --input-type=module -e 'await import("./dist/index.js"); await import("./dist/Client.js"); await import("./dist/Sessions.js"); await import("./dist/h3.js"); console.log(process.version)'
-
-      - name: Bun portable import smoke
-        run: bun --no-env-file -e 'await import("./dist/index.js"); await import("./dist/Client.js"); await import("./dist/Sessions.js"); await import("./dist/h3.js"); console.log(Bun.version)'
+      - name: Shared portable verification
+        run: bun run verify --profile portable
 
   native:
     name: Native (${{ matrix.platform }})
@@ -85,7 +77,7 @@ jobs:
       - name: Set up Rust 1.90
         shell: bash
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component clippy
+          rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
           rustup override set 1.90.0
           rustc --version
           cargo --version
@@ -104,24 +96,14 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Native qualification
-        run: ./scripts/native-test.sh
-
-      - name: Stage native artifact
-        run: ./scripts/native-package.sh native/target/release/${{ matrix.library }} ${{ matrix.platform }}
-
-      - name: Local browser/native WebRTC qualification
-        if: matrix.platform == 'darwin-arm64'
-        run: ./scripts/browser-native.sh
-
-      - name: Full Bun test suite with native artifact present
-        run: bun run test
+      - name: Shared native and public WebRTC verification
+        run: bun run verify --profile native
 
       - name: Upload native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.platform }}
-          path: dist/native/${{ matrix.platform }}/${{ matrix.library }}
+          path: dist/native/${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 1
 
@@ -147,9 +129,6 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Build package JavaScript and declarations
-        run: bun run build
-
       - name: Download Linux native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -163,14 +142,17 @@ jobs:
           path: dist/native/darwin-arm64
 
       - name: Clean npm pack/install validation
+        id: package
         env:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64,darwin-arm64
-        run: bun --no-env-file scripts/pack.ts
+        run: bun run verify --profile package
 
       - name: Upload validated npm tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-package
-          path: .check/pack/*.tgz
+          path: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.identity }}
           if-no-files-found: error
           retention-days: 7

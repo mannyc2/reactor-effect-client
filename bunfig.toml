@@ -1,0 +1,4 @@
+# Portable assertions run directly under Bun, independently of native artifacts.
+[test]
+root = "test"
+pathIgnorePatterns = ["**/native/**", "**/integration/**", "**/fixtures/**"]

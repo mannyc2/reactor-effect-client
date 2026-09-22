@@ -3,12 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "ES2023",
-      "DOM",
-      "DOM.Iterable",
-      "ESNext.Disposable"
-    ],
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -22,19 +17,9 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": ".",
-    "types": [
-      "node",
-      "bun"
-    ],
+    "types": ["node", "bun"],
     "noEmitOnError": true
   },
-  "include": [
-    "src/**/*.ts",
-    "test/**/*.ts",
-    "testing/**/*.ts",
-    "scripts/**/*.ts"
-  ],
-  "exclude": [
-    "test/dependency-audit.test.mjs"
-  ]
+  "include": ["src/**/*.ts", "test/**/*.ts", "testing/**/*.ts", "scripts/**/*.ts"],
+  "exclude": []
 }
