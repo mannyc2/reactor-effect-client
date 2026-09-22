@@ -208,6 +208,7 @@ test("unrecoverable media reports each lost clip with its source and replacement
       yield* until(() => renewals.some((event) => event._tag === "Replaced"));
       const fresh = yield* handle.engine.enqueue(member("fresh"));
       expect(fresh).not.toBe(lost);
+      yield* until(() => events.some((event) => event._tag === "Failed"));
       expect(
         events
           .filter((event) => event._tag === "Failed")
