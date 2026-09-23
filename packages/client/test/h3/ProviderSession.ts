@@ -13,6 +13,7 @@ import type {
   Snapshot,
   ReadyState,
   Uploaded,
+  UploadTimeoutOptions,
 } from "../../src/session/index.js";
 import { providerSchema } from "./ProviderSchema.js";
 
@@ -104,6 +105,7 @@ export interface Fixture {
     readonly name: string;
     readonly mimeType: string;
     readonly bytes: Uint8Array;
+    readonly options: UploadTimeoutOptions | undefined;
   }[];
   readonly accepted: FixtureClip[];
   readonly returns: CommandReply[];
@@ -143,7 +145,12 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       accepted: FixtureClip[] = [],
       reads: string[] = [],
       returns: CommandReply[] = [];
-    const uploaded: { name: string; mimeType: string; bytes: Uint8Array }[] = [];
+    const uploaded: {
+      name: string;
+      mimeType: string;
+      bytes: Uint8Array;
+      options: UploadTimeoutOptions | undefined;
+    }[] = [];
     const lifecycleCalls = { connect: 0, reconnect: 0, close: 0 };
     const ready = (): ReadyState => ({
       status: "ready",
@@ -449,9 +456,9 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           if (!script.omitObservation) sendEvent(result);
           return result;
         }),
-      upload: (name, mimeType, bytes) =>
+      upload: (name, mimeType, bytes, options) =>
         Effect.gen(function* () {
-          uploaded.push({ name, mimeType, bytes: new Uint8Array(bytes) });
+          uploaded.push({ name, mimeType, bytes: new Uint8Array(bytes), options });
           return yield* (
             script.upload?.(name, mimeType, bytes) ??
               Effect.succeed({

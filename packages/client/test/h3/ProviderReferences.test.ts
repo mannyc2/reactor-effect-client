@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   Crypto,
+  Duration,
   Effect,
   Fiber,
   FileSystem,
@@ -293,6 +294,20 @@ test("the standalone URI loader retains typed malformed-URL and encoded-byte bou
       expect(h.fake.uploaded).toHaveLength(0);
       expect(yield* h.entries()).toEqual([]);
       expect(h.stagingAttempts()).toBe(0);
+    }),
+  ));
+
+test("reference uploads run under H3's upload budget, not its one-second reply budget", () =>
+  run(
+    Effect.gen(function* () {
+      const h = yield* setup();
+      const source = h.path.join(h.directory, "budget.png");
+      yield* h.fs.writeFile(source, pngBytes(32, 24));
+      yield* (yield* h.prepare(source)).submit;
+      const budget = h.fake.uploaded[0]?.options?.uploadTimeout;
+      expect(budget !== undefined && Duration.toMillis(Duration.fromInputUnsafe(budget))).toBe(
+        60_000,
+      );
     }),
   ));
 
