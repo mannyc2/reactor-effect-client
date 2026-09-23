@@ -225,6 +225,7 @@ jobs:
           name: native-${{ matrix.platform }}
           path: packages/native/lib/${{ matrix.platform }}/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   package:
@@ -291,7 +292,10 @@ jobs:
           PACKAGE_IDENTITY: ${{ steps.package.outputs.identity }}
         run: |
           mkdir -p .release/qualified
-          cp "$PACKAGE_DIRECTORY"/*.tgz "$PACKAGE_IDENTITY" .release/qualified/
+          for tarball in $(jq -r '.packages[].tarball' "$PACKAGE_IDENTITY"); do
+            cp "$PACKAGE_DIRECTORY/$tarball" .release/qualified/
+          done
+          cp "$PACKAGE_IDENTITY" .release/qualified/
 
       - name: Upload validated npm packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -300,4 +304,5 @@ jobs:
           path: .release/qualified/
           include-hidden-files: true
           if-no-files-found: error
+          overwrite: true
           retention-days: 90
