@@ -384,15 +384,9 @@ const connectionFailure = (stats: readonly unknown[]): ReactorError => {
   });
 };
 
-const withTimeout = <A>(promise: Promise<A>, ms: number, message: string): Promise<A> => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new ReactorError({ code: "Timeout", message })), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
-};
+/** One synchronous, nonblocking take from a native queue, as a pump step. */
+const drain = <A>(step: () => A): Effect.Effect<A, ReactorError> =>
+  Effect.try({ try: step, catch: (cause) => nativeError(cause, "drain native WebRTC") });
 
 export class NativePeer implements Peer {
   readonly nativeTracks = false;
@@ -408,7 +402,6 @@ export class NativePeer implements Peer {
   private readonly wakeAudio = Effect.runSync(Queue.dropping<void>(1));
   private emit: ((event: PeerEvent) => void) | undefined;
   private closed = false;
-  private classifying = false;
   private failureEmitted = false;
   private failure: ReactorError | undefined;
 
@@ -503,77 +496,99 @@ export class NativePeer implements Peer {
    * batch of half a subscriber's capacity overflowed an observation queue on
    * Bun under CPU contention, so each item costs one event-loop turn.
    */
-  private pump(wake: Queue.Queue<void>, step: () => boolean): Effect.Effect<void> {
+  private pump(
+    wake: Queue.Queue<void>,
+    step: Effect.Effect<boolean, ReactorError>,
+  ): Effect.Effect<void> {
     const self = this;
-    const takeOne = Effect.try({
-      try: step,
-      catch: (cause) => nativeError(cause, "drain native WebRTC"),
-    });
     return Effect.gen(function* () {
       while (!self.closed) {
         yield* Queue.take(wake);
-        while (!self.closed && (yield* takeOne)) {
+        while (!self.closed && (yield* step)) {
           yield* Effect.yieldNow;
         }
       }
     }).pipe(Effect.catch((error) => Effect.sync(() => self.fail(error))));
   }
 
-  /** Deliver one event; false once the queue is empty or closed. */
-  private stepEvent(): boolean {
-    const packet = this.bridge.takeEvent();
-    if (packet === undefined || packet === null) return false;
-    const event = parseEvent(packet);
-    // The failed connection's classification decides its error; later events
-    // describe the same teardown.
-    if (this.classifying) return true;
-    if (event.type === "error") this.fail(event.error);
-    else if (event.type === "state" && event.state === "failed") this.classify();
-    else this.emit?.(event);
-    return true;
-  }
-
-  private stepVideo(): boolean {
-    const taken = this.bridge.takeVideo();
-    if (taken === undefined || taken === null) return false;
-    const frame = videoFrame(this.tracks, taken);
-    this.videoFeed(frame.track).emit(
-      frame,
-      frame.data.byteLength + frame.metadata.byteLength + frame.track.length * 2,
+  /**
+   * Deliver one event; false once the queue is empty or closed. A failed
+   * connection is classified here before the pump takes another event, so its
+   * classification decides the error; later events describe the same teardown.
+   */
+  private get stepEvent(): Effect.Effect<boolean, ReactorError> {
+    return drain(() => {
+      const packet = this.bridge.takeEvent();
+      if (packet === undefined || packet === null) return false;
+      const event = parseEvent(packet);
+      if (event.type === "state" && event.state === "failed") return "failed";
+      if (event.type === "error") this.fail(event.error);
+      else this.emit?.(event);
+      return true;
+    }).pipe(
+      Effect.filterOrElse(
+        (taken): taken is boolean => taken !== "failed",
+        () => this.classify.pipe(Effect.as(true)),
+      ),
     );
-    return true;
   }
 
-  private stepAudio(): boolean {
-    const taken = this.bridge.takeAudio();
-    if (taken === undefined || taken === null) return false;
-    const frame = audioFrame(this.tracks, taken);
-    this.audioFeed(frame.track).emit(frame, frame.samples.byteLength + frame.track.length * 2);
-    return true;
+  private get stepVideo(): Effect.Effect<boolean, ReactorError> {
+    return drain(() => {
+      const taken = this.bridge.takeVideo();
+      if (taken === undefined || taken === null) return false;
+      const frame = videoFrame(this.tracks, taken);
+      this.videoFeed(frame.track).emit(
+        frame,
+        frame.data.byteLength + frame.metadata.byteLength + frame.track.length * 2,
+      );
+      return true;
+    });
   }
 
-  /** Report a failed connection as IceFailed or TransportFailed rather than a bare state. */
-  private classify(): void {
-    this.classifying = true;
-    withTimeout(
-      this.bridge.call(NativeCall.Stats),
-      CLASSIFY_TIMEOUT_MS,
-      "native failure classification timed out",
-    )
-      .then(
-        (stats) =>
-          Array.isArray(stats)
-            ? connectionFailure(stats)
-            : new ReactorError({ code: "Disconnected", message: "peer state failed" }),
-        (cause: unknown) =>
+  private get stepAudio(): Effect.Effect<boolean, ReactorError> {
+    return drain(() => {
+      const taken = this.bridge.takeAudio();
+      if (taken === undefined || taken === null) return false;
+      const frame = audioFrame(this.tracks, taken);
+      this.audioFeed(frame.track).emit(frame, frame.samples.byteLength + frame.track.length * 2);
+      return true;
+    });
+  }
+
+  /**
+   * Report a failed connection as IceFailed or TransportFailed rather than a
+   * bare state. The statistics read runs in the events pump, so the connection
+   * scope owns it and its deadline runs on the fiber's Clock.
+   */
+  private get classify(): Effect.Effect<void, ReactorError> {
+    return bridgeEffect("classify native failure", () => this.bridge.call(NativeCall.Stats)).pipe(
+      Effect.map((stats) =>
+        Array.isArray(stats)
+          ? connectionFailure(stats)
+          : new ReactorError({ code: "Disconnected", message: "peer state failed" }),
+      ),
+      Effect.timeoutOrElse({
+        duration: CLASSIFY_TIMEOUT_MS,
+        orElse: () =>
+          Effect.fail(
+            new ReactorError({
+              code: "Timeout",
+              message: "native failure classification timed out",
+            }),
+          ),
+      }),
+      Effect.catch((cause) =>
+        Effect.succeed(
           new ReactorError({
             code: "Disconnected",
             message: "peer state failed",
             context: { detail: cause },
           }),
-      )
-      .then((error) => this.fail(error))
-      .catch(() => this.close());
+        ),
+      ),
+      Effect.flatMap((error) => drain(() => this.fail(error))),
+    );
   }
 
   prepare(
@@ -605,9 +620,9 @@ export class NativePeer implements Peer {
           }),
         ),
       );
-      yield* Effect.forkScoped(self.pump(self.wakeEvents, () => self.stepEvent()));
-      yield* Effect.forkScoped(self.pump(self.wakeVideo, () => self.stepVideo()));
-      yield* Effect.forkScoped(self.pump(self.wakeAudio, () => self.stepAudio()));
+      yield* Effect.forkScoped(self.pump(self.wakeEvents, self.stepEvent));
+      yield* Effect.forkScoped(self.pump(self.wakeVideo, self.stepVideo));
+      yield* Effect.forkScoped(self.pump(self.wakeAudio, self.stepAudio));
       return prepared;
     });
   }

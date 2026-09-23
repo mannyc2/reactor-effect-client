@@ -2,7 +2,9 @@ import { rmSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import koffi from "koffi";
+import type { ReactorError } from "reactor-effect-client";
 import { describe, expect, test, vi } from "vitest";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";
@@ -200,6 +202,58 @@ describe("native foreign-call ownership", () => {
         ),
       );
     } finally {
+      if (peer !== undefined) await Effect.runPromise(peer.shutdown);
+      rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies a failed connection on the fiber's Clock when statistics never return", async () => {
+    if (process.platform === "win32") return;
+    const fixture = compile();
+    const stat: (which: number) => number = fixture.library.func(
+      "int fixture_lifetime_stat(int which)",
+    );
+    const hold: (held: number) => void = fixture.library.func("void fixture_stats_hold(int held)");
+    const failConnection: () => void = fixture.library.func("void fixture_connection_fail(void)");
+    let peer: NativePeer | undefined;
+    try {
+      await checkNativeBridge(fixture.path);
+      peer = new NativePeer(fixture.path);
+      const ownedPeer = peer;
+      const errors: ReactorError[] = [];
+      const waited = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* ownedPeer.prepare([], tracks, (event) => {
+              if (event.type === "error") errors.push(event.error);
+            });
+            hold(1);
+            failConnection();
+            yield* Effect.promise(() =>
+              until(() => stat(10) === 1, "classification never read statistics"),
+            );
+            // The native call never returns, and no host timer ends the wait.
+            yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+            expect(errors).toEqual([]);
+            const started = performance.now();
+            yield* TestClock.adjust("2 seconds");
+            yield* Effect.promise(() => until(() => errors.length > 0, "no classification"));
+            return performance.now() - started;
+          }),
+        ).pipe(Effect.provide(TestClock.layer())),
+      );
+      expect(waited).toBeLessThan(1_000);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        code: "Disconnected",
+        message: "peer state failed",
+        context: {
+          detail: { code: "Timeout", message: "native failure classification timed out" },
+        },
+      });
+    } finally {
+      // The abandoned statistics call still owns its lease; shutdown drains it.
+      hold(0);
       if (peer !== undefined) await Effect.runPromise(peer.shutdown);
       rmSync(fixture.directory, { recursive: true, force: true });
     }
