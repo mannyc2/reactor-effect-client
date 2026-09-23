@@ -20,6 +20,7 @@ export {
   Native,
   IceFailed,
   TransportFailed,
+  ClipEnded,
   ReactorErrorReason,
   isReactorFailure,
 } from "./errors.js";

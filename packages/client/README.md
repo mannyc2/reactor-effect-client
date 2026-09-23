@@ -150,6 +150,8 @@ const enqueueClip = (session: Session) =>
 
 Use a session created with `H3.modelName`. The adapter targets the documented `0.5.5` prompt-and-images subset of `reactor/h3-reference-to-video-turbo-realtime`. Prompt-only requests are supported. Image references accept owned bytes or explicit upload references; H3 itself requires no filesystem or path services. Reference-audio input is unsupported, and FastH3 `startingFrame`/`endingFrame` fields are absent from this contract.
 
+`provider.operation(submission)` keeps a committed clip's facts for as long as its scope holds them: `accepted`, `reached("generated" | "started")` and `ended` each resolve once, every fact naming the transport generation of its evidence, and a clip that fails or is popped first fails the phases it never reached with `ClipEnded`. Evidence arriving after the reconcile window, or in a later transport generation of the same session, still attributes an unknown enqueue. A commit reserves the operation's slot before it sends, so a table full of unresolved operations refuses new commits with `Overflow` instead of discarding evidence; releasing the scope frees the slot.
+
 The adapter exposes autoplay, flush, playback, reset, and other model controls as explicit operations. Creating it does not change those policies or initiate reconnect. Request `metadata` is a provider string; orchestration keeps its richer application annotation separately.
 
 ## Orchestration and simulation
