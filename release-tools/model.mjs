@@ -58,7 +58,16 @@ export const Qualification = Schema.Struct({
   ciRunId: runId,
   ciRunAttempt: runId,
   version,
-  packages: Schema.Array(QualifiedPackage),
+  // Every reader (CI stamp, preparation, admission, confirmation) sees the
+  // canonical package set in publication order, never a subset or reordering.
+  packages: Schema.Array(QualifiedPackage).check(
+    Schema.makeFilter((entries) =>
+      entries.length === packageNames.length &&
+      entries.every((entry, index) => entry.name === packageNames[index])
+        ? undefined
+        : "Qualified packages must list every workspace package in publication order",
+    ),
+  ),
 });
 const NativeIdentity = Schema.Struct({
   schemaVersion: Schema.Literal(1),

@@ -4,6 +4,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -594,6 +595,36 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
         ],
         journal,
       ],
+      [
+        "a host intent carrying the other host's archive and digests",
+        [
+          client,
+          await republish(
+            browserPackage,
+            {
+              tarball: intentFor(loaded, nativePackage).tarball,
+              integrity: intentFor(loaded, nativePackage).integrity,
+              shasum: intentFor(loaded, nativePackage).shasum,
+            },
+            [client.operationId],
+          ),
+          native,
+        ],
+        journal,
+      ],
+      [
+        "a host intent carrying the other host's signed provenance",
+        [
+          client,
+          await republish(
+            browserPackage,
+            { provenance: intentFor(loaded, nativePackage).provenance },
+            [client.operationId],
+          ),
+          native,
+        ],
+        journal,
+      ],
     ];
     for (const [name, operations, journalId] of variants) {
       const plan = await Effect.runPromise(createPlan(input.bundleSha256, operations, journalId));
@@ -609,4 +640,11 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
       assert.ok(Result.isFailure(result), name);
       assert.equal(result.failure.code, "reactor-release-publication-policy", name);
     }
+  }));
+
+test("preparation refuses a qualified directory missing one host archive and creates no candidate", () =>
+  withFixture(async (fixture) => {
+    rmSync(join(fixture.qualifiedDirectory, `${nativePackage}-0.2.0.tgz`));
+    await assert.rejects(Effect.runPromise(prepareOffline(fixture.options)), /qualification/);
+    assert.equal(existsSync(fixture.candidateDirectory), false);
   }));
