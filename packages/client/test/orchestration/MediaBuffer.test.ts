@@ -8,7 +8,7 @@ test("cancelling a video reader retains unconsumed frames and their byte account
   runClock(
     Effect.gen(function* () {
       const buffer = yield* MediaBuffer.make;
-      const received = yield* gate();
+      const received = yield* gate;
       yield* buffer.offerVideo(videoFrame(1));
       yield* buffer.offerVideo({ ...videoFrame(2), metadata: new Uint8Array([3, 4]) });
       const reader = yield* buffer.video.pipe(
@@ -29,7 +29,7 @@ test("cancelling an audio reader preserves the next packet and exact sample coun
   runClock(
     Effect.gen(function* () {
       const buffer = yield* MediaBuffer.make;
-      const received = yield* gate();
+      const received = yield* gate;
       yield* buffer.offerAudio(audioFrame(7, 1));
       yield* buffer.offerAudio(audioFrame(11, 2));
       const reader = yield* buffer.audio.pipe(
@@ -41,7 +41,7 @@ test("cancelling an audio reader preserves the next packet and exact sample coun
       expect(buffer.forwarded()).toEqual({ queuedVideoFrames: 0, queuedAudioSamples: 11 });
       expect(buffer.pressure()).toEqual({ queuedVideo: 0, queuedAudio: 1, queuedBytes: 22 });
       const remaining = yield* buffer.audio.pipe(Stream.take(1), Stream.runCollect);
-      expect([...remaining[0]!.samples]).toEqual(new Array(11).fill(2));
+      expect([...remaining[0]!.samples]).toEqual(new Array<number>(11).fill(2));
       expect(buffer.forwarded().queuedAudioSamples).toBe(0);
       buffer.end();
     }),
@@ -59,7 +59,7 @@ test("queue admission refuses overflow without changing accounting or accepting 
         expect(Result.isFailure(result) && result.failure.code).toBe("Overflow");
         expect(buffer.pressure()).toEqual(before);
       }
-      const failure = new ReactorError("Overflow", "fixture queue is full");
+      const failure = new ReactorError({ code: "Overflow", message: "fixture queue is full" });
       buffer.fail(failure);
       buffer.end();
       yield* buffer.offerVideo(videoFrame());

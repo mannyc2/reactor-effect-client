@@ -83,7 +83,7 @@ const validatePoll = (p: Poll): Poll => {
   positiveLimit(p.initialMs, "poll initialMs", 60_000);
   positiveLimit(p.maxMs, "poll maxMs", 60_000);
   if (p.initialMs > p.maxMs)
-    throw new ReactorError("Protocol", "poll initial delay exceeds maximum");
+    throw new ReactorError({ code: "Protocol", message: "poll initial delay exceeds maximum" });
   return Object.freeze({ ...p });
 };
 const checkedUrl = (url: string): URL => {
@@ -93,10 +93,10 @@ const checkedUrl = (url: string): URL => {
     value.username ||
     value.password
   )
-    throw new ReactorError(
-      "Protocol",
-      "HTTP URL must use http(s) and contain no embedded credentials",
-    );
+    throw new ReactorError({
+      code: "Protocol",
+      message: "HTTP URL must use http(s) and contain no embedded credentials",
+    });
   return value;
 };
 /** Reactor HTTP protocol over the application-supplied Effect HTTP client. */
@@ -116,7 +116,10 @@ export class CoordinatorClient {
     this.options = Object.freeze({ ...options });
     const base = checkedUrl(options.apiUrl);
     if (base.search || base.hash)
-      throw new ReactorError("Protocol", "apiUrl cannot contain a query or fragment");
+      throw new ReactorError({
+        code: "Protocol",
+        message: "apiUrl cannot contain a query or fragment",
+      });
     this.apiUrl = base.href.replace(/\/$/, "");
     this.local = options.local ?? false;
     this.timeoutMs = positiveLimit(options.requestTimeoutMs ?? 15_000, "request timeout", 600_000);
@@ -153,22 +156,30 @@ export class CoordinatorClient {
       const operation = request.operation;
       const networkError = (cause: unknown): ReactorError => {
         if (cause instanceof ReactorError)
-          return new ReactorError(cause.code, cause.message, {
-            operation,
-            outcome: submitted ? "unknown" : "not-submitted",
-            ...(status === undefined ? {} : { status }),
-            ...cause.context,
+          return new ReactorError({
+            code: cause.code,
+            message: cause.message,
+            context: {
+              operation,
+              outcome: submitted ? "unknown" : "not-submitted",
+              ...(status === undefined ? {} : { status }),
+              ...cause.context,
+            },
           });
         const detail = CoreHttpClientError.isHttpClientError(cause)
           ? "cause" in cause.reason
             ? cause.reason.cause
             : cause.reason._tag
           : cause;
-        return new ReactorError("Http", `${operation}: network/read failure`, {
-          operation,
-          detail,
-          outcome: submitted ? "unknown" : "not-submitted",
-          ...(status === undefined ? {} : { status }),
+        return new ReactorError({
+          code: "Http",
+          message: `${operation}: network/read failure`,
+          context: {
+            operation,
+            detail,
+            outcome: submitted ? "unknown" : "not-submitted",
+            ...(status === undefined ? {} : { status }),
+          },
         });
       };
       const action = Effect.gen(function* () {
@@ -188,7 +199,7 @@ export class CoordinatorClient {
           (auth === "coordinator" && !self.local) ||
           (auth === "same-origin" && url.origin === new URL(self.apiUrl).origin);
         if (authenticate) {
-          const token = yield* self.options.credential ?? Effect.succeed(undefined);
+          const token = yield* self.options.credential ?? Effect.void;
           if (token !== undefined)
             yield* pure(() => headers.set("Authorization", `Bearer ${nonempty(token, "JWT")}`));
         }
@@ -218,19 +229,17 @@ export class CoordinatorClient {
         )
           return reply;
         const retry = retryAfterMs(reply.headers);
-        return yield* Effect.fail(
-          new ReactorError(
-            response.status === 426 || response.status === 501 ? "VersionMismatch" : "Http",
-            `${operation}: HTTP ${response.status}`,
-            {
-              operation,
-              status: response.status,
-              body: new TextDecoder().decode(bytes),
-              outcome: "replied",
-              ...(retry === undefined ? {} : { retryAfterMs: retry }),
-            },
-          ),
-        );
+        return yield* new ReactorError({
+          code: response.status === 426 || response.status === 501 ? "VersionMismatch" : "Http",
+          message: `${operation}: HTTP ${response.status}`,
+          context: {
+            operation,
+            status: response.status,
+            body: new TextDecoder().decode(bytes),
+            outcome: "replied",
+            ...(retry === undefined ? {} : { retryAfterMs: retry }),
+          },
+        });
       });
       return action.pipe(
         Effect.mapError(networkError),
@@ -249,15 +258,15 @@ export class CoordinatorClient {
           duration: request.timeoutMs ?? self.timeoutMs,
           orElse: () =>
             Effect.fail(
-              new ReactorError(
-                "Timeout",
-                `${operation}: deadline during request or response read`,
-                {
+              new ReactorError({
+                code: "Timeout",
+                message: `${operation}: deadline during request or response read`,
+                context: {
                   operation,
                   outcome: submitted ? "unknown" : "not-submitted",
                   ...(status === undefined ? {} : { status }),
                 },
-              ),
+              }),
             ),
         }),
       );
@@ -316,7 +325,10 @@ export class CoordinatorClient {
         pure(() => {
           const descriptor = parseDescriptor(raw);
           if (descriptor.session_id !== id)
-            throw new ReactorError("Protocol", "session descriptor identity mismatch");
+            throw new ReactorError({
+              code: "Protocol",
+              message: "session descriptor identity mismatch",
+            });
           return descriptor;
         }),
       ),
@@ -328,11 +340,16 @@ export class CoordinatorClient {
       for (let attempt = 0; attempt < self.sessionPoll.attempts; attempt++) {
         const descriptor = attempt === 0 && initial !== undefined ? initial : yield* self.read(id);
         if (descriptor.session_id !== id)
-          return yield* Effect.fail(new ReactorError("Protocol", "ready descriptor id mismatch"));
+          return yield* new ReactorError({
+            code: "Protocol",
+            message: "ready descriptor id mismatch",
+          });
         if (terminal(descriptor.state))
-          return yield* Effect.fail(
-            new ReactorError("TerminalSession", descriptor.state, { sessionId: id }),
-          );
+          return yield* new ReactorError({
+            code: "TerminalSession",
+            message: descriptor.state,
+            context: { sessionId: id },
+          });
         if (descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined)
           return descriptor;
         if (attempt + 1 < self.sessionPoll.attempts)
@@ -340,9 +357,11 @@ export class CoordinatorClient {
             Math.min(self.sessionPoll.initialMs * 2 ** attempt, self.sessionPoll.maxMs),
           );
       }
-      return yield* Effect.fail(
-        new ReactorError("Timeout", "session capabilities/transport not ready", { sessionId: id }),
-      );
+      return yield* new ReactorError({
+        code: "Timeout",
+        message: "session capabilities/transport not ready",
+        context: { sessionId: id },
+      });
     });
   }
   iceServers(id: string): Effect.Effect<IceServer[], ReactorError> {
@@ -406,9 +425,11 @@ export class CoordinatorClient {
         if (attempt + 1 < self.sdpPoll.attempts)
           yield* Effect.sleep(Math.min(self.sdpPoll.initialMs * 2 ** attempt, self.sdpPoll.maxMs));
       }
-      return yield* Effect.fail(
-        new ReactorError("Timeout", "SDP answer not ready", { sessionId: id }),
-      );
+      return yield* new ReactorError({
+        code: "Timeout",
+        message: "SDP answer not ready",
+        context: { sessionId: id },
+      });
     });
   }
   ice(
@@ -555,11 +576,11 @@ export class CoordinatorClient {
             confirmed: false,
             evidence: null,
             state: null,
-            error: new ReactorError(
-              "Http",
-              "Remote termination could not be confirmed after authority refusal",
-              { operation: "terminate", status: deleteStatus, outcome: "replied" },
-            ),
+            error: new ReactorError({
+              code: "Http",
+              message: "Remote termination could not be confirmed after authority refusal",
+              context: { operation: "terminate", status: deleteStatus, outcome: "replied" },
+            }),
           };
         return { ...base, confirmed: true, evidence: "absent" as const, state: null };
       }
@@ -581,7 +602,7 @@ export class CoordinatorClient {
     }).pipe(Effect.withSpan("reactor.coordinator.terminate"));
   }
   /** Pricing remains provider JSON; modelRate interprets only known rate units. */
-  pricing(): Effect.Effect<Json, ReactorError> {
+  get pricing(): Effect.Effect<Json, ReactorError> {
     return this.jsonRequest({
       operation: "pricing",
       url: this.path("/pricing"),
@@ -610,13 +631,12 @@ export class CoordinatorClient {
         value.expires_at * 1_000 <
         (yield* Clock.currentTimeMillis) + (options.maxSessionDurationSeconds + 30) * 1_000
       )
-        return yield* Effect.fail(
-          new ReactorError(
-            "Protocol",
+        return yield* new ReactorError({
+          code: "Protocol",
+          message:
             "Reactor returned a token without enough lifetime for the bounded session and cleanup",
-            { operation: "token", outcome: "replied" },
-          ),
-        );
+          context: { operation: "token", outcome: "replied" },
+        });
       const granted = yield* grantedLimits(value.jwt, options);
       return { jwt: Redacted.make(value.jwt), expiresAt: value.expires_at, granted };
     }).pipe(Effect.withSpan("reactor.coordinator.mintToken"));
@@ -635,7 +655,11 @@ export class CoordinatorClient {
       Effect.flatMap((raw) => decodeInspection(raw, id)),
       Effect.mapError(
         (error) =>
-          new ReactorError(error.code, error.message, { operation: "inspect", ...error.context }),
+          new ReactorError({
+            code: error.code,
+            message: error.message,
+            context: { operation: "inspect", ...error.context },
+          }),
       ),
       Effect.withSpan("reactor.coordinator.inspect"),
     );
@@ -673,7 +697,8 @@ export const tokenBody = (input: TokenConstraints): string => {
   const c = record(input),
     keys = new Set(["models", "max_sessions", "max_session_duration_seconds", "expires_after"]);
   for (const key of Object.keys(c))
-    if (!keys.has(key)) throw new ReactorError("Protocol", `unknown token constraint: ${key}`);
+    if (!keys.has(key))
+      throw new ReactorError({ code: "Protocol", message: `unknown token constraint: ${key}` });
   const parts: string[] = [];
   if (c.models !== undefined) {
     const models = array(c.models, "models").map((m) => nonempty(m, "model"));
@@ -701,7 +726,10 @@ export const tokenBody = (input: TokenConstraints): string => {
       c.expires_after < 0n ||
       c.expires_after > 0xffffffffffffffffn
     )
-      throw new ReactorError("Protocol", "expires_after must be a uint64 bigint");
+      throw new ReactorError({
+        code: "Protocol",
+        message: "expires_after must be a uint64 bigint",
+      });
     parts.push(`"expires_after":${c.expires_after}`);
   }
   return parts.length ? `{${parts.join(",")}}` : "null";

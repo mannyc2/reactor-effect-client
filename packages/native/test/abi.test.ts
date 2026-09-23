@@ -96,7 +96,7 @@ describe("native C ABI", () => {
         });
       } finally {
         peer.close();
-        await Effect.runPromise(peer.shutdown());
+        await Effect.runPromise(peer.shutdown);
       }
     }
   });

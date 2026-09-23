@@ -52,10 +52,20 @@ export interface Call {
   readonly requestId: string;
   readonly generation: bigint;
 }
+/** A command argument the wire carries as text; anything else is an adapter bug. */
+export const textArg = (value: unknown): string => {
+  if (typeof value !== "string")
+    throw new TypeError(`expected a text argument, got ${typeof value}`);
+  return value;
+};
+/** The fields the adapter encodes into a clip's metadata text. */
+export const metadataOf = (metadata: string): Readonly<Record<string, unknown>> =>
+  JSON.parse(metadata) as Record<string, unknown>;
+
 export interface ReplyContext {
   readonly fake: Fixture;
   readonly call: Call;
-  readonly defaults: () => Effect.Effect<WireMessage | undefined, CommandFailure>;
+  readonly defaults: Effect.Effect<WireMessage | undefined, CommandFailure>;
   readonly fail: (
     outcome: "unknown" | "replied" | "not-submitted",
     code?: ReactorError["code"],
@@ -237,8 +247,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             );
             const count = Array.isArray(args.reference_images) ? args.reference_images.length : 0;
             const clip = fixtureClip({
-              prompt: String(args.prompt),
-              metadata: String(args.metadata),
+              prompt: textArg(args.prompt),
+              metadata: textArg(args.metadata),
               frames,
               seconds: frames / 24,
               seed: typeof args.seed === "number" ? args.seed : seed++,
@@ -319,7 +329,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             return { type: "clip_length_accepted", data: { frames, clip_seconds: duration } };
           }
           case "set_canvas":
-            aspect = String(args.aspect);
+            aspect = textArg(args.aspect);
             broadcast("state_update", state());
             return {
               type: "canvas_accepted",
@@ -368,7 +378,9 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       ready: Effect.suspend(() =>
         status === "ready"
           ? Effect.succeed(ready())
-          : Effect.fail(new ReactorError("InvalidState", "Fixture session is not ready")),
+          : Effect.fail(
+              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+            ),
       ),
       current: Effect.sync(current),
       events: (bounds) => observers.stream(bounds),
@@ -384,11 +396,12 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       command: (command, input, attachments, timeout = 1000) =>
         Effect.gen(function* () {
           if (status !== "ready")
-            return yield* Effect.fail(
-              new CommandFailure(new ReactorError("InvalidState", "Fixture session is not ready"), {
+            return yield* CommandFailure.from(
+              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+              {
                 operation: command,
                 outcome: "not-submitted",
-              }),
+              },
             );
           const call: Call = {
             command,
@@ -405,14 +418,14 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             outcome: "unknown" | "replied" | "not-submitted",
             code: ReactorError["code"] = "Timeout",
           ) =>
-            new CommandFailure(new ReactorError(code, "Fixture command failure"), {
+            CommandFailure.from(new ReactorError({ code, message: "Fixture command failure" }), {
               operation: command,
               outcome,
               requestId: call.requestId,
               generation: call.generation,
             });
           const commandEffect =
-            script.command?.[command]?.({ fake, call, defaults: () => defaults(call), fail }) ??
+            script.command?.[command]?.({ fake, call, defaults: defaults(call), fail }) ??
             defaults(call);
           const message = yield* commandEffect.pipe(
             Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(fail("unknown")) }),
@@ -452,9 +465,17 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           );
         }),
       requestRecordingClip: () =>
-        Effect.fail(new ReactorError("UnsupportedCapability", "Not a fixture recording operation")),
+        Effect.fail(
+          new ReactorError({
+            code: "UnsupportedCapability",
+            message: "Not a fixture recording operation",
+          }),
+        ),
       recording: Effect.fail(
-        new ReactorError("UnsupportedCapability", "Not a fixture recording operation"),
+        new ReactorError({
+          code: "UnsupportedCapability",
+          message: "Not a fixture recording operation",
+        }),
       ),
       stats: Effect.succeed({ sampledAtMs: 0, generation, warnings: [] }),
       close: Effect.sync(() => {
@@ -513,8 +534,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
     return fake;
   });
 
-export const gate = () =>
-  Effect.gen(function* () {
-    const signal = yield* Deferred.make<void>();
-    return { wait: Deferred.await(signal), release: Deferred.succeed(signal, undefined) };
-  });
+export const gate = Effect.gen(function* () {
+  const signal = yield* Deferred.make<void>();
+  return { wait: Deferred.await(signal), release: Deferred.succeed(signal, undefined) };
+});

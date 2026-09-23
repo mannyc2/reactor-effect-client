@@ -149,7 +149,7 @@ interface Host {
   readonly audio: SinkModel;
   readonly tracks: { readonly audio: FakeTrack; readonly video: FakeTrack };
   readonly intervals: Map<number, () => void>;
-  tickAudio(): void;
+  readonly tickAudio: () => void;
   frames(count?: number, changing?: boolean): void;
   open(signal?: AbortSignal, timeout?: number): Promise<PublicationReceiver>;
 }

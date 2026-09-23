@@ -26,10 +26,15 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
   const remote = new RemoteSession();
   const http = coordinator();
   const order: string[] = [];
-  const submissionError = new ReactorError("Disconnected", "release submission failed", {
-    outcome: "unknown",
+  const submissionError = new ReactorError({
+    code: "Disconnected",
+    message: "release submission failed",
+    context: { outcome: "unknown" },
   });
-  const retirementError = new ReactorError("Shutdown", "synchronous peer close failed");
+  const retirementError = new ReactorError({
+    code: "Shutdown",
+    message: "synchronous peer close failed",
+  });
   const peer = new MockPeer(new HttpFixture());
   http.create = () => Effect.succeed({ session_id: "cleanup-fixture", state: "ACTIVE", raw: {} });
   http.terminate = () =>
@@ -228,13 +233,12 @@ test("session lifecycle: interrupted concurrent close joins shutdown and publish
           close();
         };
         Object.assign(peer, {
-          shutdown: () =>
-            Effect.gen(function* () {
-              order.push("shutdown started");
-              yield* Deferred.succeed(shutdownEntered, undefined);
-              yield* Deferred.await(releaseShutdown);
-              order.push("shutdown joined");
-            }),
+          shutdown: Effect.gen(function* () {
+            order.push("shutdown started");
+            yield* Deferred.succeed(shutdownEntered, undefined);
+            yield* Deferred.await(releaseShutdown);
+            order.push("shutdown joined");
+          }),
         });
       },
     );
@@ -349,17 +353,19 @@ test("session lifecycle: phase events retain their generation and order through 
 
 test("session lifecycle: a retired generation's shutdown defect reaches reconnect without reviving its callbacks", () =>
   withFixture(async (fixture) => {
-    const shutdownError = new ReactorError("Shutdown", "retired native shutdown failed");
+    const shutdownError = new ReactorError({
+      code: "Shutdown",
+      message: "retired native shutdown failed",
+    });
     const shutdowns: number[] = [];
     let generations = 0;
     const { session, peers } = makeSession(fixture, {}, (peer) => {
       const generation = ++generations;
       Object.assign(peer, {
-        shutdown: () =>
-          Effect.suspend(() => {
-            shutdowns.push(generation);
-            return generation === 1 ? Effect.fail(shutdownError) : Effect.void;
-          }),
+        shutdown: Effect.suspend(() => {
+          shutdowns.push(generation);
+          return generation === 1 ? Effect.fail(shutdownError) : Effect.void;
+        }),
       });
     });
     try {

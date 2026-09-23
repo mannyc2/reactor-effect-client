@@ -230,7 +230,9 @@ export class MockPeer implements Peer {
         }
       },
       catch: (cause) =>
-        cause instanceof ReactorError ? cause : new ReactorError("Disconnected", String(cause)),
+        cause instanceof ReactorError
+          ? cause
+          : new ReactorError({ code: "Disconnected", message: String(cause) }),
     });
   }
   close(): void {
@@ -261,7 +263,7 @@ export class MockPeer implements Peer {
       this.bitrateCalls.push({ name, rate });
     });
   }
-  stats(): Effect.Effect<readonly unknown[], ReactorError> {
+  get stats(): Effect.Effect<readonly unknown[], ReactorError> {
     return Effect.succeed(this.statsEntries);
   }
 }

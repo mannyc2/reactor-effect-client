@@ -129,10 +129,10 @@ const defaultPaths = (): readonly string[] => {
 
 const asAsync = (value: unknown, symbol: string): AsyncNativeFunction => {
   if (typeof value !== "function" || !("async" in value)) {
-    throw new ReactorError(
-      "Native",
-      `native library symbol ${symbol} does not support asynchronous calls`,
-    );
+    throw new ReactorError({
+      code: "Native",
+      message: `native library symbol ${symbol} does not support asynchronous calls`,
+    });
   }
   return value as AsyncNativeFunction;
 };
@@ -142,11 +142,11 @@ const importKoffi = async (): Promise<KoffiModule> => {
     const module = await import("koffi");
     return module.default as unknown as KoffiModule;
   } catch (cause) {
-    throw new ReactorError(
-      "UnsupportedHost",
-      "the native export requires the optional koffi dependency",
-      { detail: cause, outcome: "not-submitted" },
-    );
+    throw new ReactorError({
+      code: "UnsupportedHost",
+      message: "the native export requires the optional koffi dependency",
+      context: { detail: cause, outcome: "not-submitted" },
+    });
   }
 };
 
@@ -162,30 +162,31 @@ const loadAt = async (path: string): Promise<NativeApi> => {
       .digest("hex");
     library = koffi.load(path);
   } catch (cause) {
-    throw new ReactorError("Native", `could not load native WebRTC bridge at ${path}`, {
-      detail: cause,
-      outcome: "not-submitted",
+    throw new ReactorError({
+      code: "Native",
+      message: `could not load native WebRTC bridge at ${path}`,
+      context: { detail: cause, outcome: "not-submitted" },
     });
   }
   const symbol = (prototype: string): unknown => {
     try {
       return library.func(prototype);
     } catch (cause) {
-      throw new ReactorError(
-        "Native",
-        `native WebRTC bridge is incompatible: missing ${prototype.split("(")[0] ?? prototype}`,
-        { detail: cause, outcome: "not-submitted" },
-      );
+      throw new ReactorError({
+        code: "Native",
+        message: `native WebRTC bridge is incompatible: missing ${prototype.split("(")[0] ?? prototype}`,
+        context: { detail: cause, outcome: "not-submitted" },
+      });
     }
   };
   const abi = symbol("uint32_t reactor_effect_abi_version(void)") as () => number;
   const actual = abi();
   if (actual !== ABI_VERSION)
-    throw new ReactorError(
-      "Native",
-      `native WebRTC ABI mismatch: expected ${ABI_VERSION}, received ${actual}`,
-      { outcome: "not-submitted" },
-    );
+    throw new ReactorError({
+      code: "Native",
+      message: `native WebRTC ABI mismatch: expected ${ABI_VERSION}, received ${actual}`,
+      context: { outcome: "not-submitted" },
+    });
   notifyType ??= koffi.pointer(koffi.proto("void", ["uint32_t"]));
   const notify = notifyType;
   const api: NativeApi = {
@@ -243,11 +244,12 @@ export const resolveNativeBridge = async (path?: string): Promise<string> => {
       failures.push(cause instanceof Error ? cause.message : String(cause));
     }
   }
-  throw new ReactorError(
-    "Native",
-    "native WebRTC bridge is not staged or its identity is invalid; run bun run native:build or provide an explicit library path",
-    { detail: failures, outcome: "not-submitted" },
-  );
+  throw new ReactorError({
+    code: "Native",
+    message:
+      "native WebRTC bridge is not staged or its identity is invalid; run bun run native:build or provide an explicit library path",
+    context: { detail: failures, outcome: "not-submitted" },
+  });
 };
 
 export const checkNativeBridge = async (path?: string): Promise<void> => {
@@ -257,18 +259,21 @@ export const checkNativeBridge = async (path?: string): Promise<void> => {
 const checked = (path: string): NativeApi => {
   const api = APIs.get(path);
   if (api === undefined)
-    throw new ReactorError(
-      "InvalidState",
-      "native WebRTC bridge was not preflighted; run PeerFactory.check before make",
-      { outcome: "not-submitted" },
-    );
+    throw new ReactorError({
+      code: "InvalidState",
+      message: "native WebRTC bridge was not preflighted; run PeerFactory.check before make",
+      context: { outcome: "not-submitted" },
+    });
   return api;
 };
 
 const toNumber = (value: unknown, name: string): number => {
   const number = typeof value === "bigint" ? Number(value) : value;
   if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 0)
-    throw new ReactorError("Protocol", `native ${name} is outside the safe integer range`);
+    throw new ReactorError({
+      code: "Protocol",
+      message: `native ${name} is outside the safe integer range`,
+    });
   return number;
 };
 
@@ -277,12 +282,17 @@ const jsonRecord = (bytes: Uint8Array, operation: string): Record<string, unknow
   try {
     value = JSON.parse(new TextDecoder().decode(bytes));
   } catch (cause) {
-    throw new ReactorError("Protocol", `native ${operation} returned invalid JSON`, {
-      detail: cause,
+    throw new ReactorError({
+      code: "Protocol",
+      message: `native ${operation} returned invalid JSON`,
+      context: { detail: cause },
     });
   }
   if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new ReactorError("Protocol", `native ${operation} returned a non-object response`);
+    throw new ReactorError({
+      code: "Protocol",
+      message: `native ${operation} returned a non-object response`,
+    });
   return value as Record<string, unknown>;
 };
 
@@ -302,19 +312,25 @@ export const verifyStagedNativeBridge = async (
       manifest.library !== libraryName() ||
       manifest.sha256 !== createHash("sha256").update(binary).digest("hex")
     ) {
-      throw new ReactorError("Native", "native artifact does not match its staged identity");
+      throw new ReactorError({
+        code: "Native",
+        message: "native artifact does not match its staged identity",
+      });
     }
     const api = await loadAt(path);
     if (api.binarySha256 !== manifest.sha256) {
-      throw new ReactorError(
-        "Native",
-        "staged native artifact changed after this process loaded it",
-      );
+      throw new ReactorError({
+        code: "Native",
+        message: "staged native artifact changed after this process loaded it",
+      });
     }
     const prefix = "reactor-effect-native:build-identity:",
       suffix = ":end";
     if (!api.buildIdentity.startsWith(prefix) || !api.buildIdentity.endsWith(suffix)) {
-      throw new ReactorError("Native", "loaded native artifact omitted its source/build identity");
+      throw new ReactorError({
+        code: "Native",
+        message: "loaded native artifact omitted its source/build identity",
+      });
     }
     const build = jsonRecord(
       Buffer.from(api.buildIdentity.slice(prefix.length, -suffix.length)),
@@ -325,16 +341,17 @@ export const verifyStagedNativeBridge = async (
       build.profile !== "release" ||
       JSON.stringify(build) !== JSON.stringify(manifest.build)
     ) {
-      throw new ReactorError(
-        "Native",
-        "loaded native build identity differs from its staged artifact",
-      );
+      throw new ReactorError({
+        code: "Native",
+        message: "loaded native build identity differs from its staged artifact",
+      });
     }
     return Object.freeze(manifest);
   } catch (cause) {
-    throw new ReactorError("Native", "native staged artifact verification failed", {
-      detail: cause,
-      outcome: "not-submitted",
+    throw new ReactorError({
+      code: "Native",
+      message: "native staged artifact verification failed",
+      context: { detail: cause, outcome: "not-submitted" },
     });
   }
 };
@@ -353,20 +370,32 @@ const failureOf = (
   // A native status does not establish whether a side effect executed. Keep
   // backend messages for explicit inspection rather than diagnostics: a
   // libwebrtc error can contain peer SDP or caller-supplied signaling material.
-  return new ReactorError(code, `native ${operation} failed (${code})`, {
-    operation,
-    outcome: "unknown",
-    detail: {
-      status,
-      message: new TextDecoder().decode(failure.subarray(4, 4 + length)),
-      ...detail,
+  return new ReactorError({
+    code,
+    message: `native ${operation} failed (${code})`,
+    context: {
+      operation,
+      outcome: "unknown",
+      detail: {
+        status,
+        message: new TextDecoder().decode(failure.subarray(4, 4 + length)),
+        ...detail,
+      },
     },
   });
 };
 
 const asyncStatus = (fn: AsyncNativeFunction, args: readonly unknown[]): Promise<number> =>
   new Promise((resolve, reject) => {
-    fn.async(...args, (error, result) => (error == null ? resolve(result) : reject(error)));
+    fn.async(...args, (error, result) =>
+      error == null
+        ? resolve(result)
+        : reject(
+            error instanceof Error
+              ? error
+              : new Error("native async call failed", { cause: error }),
+          ),
+    );
   });
 
 export interface NativePacket {
@@ -396,17 +425,26 @@ export type Take<A> = A | undefined | null;
 
 const parsePacket = (bytes: Uint8Array): NativePacket => {
   if (bytes.length < 4)
-    throw new ReactorError("Protocol", "native packet omitted its header length");
+    throw new ReactorError({
+      code: "Protocol",
+      message: "native packet omitted its header length",
+    });
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const headerLength = view.getUint32(0, true);
   if (headerLength > bytes.length - 4)
-    throw new ReactorError("Protocol", "native packet header length exceeds packet size");
+    throw new ReactorError({
+      code: "Protocol",
+      message: "native packet header length exceeds packet size",
+    });
   const header = jsonRecord(bytes.subarray(4, 4 + headerLength), "packet");
   return { header: Object.freeze(header), payload: bytes.slice(4 + headerLength) };
 };
 
 const overSized = (what: string, size: number): ReactorError =>
-  new ReactorError("Protocol", `native ${what} of ${size} exceeds the native queue bound`);
+  new ReactorError({
+    code: "Protocol",
+    message: `native ${what} of ${size} exceeds the native queue bound`,
+  });
 
 /**
  * One native peer. Media and transport events never cross into JavaScript on
@@ -444,16 +482,20 @@ export class NativeBridge {
       if (handle === null) this.api.unregister(this.notify);
     }
     if (handle === null)
-      throw new ReactorError("Native", "native WebRTC peer allocation failed", {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Native",
+        message: "native WebRTC peer allocation failed",
+        context: { outcome: "not-submitted" },
       });
     this.handle = handle;
   }
 
   private require(): bigint {
     if (this.closed || this.handle === undefined)
-      throw new ReactorError("Closed", "native WebRTC peer is closed", {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Closed",
+        message: "native WebRTC peer is closed",
+        context: { outcome: "not-submitted" },
       });
     return this.handle;
   }
@@ -464,8 +506,10 @@ export class NativeBridge {
       this.active.size >= MAX_IN_FLIGHT_CALLS ||
       this.requestBytes + bytes > MAX_IN_FLIGHT_REQUEST_BYTES
     ) {
-      throw new ReactorError("Overflow", "native foreign-call admission bound exceeded", {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Overflow",
+        message: "native foreign-call admission bound exceeded",
+        context: { outcome: "not-submitted" },
       });
     }
     let release!: () => void;
@@ -488,8 +532,10 @@ export class NativeBridge {
 
   async call(operation: NativeCall, request: Uint8Array = new Uint8Array()): Promise<unknown> {
     if (request.byteLength > MAX_REQUEST_BYTES)
-      throw new ReactorError("Overflow", "native request exceeds 1 MiB", {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Overflow",
+        message: "native request exceeds 1 MiB",
+        context: { outcome: "not-submitted" },
       });
     return this.withHandle(CALL_BUFFER_BYTES + request.byteLength, async (handle) => {
       const response = Buffer.allocUnsafe(CALL_BUFFER_BYTES),
@@ -509,27 +555,38 @@ export class NativeBridge {
           failure,
         ]);
       } catch (cause) {
-        throw new ReactorError("Native", "native WebRTC call completion failed", {
-          detail: cause,
-          outcome: "unknown",
+        throw new ReactorError({
+          code: "Native",
+          message: "native WebRTC call completion failed",
+          context: { detail: cause, outcome: "unknown" },
         });
       }
       if (status !== STATUS_OK) throw failureOf(status, failure, `call:${operation}`);
       const length = toNumber(responseLength[0], "call response length");
       if (length > response.byteLength)
-        throw new ReactorError("Protocol", "native call response exceeded its declared buffer");
+        throw new ReactorError({
+          code: "Protocol",
+          message: "native call response exceeded its declared buffer",
+        });
       try {
-        return JSON.parse(new TextDecoder().decode(response.subarray(0, length)));
+        const reply: unknown = JSON.parse(new TextDecoder().decode(response.subarray(0, length)));
+        return reply;
       } catch (cause) {
-        throw new ReactorError("Protocol", "native call returned invalid JSON", { detail: cause });
+        throw new ReactorError({
+          code: "Protocol",
+          message: "native call returned invalid JSON",
+          context: { detail: cause },
+        });
       }
     });
   }
 
   async send(channel: "control" | "data", bytes: Uint8Array): Promise<void> {
     if (bytes.byteLength > MAX_MESSAGE_BYTES)
-      throw new ReactorError("Overflow", "native data channel message exceeds 262144 bytes", {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Overflow",
+        message: "native data channel message exceeds 262144 bytes",
+        context: { outcome: "not-submitted" },
       });
     return this.withHandle(FAILURE_BYTES + bytes.byteLength, async (handle) => {
       const failure = Buffer.alloc(FAILURE_BYTES);
@@ -544,9 +601,10 @@ export class NativeBridge {
           failure,
         ]);
       } catch (cause) {
-        throw new ReactorError("Native", `native ${channel} send completion failed`, {
-          detail: cause,
-          outcome: "unknown",
+        throw new ReactorError({
+          code: "Native",
+          message: `native ${channel} send completion failed`,
+          context: { detail: cause, outcome: "unknown" },
         });
       }
       if (status !== STATUS_OK) throw failureOf(status, failure, `send:${channel}`, { channel });
@@ -569,11 +627,17 @@ export class NativeBridge {
       const length = toNumber(this.eventLength[0], "event length");
       if (status === STATUS_OK) {
         if (length > this.event.byteLength)
-          throw new ReactorError("Protocol", "native event exceeded its declared buffer");
+          throw new ReactorError({
+            code: "Protocol",
+            message: "native event exceeded its declared buffer",
+          });
         return parsePacket(this.event.subarray(0, length));
       }
       if (status !== STATUS_BUFFER_TOO_SMALL)
-        throw new ReactorError("Native", `native event take failed with status ${status}`);
+        throw new ReactorError({
+          code: "Native",
+          message: `native event take failed with status ${status}`,
+        });
       if (length <= this.event.byteLength || length > MAX_EVENT_BYTES)
         throw overSized("event", length);
       this.event = new Uint8Array(length);
@@ -613,13 +677,19 @@ export class NativeBridge {
         };
       }
       if (status !== STATUS_BUFFER_TOO_SMALL)
-        throw new ReactorError("Native", `native video take failed with status ${status}`);
+        throw new ReactorError({
+          code: "Native",
+          message: `native video take failed with status ${status}`,
+        });
       if (dataLength + metadataLength > MAX_VIDEO_BYTES)
         throw overSized("video frame", dataLength + metadataLength);
       const growData = dataLength > this.nextVideo.byteLength,
         growMetadata = metadataLength > this.metadata.byteLength;
       if (!growData && !growMetadata)
-        throw new ReactorError("Protocol", "native video take refused a fitting frame");
+        throw new ReactorError({
+          code: "Protocol",
+          message: "native video take refused a fitting frame",
+        });
       if (growData) this.nextVideo = new Uint8Array(dataLength);
       if (growMetadata) this.metadata = new Uint8Array(metadataLength);
     }
@@ -651,10 +721,16 @@ export class NativeBridge {
         };
       }
       if (status !== STATUS_BUFFER_TOO_SMALL)
-        throw new ReactorError("Native", `native audio take failed with status ${status}`);
+        throw new ReactorError({
+          code: "Native",
+          message: `native audio take failed with status ${status}`,
+        });
       if (samples > MAX_AUDIO_SAMPLES) throw overSized("audio block", samples);
       if (samples <= this.nextAudio.length)
-        throw new ReactorError("Protocol", "native audio take refused a fitting block");
+        throw new ReactorError({
+          code: "Protocol",
+          message: "native audio take refused a fitting block",
+        });
       this.nextAudio = new Int16Array(samples);
     }
   }
@@ -687,15 +763,15 @@ export class NativeBridge {
       // blocked until this thread runs its readiness callback.
       status = await asyncStatus(this.api.shutdown, [handle, failure]);
     } catch (cause) {
-      throw new ReactorError(
-        "Shutdown",
-        "native WebRTC owner join could not execute; handle retained",
-        { detail: cause },
-      );
+      throw new ReactorError({
+        code: "Shutdown",
+        message: "native WebRTC owner join could not execute; handle retained",
+        context: { detail: cause },
+      });
     }
     if (status !== STATUS_OK) {
       const error = failureOf(status, failure, "shutdown");
-      throw new ReactorError("Shutdown", error.message, error.context);
+      throw new ReactorError({ code: "Shutdown", message: error.message, context: error.context });
     }
     this.api.destroy(handle);
     this.handle = undefined;

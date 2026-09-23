@@ -45,7 +45,10 @@ const fixture = (options: { readonly refuseTermination?: boolean } = {}) => {
       check: Effect.void,
       make: () => {
         peers++;
-        throw new ReactorError("InvalidState", "unexpected connection in allocation test");
+        throw new ReactorError({
+          code: "InvalidState",
+          message: "unexpected connection in allocation test",
+        });
       },
     }),
   );
@@ -89,16 +92,14 @@ test("a shared Client allocates independent sessions without opening peers", asy
 
 test("owned allocation is cleaned up when the caller fails before connect", async () => {
   const fake = fixture();
-  const result = await Effect.runPromise(
-    Effect.exit(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const client = yield* Client.make();
-          yield* client.create({ model: "selected/model", jwt: Redacted.make("fixture-token") });
-          return yield* Effect.fail("supervisor registration failed");
-        }),
-      ).pipe(Effect.provide(fake.dependencies)),
-    ),
+  const result = await Effect.runPromiseExit(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* Client.make();
+        yield* client.create({ model: "selected/model", jwt: Redacted.make("fixture-token") });
+        return yield* Effect.fail("supervisor registration failed");
+      }),
+    ).pipe(Effect.provide(fake.dependencies)),
   );
   expect(Exit.isFailure(result)).toBe(true);
   expect(fake.open.size).toBe(0);
@@ -140,7 +141,11 @@ test("preflight refuses an unsupported peer before remote allocation", async () 
       ).pipe(
         Effect.provideService(PeerFactory, {
           check: Effect.fail(
-            new ReactorError("UnsupportedHost", "fixture platform", { outcome: "not-submitted" }),
+            new ReactorError({
+              code: "UnsupportedHost",
+              message: "fixture platform",
+              context: { outcome: "not-submitted" },
+            }),
           ),
           make: () => {
             throw new Error("must not allocate");

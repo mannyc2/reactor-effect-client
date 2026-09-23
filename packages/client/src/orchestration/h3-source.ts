@@ -64,7 +64,7 @@ const record = (clip: ProviderClip, annotations: ReadonlyMap<string, Annotation>
     clipId: clip.clip_id as ClipId,
     durationSeconds: clip.seconds,
     provider: clip,
-    ...(annotation === undefined ? {} : annotation),
+    ...(annotation ?? {}),
   });
 };
 
@@ -151,9 +151,10 @@ export const fromH3 = (
 > =>
   Effect.gen(function* () {
     if (session.id !== provider.sessionId)
-      return yield* Effect.fail(
-        new ReactorError("InvalidInput", "H3 provider and session identities differ"),
-      );
+      return yield* new ReactorError({
+        code: "InvalidInput",
+        message: "H3 provider and session identities differ",
+      });
     const environment = yield* Effect.context<
       FileSystem.FileSystem | Path.Path | Http.HttpClient
     >();
@@ -163,7 +164,7 @@ export const fromH3 = (
     const observations = new Observations<EngineEvent>();
     const limit = options.maxAnnotations ?? 2048;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16384)
-      return yield* Effect.fail(new ReactorError("InvalidInput", "Invalid annotation bound"));
+      return yield* new ReactorError({ code: "InvalidInput", message: "Invalid annotation bound" });
     let reservations = 0;
     let sequence = 0;
     let closed = false;
@@ -196,7 +197,10 @@ export const fromH3 = (
           const previous = times.get(clipId) ?? {};
           if (!times.has(clipId) && times.size >= limit * 2) {
             observations.fail(
-              new ReactorError("Overflow", "Orchestration timing observation bound exceeded"),
+              new ReactorError({
+                code: "Overflow",
+                message: "Orchestration timing observation bound exceeded",
+              }),
             );
             return;
           }
@@ -238,6 +242,8 @@ export const fromH3 = (
             case "clip_failed":
               emit({ _tag: "Failed", clipId, reason: message.data.reason });
               break;
+            default:
+              break;
           }
         }
         if (
@@ -266,17 +272,17 @@ export const fromH3 = (
     const requireReady = (operation: string) =>
       Effect.gen(function* () {
         if (closed)
-          return yield* Effect.fail(
-            new PolicyFailure("session_closed", "Source is closed", operation),
-          );
+          return yield* PolicyFailure.refuse("session_closed", "Source is closed", operation);
         let snapshot = yield* provider.current;
         if (snapshot._tag === "Synchronizing") {
           yield* provider.refresh;
           snapshot = yield* provider.current;
         }
         if (snapshot._tag !== "Ready")
-          return yield* Effect.fail(
-            new PolicyFailure("session_recovering", "Provider state is unavailable", operation),
+          return yield* PolicyFailure.refuse(
+            "session_recovering",
+            "Provider state is unavailable",
+            operation,
           );
         return snapshot;
       });
@@ -314,18 +320,14 @@ export const fromH3 = (
             commit: (id) =>
               Effect.gen(function* () {
                 if (annotations.size + reservations >= limit)
-                  return yield* Effect.fail(
-                    new PolicyFailure(
-                      "annotation_capacity",
-                      "Local submission annotations are full",
-                    ),
+                  return yield* PolicyFailure.refuse(
+                    "annotation_capacity",
+                    "Local submission annotations are full",
                   );
                 if (sequence >= Number.MAX_SAFE_INTEGER)
-                  return yield* Effect.fail(
-                    new PolicyFailure(
-                      "identity_exhausted",
-                      "Local submission sequence is exhausted",
-                    ),
+                  return yield* PolicyFailure.refuse(
+                    "identity_exhausted",
+                    "Local submission sequence is exhausted",
                   );
                 reservations++;
                 yield* (hooks.commit?.(id) ?? Effect.void).pipe(
@@ -386,12 +388,10 @@ export const fromH3 = (
 
     if (options.canvas !== undefined) {
       if (!isIdle(yield* state))
-        return yield* Effect.fail(
-          new PolicyFailure(
-            "busy",
-            "Canvas can only change while the provider is idle",
-            "set_canvas",
-          ),
+        return yield* PolicyFailure.refuse(
+          "busy",
+          "Canvas can only change while the provider is idle",
+          "set_canvas",
         );
       yield* provider.setCanvas(options.canvas);
       yield* provider.refresh;
@@ -426,8 +426,10 @@ export const fromH3 = (
           const queued = snapshot.queue.generation.some((clip) => clip.clip_id === id);
           const ready = snapshot.queue.playout.some((clip) => clip.clip_id === id);
           if (!queued && !ready)
-            return yield* Effect.fail(
-              new PolicyFailure("not_found", "Clip is not present in a provider queue", "pop"),
+            return yield* PolicyFailure.refuse(
+              "not_found",
+              "Clip is not present in a provider queue",
+              "pop",
             );
           yield* provider.pop(id);
           return ready ? "ready" : "generation";
@@ -437,12 +439,10 @@ export const fromH3 = (
         Effect.gen(function* () {
           yield* requireReady("set_canvas");
           if (!isIdle(yield* state))
-            return yield* Effect.fail(
-              new PolicyFailure(
-                "busy",
-                "Canvas can only change while the provider is idle",
-                "set_canvas",
-              ),
+            return yield* PolicyFailure.refuse(
+              "busy",
+              "Canvas can only change while the provider is idle",
+              "set_canvas",
             );
           yield* provider.setCanvas(canvas);
         }),

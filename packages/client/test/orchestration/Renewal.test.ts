@@ -157,8 +157,8 @@ test("a sequence conflicting with a warm-source anchor or continuation sends not
 test("before position is revalidated after prework and a changed route never commits", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       const anchor = record("anchor"),
         preceding = record("inserted-later");
       const { handle, sources } = yield* renewalFixture(() => ({
@@ -194,8 +194,8 @@ test("before position is revalidated after prework and a changed route never com
 test("cancelling prework releases provisional resources and leaves no sequence or delayed dispatch", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       let releases = 0;
       const { handle, sources } = yield* renewalFixture(() => ({
         prework: () =>
@@ -228,8 +228,8 @@ test("cancelling prework releases provisional resources and leaves no sequence o
 test("caller cancellation after commit keeps one dispatch and records final acceptance before sealing", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       const { handle, sources } = yield* renewalFixture(() => ({
         execute: (_, accept) =>
           entered.release.pipe(Effect.andThen(held.wait), Effect.andThen(accept)),
@@ -257,8 +257,8 @@ test("caller cancellation after commit keeps one dispatch and records final acce
 test("concurrent sequence members share their owner and sealing waits for earlier pending work", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       const { handle, sources } = yield* renewalFixture(() => ({
         execute: (plan, accept) =>
           plan.request.sequence?.final === false
@@ -341,7 +341,7 @@ test("unknown commit outcome remains indeterminate through retirement, late even
 test("close joins pending commit accounting and preserves each canonical attached cleanup exactly once", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       const { handle, sources } = yield* renewalFixture(() => ({
         execute: () => entered.release.pipe(Effect.andThen(Effect.never)),
       }));
@@ -438,10 +438,12 @@ test("foreign startup playback and incomplete snapshots prohibit canvas mutation
 test("frame failure exposes recovery without an application control reader and reconnect preserves queued work", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
       const accepted = yield* handle.engine.enqueue(member("retained", false));
-      yield* sources[0]!.failVideo(new ReactorError("Disconnected", "frame receiver ended"));
+      yield* sources[0]!.failVideo(
+        new ReactorError({ code: "Disconnected", message: "frame receiver ended" }),
+      );
       yield* untilEffect(
         handle.mediaState.pipe(Effect.map((state) => state._tag === "Recovering")),
       );
@@ -463,8 +465,8 @@ test("frame failure exposes recovery without an application control reader and r
 test("queued removal and committed work cannot deadlock recovery", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate(),
-        entered = yield* gate();
+      const held = yield* gate,
+        entered = yield* gate;
       const { handle, sources, renewals } = yield* renewalFixture(() => ({
         execute: (plan, accept) =>
           plan.request.metadata.held === true
@@ -478,7 +480,10 @@ test("queued removal and committed work cannot deadlock recovery", () =>
       yield* entered.wait;
       const removal = yield* handle.engine.remove(first).pipe(Effect.result, Effect.forkScoped);
       yield* sources[0]!.failVideo(
-        new ReactorError("Disconnected", "reconnect during an outstanding mutation"),
+        new ReactorError({
+          code: "Disconnected",
+          message: "reconnect during an outstanding mutation",
+        }),
       );
       yield* held.release;
       yield* Fiber.join(pending).pipe(Effect.timeout(1000));

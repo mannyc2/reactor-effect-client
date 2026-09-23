@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -16,6 +17,81 @@
     "declarationMap": true,
     "sourceMap": true,
     "noEmitOnError": true,
-    "types": []
+    "types": [],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "includeSuggestionsInTsc": false,
+        "diagnosticSeverity": {
+          "abortControllerInEffect": "warning",
+          "acquireReleaseDisposable": "warning",
+          "allOfMapToForEach": "warning",
+          "catchAllTagDispatchToCatchTag": "warning",
+          "catchAllToMapError": "warning",
+          "catchChainToFirstSuccessOf": "warning",
+          "catchConditionalRefailToCatchIf": "warning",
+          "catchDieToOrDie": "warning",
+          "catchTagToCatchReason": "warning",
+          "catchToIgnore": "warning",
+          "catchToOrElseSucceed": "warning",
+          "catchUnfailableEffect": "warning",
+          "cryptoRandomUUIDInEffect": "warning",
+          "effectFnOpportunity": "warning",
+          "effectMapFlatten": "warning",
+          "effectMapVoid": "warning",
+          "effectSucceedWithVoid": "warning",
+          "extendsNativeError": "warning",
+          "flatMapConditionalToFilterOrFail": "warning",
+          "flatMapToMap": "warning",
+          "globalConsoleInEffect": "warning",
+          "globalDateInEffect": "warning",
+          "globalFetchInEffect": "warning",
+          "globalRandomInEffect": "warning",
+          "globalTimersInEffect": "warning",
+          "lazyEffect": "warning",
+          "leakingRequirements": "warning",
+          "mapSomeToAsSome": "warning",
+          "matchEffectToMapBoth": "warning",
+          "matchEffectToMatch": "warning",
+          "missingEffectServiceDependency": "warning",
+          "multipleCatchTag": "warning",
+          "optionMatchToFromOption": "warning",
+          "preferSucceedSomeOrNone": "warning",
+          "preferTypedSchemaDecoder": "warning",
+          "preferUnsafeConstructor": "warning",
+          "processEnvInEffect": "warning",
+          "provideLayerSucceedToProvideService": "warning",
+          "raceFirstWithSleepToTimeout": "warning",
+          "redundantMapError": "warning",
+          "redundantOrDie": "warning",
+          "redundantSchemaTagIdentifier": "warning",
+          "returnEffectInGen": "warning",
+          "runEffectInsideEffect": "warning",
+          "runOfExitToRunExit": "warning",
+          "schemaNumber": "warning",
+          "schemaStructWithTag": "warning",
+          "schemaSyncInEffect": "warning",
+          "syncToSucceed": "warning",
+          "timeoutCatchTagToTimeoutOrElse": "warning",
+          "tryCatchInEffectGen": "warning",
+          "unnecessaryEffectGen": "warning",
+          "unnecessaryFailYieldableError": "warning",
+          "unnecessaryPipe": "warning",
+          "unnecessaryPipeChain": "warning",
+          "unnecessaryTypeofType": "warning",
+          "unsafeEffectTypeAssertion": "warning"
+        },
+        "overrides": [
+          {
+            "include": ["**/src/**/*.ts"],
+            "options": {
+              "diagnosticSeverity": {
+                "anyUnknownInErrorContext": "warning"
+              }
+            }
+          }
+        ]
+      }
+    ]
   }
 }

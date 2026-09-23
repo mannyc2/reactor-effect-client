@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import type { CoordinatorClient, Termination } from "../../coordinator/_internal/client.js";
 import { errorOf, ReactorError } from "../../errors.js";
@@ -34,7 +35,10 @@ const releasePublications = (
           ).pipe(
             Effect.timeoutOrElse({
               duration: Math.min(1000, commandTimeout),
-              orElse: () => Effect.fail(new ReactorError("Timeout", "close unpublish: deadline")),
+              orElse: () =>
+                Effect.fail(
+                  new ReactorError({ code: "Timeout", message: "close unpublish: deadline" }),
+                ),
             }),
           ),
         );
@@ -44,8 +48,10 @@ const releasePublications = (
           errors.push(
             failure._tag === "Success" && failure.success instanceof ReactorError
               ? failure.success
-              : new ReactorError("Shutdown", "publication cleanup failed", {
-                  detail: result.cause,
+              : new ReactorError({
+                  code: "Shutdown",
+                  message: "publication cleanup failed",
+                  context: { detail: result.cause },
                 }),
           );
         }
@@ -77,10 +83,10 @@ const terminateOwnedRemote = (
           evidence: null,
           deleteStatus: null,
           state: null,
-          error: new ReactorError("Shutdown", "remote cleanup did not complete", {
-            detail: result.cause,
-            sessionId: remote.id,
-            outcome: "unknown",
+          error: new ReactorError({
+            code: "Shutdown",
+            message: "remote cleanup did not complete",
+            context: { detail: result.cause, sessionId: remote.id, outcome: "unknown" },
           }),
         };
   });
@@ -99,17 +105,25 @@ export const cleanupSession = (options: {
     const { connection } = options;
     const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
     if (connection !== undefined) {
-      try {
-        options.retire(connection, new ReactorError("Aborted", "session closed"));
-      } catch (error) {
-        errors.push(errorOf(error));
-      }
+      const retired = yield* Effect.result(
+        Effect.try({
+          try: () =>
+            options.retire(
+              connection,
+              new ReactorError({ code: "Aborted", message: "session closed" }),
+            ),
+          catch: errorOf,
+        }),
+      );
+      if (Result.isFailure(retired)) errors.push(retired.failure);
     }
     const shutdown = yield* Effect.exit(Scope.close(options.scope, Exit.void));
     if (Exit.isFailure(shutdown))
       errors.push(
-        new ReactorError("Shutdown", "local cleanup did not complete cleanly", {
-          detail: shutdown.cause,
+        new ReactorError({
+          code: "Shutdown",
+          message: "local cleanup did not complete cleanly",
+          context: { detail: shutdown.cause },
         }),
       );
     // Inspect ownership after joining local work: interrupted allocation may

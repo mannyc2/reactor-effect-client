@@ -38,7 +38,7 @@ export const mediaFacilities = (): Readonly<Record<string, boolean>> =>
   Object.freeze({
     peer: typeof RTCPeerConnection === "function",
     videoFrame: typeof VideoFrame === "function",
-    trackProcessor: typeof record(globalThis)["MediaStreamTrackProcessor"] === "function",
+    trackProcessor: typeof record(globalThis).MediaStreamTrackProcessor === "function",
     audioData: "AudioData" in globalThis && typeof globalThis.AudioData === "function",
     playback: typeof HTMLMediaElement === "function",
     audioContext: typeof AudioContext === "function",
@@ -46,15 +46,15 @@ export const mediaFacilities = (): Readonly<Record<string, boolean>> =>
   });
 
 const unsupported = (message: string): never => {
-  throw new ReactorError("UnsupportedCapability", message);
+  throw new ReactorError({ code: "UnsupportedCapability", message });
 };
 const timestamp = (input: unknown): number => {
   const value = finite(input, "media timestamp");
   if (!Number.isSafeInteger(value))
-    throw new ReactorError(
-      "Protocol",
-      "media timestamp cannot be represented exactly in this host",
-    );
+    throw new ReactorError({
+      code: "Protocol",
+      message: "media timestamp cannot be represented exactly in this host",
+    });
   return value;
 };
 
@@ -66,10 +66,12 @@ const deadline = async <A>(promise: Promise<A>, ms: number, signal?: AbortSignal
       promise,
       new Promise<never>((_, reject) => {
         handle = setTimeout(
-          () => reject(new ReactorError("Timeout", "media read/copy/play deadline")),
+          () =>
+            reject(new ReactorError({ code: "Timeout", message: "media read/copy/play deadline" })),
           ms,
         );
-        aborted = () => reject(new ReactorError("Aborted", "media operation cancelled"));
+        aborted = () =>
+          reject(new ReactorError({ code: "Aborted", message: "media operation cancelled" }));
         if (signal?.aborted) aborted();
         else signal?.addEventListener("abort", aborted, { once: true });
       }),
@@ -85,7 +87,7 @@ interface Block {
 }
 
 const processor = (track: MediaStreamTrack): unknown => {
-  const constructor = record(globalThis)["MediaStreamTrackProcessor"];
+  const constructor = record(globalThis).MediaStreamTrackProcessor;
   if (typeof constructor !== "function")
     return unsupported("MediaStreamTrackProcessor is unavailable in this realm");
   return Reflect.construct(constructor, [{ track, maxBufferSize: 1 }]);
@@ -175,7 +177,7 @@ function copiedSamples<A>(
   );
   const timeoutMs = positiveLimit(options.readTimeoutMs ?? 10_000, "media read timeout", 600_000);
   if (source.kind !== kind || source.readyState !== "live")
-    throw new ReactorError("InvalidState", `expected a live ${kind} track`);
+    throw new ReactorError({ code: "InvalidState", message: `expected a live ${kind} track` });
   const operation = kind === "audio" ? "audioSamples" : "videoFrames";
   const track = source.clone();
   let constructed = false,
@@ -212,10 +214,10 @@ function copiedSamples<A>(
       ...(name === undefined ? {} : { nativeErrorName: name }),
       cleanupFailures,
     };
-    return new ReactorError(error.code, error.message, {
-      ...error.context,
-      operation: `${operation}.${phase}`,
-      detail,
+    return new ReactorError({
+      code: error.code,
+      message: error.message,
+      context: { ...error.context, operation: `${operation}.${phase}`, detail },
     });
   };
   const noteCleanup = (phase: string, cause: unknown): void => {
@@ -233,7 +235,10 @@ function copiedSamples<A>(
       kind === "audio" &&
       (!("AudioData" in globalThis) || typeof globalThis.AudioData !== "function")
     ) {
-      throw new ReactorError("UnsupportedCapability", "AudioData is not exposed in this realm");
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "AudioData is not exposed in this realm",
+      });
     }
     acquisitionPhase = "processor";
     const native = processor(track);
@@ -241,10 +246,10 @@ function copiedSamples<A>(
     acquisitionPhase = "readable";
     const readable: unknown = record(native, "track processor").readable;
     if (!(readable instanceof ReadableStream))
-      throw new ReactorError(
-        "UnsupportedCapability",
-        "track processor did not supply a ReadableStream",
-      );
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "track processor did not supply a ReadableStream",
+      });
     acquisitionPhase = "reader";
     reader = readable.getReader();
     acquired = true;
@@ -303,7 +308,10 @@ function copiedSamples<A>(
   const ended = (): void =>
     fail(
       annotate(
-        new ReactorError("Disconnected", "media source lease ended; reacquire after reconnect"),
+        new ReactorError({
+          code: "Disconnected",
+          message: "media source lease ended; reacquire after reconnect",
+        }),
         "track",
       ),
     );
@@ -433,7 +441,10 @@ export const videoFrames = (
     }
     const size = raw.allocationSize({ format: "RGBA" });
     if (!Number.isSafeInteger(size) || size !== width * height * 4 || size > maxBytes)
-      throw new ReactorError("Overflow", "RGBA sample byte bound/layout mismatch");
+      throw new ReactorError({
+        code: "Overflow",
+        message: "RGBA sample byte bound/layout mismatch",
+      });
     const data = new Uint8Array(size);
     await raw.copyTo(data, { format: "RGBA" });
     return Object.freeze({
@@ -451,10 +462,13 @@ export const audioSamples = (
   track: MediaStreamTrack,
   options: MediaOptions = {},
 ): Stream.Stream<AudioSample, ReactorError> =>
+  // The copy contract returns a promise. Audio copies synchronously, and async
+  // turns its throws into that promise's rejection.
+  // oxlint-disable-next-line typescript/require-await
   nativeSamples(track, "audio", options, async (raw, maxBytes) => {
     const audio = nativeAudio(raw);
     if (audio.frames * audio.channels * 4 > maxBytes)
-      throw new ReactorError("Overflow", "PCM sample byte bound");
+      throw new ReactorError({ code: "Overflow", message: "PCM sample byte bound" });
     const planes: Float32Array<ArrayBuffer>[] = [];
     for (let channel = 0; channel < audio.channels; channel++) {
       const plane = new Float32Array(audio.frames);
@@ -486,9 +500,15 @@ export const play = (
       Effect.try({
         try: () => {
           if (track.readyState !== "live")
-            throw new ReactorError("InvalidState", "playback requires a live track");
+            throw new ReactorError({
+              code: "InvalidState",
+              message: "playback requires a live track",
+            });
           if (element.srcObject !== null || element.getAttribute("src"))
-            throw new ReactorError("InvalidState", "playback element already has a source");
+            throw new ReactorError({
+              code: "InvalidState",
+              message: "playback element already has a source",
+            });
           const clone = track.clone();
           try {
             const stream = new MediaStream([clone]);
@@ -515,9 +535,10 @@ export const play = (
       catch: (e) => errorOf(e, "UnsupportedCapability", "HTMLMediaElement.play"),
     });
     if (owned.clone.readyState !== "live")
-      return yield* Effect.fail(
-        new ReactorError("Disconnected", "playback track ended during start"),
-      );
+      return yield* new ReactorError({
+        code: "Disconnected",
+        message: "playback track ended during start",
+      });
   });
 
 export interface Presentation {
@@ -542,7 +563,10 @@ export const nextPresentation = (
         if (typeof element.requestVideoFrameCallback !== "function") {
           resume(
             Effect.fail(
-              new ReactorError("UnsupportedCapability", "requestVideoFrameCallback unavailable"),
+              new ReactorError({
+                code: "UnsupportedCapability",
+                message: "requestVideoFrameCallback unavailable",
+              }),
             ),
           );
           return;
@@ -563,7 +587,12 @@ export const nextPresentation = (
         Effect.timeoutOrElse({
           duration: timeout,
           orElse: () =>
-            Effect.fail(new ReactorError("Timeout", "no local video presentation callback")),
+            Effect.fail(
+              new ReactorError({
+                code: "Timeout",
+                message: "no local video presentation callback",
+              }),
+            ),
         }),
       );
     }),

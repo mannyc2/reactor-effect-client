@@ -28,7 +28,7 @@ export const parsePlaylist = (
 ): readonly Segment[] => {
   positiveLimit(maxSegments, "clip segments", 16_384);
   if (text.trimStart().split(/\r?\n/, 1)[0]?.trim() !== "#EXTM3U")
-    throw new ReactorError("Protocol", "not an HLS playlist");
+    throw new ReactorError({ code: "Protocol", message: "not an HLS playlist" });
   let init: string | undefined;
   const media: string[] = [];
   for (const line of text
@@ -40,41 +40,52 @@ export const parsePlaylist = (
         line,
       )
     )
-      throw new ReactorError(
-        "UnsupportedCapability",
-        "master, byte-range, discontinuous, encrypted, gap, variable, or low-latency playlists require an HLS player, not byte concatenation",
-      );
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message:
+          "master, byte-range, discontinuous, encrypted, gap, variable, or low-latency playlists require an HLS player, not byte concatenation",
+      });
     if (line.startsWith("#EXT-X-KEY:") && !/(?:^|,)METHOD=NONE(?:,|$)/.test(line.slice(11)))
-      throw new ReactorError(
-        "UnsupportedCapability",
-        "encrypted clips are not assembled by this client",
-      );
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "encrypted clips are not assembled by this client",
+      });
     if (line.startsWith("#EXT-X-MAP:")) {
       if (line.includes("BYTERANGE="))
-        throw new ReactorError("UnsupportedCapability", "byte-range init segments unsupported");
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "byte-range init segments unsupported",
+        });
       const match = /(?:^|,)URI="([^"]+)"/.exec(line.slice(11)),
         uri = match?.[1];
       if (uri === undefined || (init !== undefined && init !== uri))
-        throw new ReactorError("Protocol", "missing or changing HLS init URI");
+        throw new ReactorError({ code: "Protocol", message: "missing or changing HLS init URI" });
       init = uri;
     } else if (!line.startsWith("#")) {
       if (media.length >= maxSegments)
-        throw new ReactorError("Overflow", "clip segment count bound exceeded");
+        throw new ReactorError({ code: "Overflow", message: "clip segment count bound exceeded" });
       media.push(line);
     }
   }
-  if (media.length === 0) throw new ReactorError("Protocol", "empty clip playlist");
+  if (media.length === 0)
+    throw new ReactorError({ code: "Protocol", message: "empty clip playlist" });
   const resolve = (uri: string): string => {
     const url = new URL(uri, baseUrl);
     if (!(url.protocol === "http:" || url.protocol === "https:") || url.username || url.password)
-      throw new ReactorError("Protocol", "clip URL must use http(s) with no embedded credentials");
+      throw new ReactorError({
+        code: "Protocol",
+        message: "clip URL must use http(s) with no embedded credentials",
+      });
     return url.href;
   };
   if (
     init === undefined &&
     media.some((uri) => /\.(?:m4s|mp4|m4a|m4v)$/i.test(new URL(uri, baseUrl).pathname))
   )
-    throw new ReactorError("Protocol", "fragmented MP4 playlist lacks EXT-X-MAP init segment");
+    throw new ReactorError({
+      code: "Protocol",
+      message: "fragmented MP4 playlist lacks EXT-X-MAP init segment",
+    });
   const segments: Segment[] = init === undefined ? [] : [{ kind: "init", url: resolve(init) }];
   for (const uri of media) segments.push({ kind: "media", url: resolve(uri) });
   return Object.freeze(segments.map((s) => Object.freeze(s)));
@@ -131,12 +142,10 @@ export const downloadClip = (
           // A local peer disconnection does not prove stopped inference. Query the remote descriptor.
           const descriptor = yield* http.read(clip.session_id);
           if (terminal(descriptor.state))
-            return yield* Effect.fail(
-              new ReactorError(
-                "TerminalSession",
-                "session terminated before playlist became available",
-              ),
-            );
+            return yield* new ReactorError({
+              code: "TerminalSession",
+              message: "session terminated before playlist became available",
+            });
           yield* Effect.sleep(
             Math.max(200, Math.min(retryAfterMs(response.headers) ?? 2000, 2000)),
           );
@@ -151,14 +160,16 @@ export const downloadClip = (
             maxBytes: Math.min(bounds.segment, bounds.total - size || 1),
           });
           if (response.status === 202)
-            return yield* Effect.fail(
-              new ReactorError("Protocol", "playlist referenced a segment that is not ready"),
-            );
+            return yield* new ReactorError({
+              code: "Protocol",
+              message: "playlist referenced a segment that is not ready",
+            });
           size += response.bytes.length;
           if (size > bounds.total)
-            return yield* Effect.fail(
-              new ReactorError("Overflow", "assembled clip byte bound exceeded"),
-            );
+            return yield* new ReactorError({
+              code: "Overflow",
+              message: "assembled clip byte bound exceeded",
+            });
           chunks.push(response.bytes);
         }
         const bytes = new Uint8Array(size);
@@ -174,10 +185,10 @@ export const downloadClip = (
           duration: bounds.timeout,
           orElse: () =>
             Effect.fail(
-              new ReactorError(
-                "Timeout",
-                "clip download deadline; remote generation outcome unchanged",
-              ),
+              new ReactorError({
+                code: "Timeout",
+                message: "clip download deadline; remote generation outcome unchanged",
+              }),
             ),
         }),
       );

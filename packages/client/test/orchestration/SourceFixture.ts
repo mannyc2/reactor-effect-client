@@ -96,14 +96,13 @@ export const audioFrame = (length = 480, value = 1): AudioFrame => ({
   channels: 1,
   samples: new Int16Array(length).fill(value),
 });
-export const gate = () =>
-  Effect.gen(function* () {
-    const signal = yield* Deferred.make<void>();
-    return {
-      wait: Deferred.await(signal),
-      release: Deferred.succeed(signal, undefined).pipe(Effect.asVoid),
-    };
-  });
+export const gate = Effect.gen(function* () {
+  const signal = yield* Deferred.make<void>();
+  return {
+    wait: Deferred.await(signal),
+    release: Deferred.succeed(signal, undefined).pipe(Effect.asVoid),
+  };
+});
 
 /** Bounded real scheduler turns also work while TestClock is deliberately stationary. */
 export const until = (
@@ -133,8 +132,8 @@ export const failure = (
   message = "fixture outcome",
   operation = "enqueue",
 ) =>
-  new CommandFailure(
-    new ReactorError("Remote", message),
+  CommandFailure.from(
+    new ReactorError({ code: "Remote", message }),
     outcome === "not-submitted"
       ? { operation, outcome }
       : { operation, outcome, requestId: "fixture-dispatch", generation: 1n },

@@ -220,7 +220,7 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
   try {
     await run(
       Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => peer.shutdown().pipe(Effect.orDie));
+        yield* Effect.addFinalizer(() => peer.shutdown.pipe(Effect.orDie));
         const prepared = yield* peer.prepare([], tracks, (event) => {
           if (event.type === "ice" && event.candidate !== undefined)
             far.candidate(id, event.candidate);
@@ -354,7 +354,7 @@ const report = async (
     receivers.map(async (receiver) => {
       const frames = receiver.frames.filter((frame) => frame.at >= window.at);
       const latencies = frames.map((frame) => frame.latencyMs);
-      const native = (await run(receiver.peer.stats())).map(record);
+      const native = (await run(receiver.peer.stats)).map(record);
       const media = await pressure(receiver);
       const inbound = native.find(
         (entry) => entry.type === "inbound-rtp" && entry.kind === "video",

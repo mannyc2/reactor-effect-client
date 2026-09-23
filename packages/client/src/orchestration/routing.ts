@@ -54,18 +54,18 @@ export const resolve = <Owner>(
     try: () => {
       if (sequence !== undefined && (sequence.status !== "open" || sequence.sealRequested)) {
         const reason = sequence.status === "open" ? "sealing" : sequence.status;
-        throw new PolicyFailure(`sequence_${reason}`, `Sequence ${sequence.id} is ${reason}`);
+        throw PolicyFailure.refuse(`sequence_${reason}`, `Sequence ${sequence.id} is ${reason}`);
       }
       const constraints: Owner[] = sequence === undefined ? [] : [sequence.owner];
       const ownerFor = (id: ClipId, purpose: string): Candidate<Owner> => {
         const matches = candidates.filter((candidate) => owns(candidate, id));
         if (matches.length === 0)
-          throw new PolicyFailure(
+          throw PolicyFailure.refuse(
             `${purpose}_missing`,
             `The ${purpose} clip has no known owning session`,
           );
         if (matches.length !== 1)
-          throw new PolicyFailure(
+          throw PolicyFailure.refuse(
             "owner_conflict",
             "A clip identity was observed in multiple sessions",
           );
@@ -85,25 +85,28 @@ export const resolve = <Owner>(
       if (continuation !== undefined) constraints.push(continuation.owner);
       const owner = constraints[0] ?? defaultOwner;
       if (constraints.some((value) => value !== owner)) {
-        throw new PolicyFailure(
+        throw PolicyFailure.refuse(
           "owner_conflict",
           "Sequence, source affinity, insertion anchor and continuation require different sessions",
         );
       }
       const candidate = candidates.find((value) => value.owner === owner);
       if (candidate === undefined || candidate.closed)
-        throw new PolicyFailure("session_retired", "The request's owning session has retired");
+        throw PolicyFailure.refuse("session_retired", "The request's owning session has retired");
       if (candidate.recovering || candidate.state.availability !== "Ready") {
-        throw new PolicyFailure("session_recovering", "Waiting for a coherent provider snapshot");
+        throw PolicyFailure.refuse(
+          "session_recovering",
+          "Waiting for a coherent provider snapshot",
+        );
       }
       const queue = generation(candidate.state);
       if (queue.length >= candidate.state.capacities.generation)
-        throw new PolicyFailure("queue_full", "The generation queue is full");
+        throw PolicyFailure.refuse("queue_full", "The generation queue is full");
       if (
         request.continueFrom !== undefined &&
         !candidate.state.continuable.includes(request.continueFrom)
       ) {
-        throw new PolicyFailure(
+        throw PolicyFailure.refuse(
           "continuation_unavailable",
           "Continuation ownership is known, but the retained provider view no longer offers that clip",
         );
@@ -112,12 +115,12 @@ export const resolve = <Owner>(
       if (request.before !== undefined) {
         const index = queue.findIndex((clip) => clip.clipId === request.before);
         if (index < 0)
-          throw new PolicyFailure(
+          throw PolicyFailure.refuse(
             "anchor_unavailable",
             "Insertion anchor is no longer in the generation queue",
           );
         if (position !== undefined && position !== index) {
-          throw new PolicyFailure(
+          throw PolicyFailure.refuse(
             "position_conflict",
             "Explicit position and insertion anchor disagree",
           );
@@ -131,7 +134,7 @@ export const resolve = <Owner>(
     catch: (cause) =>
       cause instanceof PolicyFailure
         ? cause
-        : new PolicyFailure(
+        : PolicyFailure.refuse(
             "invalid_request",
             "Could not resolve request ownership",
             "enqueue",

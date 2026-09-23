@@ -281,7 +281,9 @@ test("session policy: failure DURING setRemoteDescription preserves the actual p
     const { session: s } = makeSession(f, {}, (p) => {
       p.answerHook = () =>
         Effect.sync(() => p.emit({ type: "state", state: "failed" })).pipe(
-          Effect.andThen(Effect.fail(new ReactorError("InvalidState", "generic closed peer"))),
+          Effect.andThen(
+            Effect.fail(new ReactorError({ code: "InvalidState", message: "generic closed peer" })),
+          ),
         );
     });
     try {
@@ -651,7 +653,11 @@ test("session policy: pause tracks changes local direction before notification; 
       await run(s.start());
       const p = peerAt(peers);
       p.sendHook = () => {
-        throw new ReactorError("Overflow", "send buffer full", { outcome: "not-submitted" });
+        throw new ReactorError({
+          code: "Overflow",
+          message: "send buffer full",
+          context: { outcome: "not-submitted" },
+        });
       };
       equal((await failure(s.setTrackActive("main_video", false))).code, "Overflow");
       assert(s.snapshot.pausedLocally.includes("main_video"));
@@ -728,7 +734,9 @@ test("publication session: rejected native replacement disposes candidate, prese
       await run(s.publish("input_audio", first));
       const p = peerAt(peers);
       p.replaceHook = () =>
-        Effect.fail(new ReactorError("InvalidState", "modeled native rejection"));
+        Effect.fail(
+          new ReactorError({ code: "InvalidState", message: "modeled native rejection" }),
+        );
       equal((await failure(s.publish("input_audio", next))).code, "InvalidState");
       equal(next.clones[0]?.readyState, "ended");
       equal(first.clones[0]?.readyState, "live");
@@ -750,7 +758,9 @@ test("publication session: rejected unpublish detach retains sender and sends no
       await run(s.publish("input_audio", source));
       const p = peerAt(peers);
       p.replaceHook = () =>
-        Effect.fail(new ReactorError("InvalidState", "modeled detach rejection"));
+        Effect.fail(
+          new ReactorError({ code: "InvalidState", message: "modeled detach rejection" }),
+        );
       equal((await failure(s.unpublish("input_audio"))).code, "InvalidState");
       equal(source.clones[0]?.readyState, "live");
       equal(s.snapshot.claimedTracks, ["input_audio"]);
@@ -773,8 +783,10 @@ test("publication session: notification failure follows local sender retirement 
           channel === "control" &&
           W.ControlClientMessage.decode(bytes).payload?.case === "unpublish_track"
         )
-          throw new ReactorError("Disconnected", "modeled submission failure", {
-            outcome: "unknown",
+          throw new ReactorError({
+            code: "Disconnected",
+            message: "modeled submission failure",
+            context: { outcome: "unknown" },
           });
       };
       const error = await failure(s.unpublish("input_audio"));
@@ -803,7 +815,7 @@ test("publication session: interrupted in-flight native replacement retires the 
             new Promise<void>((resolve) => {
               finish = resolve;
             }),
-          catch: () => new ReactorError("InvalidState", "modeled replace"),
+          catch: () => new ReactorError({ code: "InvalidState", message: "modeled replace" }),
         });
       const task = Effect.runFork(s.publish("input_audio", next));
       await eventually(() => finish !== undefined);
@@ -837,7 +849,10 @@ test("publication session: stalled native replacement has a deadline and cannot 
         s.publish("input_audio", source).pipe(
           Effect.timeoutOrElse({
             duration: 200,
-            orElse: () => Effect.fail(new ReactorError("Protocol", "missing sender deadline")),
+            orElse: () =>
+              Effect.fail(
+                new ReactorError({ code: "Protocol", message: "missing sender deadline" }),
+              ),
           }),
         ),
       );
@@ -916,7 +931,7 @@ test("publication session: interrupted native unpublish retires local generation
             new Promise<void>((resolve) => {
               finish = resolve;
             }),
-          catch: () => new ReactorError("InvalidState", "modeled detach"),
+          catch: () => new ReactorError({ code: "InvalidState", message: "modeled detach" }),
         });
       const task = Effect.runFork(s.unpublish("input_audio"));
       await eventually(() => finish !== undefined);

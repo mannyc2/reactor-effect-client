@@ -18,13 +18,14 @@ for (let index = 0; index < args.length; index++) {
 
 // CI/release and local callers share exactly these workspace commands. Runtime
 // test discovery lives in bunfig/Vitest projects, not in this orchestration.
-// `build` precedes `typecheck` because dependent packages and examples resolve
-// their workspace dependencies through the built declarations.
+// `build` precedes `lint` and `typecheck` because dependent packages and
+// examples resolve their workspace dependencies through the built declarations,
+// and type-aware lint rules need those types too.
 const portable = [
   "generate:check",
   "format:check",
-  "lint",
   "build",
+  "lint",
   "typecheck",
   "check:architecture",
   "check:examples",

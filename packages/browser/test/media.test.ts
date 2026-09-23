@@ -39,7 +39,10 @@ test("media policy: acquisition exceptions are typed failures, not stream defect
   const error = await failure(
     fromOwnedReadableStream({
       evaluate: () => {
-        throw new ReactorError("UnsupportedCapability", "not exposed in this realm");
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "not exposed in this realm",
+        });
       },
       onError: errorOf,
     }).pipe(Stream.runDrain),
@@ -89,9 +92,7 @@ test("media packet: render clock and skipped frames are retained, not relabelled
   equal(sample.clock, "audio-context-render");
   equal(sample.skippedFrames, 128);
   equal(sample.frames, 4);
-  assert(
-    sample.planes[0] !== undefined && sample.planes[0][1] !== undefined && sample.planes[0][1] < 0,
-  );
+  assert(sample.planes[0]?.[1] !== undefined && sample.planes[0][1] < 0);
   equal(sample.planes[0].byteLength, 16);
 });
 test("media packet: malformed, nonfinite, over-bound and invalid timebase values fail", () => {

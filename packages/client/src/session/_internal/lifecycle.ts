@@ -93,7 +93,10 @@ export class SessionLifecycle {
   transition(status: Status): void {
     if (this.phase === status) return;
     if (!transitions[this.phase].includes(status))
-      throw new ReactorError("InvalidState", `illegal transition ${this.phase} -> ${status}`);
+      throw new ReactorError({
+        code: "InvalidState",
+        message: `illegal transition ${this.phase} -> ${status}`,
+      });
     this.phase = status;
     this.onStatus(status);
   }
@@ -101,12 +104,15 @@ export class SessionLifecycle {
   /** Called synchronously with Session's sampling reset and connecting event. */
   begin(reconnect: boolean, hasKnownRemote: boolean, makePeer: () => Peer): Connection {
     if (reconnect ? this.phase !== "ready" && this.phase !== "disconnected" : this.phase !== "idle")
-      throw new ReactorError(
-        "InvalidState",
-        `${reconnect ? "reconnect" : "connect"} while ${this.phase}`,
-      );
+      throw new ReactorError({
+        code: "InvalidState",
+        message: `${reconnect ? "reconnect" : "connect"} while ${this.phase}`,
+      });
     if (reconnect && !hasKnownRemote)
-      throw new ReactorError("InvalidState", "cannot reconnect without a known session");
+      throw new ReactorError({
+        code: "InvalidState",
+        message: "cannot reconnect without a known session",
+      });
     const generation = ++this.revision,
       scope = Scope.forkUnsafe(this.scope),
       peer = makePeer();
@@ -124,18 +130,26 @@ export class SessionLifecycle {
     // Preserve the actual failure even when close or reconnect also retired it.
     if (connection.failure !== undefined) throw connection.failure;
     if (this.active !== connection || this.isClosing)
-      throw new ReactorError("Aborted", "retired connection generation", {
-        generation: connection.generation,
+      throw new ReactorError({
+        code: "Aborted",
+        message: "retired connection generation",
+        context: { generation: connection.generation },
       });
   }
 
   currentReady(): ReadyConnection {
     const connection = this.active;
     if (this.isClosing)
-      throw new ReactorError("Closed", "session is closed", { outcome: "not-submitted" });
+      throw new ReactorError({
+        code: "Closed",
+        message: "session is closed",
+        context: { outcome: "not-submitted" },
+      });
     if (this.phase !== "ready" || connection === undefined)
-      throw new ReactorError("InvalidState", `operation requires ready, not ${this.phase}`, {
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "InvalidState",
+        message: `operation requires ready, not ${this.phase}`,
+        context: { outcome: "not-submitted" },
       });
     this.assertCurrent(connection);
     if (!isNegotiated(connection)) throw new Error("ready connection has no negotiated descriptor");

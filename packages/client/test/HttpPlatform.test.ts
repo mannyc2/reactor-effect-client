@@ -39,7 +39,7 @@ test("empty session ids and model names are lazy typed failures, never defects",
   );
   const client = new Http.CoordinatorClient({ apiUrl: "https://injected.invalid" }, platform);
   for (const operation of [client.read(""), client.create({ name: "" })]) {
-    const exit = await Effect.runPromise(Effect.exit(operation));
+    const exit = await Effect.runPromiseExit(operation);
     expect(Exit.isFailure(exit)).toBe(true);
     if (Exit.isFailure(exit)) {
       const expected = Cause.findErrorOption(exit.cause);
@@ -194,7 +194,7 @@ const matrixOperations: readonly MatrixOperation[] = [
     url: `${matrixUrl}/pricing`,
     valid: { published: true },
     nullIsValid: true,
-    run: (_, coordinator) => coordinator.pricing(),
+    run: (_, coordinator) => coordinator.pricing,
   },
   {
     name: "coordinator token",
@@ -422,7 +422,7 @@ test("cross-origin uploads and public coordinator endpoints never receive the se
   );
   await Effect.runPromise(
     Effect.gen(function* () {
-      yield* client.pricing();
+      yield* client.pricing;
       yield* client.mintToken(matrixOptions);
       yield* client.putUpload(
         {

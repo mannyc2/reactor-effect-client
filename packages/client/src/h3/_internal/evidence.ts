@@ -18,11 +18,11 @@ export interface AcceptanceIdentity {
 export const encodeMetadata = (namespace: string, submission: string, caller = ""): string => {
   const value = JSON.stringify({ reactor_effect_h3: 1, namespace, submission, caller });
   if (Array.from(value).length > metadataMaxChars)
-    throw new ReactorError(
-      "InvalidInput",
-      `Metadata including acceptance identity exceeds ${metadataMaxChars} characters`,
-      { operation: "enqueue", outcome: "not-submitted" },
-    );
+    throw new ReactorError({
+      code: "InvalidInput",
+      message: `Metadata including acceptance identity exceeds ${metadataMaxChars} characters`,
+      context: { operation: "enqueue", outcome: "not-submitted" },
+    });
   return value;
 };
 

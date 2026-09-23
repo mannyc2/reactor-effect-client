@@ -8,7 +8,7 @@ import { cleanPressure, gate, member, readyState, record, run, runClock } from "
 test("expiry closes the remote lease while allowing bounded local accounting of an already known acceptance", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       let accounted = false;
       const { handle, sources } = yield* renewalFixture(
         (index) =>
@@ -53,7 +53,9 @@ test("a stalled reconnect is bounded by the source lifetime rather than the long
           reconnectTimeoutMs: 5_000,
         },
       );
-      yield* sources[0]!.failVideo(new ReactorError("Disconnected", "stalled reconnect"));
+      yield* sources[0]!.failVideo(
+        new ReactorError({ code: "Disconnected", message: "stalled reconnect" }),
+      );
       yield* sources[0]!.lifecycle.wait((event) => event._tag === "Reconnecting");
       yield* TestClock.adjust(1_100);
       yield* awaitRenewal((event) => event._tag === "Replaced");
@@ -66,7 +68,7 @@ test("a stalled reconnect is bounded by the source lifetime rather than the long
 test("recovery waiting on a committed command closes its source at expiry and retains the unknown outcome", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       const { handle, sources, awaitRenewal } = yield* renewalFixture(
         (index) =>
           index === 0
@@ -80,7 +82,7 @@ test("recovery waiting on a committed command closes its source at expiry and re
       const pending = yield* prepared.submit.pipe(Effect.result, Effect.forkScoped);
       yield* entered.wait;
       yield* sources[0]!.failVideo(
-        new ReactorError("Disconnected", "recovering with committed work"),
+        new ReactorError({ code: "Disconnected", message: "recovering with committed work" }),
       );
       yield* awaitRenewal((event) => event._tag === "Recovering");
       yield* TestClock.adjust(1_100);
@@ -112,7 +114,7 @@ test("repeated pressure reads and reconnects count each retired generation's dro
       ] as const) {
         if (generation !== 1) {
           yield* sources[0]!.failVideo(
-            new ReactorError("Disconnected", "retire one receiver generation"),
+            new ReactorError({ code: "Disconnected", message: "retire one receiver generation" }),
           );
           yield* awaitRenewal(
             (event) => event._tag === "Reconnected" && event.generation === BigInt(generation),
@@ -132,13 +134,16 @@ test("repeated pressure reads and reconnects count each retired generation's dro
 test("an unreadable retired generation prevents a later zero-drop sample from establishing complete pressure", () =>
   run(
     Effect.gen(function* () {
-      const unavailable = new ReactorError("Disconnected", "old generation pressure unavailable");
+      const unavailable = new ReactorError({
+        code: "Disconnected",
+        message: "old generation pressure unavailable",
+      });
       const { handle, sources, awaitRenewal } = yield* renewalFixture(() => ({
         pressure: (generation) =>
           generation === 1n ? Effect.fail(unavailable) : Effect.succeed(cleanPressure),
       }));
       yield* sources[0]!.failVideo(
-        new ReactorError("Disconnected", "retire unobserved generation"),
+        new ReactorError({ code: "Disconnected", message: "retire unobserved generation" }),
       );
       yield* awaitRenewal((event) => event._tag === "Reconnected");
       const pressure = yield* Effect.result(handle.media.pressure);
@@ -150,9 +155,11 @@ test("an unreadable retired generation prevents a later zero-drop sample from es
 test("a reconnect returning after explicit close cannot publish a ready handle or reopen readers", () =>
   runClock(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
-      yield* sources[0]!.failVideo(new ReactorError("Disconnected", "controlled reconnect"));
+      yield* sources[0]!.failVideo(
+        new ReactorError({ code: "Disconnected", message: "controlled reconnect" }),
+      );
       yield* sources[0]!.lifecycle.wait((event) => event._tag === "Reconnecting");
       const report = yield* handle.close;
       yield* held.release;
@@ -169,8 +176,8 @@ for (const operation of ["switch", "replace"] as const)
   test(`a ${operation} completing autoplay after close cannot restore Ready`, () =>
     runClock(
       Effect.gen(function* () {
-        const entered = yield* gate();
-        const held = yield* gate();
+        const entered = yield* gate;
+        const held = yield* gate;
         const { handle, sources, warm } = yield* renewalFixture((index) =>
           index === 1
             ? {

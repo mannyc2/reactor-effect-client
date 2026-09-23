@@ -37,7 +37,8 @@ export class RemoteSession {
   }
 
   requireKnown(): KnownRemote {
-    if (!isKnownRemote(this.value)) throw new ReactorError("InvalidState", "no known session id");
+    if (!isKnownRemote(this.value))
+      throw new ReactorError({ code: "InvalidState", message: "no known session id" });
     return this.value;
   }
 
@@ -54,18 +55,18 @@ export class RemoteSession {
     return Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         if (lifecycle.isClosing)
-          return yield* Effect.fail(
-            new ReactorError("Closed", "session is closed", { outcome: "not-submitted" }),
-          );
+          return yield* new ReactorError({
+            code: "Closed",
+            message: "session is closed",
+            context: { outcome: "not-submitted" },
+          });
         if (isKnownRemote(self.value)) return self.value.id;
         if (self.value !== undefined)
-          return yield* Effect.fail(
-            new ReactorError(
-              "InvalidState",
-              "session allocation is already pending or unresolved",
-              { outcome: "unknown" },
-            ),
-          );
+          return yield* new ReactorError({
+            code: "InvalidState",
+            message: "session allocation is already pending or unresolved",
+            context: { outcome: "unknown" },
+          });
         const intent = options.intent;
         if (intent._tag === "Attach") {
           self.value = {

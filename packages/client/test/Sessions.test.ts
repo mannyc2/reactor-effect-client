@@ -29,7 +29,11 @@ const fetchLayer = (request: RequestFixture) =>
       Layer.succeed(
         FetchHttpClient.Fetch,
         Object.assign(
-          (input: string | Request | URL, init?: RequestInit) => request(String(input), init ?? {}),
+          (input: string | Request | URL, init?: RequestInit) =>
+            request(
+              typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+              init ?? {},
+            ),
           { preconnect: fetch.preconnect },
         ),
       ),
@@ -62,7 +66,7 @@ const client = (jwt: Redacted.Redacted<string> = inspectionToken) =>
     apiUrl: "https://configured.fixture/api",
     credential: Effect.succeed(jwt),
   });
-const pricing = () => client().pipe(Effect.flatMap((coordinator) => coordinator.pricing()));
+const pricing = () => client().pipe(Effect.flatMap((coordinator) => coordinator.pricing));
 const mintToken = (input: Coordinator.TokenOptions) =>
   client().pipe(Effect.flatMap((coordinator) => coordinator.mintToken(input)));
 const inspect = (jwt: Redacted.Redacted<string>, sessionId: string) =>
@@ -358,13 +362,15 @@ describe("Reactor HTTP session contract (offline)", () => {
         expect(inspection.observedAt).toBe(yield* Clock.currentTimeMillis);
       }).pipe(
         Effect.provide(
-          fetchLayer(async (url) =>
-            url.endsWith("/tokens")
-              ? Response.json({ jwt: fixtureJwt, expires_at: 250 })
-              : Response.json({ session_id: "session", state: "WAITING" }),
+          Layer.mergeAll(
+            fetchLayer(async (url) =>
+              url.endsWith("/tokens")
+                ? Response.json({ jwt: fixtureJwt, expires_at: 250 })
+                : Response.json({ session_id: "session", state: "WAITING" }),
+            ),
+            TestClock.layer(),
           ),
         ),
-        Effect.provide(TestClock.layer()),
       ),
     );
   });
@@ -477,9 +483,10 @@ describe("Reactor HTTP session contract (offline)", () => {
       { ...options, expiresAfterSeconds: 130 },
       { ...options, modelName: "" },
     ]) {
-      await expect(
-        Effect.runPromise(mintToken(invalid).pipe(Effect.provide(fetchLayer(request)))),
-      ).rejects.toThrow();
+      const exit = await Effect.runPromiseExit(
+        mintToken(invalid).pipe(Effect.provide(fetchLayer(request))),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     }
     expect(calls).toBe(0);
   });
@@ -955,18 +962,17 @@ describe("Reactor HTTP session contract (offline)", () => {
         const started = performance.now();
         const error = await Effect.runPromise(
           Effect.flip(
-            inspect(inspectionToken, "session")
-              .pipe(
-                Effect.provide(
-                  fetchLayer(async (_url, init) => {
-                    signal = init.signal ?? undefined;
-                    const response = await fetch(`http://127.0.0.1:${server.port}/session`, init);
-                    headersReceived = true;
-                    return response;
-                  }),
-                ),
-              )
-              .pipe(Effect.timeout(2_000)),
+            inspect(inspectionToken, "session").pipe(
+              Effect.provide(
+                fetchLayer(async (_url, init) => {
+                  signal = init.signal ?? undefined;
+                  const response = await fetch(`http://127.0.0.1:${server.port}/session`, init);
+                  headersReceived = true;
+                  return response;
+                }),
+              ),
+              Effect.timeout(2_000),
+            ),
           ),
         );
         expect(error).toBeInstanceOf(ReactorError);

@@ -6,7 +6,7 @@ import { ReactorError } from "../../src/errors.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import type { JsonObject } from "../../src/json.js";
 import { pngBytes } from "../../src/testing/Png.js";
-import { fixture, fixtureClip, gate } from "./ProviderSession.js";
+import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSession.js";
 import type { Fixture, Script } from "./ProviderSession.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 
@@ -140,7 +140,7 @@ describe("canonical H3 provider acquisition", () => {
   test("interrupting acquisition joins its local reader and never resets someone else's Session", () =>
     run(
       Effect.gen(function* () {
-        const entered = yield* gate();
+        const entered = yield* gate;
         const fake = yield* fixture({
           command: { get_state: () => entered.release.pipe(Effect.andThen(Effect.never)) },
         });
@@ -425,7 +425,7 @@ describe("H3 request capture and references", () => {
         expect(second).toBe(first);
         expect(fake.uploaded[0]!.bytes).toEqual(expected);
         expect(first.clip.prompt).toBe("captured prompt");
-        expect(JSON.parse(first.clip.metadata).caller).toBe("captured metadata");
+        expect(metadataOf(first.clip.metadata).caller).toBe("captured metadata");
         expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
         expect((yield* prepared.state)._tag).toBe("Completed");
       }),
@@ -554,8 +554,8 @@ describe("H3 command and observation authority", () => {
                 Effect.sync(() => {
                   commandId = call.requestId;
                   pendingClip = fixtureClip({
-                    prompt: String(call.args.prompt),
-                    metadata: String(call.args.metadata),
+                    prompt: textArg(call.args.prompt),
+                    metadata: textArg(call.args.metadata),
                   });
                   return undefined;
                 }),
@@ -606,7 +606,7 @@ describe("H3 command and observation authority", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
-          command: { enqueue: () => Effect.succeed(undefined) },
+          command: { enqueue: () => Effect.undefined },
         });
         const prepared = yield* provider.prepare(request());
         const first = yield* Effect.result(prepared.submit),
@@ -697,15 +697,15 @@ describe("H3 command and observation authority", () => {
             enqueue: ({ fake, call, fail }) =>
               Effect.gen(function* () {
                 const clip = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                 });
                 yield* fake.emit(
                   "clip_generated",
                   { clip: { ...clip, ready: true } },
                   { requestId: call.requestId, correlation: "late" },
                 );
-                return yield* Effect.fail(fail("unknown", "Disconnected"));
+                return yield* fail("unknown", "Disconnected");
               }),
           },
         });
@@ -725,8 +725,8 @@ describe("H3 command and observation authority", () => {
           second = yield* H3.make(fake.session, options);
         const a = yield* first.enqueue(request({ metadata: "first" }));
         const b = yield* second.enqueue(request({ metadata: "second" }));
-        expect(JSON.parse(a.clip.metadata).namespace).not.toBe(
-          JSON.parse(b.clip.metadata).namespace,
+        expect(metadataOf(a.clip.metadata).namespace).not.toBe(
+          metadataOf(b.clip.metadata).namespace,
         );
         expect((yield* first.acceptances).map((entry) => entry.submissionId)).toEqual([
           a.submissionId,
@@ -758,7 +758,7 @@ describe("H3 command and observation authority", () => {
                 data: {
                   clip: {
                     ...fixtureClip({
-                      prompt: String(call.args.prompt),
+                      prompt: textArg(call.args.prompt),
                       metadata: JSON.stringify({
                         reactor_effect_h3: 1,
                         namespace: "someone-else",
@@ -805,8 +805,8 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
             enqueue: ({ call }) =>
               Effect.sync(() => {
                 accepted = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                 });
                 return { type: "clip_queued", data: { clip: { ...accepted } } };
               }),
@@ -873,8 +873,8 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
             enqueue: ({ fake, call }) =>
               Effect.gen(function* () {
                 const clip = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                   ready: true,
                 });
                 yield* fake.emit("clip_started", { clip: { ...clip } });
@@ -1110,7 +1110,7 @@ describe("H3 explicit commands", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
-          command: { set_autoplay: ({ defaults }) => defaults().pipe(Effect.as(undefined)) },
+          command: { set_autoplay: ({ defaults }) => defaults.pipe(Effect.as(undefined)) },
         });
         const result = yield* Effect.result(provider.setAutoplay(true));
         expect(Result.isFailure(result) && result.failure.context.outcome).toBe("unknown");
@@ -1232,7 +1232,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup();
-        const held = yield* gate();
+        const held = yield* gate;
         let entered = false,
           released = 0,
           attempts = 0,
@@ -1278,11 +1278,13 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("cancelling upload prework never dispatches the clip later", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         const { fake, provider } = yield* setup({
           upload: () =>
             held.wait.pipe(
-              Effect.andThen(Effect.fail(new ReactorError("Upload", "fixture upload ends"))),
+              Effect.andThen(
+                Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload ends" })),
+              ),
             ),
         });
         const prepared = yield* provider.prepare(request({ references: [bytesReference()] }));
@@ -1305,10 +1307,13 @@ describe("H3 preparation, cancellation and bounds", () => {
           commit: () =>
             refuse
               ? Effect.fail(
-                  new CommandFailure(new ReactorError("InvalidState", "affinity refused"), {
-                    operation: "enqueue",
-                    outcome: "not-submitted",
-                  }),
+                  CommandFailure.from(
+                    new ReactorError({ code: "InvalidState", message: "affinity refused" }),
+                    {
+                      operation: "enqueue",
+                      outcome: "not-submitted",
+                    },
+                  ),
                 )
               : Effect.void,
         });
@@ -1325,10 +1330,10 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("caller cancellation after commit does not cancel or replay a late accepted enqueue", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         let resultHooks = 0;
         const { fake, provider } = yield* setup(
-          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults())) } },
+          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
           { commandTimeoutMs: 1000 },
         );
         const prepared = yield* provider.prepare(request(), {
@@ -1356,10 +1361,12 @@ describe("H3 preparation, cancellation and bounds", () => {
           command: {
             enqueue: ({ defaults, fake, fail }) =>
               Effect.gen(function* () {
-                yield* defaults();
+                yield* defaults;
                 yield* Effect.sleep(5);
-                yield* fake.failObservation(new ReactorError("Closed", "fixture source ended"));
-                return yield* Effect.fail(fail("unknown", "Disconnected"));
+                yield* fake.failObservation(
+                  new ReactorError({ code: "Closed", message: "fixture source ended" }),
+                );
+                return yield* fail("unknown", "Disconnected");
               }),
           },
         });
@@ -1373,9 +1380,9 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("pending acceptance and retained annotation counts are bounded without replay", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         const { fake, provider } = yield* setup(
-          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults())) } },
+          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
           { maxPending: 1, maxAcceptances: 1, commandTimeoutMs: 1000 },
         );
         const first = yield* provider.prepare(request());
@@ -1468,7 +1475,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup();
-        const held = yield* gate();
+        const held = yield* gate;
         let blocked = false;
         const observation = yield* provider.observe({ capacity: 1 });
         const reader = yield* observation.events.pipe(

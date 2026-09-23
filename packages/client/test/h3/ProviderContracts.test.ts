@@ -235,7 +235,7 @@ describe("H3 command consumers use the admitted reply identity", () => {
                   command: {
                     [command.command]: ({ defaults }) =>
                       !acquired
-                        ? defaults()
+                        ? defaults
                         : Effect.succeed(
                             mode === "body"
                               ? command.reply

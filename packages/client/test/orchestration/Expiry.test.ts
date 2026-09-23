@@ -7,7 +7,7 @@ import { gate, member, readyState, record, runClock } from "./SourceFixture.js";
 test("expiry settles a committed pending member as unknown before sequence retirement and never replays it", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       const { handle, sources, awaitRenewal, warm } = yield* renewalFixture((index) =>
         index === 0
           ? {

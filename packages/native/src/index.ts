@@ -24,15 +24,18 @@ const factory = (options: NativeOptions): PeerFactoryShape => {
       catch: (cause) =>
         cause instanceof ReactorError
           ? cause
-          : new ReactorError("Native", "native WebRTC preflight failed", {
-              detail: cause,
-              outcome: "not-submitted",
+          : new ReactorError({
+              code: "Native",
+              message: "native WebRTC preflight failed",
+              context: { detail: cause, outcome: "not-submitted" },
             }),
     }),
     make: () => {
       if (resolved === undefined)
-        throw new ReactorError("InvalidState", "native WebRTC factory was not preflighted", {
-          outcome: "not-submitted",
+        throw new ReactorError({
+          code: "InvalidState",
+          message: "native WebRTC factory was not preflighted",
+          context: { outcome: "not-submitted" },
         });
       return new NativePeer(resolved);
     },

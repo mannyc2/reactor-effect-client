@@ -125,8 +125,8 @@ test("a ready-owner constraint binds a fresh sequence to the old source while re
 test("sameSessionAs is revalidated after prework and cannot move an already bound sequence", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       let pause = false;
       const {
         handle,

@@ -47,7 +47,7 @@ export class StatsSampler {
   }
   sample(raw: readonly unknown[], generation: bigint, atMs: number): Statistics {
     if (!Number.isFinite(atMs) || raw.length > 4096)
-      throw new ReactorError("Protocol", "invalid statistics sample/bound");
+      throw new ReactorError({ code: "Protocol", message: "invalid statistics sample/bound" });
     const warnings: string[] = [],
       entries = raw.filter(isRecord),
       byId = new Map(
@@ -96,8 +96,7 @@ export class StatsSampler {
         const key = `${generation}:${pair.id}`,
           previous = this.baseline;
         if (
-          previous !== undefined &&
-          previous.key === key &&
+          previous?.key === key &&
           atMs >= previous.at &&
           sent >= previous.sent &&
           received >= previous.received

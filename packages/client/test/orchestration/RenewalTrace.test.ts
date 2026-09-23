@@ -20,7 +20,7 @@ for (const remoteOutcome of ["accepted", "rejected"] as const) {
     test(`${remoteOutcome}: ${trace.join(" -> ")} preserves the original committed outcome`, () =>
       runClock(
         Effect.gen(function* () {
-          const delivery = yield* gate();
+          const delivery = yield* gate;
           const rejection = failure("replied", "fixture rejection");
           const { handle, sources } = yield* renewalFixture((index) =>
             index === 0

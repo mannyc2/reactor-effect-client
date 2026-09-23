@@ -64,7 +64,7 @@ const runClient = <A>(
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
-      Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch as typeof fetch),
+      Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch),
     ),
   );
 

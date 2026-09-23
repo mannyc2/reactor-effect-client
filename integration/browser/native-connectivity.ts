@@ -72,12 +72,20 @@ interface SelectedCandidateEvidence {
   readonly remoteRelayProtocol?: string;
 }
 
+/** A track's state now; a check made earlier in the run does not narrow it. */
+const trackState = (track: MediaStreamTrack): MediaStreamTrackState => track.readyState;
+
+/** Surfaces a failure the protocol fixture recorded while the harness waited. */
+const rethrow = (failure: Error | undefined): void => {
+  if (failure !== undefined) throw failure;
+};
+
 const selectedCandidateEvidence = async (
   peer: RTCPeerConnection,
 ): Promise<SelectedCandidateEvidence> => {
   const report = await peer.getStats(),
     entries = new Map<string, Record<string, unknown>>();
-  report.forEach((value) => entries.set(value.id, value as unknown as Record<string, unknown>));
+  report.forEach((value: Record<string, unknown>, id: string) => entries.set(id, value));
   let pair: Record<string, unknown> | undefined;
   for (const entry of entries.values()) {
     if (entry.type !== "transport" || typeof entry.selectedCandidatePairId !== "string") continue;
@@ -421,7 +429,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
               JSON.stringify({ bytes: [0xa2, 0x20, 0x21, 0x22] }),
             "browser echo payload changed",
           );
-          if (protocol.failure !== undefined) throw protocol.failure;
+          rethrow(protocol.failure);
           protocol.retire();
           const report = yield* session.close;
           assert(
@@ -429,7 +437,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
             "browser owned close did not complete and confirm termination",
           );
           assert(
-            String(lease.readyState) === "ended",
+            trackState(lease) === "ended",
             "browser session close did not retire its leased track",
           );
           const stale = yield* Effect.result(media.setTrackActive("browser_video", true));
@@ -479,7 +487,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
       fetchImpl,
     );
     assert(deletes === 1, "browser owned session terminated more than once");
-    if (protocol.failure !== undefined) throw protocol.failure;
+    rethrow(protocol.failure);
     return {
       ...result,
       channels: [...protocol.channels.keys()].sort(),
@@ -639,7 +647,7 @@ const browserNativeCheck = async (): Promise<{
       10000,
       "browser/native WebRTC connection and channels",
     );
-    if (protocol.failure !== undefined) throw protocol.failure;
+    rethrow(protocol.failure);
     await waitUntil(
       () =>
         protocol.failure !== undefined ||
@@ -650,7 +658,7 @@ const browserNativeCheck = async (): Promise<{
       7000,
       "native public session control/model exchanges",
     );
-    if (protocol.failure !== undefined) throw protocol.failure;
+    rethrow(protocol.failure);
     const modelRequests = protocol.requests.filter((request) => request.channel === "data");
     assert(
       modelRequests[0]?.type === "ack" && modelRequests[1]?.type === "echo",

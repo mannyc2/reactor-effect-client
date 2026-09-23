@@ -45,7 +45,11 @@ export const layer = Layer.effect(
                 : fromOwnedReadableStream({
                     evaluate: () => source.body!,
                     onError: (cause) =>
-                      new ReactorError("Http", "HTTP response body failed", { detail: cause }),
+                      new ReactorError({
+                        code: "Http",
+                        message: "HTTP response body failed",
+                        context: { detail: cause },
+                      }),
                   }).pipe(
                     Stream.mapError(
                       (cause) =>

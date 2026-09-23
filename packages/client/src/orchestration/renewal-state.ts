@@ -73,7 +73,7 @@ export type RenewalDecision = "Retain" | "Prepare" | "InspectHandoff" | "Expire"
 /** Expiry is checked before sequence, queue, or media readiness can delay retirement. */
 export const decideRenewal = (facts: RenewalFacts): RenewalDecision => {
   const current = facts.current;
-  if (!facts.running || current === undefined || current.phase._tag !== "Active") return "Retain";
+  if (!facts.running || current?.phase._tag !== "Active") return "Retain";
   if (expired(current, facts.now)) return "Expire";
   if (facts.replacement === "Absent") {
     return ageMillis(current, facts.now) >= (current.maxSeconds - facts.leadSeconds) * 1000 &&

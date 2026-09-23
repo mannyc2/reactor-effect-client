@@ -39,20 +39,21 @@ export const parseTrack = (input: unknown): Track => {
   const t = record(input, "track"),
     name = nonempty(t.name, "track.name");
   if (t.kind !== "audio" && t.kind !== "video")
-    throw new ReactorError("Protocol", "unknown track kind");
+    throw new ReactorError({ code: "Protocol", message: "unknown track kind" });
   if (t.direction !== "recvonly" && t.direction !== "sendonly")
-    throw new ReactorError("Protocol", "unknown track direction");
+    throw new ReactorError({ code: "Protocol", message: "unknown track direction" });
   return Object.freeze({ name, kind: t.kind, direction: t.direction });
 };
 export const parseCapabilities = (input: unknown): Capabilities => {
   const c = record(input, "capabilities"),
     tracks = array(c.tracks, "capabilities.tracks").map(parseTrack);
-  if (tracks.length > 64) throw new ReactorError("Protocol", "at most 64 tracks are supported");
+  if (tracks.length > 64)
+    throw new ReactorError({ code: "Protocol", message: "at most 64 tracks are supported" });
   if (new Set(tracks.map((t) => t.name)).size !== tracks.length)
-    throw new ReactorError(
-      "Protocol",
-      "duplicate track names are ambiguous for named track operations",
-    );
+    throw new ReactorError({
+      code: "Protocol",
+      message: "duplicate track names are ambiguous for named track operations",
+    });
   const commands =
     c.commands == null
       ? undefined
@@ -101,7 +102,8 @@ export interface IceServer {
 }
 export const parseIce = (input: unknown): IceServer[] => {
   const list = array(record(input).ice_servers, "ice_servers");
-  if (list.length > 64) throw new ReactorError("Protocol", "too many ICE servers");
+  if (list.length > 64)
+    throw new ReactorError({ code: "Protocol", message: "too many ICE servers" });
   return list.map((x) => {
     const server = record(x, "ICE server"),
       urls = array(server.uris, "ICE server uris").map((u) => nonempty(u, "ICE URI"));

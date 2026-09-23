@@ -51,23 +51,26 @@ interface Resources {
 const failure = (error: unknown): ReactorError =>
   error instanceof ReactorError
     ? error
-    : new ReactorError(
-        "UnsupportedCapability",
-        error instanceof Error ? error.message : String(error),
-        { operation: "recording browser playback" },
-      );
+    : new ReactorError({
+        code: "UnsupportedCapability",
+        message: error instanceof Error ? error.message : String(error),
+        context: { operation: "recording browser playback" },
+      });
 const open = (
   bytes: Uint8Array<ArrayBuffer>,
   context: AudioContext,
   preview?: HTMLElement,
 ): Resources => {
   if (context.state !== "running")
-    throw new ReactorError(
-      "InvalidState",
-      "recording playback requires a running caller-owned AudioContext",
-    );
+    throw new ReactorError({
+      code: "InvalidState",
+      message: "recording playback requires a running caller-owned AudioContext",
+    });
   if (bytes.length === 0 || bytes.length > 1048576)
-    throw new ReactorError("Overflow", "recording fixture input must be 1..1048576 bytes");
+    throw new ReactorError({
+      code: "Overflow",
+      message: "recording fixture input must be 1..1048576 bytes",
+    });
   const video = document.createElement("video"),
     canvas = document.createElement("canvas");
   let url: string | undefined,
@@ -102,17 +105,19 @@ const open = (
       }
     }
     if (errors.length !== 0)
-      throw new ReactorError("UnsupportedCapability", "recording cleanup failed", {
-        detail: errors,
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "recording cleanup failed",
+        context: { detail: errors },
       });
   };
   try {
     const pixels = canvas.getContext("2d", { willReadFrequently: true });
     if (pixels === null)
-      throw new ReactorError(
-        "UnsupportedCapability",
-        "recording pixel readback requires Canvas 2D",
-      );
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "recording pixel readback requires Canvas 2D",
+      });
     video.playsInline = true;
     video.preload = "auto";
     video.loop = false;
@@ -171,31 +176,37 @@ const observe = ({
     };
     const diagnostic = (cause: unknown): ReactorError => {
       const error = failure(cause);
-      return new ReactorError(error.code, error.message, {
-        ...error.context,
-        detail: {
-          cause: error.context.detail,
-          frames,
-          windows,
-          readyState: video.readyState,
-          currentTimeSeconds: video.currentTime,
-          ended: video.ended,
-          contextState: context.state,
-          mediaErrorCode: video.error?.code,
-          mediaError: video.error?.message,
+      return new ReactorError({
+        code: error.code,
+        message: error.message,
+        context: {
+          ...error.context,
+          detail: {
+            cause: error.context.detail,
+            frames,
+            windows,
+            readyState: video.readyState,
+            currentTimeSeconds: video.currentTime,
+            ended: video.ended,
+            contextState: context.state,
+            mediaErrorCode: video.error?.code,
+            mediaError: video.error?.message,
+          },
         },
       });
     };
     const fail = (cause: unknown): void => finish(Effect.fail(diagnostic(cause)));
     const error = (): void =>
       fail(
-        new ReactorError("UnsupportedCapability", "recording HTML decoder failed", {
-          detail: { mediaErrorCode: video.error?.code, message: video.error?.message },
+        new ReactorError({
+          code: "UnsupportedCapability",
+          message: "recording HTML decoder failed",
+          context: { detail: { mediaErrorCode: video.error?.code, message: video.error?.message } },
         }),
       );
     const state = (): void => {
       if (context.state !== "running")
-        fail(new ReactorError("Disconnected", "recording AudioContext stopped"));
+        fail(new ReactorError({ code: "Disconnected", message: "recording AudioContext stopped" }));
     };
     const ended = (): void =>
       finish(
@@ -265,7 +276,10 @@ const observe = ({
         state();
         if (settled) return;
         if (frames.length >= 128)
-          throw new ReactorError("Overflow", "recording callback observation bound (128)");
+          throw new ReactorError({
+            code: "Overflow",
+            message: "recording callback observation bound (128)",
+          });
         // Fixture-specific dimensions, not a permissive arbitrary-media decoder test.
         assert(
           video.videoWidth === 96 && video.videoHeight === 64,
@@ -302,10 +316,10 @@ const observe = ({
     if (typeof video.requestVideoFrameCallback !== "function") {
       resume(
         Effect.fail(
-          new ReactorError(
-            "UnsupportedCapability",
-            "recording check requires requestVideoFrameCallback",
-          ),
+          new ReactorError({
+            code: "UnsupportedCapability",
+            message: "recording check requires requestVideoFrameCallback",
+          }),
         ),
       );
       return;
@@ -337,9 +351,10 @@ export const recordingPlayback = (
       const timeout = options.timeoutMs ?? 10000,
         activation = options.activationTimeoutMs ?? 5000;
       if (![timeout, activation].every((n) => Number.isSafeInteger(n) && n > 0 && n <= 60000))
-        return yield* Effect.fail(
-          new ReactorError("Protocol", "recording check deadlines must be 1..60000 ms"),
-        );
+        return yield* new ReactorError({
+          code: "Protocol",
+          message: "recording check deadlines must be 1..60000 ms",
+        });
       const resources = yield* Effect.acquireRelease(
         Effect.try({ try: () => open(bytes, context, options.preview), catch: failure }),
         (resources) => Effect.sync(() => resources.close()),
@@ -354,7 +369,12 @@ export const recordingPlayback = (
             Effect.timeoutOrElse({
               duration: activation,
               orElse: () =>
-                Effect.fail(new ReactorError("Timeout", "recording play activation deadline")),
+                Effect.fail(
+                  new ReactorError({
+                    code: "Timeout",
+                    message: "recording play activation deadline",
+                  }),
+                ),
             }),
           ),
         ],
@@ -364,7 +384,10 @@ export const recordingPlayback = (
           duration: timeout,
           orElse: () =>
             Effect.fail(
-              new ReactorError("Timeout", "recording playback/decoded-observation deadline"),
+              new ReactorError({
+                code: "Timeout",
+                message: "recording playback/decoded-observation deadline",
+              }),
             ),
         }),
       );

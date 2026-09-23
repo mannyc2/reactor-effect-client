@@ -13,10 +13,14 @@ export interface LoadLimits {
 }
 
 const failure = (message: string, detail?: unknown): ReactorError =>
-  new ReactorError("Upload", message, {
-    operation: "load reference",
-    outcome: "not-submitted",
-    ...(detail === undefined ? {} : { detail }),
+  new ReactorError({
+    code: "Upload",
+    message,
+    context: {
+      operation: "load reference",
+      outcome: "not-submitted",
+      ...(detail === undefined ? {} : { detail }),
+    },
   });
 
 /**
@@ -36,22 +40,20 @@ export const loadReferenceBytes = (
       !Number.isFinite(limits.timeoutMs) ||
       limits.timeoutMs <= 0
     ) {
-      return yield* Effect.fail(
-        failure("Reference URI and positive finite loading bounds are required"),
-      );
+      return yield* failure("Reference URI and positive finite loading bounds are required");
     }
     if (uri.startsWith("data:")) {
       const comma = uri.indexOf(",");
       if (comma < 0 || !uri.slice(0, comma).endsWith(";base64"))
-        return yield* Effect.fail(failure("Only base64 data URIs are supported"));
+        return yield* failure("Only base64 data URIs are supported");
       const encoded = uri.slice(comma + 1);
       if (encoded.length > 4 * Math.ceil(limits.maxBytes / 3))
-        return yield* Effect.fail(failure("Reference exceeds the byte bound"));
-      const result = Schema.decodeUnknownResult(Schema.Uint8ArrayFromBase64)(encoded);
+        return yield* failure("Reference exceeds the byte bound");
+      const result = Schema.decodeResult(Schema.Uint8ArrayFromBase64)(encoded);
       if (result._tag === "Failure")
-        return yield* Effect.fail(failure("Invalid base64 reference", result.failure));
+        return yield* failure("Invalid base64 reference", result.failure);
       if (result.success.byteLength > limits.maxBytes)
-        return yield* Effect.fail(failure("Reference exceeds the byte bound"));
+        return yield* failure("Reference exceeds the byte bound");
       return result.success;
     }
     if (uri.startsWith("/") || uri.startsWith("file://")) {
@@ -82,12 +84,10 @@ export const loadReferenceBytes = (
             .get(uri)
             .pipe(Effect.mapError((cause) => failure("Reference download failed", cause)));
           if (response.status < 200 || response.status >= 300)
-            return yield* Effect.fail(
-              failure(`Reference download returned HTTP ${response.status}`),
-            );
+            return yield* failure(`Reference download returned HTTP ${response.status}`);
           const declared = Number(response.headers["content-length"] ?? "0");
           if (Number.isFinite(declared) && declared > limits.maxBytes)
-            return yield* Effect.fail(failure("Reference exceeds the byte bound"));
+            return yield* failure("Reference exceeds the byte bound");
           return yield* collectBytes(response.stream, limits.maxBytes).pipe(
             Effect.mapError((cause) =>
               cause instanceof ReactorError ? cause : failure("Reference download failed", cause),
@@ -96,7 +96,7 @@ export const loadReferenceBytes = (
         }),
       );
     }
-    return yield* Effect.fail(failure("Unsupported reference URI scheme"));
+    return yield* failure("Unsupported reference URI scheme");
   }).pipe(
     Effect.timeoutOrElse({
       duration: limits.timeoutMs,

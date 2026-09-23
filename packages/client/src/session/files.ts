@@ -23,20 +23,21 @@ export const readFileBytes = (
       !Number.isSafeInteger(maxBytes) ||
       maxBytes <= 0
     ) {
-      return yield* Effect.fail(
-        new ReactorError("InvalidInput", "A file and positive byte bound are required", {
-          outcome: "not-submitted",
-        }),
-      );
+      return yield* new ReactorError({
+        code: "InvalidInput",
+        message: "A file and positive byte bound are required",
+        context: { outcome: "not-submitted" },
+      });
     }
     const fs = yield* FileSystem.FileSystem;
     return yield* collectBytes(fs.stream(file, { bytesToRead: maxBytes + 1 }), maxBytes).pipe(
       Effect.mapError((cause) =>
         cause instanceof ReactorError
           ? cause
-          : new ReactorError("Upload", "Source file could not be read", {
-              outcome: "not-submitted",
-              detail: cause,
+          : new ReactorError({
+              code: "Upload",
+              message: "Source file could not be read",
+              context: { outcome: "not-submitted", detail: cause },
             }),
       ),
     );
@@ -52,27 +53,31 @@ export const uploadFile = (
     const before = yield* session.ready;
     const timeout = options.readTimeoutMs ?? 30_000;
     if (!Number.isFinite(timeout) || timeout <= 0)
-      return yield* Effect.fail(
-        new ReactorError("InvalidInput", "Invalid file-read deadline", {
-          outcome: "not-submitted",
-        }),
-      );
+      return yield* new ReactorError({
+        code: "InvalidInput",
+        message: "Invalid file-read deadline",
+        context: { outcome: "not-submitted" },
+      });
     const bytes = yield* readFileBytes(file, options.maxBytes ?? 64 * 1024 * 1024).pipe(
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () =>
           Effect.fail(
-            new ReactorError("Upload", "Source file read timed out", { outcome: "not-submitted" }),
+            new ReactorError({
+              code: "Upload",
+              message: "Source file read timed out",
+              context: { outcome: "not-submitted" },
+            }),
           ),
       }),
     );
     const after = yield* session.ready;
     if (after.generation !== before.generation)
-      return yield* Effect.fail(
-        new ReactorError("Disconnected", "Connection changed while reading the upload file", {
-          outcome: "not-submitted",
-        }),
-      );
+      return yield* new ReactorError({
+        code: "Disconnected",
+        message: "Connection changed while reading the upload file",
+        context: { outcome: "not-submitted" },
+      });
     const path = yield* Path.Path;
     const name = path.basename(file);
     const extension = path.extname(name).toLowerCase();

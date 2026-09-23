@@ -318,8 +318,10 @@ const testEffect = (run) =>
   Effect.try({
     try: run,
     catch: (cause) =>
-      new ReactorError("Protocol", "public native media fixture assertion failed", {
-        detail: cause,
+      new ReactorError({
+        code: "Protocol",
+        message: "public native media fixture assertion failed",
+        context: { detail: cause },
       }),
   });
 /** @template T @param {Stream.Stream<T, ReactorError>} source @param {(frame: T) => void} visit @returns {Effect.Effect<void>} */
@@ -334,7 +336,8 @@ const joinMedia = (source, visit) =>
   );
 let summary, runError;
 try {
-  const fixtureServer = createServer(requestHandler);
+  // requestHandler answers its own failures, so its promise is not awaited.
+  const fixtureServer = createServer((request, response) => void requestHandler(request, response));
   server = fixtureServer;
   await new Promise((resolveListen, rejectListen) => {
     fixtureServer.once("error", rejectListen);
@@ -634,7 +637,9 @@ if (runError !== undefined) {
       [runError, ...cleanupErrors],
       "browser/native qualification and cleanup failed",
     );
-  throw runError;
+  throw runError instanceof Error
+    ? runError
+    : new Error("browser/native qualification failed", { cause: runError });
 }
 if (cleanupErrors.length > 0)
   throw new AggregateError(cleanupErrors, "browser/native cleanup failed");

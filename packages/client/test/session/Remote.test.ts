@@ -82,7 +82,7 @@ test("remote lifecycle: closing an allocation retains unknown ownership without 
   try {
     await Effect.runPromise(Deferred.await(entered));
     lifecycle.transition("closing");
-    const error = new ReactorError("Closed", "session closing");
+    const error = new ReactorError({ code: "Closed", message: "session closing" });
     Deferred.doneUnsafe(lifecycle.closing, Effect.fail(error));
     const exit = await Effect.runPromiseExit(Fiber.join(pending));
     if (!Exit.isFailure(exit)) throw new Error("allocation survived close");

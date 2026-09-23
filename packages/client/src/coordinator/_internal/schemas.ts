@@ -2,10 +2,10 @@ import { Clock, Effect, Redacted, Schema } from "effect";
 import { positiveLimit, ReactorError } from "../../errors.js";
 
 const failure = (operation: string, message: string, cause?: unknown) =>
-  new ReactorError("Protocol", message, {
-    operation,
-    outcome: "replied",
-    ...(cause === undefined ? {} : { detail: cause }),
+  new ReactorError({
+    code: "Protocol",
+    message,
+    context: { operation, outcome: "replied", ...(cause === undefined ? {} : { detail: cause }) },
   });
 const PositiveInteger = Schema.Number.check(
   Schema.isFinite(),
@@ -21,7 +21,7 @@ const Pricing = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       rate: Schema.Struct({
-        amount_per_sec: Schema.Number,
+        amount_per_sec: Schema.Finite,
         unit: Schema.String,
         denomination: Schema.String,
       }),
@@ -29,32 +29,29 @@ const Pricing = Schema.Struct({
   ),
 });
 
+const unknownRate = (cause?: unknown) =>
+  failure("pricing", "Reactor pricing has an unknown model, currency or rate unit", cause);
+
 /** Preserve the integer ratio; callers decide whether the returned price fits their budget. */
 export const modelRate = (value: unknown, model: string) =>
-  Effect.try({
-    try: () => {
-      const decoded = Schema.decodeUnknownSync(Pricing)(value);
+  Schema.decodeUnknownEffect(Pricing)(value).pipe(
+    Effect.mapError(unknownRate),
+    Effect.flatMap((decoded) => {
       const matches = decoded.models.filter((entry) => entry.name === model);
       const rate = matches[0]?.rate;
-      if (
-        matches.length !== 1 ||
+      return matches.length !== 1 ||
         rate?.unit !== "credits" ||
         rate.denomination !== "second" ||
         !Number.isSafeInteger(rate.amount_per_sec) ||
         rate.amount_per_sec <= 0 ||
         !Number.isSafeInteger(decoded.settings.credits_per_dollar)
-      )
-        throw failure("pricing", "Reactor pricing has an unknown model, currency or rate unit");
-      return {
-        creditsPerDollar: decoded.settings.credits_per_dollar,
-        creditsPerSecond: rate.amount_per_sec,
-      };
-    },
-    catch: (cause) =>
-      cause instanceof ReactorError
-        ? cause
-        : failure("pricing", "Reactor pricing has an unknown model, currency or rate unit", cause),
-  });
+        ? Effect.fail(unknownRate())
+        : Effect.succeed({
+            creditsPerDollar: decoded.settings.credits_per_dollar,
+            creditsPerSecond: rate.amount_per_sec,
+          });
+    }),
+  );
 
 export interface TokenOptions {
   readonly apiKey: Redacted.Redacted<string>;
@@ -91,11 +88,12 @@ export const validateTokenOptions = (
       return Object.freeze(options);
     },
     catch: () =>
-      new ReactorError(
-        "InvalidInput",
-        "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
-        { operation: "token", outcome: "not-submitted" },
-      ),
+      new ReactorError({
+        code: "InvalidInput",
+        message:
+          "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
+        context: { operation: "token", outcome: "not-submitted" },
+      }),
   });
 
 const Token = Schema.Struct({
@@ -138,8 +136,9 @@ export const grantedLimits = (jwt: string, options: TokenOptions) =>
       authorization.resources.models.match[0] !== options.modelName ||
       seconds > options.maxSessionDurationSeconds
     )
-      return yield* Effect.fail(
-        failure("token", "Reactor returned a token outside the requested session grant"),
+      return yield* failure(
+        "token",
+        "Reactor returned a token outside the requested session grant",
       );
     return { maxSessions: authorization.constraints.max_sessions, maxSessionSeconds: seconds };
   }).pipe(
@@ -153,7 +152,7 @@ const Transport = Schema.Struct({
   version: Schema.NonEmptyString,
 });
 export const Inspection = Schema.Struct({
-  observedAt: Schema.Number,
+  observedAt: Schema.Finite,
   state: Schema.String,
   hasCapabilities: Schema.Boolean,
   selectedTransport: Schema.NullOr(Transport),
@@ -162,7 +161,7 @@ export const Inspection = Schema.Struct({
   serverVersion: Schema.NullOr(Schema.String),
   additional: Schema.Record(
     Schema.String,
-    Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null]),
+    Schema.Union([Schema.String, Schema.Finite, Schema.Boolean, Schema.Null]),
   ),
 });
 export type Inspection = typeof Inspection.Type;
@@ -181,7 +180,7 @@ const sensitiveField = /secret|token|credential|password|key|jwt|url|auth/i;
 const additionalFacts = (raw: unknown): Record<string, string | number | boolean | null> => {
   const facts: [string, string | number | boolean | null][] = [];
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
-  for (const [key, value] of Object.entries(raw).slice(0, 64)) {
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>).slice(0, 64)) {
     if (modeledFields.has(key) || sensitiveField.test(key)) continue;
     if (value === null || typeof value === "number" || typeof value === "boolean")
       facts.push([key, value]);
@@ -213,9 +212,7 @@ export const decodeInspection = (
       ),
     );
     if (value.session_id !== sessionId)
-      return yield* Effect.fail(
-        failure("inspect", "Reactor returned a different session identity"),
-      );
+      return yield* failure("inspect", "Reactor returned a different session identity");
     return {
       observedAt: yield* Clock.currentTimeMillis,
       state: value.state,
@@ -239,9 +236,8 @@ export const decodeTermination = (raw: unknown, sessionId: string) =>
     Effect.mapError((cause) =>
       failure("terminate", "Reactor returned an invalid termination description", cause),
     ),
-    Effect.flatMap((value) =>
-      value.session_id !== undefined && value.session_id !== sessionId
-        ? Effect.fail(failure("terminate", "Reactor returned a different session identity"))
-        : Effect.succeed(value),
+    Effect.filterOrFail(
+      (value) => value.session_id === undefined || value.session_id === sessionId,
+      () => failure("terminate", "Reactor returned a different session identity"),
     ),
   );
