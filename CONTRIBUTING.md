@@ -27,7 +27,7 @@ Do not commit credentials, JWTs, API keys, session exports, generated media, nat
 | ------------------- | ------------------------ | ------------------------------------------------------------------------------------------ |
 | `packages/client`   | `reactor-effect-client`  | Portable core: session, coordinator, H3, orchestration, simulation, testing, wire, host    |
 | `packages/browser`  | `reactor-effect-browser` | Browser peer and media over the client's `/host` surface                                   |
-| `packages/native`   | `reactor-effect-native`  | Native peer, Rust crate, staged libraries, Node/Vitest tests                               |
+| `packages/native`   | `reactor-effect-native`  | Native peer, Rust crate, staged libraries, Vitest tests on Node and Bun                    |
 | `packages/test-kit` | private                  | Runner-agnostic assertion helpers and `FakeTrack`; imports no workspace package            |
 | `examples`          | private                  | Documentation examples compiled against the built packages for both hosts                  |
 | `integration`       | private                  | Real Chrome/native qualification, its browser bundle sources, and their modeled-host tests |
@@ -76,7 +76,7 @@ bun run test:pack
 
 The pack smoke packs each public package with `bun pm pack`, checks the exact export map, declaration/import closure and declared dependencies of every archive, then installs the archives into isolated consumers: a portable Node consumer without optional dependencies, a browser consumer whose bundle runs without the Node `Buffer` global, and a native consumer that verifies the packaged library identity. The [examples](./examples/README.md) are compiled again inside those installations against the published declarations; only the offline simulation runs. Each run retains its archives, package identity and consumer resolution traces under `.check/pack-*`. `bun --no-env-file scripts/pack.ts --portable` runs the client and browser parts on a host without a staged native library. Successfully checked temporary consumer trees are released sequentially unless `KEEP_PACK_TMP=1`; previous delivery directories are never removed.
 
-The native and integration projects run under Node/Vitest through `scripts/test.ts` and use the staged native libraries under `packages/native/lib/`. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. Package builds, browser integration, and pack validation mutate the packages' `dist` directories; serialize them in a shared checkout.
+The native project runs under Vitest on Node and then on Bun, and the integration project under Node/Vitest, through `scripts/test.ts`; both use the staged native libraries under `packages/native/lib/`. The native media load tests also need the test far peer that `bun run native:test` builds (`cargo build --release --example far_peer`), or `REACTOR_NATIVE_FAR_PEER` naming one. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. Package builds, browser integration, and pack validation mutate the packages' `dist` directories; serialize them in a shared checkout.
 
 Native changes:
 
@@ -85,7 +85,7 @@ bun run native:build
 bun run native:test
 ```
 
-The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, then runs the JavaScript native ABI/parser/session-boundary tests against the staged artifact. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
+The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, builds the test far peer, then runs the JavaScript native suite, including the media load tests, against the staged artifact on Node and on Bun. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
 
 ```sh
 DOCKER_CONTEXT=my-context bun run native:linux-x64
@@ -103,7 +103,7 @@ For a local TURN fixture, supply `BROWSER_NATIVE_FORCE_RELAY=1` plus `BROWSER_NA
 
 The native bridge is transport/media only. Do not put Reactor session allocation, model commands or coordinator policy into Rust.
 
-Callbacks from libwebrtc must not enter JavaScript directly. Copy into bounded native queues, fence event admission synchronously on close, and keep callback/userdata storage alive until shutdown proves quiescence.
+Callbacks from libwebrtc must never enter or wait for JavaScript. Copy into bounded native queues and signal readiness; only a peer's notifier thread calls into JavaScript. Keep one libwebrtc factory per process. Fence event admission synchronously on close, and keep callback/userdata storage and the Koffi callback registration alive until shutdown has joined the notifier. A native failure carries one of the ABI's failure classes; add a class to the header, the Rust bridge and the host mapping together rather than matching on error text.
 
 The public native peer currently accepts at most one incoming video and one incoming audio track because pinned `reactor-webrtc` does not expose the remote callback's MID/identity. Do not widen this contract by assuming same-kind callback order; expose a formal upstream identity join first.
 

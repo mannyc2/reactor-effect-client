@@ -37,6 +37,7 @@ Native transport provides:
 - WebRTC statistics;
 - owned decoded BGRA video with Reactor frame metadata;
 - owned interleaved signed 16-bit PCM audio;
+- typed failure classes;
 - immediate close fencing plus joined callback quiescence during shutdown.
 
 The current public native peer accepts at most one incoming video track and one incoming audio track. Pinned `reactor-webrtc` delivers `RemoteTrack` callbacks without the transceiver MID/native identity needed to join multiple same-kind callbacks to SDP mappings without relying on arrival order. `NativePeer.prepare` therefore rejects an ambiguous declaration with `UnsupportedCapability` before native negotiation. Multiple outgoing tracks remain distinct by their declared transceivers.
@@ -48,13 +49,40 @@ The current public native peer accepts at most one incoming video track and one 
 | `dist/`                              | The compiled TypeScript entry point and its declarations                                 |
 | `lib/<platform>-<arch>/`             | The staged shared library and its `native-identity.json` sidecar for each shipped host   |
 | `rust/`                              | The `reactor-effect-native` crate: Cargo manifest and lock, build script, header, source |
+| `rust/examples/far_peer.rs`          | Test-only libwebrtc sender for the media load tests; not packaged or staged              |
 | `scripts/build.sh`                   | Builds the crate for the current host and stages it                                      |
 | `scripts/stage.sh`, `stage.mjs`      | Stage an already built library; `stage.mjs` is the single staging owner                  |
 | `scripts/install-linux-toolchain.sh` | Explicit root-only LLVM 21 installer for opted-in Debian/Ubuntu build environments       |
 
-The bridge owns one libwebrtc peer on a Rust thread. libwebrtc callbacks copy their data into bounded Rust queues; they never invoke JavaScript. ABI 2 retains the exact packet selected by a size probe until it is copied or the queue is closed. Its bytes and item still count toward the queue limits. Producer pressure may evict other queued media; it cannot change the reader's packet.
+## Media path (ABI 3)
 
-`close()` fences new callback and host-call admission immediately. The host registers every operation before dispatching to Koffi and keeps that ownership until the foreign call actually returns, even when its Effect waiter is interrupted. `shutdown()` drains those active and queued foreign calls, joins the Rust owner and callback guards, then destroys the handle once. The C ABI requires other hosts to perform the same foreign-call drain before destruction. Joining the Rust owner alone cannot observe calls queued in a host executor.
+The bridge owns one libwebrtc peer on a Rust thread. Every peer in a process shares one libwebrtc factory, created on the first `prepare` and never destroyed, because reactor-webrtc requires one factory per process.
+
+libwebrtc callbacks copy each decoded frame once into a bounded, typed Rust queue and set a readiness bit. They never invoke or wait for JavaScript. The queues hold 8 video frames (333 ms at 24 fps), 256 PCM blocks (2.56 s of 10 ms blocks) and 1,024 transport events. One notifier thread per peer passes the readiness bits to a Koffi callback; it is the only native thread that ever waits on JavaScript. The callback wakes one pump fiber per queue. Each pump reads with synchronous, nonblocking takes that copy a frame straight into memory its consumer then owns, and yields between items so observers run at their own pace. No media call uses the libuv thread pool, and none is in flight when a reader is interrupted.
+
+A full media queue evicts its oldest item and counts it, so `media.snapshot` reports what was dropped, delivered and still queued. A full event queue is not pruned: it retires the connection with an `Overflow` failure.
+
+The C header, `rust/include/reactor_effect_native.h`, is the ABI contract. Readiness is a callback passed to `reactor_effect_peer_create`; `reactor_effect_peer_take_event`, `_take_video` and `_take_audio` report `BUFFER_TOO_SMALL` with the required size and keep the item queued until a take succeeds.
+
+`close()` fences new callback and host-call admission immediately. The host registers every `call`, `send` and `shutdown` before dispatching it to Koffi, and keeps that ownership until the foreign call actually returns, even when its Effect waiter is interrupted. `shutdown()` drains those active and queued foreign calls, joins the Rust owner, the callback guards and the notifier thread, then destroys the handle and unregisters the Koffi callback once. The join is an asynchronous Koffi call because the notifier may be waiting for the JavaScript thread to run its callback. The C ABI requires other hosts to perform the same foreign-call drain before destruction, and to join from a thread other than the one that runs the callback. Joining the Rust owner alone cannot observe calls queued in a host executor.
+
+## Failure classes
+
+Every native failure is one of a closed set of classes, which the host maps to `ReactorError.code`:
+
+| Status | `ReactorError.code` | Raised when                                                                 |
+| ------ | ------------------- | --------------------------------------------------------------------------- |
+| `-1`   | `InvalidInput`      | the bridge rejects a request or argument                                    |
+| `-2`   | `Native`            | libwebrtc or the bridge fails in a way it cannot classify                   |
+| `-3`   | `Overflow`          | a queue, buffer or message bound is exceeded                                |
+| `-4`   | `Protocol`          | the remote peer breaks the negotiated contract, such as an undeclared track |
+| `-5`   | `SdpRejected`       | libwebrtc refuses to create or apply an offer or answer                     |
+| `-6`   | `ChannelClosed`     | a send targets a data channel that is not open                              |
+| `3`    | `Closed`            | the peer is fenced or shut down                                             |
+
+Pinned reactor-webrtc reports every libwebrtc error as a string, so the bridge classifies a failure by the operation that produced it. The diagnostic text stays in `context.detail`, never in the message, because a libwebrtc error can contain SDP.
+
+When the connection state reaches `failed`, the host reads its statistics once. A candidate pair that succeeded or was nominated means ICE worked and the DTLS or SCTP transport above it failed: `TransportFailed`. Otherwise the failure is `IceFailed`, with the local candidate types tried. The session reports a data channel that closes as `ChannelClosed`, naming the channel. A `disconnected` state still fails the connection as `Disconnected`, and decode failures are not reported: reactor-webrtc surfaces neither ICE connection state nor decoder errors.
 
 ## Build and stage
 
@@ -86,9 +114,16 @@ Local qualification is credential-free:
 bun run native:test # sh packages/native/scripts/test.sh
 ```
 
-The script checks Rust formatting, runs the Rust tests and clippy with warnings denied, then runs the JavaScript ABI/parser/session-boundary tests (Node/Vitest in `packages/native/test`) against the staged artifact; it never restages a second release library. The loopback test negotiates two local peers and exercises real libwebrtc ICE/DTLS/SCTP, both binary channels, video encode/decode, PCM audio, per-frame metadata, stream stats, direction changes, bitrate controls, and callback quiescence. It does not contact Reactor or generate paid media.
+The script checks Rust formatting, runs the Rust tests and clippy with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged artifact twice, on Node and on Bun; it never restages a second release library. The Rust loopback test negotiates two local peers on the shared factory and exercises real libwebrtc ICE/DTLS/SCTP, both binary channels, video encode/decode, PCM audio, per-frame metadata, stream stats, direction changes, bitrate controls, and callback quiescence. Other Rust tests cover queue accounting, typed takes, readiness coalescing, failure classes, and a shutdown that must wait for a notifier still inside the host callback. None of it contacts Reactor or generates paid media.
 
-Additional tests force differently sized media eviction between the size probe and copying calls, and block foreign calls while interrupting their Effect waiters. The lifetime fixture drains queued calls while one active call remains held, verifies that shutdown/destruction have not run, then releases the final call and verifies one destruction. Its tombstone reports unsafe ordering without intentionally dereferencing freed memory. These checks establish ownership and ordering; they do not claim an observed heap-corruption incident.
+The media load tests receive from `rust/examples/far_peer.rs`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. Through Koffi and the staged library, on each runtime:
+
+- one session must deliver at least 95% of the frames the far peer encoded, with p95 latency of at most 150 ms, while control-channel round trips stay under 100 ms at p95;
+- two concurrent sessions must meet the same bounds for 10 s without dropping audio;
+- a 250 ms event-loop stall may drop at most 1% of frames; a 2 s stall must count its video evictions, lose no audio, and recover;
+- a session is renewed three times while its predecessor streams, and each replacement must receive what its sender encodes, without a freeze, while the predecessor shuts down.
+
+The C fixture in `test/session-fixture.c` implements the same header without libwebrtc, including a notifier thread. It drives the canonical session, blocks foreign calls while interrupting their Effect waiters, and checks that the Koffi callback is unregistered only after shutdown joined the notifier. The lifetime fixture drains queued calls while one active call remains held, verifies that shutdown/destruction have not run, then releases the final call and verifies one destruction. Its tombstone reports unsafe ordering without intentionally dereferencing freed memory. These checks establish ownership and ordering; they do not claim an observed heap-corruption incident.
 
 `scripts/stage.sh` stages an already-built shared library under the package runtime layout, `lib/<platform>-<arch>/`. For example:
 

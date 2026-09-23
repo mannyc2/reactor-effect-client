@@ -6,7 +6,7 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------- |
 | [`reactor-effect-client`](./packages/client)   | Canonical `Client`/`Session`, coordinator, H3 provider, orchestration, simulation, test fixtures, wire    | Node, Bun and browsers |
 | [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks, media conversion, recording                  | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media generations, explicit file upload, staged native binaries | Node                   |
+| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media generations, explicit file upload, staged native binaries | Node and Bun           |
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
@@ -65,7 +65,7 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 | `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                |
 | `bun run typecheck`                   | Checks every workspace's tests and tooling against the built declarations                           |
 | `bun run test`                        | Portable suites under Bun (`packages/client`, `packages/browser`, `integration` helpers, `scripts`) |
-| `bun run test:native`                 | Node/Vitest tests in `packages/native` against the staged library                                   |
+| `bun run test:native`                 | Vitest tests in `packages/native` against the staged library, on Node and then on Bun               |
 | `bun run test:integration`            | Real local browser/native session through the public packages                                       |
 | `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                |
 | `bun run check:architecture`          | Compiler-backed layering, host-boundary, dependency and cycle check for every package               |
@@ -76,7 +76,7 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 
 ## Continuous integration
 
-The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified library, runs only the JavaScript native and integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the library it qualifies. The package job then installs the three archives into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the three archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
+The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified library and the test far peer, runs only the JavaScript native tests (on Node and on Bun) and the integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the library it qualifies. The package job then installs the three archives into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the three archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
 
 ## Releases
 
@@ -84,9 +84,15 @@ Publication is manual and separate from CI. The [release workflow](./.github/wor
 
 ## Qualification evidence
 
-These records predate the workspace split; their paths and script names refer to the previous single-package layout, and the API contracts they describe are unchanged.
+### ABI 3 media path
+
+On September 23, 2026, in a Linux x64 container with 4 vCPUs, Rust 1.90.0, Clang 21.1.8, Node 24.15.0 and Bun 1.4.2, `bun run native:test` passed: Rust formatting, all 16 Rust tests including the real libwebrtc loopback, clippy with warnings denied, and all 19 JavaScript native tests on Node and again on Bun. Those include the media load tests against a local libwebrtc far peer sending 1344x768 BGRA at 24 fps. One session delivered at least 95% of encoded frames with p95 latency of at most 150 ms, and two concurrent sessions did the same for 10 s without dropping audio. A 250 ms event-loop stall dropped at most one frame, and a 2 s stall lost no audio. In three renewals the replacement kept receiving while the old session shut down; instrumented runs measured those shutdowns at 5–14 ms on both runtimes. The complete load suite passed three more times on each runtime, and once more on each with two of the four cores held busy.
+
+Run against the previous ABI 2 bridge on Bun, the throughput, stall and renewal tests all failed: 54 frames arrived where at least 220 were required, a 250 ms stall dropped 39 frames, and the renewal overlap dropped 710 audio blocks. On Node, ABI 2 failed the two-session test with 285 audio blocks dropped in 10 s. The CI portable profile, the release-tool tests, the pack/install smoke (whose installed native consumer preflights ABI 3) and the public browser/native integration project with Chromium also passed. The browser runner needed `BROWSER_NATIVE_NO_SANDBOX=1` because the container runs as root. macOS arm64, TURN relays, physical x64 hardware and hosted Reactor were not exercised.
 
 ### Canonical API checks
+
+This record and the retained ones below predate the workspace split; their paths and script names refer to the previous single-package layout, and the API contracts they describe are unchanged.
 
 On September 22, 2026, the focused TypeScript check passed and `scripts/native-test.sh` completed Rust formatting checks, all 12 Rust tests, clippy with warnings denied, and all 15 JavaScript native tests on macOS arm64. The Rust tests include the real libwebrtc media loopback. The JavaScript tests use the staged ABI 2 library and explicit C fixtures to cover the canonical session, ABI validation, source and byte identity, decoded-media parsing, interrupted foreign-call lifetime, and media failure/cleanup. The public browser/native integration project also passed through the canonical factories: both ordered binary channels, shared command return/event attribution, browser track leases and borrowed publication sources, failed-acquisition cleanup, 12 distinct decoded 160x96 BGRA frames, and 95 mono 48 kHz PCM packets were observed. Both owners joined cleanup without local errors and confirmed their fixture allocations closed.
 

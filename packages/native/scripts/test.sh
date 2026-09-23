@@ -24,6 +24,14 @@ fi
 cargo fmt --manifest-path rust/Cargo.toml -- --check
 cargo test --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml -- --nocapture
 cargo clippy --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+# The media load tests receive from a libwebrtc far peer on the same pinned
+# reactor-webrtc. It is a Cargo example, so it never enters the staged library.
+cargo build --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --release --example far_peer
+REACTOR_NATIVE_FAR_PEER="${CARGO_TARGET_DIR:-$root/rust/target}/release/examples/far_peer"
+export REACTOR_NATIVE_FAR_PEER
 # The preceding native:build owns staging. Tests load only the staged artifact
 # and reject a missing or mismatched identity instead of rebuilding another copy.
+# Under Bun, Koffi runs on Bun's own Node-API implementation, whose behaviour
+# under load has differed from Node's, so the same suite runs on both runtimes.
 "${NODE_BINARY:-node}" node_modules/vitest/vitest.mjs run
+"${BUN_BINARY:-bun}" --bun node_modules/vitest/vitest.mjs run

@@ -151,13 +151,15 @@ jobs:
       # pull request, a library qualified for the same inputs, build recipe,
       # toolchain and runner image is reused; the staging and preflight checks
       # still reject a library whose identity differs from the checked-out
-      # sources. A main run always builds the library it qualifies.
+      # sources. A main run always builds the library it qualifies. The test
+      # far peer the media load tests receive from is cached beside it: it is
+      # built from the same pinned reactor-webrtc and needs only the C runtime.
       - name: Compute native cache key
         id: identity
         shell: bash
         run: |
           source=$(node packages/native/scripts/stage.mjs --source-hash)
-          recipe='${{ hashFiles('packages/native/scripts/build.sh', 'packages/native/scripts/stage.sh', 'packages/native/scripts/stage.mjs', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/Dockerfile') }}'
+          recipe='${{ hashFiles('packages/native/scripts/build.sh', 'packages/native/scripts/stage.sh', 'packages/native/scripts/stage.mjs', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/Dockerfile', 'packages/native/rust/examples/**') }}'
           echo "key=native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-image${ImageVersion:-unknown}-source${source}-recipe${recipe}" >> "$GITHUB_OUTPUT"
 
       - name: Restore qualified native library
@@ -165,7 +167,9 @@ jobs:
         if: github.ref != 'refs/heads/main'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: packages/native/lib/${{ matrix.platform }}
+          path: |
+            packages/native/lib/${{ matrix.platform }}
+            packages/native/rust/target/release/examples/far_peer
           key: ${{ steps.identity.outputs.key }}
 
       - name: Set up Rust
@@ -209,12 +213,19 @@ jobs:
         if: steps.staged.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: packages/native/lib/${{ matrix.platform }}
+          path: |
+            packages/native/lib/${{ matrix.platform }}
+            packages/native/rust/target/release/examples/far_peer
           key: ${{ steps.identity.outputs.key }}
 
+      # The TypeScript host is not part of the cache key, so a restored library
+      # still runs the whole suite, media load tests included, on both runtimes.
       - name: Check the restored library against the current sources
         if: steps.staged.outputs.cache-hit == 'true'
-        run: bun run --filter reactor-effect-native test
+        working-directory: packages/native
+        run: |
+          node node_modules/vitest/vitest.mjs run
+          bun --bun node_modules/vitest/vitest.mjs run
 
       - name: Public browser/native WebRTC verification
         run: bun run test:integration

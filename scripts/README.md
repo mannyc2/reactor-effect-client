@@ -4,7 +4,7 @@
 
 The profiles are `portable`, `runtime`, `native`, `package`, `release` and `full`. Print a profile without executing it with `bun run verify --profile full --list`. `portable` needs no native binary. `runtime` builds and runs only the portable tests and import guards; CI uses it for the OS/Node matrix. `native` builds the packages, then builds and stages the host binary before checking it and running the public session integration. `package` checks the already staged binaries without rebuilding them. `release` combines the portable and package checks; its native matrix must have qualified the staged artifacts first. `full` runs all three parts.
 
-`test:portable` uses Bun discovery from the workspace root; `bunfig.toml` excludes the Node/Vitest files (`packages/native/test` and `*.integration.test.ts`) and disposable output. `test:native` and `test:integration` run Vitest under Node in `packages/native` and `integration`. There is no test filename registry: a new test in its workspace joins the corresponding project automatically.
+`test:portable` uses Bun discovery from the workspace root; `bunfig.toml` excludes the Node/Vitest files (`packages/native/test` and `*.integration.test.ts`) and disposable output. `test:native` runs Vitest in `packages/native` under Node and then Bun, and `test:integration` runs Vitest under Node in `integration`. There is no test filename registry: a new test in its workspace joins the corresponding project automatically.
 
 ## Files
 

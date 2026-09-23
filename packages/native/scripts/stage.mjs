@@ -72,7 +72,7 @@ if (start < 0 || end < 0 || bytes.indexOf(prefix, end + suffix.length) !== -1) {
 const build = JSON.parse(bytes.subarray(start + prefix.length, end).toString("utf8"));
 if (
   build.schemaVersion !== 1 ||
-  build.abiVersion !== 2 ||
+  build.abiVersion !== 3 ||
   build.profile !== "release" ||
   build.target !== target
 ) {

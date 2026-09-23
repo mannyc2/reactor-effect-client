@@ -104,7 +104,7 @@ fn build_identity() {
     let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".into());
     let mut fields = vec![
         "\"schemaVersion\":1".to_owned(),
-        "\"abiVersion\":2".to_owned(),
+        "\"abiVersion\":3".to_owned(),
         format!("\"sourceSha256\":{}", quote(digest)),
         format!("\"target\":{}", quote(&env::var("TARGET").unwrap())),
         format!("\"profile\":{}", quote(&env::var("PROFILE").unwrap())),

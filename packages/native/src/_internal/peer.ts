@@ -1,10 +1,10 @@
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
+import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ReactorError, ErrorCode } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client";
 import type { Mapping, Track } from "reactor-effect-client";
-import { Observations, errorOf } from "reactor-effect-client/host";
+import { Observations, errorOf, isRecord } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   Channel,
@@ -22,10 +22,13 @@ import type {
 import {
   encodeNativeJson,
   encodeNativeText,
+  failureCode,
   NativeBridge,
   NativeCall,
+  Ready,
+  type NativeAudio,
   type NativePacket,
-  type NativePoll,
+  type NativeVideo,
 } from "./bridge.js";
 
 const stateValues = new Set<PeerState>([
@@ -36,7 +39,6 @@ const stateValues = new Set<PeerState>([
   "failed",
   "closed",
 ]);
-const isErrorCode = Schema.is(ErrorCode);
 const statsBigInts = new Set([
   "bytesSent",
   "bytesReceived",
@@ -45,6 +47,8 @@ const statsBigInts = new Set([
   "retransmittedPacketsSent",
   "priority",
 ]);
+// Bound on reading statistics to classify a failed connection.
+const CLASSIFY_TIMEOUT_MS = 2000;
 
 const validateNativeTracks = (tracks: readonly Track[]): void => {
   const incomingVideo = tracks.filter(
@@ -63,9 +67,8 @@ const validateNativeTracks = (tracks: readonly Track[]): void => {
 };
 
 const record = (value: unknown, what: string): Record<string, unknown> => {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new ReactorError("Protocol", `native ${what} is not an object`);
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) throw new ReactorError("Protocol", `native ${what} is not an object`);
+  return value;
 };
 const string = (value: unknown, what: string): string => {
   if (typeof value !== "string")
@@ -200,12 +203,16 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
       };
     }
     case "error": {
-      const rawCode = string(header.code, "error.code"),
-        code = isErrorCode(rawCode) ? rawCode : "Native";
-      string(header.message, "error.message");
+      const status = header.status;
+      if (typeof status !== "number" || !Number.isSafeInteger(status))
+        throw new ReactorError("Protocol", "native error event omitted its failure class");
+      const message = string(header.message, "error.message"),
+        code = failureCode(status);
       return {
         type: "error",
-        error: new ReactorError(code, `native peer failed (${code})`, { detail: header }),
+        error: new ReactorError(code, `native peer failed (${code})`, {
+          detail: { status, message },
+        }),
       };
     }
     default:
@@ -213,60 +220,47 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
   }
 };
 
-const parseVideo = (packet: NativePacket): VideoFrame => {
-  const h = packet.header;
-  if (h.type !== "video" || h.format !== "BGRA")
-    throw new ReactorError("Protocol", "native video packet has an unsupported format");
-  const width = integer(h.width, "video.width"),
-    height = integer(h.height, "video.height"),
-    dataLength = integer(h.dataLength, "video.dataLength"),
-    metadataLength = integer(h.metadataLength, "video.metadataLength");
+/** The native track index is the position of the track in the prepare request. */
+const receiving = (tracks: readonly Track[], index: number, kind: "video" | "audio"): string => {
+  const track = tracks[index];
+  if (track === undefined || track.direction !== "recvonly" || track.kind !== kind)
+    throw new ReactorError(
+      "Protocol",
+      `native ${kind} was delivered without its declared receive mapping`,
+    );
+  return track.name;
+};
+
+const videoFrame = (tracks: readonly Track[], taken: NativeVideo): VideoFrame => {
+  const track = receiving(tracks, taken.track, "video");
   if (
-    width === 0 ||
-    height === 0 ||
-    dataLength !== width * height * 4 ||
-    dataLength + metadataLength !== packet.payload.length
+    taken.width === 0 ||
+    taken.height === 0 ||
+    taken.data.byteLength !== taken.width * taken.height * 4
   )
     throw new ReactorError("Protocol", "native BGRA frame dimensions do not match its payload");
   return Object.freeze({
     _tag: "VideoFrame",
-    track: string(h.track, "video.track"),
-    width,
-    height,
-    frameId: bigint(h.frameId, "video.frameId"),
-    timestampMicros: bigint(h.timestampMicros, "video.timestampMicros"),
-    data: Uint8Array.from(packet.payload.subarray(0, dataLength)),
-    metadata: Uint8Array.from(packet.payload.subarray(dataLength)),
+    track,
+    width: taken.width,
+    height: taken.height,
+    frameId: taken.frameId,
+    timestampMicros: taken.timestampMicros,
+    data: taken.data,
+    metadata: taken.metadata,
   });
 };
 
-const parseAudio = (packet: NativePacket): AudioFrame => {
-  const h = packet.header;
-  if (h.type !== "audio" || h.format !== "s16le")
-    throw new ReactorError("Protocol", "native audio packet has an unsupported format");
-  const sampleRate = integer(h.sampleRate, "audio.sampleRate"),
-    channels = integer(h.channels, "audio.channels"),
-    samples = integer(h.samples, "audio.samples");
-  if (
-    sampleRate === 0 ||
-    channels === 0 ||
-    samples % channels !== 0 ||
-    packet.payload.length !== samples * 2
-  )
+const audioFrame = (tracks: readonly Track[], taken: NativeAudio): AudioFrame => {
+  const track = receiving(tracks, taken.track, "audio");
+  if (taken.sampleRate === 0 || taken.channels === 0 || taken.samples.length % taken.channels)
     throw new ReactorError("Protocol", "native PCM format does not match its payload");
-  const view = new DataView(
-      packet.payload.buffer,
-      packet.payload.byteOffset,
-      packet.payload.byteLength,
-    ),
-    pcm = new Int16Array(samples);
-  for (let index = 0; index < samples; index++) pcm[index] = view.getInt16(index * 2, true);
   return Object.freeze({
     _tag: "AudioFrame",
-    track: string(h.track, "audio.track"),
-    sampleRate,
-    channels,
-    samples: pcm,
+    track,
+    sampleRate: taken.sampleRate,
+    channels: taken.channels,
+    samples: taken.samples,
   });
 };
 
@@ -300,13 +294,42 @@ const statsValue = (value: unknown): unknown => {
   return output;
 };
 
-const pollPacket = (
-  poll: () => Promise<NativePoll>,
-): Effect.Effect<NativePacket | undefined | null, ReactorError> =>
-  bridgeEffect("poll native WebRTC", async () => {
-    const result = await poll();
-    return result._tag === "Packet" ? result.packet : result._tag === "Closed" ? null : undefined;
+/**
+ * Classify a failed connection from its candidate pairs. reactor-webrtc does
+ * not report ICE connection state, but a pair that succeeded or was nominated
+ * shows ICE worked and the DTLS/SCTP transport above it failed.
+ */
+const connectionFailure = (stats: readonly unknown[]): ReactorError => {
+  const entries = stats.filter(isRecord);
+  const pairs = entries.filter((entry) => entry.type === "candidate-pair");
+  if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
+    return new ReactorError(
+      "TransportFailed",
+      "native peer failed after ICE connectivity succeeded",
+      { detail: { pairs: pairs.length } },
+    );
+  const candidateTypes = [
+    ...new Set(
+      entries
+        .filter((entry) => entry.type === "local-candidate")
+        .map((entry) => entry.candidateType)
+        .filter((type): type is string => typeof type === "string"),
+    ),
+  ];
+  return new ReactorError("IceFailed", "native peer found no working ICE candidate pair", {
+    detail: { pairs: pairs.length, candidateTypes },
   });
+};
+
+const withTimeout = <A>(promise: Promise<A>, ms: number, message: string): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new ReactorError("Timeout", message)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+};
 
 export class NativePeer implements Peer {
   readonly nativeTracks = false;
@@ -315,13 +338,19 @@ export class NativePeer implements Peer {
   private readonly video = new Map<string, Observations<VideoFrame>>();
   private readonly audio = new Map<string, Observations<AudioFrame>>();
   private readonly incoming = new Map<string, "video" | "audio">();
+  private tracks: readonly Track[] = [];
+  // Readiness wakes one pump per native queue; a pending wake coalesces.
+  private readonly wakeEvents = Effect.runSync(Queue.dropping<void>(1));
+  private readonly wakeVideo = Effect.runSync(Queue.dropping<void>(1));
+  private readonly wakeAudio = Effect.runSync(Queue.dropping<void>(1));
   private emit: ((event: PeerEvent) => void) | undefined;
   private closed = false;
+  private classifying = false;
   private failureEmitted = false;
   private failure: ReactorError | undefined;
 
   constructor(libraryPath: string) {
-    this.bridge = new NativeBridge(libraryPath);
+    this.bridge = new NativeBridge(libraryPath, (ready) => this.wake(ready));
     this.rawMedia = Object.freeze({
       video: (name: string) =>
         Stream.unwrap(
@@ -393,77 +422,86 @@ export class NativePeer implements Peer {
     }
   }
 
-  private pumpEvents(): Effect.Effect<void> {
+  /** The native readiness callback, on the JavaScript thread: it only wakes pumps. */
+  private wake(ready: number): void {
+    if (ready & Ready.Events) Queue.offerUnsafe(this.wakeEvents, undefined);
+    if (ready & Ready.Video) Queue.offerUnsafe(this.wakeVideo, undefined);
+    if (ready & Ready.Audio) Queue.offerUnsafe(this.wakeAudio, undefined);
+  }
+
+  /**
+   * Drain one native queue with synchronous takes whenever readiness wakes
+   * it. Yielding after every item lets observers run between emits, so a
+   * backlog released by a stalled event loop reaches bounded observation
+   * queues at their readers' pace rather than all at once.
+   */
+  private pump(wake: Queue.Queue<void>, step: () => boolean): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       while (!self.closed) {
-        const packet = yield* pollPacket(() => self.bridge.pollEvent());
-        if (self.closed) return;
-        if (packet === null) return;
-        if (packet === undefined) continue;
-        const event = yield* Effect.try({
-          try: () => parseEvent(packet),
-          catch: (cause) => nativeError(cause, "decode native event"),
-        });
-        if (event.type === "error") {
-          self.fail(event.error);
-          return;
+        yield* Queue.take(wake);
+        while (!self.closed && (yield* Effect.try({ try: step, catch: (cause) => cause }))) {
+          yield* Effect.yieldNow;
         }
-        self.emit?.(event);
       }
-    }).pipe(Effect.catch((error) => Effect.sync(() => self.fail(error))));
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => self.fail(nativeError(cause, "drain native WebRTC"))),
+      ),
+    );
   }
 
-  private pumpVideo(): Effect.Effect<void> {
-    const self = this;
-    return Effect.gen(function* () {
-      while (!self.closed) {
-        const packet = yield* pollPacket(() => self.bridge.pollVideo());
-        if (self.closed) return;
-        if (packet === null) return;
-        if (packet === undefined) continue;
-        const frame = yield* Effect.try({
-          try: () => {
-            const frame = parseVideo(packet);
-            if (self.incoming.get(frame.track) !== "video")
-              throw new ReactorError(
-                "Protocol",
-                "native video was delivered without its declared receive mapping",
-              );
-            return frame;
-          },
-          catch: (cause) => nativeError(cause, "decode native video"),
-        });
-        self
-          .videoFeed(frame.track)
-          .emit(frame, frame.data.byteLength + frame.metadata.byteLength + frame.track.length * 2);
-      }
-    }).pipe(Effect.catch((error) => Effect.sync(() => self.fail(error))));
+  /** Deliver one event; false once the queue is empty or closed. */
+  private stepEvent(): boolean {
+    const packet = this.bridge.takeEvent();
+    if (packet === undefined || packet === null) return false;
+    const event = parseEvent(packet);
+    // The failed connection's classification decides its error; later events
+    // describe the same teardown.
+    if (this.classifying) return true;
+    if (event.type === "error") this.fail(event.error);
+    else if (event.type === "state" && event.state === "failed") this.classify();
+    else this.emit?.(event);
+    return true;
   }
 
-  private pumpAudio(): Effect.Effect<void> {
-    const self = this;
-    return Effect.gen(function* () {
-      while (!self.closed) {
-        const packet = yield* pollPacket(() => self.bridge.pollAudio());
-        if (self.closed) return;
-        if (packet === null) return;
-        if (packet === undefined) continue;
-        const frame = yield* Effect.try({
-          try: () => {
-            const frame = parseAudio(packet);
-            if (self.incoming.get(frame.track) !== "audio")
-              throw new ReactorError(
-                "Protocol",
-                "native audio was delivered without its declared receive mapping",
-              );
-            return frame;
-          },
-          catch: (cause) => nativeError(cause, "decode native audio"),
-        });
-        self.audioFeed(frame.track).emit(frame, frame.samples.byteLength + frame.track.length * 2);
-      }
-    }).pipe(Effect.catch((error) => Effect.sync(() => self.fail(error))));
+  private stepVideo(): boolean {
+    const taken = this.bridge.takeVideo();
+    if (taken === undefined || taken === null) return false;
+    const frame = videoFrame(this.tracks, taken);
+    this.videoFeed(frame.track).emit(
+      frame,
+      frame.data.byteLength + frame.metadata.byteLength + frame.track.length * 2,
+    );
+    return true;
+  }
+
+  private stepAudio(): boolean {
+    const taken = this.bridge.takeAudio();
+    if (taken === undefined || taken === null) return false;
+    const frame = audioFrame(this.tracks, taken);
+    this.audioFeed(frame.track).emit(frame, frame.samples.byteLength + frame.track.length * 2);
+    return true;
+  }
+
+  /** Report a failed connection as IceFailed or TransportFailed rather than a bare state. */
+  private classify(): void {
+    this.classifying = true;
+    withTimeout(
+      this.bridge.call(NativeCall.Stats),
+      CLASSIFY_TIMEOUT_MS,
+      "native failure classification timed out",
+    )
+      .then(
+        (stats) =>
+          Array.isArray(stats)
+            ? connectionFailure(stats)
+            : new ReactorError("Disconnected", "peer state failed"),
+        (cause: unknown) =>
+          new ReactorError("Disconnected", "peer state failed", { detail: cause }),
+      )
+      .then((error) => this.fail(error))
+      .catch(() => this.close());
   }
 
   prepare(
@@ -477,6 +515,7 @@ export class NativePeer implements Peer {
         try: () => validateNativeTracks(tracks),
         catch: (cause) => nativeError(cause, "validate native tracks"),
       });
+      self.tracks = Object.freeze([...tracks]);
       for (const track of tracks)
         if (track.direction === "recvonly") self.incoming.set(track.name, track.kind);
       self.emit = emit;
@@ -494,9 +533,9 @@ export class NativePeer implements Peer {
           }),
         ),
       );
-      yield* Effect.forkScoped(self.pumpEvents());
-      yield* Effect.forkScoped(self.pumpVideo());
-      yield* Effect.forkScoped(self.pumpAudio());
+      yield* Effect.forkScoped(self.pump(self.wakeEvents, () => self.stepEvent()));
+      yield* Effect.forkScoped(self.pump(self.wakeVideo, () => self.stepVideo()));
+      yield* Effect.forkScoped(self.pump(self.wakeAudio, () => self.stepAudio()));
       return prepared;
     });
   }
@@ -577,6 +616,9 @@ export class NativePeer implements Peer {
     this.closed = true;
     this.emit = undefined;
     this.bridge.close();
+    // Let waiting pumps observe the close and exit.
+    for (const wake of [this.wakeEvents, this.wakeVideo, this.wakeAudio])
+      Queue.offerUnsafe(wake, undefined);
     for (const feed of this.video.values()) {
       if (this.failure === undefined) feed.end();
       else feed.fail(this.failure);
@@ -606,9 +648,10 @@ export class NativePeer implements Peer {
 export const nativePeerTesting = Object.freeze({
   parsePrepared,
   parseEvent,
-  parseVideo,
-  parseAudio,
+  videoFrame,
+  audioFrame,
   parseSnapshot,
   statsValue,
   validateNativeTracks,
+  connectionFailure,
 });

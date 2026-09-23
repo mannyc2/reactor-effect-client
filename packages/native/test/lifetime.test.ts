@@ -1,39 +1,23 @@
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { rmSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
-import { checkNativeBridge, NativeBridge } from "../src/_internal/bridge.js";
+import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";
+import { compileFixture, until } from "./support.js";
 
-const fixtureSource = fileURLToPath(new URL("./session-fixture.c", import.meta.url));
 const compile = () => {
-  const directory = mkdtempSync(join(tmpdir(), "reactor-native-lifetime-"));
-  const path = join(directory, process.platform === "darwin" ? "fixture.dylib" : "fixture.so");
-  const compiler = process.env.CC ?? "cc";
-  const flags = process.platform === "darwin" ? ["-dynamiclib"] : ["-shared", "-fPIC"];
-  const result = spawnSync(
-    compiler,
-    ["-std=c11", "-D_DEFAULT_SOURCE", ...flags, fixtureSource, "-o", path],
-    { encoding: "utf8" },
-  );
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) throw new Error(`${compiler} failed: ${result.stderr}`);
-  return { directory, path, library: koffi.load(path) };
+  const fixture = compileFixture();
+  return { ...fixture, library: koffi.load(fixture.path) };
 };
 
-const until = async (condition: () => boolean, message: string): Promise<void> => {
-  const deadline = performance.now() + 5000;
-  while (!condition()) {
-    if (performance.now() >= deadline) throw new Error(message);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-};
+const tracks = [
+  { name: "main_video", kind: "video", direction: "recvonly" },
+  { name: "main_audio", kind: "audio", direction: "recvonly" },
+  { name: "input_audio", kind: "audio", direction: "sendonly" },
+] as const;
 
 describe("native foreign-call ownership", () => {
   test("joins active and queued Koffi work after Effect interruption before one handle destruction", async () => {
@@ -112,69 +96,28 @@ describe("native foreign-call ownership", () => {
     }
   }, 15_000);
 
-  test.each([
-    [8, 13],
-    [13, 8],
-  ])(
-    "retains a %i-byte payload when %i-byte media evicts a queued packet between FFI calls",
-    async (firstSize, replacementSize) => {
-      if (process.platform === "win32") return;
-      const fixture = compile();
-      const begin = fixture.library.func("void fixture_packet_begin(int first_size)");
-      const push = fixture.library.func("void fixture_packet_push(int size, int value)");
-      const evictions = fixture.library.func("int fixture_packet_evictions(void)");
-      begin(firstSize);
-      let injected = false;
-      const originalLoad = koffi.load;
-      // This hook runs after the actual first foreign call has returned and
-      // before its JS continuation can issue the copying foreign call.
-      const load = vi.spyOn(koffi, "load").mockImplementation((path, options) => {
-        const library = options === undefined ? originalLoad(path) : originalLoad(path, options);
-        if (path !== fixture.path) return library;
-        return new Proxy(library, {
-          get(target, property, receiver) {
-            if (property !== "func") return Reflect.get(target, property, receiver);
-            return (prototype: string) => {
-              const native = target.func(prototype);
-              if (!prototype.includes("reactor_effect_peer_poll_video(")) return native;
-              const wrapped = (...args: unknown[]) => native(...args);
-              wrapped.async = (...args: unknown[]) => {
-                const done = args.pop() as (error: unknown, status: number) => void;
-                native.async(...args, (error: unknown, status: number) => {
-                  if (error == null && status === 2 && !injected) {
-                    injected = true;
-                    push(replacementSize, 3);
-                  }
-                  done(error, status);
-                });
-              };
-              return wrapped;
-            };
-          },
-        });
-      });
-      let bridge: NativeBridge | undefined;
-      try {
-        await checkNativeBridge(fixture.path);
-        load.mockRestore();
-        bridge = new NativeBridge(fixture.path);
-        const original = await bridge.pollVideo(0);
-        expect(injected).toBe(true);
-        expect(evictions()).toBe(1);
-        expect(original._tag).toBe("Packet");
-        if (original._tag !== "Packet") throw new Error("retained packet was not delivered");
-        expect([...original.packet.payload]).toEqual(Array(firstSize).fill(1));
-        const replacement = await bridge.pollVideo(0);
-        expect(replacement._tag).toBe("Packet");
-        if (replacement._tag !== "Packet") throw new Error("replacement packet was not delivered");
-        expect([...replacement.packet.payload]).toEqual(Array(replacementSize).fill(3));
-      } finally {
-        load.mockRestore();
-        await bridge?.shutdown();
-        rmSync(fixture.directory, { recursive: true, force: true });
-      }
-    },
-  );
+  test("unregisters the readiness callback only after shutdown joined the notifier thread", async () => {
+    if (process.platform === "win32") return;
+    const fixture = compile();
+    const stat = fixture.library.func("int fixture_lifetime_stat(int which)");
+    const unregister = koffi.unregister;
+    const joinsAtUnregister: number[] = [];
+    const spy = vi.spyOn(koffi, "unregister").mockImplementation((callback) => {
+      joinsAtUnregister.push(stat(7));
+      unregister(callback);
+    });
+    try {
+      await checkNativeBridge(fixture.path);
+      const joins = stat(7);
+      const peer = new NativePeer(fixture.path);
+      await Effect.runPromise(peer.shutdown());
+      await Effect.runPromise(peer.shutdown());
+      expect(joinsAtUnregister).toEqual([joins + 1]);
+    } finally {
+      spy.mockRestore();
+      rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
 
   test("source failure reaches existing and future decoded-media readers", async () => {
     if (process.platform === "win32") return;
@@ -191,21 +134,14 @@ describe("native foreign-call ownership", () => {
           Effect.gen(function* () {
             // Finalizers have no typed error channel; a shutdown defect must still fail this test.
             yield* Effect.addFinalizer(() => ownedPeer.shutdown().pipe(Effect.orDie));
-            yield* ownedPeer.prepare(
-              [],
-              [
-                { name: "main_video", kind: "video", direction: "recvonly" },
-                { name: "main_audio", kind: "audio", direction: "recvonly" },
-                { name: "input_audio", kind: "audio", direction: "sendonly" },
-              ],
-              (event) => {
-                if (event.type === "error") errors.push(event.error);
-              },
-            );
+            yield* ownedPeer.prepare([], tracks, (event) => {
+              if (event.type === "error") errors.push(event.error);
+            });
             const reader = yield* Effect.forkChild(
               Effect.result(ownedPeer.rawMedia.video("main_video").pipe(Stream.runHead)),
             );
             yield* Effect.yieldNow;
+            // The fixture's next frame names a track index that is not a video receiver.
             fault(1);
             yield* ownedPeer.rawMedia.snapshot;
             const current = yield* Fiber.join(reader);
@@ -219,6 +155,7 @@ describe("native foreign-call ownership", () => {
         ),
       );
     } finally {
+      fault(0);
       if (peer !== undefined) await Effect.runPromise(peer.shutdown());
       rmSync(fixture.directory, { recursive: true, force: true });
     }
@@ -236,15 +173,7 @@ describe("native foreign-call ownership", () => {
         Effect.scoped(
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() => ownedPeer.shutdown().pipe(Effect.orDie));
-            yield* ownedPeer.prepare(
-              [],
-              [
-                { name: "main_video", kind: "video", direction: "recvonly" },
-                { name: "main_audio", kind: "audio", direction: "recvonly" },
-                { name: "input_audio", kind: "audio", direction: "sendonly" },
-              ],
-              () => {},
-            );
+            yield* ownedPeer.prepare([], tracks, () => {});
             for (const name of ["missing", "main_audio", "input_audio"]) {
               const result = yield* Effect.result(
                 ownedPeer.rawMedia.video(name).pipe(Stream.runHead),
