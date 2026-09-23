@@ -21,8 +21,7 @@ export type {
   SourceCleanup,
   CleanupReport,
   HandleShape,
-  CommandError,
-  EnqueueError,
+  EngineError,
   RemoveOutcome,
 } from "./types.js";
 export { emptyState, isIdle, isLive, committedMs, securedMs, pendingCount } from "./queries.js";

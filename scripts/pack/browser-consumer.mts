@@ -12,8 +12,11 @@ import * as Wire from "reactor-effect-client/wire";
 declare const factory: Effect.Success<ReturnType<typeof Browser.make>>;
 declare const session: Root.Session;
 const sameSession: Effect.Success<ReturnType<typeof factory.create>> = session;
-const provider: Effect.Effect<H3.Provider, Root.ReactorError, Crypto.Crypto | Scope.Scope> =
-  H3.make(session);
+const provider: Effect.Effect<
+  H3.Provider,
+  Root.ReactorError | Root.CommandFailure,
+  Crypto.Crypto | Scope.Scope
+> = H3.make(session);
 const track = Effect.flatMap(Browser.media(session), (media) => media.track("video"));
 const browserTrack: Effect.Effect<MediaStreamTrack, Root.ReactorError, Scope.Scope> = track;
 void [Root.make, H3, Orchestration, Simulation, sameSession, provider, browserTrack];

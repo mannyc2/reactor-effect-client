@@ -6,9 +6,14 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { errorOf, positiveLimit, ReactorError } from "../../errors.js";
+import {
+  CommandFailure,
+  errorOf,
+  PolicyFailure,
+  positiveLimit,
+  ReactorError,
+} from "../../errors.js";
 import { Observations } from "../../observation.js";
-import { CommandFailure } from "../../session/commands.js";
 import type { CommandReply, Session, SessionEvent } from "../../session/index.js";
 import * as Submission from "../../Submission.js";
 import type { UploadReference } from "../../wire.generated.js";
@@ -23,6 +28,7 @@ import type {
   Provider,
   ProviderEvent,
   Reply,
+  Request,
 } from "../types.js";
 import { Commands } from "./contracts.js";
 import type {
@@ -42,8 +48,14 @@ import { ProviderState } from "./state.js";
 
 const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> =>
   Effect.try({ try: evaluate, catch: errorOf });
-const localFailure = (operation: string, cause: ReactorError): CommandFailure =>
+const localFailure = (operation: string, cause: ReactorError | CommandFailure): CommandFailure =>
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
+/** A caller's local refusal already proves no dispatch; anything else becomes one. */
+const preparationFailure = <E extends PolicyFailure>(
+  operation: string,
+  cause: ReactorError | CommandFailure | E,
+): CommandFailure | E =>
+  ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure(operation, cause) : cause;
 const uncertain = (
   operation: string,
   source: CommandReply,
@@ -113,7 +125,7 @@ type ObservationResult = DecodedMessage | undefined;
 const build = (
   session: Session,
   options: Options,
-): Effect.Effect<Provider, ReactorError, Crypto.Crypto | Scope.Scope> =>
+): Effect.Effect<Provider, ReactorError | CommandFailure, Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const crypto = yield* Crypto.Crypto;
@@ -535,20 +547,23 @@ const build = (
           });
         return `${namespace}:${++counter}`;
       });
-    const prepared = (
+    const prepared = <E extends PolicyFailure>(
       id: string,
       input: Effect.Effect<
         { readonly request: CapturedRequest; readonly metadata: string },
-        ReactorError,
+        ReactorError | CommandFailure | E,
         Scope.Scope
       >,
-      hooks: PrepareHooks,
-    ): ReturnType<Provider["prepare"]> =>
+      hooks: PrepareHooks<E>,
+    ): Effect.Effect<
+      Submission.Submission<Acceptance, CommandFailure | E>,
+      ReactorError | CommandFailure
+    > =>
       Submission.make({
         id,
         prepare: Effect.gen(function* () {
           const { request, metadata } = yield* input.pipe(
-            Effect.mapError((error) => localFailure("enqueue", error)),
+            Effect.mapError((error) => preparationFailure("enqueue", error)),
           );
           const staged = yield* stage(request, metadata);
           return {
@@ -679,7 +694,10 @@ const build = (
               );
         },
       }).pipe(Scope.provide(scope));
-    const prepare: Provider["prepare"] = (input, hooks = {}) =>
+    const prepare: Provider["prepare"] = <E extends PolicyFailure = never>(
+      input: Request,
+      hooks: PrepareHooks<E> = {},
+    ) =>
       Effect.gen(function* () {
         yield* active("enqueue", true);
         const request = yield* pure(() => captureRequest(input, limits.prompt));
@@ -687,7 +705,10 @@ const build = (
         const metadata = yield* pure(() => encodeMetadata(namespace, id, request.metadata));
         return yield* prepared(id, Effect.succeed({ request, metadata }), hooks);
       });
-    const prepareFrom: Provider["prepareFrom"] = (preparation, hooks = {}) =>
+    const prepareFrom: Provider["prepareFrom"] = <E extends PolicyFailure = never>(
+      preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
+      hooks: PrepareHooks<E> = {},
+    ) =>
       Effect.gen(function* () {
         yield* active("enqueue", true);
         if (!Effect.isEffect(preparation))
@@ -758,7 +779,9 @@ const build = (
       prepareFrom,
       enqueue: (request) =>
         prepare(request).pipe(
-          Effect.mapError((error) => localFailure("enqueue", error)),
+          Effect.mapError((error) =>
+            ReactorError.is(error) ? localFailure("enqueue", error) : error,
+          ),
           Effect.flatMap((submission) => submission.submit),
         ),
       getState,
@@ -829,7 +852,7 @@ const build = (
 export const make = (
   session: Session,
   options: Options = {},
-): Effect.Effect<Provider, ReactorError, Crypto.Crypto | Scope.Scope> =>
+): Effect.Effect<Provider, ReactorError | CommandFailure, Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const child = yield* Scope.fork(yield* Effect.scope);
     return yield* build(session, options).pipe(

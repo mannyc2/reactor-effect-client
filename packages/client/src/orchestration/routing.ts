@@ -132,7 +132,7 @@ export const resolve = <Owner>(
       return Object.freeze({ owner, position });
     },
     catch: (cause) =>
-      cause instanceof PolicyFailure
+      PolicyFailure.is(cause)
         ? cause
         : PolicyFailure.refuse(
             "invalid_request",

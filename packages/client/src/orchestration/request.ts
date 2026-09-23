@@ -1,8 +1,9 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { jsonObject } from "../json.js";
-import { CommandFailure } from "../session/commands.js";
-import { ReactorError } from "../errors.js";
+import { AcquisitionFailure, CommandFailure, PolicyFailure, ReactorError } from "../errors.js";
+
+export { PolicyFailure };
 
 export const ClipId = Schema.String.pipe(Schema.brand("ClipId"));
 export type ClipId = typeof ClipId.Type;
@@ -34,30 +35,6 @@ export class ClipRequest extends Schema.Class<ClipRequest>("OrchestrationClipReq
   speech: Schema.optionalKey(Schema.String),
   sequence: Schema.optionalKey(ClipSequence),
 }) {}
-
-/** Local admission is a policy decision, with explicit proof of no dispatch. */
-export class PolicyFailure extends CommandFailure.extend<PolicyFailure>(
-  "reactor-effect-client/PolicyFailure",
-)({ reason: Schema.String }) {
-  /** A local refusal of `operation`, which was therefore never dispatched. */
-  static refuse(
-    reason: string,
-    message: string,
-    operation = "enqueue",
-    cause?: unknown,
-  ): PolicyFailure {
-    return new PolicyFailure({
-      code: reason === "invalid_request" ? "InvalidInput" : "InvalidState",
-      message,
-      context: {
-        operation,
-        outcome: "not-submitted",
-        ...(cause === undefined ? {} : { detail: cause }),
-      },
-      reason,
-    });
-  }
-}
 
 const captured = new WeakSet<ClipRequest>();
 const fields = new Set([
@@ -155,11 +132,14 @@ export const captureRequest = (input: ClipRequest): Effect.Effect<ClipRequest, P
   });
 
 /** An error during caller-owned prework cannot imply that enqueue was sent. */
-export const preworkFailure = (operation: string, cause: unknown): CommandFailure =>
-  cause instanceof CommandFailure && cause.context.outcome === "not-submitted"
+export const preworkFailure = (
+  operation: string,
+  cause: unknown,
+): CommandFailure | PolicyFailure =>
+  PolicyFailure.is(cause) || (CommandFailure.is(cause) && cause.context.outcome === "not-submitted")
     ? cause
     : CommandFailure.from(
-        cause instanceof ReactorError
+        ReactorError.is(cause) || CommandFailure.is(cause) || AcquisitionFailure.is(cause)
           ? cause
           : new ReactorError({ code: "InvalidInput", message: `${operation} preparation failed` }),
         {

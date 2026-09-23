@@ -1,13 +1,11 @@
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
-import * as Schema from "effect/Schema";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../coordinator/_internal/client.js";
-import { errorOf, ReactorError } from "../../errors.js";
+import { AcquisitionFailure, errorOf, ReactorError } from "../../errors.js";
 import { json, nonempty, uint32 } from "../../json.js";
 import type { PeerFactoryShape } from "../../PeerFactory.js";
 import { Session as SessionImplementation } from "../../session.js";
@@ -19,30 +17,10 @@ type Input =
   | { readonly _tag: "Create"; readonly options: CreateOptions }
   | { readonly _tag: "Attach"; readonly options: AttachOptions };
 
-/** The report a lease produced, kept by reference rather than copied. */
-const Cleanup = Schema.declare(
-  (input: unknown): input is CloseReport =>
-    Predicate.isObject(input) && typeof input.localClosed === "boolean",
-  { expected: "CloseReport" },
-);
+export { AcquisitionFailure };
 
-/** A failed acquisition still returns the lifetime evidence of its partial lease. */
-export class AcquisitionFailure extends ReactorError.extend<AcquisitionFailure>(
-  "reactor-effect-client/AcquisitionFailure",
-)({ cleanup: Cleanup }) {
-  /** `error`'s failure, with the cleanup its partial lease reported. */
-  static from(error: ReactorError, cleanup: CloseReport): AcquisitionFailure {
-    return new AcquisitionFailure({
-      code: error.code,
-      message: error.message,
-      context: error.context,
-      ...(error.nativeError === undefined ? {} : { nativeError: error.nativeError }),
-      cleanup,
-    });
-  }
-}
-
-const noAcquisition: CloseReport = Object.freeze({
+/** The report of an acquisition that allocated and attached nothing. */
+export const noAcquisition: CloseReport = Object.freeze({
   localClosed: true,
   allocation: "none",
   remote: Object.freeze({

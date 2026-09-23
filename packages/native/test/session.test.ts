@@ -13,8 +13,8 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
-import { ReactorError } from "reactor-effect-client";
 import { FetchHttp } from "reactor-effect-client";
+import type { ReactorFailure } from "reactor-effect-client";
 import * as Native from "../src/index.js";
 import type { UploadReference } from "reactor-effect-client/wire";
 import { compileFixture, until } from "./support.js";
@@ -69,8 +69,8 @@ const coordinator = () => {
   return { fetch, allocated, deleted };
 };
 
-const runClient = <A>(
-  effect: Effect.Effect<A, ReactorError, PlatformHttp.HttpClient | Crypto.Crypto>,
+const runClient = <A, E extends ReactorFailure>(
+  effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
   fetch: typeof globalThis.fetch = coordinator().fetch,
 ): Promise<A> =>
   Effect.runPromise(

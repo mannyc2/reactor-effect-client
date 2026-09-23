@@ -49,7 +49,7 @@ interface Resources {
   close(): void;
 }
 const failure = (error: unknown): ReactorError =>
-  error instanceof ReactorError
+  ReactorError.is(error)
     ? error
     : new ReactorError({
         code: "UnsupportedCapability",

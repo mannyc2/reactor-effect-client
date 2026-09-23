@@ -9,7 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Http from "effect/unstable/http/HttpClient";
-import { ReactorError } from "../errors.js";
+import { CommandFailure, ReactorError } from "../errors.js";
 import type { Clip as ProviderClip } from "../h3/messages.js";
 import { h3ReferenceTurboRealtime } from "../h3/profile.js";
 import type {
@@ -146,7 +146,7 @@ export const fromH3 = (
   options: H3SourceOptions,
 ): Effect.Effect<
   Source,
-  ReactorError,
+  ReactorError | PolicyFailure | CommandFailure,
   Scope.Scope | FileSystem.FileSystem | Path.Path | Http.HttpClient
 > =>
   Effect.gen(function* () {
@@ -291,30 +291,32 @@ export const fromH3 = (
       Effect.gen(function* () {
         const request = yield* captureRequest(plan.request);
         let annotation: Annotation | undefined;
-        const input: Effect.Effect<ProviderRequest, ReactorError, Scope.Scope> = Effect.gen(
-          function* () {
-            yield* requireReady("enqueue");
-            const references = yield* Effect.forEach(request.references, ({ uri }) =>
-              loadReferenceBytes(uri, {
-                maxBytes:
-                  options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
-                timeoutMs: options.references?.timeoutMs ?? 5000,
-              }).pipe(
-                Effect.provideContext(environment),
-                Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),
-              ),
-            );
-            return {
-              prompt: request.prompt,
-              references,
-              seconds: request.durationSeconds,
-              metadata: JSON.stringify(request.metadata),
-              ...(request.seed === undefined ? {} : { seed: request.seed }),
-              ...(request.continueFrom === undefined ? {} : { continueFrom: request.continueFrom }),
-              ...(plan.position === undefined ? {} : { position: plan.position }),
-            };
-          },
-        );
+        const input: Effect.Effect<
+          ProviderRequest,
+          ReactorError | CommandFailure | PolicyFailure,
+          Scope.Scope
+        > = Effect.gen(function* () {
+          yield* requireReady("enqueue");
+          const references = yield* Effect.forEach(request.references, ({ uri }) =>
+            loadReferenceBytes(uri, {
+              maxBytes:
+                options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
+              timeoutMs: options.references?.timeoutMs ?? 5000,
+            }).pipe(
+              Effect.provideContext(environment),
+              Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),
+            ),
+          );
+          return {
+            prompt: request.prompt,
+            references,
+            seconds: request.durationSeconds,
+            metadata: JSON.stringify(request.metadata),
+            ...(request.seed === undefined ? {} : { seed: request.seed }),
+            ...(request.continueFrom === undefined ? {} : { continueFrom: request.continueFrom }),
+            ...(plan.position === undefined ? {} : { position: plan.position }),
+          };
+        });
         const prepared = yield* provider
           .prepareFrom(input, {
             commit: (id) =>

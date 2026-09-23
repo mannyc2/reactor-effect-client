@@ -15,8 +15,11 @@ declare const session: Root.Session;
 // published by reactor-effect-client; H3 composes over that same session.
 const nativeFactory: Effect.Effect<Root.Factory, never, Http.HttpClient | Crypto.Crypto> =
   Native.make();
-const provider: Effect.Effect<H3.Provider, Root.ReactorError, Crypto.Crypto | Scope.Scope> =
-  H3.make(session);
+const provider: Effect.Effect<
+  H3.Provider,
+  Root.ReactorError | Root.CommandFailure,
+  Crypto.Crypto | Scope.Scope
+> = H3.make(session);
 const nativeMedia: Effect.Effect<Native.MediaGeneration, Root.ReactorError> = Native.media(session);
 declare const frame: Native.VideoFrame;
 const nativeClock: bigint = frame.timestampMicros;

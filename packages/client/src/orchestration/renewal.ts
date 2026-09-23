@@ -10,12 +10,12 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
-import { ReactorError, errorOf } from "../errors.js";
+import { AcquisitionFailure, CommandFailure, ReactorError, errorOf } from "../errors.js";
+import type { ReactorFailure } from "../errors.js";
 import { Observations } from "../observation.js";
+import { noAcquisition } from "../session/_internal/acquire.js";
 import * as Sequence from "../Sequence.js";
 import * as Submission from "../Submission.js";
-import { CommandFailure } from "../session/commands.js";
-import { AcquisitionFailure } from "../session/index.js";
 import type { MediaPressure } from "../session/media.js";
 import * as MediaBuffer from "./media-buffer.js";
 import * as SourceSlot from "./source-slot.js";
@@ -28,6 +28,7 @@ import { activeIds, generation, resolve } from "./routing.js";
 import type { Candidate } from "./routing.js";
 import type {
   CleanupReport,
+  EngineError,
   EngineEvent,
   EngineShape,
   EngineState,
@@ -40,7 +41,7 @@ import type {
 export interface Options<R = never> {
   readonly open: Effect.Effect<
     { readonly source: Source; readonly maxSeconds: number },
-    unknown,
+    ReactorError | AcquisitionFailure,
     Scope.Scope | R
   >;
   readonly leadSeconds?: number;
@@ -86,7 +87,7 @@ export type Renewal =
 
 type Replacement =
   | { readonly _tag: "Absent" }
-  | { readonly _tag: "Opening"; readonly fiber: Fiber.Fiber<Slot, ReactorError> }
+  | { readonly _tag: "Opening"; readonly fiber: Fiber.Fiber<Slot, ReactorFailure> }
   | { readonly _tag: "Ready"; readonly slot: Slot };
 
 /**
@@ -95,7 +96,7 @@ type Replacement =
  */
 export const make = <R>(
   options: Options<R>,
-): Effect.Effect<HandleShape, ReactorError, Scope.Scope | Crypto.Crypto | R> =>
+): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto | R> =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const context = yield* Effect.context<R>();
@@ -111,7 +112,7 @@ export const make = <R>(
     );
     const events = new Observations<EngineEvent>();
     const buffer = yield* MediaBuffer.make;
-    const fatal = yield* Deferred.make<ReactorError>();
+    const fatal = yield* Deferred.make<ReactorFailure>();
     const slots = new Map<string, Slot>();
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
@@ -141,13 +142,13 @@ export const make = <R>(
     let closing = false;
     let finalReport: CleanupReport | undefined;
     let mediaState: MediaState = { _tag: "Closed" };
-    let terminalFailure: ReactorError | undefined;
+    let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
 
     const observe = (event: Renewal) => options.onRenewal?.(event) ?? Effect.void;
     const log = (message: string) => Effect.sync(() => options.log?.(message));
     const emit = (event: EngineEvent): void => events.emit(event, 256);
-    const fail = (cause: ReactorError): Effect.Effect<void> =>
+    const fail = (cause: ReactorFailure): Effect.Effect<void> =>
       Effect.suspend(() => {
         if (terminalFailure !== undefined) return Effect.void;
         terminalFailure = cause;
@@ -181,7 +182,7 @@ export const make = <R>(
     const retired = (slot: Slot) => slot.retired(buffer.forwarded);
     const closeSlot = (slot: Slot) => slot.close;
 
-    const replace = (slot: Slot, cause: ReactorError): Effect.Effect<void> =>
+    const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
         const state = yield* slot.source.state;
@@ -218,9 +219,9 @@ export const make = <R>(
         yield* current.source.setAutoplay(autoplay);
         if (!publishReady(current)) return;
         yield* log("Replaced lost session; local queue resumes on the new connection");
-      }).pipe(Effect.catch((failure) => fail(errorOf(failure, "Disconnected"))));
+      }).pipe(Effect.catch(fail));
 
-    const recover = (slot: Slot, cause: ReactorError): Effect.Effect<void> =>
+    const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
         if (slot === current) mediaState = { _tag: "Recovering", sessionId: slot.source.id, cause };
@@ -307,7 +308,7 @@ export const make = <R>(
 
     const scheduleRecovery = (
       slot: Slot,
-      cause: ReactorError,
+      cause: ReactorFailure,
       mode: "reconnect" | "replace",
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -339,7 +340,7 @@ export const make = <R>(
         lost: (cause) => (closing ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
       });
 
-    const acquire: Effect.Effect<Slot, ReactorError> = Effect.uninterruptibleMask((restore) =>
+    const acquire: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         if (opened >= maxSessions)
           return yield* new ReactorError({
@@ -365,7 +366,6 @@ export const make = <R>(
                     }),
                   ),
               }),
-              Effect.mapError((cause) => errorOf(cause, "InvalidState")),
             );
             acquiredSource = value.source;
             if (
@@ -426,7 +426,7 @@ export const make = <R>(
                     yield* Scope.close(owned, exit);
                     if (Exit.isFailure(exit)) {
                       const failure = Cause.findErrorOption(exit.cause);
-                      if (Option.isSome(failure) && failure.value instanceof AcquisitionFailure)
+                      if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
                         recordCleanup({ lease: failure.value.cleanup, policy: [] });
                     }
                   }
@@ -457,8 +457,14 @@ export const make = <R>(
       Effect.catch((cause) =>
         close.pipe(
           Effect.flatMap((report) => {
+            // An AcquisitionFailure from `open` already carries the lease it
+            // recorded, by reference; any later failure takes the recorded lease.
             const lease = report.sessions[0]?.lease;
-            return Effect.fail(lease === undefined ? cause : AcquisitionFailure.from(cause, lease));
+            return Effect.fail(
+              AcquisitionFailure.is(cause) || (lease === undefined && ReactorError.is(cause))
+                ? cause
+                : AcquisitionFailure.from(cause, lease ?? noAcquisition),
+            );
           }),
         ),
       ),
@@ -472,7 +478,7 @@ export const make = <R>(
     const guard = <A, E>(
       operation: string,
       effect: Effect.Effect<A, E>,
-    ): Effect.Effect<A, E | CommandFailure> =>
+    ): Effect.Effect<A, E | EngineError> =>
       Effect.gen(function* () {
         if (closing)
           return yield* PolicyFailure.refuse(
@@ -520,7 +526,7 @@ export const make = <R>(
         const request = yield* captureRequest(input);
         const id = `${namespace}:${++submissionSequence}`;
         const gate = yield* Semaphore.make(1);
-        let active: Submission.Submission<ClipId, CommandFailure> | undefined;
+        let active: Submission.Submission<ClipId, EngineError> | undefined;
         let activeOwner: Slot | undefined;
         const submit = gate.withPermit(
           Effect.gen(function* () {
@@ -639,7 +645,7 @@ export const make = <R>(
           submit,
           state: Effect.suspend(() =>
             active === undefined
-              ? Effect.succeed<Submission.State<ClipId, CommandFailure>>({ _tag: "Prepared" })
+              ? Effect.succeed<Submission.State<ClipId, EngineError>>({ _tag: "Prepared" })
               : active.state,
           ),
         };
@@ -885,7 +891,7 @@ export const make = <R>(
           yield* log("Switched prepared sessions at a sequence boundary");
         }),
       )
-      .pipe(Effect.catch((cause) => fail(errorOf(cause, "Disconnected"))));
+      .pipe(Effect.catch(fail));
     yield* Effect.forever(Effect.sleep(100).pipe(Effect.andThen(tick))).pipe(Effect.forkIn(scope));
 
     const pressure: Effect.Effect<MediaPressure, ReactorError> = Effect.suspend(() => {

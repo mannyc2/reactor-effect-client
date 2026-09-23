@@ -70,9 +70,7 @@ export const loadReferenceBytes = (
           });
       return yield* readFileBytes(path, limits.maxBytes).pipe(
         Effect.mapError((cause) =>
-          cause instanceof ReactorError
-            ? cause
-            : failure("Reference file could not be read", cause),
+          ReactorError.is(cause) ? cause : failure("Reference file could not be read", cause),
         ),
       );
     }
@@ -90,7 +88,7 @@ export const loadReferenceBytes = (
             return yield* failure("Reference exceeds the byte bound");
           return yield* collectBytes(response.stream, limits.maxBytes).pipe(
             Effect.mapError((cause) =>
-              cause instanceof ReactorError ? cause : failure("Reference download failed", cause),
+              ReactorError.is(cause) ? cause : failure("Reference download failed", cause),
             ),
           );
         }),

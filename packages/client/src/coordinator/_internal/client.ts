@@ -161,7 +161,7 @@ export class CoordinatorClient {
       let status: number | undefined;
       const operation = request.operation;
       const networkError = (cause: unknown): ReactorError => {
-        if (cause instanceof ReactorError)
+        if (ReactorError.is(cause))
           return new ReactorError({
             code: cause.code,
             message: cause.message,

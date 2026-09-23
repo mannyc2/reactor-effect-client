@@ -45,7 +45,7 @@ const factory = (options: NativeOptions): PeerFactoryShape => {
         NativeBridge.requireUsable(resolved);
       },
       catch: (cause) =>
-        cause instanceof ReactorError
+        ReactorError.is(cause)
           ? cause
           : new ReactorError({
               code: "Native",

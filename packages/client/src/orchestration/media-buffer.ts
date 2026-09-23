@@ -3,12 +3,13 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { ReactorError } from "../errors.js";
+import type { ReactorFailure } from "../errors.js";
 import type { AudioFrame, VideoFrame } from "../session/media.js";
 
 /** The output queue owns admission and accounting together; source readers cannot bypass its bounds. */
 export const make = Effect.gen(function* () {
-  const video = yield* Queue.unbounded<VideoFrame, ReactorError | Cause.Done>();
-  const audio = yield* Queue.unbounded<AudioFrame, ReactorError | Cause.Done>();
+  const video = yield* Queue.unbounded<VideoFrame, ReactorFailure | Cause.Done>();
+  const audio = yield* Queue.unbounded<AudioFrame, ReactorFailure | Cause.Done>();
   let ended = false;
   let queuedFrames = 0;
   let queuedSamples = 0;
@@ -74,7 +75,7 @@ export const make = Effect.gen(function* () {
       queuedBytes: queuedVideoBytes + queuedSamples * 2,
     }),
     forwarded: () => ({ queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples }),
-    fail: (cause: ReactorError): void => {
+    fail: (cause: ReactorFailure): void => {
       if (ended) return;
       ended = true;
       Queue.failCauseUnsafe(video, Cause.fail(cause));

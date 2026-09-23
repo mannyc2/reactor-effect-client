@@ -114,8 +114,8 @@ export const source = (
     const emit = (event: EngineEvent): void => events.emit(Object.freeze(event), 256);
     const signalBuild = Queue.offer(buildSignal, undefined).pipe(Effect.asVoid);
     const signalPlay = Queue.offer(playSignal, undefined).pipe(Effect.asVoid);
-    const validate = (operation: string): Effect.Effect<void, CommandFailure> =>
-      Effect.suspend(() => {
+    const validate = (operation: string): Effect.Effect<void, CommandFailure | PolicyFailure> =>
+      Effect.suspend((): Effect.Effect<void, CommandFailure | PolicyFailure> => {
         if (closed)
           return Effect.fail(
             PolicyFailure.refuse("session_closed", "Simulation is closed", operation),
@@ -399,20 +399,19 @@ export const source = (
                 Effect.gen(function* () {
                   const seq = ++sequence;
                   if (options.faults?.sessionFails?.(seq) === true) {
-                    const uncertainty = CommandFailure.from(
-                      new ReactorError({
-                        code: "Disconnected",
-                        message: "Simulated loss after enqueue dispatch",
-                      }),
-                      {
-                        operation: "enqueue",
-                        outcome: "unknown",
-                        requestId: submissionId,
-                        generation: 1n,
-                      },
-                    );
-                    failed = uncertainty;
-                    return yield* uncertainty;
+                    // The session is lost after this enqueue was dispatched: the
+                    // source fails with the loss, the command with its evidence.
+                    const loss = new ReactorError({
+                      code: "Disconnected",
+                      message: "Simulated loss after enqueue dispatch",
+                    });
+                    failed = loss;
+                    return yield* CommandFailure.from(loss, {
+                      operation: "enqueue",
+                      outcome: "unknown",
+                      requestId: submissionId,
+                      generation: 1n,
+                    });
                   }
                   const clipId =
                     `${namespace.slice(0, 8)}-${namespace.slice(8, 12)}-4${namespace.slice(13, 16)}-8${namespace.slice(17, 20)}-${seq.toString(16).padStart(12, "0")}` as ClipId;
@@ -473,9 +472,11 @@ export const source = (
                 yield* signalBuild;
                 return result.success;
               }
-              events.fail(result.failure);
-              Queue.failCauseUnsafe(video, Cause.fail(result.failure));
-              Queue.failCauseUnsafe(audio, Cause.fail(result.failure));
+              if (failed !== undefined) {
+                events.fail(failed);
+                Queue.failCauseUnsafe(video, Cause.fail(failed));
+                Queue.failCauseUnsafe(audio, Cause.fail(failed));
+              }
               return yield* result.failure;
             }),
         }).pipe(Scope.provide(scope));
@@ -628,40 +629,30 @@ export const source = (
       move: (clipId, position) =>
         validate("move").pipe(
           Effect.andThen(
-            Effect.try({
-              try: () => {
-                if (!Number.isSafeInteger(position) || position < 0)
-                  throw PolicyFailure.refuse(
+            Effect.suspend((): Effect.Effect<void, PolicyFailure> => {
+              if (!Number.isSafeInteger(position) || position < 0)
+                return Effect.fail(
+                  PolicyFailure.refuse(
                     "invalid_request",
                     "Move position must be a nonnegative integer",
                     "move",
-                  );
-                const queue = generation.some(
-                  (value) => value.record.clipId === clipId && !value.popped,
-                )
-                  ? generation
-                  : playout;
-                const index = queue.findIndex(
-                  (value) => value.record.clipId === clipId && !value.popped,
+                  ),
                 );
-                if (index < 0)
-                  throw PolicyFailure.refuse(
-                    "not_found",
-                    "Clip is not in a simulated queue",
-                    "move",
-                  );
-                const [clip] = queue.splice(index, 1);
-                queue.splice(Math.min(position, queue.length), 0, clip!);
-              },
-              catch: (cause) =>
-                cause instanceof CommandFailure
-                  ? cause
-                  : PolicyFailure.refuse(
-                      "invalid_request",
-                      "Invalid simulated move",
-                      "move",
-                      cause,
-                    ),
+              const queue = generation.some(
+                (value) => value.record.clipId === clipId && !value.popped,
+              )
+                ? generation
+                : playout;
+              const index = queue.findIndex(
+                (value) => value.record.clipId === clipId && !value.popped,
+              );
+              if (index < 0)
+                return Effect.fail(
+                  PolicyFailure.refuse("not_found", "Clip is not in a simulated queue", "move"),
+                );
+              const [clip] = queue.splice(index, 1);
+              queue.splice(Math.min(position, queue.length), 0, clip!);
+              return Effect.void;
             }),
           ),
         ),

@@ -8,11 +8,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ReactorError } from "../errors.js";
 import type { Submission } from "../Submission.js";
-import type { CommandFailure } from "../session/commands.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import { PolicyFailure, type ClipId } from "./request.js";
 import * as Lifecycle from "./renewal-state.js";
-import type { EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
+import type { EngineError, EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
 
 interface Options extends Lifecycle.Lifetime {
   readonly source: Source;
@@ -46,7 +45,7 @@ export const make = (options: Options) =>
     let inFlight = 0;
     let settled = yield* Deferred.make<void>();
     yield* Deferred.succeed(settled, undefined);
-    const submissions = new Set<Submission<ClipId, CommandFailure>>();
+    const submissions = new Set<Submission<ClipId, EngineError>>();
     const accepted = new Set<ClipId>();
     const started = new Set<ClipId>();
     let media = options.media;
@@ -154,8 +153,8 @@ export const make = (options: Options) =>
       closeMedia,
       /** Called only from the physical Submission's existing commit hook, under admission serialization. */
       register: (
-        submission: Submission<ClipId, CommandFailure>,
-        admit: Effect.Effect<void, CommandFailure>,
+        submission: Submission<ClipId, EngineError>,
+        admit: Effect.Effect<void, EngineError>,
       ) =>
         Effect.gen(function* () {
           for (const previous of submissions) {
@@ -170,14 +169,14 @@ export const make = (options: Options) =>
           if (inFlight++ === 0) settled = Deferred.makeUnsafe<void>();
           submissions.add(submission);
         }),
-      recordResult: (result: Result.Result<ClipId, CommandFailure>): void => {
+      recordResult: (result: Result.Result<ClipId, EngineError>): void => {
         if (Result.isSuccess(result)) accepted.add(result.success);
         else if (result.failure.context.outcome === "unknown") indeterminate = true;
       },
       finishAccounting: (): void => {
         if (--inFlight === 0) Deferred.doneUnsafe(settled, Effect.void);
       },
-      forgetCompleted: (submission: Submission<ClipId, CommandFailure>): void => {
+      forgetCompleted: (submission: Submission<ClipId, EngineError>): void => {
         submissions.delete(submission);
       },
       observe: (

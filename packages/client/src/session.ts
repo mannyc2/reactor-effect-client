@@ -448,7 +448,7 @@ export class Session {
             const failure = Cause.findError(cause);
             this.fail(
               c,
-              failure._tag === "Success" && failure.success instanceof ReactorError
+              failure._tag === "Success" && ReactorError.is(failure.success)
                 ? failure.success
                 : new ReactorError({
                     code: "Protocol",
@@ -699,7 +699,7 @@ export class Session {
                 const error = Cause.findError(exit.cause);
                 self.fail(
                   c,
-                  error._tag === "Success" && error.success instanceof ReactorError
+                  error._tag === "Success" && ReactorError.is(error.success)
                     ? error.success
                     : new ReactorError({
                         code: "Aborted",

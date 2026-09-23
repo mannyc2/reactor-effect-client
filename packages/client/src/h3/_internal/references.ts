@@ -211,7 +211,7 @@ export const validateReference = (
   Effect.try({
     try: () => captureReference(input),
     catch: (error) =>
-      error instanceof ReactorError
+      ReactorError.is(error)
         ? error
         : new ReactorError({
             code: "InvalidInput",

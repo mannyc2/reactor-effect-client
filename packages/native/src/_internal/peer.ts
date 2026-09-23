@@ -102,7 +102,7 @@ const bigint = (value: unknown, what: string): bigint => {
 };
 
 const nativeError = (cause: unknown, operation: string): ReactorError =>
-  cause instanceof ReactorError ? cause : errorOf(cause, "Native", operation);
+  ReactorError.is(cause) ? cause : errorOf(cause, "Native", operation);
 
 const parseMapping = (value: unknown): readonly Mapping[] => {
   if (!Array.isArray(value) || value.length > 64)

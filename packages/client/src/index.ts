@@ -10,8 +10,14 @@ export type {
 export * as Coordinator from "./coordinator/index.js";
 export * as Peers from "./PeerFactory.js";
 export * as FetchHttp from "./FetchHttp.js";
-export { ReactorError, ErrorCode, ErrorContext, ProviderFailure } from "./errors.js";
-export type { RemoteOutcome } from "./errors.js";
+export {
+  ReactorError,
+  ErrorCode,
+  ErrorContext,
+  ProviderFailure,
+  isReactorFailure,
+} from "./errors.js";
+export type { ReactorFailure, RemoteOutcome } from "./errors.js";
 export { PeerFactory } from "./PeerFactory.js";
 export type { PeerFactoryShape } from "./PeerFactory.js";
 export type {

@@ -64,6 +64,60 @@ test("failed and interrupted acquisition immediately join their owned source sco
     }),
   ));
 
+const refusedAcquisition = (sessionId: string) =>
+  AcquisitionFailure.from(
+    new ReactorError({ code: "Http", message: "session allocation refused" }),
+    Object.freeze({
+      localClosed: true,
+      allocation: "known",
+      sessionId,
+      remote: Object.freeze({
+        attempted: true,
+        responseReceived: true,
+        confirmed: true,
+        evidence: null,
+        deleteStatus: 204,
+        state: null,
+      }),
+      unpublishSubmitted: Object.freeze([]),
+      unresolvedPublications: Object.freeze([]),
+      localErrors: Object.freeze([]),
+    }),
+  );
+
+test("an AcquisitionFailure from open fails make unchanged, with its cleanup by reference", () =>
+  run(
+    Effect.gen(function* () {
+      const refused = refusedAcquisition("refused-first");
+      const failed = yield* Effect.flip(Renewal.make({ open: Effect.fail(refused) }));
+      expect(failed).toBe(refused);
+      expect(AcquisitionFailure.is(failed) && failed.cleanup).toBe(refused.cleanup);
+    }),
+  ));
+
+test("a replacement's AcquisitionFailure is the terminal failure, and cleanup keeps its report", () =>
+  runClock(
+    Effect.gen(function* () {
+      const refused = refusedAcquisition("refused-replacement");
+      let opened = 0;
+      const handle = yield* Renewal.make({
+        leadSeconds: 0.5,
+        reconnectTimeoutMs: 50,
+        open: Effect.gen(function* () {
+          if (opened++ > 0) return yield* refused;
+          const entry = yield* sourceFixture("expiring");
+          return { source: entry.source, maxSeconds: 1 };
+        }),
+      });
+      yield* TestClock.adjust(1_500);
+      const terminal = yield* handle.engine.failure;
+      expect(terminal).toBe(refused);
+      expect(yield* handle.mediaState).toEqual({ _tag: "Failed", cause: refused });
+      const report = yield* handle.close;
+      expect(report.sessions.some(({ lease }) => lease === refused.cleanup)).toBe(true);
+    }),
+  ));
+
 test("logical preparation is inert and selects the live source only when submitted after renewal", () =>
   runClock(
     Effect.gen(function* () {

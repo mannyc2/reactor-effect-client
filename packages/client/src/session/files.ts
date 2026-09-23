@@ -32,7 +32,7 @@ export const readFileBytes = (
     const fs = yield* FileSystem.FileSystem;
     return yield* collectBytes(fs.stream(file, { bytesToRead: maxBytes + 1 }), maxBytes).pipe(
       Effect.mapError((cause) =>
-        cause instanceof ReactorError
+        ReactorError.is(cause)
           ? cause
           : new ReactorError({
               code: "Upload",

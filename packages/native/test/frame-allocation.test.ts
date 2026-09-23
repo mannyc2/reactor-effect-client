@@ -13,7 +13,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
 import { FetchHttp } from "reactor-effect-client";
-import type { ReactorError } from "reactor-effect-client";
+import type { ReactorFailure } from "reactor-effect-client";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge, NativeBridge } from "../src/_internal/bridge.js";
 import type { NativeVideo } from "../src/_internal/bridge.js";
@@ -280,9 +280,9 @@ const coordinatorFetch = async (
   return Response.json({ error: `unhandled native fixture route ${path}` }, { status: 404 });
 };
 
-const withCoordinator = <A>(
-  effect: Effect.Effect<A, ReactorError, PlatformHttp.HttpClient | Crypto.Crypto>,
-): Effect.Effect<A, ReactorError> =>
+const withCoordinator = <A, E extends ReactorFailure>(
+  effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
+): Effect.Effect<A, E> =>
   effect.pipe(
     Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
     Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch),

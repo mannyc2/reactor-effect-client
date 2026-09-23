@@ -46,7 +46,7 @@ const releasePublications = (
         else {
           const failure = Cause.findError(result.cause);
           errors.push(
-            failure._tag === "Success" && failure.success instanceof ReactorError
+            failure._tag === "Success" && ReactorError.is(failure.success)
               ? failure.success
               : new ReactorError({
                   code: "Shutdown",

@@ -3,7 +3,8 @@ import * as Crypto from "effect/Crypto";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import type * as PlatformHttp from "effect/unstable/http/HttpClient";
-import { FetchHttp, ReactorError } from "reactor-effect-client";
+import { FetchHttp } from "reactor-effect-client";
+import type { ReactorFailure } from "reactor-effect-client";
 import * as Browser from "reactor-effect-browser";
 import * as W from "reactor-effect-client/wire";
 import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
@@ -240,8 +241,8 @@ const browserCrypto = Crypto.make({
       async () => new Uint8Array(await crypto.subtle.digest(algorithm, Uint8Array.from(data))),
     ),
 });
-const runBrowser = <A>(
-  effect: Effect.Effect<A, ReactorError, PlatformHttp.HttpClient | Crypto.Crypto>,
+const runBrowser = <A, E extends ReactorFailure>(
+  effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
   fetchImpl: typeof fetch,
 ): Promise<A> =>
   Effect.runPromise(

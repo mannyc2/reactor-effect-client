@@ -187,8 +187,7 @@ function copiedSamples<A>(
   const cleanupFailures: { phase: string; message: string }[] = [];
 
   const annotate = (cause: unknown, phase: string): ReactorError => {
-    const name =
-      cause instanceof Error && !(cause instanceof ReactorError) ? cause.name : undefined;
+    const name = cause instanceof Error && !ReactorError.is(cause) ? cause.name : undefined;
     const error = errorOf(
       cause,
       name === "NotSupportedError" || (name === "TypeError" && phase === "processor")
