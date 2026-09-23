@@ -119,6 +119,8 @@ Avoid adding a dependency when a platform or standard-library primitive already 
 4. declare the dependency in the package that imports it, through the catalog when another workspace shares the version, never through a workspace parent;
 5. extend the pack/import-closure validation so a clean consumer cannot accidentally resolve a development dependency.
 
+For the native crate, CI also checks every locked crate against `packages/native/rust/deny.toml` with cargo-deny 0.20.2: its license must be on the allow-list, its source must be crates.io or the pinned reactor-webrtc repository, and no RustSec advisory may apply to it. Run `cargo deny --manifest-path packages/native/rust/Cargo.toml --locked check` before changing `Cargo.lock`. Allowing a license there does not replace the notice steps above.
+
 ## Pull requests
 
 Keep changes focused and reviewable. A useful description explains the concrete behavior before and after the change, the boundary it affects, and the validation that actually ran. Report unexecuted platform/provider checks plainly.

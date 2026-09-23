@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-reactor-webrtc = { git = "https://github.com/reactor-team/reactor-webrtc.git", rev = "bebf63e42624ee440e066b692494dd3229d29ae7" }
+reactor-webrtc = { git = "https://github.com/reactor-team/reactor-webrtc.git", rev = "bebf63e42624ee440e066b692494dd3229d29ae7", version = "0.18.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
