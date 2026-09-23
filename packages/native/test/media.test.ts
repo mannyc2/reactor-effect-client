@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
+import { availableParallelism, loadavg } from "node:os";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -49,7 +50,28 @@ const stall = (ms: number): void => {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const round = (value: number): number => Math.round(value * 100) / 100;
+
 type Message = Readonly<Record<string, unknown>>;
+
+const record = (value: unknown): Message =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Message) : {};
+
+/** One ps field for a process, trimmed; empty where ps cannot say. */
+const ps = (pid: number | undefined, field: string): string =>
+  spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ??
+  "";
+
+/** CPU seconds a process has used: Linux ps prints [dd-]hh:mm:ss and macOS m:ss.ss. */
+const cpuSeconds = (pid: number | undefined): number => {
+  const time = ps(pid, "time");
+  if (time === "") return Number.NaN;
+  const [days, clock] = time.includes("-") ? time.split("-") : ["0", time];
+  return (
+    Number(days) * 86_400 +
+    (clock ?? "").split(":").reduce((total, part) => total * 60 + Number(part), 0)
+  );
+};
 
 class FarPeer {
   private readonly waiters: {
@@ -104,16 +126,25 @@ class FarPeer {
     });
   }
 
-  /** Frames the far peer's encoder actually sent, and their size. */
-  async sent(id: string): Promise<{ frames: number; width: number; height: number }> {
+  /** One session's stats as far_peer.rs reports them: pacing, encoder and path. */
+  async stats(id: string): Promise<Message> {
     const reply = this.next("stats", id);
     this.send({ op: "stats", id });
-    const video = ((await reply).stats as { video?: Record<string, number> } | null)?.video ?? {};
+    return record((await reply).stats);
+  }
+
+  /** Frames the far peer's encoder actually sent, and their size. */
+  async sent(id: string): Promise<{ frames: number; width: number; height: number }> {
+    const video = record((await this.stats(id)).video);
     return {
-      frames: video.framesSent ?? 0,
-      width: video.frameWidth ?? 0,
-      height: video.frameHeight ?? 0,
+      frames: Number(video.framesSent ?? 0),
+      width: Number(video.frameWidth ?? 0),
+      height: Number(video.frameHeight ?? 0),
     };
+  }
+
+  get pid(): number | undefined {
+    return this.child.pid;
   }
 
   async close(id: string): Promise<void> {
@@ -228,6 +259,91 @@ const close = async (far: FarPeer, receiver: Receiver): Promise<number> => {
   return elapsed;
 };
 
+/** The start of a measured window: its time and both processes' CPU use. */
+interface Window {
+  readonly at: number;
+  readonly cpu: NodeJS.CpuUsage;
+  readonly farCpu: number;
+}
+
+const begin = (far: FarPeer): Window => ({
+  at: performance.now(),
+  cpu: process.cpuUsage(),
+  farCpu: cpuSeconds(far.pid),
+});
+
+const runtime =
+  process.versions.bun === undefined
+    ? `node ${process.versions.node}`
+    : `bun ${process.versions.bun}`;
+
+/**
+ * Print what a load test measured over its window before it asserts, so every
+ * CI log records what that runner achieved: both processes' CPU use, the far
+ * peer's pacing, encoder and path counters, and each receiver's delivery,
+ * latency, decoder and loss counters.
+ */
+const report = async (
+  label: string,
+  far: FarPeer,
+  window: Window,
+  receivers: readonly Receiver[],
+): Promise<void> => {
+  const seconds = (performance.now() - window.at) / 1000;
+  const cpu = process.cpuUsage(window.cpu);
+  const sessions = await Promise.all(
+    receivers.map(async (receiver) => {
+      const frames = receiver.frames.filter((frame) => frame.at >= window.at);
+      const latencies = frames.map((frame) => frame.latencyMs);
+      const native = (await run(receiver.peer.stats())).map(record);
+      const inbound = native.find(
+        (entry) => entry.type === "inbound-rtp" && entry.kind === "video",
+      );
+      const pair = native.find(
+        (entry) => entry.type === "candidate-pair" && entry.nominated === true,
+      );
+      const counter = (name: string): number => Number(inbound?.[name] ?? Number.NaN);
+      return {
+        id: receiver.id,
+        fps: round(frames.length / seconds),
+        latencyMs: [0.5, 0.95, 1].map((p) => round(percentile(latencies, p))),
+        maxGapMs: round(
+          Math.max(0, ...frames.slice(1).map((frame, index) => frame.at - frames[index]!.at)),
+        ),
+        rttP95Ms: round(percentile(receiver.rtts, 0.95)),
+        far: await far.stats(receiver.id),
+        inbound: {
+          framesDecoded: counter("framesDecoded"),
+          framesDropped: counter("framesDropped"),
+          decodeMs: round((counter("totalDecodeTime") * 1000) / counter("framesDecoded")),
+          packetsLost: counter("packetsLost"),
+          nackCount: counter("nackCount"),
+          pliCount: counter("pliCount"),
+          availableIncomingBitrate: Number(pair?.availableIncomingBitrate ?? Number.NaN),
+        },
+      };
+    }),
+  );
+  console.log(
+    `media-load ${JSON.stringify({
+      label,
+      runtime,
+      host: `${process.platform}-${process.arch}`,
+      cores: availableParallelism(),
+      load: round(loadavg()[0] ?? Number.NaN),
+      seconds: round(seconds),
+      cpu: {
+        host: round((cpu.user + cpu.system) / 1e6 / seconds),
+        far: round((cpuSeconds(far.pid) - window.farCpu) / seconds),
+      },
+      // macOS runs throttled background processes at priority 4.
+      priority: { host: ps(process.pid, "pri"), far: ps(far.pid, "pri") },
+      clockSkewMs: round(Date.now() - wallMs()),
+      sessions,
+    })}`,
+  );
+};
+
 const ping = (receiver: Receiver): Promise<void> => {
   const bytes = new Uint8Array(8);
   new DataView(bytes.buffer).setFloat64(0, wallMs(), true);
@@ -248,14 +364,15 @@ describe("native media under load", () => {
     const receiver = await open(far, "throughput");
     try {
       await until(() => receiver.frames.length > 0, "no first frame", 15_000);
-      const started = performance.now();
-      while (performance.now() - started < 10_000) {
+      const measured = begin(far);
+      while (performance.now() - measured.at < 10_000) {
         await ping(receiver);
         await sleep(250);
       }
       const sent = await far.sent(receiver.id);
       await sleep(300); // frames already sent are still in flight
       const snapshot = await pressure(receiver);
+      await report("throughput", far, measured, [receiver]);
       const latencies = receiver.frames.map((frame) => frame.latencyMs);
       expect(receiver.failures).toEqual([]);
       expect([sent.width, sent.height]).toEqual([WIDTH, HEIGHT]);
@@ -290,13 +407,14 @@ describe("native media under load", () => {
           pressure: await pressure(session),
         })),
       );
-      const started = performance.now();
-      while (performance.now() - started < 10_000) {
+      const measured = begin(far);
+      while (performance.now() - measured.at < 10_000) {
         await Promise.all(sessions.map(ping));
         await sleep(250);
       }
       const sent = await Promise.all(sessions.map((session) => far.sent(session.id)));
       await sleep(300); // frames already sent are still in flight
+      await report("two sessions", far, measured, sessions);
       for (const [index, session] of sessions.entries()) {
         const before = start[index]!,
           after = await pressure(session);
@@ -324,6 +442,7 @@ describe("native media under load", () => {
     const receiver = await open(far, "stall");
     try {
       await until(() => receiver.frames.length >= 24, "media did not start", 15_000);
+      const measured = begin(far);
       const before = await pressure(receiver);
       stall(250);
       await sleep(2000);
@@ -337,6 +456,7 @@ describe("native media under load", () => {
       stall(2000);
       await sleep(2000);
       const long = await pressure(receiver);
+      await report("stall", far, measured, [receiver]);
       const dropped = Number(long.droppedVideo - short.droppedVideo);
       // About 48 frames arrive in 2 s; the queue keeps the newest 8 and counts
       // each eviction. The 256-block audio queue rides through 2.56 s.
@@ -370,12 +490,14 @@ describe("native media under load", () => {
           // Both sessions stream at full load before the old one drains.
           const overlap = await pressure(current);
           expect(overlap.droppedAudio).toBe(0n);
+          const measured = begin(far);
           const during = next.frames.length;
           const sentDuring = (await far.sent(next.id)).frames;
           const shutdownMs = await close(far, current);
           await sleep(2000);
           const sent = (await far.sent(next.id)).frames - sentDuring;
           await sleep(300); // frames already sent are still in flight
+          await report(`renewal ${cycle}`, far, measured, [next]);
           const window = next.frames.slice(during);
           expect(shutdownMs).toBeLessThan(2000);
           expect(current.failures).toEqual([]);

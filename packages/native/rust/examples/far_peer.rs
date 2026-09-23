@@ -92,11 +92,21 @@ struct Signals {
     channels: Mutex<Vec<DataChannel>>,
 }
 
+/// What the pump achieved against its schedule, reported with the stats.
+#[derive(Default)]
+struct Pacing {
+    pushed: AtomicU64,
+    /// Pushes that ran more than one frame interval behind schedule.
+    late: AtomicU64,
+    /// The furthest behind schedule any push ran, in microseconds.
+    lag_max_us: AtomicU64,
+}
+
 struct Session {
     peer: PeerConnection,
     signals: Arc<Signals>,
     stop: Arc<AtomicBool>,
-    pushed: Arc<AtomicU64>,
+    pacing: Arc<Pacing>,
     pump: Option<JoinHandle<()>>,
     echoer: Option<JoinHandle<()>>,
 }
@@ -188,7 +198,7 @@ impl Session {
         let sdp = with_candidates(&answer.sdp, &candidates);
 
         let stop = Arc::new(AtomicBool::new(false));
-        let pushed = Arc::new(AtomicU64::new(0));
+        let pacing = Arc::new(Pacing::default());
         let echoer = {
             let signals = Arc::clone(&signals);
             thread::spawn(move || {
@@ -202,8 +212,8 @@ impl Session {
             })
         };
         let pump = {
-            let (stop, pushed, connected) =
-                (Arc::clone(&stop), Arc::clone(&pushed), Arc::clone(&signals));
+            let (stop, pacing, connected) =
+                (Arc::clone(&stop), Arc::clone(&pacing), Arc::clone(&signals));
             thread::spawn(move || {
                 while !connected.connected.load(Ordering::Acquire) {
                     if stop.load(Ordering::Acquire) {
@@ -217,7 +227,7 @@ impl Session {
                     &frames,
                     (width, height, fps),
                     &stop,
-                    &pushed,
+                    &pacing,
                 );
             })
         };
@@ -226,7 +236,7 @@ impl Session {
                 peer,
                 signals,
                 stop,
-                pushed,
+                pacing,
                 pump: Some(pump),
                 echoer: Some(echoer),
             },
@@ -235,7 +245,7 @@ impl Session {
     }
 
     fn stats(&self) -> Value {
-        let mut video = json!({});
+        let (mut video, mut path) = (json!({}), json!({}));
         if let Ok(report) = self.peer.get_stats() {
             if let Some(outbound) = report
                 .outbound_rtp
@@ -247,13 +257,25 @@ impl Session {
                     "frameWidth": outbound.frame_width,
                     "frameHeight": outbound.frame_height,
                     "targetBitrate": outbound.target_bitrate_bps,
+                    "packetsLost": outbound.packets_lost,
+                    "nackCount": outbound.nack_count,
+                    "pliCount": outbound.pli_count,
+                });
+            }
+            if let Some(pair) = report.candidate_pairs.iter().find(|pair| pair.nominated) {
+                path = json!({
+                    "availableOutgoingBitrate": pair.available_outgoing_bitrate_bps,
+                    "currentRoundTripTime": pair.current_round_trip_time_s,
                 });
             }
         }
         json!({
             "connected": self.signals.connected.load(Ordering::Acquire),
-            "framesPushed": self.pushed.load(Ordering::Relaxed),
+            "framesPushed": self.pacing.pushed.load(Ordering::Relaxed),
+            "latePushes": self.pacing.late.load(Ordering::Relaxed),
+            "pushLagMaxMs": self.pacing.lag_max_us.load(Ordering::Relaxed) as f64 / 1000.0,
             "video": video,
+            "path": path,
         })
     }
 
@@ -278,7 +300,7 @@ fn pump(
     frames: &[Vec<u8>],
     (width, height, fps): (u32, u32, u32),
     stop: &AtomicBool,
-    pushed: &AtomicU64,
+    pacing: &Pacing,
 ) {
     let started = Instant::now();
     let frame_interval = Duration::from_micros(1_000_000 / u64::from(fps));
@@ -287,6 +309,13 @@ fn pump(
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
         if now >= next_video {
+            let lag = now - next_video;
+            if lag > frame_interval {
+                pacing.late.fetch_add(1, Ordering::Relaxed);
+            }
+            pacing
+                .lag_max_us
+                .fetch_max(lag.as_micros() as u64, Ordering::Relaxed);
             let mut user_data = [0u8; 16];
             user_data[..8].copy_from_slice(&wall_micros().to_le_bytes());
             user_data[8..].copy_from_slice(&sequence.to_le_bytes());
@@ -295,7 +324,7 @@ fn pump(
                 .push_frame_with_metadata(VideoFrame::new(bgra, width, height), &user_data)
                 .is_ok()
             {
-                pushed.fetch_add(1, Ordering::Relaxed);
+                pacing.pushed.fetch_add(1, Ordering::Relaxed);
             }
             sequence += 1;
             next_video += frame_interval;
