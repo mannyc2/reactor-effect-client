@@ -39,10 +39,14 @@ interactive npm authentication with a placeholder version such as
 `0.0.0-reserved.0` that carries no SDK code, then configure the same trusted
 publisher for it. Complete this for every package before the first publish run:
 the client is published first, so a host package whose trusted publisher is
-missing fails only after the client publication has been dispatched, and the
-resulting partially applied release must be recovered through the journal, not
-prepared again. This separate bootstrap does not qualify or publish an SDK
-release. Subsequent SDK releases use only the retained candidates and OIDC
+missing fails its credential exchange only after the client publication has been
+dispatched. Rerunning `publish` with the same candidate resumes only a host
+publication whose dispatch was never recorded (a refused credential exchange
+sends no bytes) or one the registry already shows at the exact version; a host
+request that reached npm and was answered without acknowledgement stays
+inconclusive and needs an explicit ts-release risk decision outside this
+workflow, never a new preparation. This separate bootstrap does not qualify or
+publish an SDK release. Subsequent SDK releases use only the retained candidates and OIDC
 workflow described here.
 
 GitHub supplies run-scoped `github.token` as `GH_TOKEN` for the fixed journal

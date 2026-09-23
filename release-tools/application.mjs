@@ -20,6 +20,7 @@ import {
   journalId,
   journalRemote,
   packages,
+  preparationContext,
   qualificationMatches,
   readBytes,
   reject,
@@ -27,7 +28,6 @@ import {
   sha256,
   validatePackageIdentity,
 } from "./model.mjs";
-import { preparationContext } from "./prepare.mjs";
 import { authorization, verifyProvenance, workflowRef } from "./provenance.mjs";
 
 /** Admit saved bytes and the workspace's npm operations before acquiring any credentials or journal.

@@ -13,6 +13,7 @@ import {
   commit,
   journalId,
   packages,
+  preparationContext,
   qualificationMatches,
   qualifiedPackages,
   readBytes,
@@ -30,17 +31,6 @@ import {
   workflow,
   workflowRef,
 } from "./provenance.mjs";
-
-/** Dependency evidence for an offline provider preparation: declared, never dispatched.
- * @param {import("@mannyc1/ts-release").Plan} plan @param {import("@mannyc1/ts-release").Operation} operation */
-export const preparationContext = (plan, operation) => ({
-  own: { operation, receipts: [], observations: [] },
-  dependencies: operation.dependsOn.map((id) => {
-    const dependency = plan.operations.find((entry) => entry.operationId === id);
-    if (dependency === undefined) reject("Plan dependency is absent");
-    return { operation: dependency, receipts: [], observations: [] };
-  }),
-});
 
 /** Adopt the qualified archives and retain signed provenance for each before npm publication.
  * @param {{ qualifiedDirectory: string, candidateDirectory: string, applicationCommit: string, run: unknown, ciRunId: string, source: Npm.ProvenanceSource }} options

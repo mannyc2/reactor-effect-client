@@ -211,6 +211,16 @@ export const qualificationMatches = (qualification, identity) => {
  * @param {typeof Qualification.Type} qualification */
 export const confirmationFor = (qualification) =>
   `publish ${qualification.packages.map((entry) => `${entry.name}@${qualification.version}`).join(" ")}`;
+/** Dependency evidence for an offline provider preparation: declared, never dispatched.
+ * @param {import("@mannyc1/ts-release").Plan} plan @param {import("@mannyc1/ts-release").Operation} operation */
+export const preparationContext = (plan, operation) => ({
+  own: { operation, receipts: [], observations: [] },
+  dependencies: operation.dependsOn.map((id) => {
+    const dependency = plan.operations.find((entry) => entry.operationId === id);
+    if (dependency === undefined) reject("Plan dependency is absent");
+    return { operation: dependency, receipts: [], observations: [] };
+  }),
+});
 /** A release coordinate keeps one journal even when an operator prepares different bytes.
  * @param {string} selectedVersion */
 export const journalId = (selectedVersion) => `reactor-npm:${repository}:${selectedVersion}`;
