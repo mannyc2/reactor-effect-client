@@ -27,6 +27,7 @@
     }
   },
   "devDependencies": {
+    "@effect/tsgo": "0.45.0",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "oxfmt": "0.70.0",
@@ -40,8 +41,9 @@
     "@effect/platform-node-shared": "4.0.0-rc.115"
   },
   "scripts": {
+    "prepare": "effect-tsgo patch --typescript",
     "build": "bun run --filter './packages/*' build",
-    "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
+    "typecheck": "node scripts/effect-tsc.mjs && bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
     "lint": "oxlint -c .oxlintrc.json --deny-warnings .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",

@@ -358,13 +358,15 @@ describe("Reactor HTTP session contract (offline)", () => {
         expect(inspection.observedAt).toBe(yield* Clock.currentTimeMillis);
       }).pipe(
         Effect.provide(
-          fetchLayer(async (url) =>
-            url.endsWith("/tokens")
-              ? Response.json({ jwt: fixtureJwt, expires_at: 250 })
-              : Response.json({ session_id: "session", state: "WAITING" }),
+          Layer.mergeAll(
+            fetchLayer(async (url) =>
+              url.endsWith("/tokens")
+                ? Response.json({ jwt: fixtureJwt, expires_at: 250 })
+                : Response.json({ session_id: "session", state: "WAITING" }),
+            ),
+            TestClock.layer(),
           ),
         ),
-        Effect.provide(TestClock.layer()),
       ),
     );
   });

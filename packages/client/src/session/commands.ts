@@ -24,6 +24,9 @@ export type CommandContext = Details &
 export class CommandFailure extends ReactorError {
   declare readonly context: CommandContext;
 
+  // Built from a ReactorError and its dispatch evidence; never decoded through
+  // the ReactorError schema.
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(error: ReactorError, context: CommandContext) {
     super({
       code: error.code,

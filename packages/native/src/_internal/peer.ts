@@ -439,18 +439,18 @@ export class NativePeer implements Peer {
    */
   private pump(wake: Queue.Queue<void>, step: () => boolean): Effect.Effect<void> {
     const self = this;
+    const takeOne = Effect.try({
+      try: step,
+      catch: (cause) => nativeError(cause, "drain native WebRTC"),
+    });
     return Effect.gen(function* () {
       while (!self.closed) {
         yield* Queue.take(wake);
-        while (!self.closed && (yield* Effect.try({ try: step, catch: (cause) => cause }))) {
+        while (!self.closed && (yield* takeOne)) {
           yield* Effect.yieldNow;
         }
       }
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.sync(() => self.fail(nativeError(cause, "drain native WebRTC"))),
-      ),
-    );
+    }).pipe(Effect.catch((error) => Effect.sync(() => self.fail(error))));
   }
 
   /** Deliver one event; false once the queue is empty or closed. */

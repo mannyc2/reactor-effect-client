@@ -39,6 +39,9 @@ export class ClipRequest extends Schema.Class<ClipRequest>("OrchestrationClipReq
 export class PolicyFailure extends CommandFailure {
   readonly reason: string;
 
+  // Built from a local policy decision; never decoded through the ReactorError
+  // schema.
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(reason: string, message: string, operation = "enqueue", cause?: unknown) {
     super(
       new ReactorError(reason === "invalid_request" ? "InvalidInput" : "InvalidState", message),

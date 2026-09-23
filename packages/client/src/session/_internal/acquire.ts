@@ -21,6 +21,9 @@ type Input =
 export class AcquisitionFailure extends ReactorError {
   readonly cleanup: CloseReport;
 
+  // Built from a ReactorError and its cleanup evidence; never decoded through
+  // the ReactorError schema.
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(error: ReactorError, cleanup: CloseReport) {
     super({
       code: error.code,

@@ -70,6 +70,9 @@ export class ReactorError extends Schema.TaggedError<ReactorError>(
   context: ErrorContext,
   nativeError: Schema.optionalKey(ProviderFailure),
 }) {
+  // Schema decoding passes a fields object, which the first overload accepts;
+  // the positional overload is the SDK's public constructor.
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(fields: Fields);
   constructor(code: ErrorCode, message: string, context?: ErrorContext);
   constructor(code: ErrorCode | Fields, message?: string, context: ErrorContext = {}) {

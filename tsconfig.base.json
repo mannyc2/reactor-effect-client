@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -16,6 +17,30 @@
     "declarationMap": true,
     "sourceMap": true,
     "noEmitOnError": true,
-    "types": []
+    "types": [],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "includeSuggestionsInTsc": false,
+        "diagnosticSeverity": {
+          "cryptoRandomUUIDInEffect": "warning",
+          "extendsNativeError": "warning",
+          "globalConsoleInEffect": "warning",
+          "globalDateInEffect": "warning",
+          "globalFetchInEffect": "warning",
+          "globalRandomInEffect": "warning",
+          "globalTimersInEffect": "warning",
+          "missingEffectServiceDependency": "warning",
+          "processEnvInEffect": "warning",
+          "unsafeEffectTypeAssertion": "warning"
+        },
+        "overrides": [
+          {
+            "include": ["**/src/**/*.ts"],
+            "options": { "diagnosticSeverity": { "anyUnknownInErrorContext": "warning" } }
+          }
+        ]
+      }
+    ]
   }
 }
