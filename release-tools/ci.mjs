@@ -29,6 +29,7 @@ if (command === "select") {
   const ci = validateRun(JSON.parse(readBytes(file).toString()), env.CI_RUN_ID ?? "", "ci");
   emit("source-commit", ci.head_sha);
   if (mode === "prepare") {
+    if (ci.head_sha !== env.GITHUB_SHA) reject("Prepare requires CI for the current main commit");
     emit("application-commit", env.GITHUB_SHA);
   } else {
     if (!output) reject("Publish/observe requires the preparation run JSON");

@@ -50,6 +50,7 @@ test("explicit confirmation selects publication; observe cannot acquire publicat
     const options = {
       ciRun: workflowRun(),
       ciRunId,
+      candidateRunId: "8101",
       applicationCommit,
       candidateDirectory: fixture.candidateDirectory,
       mode: "observe",
@@ -82,10 +83,12 @@ test("explicit confirmation selects publication; observe cannot acquire publicat
       "authorize",
       "bundleSha256",
       "candidateDirectory",
+      "candidateRunId",
       "ciRunId",
       "planId",
       "sourceCommit",
     ]);
+    assert.throws(() => makeInput(identity, { ...options, candidateRunId: "8102" }));
     assert.throws(() => makeInput(identity, { ...options, mode: "prepare" }));
     assert.throws(() => makeInput(identity, { ...options, applicationCommit: "4".repeat(40) }));
     assert.throws(() =>

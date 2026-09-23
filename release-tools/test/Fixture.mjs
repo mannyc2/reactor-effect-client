@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import assert from "node:assert/strict";
 import { Effect } from "effect";
+import * as Npm from "@mannyc1/ts-release-npm";
+import { loadCandidate } from "../application.mjs";
 import { prepareCandidate } from "../prepare.mjs";
 
 // Independent fixture coordinates. These are not live CI runs or native libraries.
 export const sourceCommit = "1".repeat(40);
-export const applicationCommit = "2".repeat(40);
+export const applicationCommit = sourceCommit;
 export const sourceTree = "3".repeat(40);
 export const ciRunId = "7101";
 export const packageName = "reactor-effect-client";
@@ -70,7 +73,7 @@ const fixture = (options = {}) => {
     exports,
     peerDependencies: { effect: "4.0.0-rc.115" },
     repository: { type: "git", url: `git+https://github.com/${repository}.git` },
-    publishConfig: { access: "public", provenance: false },
+    publishConfig: { access: "public", provenance: true },
     // Neither preparing nor loading an archive should execute its lifecycle scripts.
     scripts: { prepublishOnly: "exit 99", prepare: "exit 99" },
     ...options.manifest,
@@ -162,6 +165,7 @@ const fixture = (options = {}) => {
       applicationCommit,
       run: workflowRun(),
       ciRunId,
+      source: provenanceSource,
     },
   };
 };
@@ -181,11 +185,12 @@ export const withFixture = async (body, options) => {
 
 /** @param {Fixture} fixture */
 export const prepared = async (fixture) => {
-  const identity = await Effect.runPromise(prepareCandidate(fixture.options));
+  const identity = await Effect.runPromise(prepareOffline(fixture.options));
   return {
     identity,
     input: {
       candidateDirectory: fixture.candidateDirectory,
+      candidateRunId: provenanceSource.runId,
       bundleSha256: identity.bundleSha256,
       planId: identity.planId,
       applicationCommit,
@@ -195,3 +200,80 @@ export const prepared = async (fixture) => {
     },
   };
 };
+
+// Structural witnesses only: the fake signer/verifier exercise exact-byte contracts,
+// never claim signature trust, and are not passed to the production application.
+export const provenanceSource = new Npm.ProvenanceSource({
+  format: "npm-github-actions-provenance-source/v1",
+  serverUrl: "https://github.com",
+  repository,
+  workflow: ".github/workflows/release.yml",
+  workflowRef: "refs/heads/main",
+  sourceRef: "refs/heads/main",
+  sourceCommit,
+  eventName: "workflow_dispatch",
+  repositoryId: "11",
+  repositoryOwnerId: "12",
+  runnerEnvironment: "github-hosted",
+  runId: "8101",
+  runAttempt: "1",
+  repositoryVisibility: "public",
+});
+/** @type {Npm.Attest} */
+export const attestOffline = ({ payload }) =>
+  Effect.succeed({
+    bundleBytes: new TextEncoder().encode(
+      JSON.stringify({
+        mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+        dsseEnvelope: {
+          payloadType: "application/vnd.in-toto+json",
+          payload: Buffer.from(payload).toString("base64"),
+          signatures: [{ sig: "AA==" }],
+        },
+        verificationMaterial: {
+          certificate: { rawBytes: "AA==" },
+          tlogEntries: [
+            {
+              canonicalizedBody: "AA==",
+              logId: { keyId: "AA==" },
+              integratedTime: "1",
+              logIndex: "0",
+              kindVersion: { kind: "dsse", version: "0.0.1" },
+              inclusionProof: {
+                logIndex: "0",
+                treeSize: "1",
+                hashes: [],
+                rootHash: Buffer.alloc(32).toString("base64"),
+                checkpoint: {
+                  envelope: `untrusted-fixture\n1\n${Buffer.alloc(32).toString("base64")}\n\n`,
+                },
+              },
+            },
+          ],
+        },
+      }),
+    ),
+  });
+/** @type {Npm.VerifyProvenance} */
+export const verifyOffline = ({ source, bundleBytes }) =>
+  Effect.sync(() => {
+    assert.deepEqual(source, provenanceSource);
+    const bundle = JSON.parse(Buffer.from(bundleBytes).toString());
+    const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64").toString());
+    assert.equal(
+      statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit,
+      sourceCommit,
+    );
+    assert.equal(
+      statement.predicate.runDetails.metadata.invocationId,
+      `https://github.com/${repository}/actions/runs/8101/attempts/1`,
+    );
+  });
+/** @param {Parameters<typeof prepareCandidate>[0]} options */
+export const prepareOffline = (options) =>
+  prepareCandidate(options, {
+    attest: attestOffline,
+    verifyProvenance: verifyOffline,
+  });
+/** @param {unknown} input */
+export const loadOffline = (input) => loadCandidate(input, verifyOffline);

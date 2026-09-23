@@ -35,6 +35,7 @@ env:
   CI_RUN_ID: ${{ inputs.ci_run_id }}
   CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
   RELEASE_MODE: ${{ inputs.mode }}
+  REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
 
 jobs:
   select:
@@ -77,10 +78,14 @@ jobs:
           fi
 
   prepare:
-    name: Retain qualified archive as a ts-release Bundle and Plan
+    name: Sign qualified archive and retain a ts-release Bundle and Plan
     needs: select
     if: inputs.mode == 'prepare'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write # Sign retained provenance; no npm publication in preparation.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,7 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > .release/ci-run.json
-      - name: Prepare locally without credentials, journal writes or publication
+      - name: Sign exact qualified bytes without journal writes or npm publication
         run: node release-tools/prepare.mjs .release/qualified .release/candidate .release/ci-run.json > .release/prepare-report.json
       - name: Retain original Bundle, Plan, qualification and owned bytes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -126,7 +131,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       actions: read
-      contents: write # Git CAS journal only; publication itself uses NPM_TOKEN.
+      contents: write # Git CAS journal only.
+      id-token: write # npm trusted-publisher exchange.
     steps:
       - name: Restore the release application from the reviewed preparation run
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -155,7 +161,6 @@ jobs:
         id: input
         env:
           CONFIRM: ${{ inputs.confirm }}
-          NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
         run: node release-tools/input.mjs .release/candidate .release/ci-run.json .release/input.json
       - name: Execute the pinned ts-release Action over the durable journal
         id: release
@@ -166,7 +171,6 @@ jobs:
           observe: ${{ inputs.mode == 'observe' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
       - name: Retain fresh observations without replaying publication
         if: ${{ always() && steps.input.outcome == 'success' }}
         env:

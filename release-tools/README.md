@@ -21,32 +21,34 @@ It publishes npm only; it does not create a GitHub release or release tag.
 
 ## Setup and authentication
 
-Enable GitHub Actions for `mannyc2/reactor-effect-client`. Configure a repository
-Actions secret named `NPM_TOKEN` with an npm granular access token authorized to
-create/publish `reactor-effect-client`. Limit its permissions and expiration to
-what the release requires. For unattended publication, the token must meet the
-account/package's two-factor policy, including bypass-2FA permission when needed.
-Do not paste a token into a workflow input, source file, candidate or journal.
+The repository and package must be public. Configure the npm package's trusted
+publisher for GitHub owner `mannyc2`, repository `reactor-effect-client`, workflow
+filename `release.yml`, and **no environment**. Enable direct `npm publish`
+permission: this provider does not use npm's staged publishing flow. No npm token
+or repository Actions secret is used, and token fallback is not supported.
 
-GitHub supplies the run-scoped `github.token` as `GH_TOKEN` to authenticate the
-fixed journal destination. Only the publish/observe job receives `contents: write`;
-preparation cannot write the journal or access the npm token. Dependency installs
-use the isolated lockfile with `--ignore-scripts` before publish credentials are
-available. All source-run IDs and confirmation values pass through environment
-variables and validation, not shell interpolation of workflow expressions.
+npm requires the package to exist before its trusted publisher can be configured.
+For a new name, create the namespace once through interactive npm authentication,
+then configure its trusted publisher. This separate bootstrap does not qualify or
+publish an SDK release. Subsequent SDK releases use only the retained candidates
+and OIDC workflow described here.
 
-The repository is private. The pinned ts-release npm provider requires retained
-public-repository provenance for its TrustedAuthorization mode. Accordingly, this
-application deliberately uses TokenAuthorization plus NoProvenance; the package
-manifest explicitly sets `publishConfig.provenance` to `false`. It does not claim
-an npm provenance attestation or a configured OIDC trust. npm's initial trusted
-publisher configuration also requires the package to exist first.
+GitHub supplies run-scoped `github.token` as `GH_TOKEN` for the fixed journal
+remote. Only the publish/observe job receives `contents: write`. Both prepare and
+publish receive `id-token: write`: prepare uses it to sign exact archive provenance
+through Sigstore; publish exchanges its identity for a package-scoped npm token.
+Observe mode never requests npm credentials or dispatches publication. Dependency
+installs use the isolated lockfile with `--ignore-scripts`.
 
-Changing authentication/provenance requires a reviewed application change and a
-new qualified artifact before any dispatch, not an environment override or
-mutation of the old candidate. See the official
-[npm trusted-publishing documentation](https://docs.npmjs.com/trusted-publishers/)
-and [granular-token documentation](https://docs.npmjs.com/creating-and-viewing-access-tokens/).
+Preparation calls Sigstore's production Fulcio/Rekor services and retains the
+signed attestation in the immutable Bundle. Its TUF root comes from pinned
+`@sigstore/tuf@5.0.0`. Every restored candidate undergoes native signature and exact
+source verification before registry access or journal credentials. Preparation
+must run on the **same main commit as the selected successful CI run**: GitHub's
+signed workload identity must match the source that produced the archive. The
+package manifest sets `publishConfig.provenance` to `true`.
+
+See npm's [trusted-publishing documentation](https://docs.npmjs.com/trusted-publishers/).
 
 No GitHub environment approval protection is assumed. The explicit manual
 confirmation is an application check, not a substitute for branch protection,
@@ -62,7 +64,7 @@ the portable, native and isolated-package checks. It uploads one flat
 source tree, CI run and attempt. Pull-request and fork artifacts are ineligible.
 
 Manually run **Release npm with ts-release** on `main` with `mode=prepare` and
-that successful `ci_run_id`. This run validates the qualification, native
+that successful `ci_run_id`. Main must still point to its commit. This run validates the qualification, native
 identities and archive hash, exercises the actual npm request encoder without
 sending it, and retains `ts-release-candidate` containing:
 
@@ -70,11 +72,11 @@ sending it, and retains `ts-release-candidate` containing:
 identity.json
 bundle.json
 plan.json
-content/<sha256>
+content/<sha256>  # archive, identities, qualification, signed provenance
 ```
 
 Review the recorded package/version, source and Plan identities. Preparation
-does not publish and has no npm credential. Then start a separate manual run
+signs provenance but does not publish and has no npm credential. Then start a separate manual run
 with `mode=publish`, the **same** `ci_run_id`, the successful preparation run's
 ID as `candidate_run_id`, and this exact confirmation:
 
@@ -126,12 +128,12 @@ bun run check:release
 ```
 
 The tests use local fake packages, owned temporary directories and in-memory
-release hosts. They do not publish, spend provider credits, or write this
+release hosts with explicitly untrusted structural attestation fixtures. They do not publish, spend provider credits, or write this
 repository's remote journal. Production preparation additionally requires the
 authenticated successful CI metadata selected by the workflow. A local fixture
 test is not evidence that a hosted package was released.
 
 The workflow selects Node 24.15.0 for command steps and Bun 1.4.2 for installation.
 The pinned Action itself uses GitHub's `node24` action runtime and resolves the
-application's installed core. Local Bun 1.4.0 checks do not establish that a
-hosted workflow or publication has run.
+application's installed core. Offline checks do not establish that hosted Sigstore signing, npm OIDC exchange or
+publication has succeeded; those require the actual hosted workflow.
