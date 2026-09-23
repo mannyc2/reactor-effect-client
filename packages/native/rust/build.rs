@@ -156,4 +156,7 @@ fn main() {
     );
     println!("cargo:rustc-link-search=native={}", directory.display());
     println!("cargo:rustc-link-lib=static=clang_rt.osx");
+    // Cargo passes rustc-link-lib only to the library target, and the far-peer
+    // example cannot link this cdylib, so it names the archive itself.
+    println!("cargo:rustc-link-arg-examples={}", runtime.display());
 }
