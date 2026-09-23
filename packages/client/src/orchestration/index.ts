@@ -22,6 +22,8 @@ export type {
   SourceCleanup,
   CleanupReport,
   HandleShape,
+  HandleEvent,
+  HandleObservation,
   EngineError,
   RemoveOutcome,
 } from "./types.js";

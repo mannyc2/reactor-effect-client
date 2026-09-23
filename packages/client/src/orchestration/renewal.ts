@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { duration } from "../duration.js";
 import { AcquisitionFailure, CommandFailure, ReactorError, errorOf, parsed } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
@@ -34,11 +35,15 @@ import type {
   EngineEvent,
   EngineShape,
   EngineState,
+  HandleEvent,
   HandleShape,
   MediaState,
+  Renewal,
   Source,
   SourceCleanup,
 } from "./types.js";
+
+export type { MediaTail, Renewal } from "./types.js";
 
 /** An opened source and how long its remote session may live. */
 export interface Opened {
@@ -70,43 +75,25 @@ export interface Options<R = never> {
   /** @deprecated Removed in 0.3.0: use `reconnectTimeout` (a bare number is milliseconds). */
   readonly reconnectTimeoutMs?: never;
   readonly maxSessions?: number;
-  readonly log?: (message: string) => void;
+  /**
+   * Runs for each renewal event, in order, on a reader the handle forks: it
+   * never holds the handle's command permit, so a slow observer delays no
+   * enqueue or control. A failure is logged and the next event still runs.
+   * Events that queue past 4096 end the reader with an `Overflow` warning; use
+   * `observe` to read renewals together with the engine events they follow.
+   */
   readonly onRenewal?: (event: Renewal) => Effect.Effect<void>;
+  /**
+   * @deprecated Removed in 0.3.0: the orchestration logs through Effect's
+   * logger at debug level, annotated with `module: "reactor.orchestration"`.
+   */
+  readonly log?: never;
 }
 
-export interface MediaTail {
-  readonly video: {
-    readonly framesPerSecond: number;
-    readonly expectedFrames: number;
-    readonly receivedFrames: number;
-    readonly status: "not-started" | "count-complete" | "incomplete";
-  };
-  readonly audio: { readonly receivedSamples: number; readonly status: "unverified" };
-  readonly sourceDrops: { readonly video: bigint | null; readonly audio: bigint | null };
-  readonly forwarded: { readonly queuedVideoFrames: number; readonly queuedAudioSamples: number };
-}
-
-export type Renewal =
-  | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetime: Duration.Duration }
-  | { readonly _tag: "Prepared" }
-  | { readonly _tag: "SetupFailed"; readonly reason: string; readonly consecutive: number }
-  | { readonly _tag: "Recovering"; readonly sessionId: string; readonly reason: string }
-  | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly generation: bigint }
-  | {
-      readonly _tag: "Switched";
-      readonly sessionId: string;
-      readonly ageSeconds: number;
-      readonly tail: MediaTail;
-    }
-  | {
-      readonly _tag: "Replaced";
-      readonly reason: string;
-      readonly lostClips: number;
-      readonly sessionId: string;
-      readonly ageSeconds: number;
-      readonly tail: MediaTail;
-    }
-  | { readonly _tag: "Failed"; readonly reason: string };
+const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent> =>
+  event._tag === "Engine" ? Result.succeed(event.event) : Result.fail(event);
+const renewalsOnly = (event: HandleEvent): Result.Result<Renewal, HandleEvent> =>
+  event._tag === "Renewal" ? Result.succeed(event.event) : Result.fail(event);
 
 type Replacement =
   | { readonly _tag: "Absent" }
@@ -133,7 +120,8 @@ export const make = <R>(
     const affinity = yield* Sequence.makeAffinity<string>().pipe(
       Effect.mapError((cause) => errorOf(cause, "InvalidInput")),
     );
-    const events = new Observations<EngineEvent>();
+    // One ordered stream: engine events, renewals and media transitions.
+    const observations = new Observations<HandleEvent>();
     const buffer = yield* MediaBuffer.make;
     const fatal = yield* Deferred.make<ReactorFailure>();
     const slots = new Map<string, Slot>();
@@ -165,25 +153,58 @@ export const make = <R>(
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
 
-    const observe = (event: Renewal) => options.onRenewal?.(event) ?? Effect.void;
-    const log = (message: string) => Effect.sync(() => options.log?.(message));
-    const emit = (event: EngineEvent): void => events.emit(event, 256);
+    const announce = (event: Renewal): Effect.Effect<void> =>
+      Effect.sync(() => observations.emit({ _tag: "Renewal", event }, 256));
+    const log = (message: string): Effect.Effect<void> =>
+      Effect.logDebug(message).pipe(Effect.annotateLogs({ module: "reactor.orchestration" }));
+    const emit = (event: EngineEvent): void => observations.emit({ _tag: "Engine", event }, 256);
+    const setMedia = (state: MediaState): void => {
+      mediaState = state;
+      observations.emit({ _tag: "Media", state }, 256);
+    };
+    const onRenewal = options.onRenewal;
+    // Subscribed before the first source opens, so the reader sees its Opened.
+    const renewalReader =
+      onRenewal === undefined
+        ? undefined
+        : yield* observations.subscribe({ capacity: 4096 }).pipe(
+            Effect.flatMap((stream) =>
+              stream.pipe(
+                Stream.filterMap(renewalsOnly),
+                Stream.runForEach((event) =>
+                  Effect.suspend(() => onRenewal(event)).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("onRenewal failed", cause).pipe(
+                        Effect.annotateLogs({ module: "reactor.orchestration" }),
+                      ),
+                    ),
+                  ),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("onRenewal reader stopped", cause).pipe(
+                    Effect.annotateLogs({ module: "reactor.orchestration" }),
+                  ),
+                ),
+                Effect.forkIn(scope),
+              ),
+            ),
+          );
     const fail = (cause: ReactorFailure): Effect.Effect<void> =>
       Effect.suspend(() => {
         if (terminalFailure !== undefined) return Effect.void;
         terminalFailure = cause;
         // Publish the failed state and queues before waking a failure waiter.
-        mediaState = { _tag: "Failed", cause };
+        setMedia({ _tag: "Failed", cause });
         emit({ _tag: "SessionFailed", failure: cause });
         buffer.fail(cause);
         Deferred.doneUnsafe(fatal, Effect.succeed(cause));
-        return observe({ _tag: "Failed", reason: cause.message });
+        return announce({ _tag: "Failed", reason: cause.message });
       });
     // Every asynchronous activation uses this final fence. Closed/failed state
     // cannot be replaced by a reconnect or autoplay operation that finished late.
     const publishReady = (slot: Slot): boolean => {
       if (closing || slot.closed || slot !== current || terminalFailure !== undefined) return false;
-      mediaState = { _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation };
+      setMedia({ _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation });
       return true;
     };
     const recordCleanup = (cleanup: SourceCleanup): void => {
@@ -239,7 +260,7 @@ export const make = <R>(
           });
         if (slot === current) yield* retireOwner(slot);
         yield* closeSlot(slot);
-        yield* observe({
+        yield* announce({
           _tag: "Replaced",
           reason: cause.message,
           lostClips: lost.length,
@@ -275,8 +296,8 @@ export const make = <R>(
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
-        if (slot === current) mediaState = { _tag: "Recovering", sessionId: slot.source.id, cause };
-        yield* observe({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
+        if (slot === current) setMedia({ _tag: "Recovering", sessionId: slot.source.id, cause });
+        yield* announce({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
         yield* slot.joinCommitted(recoveryBudget(slot));
         if (slot.closed || closing || terminalFailure !== undefined) return;
         if (slot.needsReplacement()) {
@@ -345,7 +366,7 @@ export const make = <R>(
           return;
         }
         if (slot === current && !publishReady(slot)) return;
-        yield* observe({
+        yield* announce({
           _tag: "Reconnected",
           sessionId: slot.source.id,
           generation: slot.media.generation,
@@ -451,7 +472,7 @@ export const make = <R>(
               (cause) => scheduleRecovery(slot, cause, "replace"),
             );
             yield* startMedia(slot);
-            yield* observe({
+            yield* announce({
               _tag: "Opened",
               sessionId: slot.source.id,
               lifetime: Duration.seconds(slot.maxSeconds),
@@ -490,8 +511,15 @@ export const make = <R>(
           if (replacement._tag === "Opening") yield* Fiber.interrupt(replacement.fiber);
           yield* Effect.forEach([...slots.values()], closeSlot, { discard: true });
           buffer.end();
-          events.end();
-          mediaState = { _tag: "Closed" };
+          setMedia({ _tag: "Closed" });
+          observations.end();
+          // The reader delivers what was announced before close, within a bound.
+          if (renewalReader !== undefined)
+            yield* Fiber.await(renewalReader).pipe(
+              Effect.interruptible,
+              Effect.timeout("1 second"),
+              Effect.ignore,
+            );
           finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
           return finalReport;
         }),
@@ -516,11 +544,11 @@ export const make = <R>(
       ),
     );
     // The first owner's loss from its start is the output's: no baseline.
-    mediaState = {
+    setMedia({
       _tag: "Ready",
       sessionId: current.source.id,
       generation: current.media.generation,
-    };
+    });
 
     const guard = <A, E>(
       operation: string,
@@ -754,8 +782,14 @@ export const make = <R>(
       enqueue: (request) =>
         prepare(request).pipe(Effect.flatMap((submission) => submission.submit)),
       state,
-      events: events.stream(),
-      observe: (options) => events.observeWith(state, options),
+      events: Stream.filterMap(observations.stream(), engineOnly),
+      observe: (options) =>
+        observations.observeWith(state, options).pipe(
+          Effect.map(({ initial, events }) => ({
+            initial,
+            events: Stream.filterMap(events, engineOnly),
+          })),
+        ),
       failure: Deferred.await(fatal),
       setAutoplay: (enabled) =>
         commands.withPermit(
@@ -853,11 +887,11 @@ export const make = <R>(
                 replacement = { _tag: "Ready", slot: result.value };
                 openFailures = 0;
                 yield* log("Prepared the next session for renewal");
-                yield* observe({ _tag: "Prepared" });
+                yield* announce({ _tag: "Prepared" });
               } else {
                 openFailures++;
                 retryAt = clock.currentTimeMillisUnsafe() + 5000;
-                yield* observe({
+                yield* announce({
                   _tag: "SetupFailed",
                   reason: "Could not prepare the next source",
                   consecutive: openFailures,
@@ -930,7 +964,7 @@ export const make = <R>(
             const activated = publishReady(next);
             yield* closeSlot(old);
             if (!activated) return;
-            yield* observe({ _tag: "Switched", ...tail });
+            yield* announce({ _tag: "Switched", ...tail });
             yield* log("Switched prepared sessions at a sequence boundary");
           }).pipe(
             Effect.withSpan(
@@ -989,6 +1023,11 @@ export const make = <R>(
         videoFramesPerSecond: current.media.videoFramesPerSecond,
       },
       mediaState: Effect.sync(() => mediaState),
+      observe: (options) =>
+        observations.observeWith(
+          Effect.map(state, (engine) => ({ engine, media: mediaState })),
+          options,
+        ),
       sessionId: Effect.sync(() =>
         current === undefined || current.closed ? Option.none() : Option.some(current.source.id),
       ),

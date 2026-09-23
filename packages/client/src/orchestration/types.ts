@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import type * as Result from "effect/Result";
@@ -179,6 +180,61 @@ export type MediaState =
   | { readonly _tag: "Failed"; readonly cause: ReactorFailure }
   | { readonly _tag: "Closed" };
 
+export interface MediaTail {
+  readonly video: {
+    readonly framesPerSecond: number;
+    readonly expectedFrames: number;
+    readonly receivedFrames: number;
+    readonly status: "not-started" | "count-complete" | "incomplete";
+  };
+  readonly audio: { readonly receivedSamples: number; readonly status: "unverified" };
+  readonly sourceDrops: { readonly video: bigint | null; readonly audio: bigint | null };
+  readonly forwarded: { readonly queuedVideoFrames: number; readonly queuedAudioSamples: number };
+}
+
+export type Renewal =
+  | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetime: Duration.Duration }
+  | { readonly _tag: "Prepared" }
+  | { readonly _tag: "SetupFailed"; readonly reason: string; readonly consecutive: number }
+  | { readonly _tag: "Recovering"; readonly sessionId: string; readonly reason: string }
+  | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly generation: bigint }
+  | {
+      readonly _tag: "Switched";
+      readonly sessionId: string;
+      readonly ageSeconds: number;
+      readonly tail: MediaTail;
+    }
+  | {
+      readonly _tag: "Replaced";
+      readonly reason: string;
+      readonly lostClips: number;
+      readonly sessionId: string;
+      readonly ageSeconds: number;
+      readonly tail: MediaTail;
+    }
+  | { readonly _tag: "Failed"; readonly reason: string };
+
+/**
+ * One handle's observation, in the order its changes happened: engine events,
+ * renewal events and media-state transitions from a single stream, so a
+ * `Replaced` follows the `Failed` events of the clips it lost and no media
+ * state arrives out of order.
+ */
+export type HandleEvent =
+  | { readonly _tag: "Engine"; readonly event: EngineEvent }
+  | { readonly _tag: "Renewal"; readonly event: Renewal }
+  | { readonly _tag: "Media"; readonly state: MediaState };
+
+/**
+ * The handle's current engine and media state, and every handle event after
+ * it. The subscription is acquired before the state is read, so no event falls
+ * between them; an event may repeat what `initial` already reflects.
+ */
+export interface HandleObservation {
+  readonly initial: { readonly engine: EngineState; readonly media: MediaState };
+  readonly events: Stream.Stream<HandleEvent, ReactorError>;
+}
+
 export interface MediaSource {
   readonly video: Stream.Stream<VideoFrame, ReactorError>;
   readonly audio: Stream.Stream<AudioFrame, ReactorError>;
@@ -244,6 +300,10 @@ export interface HandleShape {
   readonly engine: EngineShape;
   readonly media: MediaShape;
   readonly mediaState: Effect.Effect<MediaState>;
+  /** Engine, renewal and media changes in one ordered stream, after the current state. */
+  readonly observe: (
+    options?: ObservationOptions,
+  ) => Effect.Effect<HandleObservation, ReactorError, Scope.Scope>;
   readonly sessionId: Effect.Effect<Option.Option<string>>;
   readonly close: Effect.Effect<CleanupReport>;
   readonly cleanup: Effect.Effect<Option.Option<CleanupReport>>;
