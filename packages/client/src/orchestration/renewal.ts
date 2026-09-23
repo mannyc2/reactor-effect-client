@@ -513,10 +513,7 @@ export const make = <R>(
         return yield* resolve(request, values, preferred.source.id, binding);
       });
     const sequenceError = (error: Sequence.SequenceError) =>
-      PolicyFailure.refuse(
-        `sequence_${error.reason}`,
-        `Sequence ${error.sequenceId}: ${error.reason}`,
-      );
+      PolicyFailure.refuse(`sequence_${error.code}`, error.message);
 
     const prepare: EngineShape["prepare"] = (input) =>
       Effect.gen(function* () {
