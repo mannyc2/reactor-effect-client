@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Option, Result } from "effect";
 import { ClipId, PolicyFailure } from "../../src/orchestration/request.js";
 import { activeIds, generation, resolve } from "../../src/orchestration/routing.js";

@@ -56,15 +56,15 @@
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
-    "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "effect": "catalog:",
-    "reactor-effect-test-kit": "workspace:*"
+    "reactor-effect-test-kit": "workspace:*",
+    "vitest": "catalog:"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "bun test",
+    "test": "vitest run",
     "generate:wire": "python3 wire/generate.py",
     "generate:check": "python3 wire/generate.py --check"
   },

@@ -1,6 +1,6 @@
 // The json() walker's own bounds, and how each caller-input site surfaces a violation: as a typed
 // failure that was never submitted, not as a defect.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Cause, Crypto, Effect, Exit, Option, Scope } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Http from "effect/unstable/http/HttpClient";

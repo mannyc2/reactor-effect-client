@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import * as Schema from "effect/Schema";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../src/index.js";
 import { PolicyFailure } from "../src/orchestration/index.js";

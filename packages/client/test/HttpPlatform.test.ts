@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Cause, Effect, Encoding, Exit, Fiber, Redacted, Stream } from "effect";
 import * as PlatformHttp from "effect/unstable/http/HttpClient";
 import * as Response from "effect/unstable/http/HttpClientResponse";

@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import * as Effect from "effect/Effect";
 import { tokenBody } from "../src/coordinator/_internal/client.js";
 import { retryAfterMs } from "../src/coordinator/_internal/response.js";

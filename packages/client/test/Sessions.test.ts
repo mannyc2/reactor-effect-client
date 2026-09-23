@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   Cause,
   Clock,

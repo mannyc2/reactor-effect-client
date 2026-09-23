@@ -3,7 +3,7 @@
 Run the focused suite from `packages/client`:
 
 ```sh
-bun test test/orchestration --timeout 6000
+bun run test test/orchestration --testTimeout=6000
 node ../../node_modules/typescript/bin/tsc -p test/orchestration/tsconfig.json
 ../../node_modules/.bin/oxlint -c ../../.oxlintrc.json --deny-warnings test/orchestration
 node test/orchestration/coverage-ledger.mjs
@@ -26,7 +26,7 @@ The [coverage ledger](./coverage-ledger.md) maps every assertion from the four r
 The provider and canonical ownership suites used by the ledger can be checked separately:
 
 ```sh
-bun test test/h3/Provider.test.ts test/h3/ProviderReferences.test.ts test/Submission.test.ts test/Sequence.test.ts --timeout 6000
+bun run test test/h3/Provider.test.ts test/h3/ProviderReferences.test.ts test/Submission.test.ts test/Sequence.test.ts --testTimeout=6000
 ```
 
 These tests use local fixtures and test clocks. They do not establish hosted generation or transport interoperability. The September 22 final orchestration run passed 114 tests with 664 assertions, including source affinity and acceptance accounting after remote expiry. `validation.bun.log` records that run; the earlier 14-failure result is preserved in `.check/canonical-closure/orchestration-before.log`. The complete portable profile passed 526 tests with 2,490 assertions in `.check/canonical-closure/verify-portable-qualified.log`. Earlier passing profiles remain alongside it. `validation.authority.log` records the separate provider, reference, submission, and sequence checks.

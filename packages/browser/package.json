@@ -28,15 +28,15 @@
     "reactor-effect-client": "workspace:*"
   },
   "devDependencies": {
-    "@types/bun": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*",
-    "reactor-effect-test-kit": "workspace:*"
+    "reactor-effect-test-kit": "workspace:*",
+    "vitest": "catalog:"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test"
+    "test": "vitest run"
   },
   "publishConfig": {
     "access": "public",

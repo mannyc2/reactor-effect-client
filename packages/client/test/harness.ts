@@ -7,7 +7,7 @@ import { assert } from "reactor-effect-test-kit";
 import * as FetchHttp from "../src/FetchHttp.js";
 import type { ReactorError } from "../src/errors.js";
 
-export { test } from "bun:test";
+export { test } from "vitest";
 export {
   assert,
   equal,

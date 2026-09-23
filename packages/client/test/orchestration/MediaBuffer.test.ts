@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Fiber, Result, Stream } from "effect";
 import { ReactorError } from "../../src/errors.js";
 import * as MediaBuffer from "../../src/orchestration/media-buffer.js";

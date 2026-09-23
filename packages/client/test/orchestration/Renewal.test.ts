@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Fiber, Option, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";

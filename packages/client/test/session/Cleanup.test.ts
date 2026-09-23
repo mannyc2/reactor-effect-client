@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import * as Http from "effect/unstable/http/HttpClient";

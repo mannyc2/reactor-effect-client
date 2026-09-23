@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Cause, Crypto, Effect, Exit, Fiber, Result, Scope, Stream } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as H3 from "../../src/h3/index.js";

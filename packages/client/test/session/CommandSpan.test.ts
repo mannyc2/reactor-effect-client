@@ -4,7 +4,7 @@
  * evidence and the failure category, never the input, the reply or provider text,
  * while the caller still reads provider text from `context.body`.
  */
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

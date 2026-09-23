@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import type { ReactorError } from "reactor-effect-client";
 import { assert } from "reactor-effect-test-kit";
 
-export { test } from "bun:test";
+export { test } from "vitest";
 export {
   assert,
   equal,
