@@ -59,7 +59,14 @@ export type FailureCode = typeof FailureCode.Type;
 export class Failure extends Schema.Error<Failure>("reactor-effect-client/ReactorError/Failure")({
   _tag: FailureCode,
   message: Schema.String,
-}) {}
+}) {
+  /** Local backpressure (`Overflow`) and a lost connection may succeed on a later attempt. */
+  get isRetryable(): boolean {
+    return (
+      this._tag === "Overflow" || this._tag === "Disconnected" || this._tag === "ChannelClosed"
+    );
+  }
+}
 
 /** A coordinator HTTP failure; `status` is absent when no response arrived. */
 export class Http extends Schema.Error<Http>("reactor-effect-client/ReactorError/Http")({
@@ -71,6 +78,20 @@ export class Http extends Schema.Error<Http>("reactor-effect-client/ReactorError
   /** The response body, for explicit inspection only. */
   body: Schema.optionalKey(Schema.String),
 }) {
+  /**
+   * No response arrived, or the coordinator refused for now: 408, 429, 503, or
+   * any status that named a Retry-After delay.
+   */
+  get isRetryable(): boolean {
+    return (
+      this.status === undefined ||
+      this.status === 408 ||
+      this.status === 429 ||
+      this.status === 503 ||
+      this.retryAfter !== undefined
+    );
+  }
+
   /** Diagnostic JSON: the body stays out. */
   override toJSON() {
     return reasonJson(this);
@@ -90,6 +111,11 @@ export class Remote extends Schema.Error<Remote>("reactor-effect-client/ReactorE
   /** The provider's error text, for explicit inspection only. */
   body: Schema.optionalKey(Schema.String),
 }) {
+  /** The provider refused; the same request would be refused again. */
+  get isRetryable(): boolean {
+    return false;
+  }
+
   /** Diagnostic JSON: the body stays out. */
   override toJSON() {
     return reasonJson(this);
@@ -107,6 +133,10 @@ export class Native extends Schema.Error<Native>("reactor-effect-client/ReactorE
    */
   backendMessage: Schema.optionalKey(Schema.Redacted(Schema.String, { disallowJsonEncode: true })),
 }) {
+  get isRetryable(): boolean {
+    return false;
+  }
+
   /** Diagnostic JSON: the backend text stays out. */
   override toJSON() {
     return reasonJson(this);
@@ -123,7 +153,11 @@ export class IceFailed extends Schema.Error<IceFailed>(
   pairs: Schema.Int,
   /** The local candidate types gathered, such as `host` or `relay`. */
   candidateTypes: Schema.Array(Schema.String),
-}) {}
+}) {
+  get isRetryable(): boolean {
+    return false;
+  }
+}
 
 /** ICE connectivity succeeded and the DTLS or SCTP transport above it failed. */
 export class TransportFailed extends Schema.Error<TransportFailed>(
@@ -133,7 +167,11 @@ export class TransportFailed extends Schema.Error<TransportFailed>(
   message: Schema.String,
   /** Candidate pairs the connection's statistics listed. */
   pairs: Schema.Int,
-}) {}
+}) {
+  get isRetryable(): boolean {
+    return false;
+  }
+}
 
 export const ReactorErrorReason = Schema.Union([
   Failure,
@@ -245,7 +283,12 @@ export type RefusalCode = typeof RefusalCode.Type;
 export class Refusal extends Schema.Error<Refusal>("reactor-effect-client/PolicyFailure/Refusal")({
   _tag: RefusalCode,
   message: Schema.String,
-}) {}
+}) {
+  /** A full queue and a recovering session are backpressure: the request can wait. */
+  get isRetryable(): boolean {
+    return this._tag === "QueueFull" || this._tag === "SessionRecovering";
+  }
+}
 
 /** A request field names a clip that no session is known to own. */
 export class Missing extends Schema.Error<Missing>("reactor-effect-client/PolicyFailure/Missing")({
@@ -255,6 +298,10 @@ export class Missing extends Schema.Error<Missing>("reactor-effect-client/Policy
 }) {
   override get message(): string {
     return `The ${this.purpose} clip has no known owning session`;
+  }
+
+  get isRetryable(): boolean {
+    return false;
   }
 }
 
@@ -268,6 +315,10 @@ export class SequenceRefusal extends Schema.Error<SequenceRefusal>(
 }) {
   override get message(): string {
     return `Sequence ${this.sequenceId}: ${this.code}`;
+  }
+
+  get isRetryable(): boolean {
+    return false;
   }
 }
 
@@ -368,6 +419,19 @@ export class ReactorError extends Schema.TaggedError<ReactorError>(
     return this.reason.message;
   }
 
+  /**
+   * Whether a later attempt may succeed. Never true when `context.outcome` is
+   * "unknown": the remote may already have applied the first attempt.
+   */
+  get isRetryable(): boolean {
+    return this.context.outcome !== "unknown" && this.reason.isRetryable;
+  }
+
+  /** The delay the remote asked for, when it named one (the AiError precedent). */
+  get retryAfter(): Duration.Duration | undefined {
+    return this.reason._tag === "Http" ? this.reason.retryAfter : undefined;
+  }
+
   /** Whether `u` is a `ReactorError`, and not one of the other client failures. */
   static is(u: unknown): u is ReactorError {
     return Predicate.hasProperty(u, TypeId) && Predicate.isTagged(u, "ReactorError");
@@ -395,6 +459,19 @@ export class CommandFailure extends Schema.TaggedError<CommandFailure>(
 
   override get message(): string {
     return this.reason.message;
+  }
+
+  /**
+   * Whether a later attempt may succeed. Never true when `context.outcome` is
+   * "unknown": the remote may already have applied the first attempt.
+   */
+  get isRetryable(): boolean {
+    return this.context.outcome !== "unknown" && this.reason.isRetryable;
+  }
+
+  /** The delay the remote asked for, when it named one (the AiError precedent). */
+  get retryAfter(): Duration.Duration | undefined {
+    return this.reason._tag === "Http" ? this.reason.retryAfter : undefined;
   }
 
   /** Whether `u` is a `CommandFailure`. */
@@ -434,6 +511,19 @@ export class AcquisitionFailure extends Schema.TaggedError<AcquisitionFailure>(
     return this.reason.message;
   }
 
+  /**
+   * Whether a later attempt may succeed. Never true when `context.outcome` is
+   * "unknown": the remote may already have applied the first attempt.
+   */
+  get isRetryable(): boolean {
+    return this.context.outcome !== "unknown" && this.reason.isRetryable;
+  }
+
+  /** The delay the remote asked for, when it named one (the AiError precedent). */
+  get retryAfter(): Duration.Duration | undefined {
+    return this.reason._tag === "Http" ? this.reason.retryAfter : undefined;
+  }
+
   /** Whether `u` is an `AcquisitionFailure`. */
   static is(u: unknown): u is AcquisitionFailure {
     return Predicate.hasProperty(u, TypeId) && Predicate.isTagged(u, "AcquisitionFailure");
@@ -465,6 +555,19 @@ export class PolicyFailure extends Schema.TaggedError<PolicyFailure>(
 
   override get message(): string {
     return this.reason.message;
+  }
+
+  /**
+   * Whether a later attempt may succeed: a full queue or a recovering session.
+   * Nothing was dispatched, so the outcome never stands in the way.
+   */
+  get isRetryable(): boolean {
+    return this.reason.isRetryable;
+  }
+
+  /** A local refusal names no delay. */
+  get retryAfter(): Duration.Duration | undefined {
+    return undefined;
   }
 
   /** Whether `u` is a `PolicyFailure`. */

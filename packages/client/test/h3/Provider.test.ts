@@ -1409,6 +1409,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         expect(Result.isFailure(overflow) && overflow.failure.context.outcome).toBe(
           "not-submitted",
         );
+        expect(Result.isFailure(overflow) && overflow.failure.isRetryable).toBe(true);
         yield* held.release;
         const firstAccepted = yield* Fiber.join(inflight);
         const secondAccepted = yield* other.submit;

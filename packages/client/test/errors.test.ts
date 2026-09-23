@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, test } from "vitest";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
@@ -8,12 +9,14 @@ import * as Root from "../src/index.js";
 import {
   AcquisitionFailure,
   CommandFailure,
+  Failure,
   Http,
   isReactorFailure,
   Native,
   ReactorError,
   Remote,
 } from "../src/index.js";
+import { Correlator } from "../src/correlation.js";
 // @ts-expect-error ProviderFailure is no longer exported from the root.
 import type { ProviderFailure } from "../src/index.js";
 import type { ErrorContext } from "../src/index.js";
@@ -329,5 +332,89 @@ describe("the four failure classes", () => {
       acquisition.reason,
       { operation: "enqueue", outcome: "not-submitted", detail: acquisition },
     ]);
+  });
+});
+
+describe("classification", () => {
+  const retryable = [
+    new Failure({ _tag: "Overflow", message: "pending request bound reached" }),
+    new Failure({ _tag: "Disconnected", message: "peer state failed" }),
+    new Failure({ _tag: "ChannelClosed", message: "data channel closed" }),
+    new Http({ message: "network/read failure" }),
+    new Http({ message: "HTTP 429", status: 429, retryAfter: Duration.seconds(1) }),
+    new Http({ message: "HTTP 503", status: 503 }),
+  ];
+  const unknown = {
+    operation: "enqueue",
+    outcome: "unknown",
+    requestId: "request-1",
+    generation: 1n,
+  } as const;
+
+  test("isRetryable is never true for an unknown outcome", () => {
+    for (const reason of retryable) {
+      expect(reason.isRetryable).toBe(true);
+      expect(new CommandFailure({ reason, context: unknown }).isRetryable).toBe(false);
+      expect(new ReactorError({ reason, context: { outcome: "unknown" } }).isRetryable).toBe(false);
+      expect(
+        new AcquisitionFailure({ reason, context: { outcome: "unknown" }, cleanup: report })
+          .isRetryable,
+      ).toBe(false);
+      expect(
+        new CommandFailure({ reason, context: { operation: "enqueue", outcome: "not-submitted" } })
+          .isRetryable,
+      ).toBe(true);
+    }
+  });
+
+  test("backpressure and a connection lost before dispatch are retryable", () => {
+    const correlator = new Correlator<unknown>("data", 2);
+    const sent = correlator.register(1n, "sent");
+    sent.submitted = true;
+    const unsent = correlator.register(1n, "unsent");
+    let bound: unknown;
+    try {
+      correlator.register(1n, "third");
+    } catch (error) {
+      bound = error;
+    }
+    expect(ReactorError.is(bound) && [bound.reason._tag, bound.isRetryable]).toEqual([
+      "Overflow",
+      true,
+    ]);
+    correlator.failGeneration(1n, ReactorError.fromCode("Disconnected", "peer state failed"));
+    const outcomes = [sent, unsent].map((pending) =>
+      Effect.runSync(Effect.flip(Deferred.await(pending.deferred))),
+    );
+    expect(outcomes.map((error) => [error.context.outcome, error.isRetryable])).toEqual([
+      ["unknown", false],
+      ["not-submitted", true],
+    ]);
+    expect(policy.isRetryable).toBe(true);
+    expect(
+      PolicyFailure.refuse("SessionRecovering", "Owning session is recovering").isRetryable,
+    ).toBe(true);
+    expect(PolicyFailure.refuse("Busy", "busy", "set_canvas").isRetryable).toBe(false);
+    expect(PolicyFailure.sequence("run", "sealed").isRetryable).toBe(false);
+  });
+
+  test("a refusal from the provider and a local bug are not retryable", () => {
+    for (const reason of [
+      new Remote({ _tag: "Remote", message: "remote command error MODEL_ERROR" }),
+      new Http({ message: "HTTP 400", status: 400 }),
+      new Failure({ _tag: "InvalidInput", message: "invalid" }),
+      new Failure({ _tag: "Timeout", message: "deadline" }),
+    ])
+      expect(new ReactorError({ reason }).isRetryable).toBe(false);
+  });
+
+  test("retryAfter surfaces the delay an Http reason named", () => {
+    const limited = new ReactorError({
+      reason: new Http({ message: "HTTP 429", status: 429, retryAfter: Duration.millis(1250) }),
+      context: { outcome: "replied" },
+    });
+    expect(limited.retryAfter && Duration.toMillis(limited.retryAfter)).toBe(1250);
+    expect(CommandFailure.from(limited, unknown).retryAfter).toEqual(limited.retryAfter);
+    expect([late.retryAfter, policy.retryAfter]).toEqual([undefined, undefined]);
   });
 });

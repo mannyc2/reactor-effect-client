@@ -505,11 +505,15 @@ test("session policy: pending count overflow does not send an extra side effect"
       const error = await failure(s.command("two", {}), { signal });
       equal(error.reason._tag, "Overflow");
       equal(error.context.outcome, "not-submitted");
+      // Local backpressure proves no dispatch, so the command can wait and retry.
+      equal(error.isRetryable, true);
       equal(dataSent(p).length, 1);
       p.emit({ type: "state", state: "failed" });
       const result = await first;
       assert(result._tag === "Failure");
       equal(result.failure.context.outcome, "unknown");
+      // A lost connection alone would be retryable; the unknown outcome forbids it.
+      equal([result.failure.reason._tag, result.failure.isRetryable], ["Disconnected", false]);
     } finally {
       await run(s.close());
     }
