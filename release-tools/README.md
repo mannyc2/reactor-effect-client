@@ -89,7 +89,11 @@ qualification.json
 ```
 
 Qualification binds all three archives to the exact main commit, source tree, CI
-run and attempt. Pull-request and fork artifacts are ineligible.
+run and attempt. Pull-request and fork artifacts are ineligible. So is a run
+whose package job did not execute in its latest attempt: **Re-run failed jobs**
+keeps the artifact stamped with the earlier attempt and preparation rejects it.
+Use **Re-run all jobs**, which packs, stamps and replaces the artifact under the
+new attempt, or push a new commit to `main`.
 
 Manually run **Release npm with ts-release** on `main` with `mode=prepare` and
 that successful `ci_run_id`. Main must still point to its commit. This run
