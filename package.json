@@ -45,7 +45,7 @@
     "prepare": "effect-tsgo patch --typescript",
     "build": "bun run --filter './packages/*' build",
     "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings .",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "generate:wire": "bun run --filter reactor-effect-client generate:wire",
@@ -61,6 +61,6 @@
     "native:build": "bun run --filter reactor-effect-native native:build",
     "native:test": "bun run --filter reactor-effect-native native:test",
     "native:linux-x64": "bun run --filter reactor-effect-native native:linux-x64",
-    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && cd release-tools && bun --no-env-file test ./test"
+    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings release-tools && cd release-tools && bun --no-env-file test ./test"
   }
 }
