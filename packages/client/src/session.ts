@@ -6,7 +6,9 @@ import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Stream from "effect/Stream";
+import { duration } from "./duration.js";
 import { parsed, parsedInput, positiveLimit, ReactorError, Remote } from "./errors.js";
 import type { ErrorContext } from "./errors.js";
 import { nonempty, uint32, structFromObject, objectFromStruct } from "./json.js";
@@ -21,6 +23,7 @@ import { StatsSampler } from "./stats.js";
 import type { Statistics } from "./stats.js";
 
 import type {
+  CommandOptions,
   SessionOptions,
   CloseReport,
   Snapshot,
@@ -33,6 +36,7 @@ import type {
   Uploaded,
   ControlPayload,
   ControlReply,
+  UploadTimeoutOptions,
 } from "./SessionTypes.js";
 import { CommandFailure } from "./session/commands.js";
 import type { CommandContext } from "./session/commands.js";
@@ -68,14 +72,18 @@ const remoteError = (
     context,
   });
 const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> => parsed(body);
+const replyTimeout = (input: Duration.Input): Duration.Duration =>
+  duration(input, "reply timeout", { maximum: "10 minutes" });
+const uploadTimeout = (input: Duration.Input): Duration.Duration =>
+  duration(input, "upload timeout", { maximum: "10 minutes" });
 const withDeadline = <A, R>(
   effect: Effect.Effect<A, ReactorError, R>,
-  ms: number,
+  deadline: Duration.Duration,
   operation: string,
 ): Effect.Effect<A, ReactorError, R> =>
   effect.pipe(
     Effect.timeoutOrElse({
-      duration: ms,
+      duration: deadline,
       orElse: () => Effect.fail(ReactorError.fromCode("Timeout", `${operation}: deadline`)),
     }),
   );
@@ -96,10 +104,11 @@ export class Session {
   private closeReport: CloseReport | undefined;
   private readonly received = new Set<string>();
   private readonly bitrates = new Map<string, number>();
-  private readonly commandTimeout: number;
-  private readonly connectTimeout: number;
-  private readonly readyTimeout: number;
-  private readonly heartbeat: number;
+  private readonly replyTimeout: Duration.Duration;
+  private readonly uploadTimeout: Duration.Duration;
+  private readonly connectTimeout: Duration.Duration;
+  private readonly readyTimeout: Duration.Duration;
+  private readonly heartbeat: Duration.Duration;
   private readonly uploadBound: number;
   readonly http: CoordinatorClient;
   constructor(
@@ -113,19 +122,18 @@ export class Session {
         uint32(options.intent.connectionId, "attach connectionId");
     } else nonempty(options.intent.model.name, "model name");
     this.http = http;
-    this.commandTimeout = positiveLimit(
-      options.commandTimeoutMs ?? 10_000,
-      "command timeout",
-      600_000,
-    );
-    this.connectTimeout = positiveLimit(
-      options.connectTimeoutMs ?? 180_000,
-      "connect timeout",
-      600_000,
-    );
-    this.readyTimeout = positiveLimit(options.readyTimeoutMs ?? 30_000, "ready timeout", 600_000);
-    this.heartbeat = options.heartbeatMs ?? 10_000;
-    if (this.heartbeat !== 0) positiveLimit(this.heartbeat, "heartbeat interval", 600_000);
+    this.replyTimeout = replyTimeout(options.replyTimeout ?? "10 seconds");
+    this.uploadTimeout = uploadTimeout(options.uploadTimeout ?? "60 seconds");
+    this.connectTimeout = duration(options.connectTimeout ?? "3 minutes", "connect timeout", {
+      maximum: "10 minutes",
+    });
+    this.readyTimeout = duration(options.readyTimeout ?? "30 seconds", "ready timeout", {
+      maximum: "10 minutes",
+    });
+    this.heartbeat = duration(options.heartbeatInterval ?? "10 seconds", "heartbeat interval", {
+      maximum: "10 minutes",
+      allowInfinite: true,
+    });
     this.uploadBound = positiveLimit(
       options.maxUploadBytes ?? 16_777_216,
       "upload byte bound",
@@ -672,7 +680,7 @@ export class Session {
           const outcome = yield* Effect.result(self.guard(c, c.peer.maxBitrate(name, bitrate)));
           if (outcome._tag === "Failure") self.emit({ _tag: "Diagnostic", error: outcome.failure });
         }
-        if (self.heartbeat !== 0)
+        if (Duration.isFinite(self.heartbeat))
           yield* self.background(
             c,
             Effect.gen(function* () {
@@ -708,7 +716,7 @@ export class Session {
     operation: string,
     encode: (id: string) => Uint8Array<ArrayBuffer>,
     channel: "control" | "data",
-    timeoutMs: number,
+    deadline: Duration.Duration,
     publication?: string,
   ): Effect.Effect<A, ReactorError> {
     const self = this;
@@ -772,7 +780,7 @@ export class Session {
           }),
         ).pipe(
           Effect.interruptible,
-          (effect) => withDeadline(effect, timeoutMs, operation),
+          (effect) => withDeadline(effect, deadline, operation),
           Effect.mapError(failure),
           Effect.onExit((exit) =>
             Effect.sync(() => {
@@ -823,23 +831,26 @@ export class Session {
   command(
     type: string,
     data: unknown,
-    uploads: ReadonlyMap<string, W.UploadReference> = new Map(),
-    timeoutMs = this.commandTimeout,
+    options: CommandOptions = {},
   ): Effect.Effect<CommandReply, CommandFailure> {
     return pure(() => this.currentReady()).pipe(
       // The caller's name, data, uploads and deadline: a rejection is InvalidInput.
       Effect.flatMap((c) =>
-        parsedInput(() => {
-          positiveLimit(timeoutMs, "command timeout", 600_000);
-          return {
+        parsedInput(
+          () => ({
             c,
+            deadline:
+              options.replyTimeout === undefined
+                ? this.replyTimeout
+                : replyTimeout(options.replyTimeout),
             payload: {
               type: nonempty(type, "command type"),
               data: structFromObject(data),
-              uploads: captureUploads(uploads),
+              uploads: captureUploads(options.uploads ?? new Map()),
             },
-          };
-        }, type),
+          }),
+          type,
+        ),
       ),
       Effect.mapError((error) =>
         CommandFailure.from(error, {
@@ -848,7 +859,7 @@ export class Session {
           outcome: "not-submitted",
         }),
       ),
-      Effect.flatMap(({ c, payload }) =>
+      Effect.flatMap(({ c, deadline, payload }) =>
         this.request(
           c,
           this.data,
@@ -860,7 +871,7 @@ export class Session {
               payload: { case: "command", value: payload },
             }),
           "data",
-          timeoutMs,
+          deadline,
         ).pipe(
           Effect.mapError((error) => {
             const { outcome, requestId, generation } = error.context;
@@ -903,7 +914,7 @@ export class Session {
           operation,
           (id) => W.ControlClientMessage.encode({ request_id: id, kind: 1, payload }),
           "control",
-          this.commandTimeout,
+          this.replyTimeout,
           payload.case === "publish_track" ? payload.value.name : undefined,
         ),
       ),
@@ -915,7 +926,7 @@ export class Session {
       return W.ControlClientMessage.encode({ request_id: "", kind: 3, payload });
     }).pipe(
       Effect.flatMap((bytes) => this.guard(c, c.peer.send("control", bytes))),
-      (effect) => withDeadline(effect, this.commandTimeout, "control notification"),
+      (effect) => withDeadline(effect, this.replyTimeout, "control notification"),
     );
   }
   ping(): Effect.Effect<void, ReactorError> {
@@ -1078,7 +1089,7 @@ export class Session {
         }).pipe(
           Effect.andThen(Effect.suspend(() => c.peer.replace(name, clone))),
           Effect.timeoutOrElse({
-            duration: self.commandTimeout,
+            duration: self.replyTimeout,
             orElse: () => {
               deadline = true;
               return Effect.fail(
@@ -1248,7 +1259,7 @@ export class Session {
     name: string,
     mimeType: string,
     bytes: Uint8Array,
-    timeoutMs = 60_000,
+    options: UploadTimeoutOptions = {},
   ): Effect.Effect<Uploaded, ReactorError> {
     const self = this;
     return Effect.suspend(() => {
@@ -1264,7 +1275,6 @@ export class Session {
           nonempty(name, "upload name");
           nonempty(mimeType, "upload MIME type");
           positiveLimit(bytes.byteLength, "upload size", self.uploadBound);
-          positiveLimit(timeoutMs, "upload timeout", 600_000);
           return { c, remote, copy: new Uint8Array(bytes) };
         });
         progress = { ...progress, allocation: "unknown" };
@@ -1293,7 +1303,12 @@ export class Session {
         progress = { ...progress, notification: "submitted" };
         return { file, transfer: "confirmed" as const, notification: "submitted" as const };
       });
-      return withDeadline(operation, timeoutMs, "upload").pipe(
+      return pure(() =>
+        options.uploadTimeout === undefined
+          ? self.uploadTimeout
+          : uploadTimeout(options.uploadTimeout),
+      ).pipe(
+        Effect.flatMap((deadline) => withDeadline(operation, deadline, "upload")),
         Effect.mapError((e) =>
           ReactorError.fromCode("Upload", e.message, {
             ...e.context,
@@ -1328,7 +1343,7 @@ export class Session {
             scope: self.lifecycle.scope,
             remote: self.remote,
             http: self.http,
-            commandTimeout: self.commandTimeout,
+            replyTimeout: self.replyTimeout,
             retire: (connection, error) => self.fail(connection, error),
           });
           self.closeReport = report;

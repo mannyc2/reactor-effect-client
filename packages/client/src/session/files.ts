@@ -1,14 +1,23 @@
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { collectBytes } from "../bytes.js";
-import { ReactorError } from "../errors.js";
+import { duration } from "../duration.js";
+import { parsed, ReactorError } from "../errors.js";
+import type { UploadTimeoutOptions } from "../SessionTypes.js";
 import type { Session, Uploaded } from "./index.js";
 
-export interface FileUploadOptions {
+export interface FileUploadOptions extends UploadTimeoutOptions {
   readonly mimeType?: string;
   readonly maxBytes?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * How long reading the file may take; 30 seconds by default. A bare number
+   * is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 
 /** Scoped, bounded host file loading shared by uploads and reference preparation. */
@@ -50,11 +59,9 @@ export const uploadFile = (
 ): Effect.Effect<Uploaded, ReactorError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const before = yield* session.ready;
-    const timeout = options.readTimeoutMs ?? 30_000;
-    if (!Number.isFinite(timeout) || timeout <= 0)
-      return yield* ReactorError.fromCode("InvalidInput", "Invalid file-read deadline", {
-        outcome: "not-submitted",
-      });
+    const timeout = yield* parsed(() =>
+      duration(options.readTimeout ?? "30 seconds", "file read timeout"),
+    );
     const bytes = yield* readFileBytes(file, options.maxBytes ?? 64 * 1024 * 1024).pipe(
       Effect.timeoutOrElse({
         duration: timeout,
@@ -85,5 +92,10 @@ export const uploadFile = (
           : extension === ".jpg" || extension === ".jpeg"
             ? "image/jpeg"
             : "application/octet-stream");
-    return yield* session.upload(name, mime, bytes);
+    return yield* session.upload(
+      name,
+      mime,
+      bytes,
+      options.uploadTimeout === undefined ? {} : { uploadTimeout: options.uploadTimeout },
+    );
   });

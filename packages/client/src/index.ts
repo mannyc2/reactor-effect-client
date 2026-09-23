@@ -32,9 +32,13 @@ export type {
   ReadyState,
   Status,
   CommandReply,
+  CommandOptions,
   CloseReport,
+  ReplyTimeoutOptions,
+  SessionTimeouts,
   Uploaded,
   UploadProgress,
+  UploadTimeoutOptions,
 } from "./SessionTypes.js";
 export type { HttpOptions, Termination } from "./coordinator/_internal/client.js";
 export type { CommandContext } from "./session/commands.js";

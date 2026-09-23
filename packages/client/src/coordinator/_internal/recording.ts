@@ -1,5 +1,7 @@
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { terminal } from "../../contract.js";
+import { duration } from "../../duration.js";
 import { ReactorError, parsed, positiveLimit } from "../../errors.js";
 import type { ClipReady } from "../../wire.generated.js";
 import type { CoordinatorClient } from "./client.js";
@@ -14,7 +16,14 @@ export interface DownloadedClip {
   readonly segments: readonly Segment[];
 }
 export interface DownloadOptions {
-  readonly timeoutMs?: number;
+  /**
+   * How long the whole download may take, including waiting for the playlist;
+   * 60 seconds by default and at most 10 minutes. A bare number is
+   * milliseconds.
+   */
+  readonly downloadTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `downloadTimeout` (a bare number is milliseconds). */
+  readonly timeoutMs?: never;
   readonly maxManifestBytes?: number;
   readonly maxSegmentBytes?: number;
   readonly maxTotalBytes?: number;
@@ -103,7 +112,9 @@ export const downloadClip = (
   Effect.suspend(() => {
     const action = Effect.gen(function* () {
       const bounds = yield* pure(() => ({
-        timeout: positiveLimit(options.timeoutMs ?? 60_000, "clip timeout", 600_000),
+        timeout: duration(options.downloadTimeout ?? "60 seconds", "clip download timeout", {
+          maximum: "10 minutes",
+        }),
         manifest: positiveLimit(options.maxManifestBytes ?? 262_144, "manifest bytes", 2_097_152),
         segment: positiveLimit(
           options.maxSegmentBytes ?? 16_777_216,

@@ -25,7 +25,7 @@ test("expiry closes the remote lease while allowing bounded local accounting of 
                   ),
               }
             : {},
-        { reconnectTimeoutMs: 5_000 },
+        { reconnectTimeout: 5_000 },
       );
       const prepared = yield* handle.engine.prepare(member("known-at-expiry", true));
       const pending = yield* prepared.submit.pipe(Effect.result, Effect.forkScoped);
@@ -50,7 +50,7 @@ test("a stalled reconnect is bounded by the source lifetime rather than the long
       const { handle, sources, renewals, awaitRenewal } = yield* renewalFixture(
         () => ({ reconnect: Effect.never }),
         {
-          reconnectTimeoutMs: 5_000,
+          reconnectTimeout: 5_000,
         },
       );
       yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "stalled reconnect"));
@@ -74,7 +74,7 @@ test("recovery waiting on a committed command closes its source at expiry and re
                 execute: () => entered.release.pipe(Effect.andThen(Effect.never)),
               }
             : {},
-        { reconnectTimeoutMs: 5_000 },
+        { reconnectTimeout: 5_000 },
       );
       const prepared = yield* handle.engine.prepare(member("recovering-at-expiry"));
       const pending = yield* prepared.submit.pipe(Effect.result, Effect.forkScoped);

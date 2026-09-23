@@ -387,8 +387,12 @@ try {
         const peers = yield* Layer.build(Native.layer());
         const factory = yield* makeClient({
           apiUrl: url,
-          sdpPoll: { attempts: 200, initialMs: 50, maxMs: 200 },
-          session: { connectTimeoutMs: 45_000, readyTimeoutMs: 45_000, commandTimeoutMs: 5000 },
+          sdpPoll: { attempts: 200, initialDelay: 50, maxDelay: 200 },
+          session: {
+            connectTimeout: "45 seconds",
+            readyTimeout: "45 seconds",
+            replyTimeout: "5 seconds",
+          },
         }).pipe(Effect.provide(peers));
         const session = yield* factory.createConnected({ model: "fixture/native-browser" });
         const ready = yield* session.ready;

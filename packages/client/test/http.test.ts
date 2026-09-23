@@ -18,7 +18,7 @@ test("HTTP source headers, cloud create shape, readiness 202/backoff and per-req
     const http = new HttpClient({
       apiUrl: "https://coordinator.fixture",
       credential: Effect.sync(() => `token-${++credentials}`),
-      sessionPoll: { attempts: 5, initialMs: 1, maxMs: 2 },
+      sessionPoll: { attempts: 5, initialDelay: 1, maxDelay: 2 },
     });
     const allocation = await run(
       http.create({ name: "owner/model", version: "v1" }, { temperature: 1 }),
@@ -137,7 +137,7 @@ test("HTTP deadlines cover response reads and cancel stalled readers", ({ signal
           },
         }),
       );
-    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
+    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeout: 10 });
     equal((await failure(http.read(f.sessionId), { signal })).reason._tag, "Timeout");
     await eventually(() => cancelled);
   }));
@@ -152,7 +152,7 @@ test("HTTP response byte limit and strict UTF8/JSON decoding", ({ signal }) =>
 test("HTTP no unsafe retries of creation after a network/ack timeout", ({ signal }) =>
   withFixture(async (f) => {
     f.hook = (c) => stall(c.signal);
-    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
+    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeout: 10 });
     const e = await failure(http.create({ name: "owner/model" }), { signal });
     equal(e.reason._tag, "Timeout");
     equal(e.context.outcome, "unknown");

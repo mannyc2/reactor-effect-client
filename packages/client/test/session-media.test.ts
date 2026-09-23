@@ -119,7 +119,7 @@ test("media generations: retirement preserves pressure evidence and fences queue
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const previous = yield* mediaGeneration(session);
@@ -179,7 +179,7 @@ test("media generations: a failed frame source reaches a frame-only consumer", (
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const media = yield* mediaGeneration(session);
@@ -211,7 +211,7 @@ test("media generations: reconnect retires a parked read without requiring a pee
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const media = yield* mediaGeneration(session);
@@ -240,7 +240,7 @@ test("browser generation projection: retired capabilities cannot publish into a 
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/browser-capability" });
           const old = yield* trackGeneration(session);

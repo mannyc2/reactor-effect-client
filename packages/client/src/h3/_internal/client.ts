@@ -14,6 +14,7 @@ import {
   ReactorError,
   Remote,
 } from "../../errors.js";
+import { duration } from "../../duration.js";
 import { Observations } from "../../observation.js";
 import type { CommandReply, Session, SessionEvent } from "../../session/index.js";
 import * as Submission from "../../Submission.js";
@@ -129,14 +130,21 @@ const build = (
     const scope = yield* Effect.scope;
     const crypto = yield* Crypto.Crypto;
     const limits = yield* pure(() => ({
-      command: positiveLimit(options.commandTimeoutMs ?? 15000, "H3 command deadline", 600000),
-      setup: positiveLimit(options.setupTimeoutMs ?? 60000, "H3 setup deadline", 600000),
-      reconcile: positiveLimit(
-        options.reconcileWindowMs ?? 5000,
-        "H3 reconciliation deadline",
-        60000,
-      ),
-      hook: positiveLimit(options.resultHookTimeoutMs ?? 1000, "H3 result hook deadline", 60000),
+      command: duration(options.replyTimeout ?? "15 seconds", "H3 reply timeout", {
+        maximum: "10 minutes",
+      }),
+      upload: duration(options.uploadTimeout ?? "60 seconds", "H3 upload timeout", {
+        maximum: "10 minutes",
+      }),
+      setup: duration(options.setupTimeout ?? "60 seconds", "H3 setup timeout", {
+        maximum: "10 minutes",
+      }),
+      reconcile: duration(options.reconcileWindow ?? "5 seconds", "H3 reconciliation window", {
+        maximum: "1 minute",
+      }),
+      hook: duration(options.resultHookTimeout ?? "1 second", "H3 result hook timeout", {
+        maximum: "1 minute",
+      }),
       pending: positiveLimit(options.maxPending ?? 128, "H3 pending acceptance bound", 4096),
       clips: positiveLimit(options.maxTrackedClips ?? 4096, "H3 clip observation bound", 16384),
       acceptances: positiveLimit(
@@ -384,7 +392,7 @@ const build = (
     const call = <K extends CommandName>(operation: K, args: CommandArgs<K>, needsFacts = true) =>
       Effect.gen(function* () {
         yield* active(operation, needsFacts);
-        const source = yield* session.command(operation, args, undefined, limits.command);
+        const source = yield* session.command(operation, args, { replyTimeout: limits.command });
         const message = yield* awaitObservation(source).pipe(
           Effect.mapError((error) =>
             uncertain(operation, source, "H3 reply observation failed", error),
@@ -487,7 +495,9 @@ const build = (
               const cached = uploads.get(key);
               if (cached !== undefined) return cached;
               const uploaded = yield* session
-                .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, limits.command)
+                .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, {
+                  uploadTimeout: limits.upload,
+                })
                 .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
               const file = yield* checked("enqueue", () => checkedUpload(uploaded.file));
               if (file.size !== BigInt(reference.size) || file.mime_type !== reference.mimeType)
@@ -591,7 +601,7 @@ const build = (
         execute: ({ args, entry }) => {
           const execution = Effect.gen(function* () {
             const sent = yield* Effect.result(
-              session.command("enqueue", args, undefined, limits.command),
+              session.command("enqueue", args, { replyTimeout: limits.command }),
             );
             let original: CommandFailure;
             if (Result.isFailure(sent)) {

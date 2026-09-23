@@ -35,7 +35,7 @@ test("simulation media gives each frame its own exact buffer when the renderer p
           samples: new Int16Array(slab, 2048 + index * 64, 32).fill(index + 1),
         });
         const handle = yield* Simulation.make({
-          buildFixedMs: 0,
+          fixedBuildTime: 0,
           buildRatio: 0,
           present: (_, __, sink) =>
             Effect.gen(function* () {

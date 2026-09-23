@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
@@ -13,7 +14,7 @@ import type { Remote, RemoteSession } from "./remote.js";
 
 const releasePublications = (
   connection: Connection | undefined,
-  commandTimeout: number,
+  replyTimeout: Duration.Duration,
 ): Effect.Effect<{ readonly submitted: string[]; readonly errors: ReactorError[] }> =>
   Effect.gen(function* () {
     const submitted: string[] = [],
@@ -34,7 +35,7 @@ const releasePublications = (
             ),
           ).pipe(
             Effect.timeoutOrElse({
-              duration: Math.min(1000, commandTimeout),
+              duration: Duration.min(Duration.seconds(1), replyTimeout),
               orElse: () =>
                 Effect.fail(ReactorError.fromCode("Timeout", "close unpublish: deadline")),
             }),
@@ -94,12 +95,12 @@ export const cleanupSession = (options: {
   readonly scope: Scope.Closeable;
   readonly remote: RemoteSession;
   readonly http: CoordinatorClient;
-  readonly commandTimeout: number;
+  readonly replyTimeout: Duration.Duration;
   readonly retire: (connection: Connection, error: ReactorError) => void;
 }): Effect.Effect<CloseReport> =>
   Effect.gen(function* () {
     const { connection } = options;
-    const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
+    const { submitted, errors } = yield* releasePublications(connection, options.replyTimeout);
     if (connection !== undefined) {
       // Cleanup reports every failure, a host peer's included, rather than dying:
       // retiring the generation runs the host's close.

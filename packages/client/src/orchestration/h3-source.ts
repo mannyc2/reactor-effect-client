@@ -356,7 +356,7 @@ export const fromH3 = (
             loadReferenceBytes(uri, {
               maxBytes:
                 options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
-              timeoutMs: options.references?.timeoutMs ?? 5000,
+              loadTimeout: options.references?.loadTimeout ?? "5 seconds",
             }).pipe(
               Effect.provideContext(environment),
               Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),

@@ -24,7 +24,7 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
   signal,
 }) =>
   withFixture(async (fixture) => {
-    const { session, peers } = makeSession(fixture, { commandTimeoutMs: 20 });
+    const { session, peers } = makeSession(fixture, { replyTimeout: 20 });
     const release = Deferred.makeUnsafe<void>();
     let cleanup: Promise<CloseReport> | undefined;
     let finished = false;
@@ -142,7 +142,7 @@ test("session policy: 32 concurrent replies resolve by ID in reverse order, inde
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
+    const { session: s, peers } = makeSession(f, { replyTimeout: 1000 });
     try {
       await run(s.start(), { signal });
       const p = peerAt(peers);
@@ -234,7 +234,7 @@ test("session policy: bodyless control does not ACK; schema validates its correl
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 10 });
+    const { session: s, peers } = makeSession(f, { replyTimeout: 10 });
     try {
       await run(s.start(), { signal });
       const p = peerAt(peers);
@@ -336,7 +336,7 @@ test("session policy: a closed data channel fails the connection as ChannelClose
   }));
 test("session policy: missing readiness times out and releases the generation", ({ signal }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { readyTimeoutMs: 10 }, (p) => {
+    const { session: s, peers } = makeSession(f, { readyTimeout: 10 }, (p) => {
       p.answerHook = () =>
         Effect.sync(() => p.emit({ type: "channel", channel: "data", open: true }));
     });
@@ -352,7 +352,7 @@ test("session policy: reconnect reuses connection with PUT, fails uncertain comm
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
+    const { session: s, peers } = makeSession(f, { replyTimeout: 1000 });
     try {
       await run(s.start(), { signal });
       const old = peerAt(peers);
@@ -391,7 +391,7 @@ test("session policy: late/duplicate model replies are observable, never settle 
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 10 });
+    const { session: s, peers } = makeSession(f, { replyTimeout: 10 });
     try {
       await run(s.start(), { signal });
       const p = peerAt(peers);
@@ -471,7 +471,7 @@ test("session policy: interrupted observer releases its registration while submi
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
+    const { session: s, peers } = makeSession(f, { replyTimeout: 1000 });
     try {
       await run(s.start(), { signal });
       peerAt(peers).autoReply = false;
@@ -497,7 +497,7 @@ test("session policy: interrupted observer releases its registration while submi
   }));
 test("session policy: pending count overflow does not send an extra side effect", ({ signal }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { maxPending: 1, commandTimeoutMs: 1000 });
+    const { session: s, peers } = makeSession(f, { maxPending: 1, replyTimeout: 1000 });
     try {
       await run(s.start(), { signal });
       const p = peerAt(peers);
@@ -526,7 +526,7 @@ test("session policy: allocation cancelled by close records unknown remote outco
   withFixture(async (f) => {
     f.hook = (c) =>
       c.url.pathname === "/sessions" && c.method === "POST" ? stall(c.signal) : undefined;
-    const { session: s } = makeSession(f, { requestTimeoutMs: 1000 });
+    const { session: s } = makeSession(f, { requestTimeout: 1000 });
     const task = Effect.runPromise(Effect.result(s.start()));
     await eventually(() => f.calls.some((c) => c.url.pathname === "/sessions"));
     const close = await run(s.close(), { signal });
@@ -598,7 +598,7 @@ test("session policy: close has a bounded termination request even inside an uni
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s } = makeSession(f, { requestTimeoutMs: 10 });
+    const { session: s } = makeSession(f, { requestTimeout: 10 });
     await run(s.start(), { signal });
     f.hook = (c) => (c.method === "DELETE" ? stall(c.signal) : undefined);
     const report = await run(s.close(), { signal });
@@ -611,7 +611,7 @@ test("session policy: heartbeat is immediate, generation-scoped, and stops after
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { heartbeatMs: 5 });
+    const { session: s, peers } = makeSession(f, { heartbeatInterval: 5 });
     await run(s.start(), { signal });
     const p = peerAt(peers);
     const pings = (): number => controlSent(p).filter((m) => m.payload?.case === "ping").length;
@@ -874,7 +874,7 @@ test("publication session: interrupted in-flight native replacement retires the 
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
+    const { session: s, peers } = makeSession(f, { replyTimeout: 500 }),
       first = new FakeTrack("audio"),
       next = new FakeTrack("audio");
     let finish: (() => void) | undefined;
@@ -915,7 +915,7 @@ test("publication session: stalled native replacement has a deadline and cannot 
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 35 }),
+    const { session: s, peers } = makeSession(f, { replyTimeout: 35 }),
       source = new FakeTrack("audio");
     try {
       await run(s.start(), { signal });
@@ -941,7 +941,7 @@ test("publication session: interruption while claiming sends no media and cannot
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
+    const { session: s, peers } = makeSession(f, { replyTimeout: 500 }),
       source = new FakeTrack("audio");
     try {
       await run(s.start(), { signal });
@@ -973,7 +973,7 @@ test("publication session: concurrent sender mutations are excluded; close relea
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
+    const { session: s, peers } = makeSession(f, { replyTimeout: 500 }),
       source = new FakeTrack("audio");
     await run(s.start(), { signal });
     const p = peerAt(peers);
@@ -997,7 +997,7 @@ test("publication session: interrupted native unpublish retires local generation
   signal,
 }) =>
   withFixture(async (f) => {
-    const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
+    const { session: s, peers } = makeSession(f, { replyTimeout: 500 }),
       source = new FakeTrack("audio");
     let finish: (() => void) | undefined;
     try {

@@ -30,7 +30,7 @@ await Effect.runPromise(
       let rendered;
       const handle = yield* Simulation.make({
         buildRatio: 0,
-        buildFixedMs: 0,
+        fixedBuildTime: 0,
         present: (record, _startedAt, sink) =>
           Effect.gen(function* () {
             rendered = record;

@@ -392,7 +392,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         reads.push("schema");
         return { openapi: script.schema ?? providerSchema() };
       }),
-      command: (command, input, attachments, timeout = 1000) =>
+      command: (command, input, options = {}) =>
         Effect.gen(function* () {
           if (status !== "ready")
             return yield* CommandFailure.from(
@@ -409,7 +409,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             generation,
           };
           calls.push(call);
-          if (attachments !== undefined)
+          if (options.uploads !== undefined)
             throw new Error(
               "H3 prompt/image fixture uses JSON reference arrays, not legacy attachment commands",
             );
@@ -427,7 +427,10 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             script.command?.[command]?.({ fake, call, defaults: defaults(call), fail }) ??
             defaults(call);
           const message = yield* commandEffect.pipe(
-            Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(fail("unknown")) }),
+            Effect.timeoutOrElse({
+              duration: options.replyTimeout ?? 1000,
+              orElse: () => Effect.fail(fail("unknown")),
+            }),
           );
           const result: CommandReply =
             message === undefined

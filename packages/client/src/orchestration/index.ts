@@ -29,7 +29,7 @@ export { emptyState, isIdle, isLive, committedMs, securedMs, pendingCount } from
 export { fromH3Session, isLocalClip } from "./h3-source.js";
 export type { H3Source, SessionSourceOptions } from "./h3-source.js";
 export { make } from "./renewal.js";
-export type { Options, Renewal, MediaTail } from "./renewal.js";
+export type { Options, Opened, Renewal, MediaTail } from "./renewal.js";
 export * as References from "./references.js";
 export * as Sequences from "../Sequence.js";
 export * as Submission from "../Submission.js";

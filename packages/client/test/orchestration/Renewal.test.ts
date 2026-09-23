@@ -37,7 +37,7 @@ test("failed and interrupted acquisition immediately join their owned source sco
             const fixture = yield* sourceFixture("cannot-pause", {
               autoplay: () => Effect.fail(failure("replied")),
             });
-            return { source: fixture.source, maxSeconds: 90 };
+            return { source: fixture.source, lifetime: "90 seconds" };
           }),
         }),
       );
@@ -102,12 +102,12 @@ test("a replacement's AcquisitionFailure is the terminal failure, and cleanup ke
       const refused = refusedAcquisition("refused-replacement");
       let opened = 0;
       const handle = yield* Renewal.make({
-        leadSeconds: 0.5,
-        reconnectTimeoutMs: 50,
+        lead: "500 millis",
+        reconnectTimeout: 50,
         open: Effect.gen(function* () {
           if (opened++ > 0) return yield* refused;
           const entry = yield* sourceFixture("expiring");
-          return { source: entry.source, maxSeconds: 1 };
+          return { source: entry.source, lifetime: "1 second" };
         }),
       });
       yield* TestClock.adjust(1_500);

@@ -371,7 +371,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
         Effect.gen(function* () {
           const factory = yield* browserClient({
             apiUrl: "http://browser.fixture",
-            session: { commandTimeoutMs: 5000 },
+            session: { replyTimeout: "5 seconds" },
           });
           const session = yield* factory.createConnected({ model: "fixture/browser" });
           const ready = yield* session.ready;

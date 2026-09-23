@@ -1,10 +1,12 @@
 export { audioContext, webAudioSamples } from "./audio.js";
-export type { WebAudioOptions, WebAudioSample } from "./audio.js";
+export type { AudioContextOptions, WebAudioOptions, WebAudioSample } from "./audio.js";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 import { ReactorError } from "reactor-effect-client";
 import {
+  duration,
   errorOf,
   finite,
   fromOwnedReadableStream,
@@ -15,7 +17,13 @@ import {
 
 export interface MediaOptions {
   readonly maxSampleBytes?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * How long reading and copying each sample may take; 10 seconds by default
+   * and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 export interface VideoSample {
   readonly format: "RGBA";
@@ -174,7 +182,10 @@ function copiedSamples<A>(
     "media sample bytes",
     64 * 1024 * 1024,
   );
-  const timeoutMs = positiveLimit(options.readTimeoutMs ?? 10_000, "media read timeout", 600_000);
+  // The deadline races host promises inside the stream's callbacks, in milliseconds.
+  const timeoutMs = Duration.toMillis(
+    duration(options.readTimeout ?? "10 seconds", "media read timeout", { maximum: "10 minutes" }),
+  );
   if (source.kind !== kind || source.readyState !== "live")
     throw ReactorError.fromCode("InvalidState", `expected a live ${kind} track`);
   const operation = kind === "audio" ? "audioSamples" : "videoFrames";
@@ -483,13 +494,22 @@ export const audioSamples = (
   });
 
 /** Scoped local playback. Starting playback does not establish audience output. */
+export interface PlayOptions {
+  /**
+   * How long starting playback may take; 10 seconds by default and at most 10
+   * minutes. A bare number is milliseconds.
+   */
+  readonly playTimeout?: Duration.Input | undefined;
+}
 export const play = (
   track: MediaStreamTrack,
   element: HTMLMediaElement,
-  timeoutMs = 10_000,
+  options: PlayOptions = {},
 ): Effect.Effect<void, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const timeout = yield* parsed(() => positiveLimit(timeoutMs, "playback timeout", 600_000));
+    const timeout = yield* parsed(() =>
+      duration(options.playTimeout ?? "10 seconds", "playback timeout", { maximum: "10 minutes" }),
+    );
     const owned = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {

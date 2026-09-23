@@ -1,10 +1,9 @@
-import * as Duration from "effect/Duration";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import { PeerFactory, ReactorError } from "reactor-effect-client";
 import type { PeerFactoryShape, Session } from "reactor-effect-client";
-import { mediaGeneration, parsed } from "reactor-effect-client/host";
+import { duration, mediaGeneration, parsed } from "reactor-effect-client/host";
 import type { MediaGeneration } from "reactor-effect-client/host";
 import { NativeBridge, resolveNativeBridge } from "./_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "./_internal/peer.js";
@@ -14,10 +13,10 @@ export interface NativeOptions {
   readonly libraryPath?: string;
   /**
    * How long closing a connection waits for the native owner join, 10 seconds
-   * by default; a bare number is milliseconds. On expiry the close reports a
-   * `Shutdown` error and carries on to remote termination, while the join keeps
-   * the native handle and no later peer is created in this process until it
-   * completes.
+   * by default, and `"Infinity"` waits without bound. A bare number is
+   * milliseconds. On expiry the close reports a `Shutdown` error and carries on
+   * to remote termination, while the join keeps the native handle and no later
+   * peer is created in this process until it completes.
    */
   readonly shutdownTimeout?: Duration.Input;
 }
@@ -36,18 +35,11 @@ const preflightError = (cause: unknown): ReactorError =>
  */
 const acquire = (options: NativeOptions): Effect.Effect<PeerFactoryShape, ReactorError> =>
   Effect.gen(function* () {
-    const shutdownTimeout = options.shutdownTimeout ?? defaultShutdownTimeout;
-    // NaN decodes to zero, so it fails here with every other non-positive input.
-    if (
-      !Duration.fromInput(shutdownTimeout).pipe(
-        Option.exists(Duration.isGreaterThan(Duration.zero)),
-      )
-    )
-      return yield* ReactorError.fromCode(
-        "InvalidInput",
-        "native shutdownTimeout must be a positive duration",
-        { outcome: "not-submitted" },
-      );
+    const shutdownTimeout = yield* parsed(() =>
+      duration(options.shutdownTimeout ?? defaultShutdownTimeout, "native shutdownTimeout", {
+        allowInfinite: true,
+      }),
+    );
     const resolved = yield* Effect.tryPromise({
       try: () => resolveNativeBridge(options.libraryPath),
       catch: preflightError,

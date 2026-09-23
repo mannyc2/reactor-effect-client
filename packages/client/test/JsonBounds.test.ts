@@ -122,10 +122,10 @@ const expectTypedNotSubmitted = (exit: Exit.Exit<unknown, ReactorFailure>) => {
 };
 
 describe("public call sites: json() throws are typed failures, not defects", () => {
-  test("coordinator limits: invalid requestTimeoutMs is a typed, lazy InvalidInput", async () => {
+  test("coordinator limits: invalid requestTimeout is a typed, lazy InvalidInput", async () => {
     const platform = Http.make(() => Effect.die("invalid input must not execute HTTP"));
     const exit = await Effect.runPromiseExit(
-      Coordinator.make({ requestTimeoutMs: 0 }).pipe(
+      Coordinator.make({ requestTimeout: 0 }).pipe(
         Effect.provideService(Http.HttpClient, platform),
       ),
     );
@@ -205,9 +205,9 @@ describe("public call sites: json() throws are typed failures, not defects", () 
         Effect.gen(function* () {
           const fake = yield* h3Fixture();
           const provider = yield* H3.make(fake.session, {
-            commandTimeoutMs: 80,
-            setupTimeoutMs: 500,
-            reconcileWindowMs: 30,
+            replyTimeout: 80,
+            setupTimeout: 500,
+            reconcileWindow: 30,
           });
           yield* fake.replay(unknownMessage(data() as JsonObject, 10_000n));
           const failure = yield* provider.failure.pipe(Effect.timeoutOption(500));

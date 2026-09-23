@@ -81,12 +81,12 @@ const setup = (script: Script = {}, stream?: FileSystem.FileSystem["stream"]) =>
     };
     const fake = yield* fixture(script);
     const provider = yield* H3.make(fake.session, {
-      commandTimeoutMs: 1000,
-      setupTimeoutMs: 1000,
-      reconcileWindowMs: 100,
+      replyTimeout: 1000,
+      setupTimeout: 1000,
+      reconcileWindow: 100,
     });
     const load = (uri: string, maxBytes = H3.referenceLimits.maxBytes) =>
-      loadReferenceBytes(uri, { maxBytes, timeoutMs: 1000 }).pipe(
+      loadReferenceBytes(uri, { maxBytes, loadTimeout: 1000 }).pipe(
         Effect.provideService(FileSystem.FileSystem, readonlyFs),
         Effect.provideService(Path.Path, path),
         Effect.provideService(HttpClient.HttpClient, http),

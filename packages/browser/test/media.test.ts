@@ -231,7 +231,7 @@ test("media policy: interrupted asynchronous video copy cannot enqueue late or r
   await frameHost(frame, async (readable) => {
     let delivered = 0;
     const task = Effect.runFork(
-      videoFrames(source, { readTimeoutMs: 5000 }).pipe(
+      videoFrames(source, { readTimeout: 5000 }).pipe(
         Stream.runForEach(() =>
           Effect.sync(() => {
             delivered++;
@@ -345,7 +345,7 @@ const withAudioHost = async (
         await run(
           Effect.scoped(
             Effect.gen(function* () {
-              const context = yield* audioContext({ timeoutMs: 100 });
+              const context = yield* audioContext({ transitionTimeout: 100 });
               const model = contexts[0];
               assert(model !== undefined);
               yield* Effect.tryPromise({
@@ -449,7 +449,7 @@ class ModelWorklet extends Node {
 const pcmOptions = (context: AudioContext) => ({
   context,
   workletUrl: "https://local.test/pcm-worklet.js",
-  readTimeoutMs: 100,
+  readTimeout: 100,
 });
 test("Web Audio policy: explicit PCM path copies samples and owns graph, clones, port and listeners", ({
   signal,
@@ -500,7 +500,7 @@ test("Web Audio policy: missing render blocks time out and remove all callbacks"
     equal(
       (
         await failure(
-          webAudioSamples(source, { ...pcmOptions(context), readTimeoutMs: 20 }).pipe(
+          webAudioSamples(source, { ...pcmOptions(context), readTimeout: 20 }).pipe(
             Stream.runDrain,
           ),
           { signal },
@@ -545,9 +545,7 @@ test("Web Audio policy: stream interruption removes a pending PCM read and relea
   withAudioHost(signal, { reply: false }, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
     const task = Effect.runFork(
-      webAudioSamples(source, { ...pcmOptions(context), readTimeoutMs: 5000 }).pipe(
-        Stream.runDrain,
-      ),
+      webAudioSamples(source, { ...pcmOptions(context), readTimeout: 5000 }).pipe(Stream.runDrain),
     );
     await eventually(() => (nodes[0]?.pulls ?? 0) > 0);
     await Effect.runPromise(Fiber.interrupt(task));
@@ -728,7 +726,9 @@ test("Web Audio policy: blocked resume remains a failure and closes the newly-ow
     }
   }
   await globals({ AudioContext: Context, AudioWorkletNode: class {} }, async () => {
-    const error = await failure(Effect.scoped(audioContext({ timeoutMs: 100 })), { signal });
+    const error = await failure(Effect.scoped(audioContext({ transitionTimeout: 100 })), {
+      signal,
+    });
     assert(error.message.includes("user activation"));
     equal(contexts[0]?.state, "closed");
     equal(contexts[0]?.closed, 1);
@@ -767,8 +767,11 @@ test("playback policy: a never-resolving play request has a deadline and detache
   await globals({ HTMLMediaElement: HtmlElement, MediaStream: class {} }, async () => {
     const source = new FakeTrack("video");
     equal(
-      (await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal })).reason
-        ._tag,
+      (
+        await failure(Effect.scoped(play(source, new HTMLMediaElement(), { playTimeout: 20 })), {
+          signal,
+        })
+      ).reason._tag,
       "Timeout",
     );
     equal(source.clones[0]?.readyState, "ended");
@@ -789,7 +792,9 @@ test("playback policy: failed MediaStream acquisition does not leak its clone", 
     },
     async () => {
       const source = new FakeTrack("video");
-      await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal });
+      await failure(Effect.scoped(play(source, new HTMLMediaElement(), { playTimeout: 20 })), {
+        signal,
+      });
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
     },
@@ -903,8 +908,8 @@ test("PCM activation: play deadline is independent of the read deadline and late
       const error = await failure(
         webAudioSamples(source, {
           ...pcmOptions(context),
-          activationTimeoutMs: 20,
-          readTimeoutMs: 5000,
+          activationTimeout: 20,
+          readTimeout: 5000,
         }).pipe(Stream.runDrain),
         { signal },
       );
@@ -980,11 +985,11 @@ test("PCM activation: missing Window document fails before allocating a clone or
 test("PCM activation: invalid timeout is rejected without creating a sink", ({ signal }) =>
   withAudioHost(signal, {}, async (context, model, _nodes, sinks) => {
     const source = new FakeTrack("audio");
-    for (const activationTimeoutMs of [0, -1, 0.5, 60001, NaN])
+    for (const activationTimeout of [0, -1, 60001, Number.NaN, "Infinity"] as const)
       equal(
         (
           await failure(
-            webAudioSamples(source, { ...pcmOptions(context), activationTimeoutMs }).pipe(
+            webAudioSamples(source, { ...pcmOptions(context), activationTimeout }).pipe(
               Stream.runDrain,
             ),
             { signal },

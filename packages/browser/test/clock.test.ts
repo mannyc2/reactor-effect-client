@@ -44,7 +44,9 @@ test("Web Audio policy: the resume deadline runs on the provided Clock and close
   return withGlobals(stub.globals, () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const opening = yield* Effect.forkChild(Effect.scoped(audioContext({ timeoutMs: 60_000 })));
+        const opening = yield* Effect.forkChild(
+          Effect.scoped(audioContext({ transitionTimeout: 60_000 })),
+        );
         yield* Deferred.await(stub.resuming);
         yield* TestClock.adjust(60_000);
         const error = yield* Effect.flip(Fiber.join(opening));
@@ -63,7 +65,9 @@ test("Web Audio policy: the close deadline in the scope finalizer runs on the pr
       Effect.gen(function* () {
         // The scope runs this release uninterruptibly. The deadline outlasts the live guard
         // below, so only the provided Clock can end the wait for close().
-        const closing = yield* Effect.forkChild(Effect.scoped(audioContext({ timeoutMs: 3_000 })));
+        const closing = yield* Effect.forkChild(
+          Effect.scoped(audioContext({ transitionTimeout: 3_000 })),
+        );
         yield* Deferred.await(stub.closing);
         yield* TestClock.adjust(3_000);
         yield* Fiber.join(closing);
@@ -98,7 +102,7 @@ test("playback policy: the play deadline runs on the provided Clock and detaches
     Effect.runPromise(
       Effect.gen(function* () {
         const starting = yield* Effect.forkChild(
-          Effect.scoped(play(source, new HTMLMediaElement(), 60_000)),
+          Effect.scoped(play(source, new HTMLMediaElement(), { playTimeout: 60_000 })),
         );
         yield* Deferred.await(playing);
         yield* TestClock.adjust(60_000);

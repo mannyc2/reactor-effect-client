@@ -11,7 +11,7 @@ import { at, providerSchema } from "./ProviderSchema.js";
 import { fixture, fixtureClip } from "./ProviderSession.js";
 import type { Fixture, WireMessage } from "./ProviderSession.js";
 
-const options: H3.Options = { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 };
+const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
   Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 

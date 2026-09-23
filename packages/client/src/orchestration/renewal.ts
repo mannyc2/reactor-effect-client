@@ -3,6 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -10,7 +11,8 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
-import { AcquisitionFailure, CommandFailure, ReactorError, errorOf } from "../errors.js";
+import { duration } from "../duration.js";
+import { AcquisitionFailure, CommandFailure, ReactorError, errorOf, parsed } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
 import { Observations } from "../observation.js";
 import { noAcquisition } from "../session/_internal/acquire.js";
@@ -38,14 +40,35 @@ import type {
   SourceCleanup,
 } from "./types.js";
 
+/** An opened source and how long its remote session may live. */
+export interface Opened {
+  readonly source: Source;
+  /**
+   * The source's remote session lifetime, positive, or `"Infinity"` for a
+   * source that never expires. A bare number is milliseconds, so build it with
+   * a unit from a grant in seconds: `` `${seconds} seconds` ``.
+   */
+  readonly lifetime: Duration.Input;
+}
+
 export interface Options<R = never> {
-  readonly open: Effect.Effect<
-    { readonly source: Source; readonly maxSeconds: number },
-    ReactorError | AcquisitionFailure,
-    Scope.Scope | R
-  >;
-  readonly leadSeconds?: number;
-  readonly reconnectTimeoutMs?: number;
+  readonly open: Effect.Effect<Opened, ReactorError | AcquisitionFailure, Scope.Scope | R>;
+  /**
+   * How long before a source's lifetime ends to prepare its replacement; 30
+   * seconds by default, and zero prepares at expiry. A bare number is
+   * milliseconds, so `lead: 30` is 30 milliseconds.
+   */
+  readonly lead?: Duration.Input | undefined;
+  /**
+   * How long recovering a source's connection may take, and the local cleanup
+   * budget of a retired source; 10 seconds by default. A bare number is
+   * milliseconds.
+   */
+  readonly reconnectTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `lead` (a bare number is milliseconds). */
+  readonly leadSeconds?: never;
+  /** @deprecated Removed in 0.3.0: use `reconnectTimeout` (a bare number is milliseconds). */
+  readonly reconnectTimeoutMs?: never;
   readonly maxSessions?: number;
   readonly log?: (message: string) => void;
   readonly onRenewal?: (event: Renewal) => Effect.Effect<void>;
@@ -64,7 +87,7 @@ export interface MediaTail {
 }
 
 export type Renewal =
-  | { readonly _tag: "Opened"; readonly sessionId: string; readonly maxSeconds: number }
+  | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetime: Duration.Duration }
   | { readonly _tag: "Prepared" }
   | { readonly _tag: "SetupFailed"; readonly reason: string; readonly consecutive: number }
   | { readonly _tag: "Recovering"; readonly sessionId: string; readonly reason: string }
@@ -117,19 +140,19 @@ export const make = <R>(
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
     const maxSessions = options.maxSessions ?? 64;
-    const reconnectTimeout = options.reconnectTimeoutMs ?? 10_000;
-    const leadSeconds = options.leadSeconds ?? 30;
-    if (
-      !Number.isSafeInteger(maxSessions) ||
-      maxSessions < 1 ||
-      maxSessions > 4096 ||
-      !Number.isFinite(reconnectTimeout) ||
-      reconnectTimeout <= 0 ||
-      !Number.isFinite(leadSeconds) ||
-      leadSeconds < 0
-    ) {
+    if (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 4096) {
       return yield* ReactorError.fromCode("InvalidInput", "Invalid orchestration bounds");
     }
+    const reconnectTimeout = Duration.toMillis(
+      yield* parsed(() =>
+        duration(options.reconnectTimeout ?? "10 seconds", "orchestration reconnectTimeout"),
+      ),
+    );
+    const leadSeconds = Duration.toSeconds(
+      yield* parsed(() =>
+        duration(options.lead ?? "30 seconds", "orchestration lead", { allowZero: true }),
+      ),
+    );
     let current: Slot | undefined;
     let replacement: Replacement = { _tag: "Absent" };
     let opened = 0;
@@ -381,15 +404,9 @@ export const make = <R>(
               }),
             );
             acquiredSource = value.source;
-            if (
-              !(value.maxSeconds > 0) ||
-              (value.maxSeconds !== Infinity && !Number.isFinite(value.maxSeconds))
-            ) {
-              return yield* ReactorError.fromCode(
-                "InvalidInput",
-                "Source lifetime must be positive or infinite",
-              );
-            }
+            const lifetime = yield* parsed(() =>
+              duration(value.lifetime, "source lifetime", { allowInfinite: true }),
+            );
             if (slots.has(value.source.id))
               return yield* ReactorError.fromCode(
                 "InvalidInput",
@@ -401,7 +418,7 @@ export const make = <R>(
               scope: owned,
               media,
               openedAt: clock.currentTimeMillisUnsafe(),
-              maxSeconds: value.maxSeconds,
+              maxSeconds: Duration.toSeconds(lifetime),
               cleanupBudgetMs: reconnectTimeout,
               recordCleanup,
               retireSequences: affinity.retire(value.source.id).pipe(Effect.asVoid),
@@ -424,7 +441,7 @@ export const make = <R>(
             yield* observe({
               _tag: "Opened",
               sessionId: slot.source.id,
-              maxSeconds: slot.maxSeconds,
+              lifetime: Duration.seconds(slot.maxSeconds),
             });
             return slot;
           }),

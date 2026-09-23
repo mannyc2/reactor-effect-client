@@ -48,7 +48,9 @@ export {
 export type {
   VideoSample,
   AudioSample,
+  AudioContextOptions,
   MediaOptions,
+  PlayOptions,
   Presentation,
   WebAudioOptions,
   WebAudioSample,

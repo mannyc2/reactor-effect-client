@@ -1,8 +1,10 @@
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import { ReactorError } from "reactor-effect-client";
 import {
+  duration,
   errorOf,
   fromOwnedReadableStream,
   parsed,
@@ -37,12 +39,24 @@ const bounded = async <A>(
 };
 /** Call from an ordinary start click. No autoplay-policy workaround is attempted.
  * The scope owns this context; audio streams borrow it and own their nodes/track clones. */
+export interface AudioContextOptions {
+  readonly sampleRate?: number;
+  /**
+   * How long resuming the context, and closing it on release, may each take; 5
+   * seconds by default and at most 1 minute. A bare number is milliseconds.
+   */
+  readonly transitionTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `transitionTimeout` (a bare number is milliseconds). */
+  readonly timeoutMs?: never;
+}
 export const audioContext = (
-  options: { readonly sampleRate?: number; readonly timeoutMs?: number } = {},
+  options: AudioContextOptions = {},
 ): Effect.Effect<AudioContext, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
     const timeout = yield* parsed(() =>
-      positiveLimit(options.timeoutMs ?? 5000, "audio context timeout", 60000),
+      duration(options.transitionTimeout ?? "5 seconds", "audio context transition timeout", {
+        maximum: "1 minute",
+      }),
     );
     const context = yield* Effect.acquireRelease(
       Effect.try({
@@ -98,10 +112,22 @@ export interface WebAudioOptions {
   /** Serve dist/browser/_internal/pcm-worklet.js locally. A bundler must preserve/copy this asset. */
   readonly workletUrl?: string | URL;
   readonly maxSampleBytes?: number;
-  /** Each consumption owns a muted HTMLAudioElement and waits for its ordinary play().
-   * This deadline is separate from worklet registration and individual PCM reads. */
-  readonly activationTimeoutMs?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * Each consumption owns a muted HTMLAudioElement and waits for its ordinary
+   * play(). This deadline is separate from worklet registration and individual
+   * PCM reads; 5 seconds by default and at most 1 minute. A bare number is
+   * milliseconds.
+   */
+  readonly activationTimeout?: Duration.Input | undefined;
+  /**
+   * How long registering the worklet, and then each PCM read, may take; 10
+   * seconds by default and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `activationTimeout` (a bare number is milliseconds). */
+  readonly activationTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 // A worklet is registered once per context and URL. Failed registration is retryable, not cached success.
 const modules = new WeakMap<AudioContext, Map<string, Promise<void>>>();
@@ -135,11 +161,16 @@ export const webAudioSamples = (
 ): Stream.Stream<WebAudioSample, ReactorError> =>
   fromOwnedReadableStream({
     evaluate: () => {
-      const timeout = positiveLimit(options.readTimeoutMs ?? 10000, "PCM read timeout", 600000);
-      const activationTimeout = positiveLimit(
-        options.activationTimeoutMs ?? 5000,
-        "PCM activation timeout",
-        60000,
+      // The deadlines race host promises inside the stream's callbacks, in milliseconds.
+      const timeout = Duration.toMillis(
+        duration(options.readTimeout ?? "10 seconds", "PCM read timeout", {
+          maximum: "10 minutes",
+        }),
+      );
+      const activationTimeout = Duration.toMillis(
+        duration(options.activationTimeout ?? "5 seconds", "PCM activation timeout", {
+          maximum: "1 minute",
+        }),
       );
       const maxBytes = positiveLimit(
         options.maxSampleBytes ?? 1048576,

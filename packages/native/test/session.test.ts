@@ -113,7 +113,7 @@ describe("native canonical session boundary", () => {
                 size,
               } as unknown as UploadReference;
               const invalid = yield* Effect.result(
-                client.command("echo", {}, new Map([["picture", reference]])),
+                client.command("echo", {}, { uploads: new Map([["picture", reference]]) }),
               );
               expect(invalid._tag).toBe("Failure");
               if (invalid._tag === "Failure")

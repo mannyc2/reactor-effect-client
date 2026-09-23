@@ -6,7 +6,7 @@ import { webCrypto } from "./web-crypto.mjs";
 /** Fully offline: no coordinator, credentials, native library or provider allocation. */
 export const simulateClip = Effect.scoped(
   Effect.gen(function* () {
-    const handle = yield* Simulation.make({ buildRatio: 0, buildFixedMs: 0 });
+    const handle = yield* Simulation.make({ buildRatio: 0, fixedBuildTime: 0 });
     const prepared = yield* handle.engine.prepare(
       new Orchestration.ClipRequest({
         prompt: "An unpaid local simulation",

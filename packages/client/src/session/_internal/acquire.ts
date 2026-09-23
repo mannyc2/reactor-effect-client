@@ -172,11 +172,10 @@ export const makeFactory = (
             ready: implementation.readyState(),
             events: (bounds) => implementation.events(bounds),
             observe: (bounds) => implementation.observe(bounds),
-            command: (name, data, uploads, timeoutMs) =>
-              implementation.command(name, data, uploads, timeoutMs),
+            command: (name, data, options) => implementation.command(name, data, options),
             schema: implementation.schema(),
-            upload: (name, mimeType, data, timeoutMs) =>
-              implementation.upload(name, mimeType, data, timeoutMs),
+            upload: (name, mimeType, data, options) =>
+              implementation.upload(name, mimeType, data, options),
             requestRecordingClip: (seconds) => implementation.requestClip(seconds),
             recording: implementation.recording(),
             stats: implementation.stats(),

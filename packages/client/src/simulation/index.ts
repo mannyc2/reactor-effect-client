@@ -18,7 +18,7 @@ export const make = (
   options: SimOptions = {},
 ): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto> =>
   orchestrate({
-    open: source(options).pipe(Effect.map((value) => ({ source: value, maxSeconds: Infinity }))),
+    open: source(options).pipe(Effect.map((value) => ({ source: value, lifetime: "Infinity" }))),
   });
 
 export const layerSim = (

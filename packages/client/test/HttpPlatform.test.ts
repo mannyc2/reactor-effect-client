@@ -134,7 +134,7 @@ test("a lost DELETE reply is followed by independent remote-termination confirma
     }),
   );
   const client = new Http.CoordinatorClient(
-    { apiUrl: "https://injected.invalid", requestTimeoutMs: 5 },
+    { apiUrl: "https://injected.invalid", requestTimeout: 5 },
     platform,
   );
   const result = await Effect.runPromise(client.terminate("owned-session"));
@@ -150,8 +150,8 @@ const matrixSessionUrl = `${matrixUrl}/sessions/session%20%2F%20one`;
 const matrixOptions: Coordinator.TokenOptions = {
   apiKey: Redacted.make("matrix-key-secret"),
   modelName: "matrix/model",
-  maxSessionDurationSeconds: 60,
-  expiresAfterSeconds: 300,
+  maxSessionDuration: "60 seconds",
+  expiresAfter: "300 seconds",
 };
 const matrixToken = {
   jwt: `header.${Encoding.encodeBase64Url(

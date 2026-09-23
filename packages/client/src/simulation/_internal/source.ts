@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -10,7 +11,8 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { ReactorError, errorOf } from "../../errors.js";
+import { duration } from "../../duration.js";
+import { ReactorError, errorOf, parsed } from "../../errors.js";
 import {
   alignFrames,
   alignSecondsTo,
@@ -59,8 +61,14 @@ export const source = (
     const generationCapacity = options.queueLimit ?? profile.expectedCapacities.generation;
     const playoutCapacity = options.playoutLimit ?? profile.expectedCapacities.playout;
     const buildRatio = options.buildRatio ?? 0.1;
-    const buildFixedMs = options.buildFixedMs ?? 0;
-    const gap = options.playoutGapMs ?? 0;
+    const timing = yield* parsed(() => ({
+      fixedBuild: duration(options.fixedBuildTime ?? 0, "simulation fixedBuildTime", {
+        allowZero: true,
+      }),
+      gap: duration(options.playoutGap ?? 0, "simulation playoutGap", { allowZero: true }),
+    }));
+    const buildFixedMs = Duration.toMillis(timing.fixedBuild);
+    const gap = Duration.toMillis(timing.gap);
     if (
       !Number.isSafeInteger(generationCapacity) ||
       generationCapacity <= 0 ||
@@ -70,10 +78,6 @@ export const source = (
       playoutCapacity > 1024 ||
       !Number.isFinite(buildRatio) ||
       buildRatio < 0 ||
-      !Number.isFinite(buildFixedMs) ||
-      buildFixedMs < 0 ||
-      !Number.isFinite(gap) ||
-      gap < 0 ||
       !Number.isFinite(profile.fps) ||
       profile.fps <= 0
     ) {

@@ -11,9 +11,12 @@ import { PeerFactory } from "../PeerFactory.js";
 import type { ReactorError } from "../errors.js";
 import type { Json, JsonObject } from "../json.js";
 import type { Statistics } from "../stats.js";
-import type { UploadReference, ClipReady } from "../wire.generated.js";
+import type { ClipReady } from "../wire.generated.js";
 import type {
+  CommandOptions,
   SessionOptions,
+  SessionTimeouts,
+  UploadTimeoutOptions,
   Snapshot,
   ReadyState,
   SessionEvent,
@@ -28,15 +31,7 @@ import { makeFactory, type AcquisitionFailure } from "./_internal/acquire.js";
 export interface Configuration extends Omit<HttpOptions, "apiUrl" | "credential"> {
   readonly apiUrl?: string;
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError>;
-  readonly session?: Pick<
-    SessionOptions,
-    | "commandTimeoutMs"
-    | "connectTimeoutMs"
-    | "readyTimeoutMs"
-    | "heartbeatMs"
-    | "maxPending"
-    | "maxUploadBytes"
-  >;
+  readonly session?: SessionTimeouts & Pick<SessionOptions, "maxPending" | "maxUploadBytes">;
 }
 
 export interface CreateOptions {
@@ -68,15 +63,14 @@ export interface Session {
   readonly command: (
     name: string,
     data: unknown,
-    uploads?: ReadonlyMap<string, UploadReference>,
-    timeoutMs?: number,
+    options?: CommandOptions,
   ) => Effect.Effect<CommandReply, CommandFailure>;
   readonly schema: Effect.Effect<{ readonly openapi?: JsonObject }, ReactorError>;
   readonly upload: (
     name: string,
     mimeType: string,
     bytes: Uint8Array,
-    timeoutMs?: number,
+    options?: UploadTimeoutOptions,
   ) => Effect.Effect<Uploaded, ReactorError>;
   readonly requestRecordingClip: (seconds: number) => Effect.Effect<ClipReady, ReactorError>;
   readonly recording: Effect.Effect<ClipReady, ReactorError>;
@@ -125,6 +119,10 @@ export { CommandFailure } from "./commands.js";
 export { AcquisitionFailure } from "./_internal/acquire.js";
 export type { CommandContext } from "./commands.js";
 export type {
+  CommandOptions,
+  ReplyTimeoutOptions,
+  SessionTimeouts,
+  UploadTimeoutOptions,
   Snapshot,
   ReadyState,
   SessionEvent,

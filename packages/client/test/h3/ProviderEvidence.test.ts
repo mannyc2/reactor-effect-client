@@ -6,7 +6,7 @@ import * as H3 from "../../src/h3/index.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 
-const options: H3.Options = { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 };
+const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
   Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const observed = (provider: H3.Provider, revision: bigint) =>

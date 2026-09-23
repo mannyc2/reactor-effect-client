@@ -110,7 +110,7 @@ test("native AudioData: stopped borrowed lease retires its live clone", async ({
     readable = new ReadableStream<unknown>({}, { highWaterMark: 0 });
   await host(readable, async () => {
     const task = Effect.runFork(
-      Effect.result(audioSamples(source, { readTimeoutMs: 500 }).pipe(Stream.runDrain)),
+      Effect.result(audioSamples(source, { readTimeout: 500 }).pipe(Stream.runDrain)),
     );
     await eventually(() => readable.locked);
     source.stop();
@@ -137,7 +137,7 @@ test("native AudioData: a read deadline joins native cancellation and reader rel
     { highWaterMark: 0 },
   );
   await host(readable, async () => {
-    const error = await failure(audioSamples(source, { readTimeoutMs: 60 }).pipe(Stream.runDrain), {
+    const error = await failure(audioSamples(source, { readTimeout: 60 }).pipe(Stream.runDrain), {
       signal,
     });
     equal(error.reason._tag, "Timeout");
@@ -209,9 +209,7 @@ test("native AudioData: caller interruption remains interruption and joins clean
   const source = new FakeTrack("audio"),
     readable = new ReadableStream<unknown>();
   await host(readable, async () => {
-    const task = Effect.runFork(
-      audioSamples(source, { readTimeoutMs: 5000 }).pipe(Stream.runDrain),
-    );
+    const task = Effect.runFork(audioSamples(source, { readTimeout: 5000 }).pipe(Stream.runDrain));
     await eventually(() => readable.locked);
     await Effect.runPromise(Fiber.interrupt(task));
     const exit = await Effect.runPromise(Fiber.await(task));
@@ -228,7 +226,7 @@ test("native AudioData: explicit source end terminates an outstanding read", asy
     readable = new ReadableStream<unknown>();
   await host(readable, async () => {
     const task = Effect.runFork(
-      Effect.result(audioSamples(source, { readTimeoutMs: 5000 }).pipe(Stream.runDrain)),
+      Effect.result(audioSamples(source, { readTimeout: 5000 }).pipe(Stream.runDrain)),
     );
     await eventually(() => readable.locked);
     source.readyState = "ended";

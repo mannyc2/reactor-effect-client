@@ -100,6 +100,27 @@ const enqueued = engine.enqueue(request).pipe(
 
 `message` is written by the library and never contains provider or payload text, so spans and logs that record it stay payload-free. Provider and backend text is kept only for explicit inspection: `Http.body`, `Remote.body`, the Redacted `Native.backendMessage` and `context.detail`. Diagnostic JSON leaves all of them out, and none of them is part of the cause chain that exporters render.
 
+## Time options
+
+Every time option is an Effect `Duration.Input` named by its role:
+
+- on the session, `connectTimeout`, `readyTimeout`, `heartbeatInterval`, `replyTimeout` and `uploadTimeout`;
+- on the coordinator, `requestTimeout` and the poll's `initialDelay` and `maxDelay`, and on a token, `maxSessionDuration` and `expiresAfter`, which must be whole seconds;
+- on H3, `replyTimeout`, `uploadTimeout`, `setupTimeout`, `reconcileWindow` and `resultHookTimeout`;
+- in orchestration, `lead`, `reconnectTimeout` and the `lifetime` that `open` returns.
+
+A bare number is milliseconds, as everywhere in Effect, so write the unit: `lead: "30 seconds"`, because `lead: 30` is 30 milliseconds. `"Infinity"` disables the heartbeat and marks a source that never expires. A value that is NaN, negative, zero where zero means nothing, or longer than the option's maximum fails with `InvalidInput`, not submitted. Measurements, instants and media lengths stay numbers in the unit their name carries: `requestRecordingClip(seconds)`, `ClipRequest.durationSeconds`, a renewal's `ageSeconds`.
+
+`replyTimeout` is the session's own deadline for a reply. The session's default and a command's override share the key: `session.command(name, data, { uploads, replyTimeout })`. It is not a caller's wait. After dispatch it fails with `Timeout`, outcome `unknown`, and the command's `requestId`, and the request's slot stays held until a late reply or the connection generation retires. To stop waiting without abandoning the command, fork it and bound only the join:
+
+```ts
+const fiber = yield * Effect.forkScoped(session.command("set_seed", { seed: 1 }));
+const reply = yield * Fiber.join(fiber).pipe(Effect.timeout("2 seconds"));
+// Later, Fiber.await(fiber) still reads the command's own outcome.
+```
+
+When the command must be replayed rather than awaited, prepare it as an `Orchestration.Submission`.
+
 ## Coordinator helpers
 
 `Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, termination reports, and `downloadClip` for a prepared recording (`clip_ready`), which polls its HLS playlist and concatenates its segments within a caller wall deadline, through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation.

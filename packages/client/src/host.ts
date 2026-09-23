@@ -8,6 +8,8 @@
  * compose hosts through their packages and read media through their `media`
  * functions. Nothing here allocates or owns a session.
  */
+export { duration } from "./duration.js";
+export type { DurationPolicy } from "./duration.js";
 export { errorOf, parse, parsed, positiveLimit } from "./errors.js";
 export { finite, isRecord, record } from "./json.js";
 export { fromOwnedReadableStream } from "./media-stream.js";

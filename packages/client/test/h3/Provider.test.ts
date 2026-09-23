@@ -10,7 +10,7 @@ import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSessi
 import type { Fixture, Script } from "./ProviderSession.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 
-const options: H3.Options = { commandTimeoutMs: 80, setupTimeoutMs: 500, reconcileWindowMs: 30 };
+const options: H3.Options = { replyTimeout: 80, setupTimeout: 500, reconcileWindow: 30 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
   Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const capture = (provider: H3.Provider) =>
@@ -562,7 +562,7 @@ describe("H3 command and observation authority", () => {
                 }),
             },
           },
-          { reconcileWindowMs: 200 },
+          { reconcileWindow: 200 },
         );
         const fiber = yield* provider.enqueue(request()).pipe(Effect.forkScoped);
         yield* waitFor(() =>
@@ -802,7 +802,7 @@ describe("H3 command and observation authority", () => {
       Effect.gen(function* () {
         const fake = yield* fixture({ omitObservation: true });
         const result = yield* Effect.result(
-          H3.make(fake.session, { ...options, commandTimeoutMs: 10 }),
+          H3.make(fake.session, { ...options, replyTimeout: 10 }),
         );
         expect(Result.isFailure(result)).toBe(true);
         expect(fake.calls.map((call) => call.command)).toEqual(["get_state"]);
@@ -1228,7 +1228,7 @@ describe("H3 preparation, cancellation and bounds", () => {
       Effect.gen(function* () {
         const { provider, fake } = yield* setup(
           { command: { enqueue: ({ fail }) => Effect.fail(fail("replied", "Remote")) } },
-          { resultHookTimeoutMs: 10 },
+          { resultHookTimeout: 10 },
         );
         let hooks = 0,
           recorded: CommandFailure | undefined;
@@ -1349,7 +1349,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         let resultHooks = 0;
         const { fake, provider } = yield* setup(
           { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
-          { commandTimeoutMs: 1000 },
+          { replyTimeout: 1000 },
         );
         const prepared = yield* provider.prepare(request(), {
           result: () =>
@@ -1398,7 +1398,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         const held = yield* gate;
         const { fake, provider } = yield* setup(
           { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
-          { maxPending: 1, maxAcceptances: 1, commandTimeoutMs: 1000 },
+          { maxPending: 1, maxAcceptances: 1, replyTimeout: 1000 },
         );
         const first = yield* provider.prepare(request());
         const inflight = yield* first.submit.pipe(Effect.forkScoped);

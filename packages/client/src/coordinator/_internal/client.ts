@@ -8,6 +8,7 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Duration from "effect/Duration";
+import { duration } from "../../duration.js";
 import { Http, parsed, positiveLimit, ReactorError } from "../../errors.js";
 import { array, json, nonempty, record, string, uint32 } from "../../json.js";
 import type { Json } from "../../json.js";
@@ -35,19 +36,51 @@ import { downloadClip } from "./recording.js";
 import type { DownloadedClip, DownloadOptions } from "./recording.js";
 import type { ClipReady } from "../../wire.generated.js";
 
+/** A bounded poll: each wait doubles from `initialDelay` up to `maxDelay`. */
 export interface Poll {
   readonly attempts: number;
-  readonly initialMs: number;
-  readonly maxMs: number;
+  /** The first wait, at most 1 minute. A bare number is milliseconds. */
+  readonly initialDelay: Duration.Input;
+  /** The longest wait, at most 1 minute. A bare number is milliseconds. */
+  readonly maxDelay: Duration.Input;
+  /** @deprecated Removed in 0.3.0: use `initialDelay` (a bare number is milliseconds). */
+  readonly initialMs?: never;
+  /** @deprecated Removed in 0.3.0: use `maxDelay` (a bare number is milliseconds). */
+  readonly maxMs?: never;
 }
-export const SESSION_POLL: Poll = Object.freeze({ attempts: 20, initialMs: 200, maxMs: 10_000 });
-export const SDP_POLL: Poll = Object.freeze({ attempts: 6, initialMs: 200, maxMs: 15_000 });
+export const SESSION_POLL: Poll = Object.freeze({
+  attempts: 20,
+  initialDelay: "200 millis",
+  maxDelay: "10 seconds",
+});
+export const SDP_POLL: Poll = Object.freeze({
+  attempts: 6,
+  initialDelay: "200 millis",
+  maxDelay: "15 seconds",
+});
+/** A validated poll. */
+interface Backoff {
+  readonly attempts: number;
+  readonly initialDelay: Duration.Duration;
+  readonly maxDelay: Duration.Duration;
+}
+const backoff = (poll: Backoff, attempt: number): Duration.Duration =>
+  Duration.min(Duration.times(poll.initialDelay, 2 ** attempt), poll.maxDelay);
 export interface HttpOptions {
   readonly apiUrl: string;
   readonly local?: boolean;
   /** Evaluated for each authenticated request, including signaling for local sessions. */
   readonly credential?: Effect.Effect<string | undefined, ReactorError>;
-  readonly requestTimeoutMs?: number;
+  /**
+   * Bounds each coordinator request, from sending it to reading the whole
+   * response, at most 10 minutes. By default each operation has its own budget:
+   * 15 seconds, 8 seconds for pricing and tokens, 3 seconds for each
+   * termination request and 1 second for an inspection. A bare number is
+   * milliseconds.
+   */
+  readonly requestTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `requestTimeout` (a bare number is milliseconds). */
+  readonly requestTimeoutMs?: never;
   readonly maxResponseBytes?: number;
   readonly maxResponseChunks?: number;
   readonly sessionPoll?: Poll;
@@ -63,7 +96,8 @@ interface Request {
   readonly headers?: Readonly<Record<string, string>>;
   readonly accepted?: readonly number[];
   readonly maxBytes?: number;
-  readonly timeoutMs?: number;
+  /** This request's budget when the application configured none. */
+  readonly timeout?: Duration.Duration;
   /** Observes the response status once it arrives, even if reading its body then fails. */
   readonly onStatus?: (status: number) => void;
 }
@@ -89,13 +123,17 @@ export interface Termination {
   readonly error?: ReactorError;
 }
 const pure = <A>(f: () => A): Effect.Effect<A, ReactorError> => parsed(f);
-const validatePoll = (p: Poll): Poll => {
-  positiveLimit(p.attempts, "poll attempts", 1000);
-  positiveLimit(p.initialMs, "poll initialMs", 60_000);
-  positiveLimit(p.maxMs, "poll maxMs", 60_000);
-  if (p.initialMs > p.maxMs)
-    throw ReactorError.fromCode("Protocol", "poll initial delay exceeds maximum");
-  return Object.freeze({ ...p });
+const validatePoll = (p: Poll): Backoff => {
+  const poll = Object.freeze({
+    attempts: positiveLimit(p.attempts, "poll attempts", 1000),
+    initialDelay: duration(p.initialDelay, "poll initialDelay", { maximum: "1 minute" }),
+    maxDelay: duration(p.maxDelay, "poll maxDelay", { maximum: "1 minute" }),
+  });
+  if (Duration.isGreaterThan(poll.initialDelay, poll.maxDelay))
+    throw ReactorError.fromCode("InvalidInput", "poll initialDelay exceeds maxDelay", {
+      outcome: "not-submitted",
+    });
+  return poll;
 };
 const checkedUrl = (url: string): URL => {
   let value: URL;
@@ -120,9 +158,10 @@ const checkedUrl = (url: string): URL => {
 export class CoordinatorClient {
   readonly apiUrl: string;
   readonly local: boolean;
-  readonly sessionPoll: Poll;
-  readonly sdpPoll: Poll;
-  private readonly timeoutMs: number;
+  readonly sessionPoll: Backoff;
+  readonly sdpPoll: Backoff;
+  /** The application's request budget, which replaces every operation's own. */
+  private readonly requestTimeout: Duration.Duration | undefined;
   private readonly maxBytes: number;
   private readonly maxChunks: number;
   readonly options: HttpOptions;
@@ -136,7 +175,10 @@ export class CoordinatorClient {
       throw ReactorError.fromCode("Protocol", "apiUrl cannot contain a query or fragment");
     this.apiUrl = base.href.replace(/\/$/, "");
     this.local = options.local ?? false;
-    this.timeoutMs = positiveLimit(options.requestTimeoutMs ?? 15_000, "request timeout", 600_000);
+    this.requestTimeout =
+      options.requestTimeout === undefined
+        ? undefined
+        : duration(options.requestTimeout, "request timeout", { maximum: "10 minutes" });
     this.maxBytes = positiveLimit(
       options.maxResponseBytes ?? 2_097_152,
       "HTTP response bound",
@@ -291,7 +333,7 @@ export class CoordinatorClient {
           "reactor-api-key",
         ]),
         Effect.timeoutOrElse({
-          duration: request.timeoutMs ?? self.timeoutMs,
+          duration: self.requestTimeout ?? request.timeout ?? Duration.seconds(15),
           orElse: () =>
             Effect.fail(
               ReactorError.fromCode(
@@ -404,9 +446,7 @@ export class CoordinatorClient {
         if (descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined)
           return descriptor;
         if (attempt + 1 < self.sessionPoll.attempts)
-          yield* Effect.sleep(
-            Math.min(self.sessionPoll.initialMs * 2 ** attempt, self.sessionPoll.maxMs),
-          );
+          yield* Effect.sleep(backoff(self.sessionPoll, attempt));
       }
       return yield* ReactorError.fromCode("Timeout", "session capabilities/transport not ready", {
         sessionId: id,
@@ -472,7 +512,7 @@ export class CoordinatorClient {
         const reply = yield* self.request({ operation: "SDP answer", auth: "signaling", url });
         if (reply.status !== 202) return yield* pure(() => parseAnswer(decodeJsonReply(reply)));
         if (attempt + 1 < self.sdpPoll.attempts)
-          yield* Effect.sleep(Math.min(self.sdpPoll.initialMs * 2 ** attempt, self.sdpPoll.maxMs));
+          yield* Effect.sleep(backoff(self.sdpPoll, attempt));
       }
       return yield* ReactorError.fromCode("Timeout", "SDP answer not ready", { sessionId: id });
     });
@@ -576,7 +616,7 @@ export class CoordinatorClient {
           state: null,
           error: paths.failure,
         };
-      const timeoutMs = self.options.requestTimeoutMs ?? 3_000;
+      const timeout = Duration.seconds(3);
       // A response that arrived is evidence even when reading its body failed.
       const received: { status: number | null } = { status: null };
       const response = yield* Effect.result(
@@ -585,7 +625,7 @@ export class CoordinatorClient {
           method: self.local ? "POST" : "DELETE",
           url: paths.success.remove,
           accepted: [404],
-          timeoutMs,
+          timeout,
           onStatus: (status) => {
             received.status = status;
           },
@@ -605,7 +645,7 @@ export class CoordinatorClient {
           operation: "terminate",
           url: paths.success.read,
           accepted: [404],
-          timeoutMs,
+          timeout,
         }),
       );
       if (confirmation._tag === "Failure") {
@@ -657,7 +697,7 @@ export class CoordinatorClient {
       operation: "pricing",
       url: this.path("/pricing"),
       auth: "none",
-      timeoutMs: this.options.requestTimeoutMs ?? 8_000,
+      timeout: Duration.seconds(8),
     }).pipe(
       Effect.flatMap((raw) => pure(() => json(raw))),
       Effect.withSpan("reactor.coordinator.pricing"),
@@ -698,7 +738,7 @@ export class CoordinatorClient {
         this.jsonRequest({
           operation: "inspect",
           url,
-          timeoutMs: this.options.requestTimeoutMs ?? 1_000,
+          timeout: Duration.seconds(1),
         }),
       ),
       Effect.flatMap((raw) => decodeInspection(raw, id)),
@@ -721,7 +761,7 @@ export class CoordinatorClient {
       contentType: "application/json",
       headers: { "Reactor-API-Key": apiKey },
       body,
-      timeoutMs: this.options.requestTimeoutMs ?? 8_000,
+      timeout: Duration.seconds(8),
     }).pipe(Effect.flatMap((reply) => pure(() => decodeJsonReply(reply, "token"))));
   }
   /** Source auth.rs semantics; model restrictions make a token session-scoped. No retries. */

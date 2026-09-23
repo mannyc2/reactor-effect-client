@@ -27,7 +27,7 @@ test("fromH3Session fails before any provider command on a host without decoded 
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/h3" });
           const peer = peers[0];
@@ -54,7 +54,7 @@ test("fromH3Session fails before any provider command when the session is not co
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.create({ model: "fixture/h3" });
           return yield* Effect.result(fromH3Session(session));

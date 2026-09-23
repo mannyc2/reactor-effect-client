@@ -149,6 +149,6 @@ test("downloadClip waits for the playlist, then concatenates its segments in ord
 test("downloadClip bounds the assembled bytes and its wall deadline", async () => {
   const bounded = await download(origin({ segmentBytes: 8 }).client, { maxTotalBytes: 16 });
   expect(Result.isFailure(bounded) && bounded.failure.reason._tag).toBe("Overflow");
-  const late = await download(origin({ pending: 1_000 }).client, { timeoutMs: 50 });
+  const late = await download(origin({ pending: 1_000 }).client, { downloadTimeout: 50 });
   expect(Result.isFailure(late) && late.failure.reason._tag).toBe("Timeout");
 });

@@ -45,8 +45,8 @@ const fetchLayer = (request: RequestFixture) =>
 const options: Coordinator.TokenOptions = {
   apiKey: Redacted.make("rk_secret_fixture"),
   modelName: "reactor/fast-h3",
-  maxSessionDurationSeconds: 120,
-  expiresAfterSeconds: 300,
+  maxSessionDuration: "120 seconds",
+  expiresAfter: "300 seconds",
 };
 const tokenWith = (claims: unknown) =>
   `${Encoding.encodeBase64Url('{"alg":"HS256","typ":"JWT"}')}.${Encoding.encodeBase64Url(JSON.stringify(claims))}.secret_token_fixture`;
@@ -483,11 +483,13 @@ describe("Reactor HTTP session contract (offline)", () => {
       calls++;
       return Response.json(fresh());
     };
-    for (const invalid of [
-      { ...options, maxSessionDurationSeconds: 0 },
-      { ...options, expiresAfterSeconds: 130 },
+    const invalids: readonly Coordinator.TokenOptions[] = [
+      { ...options, maxSessionDuration: 0 },
+      { ...options, expiresAfter: "130 seconds" },
+      { ...options, maxSessionDuration: "1500 millis" },
       { ...options, modelName: "" },
-    ]) {
+    ];
+    for (const invalid of invalids) {
       const exit = await Effect.runPromiseExit(
         mintToken(invalid).pipe(Effect.provide(fetchLayer(request))),
       );

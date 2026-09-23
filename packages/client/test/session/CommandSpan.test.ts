@@ -275,7 +275,7 @@ test("command span: after the caller stops waiting, the child span ends Timeout/
       expect(session.snapshot.pending.data).toBe(1);
       expect(exported).not.toContain(INPUT);
     },
-    { commandTimeoutMs: 50 },
+    { replyTimeout: 50 },
   ));
 
 test("command span: pre-dispatch rejections and notifications open no span", ({ signal }) =>
@@ -283,7 +283,7 @@ test("command span: pre-dispatch rejections and notifications open no span", ({ 
     signal,
     async (session) => {
       const invalid = await traced(
-        session.command("generate_clip", { prompt: INPUT }, undefined, 0),
+        session.command("generate_clip", { prompt: INPUT }, { replyTimeout: 0 }),
       );
       expect(failed(invalid.exit)).toMatchObject({
         reason: { _tag: "InvalidInput" },

@@ -53,9 +53,9 @@ const setup = (
       ),
     };
     const provider = yield* H3.make(session, {
-      commandTimeoutMs: 100,
-      setupTimeoutMs: 1000,
-      reconcileWindowMs: 20,
+      replyTimeout: 100,
+      setupTimeout: 1000,
+      reconcileWindow: 20,
     });
     const source = yield* fromH3(session, provider, { media: Effect.succeed(media), ...options });
     const events: EngineEvent[] = [];
@@ -474,7 +474,7 @@ test("a session-bound source derives its provider and media from the one session
         }),
       );
       const source = yield* fromSession(fake.session, {
-        provider: { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 },
+        provider: { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 },
       });
       // One provider view, over the same session, is part of the source.
       expect(source.provider.sessionId).toBe(fake.session.id);
@@ -603,7 +603,7 @@ test("orchestration establishes autoplay before the first H3 admission without c
     Effect.gen(function* () {
       const { source, fake } = yield* setup();
       const handle = yield* Renewal.make({
-        open: Effect.succeed({ source, maxSeconds: Infinity }),
+        open: Effect.succeed({ source, lifetime: "Infinity" }),
       });
       yield* handle.engine.enqueue(request());
       const commands = fake.calls.map((call) => call.command);
@@ -641,7 +641,7 @@ for (const outcome of ["replied", "unknown", "not-submitted", "ack", "timeout"] 
           },
         });
         const result = yield* Effect.result(
-          Renewal.make({ open: Effect.succeed({ source, maxSeconds: Infinity }) }),
+          Renewal.make({ open: Effect.succeed({ source, lifetime: "Infinity" }) }),
         );
         expect(Result.isFailure(result)).toBe(true);
         expect(fake.lifecycleCalls.close).toBe(1);
