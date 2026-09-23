@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import { ReactorError } from "reactor-effect-client";
 import {
   CoordinatorClient,
-  errorOf,
+  parsed,
   positiveLimit,
   retryAfterMs,
   terminal,
@@ -19,8 +19,7 @@ export interface DownloadOptions {
   readonly maxTotalBytes?: number;
   readonly maxSegments?: number;
 }
-const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.try({ try: body, catch: errorOf });
+const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> => parsed(body);
 export const parsePlaylist = (
   text: string,
   baseUrl: string,
@@ -67,8 +66,16 @@ export const parsePlaylist = (
     }
   }
   if (media.length === 0) throw ReactorError.fromCode("Protocol", "empty clip playlist");
+  // The URL constructor rejects a malformed playlist URI with a TypeError.
+  const parseUrl = (uri: string): URL => {
+    try {
+      return new URL(uri, baseUrl);
+    } catch (cause) {
+      throw ReactorError.fromCode("Protocol", "invalid clip URL", { detail: cause });
+    }
+  };
   const resolve = (uri: string): string => {
-    const url = new URL(uri, baseUrl);
+    const url = parseUrl(uri);
     if (!(url.protocol === "http:" || url.protocol === "https:") || url.username || url.password)
       throw ReactorError.fromCode(
         "Protocol",
@@ -78,7 +85,7 @@ export const parsePlaylist = (
   };
   if (
     init === undefined &&
-    media.some((uri) => /\.(?:m4s|mp4|m4a|m4v)$/i.test(new URL(uri, baseUrl).pathname))
+    media.some((uri) => /\.(?:m4s|mp4|m4a|m4v)$/i.test(parseUrl(uri).pathname))
   )
     throw ReactorError.fromCode("Protocol", "fragmented MP4 playlist lacks EXT-X-MAP init segment");
   const segments: Segment[] = init === undefined ? [] : [{ kind: "init", url: resolve(init) }];

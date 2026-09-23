@@ -2,7 +2,12 @@ import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import { ReactorError } from "reactor-effect-client";
-import { errorOf, fromOwnedReadableStream, positiveLimit } from "reactor-effect-client/host";
+import {
+  errorOf,
+  fromOwnedReadableStream,
+  parsed,
+  positiveLimit,
+} from "reactor-effect-client/host";
 import { decodeAudioPacket } from "./audio-packet.js";
 import type { WebAudioSample } from "./audio-packet.js";
 export type { WebAudioSample } from "./audio-packet.js";
@@ -36,10 +41,9 @@ export const audioContext = (
   options: { readonly sampleRate?: number; readonly timeoutMs?: number } = {},
 ): Effect.Effect<AudioContext, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const timeout = yield* Effect.try({
-      try: () => positiveLimit(options.timeoutMs ?? 5000, "audio context timeout", 60000),
-      catch: errorOf,
-    });
+    const timeout = yield* parsed(() =>
+      positiveLimit(options.timeoutMs ?? 5000, "audio context timeout", 60000),
+    );
     const context = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {
@@ -56,10 +60,10 @@ export const audioContext = (
       }),
       // Neither browser promise can be cancelled; each deadline only stops waiting for it.
       (context) =>
-        Effect.tryPromise({ try: () => context.close(), catch: errorOf }).pipe(
-          Effect.timeout(timeout),
-          Effect.ignore,
-        ),
+        Effect.tryPromise({
+          try: () => context.close(),
+          catch: (cause) => errorOf(cause, "Shutdown", "AudioContext.close"),
+        }).pipe(Effect.timeout(timeout), Effect.ignore),
     );
     yield* Effect.tryPromise({
       try: () => context.resume(),
@@ -281,7 +285,7 @@ export const webAudioSamples = (
             pending = undefined;
             waiter.resolve(sample);
           } catch (error) {
-            fail(errorOf(error));
+            fail(errorOf(error, "Protocol", "PCM block"));
           }
         };
         node.port.onmessageerror = () =>
@@ -315,7 +319,7 @@ export const webAudioSamples = (
               );
               if (live()) c.enqueue(sample);
             } catch (error) {
-              fail(errorOf(error));
+              fail(errorOf(error, "Protocol", "PCM read"));
             }
           },
           cancel: close,

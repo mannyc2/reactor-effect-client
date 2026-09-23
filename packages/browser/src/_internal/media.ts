@@ -8,6 +8,7 @@ import {
   errorOf,
   finite,
   fromOwnedReadableStream,
+  parsed,
   positiveLimit,
   record,
 } from "reactor-effect-client/host";
@@ -410,10 +411,13 @@ const nativeSamples = <A>(
   Stream.unwrap(
     Effect.gen(function* () {
       const owned = yield* Effect.acquireRelease(
-        Effect.try({ try: () => copiedSamples(source, kind, options, copy), catch: errorOf }),
+        parsed(() => copiedSamples(source, kind, options, copy)),
         (owned) => Effect.promise(() => owned.close()),
       );
-      return fromOwnedReadableStream({ evaluate: () => owned.readable, onError: errorOf });
+      return fromOwnedReadableStream({
+        evaluate: () => owned.readable,
+        onError: (cause) => errorOf(cause, "Protocol", `${kind} samples`),
+      });
     }),
   );
 
@@ -485,10 +489,7 @@ export const play = (
   timeoutMs = 10_000,
 ): Effect.Effect<void, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const timeout = yield* Effect.try({
-      try: () => positiveLimit(timeoutMs, "playback timeout", 600_000),
-      catch: errorOf,
-    });
+    const timeout = yield* parsed(() => positiveLimit(timeoutMs, "playback timeout", 600_000));
     const owned = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {
@@ -506,7 +507,8 @@ export const play = (
             throw error;
           }
         },
-        catch: errorOf,
+        // MediaStream and srcObject are platform calls: their exceptions are expected.
+        catch: (cause) => errorOf(cause, "UnsupportedCapability", "HTMLMediaElement source"),
       }),
       ({ clone, stream }) =>
         Effect.sync(() => {
@@ -544,10 +546,9 @@ export const nextPresentation = (
 ): Effect.Effect<Presentation, ReactorError> =>
   Effect.suspend(() =>
     Effect.gen(function* () {
-      const timeout = yield* Effect.try({
-        try: () => positiveLimit(timeoutMs, "presentation timeout", 600_000),
-        catch: errorOf,
-      });
+      const timeout = yield* parsed(() =>
+        positiveLimit(timeoutMs, "presentation timeout", 600_000),
+      );
       return yield* Effect.callback<Presentation, ReactorError>((resume) => {
         if (typeof element.requestVideoFrameCallback !== "function") {
           resume(

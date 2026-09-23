@@ -8,7 +8,7 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Duration from "effect/Duration";
-import { errorOf, Http, positiveLimit, ReactorError } from "../../errors.js";
+import { Http, parsed, positiveLimit, ReactorError } from "../../errors.js";
 import { array, json, nonempty, record, string, uint32 } from "../../json.js";
 import type { Json } from "../../json.js";
 import {
@@ -85,8 +85,7 @@ export interface Termination {
   readonly state: string | null;
   readonly error?: ReactorError;
 }
-const pure = <A>(f: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.try({ try: f, catch: errorOf });
+const pure = <A>(f: () => A): Effect.Effect<A, ReactorError> => parsed(f);
 const validatePoll = (p: Poll): Poll => {
   positiveLimit(p.attempts, "poll attempts", 1000);
   positiveLimit(p.initialMs, "poll initialMs", 60_000);
@@ -96,7 +95,13 @@ const validatePoll = (p: Poll): Poll => {
   return Object.freeze({ ...p });
 };
 const checkedUrl = (url: string): URL => {
-  const value = new URL(url);
+  let value: URL;
+  try {
+    value = new URL(url);
+  } catch (cause) {
+    // The URL constructor rejects malformed input with a TypeError.
+    throw ReactorError.fromCode("Protocol", "HTTP URL is malformed", { detail: cause });
+  }
   if (
     (value.protocol !== "https:" && value.protocol !== "http:") ||
     value.username ||
@@ -206,7 +211,22 @@ export class CoordinatorClient {
         if (authenticate) {
           const token = yield* self.options.credential ?? Effect.void;
           if (token !== undefined)
-            yield* pure(() => headers.set("Authorization", `Bearer ${nonempty(token, "JWT")}`));
+            yield* pure(() => {
+              const value = `Bearer ${nonempty(token, "JWT")}`;
+              try {
+                headers.set("Authorization", value);
+              } catch {
+                // Headers rejects the value with a TypeError that quotes it, so the
+                // credential is not kept, even as detail.
+                throw ReactorError.fromCode(
+                  "InvalidInput",
+                  "JWT is not a valid HTTP header value",
+                  {
+                    outcome: "not-submitted",
+                  },
+                );
+              }
+            });
         }
         if (request.contentType !== undefined)
           yield* pure(() => headers.set("Content-Type", request.contentType!));

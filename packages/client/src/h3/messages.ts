@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ReactorError } from "../errors.js";
 import { jsonObject } from "../json.js";
@@ -97,7 +98,16 @@ const freeze = <A>(value: A): A => {
   return value;
 };
 
-/** Unknown events remain observable. A known message never accepts a partial payload. */
+const malformed = (type: string): ReactorError =>
+  ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
+    operation: "h3 observation",
+  });
+
+/**
+ * Unknown events remain observable. A known message never accepts a partial
+ * payload: its Schema decode result or a cross-field rule rejects it as
+ * Protocol, and a bug in these checks stays a defect.
+ */
 export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
   if (!Object.hasOwn(Payloads, type))
     return Object.freeze({
@@ -105,34 +115,28 @@ export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
       name: type,
       data: input === undefined ? undefined : jsonObject(input),
     });
-  try {
-    const schema = Payloads[type as MessageType];
-    const data: unknown = Schema.decodeUnknownSync(schema)(input);
-    const message = { type, data } as Message;
-    if (message.type === "state_update") {
-      const state = message.data;
-      if (
-        state.clip_seconds_min <= 0 ||
-        state.clip_seconds_max < state.clip_seconds_min ||
-        state.clip_seconds <= 0 ||
-        state.playing !== (state.playing_clip_id !== null)
-      )
-        throw new Error("inconsistent state");
-    }
-    if (message.type === "queue_update") {
-      const queued = [...message.data.generation, ...message.data.playout].map(
-        (clip) => clip.clip_id,
-      );
-      const history = message.data.history.map((clip) => clip.clip_id);
-      // A retained history entry may describe a clip that is still in playout;
-      // duplicate positions within queues/history remain ambiguous.
-      if (new Set(queued).size !== queued.length || new Set(history).size !== history.length)
-        throw new Error("duplicate queue identity");
-    }
-    return freeze(message);
-  } catch {
-    throw ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
-      operation: "h3 observation",
-    });
+  const decoded = Schema.decodeUnknownResult(Payloads[type as MessageType])(input);
+  if (Result.isFailure(decoded)) throw malformed(type);
+  const message = { type, data: decoded.success } as Message;
+  if (message.type === "state_update") {
+    const state = message.data;
+    if (
+      state.clip_seconds_min <= 0 ||
+      state.clip_seconds_max < state.clip_seconds_min ||
+      state.clip_seconds <= 0 ||
+      state.playing !== (state.playing_clip_id !== null)
+    )
+      throw malformed(type);
   }
+  if (message.type === "queue_update") {
+    const queued = [...message.data.generation, ...message.data.playout].map(
+      (clip) => clip.clip_id,
+    );
+    const history = message.data.history.map((clip) => clip.clip_id);
+    // A retained history entry may describe a clip that is still in playout;
+    // duplicate positions within queues/history remain ambiguous.
+    if (new Set(queued).size !== queued.length || new Set(history).size !== history.length)
+      throw malformed(type);
+  }
+  return freeze(message);
 };

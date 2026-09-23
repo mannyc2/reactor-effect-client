@@ -18,6 +18,7 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { SequenceCode } from "./Sequence.js";
 import type { CloseReport } from "./SessionTypes.js";
@@ -638,12 +639,50 @@ const wrapperReason = (error: ReactorFailure): ReactorErrorReason =>
       })
     : error.reason;
 
-/** Keep the original cause for deliberate inspection without including it in the message. */
-export const errorOf = (
-  cause: unknown,
-  code: MessageCode = "Protocol",
+/**
+ * Runs a synchronous parser or check that rejects by throwing a ReactorError,
+ * and returns that rejection as the Result's failure. Anything else it throws
+ * is a bug and propagates, so it stays a defect rather than becoming a typed
+ * failure.
+ */
+export const parse = <A>(evaluate: () => A): Result.Result<A, ReactorError> => {
+  try {
+    return Result.succeed(evaluate());
+  } catch (cause) {
+    if (ReactorError.is(cause)) return Result.fail(cause);
+    throw cause;
+  }
+};
+
+/** `parse`, lifted with `Effect.fromResult`: a rejection fails it and a bug is a defect. */
+export const parsed = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> =>
+  Effect.suspend(() => Effect.fromResult(parse(evaluate)));
+
+/**
+ * A rejected caller input: `InvalidInput`, never submitted, whatever category
+ * the parser that rejected it uses for remote data.
+ */
+export const invalidInput = (error: ReactorError, operation?: string): ReactorError =>
+  ReactorError.fromCode("InvalidInput", error.message, {
+    ...error.context,
+    ...(operation === undefined ? {} : { operation }),
+    outcome: "not-submitted",
+  });
+
+/** `parsed` for caller input: a rejection is `invalidInput`. */
+export const parsedInput = <A>(
+  evaluate: () => A,
   operation?: string,
-): ReactorError =>
+): Effect.Effect<A, ReactorError> =>
+  parsed(evaluate).pipe(Effect.mapError((error) => invalidInput(error, operation)));
+
+/**
+ * A platform call's expected exception (a DOMException, a rejected browser
+ * promise, a native library call), as a failure of the category `code`; the
+ * exception stays in the inspection-only `detail`. Parsers and checks use
+ * `parse` instead, so a bug in them stays a defect.
+ */
+export const errorOf = (cause: unknown, code: MessageCode, operation?: string): ReactorError =>
   ReactorError.is(cause)
     ? cause
     : ReactorError.fromCode(code, operation === undefined ? code : `${operation} failed`, {

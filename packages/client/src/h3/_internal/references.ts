@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { ReactorError } from "../../errors.js";
+import { parsedInput, ReactorError } from "../../errors.js";
 import type { UploadReference } from "../../wire.generated.js";
 import { imageMimeTypes, referenceLimits } from "../profile.js";
 import type { Reference, ValidatedReference } from "../types.js";
@@ -207,12 +207,4 @@ export const referenceMaterial = (reference: ValidatedReference): Material =>
 export const validateReference = (
   input: Reference,
 ): Effect.Effect<ValidatedReference, ReactorError> =>
-  Effect.try({
-    try: () => captureReference(input),
-    catch: (error) =>
-      ReactorError.is(error)
-        ? error
-        : ReactorError.fromCode("InvalidInput", "Invalid H3 reference", {
-            outcome: "not-submitted",
-          }),
-  });
+  parsedInput(() => captureReference(input), "H3 reference");

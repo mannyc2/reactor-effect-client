@@ -1,5 +1,5 @@
-import { Clock, Effect, Redacted, Schema } from "effect";
-import { positiveLimit, ReactorError } from "../../errors.js";
+import { Clock, Effect, Redacted, Result, Schema } from "effect";
+import { parse, parsedInput, positiveLimit, ReactorError } from "../../errors.js";
 
 const failure = (operation: string, message: string, cause?: unknown) =>
   ReactorError.fromCode("Protocol", message, {
@@ -67,33 +67,35 @@ export interface TokenGrant {
 export const validateTokenOptions = (
   input: TokenOptions,
 ): Effect.Effect<TokenOptions, ReactorError> =>
-  Effect.try({
-    try: () => {
-      const options: TokenOptions = {
-        apiKey: input.apiKey,
-        modelName: input.modelName,
-        maxSessionDurationSeconds: input.maxSessionDurationSeconds,
-        expiresAfterSeconds: input.expiresAfterSeconds,
-      };
-      if (
-        !Redacted.isRedacted(options.apiKey) ||
-        Redacted.value(options.apiKey).length === 0 ||
-        typeof options.modelName !== "string" ||
-        options.modelName.length === 0 ||
-        options.expiresAfterSeconds <= options.maxSessionDurationSeconds + 30
-      )
-        throw new Error("Invalid bounded grant input");
-      positiveLimit(options.maxSessionDurationSeconds, "session duration", 86_400);
-      positiveLimit(options.expiresAfterSeconds, "token expiry", Number.MAX_SAFE_INTEGER);
-      return Object.freeze(options);
-    },
-    catch: () =>
-      ReactorError.fromCode(
+  parsedInput(() => {
+    const reject = (): never => {
+      throw ReactorError.fromCode(
         "InvalidInput",
         "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
         { operation: "token", outcome: "not-submitted" },
-      ),
-  });
+      );
+    };
+    if (input === null || typeof input !== "object") return reject();
+    const options: TokenOptions = {
+      apiKey: input.apiKey,
+      modelName: input.modelName,
+      maxSessionDurationSeconds: input.maxSessionDurationSeconds,
+      expiresAfterSeconds: input.expiresAfterSeconds,
+    };
+    if (
+      !Redacted.isRedacted(options.apiKey) ||
+      Redacted.value(options.apiKey).length === 0 ||
+      typeof options.modelName !== "string" ||
+      options.modelName.length === 0 ||
+      options.expiresAfterSeconds <= options.maxSessionDurationSeconds + 30
+    )
+      return reject();
+    const bounded = parse(() => {
+      positiveLimit(options.maxSessionDurationSeconds, "session duration", 86_400);
+      positiveLimit(options.expiresAfterSeconds, "token expiry", Number.MAX_SAFE_INTEGER);
+    });
+    return Result.isFailure(bounded) ? reject() : Object.freeze(options);
+  }, "token");
 
 const Token = Schema.Struct({
   jwt: Schema.NonEmptyString,

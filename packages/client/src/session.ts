@@ -7,7 +7,7 @@ import * as Queue from "effect/Queue";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Stream from "effect/Stream";
-import { errorOf, positiveLimit, ReactorError, Remote } from "./errors.js";
+import { parsed, parsedInput, positiveLimit, ReactorError, Remote } from "./errors.js";
 import type { ErrorContext } from "./errors.js";
 import { nonempty, uint32, structFromObject, objectFromStruct } from "./json.js";
 import type { JsonObject } from "./json.js";
@@ -67,8 +67,7 @@ const remoteError = (
     }),
     context,
   });
-const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.try({ try: body, catch: errorOf });
+const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> => parsed(body);
 const withDeadline = <A, R>(
   effect: Effect.Effect<A, ReactorError, R>,
   ms: number,
@@ -415,7 +414,10 @@ export class Session {
           this.emit({ _tag: "Control", message, correlation }, bytes.length);
       }
     } catch (cause) {
-      this.emit({ _tag: "Diagnostic", error: errorOf(cause, "Protocol") }, bytes.length);
+      // Decoding rejects a malformed reply with a ReactorError; anything else it
+      // throws is a bug and propagates to the peer rather than becoming typed.
+      if (!ReactorError.is(cause)) throw cause;
+      this.emit({ _tag: "Diagnostic", error: cause }, bytes.length);
     }
   }
   private flushIce(c: Connection): Effect.Effect<void, ReactorError> {
@@ -824,16 +826,21 @@ export class Session {
     uploads: ReadonlyMap<string, W.UploadReference> = new Map(),
     timeoutMs = this.commandTimeout,
   ): Effect.Effect<CommandReply, CommandFailure> {
-    return pure(() => {
-      const c = this.currentReady(),
-        payload = {
-          type: nonempty(type, "command type"),
-          data: structFromObject(data),
-          uploads: captureUploads(uploads),
-        };
-      positiveLimit(timeoutMs, "command timeout", 600_000);
-      return { c, payload };
-    }).pipe(
+    return pure(() => this.currentReady()).pipe(
+      // The caller's name, data, uploads and deadline: a rejection is InvalidInput.
+      Effect.flatMap((c) =>
+        parsedInput(() => {
+          positiveLimit(timeoutMs, "command timeout", 600_000);
+          return {
+            c,
+            payload: {
+              type: nonempty(type, "command type"),
+              data: structFromObject(data),
+              uploads: captureUploads(uploads),
+            },
+          };
+        }, type),
+      ),
       Effect.mapError((error) =>
         CommandFailure.from(error, {
           ...error.context,
@@ -960,10 +967,16 @@ export class Session {
             throw ReactorError.fromCode("UnexpectedReply", `clip reply was ${reply.case}`, {
               outcome: "replied",
             });
-          return {
-            ...reply.value,
-            playlist_url: new URL(reply.value.playlist_url, `${this.http.apiUrl}/`).href,
-          };
+          let playlist: URL;
+          try {
+            playlist = new URL(reply.value.playlist_url, `${this.http.apiUrl}/`);
+          } catch (cause) {
+            throw ReactorError.fromCode("Protocol", "clip playlist URL is malformed", {
+              outcome: "replied",
+              detail: cause,
+            });
+          }
+          return { ...reply.value, playlist_url: playlist.href };
         }),
       ),
     );

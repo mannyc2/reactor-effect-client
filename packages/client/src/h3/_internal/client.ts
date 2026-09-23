@@ -8,7 +8,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import {
   CommandFailure,
-  errorOf,
+  parsed,
   PolicyFailure,
   positiveLimit,
   ReactorError,
@@ -47,8 +47,7 @@ import { captureRequest, clipId, enqueueArguments, nonnegative, seconds } from "
 import type { CapturedRequest } from "./request.js";
 import { ProviderState } from "./state.js";
 
-const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.try({ try: evaluate, catch: errorOf });
+const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> => parsed(evaluate);
 const localFailure = (operation: string, cause: ReactorError | CommandFailure): CommandFailure =>
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
 /** A caller's local refusal already proves no dispatch; anything else becomes one. */
@@ -313,7 +312,10 @@ const build = (
             }),
           );
       } catch (cause) {
-        const error = errorOf(cause);
+        // The reducer rejects provider data with a ReactorError; anything else
+        // it throws is a bug, which stays a defect of the observation fiber.
+        if (!ReactorError.is(cause)) throw cause;
+        const error = cause;
         if (source._tag === "Model") {
           decoded.set(source, Result.fail(error));
           const waiter = observedWaiters.get(source);

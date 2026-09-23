@@ -8,7 +8,7 @@
  * compose hosts through their packages and read media through their `media`
  * functions. Nothing here allocates or owns a session.
  */
-export { errorOf, positiveLimit } from "./errors.js";
+export { errorOf, parse, parsed, positiveLimit } from "./errors.js";
 export { finite, isRecord, record } from "./json.js";
 export { fromOwnedReadableStream } from "./media-stream.js";
 export { terminal } from "./contract.js";

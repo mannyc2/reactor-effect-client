@@ -1,38 +1,37 @@
 import { ReactorError } from "../../errors.js";
-import { nonempty } from "../../json.js";
+import { nonempty, record } from "../../json.js";
 import type { UploadReference } from "../../wire.generated.js";
 
 const maximumWireSize = (1n << 63n) - 1n;
 
-/** Detach caller-owned references before correlation or dispatch can begin. */
+const invalid = (message: string): never => {
+  throw ReactorError.fromCode("InvalidInput", message, { outcome: "not-submitted" });
+};
+
+/**
+ * Detach caller-owned references before correlation or dispatch can begin.
+ * Each rejection is an InvalidInput ReactorError that was never submitted.
+ */
 export const captureUploads = (
   input: ReadonlyMap<string, UploadReference>,
 ): Map<string, UploadReference> => {
-  try {
-    const result = new Map<string, UploadReference>();
-    for (const [key, value] of input) {
-      if (result.size >= 128) throw new TypeError("too many upload references");
-      nonempty(key, "upload key");
-      if (value === null || typeof value !== "object")
-        throw new TypeError("upload reference must be an object");
-      if (typeof value.size !== "bigint" || value.size < 0n || value.size > maximumWireSize) {
-        throw new TypeError("upload size must be a nonnegative signed-64-bit bigint");
-      }
-      result.set(
-        key,
-        Object.freeze({
-          upload_id: nonempty(value.upload_id, "upload id"),
-          name: nonempty(value.name, "upload name"),
-          mime_type: nonempty(value.mime_type, "upload MIME type"),
-          size: value.size,
-        }),
-      );
-    }
-    return result;
-  } catch (cause) {
-    throw ReactorError.fromCode("InvalidInput", "invalid command upload reference", {
-      outcome: "not-submitted",
-      detail: cause,
-    });
+  if (!(input instanceof Map)) return invalid("upload references must be a Map");
+  const result = new Map<string, UploadReference>();
+  for (const [key, value] of input as ReadonlyMap<unknown, unknown>) {
+    if (result.size >= 128) return invalid("too many upload references");
+    const reference = record(value, "upload reference");
+    const size = reference.size;
+    if (typeof size !== "bigint" || size < 0n || size > maximumWireSize)
+      return invalid("upload size must be a nonnegative signed-64-bit bigint");
+    result.set(
+      nonempty(key, "upload key"),
+      Object.freeze({
+        upload_id: nonempty(reference.upload_id, "upload id"),
+        name: nonempty(reference.name, "upload name"),
+        mime_type: nonempty(reference.mime_type, "upload MIME type"),
+        size,
+      }),
+    );
   }
+  return result;
 };

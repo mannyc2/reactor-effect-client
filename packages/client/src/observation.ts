@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { errorOf, positiveLimit, ReactorError } from "./errors.js";
+import { parsed, positiveLimit, ReactorError } from "./errors.js";
 
 interface Entry<A> {
   readonly value: A;
@@ -41,17 +41,14 @@ export class Observations<A> {
   ): Effect.Effect<Stream.Stream<A, ReactorError>, ReactorError, Scope.Scope> {
     const observations = this;
     return Effect.gen(function* () {
-      const bounds = yield* Effect.try({
-        try: () => ({
-          capacity: positiveLimit(options.capacity ?? 64, "observation capacity", 4096),
-          maxBytes: positiveLimit(
-            options.maxBytes ?? 1_048_576,
-            "observation bytes",
-            64 * 1024 * 1024,
-          ),
-        }),
-        catch: errorOf,
-      });
+      const bounds = yield* parsed(() => ({
+        capacity: positiveLimit(options.capacity ?? 64, "observation capacity", 4096),
+        maxBytes: positiveLimit(
+          options.maxBytes ?? 1_048_576,
+          "observation bytes",
+          64 * 1024 * 1024,
+        ),
+      }));
       const subscriber = yield* Effect.acquireRelease(
         Effect.gen(function* () {
           if (observations.subscribers.size >= observations.maxSubscribers) {
@@ -79,16 +76,13 @@ export class Observations<A> {
       return Stream.unwrap(
         Effect.gen(function* () {
           yield* Effect.acquireRelease(
-            Effect.try({
-              try: () => {
-                if (reading)
-                  throw ReactorError.fromCode(
-                    "AlreadyReading",
-                    "this observation already has an active reader",
-                  );
-                reading = true;
-              },
-              catch: errorOf,
+            parsed(() => {
+              if (reading)
+                throw ReactorError.fromCode(
+                  "AlreadyReading",
+                  "this observation already has an active reader",
+                );
+              reading = true;
             }),
             () =>
               Effect.sync(() => {

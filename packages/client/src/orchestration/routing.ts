@@ -127,13 +127,10 @@ export const resolve = <Owner>(
       // unchanged. With no index or anchor, omission retains provider append.
       return Object.freeze({ owner, position });
     },
-    catch: (cause) =>
-      PolicyFailure.is(cause)
-        ? cause
-        : PolicyFailure.refuse(
-            "InvalidRequest",
-            "Could not resolve request ownership",
-            "enqueue",
-            cause,
-          ),
+    // Only a refusal is a typed failure; any other throw, such as a generation
+    // order naming a missing clip, is a broken invariant and stays a defect.
+    catch: (cause) => {
+      if (PolicyFailure.is(cause)) return cause;
+      throw cause;
+    },
   });

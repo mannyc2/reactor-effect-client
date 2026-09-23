@@ -159,7 +159,7 @@ describe("public call sites: json() throws are typed failures, not defects", () 
   commandCase("sparse array", () => ({ list: sparse() }));
   commandCase("million-slot sparse array", () => ({ list: new Array<unknown>(1_000_000) }));
   commandCase("cumulative key text over 4 MiB", bigKeys, (failure) =>
-    expect(failure.reason._tag).toBe("Protocol"),
+    expect(failure.reason._tag).toBe("InvalidInput"),
   );
 
   test("session.command input: an array index getter is never executed", () =>

@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Http from "effect/unstable/http/HttpClient";
-import { errorOf, ReactorError } from "../errors.js";
+import { parsed, ReactorError } from "../errors.js";
 import type { Json } from "../json.js";
 import { CoordinatorClient } from "./_internal/client.js";
 import type { HttpOptions, Termination } from "./_internal/client.js";
@@ -40,8 +40,8 @@ export const make = (
   configuration: Configuration = {},
 ): Effect.Effect<Client, ReactorError, Http.HttpClient> =>
   Effect.flatMap(Http.HttpClient, (http) =>
-    Effect.try({
-      try: () =>
+    parsed(
+      () =>
         new CoordinatorClient(
           {
             ...configuration,
@@ -51,23 +51,19 @@ export const make = (
                 ? Effect.undefined
                 : configuration.credential.pipe(
                     Effect.flatMap((credential) =>
-                      Effect.try({
-                        try: () => {
-                          if (!Redacted.isRedacted(credential))
-                            throw ReactorError.fromCode(
-                              "InvalidInput",
-                              "Coordinator credential must be Redacted",
-                              { outcome: "not-submitted" },
-                            );
-                          return Redacted.value(credential);
-                        },
-                        catch: errorOf,
+                      parsed(() => {
+                        if (!Redacted.isRedacted(credential))
+                          throw ReactorError.fromCode(
+                            "InvalidInput",
+                            "Coordinator credential must be Redacted",
+                            { outcome: "not-submitted" },
+                          );
+                        return Redacted.value(credential);
                       }),
                     ),
                   ),
           },
           http,
         ),
-      catch: errorOf,
-    }),
+    ),
   );

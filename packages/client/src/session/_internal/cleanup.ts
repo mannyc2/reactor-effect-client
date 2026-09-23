@@ -4,7 +4,7 @@ import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import type { CoordinatorClient, Termination } from "../../coordinator/_internal/client.js";
-import { errorOf, ReactorError } from "../../errors.js";
+import { parsed, ReactorError } from "../../errors.js";
 import type { CloseReport } from "../../SessionTypes.js";
 import * as W from "../../wire.generated.js";
 import type { Connection } from "./lifecycle.js";
@@ -102,10 +102,9 @@ export const cleanupSession = (options: {
     const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
     if (connection !== undefined) {
       const retired = yield* Effect.result(
-        Effect.try({
-          try: () => options.retire(connection, ReactorError.fromCode("Aborted", "session closed")),
-          catch: errorOf,
-        }),
+        parsed(() =>
+          options.retire(connection, ReactorError.fromCode("Aborted", "session closed")),
+        ),
       );
       if (Result.isFailure(retired)) errors.push(retired.failure);
     }

@@ -222,7 +222,9 @@ test("session policy: absent model data, empty Struct, null fields and correlate
       equal(e.message, "remote command error MODEL_ERROR");
       equal(e.reason.body, "reason");
       const count = dataSent(p).length;
-      equal((await failure(s.command("invalid", []), { signal })).reason._tag, "Protocol");
+      // Caller data that is not a JSON object is invalid input, never submitted.
+      const invalid = await failure(s.command("invalid", []), { signal });
+      equal([invalid.reason._tag, invalid.context.outcome], ["InvalidInput", "not-submitted"]);
       equal(dataSent(p).length, count);
     } finally {
       await run(s.close());

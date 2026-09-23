@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Option, Result } from "effect";
+import { Cause, Effect, Exit, Option, Result } from "effect";
 import { ClipId, PolicyFailure } from "../../src/orchestration/request.js";
 import { activeIds, generation, resolve } from "../../src/orchestration/routing.js";
 import type { Candidate } from "../../src/orchestration/routing.js";
@@ -209,4 +209,13 @@ test("unknown foreign playback contributes ownership without inventing a record"
     ),
     "ContinuationUnavailable",
   );
+});
+
+test("a generation order naming a missing clip is a broken invariant: a defect, not a refusal", async () => {
+  const broken = readyState({ generationOrder: [first.clipId] });
+  const exit = await Effect.runPromiseExit(
+    resolve(request(), [candidate("old", { state: broken })], "old", undefined),
+  );
+  expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+  expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBe(false);
 });

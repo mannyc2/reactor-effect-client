@@ -43,7 +43,7 @@ test("media policy: acquisition exceptions are typed failures, not stream defect
       evaluate: () => {
         throw ReactorError.fromCode("UnsupportedCapability", "not exposed in this realm");
       },
-      onError: errorOf,
+      onError: (cause) => errorOf(cause, "Protocol"),
     }).pipe(Stream.runDrain),
     { signal },
   );
@@ -63,10 +63,10 @@ test("media policy: early stream completion cancels AND releases the underlying 
   });
   equal(
     await run(
-      fromOwnedReadableStream({ evaluate: () => readable, onError: errorOf }).pipe(
-        Stream.take(1),
-        Stream.runCollect,
-      ),
+      fromOwnedReadableStream({
+        evaluate: () => readable,
+        onError: (cause) => errorOf(cause, "Protocol"),
+      }).pipe(Stream.take(1), Stream.runCollect),
       { signal },
     ),
     [7],
@@ -82,7 +82,10 @@ test("media policy: interrupting a blocked reader cancels and releases without w
     },
   });
   const task = Effect.runFork(
-    fromOwnedReadableStream({ evaluate: () => readable, onError: errorOf }).pipe(Stream.runDrain),
+    fromOwnedReadableStream({
+      evaluate: () => readable,
+      onError: (cause) => errorOf(cause, "Protocol"),
+    }).pipe(Stream.runDrain),
   );
   await eventually(() => readable.locked);
   await Effect.runPromise(Fiber.interrupt(task));
@@ -347,7 +350,7 @@ const withAudioHost = async (
               assert(model !== undefined);
               yield* Effect.tryPromise({
                 try: () => body(context, model, nodes, sinks),
-                catch: errorOf,
+                catch: (cause) => errorOf(cause, "Protocol", "audio fixture"),
               });
             }),
           ),

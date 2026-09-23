@@ -5,12 +5,12 @@ import * as Http from "effect/unstable/http/HttpClient";
 import type * as Scope from "effect/Scope";
 import { PeerFactory, make as makeClient } from "reactor-effect-client";
 import type { Configuration, Factory, ReactorError, Session } from "reactor-effect-client";
-import { errorOf, trackGeneration } from "reactor-effect-client/host";
+import { parsed, trackGeneration } from "reactor-effect-client/host";
 import type { TrackGeneration } from "reactor-effect-client/host";
 import { BrowserPeer, requireBrowserPeer } from "./_internal/peer.js";
 
 export const layer = Layer.succeed(PeerFactory, {
-  check: Effect.try({ try: requireBrowserPeer, catch: errorOf }),
+  check: parsed(requireBrowserPeer),
   make: () => new BrowserPeer(),
 });
 

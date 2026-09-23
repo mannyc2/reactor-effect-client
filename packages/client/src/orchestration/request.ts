@@ -1,7 +1,14 @@
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { jsonObject } from "../json.js";
-import { AcquisitionFailure, CommandFailure, PolicyFailure, ReactorError } from "../errors.js";
+import {
+  AcquisitionFailure,
+  CommandFailure,
+  parse,
+  PolicyFailure,
+  ReactorError,
+} from "../errors.js";
 
 export { PolicyFailure };
 
@@ -68,68 +75,71 @@ const invalidRequest = (cause: unknown): PolicyFailure =>
     cause,
   );
 
-/** The request's own data fields, copied without invoking accessors. */
-const ownedFields = (input: ClipRequest): Record<string, unknown> => {
+/** The request's own data fields, copied without invoking accessors, or why they are not. */
+const ownedFields = (input: ClipRequest): Result.Result<Record<string, unknown>, string> => {
   if (input === null || typeof input !== "object" || Array.isArray(input))
-    throw new TypeError("request must be an object");
+    return Result.fail("request must be an object");
   const raw: Record<string, unknown> = {};
   if (Object.getOwnPropertySymbols(input).length > 0)
-    throw new TypeError("request contains symbol fields");
+    return Result.fail("request contains symbol fields");
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(input))) {
     if (!fields.has(key) || !("value" in descriptor))
-      throw new TypeError("request contains unsupported fields or accessors");
+      return Result.fail("request contains unsupported fields or accessors");
     Object.defineProperty(raw, key, { value: descriptor.value, enumerable: true });
   }
   // The shared JSON boundary owns cycle, prototype, finite-number and byte
   // validation. It copies nested arrays/objects without invoking accessors.
-  return jsonObject(raw);
+  return Result.mapError(
+    parse(() => jsonObject(raw)),
+    (error) => error.message,
+  );
 };
 
 /** Checks the decoded request's cross-field rules, then freezes and records it. */
-const checked = (request: ClipRequest): ClipRequest => {
+const checked = (request: ClipRequest): Result.Result<ClipRequest, string> => {
   if (
     request.prompt.trim().length === 0 ||
     !Number.isFinite(request.durationSeconds) ||
     request.durationSeconds <= 0
-  ) {
-    throw new TypeError("prompt and positive finite duration are required");
-  }
+  )
+    return Result.fail("prompt and positive finite duration are required");
   if (
     request.references.length > 9 ||
     request.references.some((reference) => reference.uri.length === 0)
-  ) {
-    throw new TypeError("references must contain at most nine nonempty URIs");
-  }
+  )
+    return Result.fail("references must contain at most nine nonempty URIs");
   if (
     request.position !== undefined &&
     (!Number.isSafeInteger(request.position) || request.position < 0)
-  ) {
-    throw new TypeError("position must be a nonnegative safe integer");
-  }
-  if (request.seed !== undefined && (!Number.isSafeInteger(request.seed) || request.seed < 0)) {
-    throw new TypeError("seed must be a nonnegative safe integer");
-  }
-  if (request.sameSessionAs === "") throw new TypeError("source affinity identity cannot be empty");
+  )
+    return Result.fail("position must be a nonnegative safe integer");
+  if (request.seed !== undefined && (!Number.isSafeInteger(request.seed) || request.seed < 0))
+    return Result.fail("seed must be a nonnegative safe integer");
+  if (request.sameSessionAs === "") return Result.fail("source affinity identity cannot be empty");
   if (
     request.sequence !== undefined &&
     (request.sequence.id.length === 0 || request.sequence.memberId === "")
-  ) {
-    throw new TypeError("sequence identities cannot be empty");
-  }
+  )
+    return Result.fail("sequence identities cannot be empty");
   freeze(request);
   captured.add(request);
-  return request;
+  return Result.succeed(request);
 };
 
+/**
+ * Parses caller input into a frozen, recorded request. Each check returns its
+ * rejection as a Result, so a malformed request is an InvalidRequest refusal
+ * and a bug in a check stays a defect.
+ */
 export const captureRequest = (input: ClipRequest): Effect.Effect<ClipRequest, PolicyFailure> =>
   Effect.gen(function* () {
     if (input !== null && typeof input === "object" && captured.has(input)) return input;
-    const owned = yield* Effect.try({ try: () => ownedFields(input), catch: invalidRequest });
+    const owned = yield* Effect.fromResult(ownedFields(input));
     const request = yield* Schema.decodeUnknownEffect(ClipRequest)(owned, {
       onExcessProperty: "error",
-    }).pipe(Effect.mapError(invalidRequest));
-    return yield* Effect.try({ try: () => checked(request), catch: invalidRequest });
-  });
+    });
+    return yield* Effect.fromResult(checked(request));
+  }).pipe(Effect.mapError(invalidRequest));
 
 /** An error during caller-owned prework cannot imply that enqueue was sent. */
 export const preworkFailure = (

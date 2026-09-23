@@ -2,8 +2,11 @@ import { describe, expect, expectTypeOf, test } from "vitest";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Root from "../src/index.js";
 import {
@@ -17,6 +20,8 @@ import {
   Remote,
 } from "../src/index.js";
 import { Correlator } from "../src/correlation.js";
+import { parse, parsed, parsedInput } from "../src/errors.js";
+import { json } from "../src/json.js";
 // @ts-expect-error ProviderFailure is no longer exported from the root.
 import type { ProviderFailure } from "../src/index.js";
 import type { ErrorContext } from "../src/index.js";
@@ -416,5 +421,38 @@ describe("classification", () => {
     expect(limited.retryAfter && Duration.toMillis(limited.retryAfter)).toBe(1250);
     expect(CommandFailure.from(limited, unknown).retryAfter).toEqual(limited.retryAfter);
     expect([late.retryAfter, policy.retryAfter]).toEqual([undefined, undefined]);
+  });
+});
+
+describe("parsers", () => {
+  test("a parser's ReactorError is a typed failure; anything else it throws stays a defect", () => {
+    expect(parse(() => 1)).toEqual(Result.succeed(1));
+    const rejected = parse(() => {
+      throw ReactorError.fromCode("Protocol", "expected object");
+    });
+    expect(Result.isFailure(rejected) && rejected.failure.reason._tag).toBe("Protocol");
+    expect(() =>
+      parse(() => {
+        throw new TypeError("a bug");
+      }),
+    ).toThrow(TypeError);
+    const bug = Effect.runSyncExit(
+      parsed(() => {
+        throw new TypeError("a bug");
+      }),
+    );
+    expect(Exit.isFailure(bug) && [Cause.hasDies(bug.cause), Cause.hasFails(bug.cause)]).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  test("caller input chooses InvalidInput and not-submitted whatever the parser's category", () => {
+    const exit = Effect.runSyncExit(parsedInput(() => json(Number.NaN), "command"));
+    const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : undefined;
+    expect(failure !== undefined && Option.isSome(failure) && failure.value).toMatchObject({
+      reason: { _tag: "InvalidInput", message: "expected finite number: JSON number" },
+      context: { operation: "command", outcome: "not-submitted" },
+    });
   });
 });

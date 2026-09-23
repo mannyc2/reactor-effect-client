@@ -5,7 +5,7 @@ import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../coordinator/_internal/client.js";
-import { AcquisitionFailure, errorOf, ReactorError } from "../../errors.js";
+import { AcquisitionFailure, parsed, ReactorError } from "../../errors.js";
 import { json, nonempty, uint32 } from "../../json.js";
 import type { PeerFactoryShape } from "../../PeerFactory.js";
 import { Session as SessionImplementation } from "../../session.js";
@@ -42,14 +42,11 @@ const implementations = new WeakMap<Session, SessionImplementation>();
 export const implementationOf = (
   session: Session,
 ): Effect.Effect<SessionImplementation, ReactorError> =>
-  Effect.try({
-    try: () => {
-      const implementation = implementations.get(session);
-      if (implementation === undefined)
-        throw ReactorError.fromCode("InvalidInput", "session was not acquired by this client");
-      return implementation;
-    },
-    catch: errorOf,
+  parsed(() => {
+    const implementation = implementations.get(session);
+    if (implementation === undefined)
+      throw ReactorError.fromCode("InvalidInput", "session was not acquired by this client");
+    return implementation;
   });
 
 /** A host's decoded-media projection of the current negotiated generation. */
@@ -118,14 +115,15 @@ export const makeFactory = (
     Effect.uninterruptibleMask((restore) => {
       let acquired: SessionImplementation | undefined;
       return Effect.gen(function* () {
-        const validated = yield* Effect.try({
-          try: () => validate(input),
-          catch: (cause) =>
+        // A rejected option is invalid input; a bug in the checks stays a defect.
+        const validated = yield* parsed(() => validate(input)).pipe(
+          Effect.mapError((cause) =>
             ReactorError.fromCode("InvalidInput", "invalid session acquisition input", {
               detail: cause,
               outcome: "not-submitted",
             }),
-        });
+          ),
+        );
         yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
           Effect.mapError((cause) =>
@@ -154,16 +152,13 @@ export const makeFactory = (
         const scope = yield* Scope.fork(yield* Effect.scope);
         const acquisition = Effect.gen(function* () {
           const implementation = yield* Effect.acquireRelease(
-            Effect.try({
-              try: () => {
-                acquired = new SessionImplementation(
-                  options,
-                  peers.make,
-                  new CoordinatorClient(options, http),
-                );
-                return acquired;
-              },
-              catch: errorOf,
+            parsed(() => {
+              acquired = new SessionImplementation(
+                options,
+                peers.make,
+                new CoordinatorClient(options, http),
+              );
+              return acquired;
             }),
             (value) => value.close(),
           );
