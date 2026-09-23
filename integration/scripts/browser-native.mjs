@@ -618,7 +618,9 @@ try {
   }
   if (profile !== undefined) {
     try {
-      rmSync(profile, { recursive: true, force: true });
+      // Chrome's helper processes can still be writing the profile cache for a
+      // moment after the main process has exited; retry instead of racing them.
+      rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     } catch (error) {
       cleanupErrors.push(error);
     }
