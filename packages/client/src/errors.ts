@@ -20,6 +20,8 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { SequenceCode } from "./Sequence.js";
 import type { CloseReport } from "./SessionTypes.js";
 
@@ -387,6 +389,14 @@ const reasonJson = (reason: ReactorErrorReason | PolicyReason) => {
       };
     case "TransportFailed":
       return { _tag: reason._tag, message: reason.message, pairs: reason.pairs };
+    case "ClipEnded":
+      return {
+        _tag: reason._tag,
+        message: reason.message,
+        clipId: reason.clipId,
+        lifecycle: reason.lifecycle,
+        transportGeneration: String(reason.transportGeneration),
+      };
     case "Missing":
       return { _tag: reason._tag, message: reason.message, purpose: reason.purpose };
     case "Sequence":
@@ -636,6 +646,197 @@ export class PolicyFailure extends Schema.TaggedError<PolicyFailure>(
     return diagnostic(this);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Evidence codecs
+// ---------------------------------------------------------------------------
+
+/** A bigint as diagnostic JSON writes it. */
+const Digits = Schema.String.check(Schema.isPattern(/^(?:0|[1-9][0-9]*)$/));
+
+/** A reason's diagnostic JSON, as `toJSON` writes it. */
+const ReactorReasonJson = Schema.Union([
+  Schema.Struct({ _tag: FailureCode, message: Schema.String }),
+  Schema.TaggedStruct("Http", {
+    message: Schema.String,
+    status: Schema.optionalKey(Schema.Int),
+    retryAfterMillis: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  }),
+  Schema.Struct({
+    _tag: Remote.fields._tag,
+    message: Schema.String,
+    remoteCode: Schema.optionalKey(Schema.String),
+  }),
+  Schema.TaggedStruct("Native", {
+    message: Schema.String,
+    status: Schema.optionalKey(Schema.Int),
+  }),
+  Schema.TaggedStruct("IceFailed", {
+    message: Schema.String,
+    pairs: IceFailed.fields.pairs,
+    candidateTypes: IceFailed.fields.candidateTypes,
+  }),
+  Schema.TaggedStruct("TransportFailed", {
+    message: Schema.String,
+    pairs: TransportFailed.fields.pairs,
+  }),
+  Schema.TaggedStruct("ClipEnded", {
+    message: Schema.String,
+    clipId: ClipEnded.fields.clipId,
+    lifecycle: ClipEnded.fields.lifecycle,
+    transportGeneration: Digits,
+  }),
+]);
+
+const PolicyReasonJson = Schema.Union([
+  Schema.Struct({ _tag: RefusalCode, message: Schema.String }),
+  Schema.TaggedStruct("Missing", {
+    message: Schema.String,
+    purpose: Missing.fields.purpose,
+  }),
+  Schema.TaggedStruct("Sequence", {
+    message: Schema.String,
+    sequenceId: SequenceRefusal.fields.sequenceId,
+    code: SequenceRefusal.fields.code,
+  }),
+]);
+
+const ContextJson = Schema.Struct({
+  operation: Schema.optionalKey(Schema.String),
+  requestId: Schema.optionalKey(Schema.String),
+  sessionId: Schema.optionalKey(Schema.String),
+  generation: Schema.optionalKey(Digits),
+  outcome: ErrorContext.fields.outcome,
+});
+
+const reactorReason = (json: typeof ReactorReasonJson.Type): ReactorErrorReason => {
+  switch (json._tag) {
+    case "Http":
+      return new Http({
+        message: json.message,
+        ...(json.status === undefined ? {} : { status: json.status }),
+        ...(json.retryAfterMillis === undefined
+          ? {}
+          : { retryAfter: Duration.millis(json.retryAfterMillis) }),
+      });
+    case "Remote":
+    case "RecorderDisabled":
+      return new Remote({
+        _tag: json._tag,
+        message: json.message,
+        ...(json.remoteCode === undefined ? {} : { remoteCode: json.remoteCode }),
+      });
+    case "Native":
+      return new Native({
+        message: json.message,
+        ...(json.status === undefined ? {} : { status: json.status }),
+      });
+    case "IceFailed":
+      return new IceFailed({
+        message: json.message,
+        pairs: json.pairs,
+        candidateTypes: json.candidateTypes,
+      });
+    case "TransportFailed":
+      return new TransportFailed({ message: json.message, pairs: json.pairs });
+    case "ClipEnded":
+      return new ClipEnded({
+        message: json.message,
+        clipId: json.clipId,
+        lifecycle: json.lifecycle,
+        transportGeneration: BigInt(json.transportGeneration),
+      });
+    default:
+      return new Failure({ _tag: json._tag, message: json.message });
+  }
+};
+
+const policyReason = (json: typeof PolicyReasonJson.Type): PolicyReason => {
+  switch (json._tag) {
+    case "Missing":
+      return new Missing({ purpose: json.purpose });
+    case "Sequence":
+      return new SequenceRefusal({ sequenceId: json.sequenceId, code: json.code });
+    default:
+      return new Refusal({ _tag: json._tag, message: json.message });
+  }
+};
+
+const context = ({ generation, ...rest }: typeof ContextJson.Type) => ({
+  ...rest,
+  ...(generation === undefined ? {} : { generation: BigInt(generation) }),
+});
+
+/**
+ * A failure class encoded as its diagnostic JSON. Encoding is `toJSON`, so
+ * provider text (`body`), native backend text and `context.detail` never
+ * reach the encoded form, and a decoded failure is without them.
+ */
+const fromJson = <A extends { toJSON(): unknown }, J>(
+  json: Schema.Codec<J, unknown>,
+  target: abstract new (...args: never) => A,
+  build: (json: J) => A,
+) =>
+  json.pipe(
+    Schema.decodeTo(
+      Schema.declare((u): u is A => u instanceof target, { expected: target.name }),
+      SchemaTransformation.transformEffect({
+        decode: (input: J, options) =>
+          Effect.try({
+            try: () => build(input),
+            catch: () =>
+              new SchemaIssue.InvalidValue(
+                { message: `not a valid ${target.name} context` },
+                input,
+                options,
+              ),
+          }),
+        encode: (error: A) => Effect.succeed(error.toJSON() as J),
+      }),
+    ),
+  );
+
+/** A `ReactorError` as its diagnostic JSON. */
+export const ReactorErrorFromJson = fromJson(
+  Schema.TaggedStruct("ReactorError", {
+    message: Schema.String,
+    reason: ReactorReasonJson,
+    context: ContextJson,
+  }),
+  ReactorError,
+  (json) =>
+    new ReactorError({ reason: reactorReason(json.reason), context: context(json.context) }),
+);
+
+/** A `CommandFailure` as its diagnostic JSON. */
+export const CommandFailureFromJson = fromJson(
+  Schema.TaggedStruct("CommandFailure", {
+    message: Schema.String,
+    reason: ReactorReasonJson,
+    context: ContextJson,
+  }),
+  CommandFailure,
+  (json) =>
+    new CommandFailure({
+      reason: reactorReason(json.reason),
+      context: context(json.context) as CommandContext,
+    }),
+);
+
+/** A `PolicyFailure` as its diagnostic JSON. */
+export const PolicyFailureFromJson = fromJson(
+  Schema.TaggedStruct("PolicyFailure", {
+    message: Schema.String,
+    reason: PolicyReasonJson,
+    context: ContextJson,
+  }),
+  PolicyFailure,
+  (json) =>
+    new PolicyFailure({
+      reason: policyReason(json.reason),
+      context: context(json.context) as NotSubmitted,
+    }),
+);
 
 // ---------------------------------------------------------------------------
 // Guards and helpers

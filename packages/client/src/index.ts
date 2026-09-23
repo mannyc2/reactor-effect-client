@@ -36,14 +36,15 @@ export type {
   Status,
   CommandReply,
   CommandOptions,
-  CloseReport,
   ReplyTimeoutOptions,
   SessionTimeouts,
   Uploaded,
   UploadProgress,
   UploadTimeoutOptions,
 } from "./SessionTypes.js";
-export type { HttpOptions, Termination } from "./coordinator/_internal/client.js";
+export { CloseReport } from "./SessionTypes.js";
+export { Termination } from "./coordinator/_internal/client.js";
+export type { HttpOptions } from "./coordinator/_internal/client.js";
 export type { CommandContext } from "./session/commands.js";
 export type { Statistics } from "./stats.js";
 export type { Json, JsonObject } from "./json.js";

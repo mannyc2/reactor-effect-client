@@ -4,13 +4,15 @@ import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import type * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { ReactorError, ReactorFailure } from "../errors.js";
 import type { ObservationOptions } from "../observation.js";
 import type { Clip } from "../h3/messages.js";
 import type { CommandFailure, PolicyFailure } from "../errors.js";
-import type { CloseReport } from "../SessionTypes.js";
+import { CommandFailureFromJson, PolicyFailureFromJson } from "../errors.js";
+import { CloseReport } from "../SessionTypes.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import type { Submission } from "../Submission.js";
 import type { Affinity } from "../Sequence.js";
@@ -243,20 +245,26 @@ export interface MediaSource {
   readonly generation: bigint;
 }
 
-export interface PolicyCleanup {
-  readonly operation: string;
-  readonly result: Result.Result<void, EngineError>;
-}
+export const PolicyCleanup = Schema.Struct({
+  operation: Schema.String,
+  result: Schema.Result(Schema.Void, Schema.Union([CommandFailureFromJson, PolicyFailureFromJson])),
+});
+export interface PolicyCleanup extends Schema.Schema.Type<typeof PolicyCleanup> {}
 
-export interface SourceCleanup {
+export const SourceCleanup = Schema.Struct({
   /** The unmodified lifecycle owner's canonical cleanup evidence. */
-  readonly lease: CloseReport;
-  readonly policy: readonly PolicyCleanup[];
-}
+  lease: CloseReport,
+  policy: Schema.Array(PolicyCleanup),
+});
+export interface SourceCleanup extends Schema.Schema.Type<typeof SourceCleanup> {}
 
-export interface CleanupReport {
-  readonly sessions: readonly SourceCleanup[];
-}
+/**
+ * An orchestration's cleanup evidence. As a Schema it encodes for persistence
+ * (`Schema.toCodecJson(CleanupReport)` for JSON); its failures encode as
+ * diagnostic JSON, without provider text.
+ */
+export const CleanupReport = Schema.Struct({ sessions: Schema.Array(SourceCleanup) });
+export interface CleanupReport extends Schema.Schema.Type<typeof CleanupReport> {}
 
 /** Resolved by the one router; the full request remains a local annotation. */
 export interface RoutedRequest {
