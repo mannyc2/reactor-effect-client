@@ -127,7 +127,7 @@ The tests assert what the bridge owns: how many frames reach it, how many it dro
 
 - one session must receive at least 20 frames per second for 10 s, drop at most 1% of them and hold at most two at p95; audio must keep reaching it at 20 blocks per second or more, none dropped, and control-channel round trips stay under 100 ms at p95;
 - two concurrent sessions must each meet the same bounds for 10 s;
-- a 250 ms event-loop stall may drop at most one frame; across a 2 s stall the native queue must evict what overflows its 8 frames, within two, lose no audio, and drain;
+- across a 250 ms event-loop stall the native queue may evict only what overflowed its 8 frames while JavaScript was blocked, within one, so at 24 fps at most one frame; across a 2 s stall it must evict what overflows, within two, lose no audio, and drain;
 - a session is renewed three times while its predecessor streams; each replacement must keep receiving at least 15 frames per second while its predecessor shuts down in under 2 s, dropping at most one frame, with no 500 ms gap and no audio lost;
 - every session above closes cleanly: its native owner joins without a `Shutdown` failure, in under a fifth of the default `shutdownTimeout`, so a deadline that would fire on a slow but healthy join fails the suite;
 - a canonical `Session` over the far peer, through a coordinator stand-in that relays its signaling, receives video and closes with `localClosed`, no `localErrors` and its remote termination confirmed, under the same bound;

@@ -575,17 +575,25 @@ describe("native media under load", () => {
     }
   }, 60_000);
 
-  test("drops at most one frame across a 250 ms stall and evicts only the overflow of a 2 s stall, without losing audio", async () => {
+  test("evicts only what overflows the queue across a 250 ms and a 2 s stall, without losing audio", async () => {
     const receiver = await open(far, "stall");
     try {
       await until(() => receiver.frames.length >= 24, "media did not start", 15_000);
       const measured = await begin(far);
       const before = await drained(receiver);
       stall(250);
+      // What reached the bridge while JavaScript was blocked. The native video
+      // queue holds 8 frames, 333 ms at 24 fps, so at that rate nothing is
+      // evicted; a far peer that falls behind and then catches up can deliver
+      // more in the same 250 ms, and only those beyond 8 may be evicted.
+      const released = await pressure(receiver);
       await sleep(2000);
       const short = await drained(receiver);
-      // The native video queue holds 8 frames, 333 ms at 24 fps.
-      expect(short.droppedVideo - before.droppedVideo).toBeLessThanOrEqual(1n);
+      const burst = arrived(released) - arrived(before);
+      // A frame arriving before the pump resumes can evict one more.
+      expect(Number(short.droppedVideo - before.droppedVideo)).toBeLessThanOrEqual(
+        Math.max(0, burst - 8) + 1,
+      );
       expect(short.droppedAudio).toBe(0n);
 
       const stalledAt = performance.now();
