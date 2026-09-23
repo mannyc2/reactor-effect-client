@@ -12,4 +12,5 @@ pathIgnorePatterns = [
   "**/.check/**",
   "**/*.integration.test.ts",
   "packages/native/test/**",
+  "release-tools/**",
 ]

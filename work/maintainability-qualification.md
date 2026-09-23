@@ -2,9 +2,20 @@
 
 Date: September 22, 2026. Base: `02f5ddf7995e747c87939be4d155eabff422d55c`.
 
-**The implementation milestones are complete. Final installed-native package
-qualification is blocked by host disk exhaustion (`ENOSPC`). This is not a
-fully qualified release, and no package-check failure was converted to success.**
+**Resolved on September 22, 2026:** after free disk space became available, the
+default npm package gate passed with all three isolated consumers. The exact
+earlier archive was qualified without rebuilding either native library. The
+ENOSPC records below describe the original attempt, not the current result.
+
+The successful closeout is retained at
+`.check/ts-release-setup/pack-closeout-l_hlpsbl/HANDOFF.md` and `pack.log`.
+`.check/pack-rQiAUc/reactor-effect-client-0.2.0.tgz` has SHA-256
+`b9c5a47ed3be9147ec5675563bdea01e6a2886cbeb1a0eb4fa945e07dd6614e7`, identical
+to the earlier candidate. All 409 files matched in each installed consumer;
+archived examples compiled in all three profiles and installed-native preflight
+passed. Both native libraries, sidecars and all prior archives were unchanged.
+No npm publication was performed. Subsequent release-metadata changes require
+a separate package qualification, not a native rebuild.
 
 ## Completed implementation
 

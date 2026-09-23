@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "rootDir": ".",
+    "noEmit": true,
+    "types": ["node", "bun"]
+  },
+  "include": ["*.mjs", "test/**/*.mjs"],
+  "exclude": ["node_modules"]
+}

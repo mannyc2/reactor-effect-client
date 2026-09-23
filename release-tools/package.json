@@ -1,0 +1,21 @@
+{
+  "name": "reactor-effect-client-release-tools",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "test": "bun --no-env-file test ./test",
+    "prepare:candidate": "node prepare.mjs",
+    "release:input": "bun --no-env-file input.mjs"
+  },
+  "dependencies": {
+    "@mannyc1/ts-release": "0.4.1",
+    "@mannyc1/ts-release-npm": "0.4.1",
+    "@sigstore/tuf": "5.0.0",
+    "effect": "4.0.0-rc.115",
+    "@effect/platform-node": "4.0.0-rc.115"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.115"
+  }
+}
