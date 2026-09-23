@@ -8,11 +8,7 @@ const failure = (operation: string, message: string, cause?: unknown) =>
     outcome: "replied",
     ...(cause === undefined ? {} : { detail: cause }),
   });
-const PositiveInteger = Schema.Number.check(
-  Schema.isFinite(),
-  Schema.isInt(),
-  Schema.isGreaterThan(0),
-);
+const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 const Pricing = Schema.Struct({
   settings: Schema.Struct({
     currency_code: Schema.Literal("USD"),
@@ -33,25 +29,28 @@ const Pricing = Schema.Struct({
 const unknownRate = (cause?: unknown) =>
   failure("pricing", "Reactor pricing has an unknown model, currency or rate unit", cause);
 
+/** The one rate this client prices: whole credits per second. Other models' rates may differ. */
+const CreditsRate = Schema.Struct({
+  amount_per_sec: PositiveInteger,
+  unit: Schema.Literal("credits"),
+  denomination: Schema.Literal("second"),
+});
+
 /** Preserve the integer ratio; callers decide whether the returned price fits their budget. */
 export const modelRate = (value: unknown, model: string) =>
   Schema.decodeUnknownEffect(Pricing)(value).pipe(
-    Effect.mapError(unknownRate),
     Effect.flatMap((decoded) => {
       const matches = decoded.models.filter((entry) => entry.name === model);
-      const rate = matches[0]?.rate;
-      return matches.length !== 1 ||
-        rate?.unit !== "credits" ||
-        rate.denomination !== "second" ||
-        !Number.isSafeInteger(rate.amount_per_sec) ||
-        rate.amount_per_sec <= 0 ||
-        !Number.isSafeInteger(decoded.settings.credits_per_dollar)
-        ? Effect.fail(unknownRate())
-        : Effect.succeed({
-            creditsPerDollar: decoded.settings.credits_per_dollar,
-            creditsPerSecond: rate.amount_per_sec,
-          });
+      return Schema.decodeUnknownEffect(CreditsRate)(
+        matches.length === 1 ? matches[0]!.rate : undefined,
+      ).pipe(
+        Effect.map((rate) => ({
+          creditsPerDollar: decoded.settings.credits_per_dollar,
+          creditsPerSecond: rate.amount_per_sec,
+        })),
+      );
     }),
+    Effect.mapError(unknownRate),
   );
 
 export interface TokenOptions {
@@ -140,7 +139,7 @@ export const validateTokenOptions = (
 
 const Token = Schema.Struct({
   jwt: Schema.NonEmptyString,
-  expires_at: Schema.Number.check(Schema.isFinite()),
+  expires_at: Schema.Finite,
 });
 const TokenClaims = Schema.StringFromBase64Url.pipe(
   Schema.decodeTo(Schema.fromJsonString(Schema.Struct({ authorization_details: Schema.Unknown }))),
@@ -184,8 +183,8 @@ export const grantedLimits = (jwt: string, options: TokenRequest) =>
       );
     return { maxSessions: authorization.constraints.max_sessions, maxSessionSeconds: seconds };
   }).pipe(
-    Effect.mapError(() =>
-      failure("token", "Reactor returned an invalid or unbounded session grant"),
+    Effect.mapError((cause) =>
+      failure("token", "Reactor returned an invalid or unbounded session grant", cause),
     ),
   );
 

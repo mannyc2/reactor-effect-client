@@ -90,6 +90,16 @@ describe("Reactor HTTP session contract (offline)", () => {
       creditsPerDollar: 1_000,
       creditsPerSecond: 7,
     });
+    // Only the requested model's rate must be whole credits per second.
+    const other = {
+      name: "reactor/another-model",
+      rate: { amount_per_sec: 2.5, unit: "credits", denomination: "minute" },
+    };
+    expect(
+      await Effect.runPromise(
+        Coordinator.modelRate({ ...facts, models: [other, entry] }, options.modelName),
+      ),
+    ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
     for (const invalid of [
       { ...facts, models: [] },
       { ...facts, models: [entry, entry] },
@@ -295,6 +305,8 @@ describe("Reactor HTTP session contract (offline)", () => {
       });
       expect(JSON.stringify(failure)).not.toContain(jwt);
       expect(JSON.stringify(failure)).not.toContain("secret_token_fixture");
+      // The rejection keeps why, for explicit inspection only.
+      expect(failure.context.detail).toBeDefined();
       expect(calls).toBe(1);
     }
   });
