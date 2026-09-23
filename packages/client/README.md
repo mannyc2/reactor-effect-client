@@ -71,6 +71,35 @@ const main = Effect.scoped(useSession).pipe(Effect.provide(clientLayer));
 
 Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams.
 
+## Errors
+
+Every failure the client raises is one of four classes, each with its own `_tag`, so `Effect.catchTag` and a Schema union tell them apart:
+
+- `ReactorError`: a session, coordinator or host failure;
+- `CommandFailure`: a failed command, with the dispatch evidence its owner established;
+- `AcquisitionFailure`: a failed acquisition, with the `cleanup` report of its partial lease, kept by reference;
+- `PolicyFailure`, from `/orchestration`: a local refusal, which was never dispatched.
+
+`isReactorFailure` recognizes any of them, and each class has an `is` guard. Re-raise a known failure through a guard rather than `instanceof ReactorError`, which none of the other three satisfies.
+
+Each carries a tagged `reason`: route on `reason._tag`, with `Effect.catchReason`, `catchReasons` or `unwrapReason`. A `ReactorError`, `CommandFailure` or `AcquisitionFailure` reason is `Failure`, whose tag is a code such as `Timeout`, `Disconnected` or `InvalidInput`, or one of the reasons with fields of their own: `Http` (`status`, `retryAfter`, `body`), `Remote` and `RecorderDisabled` (`remoteCode`, `body`), `Native` (`status`, a Redacted `backendMessage`), `IceFailed` (`pairs`, `candidateTypes`) and `TransportFailed` (`pairs`). `ErrorCode` is the union of those tags. A `PolicyFailure` reason is a `Refusal` such as `QueueFull`, `SessionRecovering` or `Busy`, `Missing` with the request field whose clip has no known owner, or `Sequence` with the sequence's code.
+
+`context.outcome` says whether the remote may have applied the request: `not-submitted`, `unknown` or `replied`. A `PolicyFailure`'s outcome is always `not-submitted`, so an `EngineError = CommandFailure | PolicyFailure` is read without narrowing. `isRetryable` is true for local backpressure, a connection lost before dispatch, an HTTP refusal that names a delay, and the `QueueFull` and `SessionRecovering` refusals, and never when the outcome is `unknown`; `retryAfter` is the delay an `Http` reason named.
+
+```ts
+const admission = (failure: EngineError) =>
+  failure.context.outcome === "unknown" ? "reconcile" : failure.isRetryable ? "defer" : "reject";
+
+const enqueued = engine.enqueue(request).pipe(
+  Effect.catchReasons("PolicyFailure", {
+    QueueFull: () => Effect.succeed("wait for a free generation slot"),
+    SessionRecovering: () => Effect.succeed("wait for the session to recover"),
+  }),
+);
+```
+
+`message` is written by the library and never contains provider or payload text, so spans and logs that record it stay payload-free. Provider and backend text is kept only for explicit inspection: `Http.body`, `Remote.body`, the Redacted `Native.backendMessage` and `context.detail`. Diagnostic JSON leaves all of them out, and none of them is part of the cause chain that exporters render.
+
 ## Coordinator helpers
 
 `Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, and termination reports through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation.
@@ -104,7 +133,7 @@ The adapter exposes autoplay, flush, playback, reset, and other model controls a
 
 `ClipRequest.sameSessionAs` targets the physical session that owns a known clip, including one already ready or playing, while leaving queue position unchanged. `before` requests insertion ahead of a clip still in the generation queue. Source affinity, insertion anchors, continuation, and sequence ownership must agree; missing, conflicting, retired, or recovering ownership fails locally with a `not-submitted` outcome. This keeps a dependent request on its required session during renewal without inventing an insertion point.
 
-`Orchestration.Submission` models an inert prepared operation. Preparation may be interrupted before commit; once execution commits, callers joining or abandoning the result do not replay the dispatch. `CommandFailure.context` distinguishes `not-submitted`, `unknown`, and `replied` outcomes independently of the transport error category.
+`Orchestration.Submission` models an inert prepared operation. Preparation may be interrupted before commit; once execution commits, callers joining or abandoning the result do not replay the dispatch. `CommandFailure.context` distinguishes `not-submitted`, `unknown`, and `replied` outcomes independently of the transport error category, and an engine command fails with `EngineError`, a `CommandFailure` or a local `PolicyFailure`.
 
 `Orchestration.Sequences` owns bounded sequence affinity and explicit member outcomes. Partial admission is represented member-by-member as accepted, rejected, or indeterminate, and a sequence remains bound to one owner until it is sealed/retired and explicitly released.
 

@@ -73,21 +73,21 @@ The host waits for that drain and join for at most `shutdownTimeout`; a healthy 
 
 ## Failure classes
 
-Every native failure is one of a closed set of classes, which the host maps to `ReactorError.code`:
+Every native failure is one of a closed set of classes, which the host maps to the `ReactorError` reason's `_tag`:
 
-| Status | `ReactorError.code` | Raised when                                                                 |
-| ------ | ------------------- | --------------------------------------------------------------------------- |
-| `-1`   | `InvalidInput`      | the bridge rejects a request or argument                                    |
-| `-2`   | `Native`            | libwebrtc or the bridge fails in a way it cannot classify                   |
-| `-3`   | `Overflow`          | a queue, buffer or message bound is exceeded                                |
-| `-4`   | `Protocol`          | the remote peer breaks the negotiated contract, such as an undeclared track |
-| `-5`   | `SdpRejected`       | libwebrtc refuses to create or apply an offer or answer                     |
-| `-6`   | `ChannelClosed`     | a send targets a data channel that is not open                              |
-| `3`    | `Closed`            | the peer is fenced or shut down                                             |
+| Status | `reason._tag`   | Raised when                                                                 |
+| ------ | --------------- | --------------------------------------------------------------------------- |
+| `-1`   | `InvalidInput`  | the bridge rejects a request or argument                                    |
+| `-2`   | `Native`        | libwebrtc or the bridge fails in a way it cannot classify                   |
+| `-3`   | `Overflow`      | a queue, buffer or message bound is exceeded                                |
+| `-4`   | `Protocol`      | the remote peer breaks the negotiated contract, such as an undeclared track |
+| `-5`   | `SdpRejected`   | libwebrtc refuses to create or apply an offer or answer                     |
+| `-6`   | `ChannelClosed` | a send targets a data channel that is not open                              |
+| `3`    | `Closed`        | the peer is fenced or shut down                                             |
 
-Pinned reactor-webrtc reports every libwebrtc error as a string, so the bridge classifies a failure by the operation that produced it. The diagnostic text stays in `context.detail`, never in the message, because a libwebrtc error can contain SDP.
+Pinned reactor-webrtc reports every libwebrtc error as a string, so the bridge classifies a failure by the operation that produced it. That text can contain SDP, so it is never in the message and never in the error's cause chain, which exporters such as `OtlpTracer` render. It stays `Redacted` for explicit inspection: in the `Native` reason's `backendMessage` beside its `status`, or, for a classified failure, in `context.detail` as `{ status, backendMessage }`.
 
-When the connection state reaches `failed`, the host reads its statistics once, in the pump that delivers events, so later events wait behind it and the connection scope owns the read. A read that fails, or outlasts its 2 s deadline on the fiber's `Clock`, reports `Disconnected`. A candidate pair that succeeded or was nominated means ICE worked and the DTLS or SCTP transport above it failed: `TransportFailed`. Otherwise the failure is `IceFailed`, with the local candidate types tried. The session reports a data channel that closes as `ChannelClosed`, naming the channel. A `disconnected` state still fails the connection as `Disconnected`, and decode failures are not reported: reactor-webrtc surfaces neither ICE connection state nor decoder errors.
+When the connection state reaches `failed`, the host reads its statistics once, in the pump that delivers events, so later events wait behind it and the connection scope owns the read. A read that fails, or outlasts its 2 s deadline on the fiber's `Clock`, reports `Disconnected`. A candidate pair that succeeded or was nominated means ICE worked and the DTLS or SCTP transport above it failed: `TransportFailed`. Otherwise the failure is `IceFailed`. Both reasons carry the number of candidate pairs the statistics listed, and `IceFailed` the local candidate types tried. The session reports a data channel that closes as `ChannelClosed`, naming the channel. A `disconnected` state still fails the connection as `Disconnected`, and decode failures are not reported: reactor-webrtc surfaces neither ICE connection state nor decoder errors.
 
 ## Build and stage
 
