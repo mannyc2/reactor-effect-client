@@ -3,8 +3,10 @@ import * as Data from "effect/Data";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import type * as Result from "effect/Result";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { ReactorError, ReactorFailure } from "../errors.js";
+import type { ObservationOptions } from "../observation.js";
 import type { Clip } from "../h3/messages.js";
 import type { CommandFailure, PolicyFailure } from "../errors.js";
 import type { CloseReport } from "../SessionTypes.js";
@@ -104,13 +106,30 @@ export type RemoveOutcome = "unstarted" | "in_flight" | "generation" | "ready";
  */
 export type EngineError = CommandFailure | PolicyFailure;
 
+/**
+ * An engine's state and every event after it, with no gap between them: the
+ * subscription is acquired before the state is read. An event may repeat what
+ * `initial` already reflects, so apply events idempotently by `clipId`. The
+ * stream is bounded per observer like any observation; after an `Overflow`,
+ * observe again for a fresh state and subscription.
+ */
+export interface EngineObservation {
+  readonly initial: EngineState;
+  readonly events: Stream.Stream<EngineEvent, ReactorError>;
+}
+export type ObserveEngine = (
+  options?: ObservationOptions,
+) => Effect.Effect<EngineObservation, ReactorError, Scope.Scope>;
+
 export interface EngineShape {
   readonly prepare: (
     request: ClipRequest,
   ) => Effect.Effect<Submission<ClipId, EngineError>, EngineError>;
   readonly enqueue: (request: ClipRequest) => Effect.Effect<ClipId, EngineError>;
   readonly state: Effect.Effect<EngineState>;
+  /** Later events only, subscribed when the stream runs; use `observe` to pair them with a state. */
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
+  readonly observe: ObserveEngine;
   /**
    * The terminal failure, as it was raised: a session's `ReactorError`, a
    * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
@@ -205,6 +224,7 @@ export interface Source {
   readonly id: string;
   readonly state: Effect.Effect<EngineState>;
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
+  readonly observe: ObserveEngine;
   readonly prepareRouted: (
     request: RoutedRequest,
     hooks?: EnqueueHooks,

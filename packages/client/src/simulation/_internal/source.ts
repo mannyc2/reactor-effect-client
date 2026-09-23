@@ -549,6 +549,7 @@ export const source = (
       id,
       state,
       events: events.stream(),
+      observe: (options) => events.observeWith(state, options),
       prepareRouted,
       media: Effect.succeed({
         generation: 1n,

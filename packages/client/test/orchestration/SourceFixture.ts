@@ -247,6 +247,11 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
       id,
       state: Effect.sync(() => state),
       events: events.stream(),
+      observe: (options) =>
+        events.observeWith(
+          Effect.sync(() => state),
+          options,
+        ),
       media,
       prepareRouted: (plan, hooks = {}) =>
         Effect.gen(function* () {

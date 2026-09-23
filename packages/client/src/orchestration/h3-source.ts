@@ -471,6 +471,7 @@ export const fromH3 = (
       id: session.id,
       state,
       events: observations.stream(),
+      observe: (options) => observations.observeWith(state, options),
       prepareRouted,
       media,
       reconnect: session.reconnect.pipe(Effect.andThen(provider.refresh)),

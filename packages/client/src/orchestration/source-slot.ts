@@ -204,23 +204,33 @@ export const make = (options: Options) =>
       forgetCompleted: (submission: Submission<ClipId, EngineError>): void => {
         submissions.delete(submission);
       },
+      // Subscribed in the slot's scope when the slot starts observing, before
+      // anything else runs, so a source event is never emitted between the two.
       observe: (
         receive: (event: EngineEvent) => Effect.Effect<void>,
         failed: (cause: ReactorError) => Effect.Effect<void>,
       ) =>
-        options.source.events.pipe(
-          Stream.runForEach((event) =>
-            Effect.suspend(() => {
-              if (closed()) return Effect.void;
-              if (event._tag === "Started" && !started.has(event.clipId)) {
-                started.add(event.clipId);
-                expectedFrames += Math.round(event.durationSeconds * media.videoFramesPerSecond);
-              }
-              return receive(event);
-            }),
+        options.source.observe().pipe(
+          Scope.provide(options.scope),
+          Effect.flatMap(({ events }) =>
+            events.pipe(
+              Stream.runForEach((event) =>
+                Effect.suspend(() => {
+                  if (closed()) return Effect.void;
+                  if (event._tag === "Started" && !started.has(event.clipId)) {
+                    started.add(event.clipId);
+                    expectedFrames += Math.round(
+                      event.durationSeconds * media.videoFramesPerSecond,
+                    );
+                  }
+                  return receive(event);
+                }),
+              ),
+              Effect.catch(failed),
+              Effect.forkIn(options.scope),
+            ),
           ),
           Effect.catch(failed),
-          Effect.forkIn(options.scope),
           Effect.asVoid,
         ),
       startMedia: (readers: MediaReaders) =>

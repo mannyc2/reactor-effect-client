@@ -722,6 +722,7 @@ export const make = <R>(
         prepare(request).pipe(Effect.flatMap((submission) => submission.submit)),
       state,
       events: events.stream(),
+      observe: (options) => events.observeWith(state, options),
       failure: Deferred.await(fatal),
       setAutoplay: (enabled) =>
         commands.withPermit(

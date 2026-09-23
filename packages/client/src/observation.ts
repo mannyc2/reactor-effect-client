@@ -104,6 +104,24 @@ export class Observations<A> {
     });
   }
 
+  /**
+   * A state and every value emitted after it, with no gap: the subscription is
+   * acquired before `state` is read, so a value emitted in between is queued
+   * rather than lost (and may repeat what the state already reflects).
+   */
+  observeWith<S, E>(
+    state: Effect.Effect<S, E>,
+    options?: ObservationOptions,
+  ): Effect.Effect<
+    { readonly initial: S; readonly events: Stream.Stream<A, ReactorError> },
+    ReactorError | E,
+    Scope.Scope
+  > {
+    return Effect.flatMap(this.subscribe(options), (events) =>
+      Effect.map(state, (initial) => ({ initial, events })),
+    );
+  }
+
   stream(options?: ObservationOptions): Stream.Stream<A, ReactorError> {
     return Stream.unwrap(this.subscribe(options));
   }
