@@ -125,6 +125,19 @@ export interface Termination {
   readonly error?: ReactorError;
 }
 const pure = <A>(f: () => A): Effect.Effect<A, ReactorError> => parsed(f);
+/**
+ * A termination verdict as span attributes. Terminate returns its verdict
+ * rather than failing, so a span that succeeds says nothing about whether a
+ * paid session stopped: these attributes do.
+ */
+export const terminationAttributes = (termination: Termination): Record<string, unknown> => ({
+  "reactor.termination.attempted": termination.attempted,
+  "reactor.termination.confirmed": termination.confirmed,
+  ...(termination.evidence === null
+    ? {}
+    : { "reactor.termination.evidence": termination.evidence }),
+  ...(termination.error === undefined ? {} : { "error.type": termination.error.reason._tag }),
+});
 const validatePoll = (p: Poll): Backoff => {
   const poll = Object.freeze({
     attempts: positiveLimit(p.attempts, "poll attempts", 1000),
@@ -686,7 +699,14 @@ export class CoordinatorClient {
         state,
         ...(!terminal(state) && response._tag === "Failure" ? { error: response.failure } : {}),
       };
-    }).pipe(Effect.withSpan("reactor.coordinator.terminate"));
+    }).pipe(
+      Effect.tap((termination) => Effect.annotateCurrentSpan(terminationAttributes(termination))),
+      Effect.withSpan(
+        "reactor.coordinator.terminate",
+        { kind: "client", attributes: { "reactor.session.id": id } },
+        { captureStackTrace: false },
+      ),
+    );
   }
   /** Pricing remains provider JSON; modelRate interprets only known rate units. */
   get pricing(): Effect.Effect<Json, ReactorError> {
@@ -697,7 +717,11 @@ export class CoordinatorClient {
       timeout: Duration.seconds(8),
     }).pipe(
       Effect.flatMap((raw) => pure(() => json(raw))),
-      Effect.withSpan("reactor.coordinator.pricing"),
+      Effect.withSpan(
+        "reactor.coordinator.pricing",
+        { kind: "client" },
+        { captureStackTrace: false },
+      ),
     );
   }
   mintToken(input: TokenOptions) {
@@ -725,7 +749,13 @@ export class CoordinatorClient {
         );
       const granted = yield* grantedLimits(value.jwt, options);
       return { jwt: Redacted.make(value.jwt), expiresAt: value.expires_at, granted };
-    }).pipe(Effect.withSpan("reactor.coordinator.mintToken"));
+    }).pipe(
+      Effect.withSpan(
+        "reactor.coordinator.mintToken",
+        { kind: "client" },
+        { captureStackTrace: false },
+      ),
+    );
   }
   inspect(id: string) {
     return pure(() =>
@@ -746,7 +776,11 @@ export class CoordinatorClient {
             context: { operation: "inspect", ...error.context },
           }),
       ),
-      Effect.withSpan("reactor.coordinator.inspect"),
+      Effect.withSpan(
+        "reactor.coordinator.inspect",
+        { kind: "client" },
+        { captureStackTrace: false },
+      ),
     );
   }
   private issueToken(apiKey: string, body: string) {

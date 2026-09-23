@@ -263,7 +263,14 @@ export const make = <R>(
         yield* current.source.setAutoplay(autoplay);
         if (!publishReady(current)) return;
         yield* log("Replaced lost session; local queue resumes on the new connection");
-      }).pipe(Effect.catch(fail));
+      }).pipe(
+        Effect.withSpan(
+          "reactor.orchestration.renewal.replace",
+          { attributes: { "reactor.session.id": slot.source.id } },
+          { captureStackTrace: false },
+        ),
+        Effect.catch(fail),
+      );
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -343,7 +350,13 @@ export const make = <R>(
           sessionId: slot.source.id,
           generation: slot.media.generation,
         });
-      });
+      }).pipe(
+        Effect.withSpan(
+          "reactor.orchestration.renewal.recover",
+          { attributes: { "reactor.session.id": slot.source.id } },
+          { captureStackTrace: false },
+        ),
+      );
 
     const scheduleRecovery = (
       slot: Slot,
@@ -464,6 +477,9 @@ export const make = <R>(
           ),
         );
       }),
+    ).pipe(
+      Effect.tap((slot) => Effect.annotateCurrentSpan("reactor.session.id", slot.source.id)),
+      Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
 
     const close: Effect.Effect<CleanupReport> = closeGate.withPermit(
@@ -904,16 +920,30 @@ export const make = <R>(
           )
             return;
           const old = current;
-          yield* retireOwner(old);
-          current = next;
-          yield* activateOwner(next);
-          replacement = { _tag: "Absent" };
-          yield* current.source.setAutoplay(autoplay);
-          const activated = publishReady(current);
-          yield* closeSlot(old);
-          if (!activated) return;
-          yield* observe({ _tag: "Switched", ...tail });
-          yield* log("Switched prepared sessions at a sequence boundary");
+          // The switch is traced; the tick that found it is not.
+          yield* Effect.gen(function* () {
+            yield* retireOwner(old);
+            current = next;
+            yield* activateOwner(next);
+            replacement = { _tag: "Absent" };
+            yield* next.source.setAutoplay(autoplay);
+            const activated = publishReady(next);
+            yield* closeSlot(old);
+            if (!activated) return;
+            yield* observe({ _tag: "Switched", ...tail });
+            yield* log("Switched prepared sessions at a sequence boundary");
+          }).pipe(
+            Effect.withSpan(
+              "reactor.orchestration.renewal.switch",
+              {
+                attributes: {
+                  "reactor.session.id": next.source.id,
+                  "reactor.session.previous_id": old.source.id,
+                },
+              },
+              { captureStackTrace: false },
+            ),
+          );
         }),
       )
       .pipe(Effect.catch(fail));

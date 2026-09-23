@@ -14,7 +14,7 @@ import type { ErrorContext } from "./errors.js";
 import { nonempty, uint32, structFromObject, objectFromStruct } from "./json.js";
 import type { JsonObject } from "./json.js";
 import type { Track } from "./contract.js";
-import { CoordinatorClient } from "./coordinator/_internal/client.js";
+import { CoordinatorClient, terminationAttributes } from "./coordinator/_internal/client.js";
 import { Correlator } from "./correlation.js";
 import { Observations } from "./observation.js";
 import type { Peer, PeerEvent, MediaTrack } from "./PeerTypes.js";
@@ -72,6 +72,14 @@ const remoteError = (
     context,
   });
 const pure = <A>(body: () => A): Effect.Effect<A, ReactorError> => parsed(body);
+/** Mark a connect phase on the current span, as SqlClient marks a transaction's. */
+const phase = (name: string): Effect.Effect<void> =>
+  Effect.currentSpan.pipe(
+    Effect.flatMap((span) =>
+      Clock.currentTimeNanos.pipe(Effect.map((now) => span.event(`reactor.connect.${name}`, now))),
+    ),
+    Effect.ignore,
+  );
 const replyTimeout = (input: Duration.Input): Duration.Duration =>
   duration(input, "reply timeout", { maximum: "10 minutes" });
 const uploadTimeout = (input: Duration.Input): Duration.Duration =>
@@ -592,16 +600,19 @@ export class Session {
     const self = this;
     return Effect.gen(function* () {
       const c = yield* self.begin(reconnect);
+      yield* Effect.annotateCurrentSpan("reactor.connection.generation", c.generation);
       const work = Effect.gen(function* () {
         if (!reconnect) yield* self.guard(c, self.allocate());
         self.assertCurrent(c);
         self.lifecycle.transition("waiting");
         const remote = self.currentRemote();
+        yield* Effect.annotateCurrentSpan("reactor.session.id", remote.id);
         const descriptor = yield* self.guard(
           c,
           self.http.ready(remote.id, reconnect ? undefined : remote.descriptor),
         );
         remote.descriptor = descriptor;
+        yield* phase("described");
         const capabilities = descriptor.capabilities,
           transport = descriptor.selected_transport;
         if (capabilities === undefined || transport === undefined)
@@ -625,10 +636,12 @@ export class Session {
           ),
         );
         c.mapping = prepared.mapping;
+        yield* phase("prepared");
         const previousId = remote.connectionId;
         const cid = previousId ?? (yield* self.guard(c, self.http.register(remote.id)));
         c.connectionId = cid;
         remote.connectionId = cid;
+        yield* phase("registered");
         // Source order: registration -> buffered ICE (including empty final) -> offer -> poll answer.
         yield* self.flushIce(c);
         yield* self.background(
@@ -650,18 +663,21 @@ export class Session {
             reconnect && previousId !== undefined,
           ),
         );
+        yield* phase("offered");
         const answer = yield* self.guard(c, self.http.answer(remote.id, cid));
         if (answer.connection_id !== undefined) {
           c.connectionId = answer.connection_id;
           remote.connectionId = answer.connection_id;
         }
         yield* self.guard(c, c.peer.answer(answer.sdp_answer));
+        yield* phase("answered");
         yield* withDeadline(
           self.guard(c, Deferred.await(c.ready)),
           self.readyTimeout,
           "peer and both channels ready",
         );
         self.assertCurrent(c);
+        yield* phase("ready");
         c.negotiated = Object.freeze({
           ownership: remote.ownership,
           sessionId: remote.id,
@@ -708,7 +724,14 @@ export class Session {
             : Effect.void,
         ),
       );
-    });
+    }).pipe(
+      // A caller-boundary span with an event per phase; the caller can cancel it.
+      Effect.withSpan(
+        reconnect ? "reactor.session.reconnect" : "reactor.session.connect",
+        { kind: "client" },
+        { captureStackTrace: false },
+      ),
+    );
   }
   private request<A>(
     c: Connection,
@@ -1322,7 +1345,20 @@ export class Session {
           ),
         ),
       );
-    });
+    }).pipe(
+      // The MIME type and size only: never the name or the bytes.
+      Effect.withSpan(
+        "reactor.session.upload",
+        {
+          kind: "client",
+          attributes: {
+            "reactor.upload.mime_type": mimeType,
+            "reactor.upload.size": bytes.byteLength,
+          },
+        },
+        { captureStackTrace: false },
+      ),
+    );
   }
   /** Idempotent close. Owned-session termination is attempted once; response is not terminal proof. */
   close(): Effect.Effect<CloseReport> {
@@ -1352,8 +1388,24 @@ export class Session {
           Deferred.doneUnsafe(gate, Effect.succeed(report));
           // Consumer callbacks cannot undo or stall cleanup.
           yield* Effect.ignore(Effect.try(() => self.options.onClose?.(report)));
+          yield* Effect.annotateCurrentSpan({
+            "reactor.close.local_closed": report.localClosed,
+            "reactor.close.allocation": report.allocation,
+            ...terminationAttributes(report.remote),
+          });
           return report;
-        });
+        }).pipe(
+          // Only the close that runs cleanup is traced; a later close awaits its report.
+          Effect.withSpan(
+            "reactor.session.close",
+            {
+              kind: "client",
+              attributes:
+                self.remote.id === undefined ? {} : { "reactor.session.id": self.remote.id },
+            },
+            { captureStackTrace: false },
+          ),
+        );
       }),
     );
   }

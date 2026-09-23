@@ -629,12 +629,33 @@ const build = (
                 orElse: () => Effect.fail(original),
               }),
               Effect.mapError(() => original),
+              Effect.withSpan("reactor.h3.reconcile", {}, { captureStackTrace: false }),
             );
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 pending.delete(id);
               }),
+            ),
+            // The submission's own execution fiber carries the span, so it ends with
+            // the enqueue's outcome even when the caller stopped waiting.
+            Effect.onExit((exit) => {
+              const error = Exit.findError(exit);
+              return Effect.annotateCurrentSpan(
+                Exit.isSuccess(exit)
+                  ? { "reactor.command.outcome": "replied" }
+                  : error._tag === "Success"
+                    ? {
+                        "reactor.command.outcome": error.success.context.outcome,
+                        "error.type": error.success.reason._tag,
+                      }
+                    : {},
+              );
+            }),
+            Effect.withSpan(
+              "reactor.h3.enqueue",
+              { kind: "client", attributes: { "reactor.h3.submission.id": id } },
+              { captureStackTrace: false },
             ),
           );
           return hooks.result === undefined

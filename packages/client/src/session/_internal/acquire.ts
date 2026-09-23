@@ -124,6 +124,12 @@ export const makeFactory = (
             }),
           ),
         );
+        // Only validated input reaches the span.
+        yield* Effect.annotateCurrentSpan(
+          validated.intent._tag === "Create"
+            ? { "reactor.model.name": validated.intent.model.name }
+            : { "reactor.session.id": validated.intent.sessionId },
+        );
         if (peers.check !== undefined) yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
           Effect.mapError((cause) =>
@@ -199,10 +205,26 @@ export const makeFactory = (
       );
     });
 
+  // A caller-boundary span: the caller can cancel an acquisition, and a
+  // connected one parents the connect span. It names the model or the attached
+  // session, never a credential.
+  const traced = (
+    input: Input,
+    connected: boolean,
+  ): Effect.Effect<Session, AcquisitionFailure, Scope.Scope> =>
+    acquire(input, connected).pipe(
+      Effect.tap((session) => Effect.annotateCurrentSpan("reactor.session.id", session.id)),
+      Effect.withSpan(
+        input._tag === "Create" ? "reactor.session.create" : "reactor.session.attach",
+        { kind: "client", attributes: { "reactor.connect": connected } },
+        { captureStackTrace: false },
+      ),
+    );
+
   return {
-    create: (options) => acquire({ _tag: "Create", options }, false),
-    attach: (options) => acquire({ _tag: "Attach", options }, false),
-    createConnected: (options) => acquire({ _tag: "Create", options }, true),
-    attachConnected: (options) => acquire({ _tag: "Attach", options }, true),
+    create: (options) => traced({ _tag: "Create", options }, false),
+    attach: (options) => traced({ _tag: "Attach", options }, false),
+    createConnected: (options) => traced({ _tag: "Create", options }, true),
+    attachConnected: (options) => traced({ _tag: "Attach", options }, true),
   };
 };

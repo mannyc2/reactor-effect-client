@@ -100,6 +100,10 @@ const enqueued = engine.enqueue(request).pipe(
 
 `message` is written by the library and never contains provider or payload text, so spans and logs that record it stay payload-free. Provider and backend text is kept only for explicit inspection: `Http.body`, `Remote.body`, the Redacted `Native.backendMessage` and `context.detail`. Diagnostic JSON leaves all of them out, and none of them is part of the cause chain that exporters render.
 
+## Tracing
+
+The client traces through Effect's `Tracer`, so any tracer the application provides, such as `OtlpTracer`, receives its spans. An operation a caller can cancel has a client span at the call: `reactor.session.create` and `reactor.session.attach`, `reactor.session.connect` and `reactor.session.reconnect` (with an event per phase, from `reactor.connect.described` to `reactor.connect.ready`), `reactor.session.upload` and `reactor.session.close`, and in orchestration `reactor.orchestration.renewal.open`, `recover`, `replace` and `switch`. A request the session owns past its caller's wait, a command or control request (`reactor.session.command`, `reactor.session.control`) or an H3 enqueue (`reactor.h3.enqueue`, with `reactor.h3.reconcile`), has its span on its own execution, so the span ends with the request's outcome even after the caller stopped waiting. Termination returns a verdict rather than failing, so `reactor.coordinator.terminate` and `reactor.session.close` carry it as `reactor.termination.attempted`, `confirmed` and `evidence`: a span that ended without error does not mean a paid session stopped. Spans name identity and outcome only: never a credential, command input, a reply, an upload's name or bytes, or provider text. The renewal tick, frames, streams and heartbeats are not traced.
+
 ## Time options
 
 Every time option is an Effect `Duration.Input` named by its role:

@@ -8,83 +8,16 @@ import { expect, test } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Layer from "effect/Layer";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
-import * as OtlpExporter from "effect/unstable/observability/OtlpExporter";
-import * as OtlpSerialization from "effect/unstable/observability/OtlpSerialization";
-import * as OtlpTracer from "effect/unstable/observability/OtlpTracer";
 import { structFromObject } from "../../src/json.js";
 import type { Session, SessionOptions } from "../../src/session.js";
 import * as W from "../../src/wire.generated.js";
 import { makeSession, withFixture, type MockPeer } from "../fixtures.js";
 import { eventually, run } from "../harness.js";
+import { CLIENT, ERROR_STATUS, OK, attributes, failed, only, traced } from "../otlp.js";
 
 const INPUT = "SECRET-INPUT-7f3a";
 const REPLY = "SECRET-REPLY-91bc";
 const ERROR = "SECRET-ERROR-c0de";
-
-type Span = OtlpTracer.ScopeSpan["spans"][number];
-const CLIENT = 3;
-const OK = 1;
-const ERROR_STATUS = 2;
-
-const only = (spans: readonly Span[], name: string): Span => {
-  const found = spans.filter((span) => span.name === name);
-  expect(found).toHaveLength(1);
-  return found[0]!;
-};
-const attributes = (span: Span): Record<string, unknown> =>
-  Object.fromEntries(span.attributes.map(({ key, value }) => [key, Object.values(value)[0]]));
-const failed = <A, E>(exit: Exit.Exit<A, E>): E => {
-  const found = Exit.findError(exit);
-  if (found._tag !== "Success") throw new Error("expected a typed failure");
-  return found.success;
-};
-
-/** Runs `effect` inside an application span and returns everything the exporter sent. */
-const traced = async <A, E>(
-  effect: Effect.Effect<A, E>,
-  settled: (spans: readonly Span[]) => boolean = () => true,
-) => {
-  const bodies: string[] = [];
-  const spans = () =>
-    bodies.flatMap((body) =>
-      (JSON.parse(body) as OtlpTracer.TraceData).resourceSpans.flatMap((resource) =>
-        resource.scopeSpans.flatMap((scope) => scope.spans),
-      ),
-    );
-  const exporter = HttpClient.make((request) =>
-    Effect.sync(() => {
-      if (request.body._tag === "Uint8Array")
-        bodies.push(new TextDecoder().decode(request.body.body));
-      return HttpClientResponse.fromWeb(request, new Response(null, { status: 200 }));
-    }),
-  );
-  const exit = await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const tracer = yield* OtlpTracer.make({
-          url: "http://otlp.invalid/v1/traces",
-          resource: { serviceName: "reactor-effect-client-test" },
-          maxBatchSize: 1,
-          exportInterval: "1 hour",
-        });
-        const exit = yield* Effect.exit(effect.pipe(Effect.withSpan("app.submit"))).pipe(
-          Effect.withTracer(tracer),
-        );
-        // A request's span can end after its caller has stopped waiting.
-        yield* Effect.promise(() => eventually(() => settled(spans()), "span export deadline"));
-        return exit;
-      }),
-    ).pipe(
-      Effect.provide(Layer.merge(OtlpSerialization.layerJson, OtlpExporter.layerFlusher)),
-      Effect.provideService(HttpClient.HttpClient, exporter),
-    ),
-  );
-  // Statuses, exception events, attributes and stacks: the whole export.
-  return { exit, spans: spans(), exported: bodies.join("\n") };
-};
 
 const withSession = (
   signal: AbortSignal,
