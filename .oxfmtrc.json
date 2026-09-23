@@ -10,13 +10,14 @@
   "sortImports": false,
   "sortPackageJson": false,
   "ignorePatterns": [
-    "node_modules/**",
-    "dist/**",
+    "**/node_modules/**",
+    "**/dist/**",
     ".check/**",
-    "native/**",
-    "fixtures/**",
-    "notices/**",
-    "src/wire.generated.ts",
+    "**/notices/**",
+    "packages/client/src/wire.generated.ts",
+    "packages/client/wire/**",
+    "packages/native/lib/**",
+    "packages/native/rust/**",
     "bun.lock",
     "work/refactor-evidence/**"
   ]

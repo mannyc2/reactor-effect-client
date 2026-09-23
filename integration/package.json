@@ -1,0 +1,23 @@
+{
+  "name": "reactor-effect-integration",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Real local browser/native WebRTC qualification over the public host packages",
+  "type": "module",
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-browser": "workspace:*",
+    "reactor-effect-client": "workspace:*",
+    "reactor-effect-native": "workspace:*",
+    "reactor-effect-test-kit": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "browser-native": "sh scripts/browser-native.sh"
+  }
+}

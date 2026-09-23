@@ -1,0 +1,3 @@
+[test]
+# Real-host integration files run under Node/Vitest; Bun runs only the modeled-host tests here.
+pathIgnorePatterns = ["**/node_modules/**", "**/*.integration.test.ts"]

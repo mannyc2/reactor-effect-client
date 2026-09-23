@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import * as Reactor from "reactor-effect-client";
-import * as Browser from "reactor-effect-client/browser";
+import * as Browser from "reactor-effect-browser";
 import { inspectSession } from "../portable/session.mjs";
 import { webCrypto } from "../portable/web-crypto.mjs";
 

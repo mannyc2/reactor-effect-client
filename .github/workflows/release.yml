@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact package version expected at the selected v<version> tag
+        description: Exact version of all three packages expected at the selected v<version> tag
         required: true
         type: string
       confirm:
@@ -18,6 +18,13 @@ permissions:
 concurrency:
   group: npm-release-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.4.2"
+  NODE_VERSION: "22.14.0"
+  PYTHON_VERSION: "3.13.5"
+  RUST_VERSION: "1.90.0"
+  NPM_VERSION: "12.0.2"
 
 jobs:
   validate:
@@ -34,9 +41,9 @@ jobs:
           package-manager-cache: false
 
       - name: Pin npm CLI with trusted-publishing support
-        run: npm install --global npm@12.0.2
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
-      - name: Verify tag, version, repository identity, and publish configuration
+      - name: Verify tag, versions, repository identity, and publish configuration
         shell: bash
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -45,34 +52,41 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("node:fs")
-          const manifest = JSON.parse(fs.readFileSync("package.json", "utf8"))
           const expectedVersion = process.env.EXPECTED_VERSION
           const expectedRepository = process.env.EXPECTED_REPOSITORY
           if (process.env.CONFIRM !== "publish") throw new Error('release input confirm must equal "publish"')
-          if (manifest.version !== expectedVersion) throw new Error(`package version ${manifest.version} != workflow input ${expectedVersion}`)
-          if (process.env.GITHUB_REF_TYPE !== "tag" || process.env.GITHUB_REF_NAME !== `v${manifest.version}`) {
-            throw new Error(`release must run from tag v${manifest.version}; got ${process.env.GITHUB_REF}`)
-          }
-          const configured = typeof manifest.repository === "string" ? manifest.repository : manifest.repository?.url
-          if (typeof configured !== "string" || configured.length === 0) {
-            throw new Error("package.json repository metadata is required before npm publication is enabled")
+          if (process.env.GITHUB_REF_TYPE !== "tag" || process.env.GITHUB_REF_NAME !== `v${expectedVersion}`) {
+            throw new Error(`release must run from tag v${expectedVersion}; got ${process.env.GITHUB_REF}`)
           }
           const normalize = (value) => value.replace(/^git\+/, "").replace(/^git:\/\//, "https://").replace(/\.git$/, "").replace(/\/$/, "")
           const expected = `https://github.com/${expectedRepository}`
-          if (normalize(configured) !== expected) throw new Error(`package repository ${configured} does not match ${expected}`)
-          if (manifest.publishConfig?.access !== "public") throw new Error("publishConfig.access must be public")
-          console.log(`${manifest.name}@${manifest.version} release identity verified`)
+          for (const directory of ["client", "browser", "native"]) {
+            const path = `packages/${directory}/package.json`
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"))
+            if (manifest.private === true) throw new Error(`${path} must be publishable`)
+            if (manifest.version !== expectedVersion) throw new Error(`${manifest.name} version ${manifest.version} != workflow input ${expectedVersion}`)
+            const configured = typeof manifest.repository === "string" ? manifest.repository : manifest.repository?.url
+            if (typeof configured !== "string" || configured.length === 0) {
+              throw new Error(`${path} repository metadata is required before npm publication is enabled`)
+            }
+            if (normalize(configured) !== expected) throw new Error(`${manifest.name} repository ${configured} does not match ${expected}`)
+            if (manifest.repository?.directory !== `packages/${directory}`) throw new Error(`${manifest.name} repository.directory must name its workspace`)
+            if (manifest.publishConfig?.access !== "public") throw new Error(`${manifest.name} publishConfig.access must be public`)
+            console.log(`${manifest.name}@${manifest.version} release identity verified`)
+          }
           NODE
 
-      - name: Verify version is not already published
+      - name: Verify versions are not already published
         shell: bash
         run: |
-          name=$(node -p 'require("./package.json").name')
-          version=$(node -p 'require("./package.json").version')
-          if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version already exists on npm" >&2
-            exit 1
-          fi
+          for directory in client browser native; do
+            name=$(node -p "require('./packages/$directory/package.json').name")
+            version=$(node -p "require('./packages/$directory/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already exists on npm" >&2
+              exit 1
+            fi
+          done
 
   native:
     name: Release native (${{ matrix.platform }})
@@ -84,10 +98,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x64
-            library: libreactor_effect_native.so
           - os: macos-15
             platform: darwin-arm64
-            library: libreactor_effect_native.dylib
     steps:
       - name: Checkout exact release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,24 +107,24 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.14.0"
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Set up Rust 1.90
+      - name: Set up Rust
         shell: bash
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
-          rustup override set 1.90.0
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component clippy --component rustfmt
+          rustup override set ${{ env.RUST_VERSION }}
 
       - name: Install Linux LLVM 21 native toolchain
         if: runner.os == 'Linux'
         run: |
-          sudo ./native/install-linux-toolchain.sh
+          sudo ./packages/native/scripts/install-linux-toolchain.sh
           sudo apt-get install -y --no-install-recommends zstd
 
       - name: Ensure macOS zstd is available
@@ -120,9 +132,20 @@ jobs:
         shell: bash
         run: command -v zstd >/dev/null || brew install zstd
 
+      - name: Cache Cargo registry and build outputs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/native/rust/target
+          key: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-${{ hashFiles('packages/native/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # A release always rebuilds the library from the tagged sources.
       - name: Shared native and public WebRTC verification
         run: bun run verify --profile native
 
@@ -130,12 +153,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-native-${{ matrix.platform }}
-          path: dist/native/${{ matrix.platform }}/
+          path: packages/native/lib/${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 1
 
   package:
-    name: Build validated npm tarball
+    name: Build validated npm tarballs
     needs: native
     runs-on: ubuntu-24.04
     steps:
@@ -145,33 +168,33 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.14.0"
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          bun-version: ${{ env.BUN_VERSION }}
 
       - name: Set up pinned wire generator runtime
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
-          python-version: "3.13.5"
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Download Linux native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: release-native-linux-x64
-          path: dist/native/linux-x64
+          path: packages/native/lib/linux-x64
 
       - name: Download macOS native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: release-native-darwin-arm64
-          path: dist/native/darwin-arm64
+          path: packages/native/lib/darwin-arm64
 
       - name: Shared release and clean installed-package validation
         id: package
@@ -179,18 +202,18 @@ jobs:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64,darwin-arm64
         run: bun run verify --profile release
 
-      - name: Upload validated npm tarball
+      - name: Upload validated npm tarballs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-npm-package
+          name: release-npm-packages
           path: |
-            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.directory }}/*.tgz
             ${{ steps.package.outputs.identity }}
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Publish validated tarball to npm
+    name: Publish validated tarballs to npm
     needs: package
     runs-on: ubuntu-24.04
     environment: npm
@@ -209,15 +232,15 @@ jobs:
           package-manager-cache: false
 
       - name: Pin npm CLI with trusted-publishing support
-        run: npm install --global npm@12.0.2
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
-      - name: Download validated npm tarball
+      - name: Download validated npm tarballs
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: release-npm-package
+          name: release-npm-packages
           path: .release
 
-      - name: Verify publish input, tarball identity, and OIDC availability
+      - name: Verify publish input, tarball identities, and OIDC availability
         shell: bash
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -226,23 +249,35 @@ jobs:
           test "$CONFIRM" = "publish"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || { echo "GitHub OIDC request URL unavailable" >&2; exit 1; }
           test "$(npm config get registry)" = "https://registry.npmjs.org/"
-          mapfile -t tarballs < <(find .release -type f -name '*.tgz' -print)
-          test "${#tarballs[@]}" -eq 1 || { echo "expected exactly one validated tarball" >&2; exit 1; }
-          tarball=${tarballs[0]}
-          packed=$(tar -xOf "$tarball" package/package.json)
-          test "$(node -e 'const p=JSON.parse(process.argv[1]); process.stdout.write(p.version)' "$packed")" = "$EXPECTED_VERSION"
-          test "$(node -e 'const p=JSON.parse(process.argv[1]); process.stdout.write(p.name)' "$packed")" = "$(node -p 'require("./package.json").name')"
-          node --input-type=module - "$tarball" <<'NODE'
+          node --input-type=module - <<'NODE'
           import { createHash } from "node:crypto";
-          import { readFileSync } from "node:fs";
-          import { dirname, join } from "node:path";
-          const path = process.argv[2];
-          const identity = JSON.parse(readFileSync(join(dirname(path), "package-identity.json"), "utf8"));
-          const actual = createHash("sha256").update(readFileSync(path)).digest("hex");
-          if (identity.sha256 !== actual) throw new Error("downloaded tarball differs from the validated package identity");
+          import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          const directory = ".release";
+          const identity = JSON.parse(readFileSync(join(directory, "package-identity.json"), "utf8"));
+          if (identity.profile !== "full") throw new Error("release identity must come from the full pack profile");
+          // Dependents publish after their peer so a consumer never resolves a missing pin.
+          const order = ["reactor-effect-client", "reactor-effect-browser", "reactor-effect-native"];
+          const tarballs = readdirSync(directory).filter((name) => name.endsWith(".tgz"));
+          if (tarballs.length !== order.length) throw new Error(`expected ${order.length} validated tarballs, found ${tarballs.length}`);
+          const paths = [];
+          for (const name of order) {
+            const entry = identity.packages[name];
+            if (entry === undefined) throw new Error(`identity lacks ${name}`);
+            if (entry.version !== process.env.EXPECTED_VERSION) throw new Error(`${name} version ${entry.version} != ${process.env.EXPECTED_VERSION}`);
+            if (!tarballs.includes(entry.tarball)) throw new Error(`validated tarball missing for ${name}: ${entry.tarball}`);
+            const path = join(directory, entry.tarball);
+            const actual = createHash("sha256").update(readFileSync(path)).digest("hex");
+            if (actual !== entry.sha256) throw new Error(`${name} tarball differs from the validated package identity`);
+            paths.push(path);
+          }
+          writeFileSync(join(directory, "publish-order"), `${paths.join("\n")}\n`);
           NODE
-          printf '%s\n' "$tarball" > .release/tarball-path
 
       - name: Publish with npm Trusted Publishing
         shell: bash
-        run: npm publish "$(cat .release/tarball-path)" --access public
+        run: |
+          while IFS= read -r tarball; do
+            [ -n "$tarball" ] || continue
+            npm publish "$tarball" --access public
+          done < .release/publish-order

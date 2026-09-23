@@ -1,42 +1,45 @@
 Reactor Effect Client
 
-This independent SDK is not an official Reactor SDK.
+This independent SDK is not an official Reactor SDK. The repository is a Bun
+workspace publishing three packages; each package ships its own NOTICE and the
+third-party texts under its notices/ directory.
 
 The canonical wire definitions and selected protocol behavior derive from:
 - reactor-client-sdks, commit 24f1865b48f03354b15402731f1b92e90ceee92a
 - reactor-runtime, commit 8e98536c6daedca298700dc45cbb5fd9e3676f16
-Their upstream licenses and notices are retained under notices/.
-fixtures/proto contains the selected canonical protocol sources. The generated
-wire module also incorporates Google's protobuf Struct descriptor; see
-notices/google-protobuf-LICENSE.
+Their upstream licenses and notices are retained under packages/client/notices/.
+packages/client/wire/proto contains the selected canonical protocol sources.
+The generated wire module also incorporates Google's protobuf Struct
+descriptor; see packages/client/notices/google-protobuf-LICENSE.
 
 Session, correlation, observation and browser-media implementations incorporate
 the user-supplied reactor-effect-client reference source. Reusable H3, coordinator,
 reference and engine behavior is extracted from the user's the-show source.
-The extracted package does not depend on the-show or ship its application policy.
+The extracted packages do not depend on the-show or ship its application policy.
 
-The native transport is built from the Rust bridge in native/ against:
+The native transport is built from the Rust bridge in packages/native/rust against:
 reactor-webrtc, commit bebf63e42624ee440e066b692494dd3229d29ae7 (Apache-2.0).
 It incorporates upstream Google WebRTC binaries and associated third-party code.
 The pinned reactor-webrtc Apache terms are retained in
-notices/reactor-webrtc-LICENSE. Exact macOS arm64 and Linux x64 prebuilt SBOMs,
-plus the pinned WebRTC BSD license and patent grant, are retained under
-notices/reactor-webrtc/. Component-specific third-party redistribution texts
-for every component named by those SBOMs are retained under
-notices/reactor-webrtc/third-party/; its README names the exact pinned source
-revision and retained license/copyright or patent file for each component.
-The Rust crates linked into the native bridge and their selected license texts
-are recorded under notices/native-rust/.
+packages/native/notices/reactor-webrtc-LICENSE. Exact macOS arm64 and Linux x64
+prebuilt SBOMs, plus the pinned WebRTC BSD license and patent grant, are
+retained under packages/native/notices/reactor-webrtc/. Component-specific
+third-party redistribution texts for every component named by those SBOMs are
+retained under packages/native/notices/reactor-webrtc/third-party/; its README
+names the exact pinned source revision and retained license/copyright or patent
+file for each component. The Rust crates linked into the native bridge and
+their selected license texts are recorded under
+packages/native/notices/native-rust/.
 Native builds pin and verify the upstream binary artifact checksum.
 No reactor-ffi or reactor-core session implementation is included.
 
-Effect is MIT-licensed. The package declares Effect as a peer dependency; its
-license is retained in notices/effect-LICENSE. Koffi is an optional dependency
-used only by the explicit native implementation; its installed distribution
+Effect is MIT-licensed. Every package declares Effect as a peer dependency; its
+license is retained in each package's notices/effect-LICENSE. Koffi is an
+optional dependency of reactor-effect-native only; its installed distribution
 retains its upstream license. Development tooling and node_modules are excluded
-from the npm package.
+from the npm packages.
 
 The reference archive's limited TypeScript WebRTC/codec implementation is not
-part of this package's production graph. Retained owned-webrtc notices document
-the supplied reference and vector provenance; they do not indicate that a second
-WebRTC engine is shipped or supported.
+part of any package's production graph. Retained owned-webrtc notices under
+packages/client/notices/ document the supplied reference and vector provenance;
+they do not indicate that a second WebRTC engine is shipped or supported.

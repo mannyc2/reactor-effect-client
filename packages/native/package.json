@@ -1,0 +1,67 @@
+{
+  "name": "reactor-effect-native",
+  "version": "0.2.0",
+  "description": "Native WebRTC host for reactor-effect-client over the reactor-effect-native Rust bridge: decoded media generations and explicit file upload",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git",
+    "directory": "packages/native"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "lib",
+    "rust/Cargo.toml",
+    "rust/Cargo.lock",
+    "rust/build.rs",
+    "rust/.cargo/config.toml",
+    "rust/include",
+    "rust/src",
+    "scripts/build.sh",
+    "scripts/install-linux-toolchain.sh",
+    "scripts/stage.mjs",
+    "scripts/stage.sh",
+    "Dockerfile",
+    "notices",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*"
+  },
+  "optionalDependencies": {
+    "koffi": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@types/node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "native:build": "sh scripts/build.sh",
+    "native:test": "sh scripts/test.sh",
+    "native:linux-x64": "sh scripts/linux-x64.sh"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

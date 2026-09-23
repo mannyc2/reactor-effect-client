@@ -1,0 +1,45 @@
+{
+  "name": "reactor-effect-browser",
+  "version": "0.2.0",
+  "description": "Browser WebRTC host for reactor-effect-client: built-in peer connections, generation-scoped tracks, media conversion and recording",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git",
+    "directory": "packages/browser"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "notices",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "peerDependencies": {
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*",
+    "reactor-effect-test-kit": "workspace:*"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

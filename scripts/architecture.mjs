@@ -8,30 +8,89 @@ import * as Ast from "typescript/unstable/ast";
 
 /** @typedef {{ specifier: string, runtime: boolean, line: number }} Dependency */
 /** @typedef {{ path: string, imports: readonly Dependency[], problems: readonly string[] }} Module */
-/** @typedef {{ exports: Record<string, { types?: string, import?: string }>, peerDependencies?: Record<string, string>, devDependencies?: Record<string, string>, dependencies?: Record<string, string>, optionalDependencies?: Record<string, string> }} Manifest */
+/** @typedef {{ name: string, exports: Record<string, { types?: string, import?: string }>, peerDependencies?: Record<string, string>, devDependencies?: Record<string, string>, dependencies?: Record<string, string>, optionalDependencies?: Record<string, string> }} Manifest */
+/** @typedef {{ workspaces?: { catalog?: Record<string, string> }, overrides?: Record<string, string> }} RootManifest */
+/** @typedef {{ directory: string, entries: Readonly<Record<string, string>>, area: (path: string) => string, forbidden: Readonly<Record<string, readonly string[]>>, hostBuiltins: boolean }} Rule */
 
-// Public paths are a compatibility contract, not a directory-discovery rule.
-export const entries = Object.freeze({
-  ".": "index",
-  "./browser": "browser/index",
-  "./native": "native/index",
-  "./h3": "h3/index",
-  "./orchestration": "orchestration/index",
-  "./simulation": "simulation/index",
-  "./testing": "testing/index",
-  "./wire": "wire",
+export const EFFECT_PIN = "4.0.0-rc.115";
+
+/** @param {string} path */
+const clientArea = (path) => {
+  if (path === "src/session.ts" || path === "src/SessionTypes.ts") return "session";
+  if (path.startsWith("src/session/")) return "session";
+  for (const name of ["coordinator", "h3", "orchestration", "simulation", "testing"])
+    if (path.startsWith(`src/${name}/`)) return name;
+  // Submission and Sequence are reusable bounded primitives, not orchestration
+  // policy; index.ts and host.ts are projections of the layers beneath them.
+  return "core";
+};
+
+/**
+ * Public paths are a compatibility contract, not a directory-discovery rule.
+ * Host boundaries between packages are enforced by their declared dependencies;
+ * these rules cover the layering inside each package and host-only imports.
+ * @type {Readonly<Record<string, Rule>>}
+ */
+export const rules = Object.freeze({
+  "reactor-effect-client": {
+    directory: "packages/client",
+    entries: Object.freeze({
+      ".": "index",
+      "./h3": "h3/index",
+      "./orchestration": "orchestration/index",
+      "./simulation": "simulation/index",
+      "./testing": "testing/index",
+      "./wire": "wire",
+      "./host": "host",
+    }),
+    area: clientArea,
+    forbidden: Object.freeze({
+      core: ["h3", "orchestration", "simulation", "testing"],
+      session: ["h3", "orchestration", "simulation", "testing"],
+      coordinator: ["session", "h3", "orchestration", "simulation", "testing"],
+      h3: ["coordinator", "orchestration", "simulation", "testing"],
+      orchestration: ["simulation", "testing"],
+      simulation: ["testing"],
+      testing: [],
+    }),
+    hostBuiltins: false,
+  },
+  "reactor-effect-browser": {
+    directory: "packages/browser",
+    entries: Object.freeze({ ".": "index" }),
+    area: () => "browser",
+    forbidden: Object.freeze({}),
+    hostBuiltins: false,
+  },
+  "reactor-effect-native": {
+    directory: "packages/native",
+    entries: Object.freeze({ ".": "index" }),
+    area: () => "native",
+    forbidden: Object.freeze({}),
+    hostBuiltins: true,
+  },
 });
 
-/** @param {Manifest} manifest */
-export const checkManifest = (manifest) => {
+/** @param {RootManifest} manifest */
+export const checkWorkspace = (manifest) => {
+  const problems = [];
+  if (manifest.workspaces?.catalog?.effect !== EFFECT_PIN)
+    problems.push(`workspace catalog must pin effect to ${EFFECT_PIN}`);
+  if (manifest.overrides?.["@effect/platform-node-shared"] !== EFFECT_PIN)
+    problems.push(`workspace override for @effect/platform-node-shared must remain ${EFFECT_PIN}`);
+  return problems;
+};
+
+/** @param {Manifest} manifest @param {Rule} rule */
+export const checkManifest = (manifest, rule) => {
   const problems = [];
   if (
-    JSON.stringify(Object.keys(manifest.exports).sort()) !==
-    JSON.stringify(Object.keys(entries).sort())
+    JSON.stringify(Object.keys(manifest.exports ?? {}).sort()) !==
+    JSON.stringify(Object.keys(rule.entries).sort())
   )
-    problems.push("package must retain exactly the eight public exports");
-  for (const [name, source] of Object.entries(entries)) {
-    const target = manifest.exports[name];
+    problems.push(`${manifest.name} must retain exactly its public exports`);
+  for (const [name, source] of Object.entries(rule.entries)) {
+    const target = manifest.exports?.[name];
     if (target?.types !== `./dist/${source}.d.ts` || target.import !== `./dist/${source}.js`)
       problems.push(`public export ${name} must retain its types/import targets`);
   }
@@ -39,45 +98,22 @@ export const checkManifest = (manifest) => {
     peerDependencies: manifest.peerDependencies,
     devDependencies: manifest.devDependencies,
   })) {
-    if (dependencies?.effect !== "4.0.0-rc.115")
-      problems.push(`${group}.effect must remain 4.0.0-rc.115`);
+    if (dependencies?.effect !== "catalog:")
+      problems.push(`${group}.effect must be pinned through the workspace catalog`);
   }
+  for (const [group, dependencies] of Object.entries({
+    dependencies: manifest.dependencies,
+    peerDependencies: manifest.peerDependencies,
+    devDependencies: manifest.devDependencies,
+  }))
+    for (const [name, version] of Object.entries(dependencies ?? {}))
+      if (name in rules && version !== "workspace:*")
+        problems.push(`${group}.${name} must use the workspace protocol`);
   return problems;
 };
 
-/** @param {string} path */
-const area = (path) => {
-  if (path === "src/session.ts" || path === "src/SessionTypes.ts") return "session";
-  if (path.startsWith("src/session/")) return "session";
-  for (const name of [
-    "coordinator",
-    "h3",
-    "orchestration",
-    "simulation",
-    "browser",
-    "native",
-    "testing",
-  ])
-    if (path.startsWith(`src/${name}/`)) return name;
-  // Submission and Sequence are reusable bounded primitives, not orchestration policy.
-  return "core";
-};
-
-/** @type {Readonly<Record<string, readonly string[]>>} */
-const forbidden = {
-  core: ["h3", "orchestration", "simulation", "browser", "native", "testing"],
-  session: ["h3", "orchestration", "simulation", "browser", "native", "testing"],
-  coordinator: ["session", "h3", "orchestration", "simulation", "browser", "native", "testing"],
-  h3: ["coordinator", "orchestration", "simulation", "browser", "native", "testing"],
-  orchestration: ["simulation", "browser", "native", "testing"],
-  simulation: ["browser", "native", "testing"],
-  browser: ["native", "h3", "orchestration", "simulation", "testing"],
-  native: ["browser", "h3", "orchestration", "simulation", "testing"],
-  testing: ["native", "browser"],
-};
-
-/** @param {readonly Module[]} modules @param {Manifest} manifest */
-export const checkGraph = (modules, manifest) => {
+/** @param {readonly Module[]} modules @param {Manifest} manifest @param {Rule} rule */
+export const checkGraph = (modules, manifest, rule) => {
   const problems = modules.flatMap((module) => module.problems);
   const paths = new Set(modules.map((module) => module.path));
   const dependencies = new Set([
@@ -88,7 +124,7 @@ export const checkGraph = (modules, manifest) => {
   /** @type {Map<string, string[]>} */
   const runtime = new Map();
   for (const module of modules) {
-    const owner = area(module.path);
+    const owner = rule.area(module.path);
     const edges = [];
     for (const dependency of module.imports) {
       const { specifier } = dependency;
@@ -103,24 +139,24 @@ export const checkGraph = (modules, manifest) => {
           );
           continue;
         }
-        if (forbidden[owner]?.includes(area(target)))
+        if (rule.forbidden[owner]?.includes(rule.area(target)))
           problems.push(
-            `${location}: forbidden ${owner} -> ${area(target)} dependency (${target})`,
+            `${location}: forbidden ${owner} -> ${rule.area(target)} dependency (${target})`,
           );
         if (dependency.runtime) edges.push(target);
       } else if (isBuiltin(specifier)) {
-        if (owner !== "native")
+        if (!rule.hostBuiltins)
           problems.push(`${location}: Node builtin outside native boundary: ${specifier}`);
       } else if (specifier === "bun" || specifier.startsWith("bun:")) {
         problems.push(`${location}: Bun host dependency in runtime source: ${specifier}`);
       } else {
         const name = specifier.startsWith("@")
           ? specifier.split("/").slice(0, 2).join("/")
-          : specifier.split("/")[0];
-        if (!dependencies.has(name ?? ""))
-          problems.push(`${location}: undeclared or workspace/self dependency ${specifier}`);
-        if (name === "koffi" && owner !== "native")
+          : (specifier.split("/")[0] ?? specifier);
+        if (name === "koffi" && !rule.hostBuiltins)
           problems.push(`${location}: Koffi outside native boundary`);
+        else if (name === manifest.name || !dependencies.has(name))
+          problems.push(`${location}: undeclared or self dependency ${specifier}`);
       }
     }
     runtime.set(module.path, edges);
@@ -143,6 +179,9 @@ export const checkGraph = (modules, manifest) => {
     complete.add(path);
   };
   for (const path of [...paths].sort()) visit(path);
+  for (const source of Object.values(rule.entries))
+    if (!paths.has(`src/${source}.ts`))
+      problems.push(`missing public source entry src/${source}.ts`);
   return problems;
 };
 
@@ -161,7 +200,7 @@ const sourceFiles = (directory) =>
  * Use the pinned compiler's syntax tree, not regexes over comments/strings.
  * TypeScript 7's synchronous API requires Node's child-process pipe handles;
  * the CLI therefore runs on Node even when invoked by Bun's package runner.
- * @param {string} root
+ * @param {string} root a package directory holding tsconfig.build.json and src/
  * @returns {Module[]}
  */
 export const readGraph = (root) => {
@@ -250,23 +289,44 @@ export const readGraph = (root) => {
   }
 };
 
+/** @param {string} directory @returns {{ problems: string[], summary: string }} */
+export const checkPackage = (directory) => {
+  /** @type {Manifest} */
+  const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+  const rule = rules[manifest.name];
+  if (rule === undefined) throw new Error(`architecture: no rules for package ${manifest.name}`);
+  const graph = readGraph(directory);
+  const problems = [...checkManifest(manifest, rule), ...checkGraph(graph, manifest, rule)];
+  const exports = Object.keys(rule.entries).length;
+  return {
+    problems,
+    summary: `${manifest.name}: ${graph.length} source modules; ${exports} exports; no runtime cycles`,
+  };
+};
+
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  if (args.length !== 0 && !(args.length === 2 && args[0] === "--root"))
-    throw new Error("usage: node scripts/architecture.mjs [--root directory]");
-  const root = realpathSync(args[1] ?? join(dirname(fileURLToPath(import.meta.url)), ".."));
-  /** @type {Manifest} */
-  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const graph = readGraph(root);
-  const problems = [...checkManifest(manifest), ...checkGraph(graph, manifest)];
-  for (const source of Object.values(entries))
-    if (!graph.some((module) => module.path === `src/${source}.ts`))
-      problems.push(`missing public source entry src/${source}.ts`);
+  if (args.length !== 0 && !(args.length === 2 && args[0] === "--package"))
+    throw new Error("usage: node scripts/architecture.mjs [--package directory]");
+  const problems = [];
+  const summaries = [];
+  if (args[1] !== undefined) {
+    const result = checkPackage(realpathSync(args[1]));
+    problems.push(...result.problems);
+    summaries.push(result.summary);
+  } else {
+    const root = realpathSync(join(dirname(fileURLToPath(import.meta.url)), ".."));
+    /** @type {RootManifest} */
+    const workspace = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    problems.push(...checkWorkspace(workspace));
+    for (const rule of Object.values(rules)) {
+      const result = checkPackage(join(root, rule.directory));
+      problems.push(...result.problems);
+      summaries.push(result.summary);
+    }
+  }
   if (problems.length > 0) {
     console.error(problems.join("\n"));
     process.exitCode = 1;
-  } else
-    console.log(
-      `architecture-ok ${graph.length} source modules; eight exports; Effect rc.115; no runtime cycles`,
-    );
+  } else console.log(`architecture-ok Effect ${EFFECT_PIN} via catalog\n${summaries.join("\n")}`);
 }

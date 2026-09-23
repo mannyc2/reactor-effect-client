@@ -11,15 +11,65 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  BUN_VERSION: "1.4.2"
+  NODE_VERSION: "22.14.0"
+  PYTHON_VERSION: "3.13.5"
+  RUST_VERSION: "1.90.0"
+
 jobs:
-  js-smoke:
-    name: JS smoke (${{ matrix.os }}, Node ${{ matrix.node }})
+  check:
+    name: Portable verification
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up pinned wire generator runtime
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Generation, format, lint, dependency-ordered build, every workspace's
+      # typecheck, architecture, compiled examples, portable tests and the
+      # Node/Bun import guards. Runs once; nothing here varies by host.
+      - name: Shared portable verification
+        run: bun run verify --profile portable
+
+  test:
+    name: Portable runtime (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
-        node: ["22.14.0", "24"]
+        include:
+          - os: ubuntu-24.04
+            node: "22.14.0"
+          - os: ubuntu-24.04
+            node: "24"
+          - os: macos-15
+            node: "24"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,18 +83,22 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Set up pinned wire generator runtime
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          python-version: "3.13.5"
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Shared portable verification
-        run: bun run verify --profile portable
+      # Only the parts whose outcome can depend on the host: the build, the
+      # Node/Bun runtime import guards and the portable test suites.
+      - name: Portable runtime verification
+        run: bun run verify --profile runtime
 
   native:
     name: Native (${{ matrix.platform }})
@@ -55,10 +109,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x64
-            library: libreactor_effect_native.so
           - os: macos-15
             platform: darwin-arm64
-            library: libreactor_effect_native.dylib
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,51 +118,105 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.14.0"
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Set up Rust 1.90
-        shell: bash
-        run: |
-          rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
-          rustup override set 1.90.0
-          rustc --version
-          cargo --version
-
-      - name: Install Linux LLVM 21 native toolchain
-        if: runner.os == 'Linux'
-        run: |
-          sudo ./native/install-linux-toolchain.sh
-          sudo apt-get install -y --no-install-recommends zstd
-
-      - name: Ensure macOS zstd is available
-        if: runner.os == 'macOS'
-        shell: bash
-        run: command -v zstd >/dev/null || brew install zstd
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Shared native and public WebRTC verification
-        run: bun run verify --profile native
+      - name: Build workspace packages
+        run: bun run build
+
+      # The staged library embeds the SHA-256 of every native build input. A
+      # library qualified for the same identity and toolchain is reused; the
+      # staging and preflight checks reject a cached library whose identity
+      # differs from the checked-out sources.
+      - name: Compute native source identity
+        id: identity
+        run: echo "hash=$(node packages/native/scripts/stage.mjs --source-hash)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore qualified native library
+        id: staged
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: packages/native/lib/${{ matrix.platform }}
+          key: native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-${{ steps.identity.outputs.hash }}
+
+      - name: Set up Rust
+        if: steps.staged.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component clippy --component rustfmt
+          rustup override set ${{ env.RUST_VERSION }}
+          rustc --version
+          cargo --version
+
+      - name: Install Linux LLVM 21 native toolchain
+        if: steps.staged.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: |
+          sudo ./packages/native/scripts/install-linux-toolchain.sh
+          sudo apt-get install -y --no-install-recommends zstd
+
+      - name: Ensure macOS zstd is available
+        if: steps.staged.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        shell: bash
+        run: command -v zstd >/dev/null || brew install zstd
+
+      - name: Cache Cargo registry and build outputs
+        if: steps.staged.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/native/rust/target
+          key: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-${{ hashFiles('packages/native/rust/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-
+
+      - name: Build, stage and qualify the native library
+        if: steps.staged.outputs.cache-hit != 'true'
+        run: |
+          bun run native:build
+          bun run native:test
+
+      - name: Save qualified native library
+        if: steps.staged.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: packages/native/lib/${{ matrix.platform }}
+          key: native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-${{ steps.identity.outputs.hash }}
+
+      - name: Check the restored library against the current sources
+        if: steps.staged.outputs.cache-hit == 'true'
+        run: bun run --filter reactor-effect-native test
+
+      - name: Public browser/native WebRTC verification
+        run: bun run test:integration
 
       - name: Upload native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.platform }}
-          path: dist/native/${{ matrix.platform }}/
+          path: packages/native/lib/${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 1
 
   package:
-    name: npm pack/install smoke
+    name: Pack/install smoke
     runs-on: ubuntu-24.04
-    needs: [js-smoke, native]
+    needs: [check, native]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,13 +224,20 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.14.0"
+          node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install
         run: bun install --frozen-lockfile
@@ -133,26 +246,26 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: native-linux-x64
-          path: dist/native/linux-x64
+          path: packages/native/lib/linux-x64
 
       - name: Download macOS native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: native-darwin-arm64
-          path: dist/native/darwin-arm64
+          path: packages/native/lib/darwin-arm64
 
-      - name: Clean npm pack/install validation
+      - name: Clean pack/install validation
         id: package
         env:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64,darwin-arm64
         run: bun run verify --profile package
 
-      - name: Upload validated npm tarball
+      - name: Upload validated npm tarballs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: npm-package
+          name: npm-packages
           path: |
-            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.directory }}/*.tgz
             ${{ steps.package.outputs.identity }}
           if-no-files-found: error
           retention-days: 7

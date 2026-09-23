@@ -3,11 +3,10 @@ import * as Crypto from "effect/Crypto";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import type * as PlatformHttp from "effect/unstable/http/HttpClient";
-import * as FetchHttp from "../../src/FetchHttp.js";
-import * as Browser from "../../src/browser/index.js";
-import { ReactorError } from "../../src/errors.js";
-import { structFromObject, objectFromStruct } from "../../src/json.js";
-import * as W from "../../src/wire.generated.js";
+import { FetchHttp, ReactorError } from "reactor-effect-client";
+import * as Browser from "reactor-effect-browser";
+import * as W from "reactor-effect-client/wire";
+import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
 
 type Mapping = {
   readonly name: string;

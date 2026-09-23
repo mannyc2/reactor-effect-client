@@ -1,111 +1,62 @@
 {
-  "name": "reactor-effect-client",
+  "name": "reactor-effect",
+  "private": true,
   "version": "0.2.0",
-  "description": "Scoped Reactor sessions, H3 provider state, media and explicit orchestration over Effect",
+  "description": "Bun workspace for the reactor-effect-client, reactor-effect-browser and reactor-effect-native packages",
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "bun@1.4.2",
-  "sideEffects": false,
-  "files": [
-    "dist",
-    "examples",
-    "native/include",
-    "native/Cargo.toml",
-    "native/Cargo.lock",
-    "native/build.rs",
-    "native/stage.mjs",
-    "native/.cargo/config.toml",
-    "native/src",
-    "native/README.md",
-    "native/install-linux-toolchain.sh",
-    "LICENSE",
-    "NOTICE",
-    "notices",
-    "README.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "native/Dockerfile"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./browser": {
-      "types": "./dist/browser/index.d.ts",
-      "import": "./dist/browser/index.js"
-    },
-    "./native": {
-      "types": "./dist/native/index.d.ts",
-      "import": "./dist/native/index.js"
-    },
-    "./h3": {
-      "types": "./dist/h3/index.d.ts",
-      "import": "./dist/h3/index.js"
-    },
-    "./orchestration": {
-      "types": "./dist/orchestration/index.d.ts",
-      "import": "./dist/orchestration/index.js"
-    },
-    "./simulation": {
-      "types": "./dist/simulation/index.d.ts",
-      "import": "./dist/simulation/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js"
-    },
-    "./wire": {
-      "types": "./dist/wire.d.ts",
-      "import": "./dist/wire.js"
-    }
-  },
   "engines": {
     "node": ">=22"
   },
-  "peerDependencies": {
-    "effect": "4.0.0-rc.115"
-  },
-  "optionalDependencies": {
-    "koffi": "3.2.1"
+  "workspaces": {
+    "packages": [
+      "packages/*",
+      "examples",
+      "integration"
+    ],
+    "catalog": {
+      "@effect/platform-bun": "4.0.0-rc.115",
+      "@effect/platform-node": "4.0.0-rc.115",
+      "@types/bun": "1.4.2",
+      "@types/node": "22.20.2",
+      "effect": "4.0.0-rc.115",
+      "koffi": "3.2.1",
+      "typescript": "7.0.2",
+      "vitest": "5.0.0"
+    }
   },
   "devDependencies": {
-    "effect": "4.0.0-rc.115",
-    "@effect/platform-node": "4.0.0-rc.115",
-    "@effect/platform-bun": "4.0.0-rc.115",
-    "@effect/vitest": "4.0.0-rc.115",
-    "@types/node": "22.20.2",
-    "@types/bun": "1.4.2",
-    "typescript": "7.0.2",
-    "vitest": "5.0.0",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "oxfmt": "0.70.0",
     "oxlint": "1.81.0",
-    "oxfmt": "0.70.0"
-  },
-  "scripts": {
-    "build": "node scripts/build.mjs",
-    "typecheck": "node scripts/typecheck.mjs",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings src test testing scripts integration examples vitest.config.ts",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
-    "generate:wire": "python3 scripts/generate-wire.py",
-    "generate:check": "python3 scripts/generate-wire.py --check",
-    "check:architecture": "node scripts/architecture.mjs",
-    "check:examples": "node scripts/examples.mjs",
-    "test": "bun run test:portable",
-    "test:portable": "bun --no-env-file scripts/test.ts portable",
-    "test:native": "bun --no-env-file scripts/test.ts native",
-    "test:integration": "bun --no-env-file scripts/test.ts integration",
-    "verify": "bun --no-env-file scripts/verify.ts",
-    "test:pack": "bun --no-env-file scripts/pack.ts",
-    "native:build": "sh scripts/native-build.sh",
-    "native:test": "sh scripts/native-test.sh",
-    "native:linux-x64": "sh scripts/native-linux-x64.sh"
-  },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "reactor-effect-browser": "workspace:*",
+    "reactor-effect-client": "workspace:*",
+    "reactor-effect-native": "workspace:*",
+    "typescript": "catalog:"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.115"
+  },
+  "scripts": {
+    "build": "bun run --filter './packages/*' build",
+    "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "generate:wire": "bun run --filter reactor-effect-client generate:wire",
+    "generate:check": "bun run --filter reactor-effect-client generate:check",
+    "check:architecture": "node scripts/architecture.mjs",
+    "check:examples": "bun run --filter reactor-effect-examples check",
+    "test": "bun --no-env-file scripts/test.ts portable",
+    "test:portable": "bun --no-env-file scripts/test.ts portable",
+    "test:native": "bun --no-env-file scripts/test.ts native",
+    "test:integration": "bun --no-env-file scripts/test.ts integration",
+    "test:pack": "bun --no-env-file scripts/pack.ts",
+    "verify": "bun --no-env-file scripts/verify.ts",
+    "native:build": "bun run --filter reactor-effect-native native:build",
+    "native:test": "bun run --filter reactor-effect-native native:test",
+    "native:linux-x64": "bun run --filter reactor-effect-native native:linux-x64"
   }
 }

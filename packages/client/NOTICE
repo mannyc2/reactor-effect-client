@@ -1,0 +1,29 @@
+reactor-effect-client
+
+This independent SDK is not an official Reactor SDK.
+
+The canonical wire definitions and selected protocol behavior derive from:
+- reactor-client-sdks, commit 24f1865b48f03354b15402731f1b92e90ceee92a
+- reactor-runtime, commit 8e98536c6daedca298700dc45cbb5fd9e3676f16
+Their upstream licenses and notices are retained under notices/.
+The repository's packages/client/wire/proto directory contains the selected
+canonical protocol sources. The generated wire module also incorporates
+Google's protobuf Struct descriptor; see notices/google-protobuf-LICENSE.
+
+Session, correlation and observation implementations incorporate the
+user-supplied reactor-effect-client reference source. Reusable H3, coordinator,
+reference and engine behavior is extracted from the user's the-show source.
+The extracted package does not depend on the-show or ship its application policy.
+
+Effect is MIT-licensed. The package declares Effect as a peer dependency; its
+license is retained in notices/effect-LICENSE. Development tooling and
+node_modules are excluded from the npm package.
+
+The reference archive's limited TypeScript WebRTC/codec implementation is not
+part of this package's production graph. Retained owned-webrtc notices document
+the supplied reference and vector provenance; they do not indicate that a second
+WebRTC engine is shipped or supported.
+
+Host transports are separate packages: reactor-effect-browser uses the browser's
+built-in WebRTC implementation, and reactor-effect-native carries the Rust
+bridge and its libwebrtc attribution.

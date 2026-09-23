@@ -1,4 +1,15 @@
-# Portable assertions run directly under Bun, independently of native artifacts.
+[install]
+# Every workspace resolves only the dependencies it declares; nothing is hoisted
+# into a shared node_modules that an undeclared import could reach.
+linker = "isolated"
+
 [test]
-root = "test"
-pathIgnorePatterns = ["**/native/**", "**/integration/**", "**/fixtures/**"]
+# Portable suites run under Bun from the workspace root. Node/Vitest projects
+# (packages/native, *.integration.test.ts) and disposable output are excluded.
+pathIgnorePatterns = [
+  "**/node_modules/**",
+  "**/dist/**",
+  "**/.check/**",
+  "**/*.integration.test.ts",
+  "packages/native/test/**",
+]

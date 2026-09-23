@@ -16,22 +16,27 @@ for (let index = 0; index < args.length; index++) {
   throw new Error(`unknown verification argument: ${arg}`);
 }
 
-// CI/release and local callers share exactly these package commands. Runtime
+// CI/release and local callers share exactly these workspace commands. Runtime
 // test discovery lives in bunfig/Vitest projects, not in this orchestration.
+// `build` precedes `typecheck` because dependent packages and examples resolve
+// their workspace dependencies through the built declarations.
 const portable = [
   "generate:check",
   "format:check",
-  "typecheck",
   "lint",
-  "check:architecture",
   "build",
+  "typecheck",
+  "check:architecture",
   "check:examples",
   "test:portable",
 ];
-const native = ["native:build", "native:test", "test:integration"];
+// Native and integration tests import the built client package.
+const native = ["build", "native:build", "native:test", "test:integration"];
+const runtime = ["build", "test:portable"];
 const packaging = ["test:pack"];
 const profiles: Readonly<Record<string, readonly string[]>> = {
   portable,
+  runtime,
   native,
   package: packaging,
   release: [...portable, ...packaging],
@@ -73,7 +78,7 @@ for (const command of commands) {
         process.env.NODE_BINARY ?? "node",
         [
           "--experimental-loader",
-          "./test/fixtures/pack/resolution-guard.mjs",
+          "./scripts/pack/resolution-guard.mjs",
           "scripts/portable-import.mjs",
         ],
         {

@@ -1,0 +1,75 @@
+{
+  "name": "reactor-effect-client",
+  "version": "0.2.0",
+  "description": "Scoped Reactor sessions, H3 provider state and explicit orchestration over Effect",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git",
+    "directory": "packages/client"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "notices",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./h3": {
+      "types": "./dist/h3/index.d.ts",
+      "import": "./dist/h3/index.js"
+    },
+    "./orchestration": {
+      "types": "./dist/orchestration/index.d.ts",
+      "import": "./dist/orchestration/index.js"
+    },
+    "./simulation": {
+      "types": "./dist/simulation/index.d.ts",
+      "import": "./dist/simulation/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts",
+      "import": "./dist/wire.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-test-kit": "workspace:*"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test": "bun test",
+    "generate:wire": "python3 wire/generate.py",
+    "generate:check": "python3 wire/generate.py --check"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -2,7 +2,7 @@
  * Its ONLY media input is the byte array returned by the public downloadClip operation.
  * Native HTML playback decodes the recording; Web Audio inspects that element's output. */
 import * as Effect from "effect/Effect";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "reactor-effect-client";
 import { assert, hash, rms } from "./util.js";
 
 interface FrameObservation {
