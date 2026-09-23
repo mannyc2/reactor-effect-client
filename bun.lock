@@ -91,6 +91,7 @@
         "koffi": "catalog:",
       },
       "peerDependencies": {
+        "@effect/platform-node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
       },

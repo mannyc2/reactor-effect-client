@@ -41,6 +41,7 @@
     "node": ">=22"
   },
   "peerDependencies": {
+    "@effect/platform-node": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*"
   },
