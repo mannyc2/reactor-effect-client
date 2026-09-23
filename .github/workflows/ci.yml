@@ -120,6 +120,13 @@ jobs:
           - os: macos-15
             platform: darwin-arm64
     steps:
+      # Spotlight indexes every file the job checks out, restores and builds;
+      # on the 3-core runner it took about a core while the media load tests
+      # ran. The job searches none of it.
+      - name: Stop Spotlight indexing
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

@@ -1,10 +1,11 @@
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
 import { availableParallelism, loadavg } from "node:os";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -58,14 +59,23 @@ type Message = Readonly<Record<string, unknown>>;
 const record = (value: unknown): Message =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Message) : {};
 
-/** One ps field for a process, trimmed; empty where ps cannot say. */
-const ps = (pid: number | undefined, field: string): string =>
-  spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout?.trim() ??
-  "";
+const execFileAsync = promisify(execFile);
+
+/**
+ * Run ps off the JavaScript thread, which the tests measure; empty where ps
+ * cannot say.
+ */
+const ps = async (...args: readonly string[]): Promise<string> => {
+  try {
+    return (await execFileAsync("ps", args, { encoding: "utf8" })).stdout.trim();
+  } catch {
+    return "";
+  }
+};
 
 /** The host's busiest processes, as "percent command" strings. */
-const busiest = (): string[] => {
-  const table = spawnSync("ps", ["-Ao", "pcpu=,comm="], { encoding: "utf8" }).stdout ?? "";
+const busiest = async (): Promise<string[]> => {
+  const table = await ps("-Ao", "pcpu=,comm=");
   return table
     .split("\n")
     .map((line) => line.trim())
@@ -76,8 +86,8 @@ const busiest = (): string[] => {
 };
 
 /** CPU seconds a process has used: Linux ps prints [dd-]hh:mm:ss and macOS m:ss.ss. */
-const cpuSeconds = (pid: number | undefined): number => {
-  const time = ps(pid, "time");
+const cpuSeconds = async (pid: number | undefined): Promise<number> => {
+  const time = await ps("-o", "time=", "-p", String(pid));
   if (time === "") return Number.NaN;
   const [days, clock] = time.includes("-") ? time.split("-") : ["0", time];
   return (
@@ -270,6 +280,19 @@ const pressure = (receiver: Receiver): Promise<MediaPressure> =>
 const arrived = (snapshot: MediaPressure): number =>
   snapshot.queuedVideo + Number(snapshot.deliveredVideo + snapshot.droppedVideo);
 
+/** The same for audio blocks. */
+const arrivedAudio = (snapshot: MediaPressure): number =>
+  snapshot.queuedAudio + Number(snapshot.deliveredAudio + snapshot.droppedAudio);
+
+/** Wait until nothing is queued in the receiver's native video queue. */
+const drained = async (receiver: Receiver): Promise<MediaPressure> => {
+  for (let attempt = 0; ; attempt++) {
+    const snapshot = await pressure(receiver);
+    if (snapshot.queuedVideo === 0 || attempt === 100) return snapshot;
+    await sleep(10);
+  }
+};
+
 /**
  * Record the frames the bridge holds for a receiver: queued natively, or taken
  * but not yet seen by its subscriber. Each is one frame interval of delay the
@@ -302,10 +325,10 @@ interface Window {
   readonly farCpu: number;
 }
 
-const begin = (far: FarPeer): Window => ({
+const begin = async (far: FarPeer): Promise<Window> => ({
   at: performance.now(),
   cpu: process.cpuUsage(),
-  farCpu: cpuSeconds(far.pid),
+  farCpu: await cpuSeconds(far.pid),
 });
 
 const runtime =
@@ -332,6 +355,7 @@ const report = async (
       const frames = receiver.frames.filter((frame) => frame.at >= window.at);
       const latencies = frames.map((frame) => frame.latencyMs);
       const native = (await run(receiver.peer.stats())).map(record);
+      const media = await pressure(receiver);
       const inbound = native.find(
         (entry) => entry.type === "inbound-rtp" && entry.kind === "video",
       );
@@ -348,6 +372,12 @@ const report = async (
           Math.max(0, ...frames.slice(1).map((frame, index) => frame.at - frames[index]!.at)),
         ),
         rttP95Ms: round(percentile(receiver.rtts, 0.95)),
+        audio: {
+          received: receiver.audio,
+          delivered: Number(media.deliveredAudio),
+          dropped: Number(media.droppedAudio),
+          queued: media.queuedAudio,
+        },
         far: await far.stats(receiver.id),
         inbound: {
           framesDecoded: counter("framesDecoded"),
@@ -371,11 +401,14 @@ const report = async (
       seconds: round(seconds),
       cpu: {
         host: round((cpu.user + cpu.system) / 1e6 / seconds),
-        far: round((cpuSeconds(far.pid) - window.farCpu) / seconds),
+        far: round(((await cpuSeconds(far.pid)) - window.farCpu) / seconds),
       },
       // macOS runs throttled background processes at priority 4 and utility at 20.
-      priority: { host: ps(process.pid, "pri"), far: ps(far.pid, "pri") },
-      busiest: busiest(),
+      priority: {
+        host: await ps("-o", "pri=", "-p", String(process.pid)),
+        far: await ps("-o", "pri=", "-p", String(far.pid)),
+      },
+      busiest: await busiest(),
       clockSkewMs: round(Date.now() - wallMs()),
       sessions,
     })}`,
@@ -402,7 +435,7 @@ describe("native media under load", () => {
     const receiver = await open(far, "throughput");
     try {
       await until(() => receiver.frames.length > 0, "no first frame", 15_000);
-      const measured = begin(far);
+      const measured = await begin(far);
       const before = await pressure(receiver);
       while (performance.now() - measured.at < 10_000) {
         await ping(receiver);
@@ -424,7 +457,12 @@ describe("native media under load", () => {
         Math.floor(reached * 0.01),
       );
       expect(percentile(receiver.held, 0.95)).toBeLessThanOrEqual(2);
-      expect(receiver.audio).toBeGreaterThan(900);
+      // Audio reaches the bridge at the pace of libwebrtc's playout clock, which
+      // a throttled host slows; the bridge must pass on all of it, all the time.
+      expect(
+        (arrivedAudio(snapshot) - arrivedAudio(before)) / seconds,
+        "audio blocks per second reaching the bridge",
+      ).toBeGreaterThanOrEqual(20);
       expect(snapshot.droppedAudio).toBe(0n);
       // The control channel is not queued behind media on a shared thread pool.
       expect(receiver.rtts.length).toBeGreaterThanOrEqual(30);
@@ -443,7 +481,7 @@ describe("native media under load", () => {
         "both sessions did not stream",
         15_000,
       );
-      const measured = begin(far);
+      const measured = await begin(far);
       const start = await Promise.all(sessions.map(pressure));
       while (performance.now() - measured.at < 10_000) {
         await Promise.all(sessions.map(ping));
@@ -479,11 +517,11 @@ describe("native media under load", () => {
     const receiver = await open(far, "stall");
     try {
       await until(() => receiver.frames.length >= 24, "media did not start", 15_000);
-      const measured = begin(far);
-      const before = await pressure(receiver);
+      const measured = await begin(far);
+      const before = await drained(receiver);
       stall(250);
       await sleep(2000);
-      const short = await pressure(receiver);
+      const short = await drained(receiver);
       // The native video queue holds 8 frames, 333 ms at 24 fps.
       expect(short.droppedVideo - before.droppedVideo).toBeLessThanOrEqual(1n);
       expect(short.droppedAudio).toBe(0n);
@@ -526,7 +564,7 @@ describe("native media under load", () => {
           // Both sessions stream at full load before the old one drains.
           const overlap = await pressure(current);
           expect(overlap.droppedAudio).toBe(0n);
-          const measured = begin(far);
+          const measured = await begin(far);
           const during = next.frames.length;
           const before = await pressure(next);
           const shutdownMs = await close(far, current);
