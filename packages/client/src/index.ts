@@ -44,4 +44,5 @@ export type { HttpOptions, Termination } from "./coordinator/_internal/client.js
 export type { CommandContext } from "./session/commands.js";
 export type { Statistics } from "./stats.js";
 export type { Json, JsonObject } from "./json.js";
-export type { Capabilities, Descriptor, Track, Mapping } from "./contract.js";
+export { Capabilities, Mapping, SessionDescriptor, Track } from "./contract.js";
+export type { Descriptor } from "./contract.js";

@@ -1,11 +1,14 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { IceFailed, ReactorError, TransportFailed } from "reactor-effect-client";
-import type { Mapping, Track } from "reactor-effect-client";
-import { Observations, errorOf, isRecord } from "reactor-effect-client/host";
+import { IceFailed, Mapping, ReactorError, TransportFailed } from "reactor-effect-client";
+import type { Track } from "reactor-effect-client";
+import { Observations, errorOf } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   Channel,
@@ -74,7 +77,8 @@ const validateNativeTracks = (tracks: readonly Track[]): void => {
 };
 
 const record = (value: unknown, what: string): Record<string, unknown> => {
-  if (!isRecord(value)) throw ReactorError.fromCode("Protocol", `native ${what} is not an object`);
+  if (!Predicate.isObject(value))
+    throw ReactorError.fromCode("Protocol", `native ${what} is not an object`);
   return value;
 };
 const string = (value: unknown, what: string): string => {
@@ -96,23 +100,17 @@ const bigint = (value: unknown, what: string): bigint => {
 const nativeError = (cause: unknown, operation: string): ReactorError =>
   ReactorError.is(cause) ? cause : errorOf(cause, "Native", operation);
 
+const decodeMappings = Schema.decodeUnknownResult(
+  Schema.Array(Mapping).check(Schema.isMaxLength(64)),
+);
+/** The client's own `Mapping` schema, so the host and the session agree on every rule. */
 const parseMapping = (value: unknown): readonly Mapping[] => {
-  if (!Array.isArray(value) || value.length > 64)
-    throw ReactorError.fromCode("Protocol", "native prepare returned an invalid mapping list");
-  return Object.freeze(
-    value.map((item): Mapping => {
-      const entry = record(item, "mapping");
-      const name = string(entry.name, "mapping.name"),
-        kind = string(entry.kind, "mapping.kind"),
-        direction = string(entry.direction, "mapping.direction"),
-        mid = string(entry.mid, "mapping.mid");
-      if (kind !== "audio" && kind !== "video")
-        throw ReactorError.fromCode("Protocol", "native mapping has an unknown track kind");
-      if (direction !== "recvonly" && direction !== "sendonly")
-        throw ReactorError.fromCode("Protocol", "native mapping has an unknown direction");
-      return Object.freeze({ name, kind, direction, mid });
-    }),
-  );
+  const decoded = decodeMappings(value);
+  if (Result.isFailure(decoded))
+    throw ReactorError.fromCode("Protocol", "native prepare returned an invalid mapping list", {
+      detail: decoded.failure,
+    });
+  return Object.freeze(decoded.success.map((entry) => Object.freeze({ ...entry })));
 };
 
 const parsePrepared = (value: unknown): Prepared => {
@@ -313,7 +311,7 @@ const statsValue = (value: unknown): unknown => {
  * shows ICE worked and the DTLS/SCTP transport above it failed.
  */
 const connectionFailure = (stats: readonly unknown[]): ReactorError => {
-  const entries = stats.filter(isRecord);
+  const entries = stats.filter(Predicate.isObject);
   const pairs = entries.filter((entry) => entry.type === "candidate-pair");
   if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
     return new ReactorError({

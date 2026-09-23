@@ -10,15 +10,17 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Duration from "effect/Duration";
 import { duration } from "../../duration.js";
 import { Http, parsed, positiveLimit, ReactorError } from "../../errors.js";
-import { array, json, nonempty, record, string, uint32 } from "../../json.js";
+import { array, json, nonempty, record, uint32 } from "../../json.js";
 import type { Json } from "../../json.js";
 import {
   CLIENT_INFO,
   parseAnswer,
   parseConnectionId,
   parseDescriptor,
+  parseExchangedToken,
   parseIce,
   parseSessionId,
+  parseUploadSlot,
   terminal,
 } from "../../contract.js";
 import type { Descriptor, IceCandidate, IceServer, Mapping } from "../../contract.js";
@@ -559,14 +561,9 @@ export class CoordinatorClient {
       ),
       Effect.flatMap((raw) =>
         pure(() => {
-          const allocation = record(raw, "upload allocation");
-          const url = nonempty(allocation.presigned_url, "presigned_url");
-          checkedUrl(url);
-          return {
-            presigned_id: nonempty(allocation.presigned_id, "presigned_id"),
-            presigned_url: url,
-            path: string(allocation.path, "upload path"),
-          };
+          const allocation = parseUploadSlot(raw);
+          checkedUrl(allocation.presigned_url);
+          return allocation;
         }),
       ),
     );
@@ -771,7 +768,7 @@ export class CoordinatorClient {
   ): Effect.Effect<string, ReactorError> {
     return pure(() => tokenBody(constraints)).pipe(
       Effect.flatMap((body) => this.issueToken(apiKey, body)),
-      Effect.flatMap((raw) => pure(() => nonempty(record(raw).jwt, "jwt"))),
+      Effect.flatMap((raw) => pure(() => parseExchangedToken(raw))),
     );
   }
 }

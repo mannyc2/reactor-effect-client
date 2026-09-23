@@ -1,3 +1,4 @@
+import * as Predicate from "effect/Predicate";
 import { ReactorError } from "./errors.js";
 import { checkedString } from "./protobuf.js";
 import type { Google_Struct, Google_Value } from "./wire.generated.js";
@@ -5,13 +6,11 @@ export type Json = null | boolean | number | string | JsonObject | readonly Json
 export interface JsonObject {
   readonly [key: string]: Json;
 }
-export const isRecord = (u: unknown): u is Record<string, unknown> =>
-  typeof u === "object" && u !== null && !Array.isArray(u);
 const bad = (message: string): never => {
   throw ReactorError.fromCode("Protocol", message);
 };
 export const record = (u: unknown, context = "object"): Record<string, unknown> =>
-  isRecord(u) ? u : bad(`expected ${context}`);
+  Predicate.isObject(u) ? u : bad(`expected ${context}`);
 export const string = (u: unknown, context: string, max = 1_048_576): string =>
   typeof u === "string" ? checkedString(u, max) : bad(`expected string: ${context}`);
 export const nonempty = (u: unknown, context: string): string => {

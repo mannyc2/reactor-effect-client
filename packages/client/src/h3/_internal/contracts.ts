@@ -1,5 +1,5 @@
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { isRecord } from "../../json.js";
 import { Payloads } from "../messages.js";
 import type { MessageType } from "../messages.js";
 
@@ -82,7 +82,7 @@ const internalShapeError = (): never => {
   throw new Error("H3 contract schemas must have concrete inline JSON shapes");
 };
 const schemaObject = (value: unknown): Record<string, unknown> =>
-  isRecord(value) ? value : internalShapeError();
+  Predicate.isObject(value) ? value : internalShapeError();
 
 /**
  * Project the pinned Effect schema's JSON representation once. This is not a

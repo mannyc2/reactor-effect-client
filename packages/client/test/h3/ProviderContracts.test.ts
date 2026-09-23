@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Crypto, Effect, Result, Scope } from "effect";
+import { Crypto, Effect, Result, Schema, Scope } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
@@ -44,6 +44,50 @@ const messages = (fake: Fixture) => {
     session_reset: { component: "SessionReset", data: { cleared_clips: 0, was_playing: false } },
   } satisfies Record<H3.MessageType, { readonly component: string; readonly data: JsonObject }>;
 };
+
+/** The decode failure of a known message, with its retained SchemaError. */
+const decodeFailure = (type: string, data: unknown): ReactorError => {
+  try {
+    decodeMessage(type, data);
+  } catch (cause) {
+    if (ReactorError.is(cause)) return cause;
+    throw cause;
+  }
+  throw new Error(`${type} decoded`);
+};
+
+describe("H3 cross-field rules", () => {
+  const fake = Effect.runSync(fixture());
+  const clip = fixtureClip();
+  for (const [name, changes, path] of [
+    ["a nonpositive minimum", { clip_seconds_min: 0 }, '["clip_seconds_min"]'],
+    ["a maximum below the minimum", { clip_seconds_max: 0.5 }, '["clip_seconds_max"]'],
+    ["playback without a clip", { playing: true, playing_clip_id: null }, '["playing_clip_id"]'],
+  ] as const)
+    test(`state_update: ${name} fails at its path, naming no value`, () => {
+      const error = decodeFailure("state_update", fake.state(changes));
+      expect(error).toMatchObject({
+        reason: { _tag: "Protocol" },
+        message: "H3 state_update payload is malformed",
+      });
+      expect(Schema.isSchemaError(error.context.detail)).toBe(true);
+      expect(String(error.context.detail)).toContain(path);
+    });
+
+  test("queue_update: a clip queued twice fails at the second position", () => {
+    const error = decodeFailure("queue_update", {
+      generation: [clip],
+      playout: [clip],
+      history: [],
+    });
+    expect(String(error.context.detail)).toContain('["playout"][0]["clip_id"]');
+    expect(String(error.context.detail)).not.toContain(clip.clip_id);
+    // A retained history entry may still describe a clip in playout.
+    expect(
+      decodeMessage("queue_update", { generation: [], playout: [clip], history: [clip] }),
+    ).toMatchObject({ type: "queue_update" });
+  });
+});
 
 describe("H3 deployment and decoder contracts", () => {
   const examples = messages(Effect.runSync(fixture()));

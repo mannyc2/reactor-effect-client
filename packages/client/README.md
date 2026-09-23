@@ -123,7 +123,7 @@ When the command must be replayed rather than awaited, prepare it as an `Orchest
 
 ## Coordinator helpers
 
-`Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, termination reports, and `downloadClip` for a prepared recording (`clip_ready`), which polls its HLS playlist and concatenates its segments within a caller wall deadline, through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation.
+`Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, termination reports, and `downloadClip` for a prepared recording (`clip_ready`), which polls its HLS playlist and concatenates its segments within a caller wall deadline, through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation. The root exports the Schemas the client decodes a session descriptor with, `SessionDescriptor`, `Capabilities`, `Track` and `Mapping`, and derives their types from them.
 
 ## H3 provider
 

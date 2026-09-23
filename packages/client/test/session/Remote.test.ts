@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Schema, Scope } from "effect";
 import * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../src/coordinator/_internal/client.js";
 import type { Allocation } from "../../src/coordinator/_internal/client.js";
@@ -199,9 +199,14 @@ test("remote lifecycle: a reply that names its session but cannot describe it is
     const failure = await Effect.runPromise(Effect.flip(remote.allocate(options, http, lifecycle)));
     expect(failure).toMatchObject({
       reason: { _tag: "Protocol" },
-      message: "unknown track kind",
+      message: "invalid session descriptor",
       context: { operation: "create session", sessionId: "owned-fixture", outcome: "replied" },
     });
+    // The SchemaError stays in detail and names the field, not its value.
+    const detail = failure.context.detail;
+    expect(Schema.isSchemaError(detail)).toBe(true);
+    expect(String(detail)).toContain('["capabilities"]["tracks"][0]["kind"]');
+    expect(String(detail)).not.toContain("hologram");
     // Ownership was recorded from the id before the rest of the reply failed.
     expect(remote.current).toEqual({ ownership: "owned", id: "owned-fixture" });
     remote.allocationLost();

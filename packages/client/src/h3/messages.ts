@@ -29,11 +29,39 @@ export const Clip = Schema.Struct({
 });
 export type Clip = typeof Clip.Type;
 
+/** The first repeated clip id in `clips`, as its index. */
+const repeated = (clips: readonly Clip[], seen = new Set<string>()): number => {
+  for (const [index, clip] of clips.entries()) {
+    if (seen.has(clip.clip_id)) return index;
+    seen.add(clip.clip_id);
+  }
+  return -1;
+};
+
+/**
+ * A clip is in at most one queue position. A retained history entry may
+ * describe a clip that is still in playout, but duplicate positions within the
+ * queues, or within the history, are ambiguous.
+ */
 export const Queue = Schema.Struct({
   generation: Schema.Array(Clip),
   playout: Schema.Array(Clip),
   history: Schema.Array(Clip),
-});
+}).check(
+  Schema.makeFilter((queue) => {
+    const queued = new Set<string>();
+    const generation = repeated(queue.generation, queued);
+    if (generation >= 0)
+      return { path: ["generation", generation, "clip_id"], issue: "clip is queued twice" };
+    const playout = repeated(queue.playout, queued);
+    if (playout >= 0)
+      return { path: ["playout", playout, "clip_id"], issue: "clip is queued twice" };
+    const history = repeated(queue.history);
+    if (history >= 0)
+      return { path: ["history", history, "clip_id"], issue: "clip is in history twice" };
+    return undefined;
+  }),
+);
 export type Queue = typeof Queue.Type;
 
 export const State = Schema.Struct({
@@ -55,7 +83,19 @@ export const State = Schema.Struct({
   clips_played: Integer,
   seconds_sent: NumberValue.check(Schema.isGreaterThanOrEqualTo(0)),
   valid_commands: Schema.Array(Schema.String),
-});
+}).check(
+  Schema.makeFilter((state) => {
+    const issues: Schema.FilterIssue[] = [];
+    if (state.clip_seconds_min <= 0)
+      issues.push({ path: ["clip_seconds_min"], issue: "must be positive" });
+    if (state.clip_seconds_max < state.clip_seconds_min)
+      issues.push({ path: ["clip_seconds_max"], issue: "must be at least clip_seconds_min" });
+    if (state.clip_seconds <= 0) issues.push({ path: ["clip_seconds"], issue: "must be positive" });
+    if (state.playing !== (state.playing_clip_id !== null))
+      issues.push({ path: ["playing_clip_id"], issue: "must be set exactly while playing" });
+    return issues;
+  }),
+);
 export type State = typeof State.Type;
 
 export const Payloads = {
@@ -98,15 +138,17 @@ const freeze = <A>(value: A): A => {
   return value;
 };
 
-const malformed = (type: string): ReactorError =>
+/** The `SchemaError`, which names the path but no input value, stays in `detail`. */
+const malformed = (type: string, cause: Schema.SchemaError): ReactorError =>
   ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
     operation: "h3 observation",
+    detail: cause,
   });
 
 /**
  * Unknown events remain observable. A known message never accepts a partial
- * payload: its Schema decode result or a cross-field rule rejects it as
- * Protocol, and a bug in these checks stays a defect.
+ * payload: its Schema, cross-field rules included, rejects it as Protocol, and
+ * a bug in these checks stays a defect.
  */
 export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
   if (!Object.hasOwn(Payloads, type))
@@ -116,27 +158,6 @@ export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
       data: input === undefined ? undefined : jsonObject(input),
     });
   const decoded = Schema.decodeUnknownResult(Payloads[type as MessageType])(input);
-  if (Result.isFailure(decoded)) throw malformed(type);
-  const message = { type, data: decoded.success } as Message;
-  if (message.type === "state_update") {
-    const state = message.data;
-    if (
-      state.clip_seconds_min <= 0 ||
-      state.clip_seconds_max < state.clip_seconds_min ||
-      state.clip_seconds <= 0 ||
-      state.playing !== (state.playing_clip_id !== null)
-    )
-      throw malformed(type);
-  }
-  if (message.type === "queue_update") {
-    const queued = [...message.data.generation, ...message.data.playout].map(
-      (clip) => clip.clip_id,
-    );
-    const history = message.data.history.map((clip) => clip.clip_id);
-    // A retained history entry may describe a clip that is still in playout;
-    // duplicate positions within queues/history remain ambiguous.
-    if (new Set(queued).size !== queued.length || new Set(history).size !== history.length)
-      throw malformed(type);
-  }
-  return freeze(message);
+  if (Result.isFailure(decoded)) throw malformed(type, decoded.failure);
+  return freeze({ type, data: decoded.success } as Message);
 };

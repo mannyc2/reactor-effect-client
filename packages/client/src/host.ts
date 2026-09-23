@@ -11,7 +11,7 @@
 export { duration } from "./duration.js";
 export type { DurationPolicy } from "./duration.js";
 export { errorOf, parse, parsed, positiveLimit } from "./errors.js";
-export { finite, isRecord, record } from "./json.js";
+export { finite, record } from "./json.js";
 export { fromOwnedReadableStream } from "./media-stream.js";
 export { terminal } from "./contract.js";
 export type { IceCandidate, IceServer } from "./contract.js";
@@ -28,5 +28,5 @@ export type {
   VideoFormat,
   VideoFrame,
 } from "./session/media.js";
-export { readFileBytes, uploadFile } from "./session/files.js";
+export { uploadFile } from "./session/files.js";
 export type { FileUploadOptions } from "./session/files.js";

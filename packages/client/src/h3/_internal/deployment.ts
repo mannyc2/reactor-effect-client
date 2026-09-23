@@ -1,5 +1,6 @@
+import * as Predicate from "effect/Predicate";
 import { ReactorError } from "../../errors.js";
-import { isRecord, jsonObject } from "../../json.js";
+import { jsonObject } from "../../json.js";
 import { documentedVersion, modelName, referenceLimits, source } from "../profile.js";
 import type { Contract } from "../types.js";
 import { deploymentCommands, messageShapes } from "./contracts.js";
@@ -13,7 +14,7 @@ const incompatible = (location: string): never => {
   );
 };
 const record = (input: unknown, path: string): Record<string, unknown> =>
-  isRecord(input) ? input : incompatible(path);
+  Predicate.isObject(input) ? input : incompatible(path);
 
 /**
  * Matches the pinned reactor-runtime ModelSchema.to_openapi representation:
@@ -131,7 +132,7 @@ export const validateDeployment = (input: unknown): Contract => {
         return incompatible(`command ${name} response identity`);
     }
   }
-  const info = isRecord(doc.info) ? doc.info : {};
+  const info = Predicate.isObject(doc.info) ? doc.info : {};
   return Object.freeze({
     modelName,
     documentedVersion,
