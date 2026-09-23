@@ -531,9 +531,15 @@ export const play = (
         }),
     );
     yield* Effect.tryPromise({
-      try: (signal) => deadline(element.play(), timeout, signal),
+      try: () => element.play(),
       catch: (e) => errorOf(e, "UnsupportedCapability", "HTMLMediaElement.play"),
-    });
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(new ReactorError({ code: "Timeout", message: "media play deadline" })),
+      }),
+    );
     if (owned.clone.readyState !== "live")
       return yield* new ReactorError({
         code: "Disconnected",

@@ -57,29 +57,33 @@ export const audioContext = (
         },
         catch: (e) => errorOf(e, "UnsupportedCapability"),
       }),
+      // Neither browser promise can be cancelled; each deadline only stops waiting for it.
       (context) =>
-        Effect.tryPromise({
-          try: () => bounded(context.close(), timeout, "AudioContext close deadline"),
-          catch: errorOf,
-        }).pipe(Effect.ignore),
+        Effect.tryPromise({ try: () => context.close(), catch: errorOf }).pipe(
+          Effect.timeout(timeout),
+          Effect.ignore,
+        ),
     );
     yield* Effect.tryPromise({
-      try: (signal) =>
-        bounded(
-          context.resume(),
-          timeout,
-          "AudioContext resume deadline; supply user activation",
-          signal,
-        ),
+      try: () => context.resume(),
       catch: (cause) =>
-        cause instanceof ReactorError
-          ? cause
-          : new ReactorError({
-              code: "UnsupportedCapability",
-              message: "AudioContext resume failed; ordinary user activation is required",
-              context: { detail: cause },
+        new ReactorError({
+          code: "UnsupportedCapability",
+          message: "AudioContext resume failed; ordinary user activation is required",
+          context: { detail: cause },
+        }),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(
+            new ReactorError({
+              code: "Timeout",
+              message: "AudioContext resume deadline; supply user activation",
             }),
-    });
+          ),
+      }),
+    );
     if (context.state !== "running")
       return yield* new ReactorError({
         code: "UnsupportedCapability",
