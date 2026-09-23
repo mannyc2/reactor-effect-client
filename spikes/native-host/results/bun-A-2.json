@@ -1,0 +1,115 @@
+{
+  "label": "A bridge (sessions=2)",
+  "runtime": "bun 1.4.2",
+  "connectedMs": 1950,
+  "seconds": 60,
+  "video": {
+    "farSessions": 2,
+    "pushedByFarPeer": 2994,
+    "farEncodedFramesSent": 2947,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 7979708,
+    "bytesSent": 59260624,
+    "received": 210,
+    "latencyMs": {
+      "n": 212,
+      "p50": 1193.5,
+      "p95": 1816.5,
+      "p99": 2077.6,
+      "max": 2349.8
+    },
+    "aroundBlock": {
+      "framesDuring": 4,
+      "latencyMaxMs": 2350
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 12473,
+    "received": 299
+  },
+  "dataChannel": {
+    "pings": 48,
+    "rttMs": {
+      "n": 96,
+      "p50": 580,
+      "p95": 823.1,
+      "p99": 905.4,
+      "max": 905.4
+    },
+    "echoedByFar": 96
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "readerFailures": [],
+    "koffiCallsInFlight": {
+      "n": 151,
+      "p50": 6,
+      "p95": 7,
+      "p99": 8,
+      "max": 8
+    }
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 9.3,
+    "framesBefore": 140,
+    "videoDuringSecondAfter": 4
+  },
+  "shutdown": {
+    "ms": 616,
+    "ok": true,
+    "errors": [],
+    "koffiCallsInFlightAtShutdown": [3, 3],
+    "nativeSnapshots": [
+      {
+        "droppedVideo": "1376",
+        "droppedAudio": "5882",
+        "deliveredVideo": "107",
+        "deliveredAudio": "158"
+      },
+      {
+        "droppedVideo": "1370",
+        "droppedAudio": "5857",
+        "deliveredVideo": "106",
+        "deliveredAudio": "154"
+      }
+    ]
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 82.8,
+  "resources": {
+    "wallSeconds": 63.8,
+    "cpuSeconds": 92.01,
+    "cpuPercentOfOneCore": 144.1,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 350,
+      "peak": 534
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 31,
+    "eventLoopLagMs": {
+      "n": 118,
+      "p50": 548.8,
+      "p95": 1166.6,
+      "p99": 1429.5,
+      "max": 1709.6
+    },
+    "threadpoolStatMs": {
+      "n": 101,
+      "p50": 263,
+      "p95": 557.2,
+      "p99": 579.2,
+      "max": 644.8
+    }
+  }
+}

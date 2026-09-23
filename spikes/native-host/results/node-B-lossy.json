@@ -1,0 +1,120 @@
+{
+  "label": "B shrunk bridge (sessions=1, loss=0.02, delay=40ms)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 1408,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1467,
+    "farEncodedFramesSent": 1312,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 885,
+    "farNackCount": 1540,
+    "farTargetBitrate": 7505218,
+    "bytesSent": 98697134,
+    "received": 1310,
+    "latencyMs": {
+      "n": 1310,
+      "p50": 113.2,
+      "p95": 195.1,
+      "p99": 479.9,
+      "max": 800
+    },
+    "aroundBlock": {
+      "framesDuring": 30,
+      "latencyMaxMs": 357
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6112,
+    "received": 6104
+  },
+  "dataChannel": {
+    "pings": 60,
+    "rttMs": {
+      "n": 59,
+      "p50": 81.6,
+      "p95": 92.3,
+      "p99": 487.5,
+      "max": 487.5
+    },
+    "echoedByFar": 59
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "detachedDrops": 0,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 829,
+    "videoDuringSecondAfter": 24
+  },
+  "shutdown": {
+    "ms": 20,
+    "ok": true,
+    "errors": [],
+    "notifyCallbacks": 7404,
+    "nativeSnapshots": [
+      {
+        "audio": {
+          "delivered": "6104",
+          "dropped": "0",
+          "observed": "6104",
+          "queued": 0,
+          "queuedBytes": 0
+        },
+        "closed": false,
+        "coalescedSignals": 43,
+        "notifications": 7404,
+        "queuedControl": 0,
+        "video": {
+          "delivered": "1310",
+          "dropped": "0",
+          "observed": "1310",
+          "queued": 0,
+          "queuedBytes": 0
+        }
+      }
+    ]
+  },
+  "relay": {
+    "dropped": 1942,
+    "forwarded": 95627
+  },
+  "farPeerCpuSeconds": 42.74,
+  "resources": {
+    "wallSeconds": 61.5,
+    "cpuSeconds": 22.67,
+    "cpuPercentOfOneCore": 36.9,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 176,
+      "peak": 201
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 21,
+    "eventLoopLagMs": {
+      "n": 2998,
+      "p50": 0.2,
+      "p95": 1.6,
+      "p99": 3.9,
+      "max": 248.5
+    },
+    "threadpoolStatMs": {
+      "n": 1214,
+      "p50": 0.2,
+      "p95": 0.5,
+      "p99": 3.8,
+      "max": 250.5
+    }
+  }
+}

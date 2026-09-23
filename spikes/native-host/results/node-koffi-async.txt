@@ -1,0 +1,3 @@
+idle pool: 55 us per sequential async call
+3 blocking 100 ms polls in flight: 54 us per sequential async call
+6 blocking 100 ms polls in flight (two peers): 90072 us per sequential async call

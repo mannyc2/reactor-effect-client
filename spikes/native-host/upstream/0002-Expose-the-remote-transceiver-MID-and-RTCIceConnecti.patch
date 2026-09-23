@@ -1,0 +1,252 @@
+From 08b9ff4e56b54a97f69ef36fbd851c77916a8751 Mon Sep 17 00:00:00 2001
+From: native-host draft <noreply@anthropic.com>
+Date: Wed, 23 Sep 2026 01:35:14 +0000
+Subject: [PATCH 2/2] Expose the remote transceiver MID and
+ RTCIceConnectionState
+
+PeerConnectionObserver gains on_track_with_mid, so hosts can join several
+same-kind remote tracks to their SDP mapping instead of by arrival order,
+and on_ice_connection_state_change, so a host can tell an ICE failure from
+a DTLS/transport failure. Both are additive; on_track is unchanged.
+
+Draft for review; not proposed upstream from this session.
+---
+ .../glue/reactor_webrtc.cpp                   | 16 +++-
+ crates/reactor-webrtc-sys/src/lib.rs          |  6 +-
+ crates/reactor-webrtc-sys/tests/link.rs       |  3 +-
+ crates/reactor-webrtc/src/lib.rs              |  2 +-
+ crates/reactor-webrtc/src/observer.rs         | 80 ++++++++++++++++++-
+ 5 files changed, 98 insertions(+), 9 deletions(-)
+
+diff --git a/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp b/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
+index aa53a72..074f8ce 100644
+--- a/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
++++ b/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
+@@ -224,8 +224,12 @@ struct ReactorPcCallbacks {
+   void (*on_data_channel)(void* userdata, void* data_channel);
+   void (*on_renegotiation_needed)(void* userdata);
+   // A remote track was added; `track` is an owned MediaStreamTrack handle the
+-  // receiver must free with reactor_webrtc_media_stream_track_destroy.
+-  void (*on_track)(void* userdata, void* track);
++  // receiver must free with reactor_webrtc_media_stream_track_destroy. `mid` is
++  // the negotiated transceiver MID, or null before one is assigned.
++  void (*on_track)(void* userdata, void* track, const char* mid);
++  // RTCIceConnectionState, separate from the aggregate connection state so a
++  // host can tell an ICE failure from a DTLS/transport failure.
++  void (*on_ice_connection_change)(void* userdata, int state);
+ };
+ 
+ // A single ICE (STUN/TURN) server. `urls` holds `urls_len` NUL-terminated
+@@ -653,6 +657,11 @@ class ReactorPcObserver : public webrtc::PeerConnectionObserver {
+     if (cb_.on_connection_change)
+       cb_.on_connection_change(cb_.userdata, static_cast<int>(new_state));
+   }
++  void OnStandardizedIceConnectionChange(
++      webrtc::PeerConnectionInterface::IceConnectionState new_state) override {
++    if (cb_.on_ice_connection_change)
++      cb_.on_ice_connection_change(cb_.userdata, static_cast<int>(new_state));
++  }
+   void OnIceGatheringChange(
+       webrtc::PeerConnectionInterface::IceGatheringState new_state) override {
+     if (cb_.on_ice_gathering_change)
+@@ -688,7 +697,8 @@ class ReactorPcObserver : public webrtc::PeerConnectionObserver {
+     if (!track) return;
+     auto* handle = new ReactorMediaStreamTrack();
+     handle->track = std::move(track);
+-    cb_.on_track(cb_.userdata, handle);
++    const std::optional<std::string> mid = transceiver->mid();
++    cb_.on_track(cb_.userdata, handle, mid ? mid->c_str() : nullptr);
+   }
+ 
+  private:
+diff --git a/crates/reactor-webrtc-sys/src/lib.rs b/crates/reactor-webrtc-sys/src/lib.rs
+index e42bc41..77c86e2 100644
+--- a/crates/reactor-webrtc-sys/src/lib.rs
++++ b/crates/reactor-webrtc-sys/src/lib.rs
+@@ -369,7 +369,11 @@ pub struct PeerConnectionCallbacks {
+     pub on_renegotiation_needed: Option<extern "C" fn(userdata: *mut c_void)>,
+     /// A remote track was added. `track` is an owned handle the receiver must
+     /// free with [`reactor_webrtc_media_stream_track_destroy`].
+-    pub on_track: Option<extern "C" fn(userdata: *mut c_void, track: *mut MediaStreamTrack)>,
++    pub on_track: Option<
++        extern "C" fn(userdata: *mut c_void, track: *mut MediaStreamTrack, mid: *const c_char),
++    >,
++    /// `RTCIceConnectionState` as an integer (new=0 … closed=6).
++    pub on_ice_connection_change: Option<extern "C" fn(userdata: *mut c_void, state: c_int)>,
+ }
+ 
+ /// A single ICE (STUN/TURN) server.
+diff --git a/crates/reactor-webrtc-sys/tests/link.rs b/crates/reactor-webrtc-sys/tests/link.rs
+index a3671fc..d4f7e2c 100644
+--- a/crates/reactor-webrtc-sys/tests/link.rs
++++ b/crates/reactor-webrtc-sys/tests/link.rs
+@@ -142,7 +142,7 @@ extern "C" fn ctx_on_audio(
+     let ctx = unsafe { &*(ud as *const PcCtx) };
+     ctx.audio_frames.fetch_add(1, Ordering::SeqCst);
+ }
+-extern "C" fn ctx_on_track(ud: *mut c_void, track: *mut MediaStreamTrack) {
++extern "C" fn ctx_on_track(ud: *mut c_void, track: *mut MediaStreamTrack, _mid: *const c_char) {
+     let ctx = unsafe { &*(ud as *const PcCtx) };
+     // Only the kind-matching call attaches a sink; the other is a no-op.
+     unsafe {
+@@ -162,6 +162,7 @@ fn observer_for(ctx: &PcCtx) -> PeerConnectionCallbacks {
+         on_data_channel: None,
+         on_renegotiation_needed: None,
+         on_track: Some(ctx_on_track),
++        on_ice_connection_change: None,
+     }
+ }
+ 
+diff --git a/crates/reactor-webrtc/src/lib.rs b/crates/reactor-webrtc/src/lib.rs
+index b0b9716..d5a12ed 100644
+--- a/crates/reactor-webrtc/src/lib.rs
++++ b/crates/reactor-webrtc/src/lib.rs
+@@ -69,7 +69,7 @@ pub use media::{
+ pub use metadata::{
+     FrameMetadata, FrameMetadataGate, FRAME_METADATA_ATTRIBUTE, FRAME_METADATA_VERSION,
+ };
+-pub use observer::PeerConnectionObserver;
++pub use observer::{IceConnectionState, PeerConnectionObserver};
+ pub use peer_connection::{
+     DataChannel, DataChannelState, IceCandidate, IceCandidatePairState, IceCandidatePairStats,
+     IceCandidateType, IceGatheringState, InboundRtpStats, OutboundRtpStats, PeerConnection,
+diff --git a/crates/reactor-webrtc/src/observer.rs b/crates/reactor-webrtc/src/observer.rs
+index 1a341f2..c413c58 100644
+--- a/crates/reactor-webrtc/src/observer.rs
++++ b/crates/reactor-webrtc/src/observer.rs
+@@ -16,6 +16,35 @@ type StateCb = Box<dyn FnMut(PeerConnectionState) + Send>;
+ type GatheringCb = Box<dyn FnMut(IceGatheringState) + Send>;
+ type IceCb = Box<dyn FnMut(IceCandidate) + Send>;
+ type TrackCb = Box<dyn FnMut(RemoteTrack) + Send>;
++type TrackMidCb = Box<dyn FnMut(RemoteTrack, Option<String>) + Send>;
++type IceConnectionCb = Box<dyn FnMut(IceConnectionState) + Send>;
++
++/// `RTCIceConnectionState`. Unlike [`PeerConnectionState`] it excludes DTLS, so
++/// `Failed` here means no candidate pair worked.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum IceConnectionState {
++    New,
++    Checking,
++    Connected,
++    Completed,
++    Failed,
++    Disconnected,
++    Closed,
++}
++
++impl IceConnectionState {
++    fn from_raw(v: c_int) -> Self {
++        match v {
++            1 => Self::Checking,
++            2 => Self::Connected,
++            3 => Self::Completed,
++            4 => Self::Failed,
++            5 => Self::Disconnected,
++            6 => Self::Closed,
++            _ => Self::New,
++        }
++    }
++}
+ type DataChannelCb = Box<dyn FnMut(DataChannel) + Send>;
+ 
+ /// Builder for the closures invoked over a peer connection's lifetime. Unset
+@@ -26,10 +55,29 @@ pub struct PeerConnectionObserver {
+     on_ice_gathering_change: Option<GatheringCb>,
+     on_ice_candidate: Option<IceCb>,
+     on_track: Option<TrackCb>,
++    on_track_with_mid: Option<TrackMidCb>,
++    on_ice_connection_state_change: Option<IceConnectionCb>,
+     on_data_channel: Option<DataChannelCb>,
+ }
+ 
+ impl PeerConnectionObserver {
++    /// Like [`on_track`](Self::on_track), with the negotiated transceiver MID,
++    /// so several same-kind remote tracks can be joined to their SDP mapping
++    /// without relying on arrival order. Takes precedence over `on_track`.
++    pub fn on_track_with_mid(
++        mut self,
++        cb: impl FnMut(RemoteTrack, Option<String>) + Send + 'static,
++    ) -> Self {
++        self.on_track_with_mid = Some(Box::new(cb));
++        self
++    }
++    pub fn on_ice_connection_state_change(
++        mut self,
++        cb: impl FnMut(IceConnectionState) + Send + 'static,
++    ) -> Self {
++        self.on_ice_connection_state_change = Some(Box::new(cb));
++        self
++    }
+     pub fn new() -> Self {
+         Self::default()
+     }
+@@ -67,6 +115,8 @@ impl PeerConnectionObserver {
+             gathering: self.on_ice_gathering_change.map(Mutex::new),
+             ice: self.on_ice_candidate.map(Mutex::new),
+             track: self.on_track.map(Mutex::new),
++            track_mid: self.on_track_with_mid.map(Mutex::new),
++            ice_connection: self.on_ice_connection_state_change.map(Mutex::new),
+             data_channel: self.on_data_channel.map(Mutex::new),
+             factory,
+         })
+@@ -80,6 +130,8 @@ pub(crate) struct ObserverState {
+     gathering: Option<Mutex<GatheringCb>>,
+     ice: Option<Mutex<IceCb>>,
+     track: Option<Mutex<TrackCb>>,
++    track_mid: Option<Mutex<TrackMidCb>>,
++    ice_connection: Option<Mutex<IceConnectionCb>>,
+     data_channel: Option<Mutex<DataChannelCb>>,
+     // Cloned into every remote `Track` the `on_track` trampoline hands off, so
+     // a caller that detaches a remote track and drops the peer connection
+@@ -99,7 +151,12 @@ impl ObserverState {
+             on_ice_candidate: self.ice.as_ref().map(|_| tramp_ice as _),
+             on_data_channel: self.data_channel.as_ref().map(|_| tramp_data_channel as _),
+             on_renegotiation_needed: None,
+-            on_track: self.track.as_ref().map(|_| tramp_track as _),
++            on_track: (self.track.is_some() || self.track_mid.is_some())
++                .then_some(tramp_track as _),
++            on_ice_connection_change: self
++                .ice_connection
++                .as_ref()
++                .map(|_| tramp_ice_connection as _),
+         }
+     }
+ }
+@@ -148,7 +205,20 @@ extern "C" fn tramp_ice(
+     }
+ }
+ 
+-extern "C" fn tramp_track(ud: *mut c_void, track: *mut reactor_webrtc_sys::MediaStreamTrack) {
++extern "C" fn tramp_ice_connection(ud: *mut c_void, state: c_int) {
++    let st = unsafe { &*(ud as *const ObserverState) };
++    if let Some(m) = &st.ice_connection {
++        if let Ok(mut cb) = m.lock() {
++            cb(IceConnectionState::from_raw(state));
++        }
++    }
++}
++
++extern "C" fn tramp_track(
++    ud: *mut c_void,
++    track: *mut reactor_webrtc_sys::MediaStreamTrack,
++    mid: *const c_char,
++) {
+     let st = unsafe { &*(ud as *const ObserverState) };
+     let kind = MediaKind::from_raw(unsafe {
+         reactor_webrtc_sys::reactor_webrtc_media_stream_track_kind(track)
+@@ -159,7 +229,11 @@ extern "C" fn tramp_track(ud: *mut c_void, track: *mut reactor_webrtc_sys::Media
+         MediaKind::Video => RemoteTrack::Video(VideoTrack::wrap(t)),
+         _ => RemoteTrack::Audio(AudioTrack::wrap(t)),
+     };
+-    if let Some(m) = &st.track {
++    if let Some(m) = &st.track_mid {
++        if let Ok(mut cb) = m.lock() {
++            cb(remote, (!mid.is_null()).then(|| cstr(mid)));
++        }
++    } else if let Some(m) = &st.track {
+         if let Ok(mut cb) = m.lock() {
+             cb(remote);
+         }
+-- 
+2.43.0
+

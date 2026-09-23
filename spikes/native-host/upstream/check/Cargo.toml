@@ -1,0 +1,12 @@
+[package]
+name = "upstream-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Point at a reactor-webrtc clone with 0001 and 0002 applied on bebf63e:
+#   git -C reactor-webrtc checkout bebf63e && git -C reactor-webrtc am ../upstream/*.patch
+[dependencies]
+reactor-webrtc = { path = "../../../../../upstream/reactor-webrtc/crates/reactor-webrtc" }
+
+[workspace]

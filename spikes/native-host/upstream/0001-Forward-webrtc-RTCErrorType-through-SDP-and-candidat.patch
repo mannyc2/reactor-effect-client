@@ -1,0 +1,537 @@
+From cbe79c28cce6302affbbfe753d573afe4beea646 Mon Sep 17 00:00:00 2001
+From: native-host draft <noreply@anthropic.com>
+Date: Wed, 23 Sep 2026 01:34:31 +0000
+Subject: [PATCH 1/2] Forward webrtc::RTCErrorType through SDP and candidate
+ completions
+
+Error gains typed Rtc { operation, kind, message } and Timeout variants and
+becomes non_exhaustive. The C++ glue already receives webrtc::RTCError and
+now passes error.type() beside the message; glue-side refusals report a
+reserved 1000 (NoPeerConnection). Callers that matched only Webrtc(String)
+for SDP failures and timeouts must add the new arms.
+
+Draft for review; not proposed upstream from this session.
+---
+ .../glue/reactor_webrtc.cpp                   | 75 ++++++++++++-------
+ crates/reactor-webrtc-sys/src/lib.rs          | 13 ++--
+ crates/reactor-webrtc-sys/tests/link.rs       |  6 +-
+ crates/reactor-webrtc/src/lib.rs              | 62 ++++++++++++++-
+ crates/reactor-webrtc/src/peer_connection.rs  | 63 +++++++++++-----
+ 5 files changed, 164 insertions(+), 55 deletions(-)
+
+diff --git a/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp b/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
+index 071be2e..aa53a72 100644
+--- a/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
++++ b/crates/reactor-webrtc-sys/glue/reactor_webrtc.cpp
+@@ -711,12 +711,16 @@ struct ReactorPeerConnection {
+   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory;
+ };
+ 
++// Error type reported when the glue refuses an operation before libwebrtc sees
++// it. Every other nonzero type is a webrtc::RTCErrorType value.
++constexpr int kReactorNoPeerConnection = 1000;
++
+ // Forwards CreateOffer/CreateAnswer results to C callbacks.
+ class CreateSdpObserver : public webrtc::CreateSessionDescriptionObserver {
+  public:
+   CreateSdpObserver(void* userdata,
+                     void (*on_success)(void*, const char*, const char*),
+-                    void (*on_error)(void*, const char*))
++                    void (*on_error)(void*, int, const char*))
+       : userdata_(userdata), on_success_(on_success), on_error_(on_error) {}
+ 
+   void OnSuccess(webrtc::SessionDescriptionInterface* desc) override {
+@@ -727,45 +731,50 @@ class CreateSdpObserver : public webrtc::CreateSessionDescriptionObserver {
+     delete desc;
+   }
+   void OnFailure(webrtc::RTCError error) override {
+-    if (on_error_) on_error_(userdata_, error.message());
++    if (on_error_)
++      on_error_(userdata_, static_cast<int>(error.type()), error.message());
+   }
+ 
+  private:
+   void* userdata_;
+   void (*on_success_)(void*, const char*, const char*);
+-  void (*on_error_)(void*, const char*);
++  void (*on_error_)(void*, int, const char*);
+ };
+ 
+ // Forwards SetLocalDescription completion to a C callback (null error = ok).
+ class SetLocalDescObserver
+     : public webrtc::SetLocalDescriptionObserverInterface {
+  public:
+-  SetLocalDescObserver(void* userdata, void (*on_complete)(void*, const char*))
++  SetLocalDescObserver(void* userdata,
++                       void (*on_complete)(void*, int, const char*))
+       : userdata_(userdata), on_complete_(on_complete) {}
+   void OnSetLocalDescriptionComplete(webrtc::RTCError error) override {
+     if (on_complete_)
+-      on_complete_(userdata_, error.ok() ? nullptr : error.message());
++      on_complete_(userdata_, static_cast<int>(error.type()),
++                   error.ok() ? nullptr : error.message());
+   }
+ 
+  private:
+   void* userdata_;
+-  void (*on_complete_)(void*, const char*);
++  void (*on_complete_)(void*, int, const char*);
+ };
+ 
+ // Forwards SetRemoteDescription completion to a C callback (null error = ok).
+ class SetRemoteDescObserver
+     : public webrtc::SetRemoteDescriptionObserverInterface {
+  public:
+-  SetRemoteDescObserver(void* userdata, void (*on_complete)(void*, const char*))
++  SetRemoteDescObserver(void* userdata,
++                        void (*on_complete)(void*, int, const char*))
+       : userdata_(userdata), on_complete_(on_complete) {}
+   void OnSetRemoteDescriptionComplete(webrtc::RTCError error) override {
+     if (on_complete_)
+-      on_complete_(userdata_, error.ok() ? nullptr : error.message());
++      on_complete_(userdata_, static_cast<int>(error.type()),
++                   error.ok() ? nullptr : error.message());
+   }
+ 
+  private:
+   void* userdata_;
+-  void (*on_complete_)(void*, const char*);
++  void (*on_complete_)(void*, int, const char*);
+ };
+ 
+ // Copy a borrowed C string, mapping null to empty.
+@@ -1212,10 +1221,10 @@ int reactor_webrtc_peer_connection_set_bitrate(void* pc,
+ void reactor_webrtc_peer_connection_create_offer(
+     void* pc, void* userdata,
+     void (*on_success)(void* userdata, const char* type, const char* sdp),
+-    void (*on_error)(void* userdata, const char* message)) {
++    void (*on_error)(void* userdata, int type, const char* message)) {
+   auto* rpc = reinterpret_cast<ReactorPeerConnection*>(pc);
+   if (!rpc || !rpc->pc) {
+-    if (on_error) on_error(userdata, "no peer connection");
++    if (on_error) on_error(userdata, kReactorNoPeerConnection, "no peer connection");
+     return;
+   }
+   auto observer =
+@@ -1229,10 +1238,10 @@ void reactor_webrtc_peer_connection_create_offer(
+ void reactor_webrtc_peer_connection_create_answer(
+     void* pc, void* userdata,
+     void (*on_success)(void* userdata, const char* type, const char* sdp),
+-    void (*on_error)(void* userdata, const char* message)) {
++    void (*on_error)(void* userdata, int type, const char* message)) {
+   auto* rpc = reinterpret_cast<ReactorPeerConnection*>(pc);
+   if (!rpc || !rpc->pc) {
+-    if (on_error) on_error(userdata, "no peer connection");
++    if (on_error) on_error(userdata, kReactorNoPeerConnection, "no peer connection");
+     return;
+   }
+   auto observer =
+@@ -1245,22 +1254,27 @@ void reactor_webrtc_peer_connection_create_answer(
+ // once with a null error on success.
+ void reactor_webrtc_peer_connection_set_local_description(
+     void* pc, const char* type, const char* sdp, void* userdata,
+-    void (*on_complete)(void* userdata, const char* error)) {
++    void (*on_complete)(void* userdata, int type, const char* error)) {
+   auto* rpc = reinterpret_cast<ReactorPeerConnection*>(pc);
+   if (!rpc || !rpc->pc) {
+-    if (on_complete) on_complete(userdata, "no peer connection");
++    if (on_complete)
++      on_complete(userdata, kReactorNoPeerConnection, "no peer connection");
+     return;
+   }
+   const std::optional<webrtc::SdpType> t =
+       webrtc::SdpTypeFromString(type ? type : "");
+   if (!t) {
+-    if (on_complete) on_complete(userdata, "invalid sdp type");
++    if (on_complete)
++      on_complete(userdata, static_cast<int>(webrtc::RTCErrorType::INVALID_PARAMETER),
++                  "invalid sdp type");
+     return;
+   }
+   std::unique_ptr<webrtc::SessionDescriptionInterface> desc =
+       webrtc::CreateSessionDescription(*t, sdp ? sdp : "");
+   if (!desc) {
+-    if (on_complete) on_complete(userdata, "failed to parse sdp");
++    if (on_complete)
++      on_complete(userdata, static_cast<int>(webrtc::RTCErrorType::SYNTAX_ERROR),
++                  "failed to parse sdp");
+     return;
+   }
+   rpc->pc->SetLocalDescription(
+@@ -1271,22 +1285,27 @@ void reactor_webrtc_peer_connection_set_local_description(
+ // Parse (type, sdp) and apply it as the remote description.
+ void reactor_webrtc_peer_connection_set_remote_description(
+     void* pc, const char* type, const char* sdp, void* userdata,
+-    void (*on_complete)(void* userdata, const char* error)) {
++    void (*on_complete)(void* userdata, int type, const char* error)) {
+   auto* rpc = reinterpret_cast<ReactorPeerConnection*>(pc);
+   if (!rpc || !rpc->pc) {
+-    if (on_complete) on_complete(userdata, "no peer connection");
++    if (on_complete)
++      on_complete(userdata, kReactorNoPeerConnection, "no peer connection");
+     return;
+   }
+   const std::optional<webrtc::SdpType> t =
+       webrtc::SdpTypeFromString(type ? type : "");
+   if (!t) {
+-    if (on_complete) on_complete(userdata, "invalid sdp type");
++    if (on_complete)
++      on_complete(userdata, static_cast<int>(webrtc::RTCErrorType::INVALID_PARAMETER),
++                  "invalid sdp type");
+     return;
+   }
+   std::unique_ptr<webrtc::SessionDescriptionInterface> desc =
+       webrtc::CreateSessionDescription(*t, sdp ? sdp : "");
+   if (!desc) {
+-    if (on_complete) on_complete(userdata, "failed to parse sdp");
++    if (on_complete)
++      on_complete(userdata, static_cast<int>(webrtc::RTCErrorType::SYNTAX_ERROR),
++                  "failed to parse sdp");
+     return;
+   }
+   rpc->pc->SetRemoteDescription(
+@@ -1302,28 +1321,32 @@ void reactor_webrtc_peer_connection_set_remote_description(
+ // marker is a no-op at the ICE layer.
+ void reactor_webrtc_peer_connection_add_ice_candidate(
+     void* pc, const char* sdp_mid, int sdp_mline_index, const char* candidate,
+-    void* userdata, void (*on_complete)(void* userdata, const char* error)) {
++    void* userdata, void (*on_complete)(void* userdata, int type, const char* error)) {
+   auto* rpc = reinterpret_cast<ReactorPeerConnection*>(pc);
+   if (!rpc || !rpc->pc) {
+-    if (on_complete) on_complete(userdata, "no peer connection");
++    if (on_complete)
++      on_complete(userdata, kReactorNoPeerConnection, "no peer connection");
+     return;
+   }
+   const std::string cand_str(candidate ? candidate : "");
+   if (cand_str.empty()) {
+-    if (on_complete) on_complete(userdata, nullptr);
++    if (on_complete) on_complete(userdata, 0, nullptr);
+     return;
+   }
+   webrtc::SdpParseError err;
+   std::unique_ptr<webrtc::IceCandidate> cand(webrtc::CreateIceCandidate(
+       sdp_mid ? sdp_mid : "", sdp_mline_index, cand_str, &err));
+   if (!cand) {
+-    if (on_complete) on_complete(userdata, err.description.c_str());
++    if (on_complete)
++      on_complete(userdata, static_cast<int>(webrtc::RTCErrorType::SYNTAX_ERROR),
++                  err.description.c_str());
+     return;
+   }
+   rpc->pc->AddIceCandidate(
+       std::move(cand), [userdata, on_complete](webrtc::RTCError error) {
+         if (on_complete)
+-          on_complete(userdata, error.ok() ? nullptr : error.message());
++          on_complete(userdata, static_cast<int>(error.type()),
++                      error.ok() ? nullptr : error.message());
+       });
+ }
+ 
+diff --git a/crates/reactor-webrtc-sys/src/lib.rs b/crates/reactor-webrtc-sys/src/lib.rs
+index 0f5a16c..e42bc41 100644
+--- a/crates/reactor-webrtc-sys/src/lib.rs
++++ b/crates/reactor-webrtc-sys/src/lib.rs
+@@ -505,13 +505,14 @@ extern "C" {
+ 
+     /// Create an SDP offer. Exactly one callback fires asynchronously on the
+     /// signaling thread: `on_success(userdata, type, sdp)` or
+-    /// `on_error(userdata, message)`. The C strings are valid only for the
++    /// `on_error(userdata, ty, message)`, where `ty` is a `webrtc::RTCErrorType`
++    /// value, or 1000 when the glue refused the call before libwebrtc saw it. The C strings are valid only for the
+     /// duration of the call.
+     pub fn reactor_webrtc_peer_connection_create_offer(
+         pc: *mut PeerConnection,
+         userdata: *mut c_void,
+         on_success: extern "C" fn(userdata: *mut c_void, ty: *const c_char, sdp: *const c_char),
+-        on_error: extern "C" fn(userdata: *mut c_void, message: *const c_char),
++        on_error: extern "C" fn(userdata: *mut c_void, ty: c_int, message: *const c_char),
+     );
+     /// Create an SDP answer (the signaling state must hold a remote offer).
+     /// Same callback contract as [`reactor_webrtc_peer_connection_create_offer`].
+@@ -519,7 +520,7 @@ extern "C" {
+         pc: *mut PeerConnection,
+         userdata: *mut c_void,
+         on_success: extern "C" fn(userdata: *mut c_void, ty: *const c_char, sdp: *const c_char),
+-        on_error: extern "C" fn(userdata: *mut c_void, message: *const c_char),
++        on_error: extern "C" fn(userdata: *mut c_void, ty: c_int, message: *const c_char),
+     );
+ 
+     /// Apply `(type, sdp)` as the local description. `on_complete` fires once
+@@ -529,7 +530,7 @@ extern "C" {
+         ty: *const c_char,
+         sdp: *const c_char,
+         userdata: *mut c_void,
+-        on_complete: extern "C" fn(userdata: *mut c_void, error: *const c_char),
++        on_complete: extern "C" fn(userdata: *mut c_void, ty: c_int, error: *const c_char),
+     );
+     /// Apply `(type, sdp)` as the remote description. Same contract as
+     /// [`reactor_webrtc_peer_connection_set_local_description`].
+@@ -538,7 +539,7 @@ extern "C" {
+         ty: *const c_char,
+         sdp: *const c_char,
+         userdata: *mut c_void,
+-        on_complete: extern "C" fn(userdata: *mut c_void, error: *const c_char),
++        on_complete: extern "C" fn(userdata: *mut c_void, ty: c_int, error: *const c_char),
+     );
+     /// Add a remote ICE candidate (typically from the peer's `on_ice_candidate`).
+     pub fn reactor_webrtc_peer_connection_add_ice_candidate(
+@@ -547,7 +548,7 @@ extern "C" {
+         sdp_mline_index: c_int,
+         candidate: *const c_char,
+         userdata: *mut c_void,
+-        on_complete: extern "C" fn(userdata: *mut c_void, error: *const c_char),
++        on_complete: extern "C" fn(userdata: *mut c_void, ty: c_int, error: *const c_char),
+     );
+ 
+     /// Create an SDP-negotiated data channel. Returns an opaque handle (which
+diff --git a/crates/reactor-webrtc-sys/tests/link.rs b/crates/reactor-webrtc-sys/tests/link.rs
+index 1b309f8..a3671fc 100644
+--- a/crates/reactor-webrtc-sys/tests/link.rs
++++ b/crates/reactor-webrtc-sys/tests/link.rs
+@@ -59,14 +59,14 @@ extern "C" fn sdp_ok(ud: *mut c_void, ty: *const c_char, sdp: *const c_char) {
+         .into_owned();
+     let _ = tx.try_send(Ok((ty, sdp)));
+ }
+-extern "C" fn sdp_err(ud: *mut c_void, message: *const c_char) {
++extern "C" fn sdp_err(ud: *mut c_void, _ty: c_int, message: *const c_char) {
+     let tx = unsafe { &*(ud as *const SdpTx) };
+     let msg = unsafe { CStr::from_ptr(message) }
+         .to_string_lossy()
+         .into_owned();
+     let _ = tx.try_send(Err(msg));
+ }
+-extern "C" fn complete_cb(ud: *mut c_void, error: *const c_char) {
++extern "C" fn complete_cb(ud: *mut c_void, _ty: c_int, error: *const c_char) {
+     let tx = unsafe { &*(ud as *const CompleteTx) };
+     let r = if error.is_null() {
+         Ok(())
+@@ -77,7 +77,7 @@ extern "C" fn complete_cb(ud: *mut c_void, error: *const c_char) {
+     };
+     let _ = tx.try_send(r);
+ }
+-extern "C" fn noop_complete(_ud: *mut c_void, _error: *const c_char) {}
++extern "C" fn noop_complete(_ud: *mut c_void, _ty: c_int, _error: *const c_char) {}
+ 
+ /// Invoke an async create-offer/answer and block for its result.
+ unsafe fn run_sdp(call: impl FnOnce(*mut c_void)) -> Result<(String, String), String> {
+diff --git a/crates/reactor-webrtc/src/lib.rs b/crates/reactor-webrtc/src/lib.rs
+index 0b6c534..b0b9716 100644
+--- a/crates/reactor-webrtc/src/lib.rs
++++ b/crates/reactor-webrtc/src/lib.rs
+@@ -103,11 +103,63 @@ pub fn time_micros() -> i64 {
+ 
+ /// Errors surfaced by the WebRTC engine.
+ #[derive(Debug, Clone)]
++#[non_exhaustive]
+ pub enum Error {
+-    /// A WebRTC operation failed (SDP, ICE, transport, …).
++    /// A WebRTC operation failed without a typed native cause (Rust-side
++    /// validation, or a native call that reports only success or failure).
+     Webrtc(String),
+     /// The requested track/transceiver/data-channel was not found.
+     NotFound(String),
++    /// libwebrtc rejected an operation with a typed `RTCError`.
++    Rtc {
++        /// The operation that failed, e.g. `"set_remote_description"`.
++        operation: &'static str,
++        kind: RtcErrorKind,
++        message: String,
++    },
++    /// A blocking call waited [`OP_TIMEOUT`](crate) for the signaling thread.
++    Timeout(&'static str),
++}
++
++/// `webrtc::RTCErrorType`, plus the glue's own refusal.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[non_exhaustive]
++pub enum RtcErrorKind {
++    UnsupportedOperation,
++    UnsupportedParameter,
++    InvalidParameter,
++    InvalidRange,
++    /// The SDP or candidate did not parse.
++    SyntaxError,
++    InvalidState,
++    InvalidModification,
++    NetworkError,
++    ResourceExhausted,
++    InternalError,
++    OperationErrorWithData,
++    /// The connection handle was already gone when the call reached the glue.
++    NoPeerConnection,
++    Other(i32),
++}
++
++impl RtcErrorKind {
++    pub(crate) fn from_native(code: std::os::raw::c_int) -> Self {
++        match code {
++            1 => Self::UnsupportedOperation,
++            2 => Self::UnsupportedParameter,
++            3 => Self::InvalidParameter,
++            4 => Self::InvalidRange,
++            5 => Self::SyntaxError,
++            6 => Self::InvalidState,
++            7 => Self::InvalidModification,
++            8 => Self::NetworkError,
++            9 => Self::ResourceExhausted,
++            10 => Self::InternalError,
++            11 => Self::OperationErrorWithData,
++            1000 => Self::NoPeerConnection,
++            other => Self::Other(other),
++        }
++    }
+ }
+ 
+ impl std::fmt::Display for Error {
+@@ -115,6 +167,14 @@ impl std::fmt::Display for Error {
+         match self {
+             Error::Webrtc(m) => write!(f, "webrtc error: {m}"),
+             Error::NotFound(m) => write!(f, "not found: {m}"),
++            Error::Rtc {
++                operation,
++                kind,
++                message,
++            } => {
++                write!(f, "{operation} failed ({kind:?}): {message}")
++            }
++            Error::Timeout(operation) => write!(f, "{operation} timed out"),
+         }
+     }
+ }
+diff --git a/crates/reactor-webrtc/src/peer_connection.rs b/crates/reactor-webrtc/src/peer_connection.rs
+index 4039d84..8590ebe 100644
+--- a/crates/reactor-webrtc/src/peer_connection.rs
++++ b/crates/reactor-webrtc/src/peer_connection.rs
+@@ -1238,27 +1238,45 @@ extern "C" fn sdp_ok(ud: *mut c_void, ty: *const c_char, sdp: *const c_char) {
+     };
+     let _ = tx.try_send(result);
+ }
+-extern "C" fn sdp_err(ud: *mut c_void, message: *const c_char) {
++/// The operation name is filled in by `run_sdp`/`run_complete`, which know it.
++fn rtc_error(ty: c_int, message: *const c_char) -> Error {
++    Error::Rtc {
++        operation: "",
++        kind: crate::RtcErrorKind::from_native(ty),
++        message: if message.is_null() {
++            String::new()
++        } else {
++            unsafe { CStr::from_ptr(message) }
++                .to_string_lossy()
++                .into_owned()
++        },
++    }
++}
++extern "C" fn sdp_err(ud: *mut c_void, ty: c_int, message: *const c_char) {
+     let tx = unsafe { Arc::from_raw(ud as *const SdpTx) };
+-    let msg = unsafe { CStr::from_ptr(message) }
+-        .to_string_lossy()
+-        .into_owned();
+-    let _ = tx.try_send(Err(Error::Webrtc(msg)));
++    let _ = tx.try_send(Err(rtc_error(ty, message)));
+ }
+-extern "C" fn complete_cb(ud: *mut c_void, error: *const c_char) {
++extern "C" fn complete_cb(ud: *mut c_void, ty: c_int, error: *const c_char) {
+     let tx = unsafe { Arc::from_raw(ud as *const CompleteTx) };
+     let r = if error.is_null() {
+         Ok(())
+     } else {
+-        Err(Error::Webrtc(
+-            unsafe { CStr::from_ptr(error) }
+-                .to_string_lossy()
+-                .into_owned(),
+-        ))
++        Err(rtc_error(ty, error))
+     };
+     let _ = tx.try_send(r);
+ }
+ 
++fn with_operation(error: Error, operation: &'static str) -> Error {
++    match error {
++        Error::Rtc { kind, message, .. } => Error::Rtc {
++            operation,
++            kind,
++            message,
++        },
++        other => other,
++    }
++}
++
+ type StatsTx = SyncSender<StatsReport>;
+ 
+ extern "C" fn stats_cb(ud: *mut c_void, entries: *const ReactorStatEntry, count: c_int) {
+@@ -1364,24 +1382,26 @@ fn run_stats(call: impl FnOnce(*mut c_void)) -> Result<StatsReport> {
+     r.map_err(|_| Error::Webrtc("get_stats timed out".into()))
+ }
+ 
+-fn run_sdp(call: impl FnOnce(*mut c_void)) -> Result<SessionDescription> {
++fn run_sdp(operation: &'static str, call: impl FnOnce(*mut c_void)) -> Result<SessionDescription> {
+     let (tx, rx) = sync_channel::<Result<SessionDescription>>(1);
+     let tx = Arc::new(tx);
+     let p = Arc::into_raw(tx.clone());
+     call(p as *mut c_void);
+     let r = rx.recv_timeout(OP_TIMEOUT);
+     drop(tx);
+-    r.map_err(|_| Error::Webrtc("sdp operation timed out".into()))?
++    r.map_err(|_| Error::Timeout(operation))?
++        .map_err(|e| with_operation(e, operation))
+ }
+ 
+-fn run_complete(call: impl FnOnce(*mut c_void)) -> Result<()> {
++fn run_complete(operation: &'static str, call: impl FnOnce(*mut c_void)) -> Result<()> {
+     let (tx, rx) = sync_channel::<Result<()>>(1);
+     let tx = Arc::new(tx);
+     let p = Arc::into_raw(tx.clone());
+     call(p as *mut c_void);
+     let r = rx.recv_timeout(OP_TIMEOUT);
+     drop(tx);
+-    r.map_err(|_| Error::Webrtc("operation timed out".into()))?
++    r.map_err(|_| Error::Timeout(operation))?
++        .map_err(|e| with_operation(e, operation))
+ }
+ 
+ /// An `RTCPeerConnection`.
+@@ -1437,7 +1457,7 @@ impl PeerConnection {
+     /// is what opens this connection's
+     /// [`FrameMetadataGate`](crate::FrameMetadataGate).
+     pub fn create_offer(&self) -> Result<SessionDescription> {
+-        let offer = run_sdp(|ud| unsafe {
++        let offer = run_sdp("create_offer", |ud| unsafe {
+             reactor_webrtc_sys::reactor_webrtc_peer_connection_create_offer(
+                 self.raw, ud, sdp_ok, sdp_err,
+             )
+@@ -1458,7 +1478,7 @@ impl PeerConnection {
+     /// Requires [`set_remote_description`](Self::set_remote_description) to have been
+     /// called with the offer first, which is already the only valid order.
+     pub fn create_answer(&self) -> Result<SessionDescription> {
+-        let answer = run_sdp(|ud| unsafe {
++        let answer = run_sdp("create_answer", |ud| unsafe {
+             reactor_webrtc_sys::reactor_webrtc_peer_connection_create_answer(
+                 self.raw, ud, sdp_ok, sdp_err,
+             )
+@@ -1634,7 +1654,12 @@ impl PeerConnection {
+         let ty = CString::new(sdp.kind.as_str()).unwrap();
+         let body = CString::new(sdp.sdp.as_str())
+             .map_err(|_| Error::Webrtc("sdp contains a NUL byte".into()))?;
+-        run_complete(|ud| unsafe {
++        let operation = if local {
++            "set_local_description"
++        } else {
++            "set_remote_description"
++        };
++        run_complete(operation, |ud| unsafe {
+             if local {
+                 reactor_webrtc_sys::reactor_webrtc_peer_connection_set_local_description(
+                     self.raw,
+@@ -1664,7 +1689,7 @@ impl PeerConnection {
+         let cand = CString::new(candidate.candidate.as_str())
+             .map_err(|_| Error::Webrtc("candidate contains a NUL byte".into()))?;
+         let idx = candidate.sdp_mline_index.unwrap_or(0) as c_int;
+-        run_complete(|ud| unsafe {
++        run_complete("add_ice_candidate", |ud| unsafe {
+             reactor_webrtc_sys::reactor_webrtc_peer_connection_add_ice_candidate(
+                 self.raw,
+                 mid.as_ptr(),
+-- 
+2.43.0
+

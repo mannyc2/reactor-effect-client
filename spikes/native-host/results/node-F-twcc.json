@@ -1,0 +1,102 @@
+{
+  "label": "F werift+ffmpeg (jitter=100ms, patched TWCC)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 6575,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1475,
+    "farEncodedFramesSent": 637,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 1712000,
+    "bytesSent": 16423838,
+    "received": 635,
+    "latencyMs": {
+      "n": 636,
+      "p50": 151.6,
+      "p95": 316.9,
+      "p99": 404.1,
+      "max": 685.7
+    },
+    "aroundBlock": {
+      "framesDuring": 13,
+      "latencyMaxMs": 404
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6144,
+    "received": 6143
+  },
+  "dataChannel": {
+    "pings": 59,
+    "rttMs": {
+      "n": 59,
+      "p50": 2.7,
+      "p95": 15,
+      "p99": 17.4,
+      "max": 17.4
+    },
+    "echoedByFar": 59
+  },
+  "drops": {
+    "encodedFrames": 636,
+    "keyframes": 1,
+    "noTrailer": 0,
+    "detachedDrops": 0,
+    "ffmpegBacklogMax": 2,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 426,
+    "videoDuringSecondAfter": 4
+  },
+  "shutdown": {
+    "ms": 15,
+    "ok": true,
+    "ffmpegExited": true,
+    "receiverStats": {
+      "nackRequestsSent": 0,
+      "nackOutstanding": 0,
+      "twccEnabled": true,
+      "nackEnabled": true
+    }
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 20.25,
+  "resources": {
+    "wallSeconds": 66.6,
+    "cpuSeconds": 25.1,
+    "cpuPercentOfOneCore": 37.7,
+    "childCpuSeconds": 7.12,
+    "rssMiB": {
+      "mean": 142,
+      "peak": 160
+    },
+    "childRssMiB": {
+      "mean": 123,
+      "peak": 126
+    },
+    "peakThreads": 11,
+    "eventLoopLagMs": {
+      "n": 3272,
+      "p50": 0.1,
+      "p95": 1.1,
+      "p99": 5.2,
+      "max": 243.2
+    },
+    "threadpoolStatMs": {
+      "n": 1319,
+      "p50": 0.2,
+      "p95": 2.4,
+      "p99": 7.1,
+      "max": 18.8
+    }
+  }
+}

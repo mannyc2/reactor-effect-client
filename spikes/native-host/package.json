@@ -1,0 +1,11 @@
+{
+  "name": "native-host-spikes",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway spikes for native-host-decision.md. Not a workspace member; never published.",
+  "dependencies": {
+    "@roamhq/wrtc": "0.10.0",
+    "node-datachannel": "0.33.4",
+    "werift": "0.24.4"
+  }
+}

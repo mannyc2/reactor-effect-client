@@ -1,0 +1,13 @@
+[package]
+name = "native-host-spikes"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+reactor-webrtc = { git = "https://github.com/reactor-team/reactor-webrtc.git", rev = "bebf63e42624ee440e066b692494dd3229d29ae7" }
+serde_json = "1"
+
+[profile.release]
+debug = 1

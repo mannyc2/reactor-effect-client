@@ -1,0 +1,103 @@
+{
+  "label": "F werift+ffmpeg (jitter=100ms, patched TWCC, far min 6000 kbps)",
+  "runtime": "bun 1.4.2",
+  "connectedMs": 5672,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1453,
+    "farEncodedFramesSent": 1424,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 96,
+    "farNackCount": 11,
+    "farTargetBitrate": 6000000,
+    "bytesSent": 44619779,
+    "received": 1423,
+    "latencyMs": {
+      "n": 1424,
+      "p50": 72.6,
+      "p95": 115.2,
+      "p99": 264.5,
+      "max": 379.4
+    },
+    "aroundBlock": {
+      "framesDuring": 29,
+      "latencyMaxMs": 336
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6054,
+    "received": 6041
+  },
+  "dataChannel": {
+    "pings": 59,
+    "rttMs": {
+      "n": 59,
+      "p50": 1.2,
+      "p95": 4.5,
+      "p99": 7.2,
+      "max": 7.2
+    },
+    "echoedByFar": 59
+  },
+  "drops": {
+    "encodedFrames": 1424,
+    "keyframes": 2,
+    "noTrailer": 0,
+    "detachedDrops": 0,
+    "ffmpegBacklogMax": 4,
+    "plisSent": 0,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 949,
+    "videoDuringSecondAfter": 24
+  },
+  "shutdown": {
+    "ms": 26,
+    "ok": true,
+    "ffmpegExited": true,
+    "receiverStats": {
+      "nackRequestsSent": 11,
+      "nackOutstanding": 0,
+      "twccEnabled": true,
+      "nackEnabled": true
+    }
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 40.24,
+  "resources": {
+    "wallSeconds": 65.7,
+    "cpuSeconds": 25.85,
+    "cpuPercentOfOneCore": 39.3,
+    "childCpuSeconds": 14.99,
+    "rssMiB": {
+      "mean": 127,
+      "peak": 150
+    },
+    "childRssMiB": {
+      "mean": 124,
+      "peak": 127
+    },
+    "peakThreads": 13,
+    "eventLoopLagMs": {
+      "n": 3122,
+      "p50": 0.1,
+      "p95": 4.8,
+      "p99": 10.9,
+      "max": 254.1
+    },
+    "threadpoolStatMs": {
+      "n": 1283,
+      "p50": 0.2,
+      "p95": 3.3,
+      "p99": 8.6,
+      "max": 250.5
+    }
+  }
+}

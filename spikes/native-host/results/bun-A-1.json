@@ -1,0 +1,109 @@
+{
+  "label": "A bridge (sessions=1)",
+  "runtime": "bun 1.4.2",
+  "connectedMs": 1870,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1486,
+    "farEncodedFramesSent": 1468,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 8000000,
+    "bytesSent": 59529461,
+    "received": 238,
+    "latencyMs": {
+      "n": 238,
+      "p50": 612.1,
+      "p95": 667.6,
+      "p99": 782.1,
+      "max": 934.7
+    },
+    "aroundBlock": {
+      "framesDuring": 4,
+      "latencyMaxMs": 859
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6189,
+    "received": 1872
+  },
+  "dataChannel": {
+    "pings": 55,
+    "rttMs": {
+      "n": 55,
+      "p50": 262.7,
+      "p95": 369.5,
+      "p99": 548.9,
+      "max": 548.9
+    },
+    "echoedByFar": 55
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "readerFailures": [],
+    "koffiCallsInFlight": {
+      "n": 296,
+      "p50": 3,
+      "p95": 3,
+      "p99": 4,
+      "max": 4
+    }
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 2.7,
+    "framesBefore": 159,
+    "videoDuringSecondAfter": 4
+  },
+  "shutdown": {
+    "ms": 275,
+    "ok": true,
+    "errors": [],
+    "koffiCallsInFlightAtShutdown": [3],
+    "nativeSnapshots": [
+      {
+        "droppedVideo": "1222",
+        "droppedAudio": "4049",
+        "deliveredVideo": "239",
+        "deliveredAudio": "1873"
+      }
+    ]
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 44.15,
+  "resources": {
+    "wallSeconds": 62.3,
+    "cpuSeconds": 81.39,
+    "cpuPercentOfOneCore": 130.6,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 298,
+      "peak": 436
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 22,
+    "eventLoopLagMs": {
+      "n": 262,
+      "p50": 231.9,
+      "p95": 278,
+      "p99": 349.8,
+      "max": 562.7
+    },
+    "threadpoolStatMs": {
+      "n": 247,
+      "p50": 0.5,
+      "p95": 253.9,
+      "p99": 273.6,
+      "max": 354.1
+    }
+  }
+}

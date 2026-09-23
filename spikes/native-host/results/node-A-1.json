@@ -1,0 +1,109 @@
+{
+  "label": "A bridge (sessions=1)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 827,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1458,
+    "farEncodedFramesSent": 1441,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 7984525,
+    "bytesSent": 58526735,
+    "received": 1440,
+    "latencyMs": {
+      "n": 1440,
+      "p50": 54.7,
+      "p95": 69,
+      "p99": 80,
+      "max": 295.9
+    },
+    "aroundBlock": {
+      "framesDuring": 30,
+      "latencyMaxMs": 296
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6075,
+    "received": 6063
+  },
+  "dataChannel": {
+    "pings": 60,
+    "rttMs": {
+      "n": 60,
+      "p50": 8.5,
+      "p95": 32.1,
+      "p99": 38.7,
+      "max": 38.7
+    },
+    "echoedByFar": 60
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "readerFailures": [],
+    "koffiCallsInFlight": {
+      "n": 5404,
+      "p50": 3,
+      "p95": 3,
+      "p99": 3,
+      "max": 4
+    }
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 4.9,
+    "framesBefore": 960,
+    "videoDuringSecondAfter": 24
+  },
+  "shutdown": {
+    "ms": 43,
+    "ok": true,
+    "errors": [],
+    "koffiCallsInFlightAtShutdown": [3],
+    "nativeSnapshots": [
+      {
+        "droppedVideo": "0",
+        "droppedAudio": "0",
+        "deliveredVideo": "1441",
+        "deliveredAudio": "6065"
+      }
+    ]
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 41.07,
+  "resources": {
+    "wallSeconds": 60.9,
+    "cpuSeconds": 75.87,
+    "cpuPercentOfOneCore": 124.5,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 206,
+      "peak": 274
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 20,
+    "eventLoopLagMs": {
+      "n": 2863,
+      "p50": 0.3,
+      "p95": 6.5,
+      "p99": 11,
+      "max": 233.6
+    },
+    "threadpoolStatMs": {
+      "n": 1183,
+      "p50": 0.2,
+      "p95": 7,
+      "p99": 13.4,
+      "max": 27.4
+    }
+  }
+}

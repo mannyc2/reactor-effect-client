@@ -1,0 +1,137 @@
+{
+  "label": "B shrunk bridge (sessions=2)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 645,
+  "seconds": 60,
+  "video": {
+    "farSessions": 2,
+    "pushedByFarPeer": 2903,
+    "farEncodedFramesSent": 2866,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 8000000,
+    "bytesSent": 57558035,
+    "received": 2780,
+    "latencyMs": {
+      "n": 2780,
+      "p50": 64.5,
+      "p95": 80.6,
+      "p99": 94.1,
+      "max": 372.9
+    },
+    "aroundBlock": {
+      "framesDuring": 64,
+      "latencyMaxMs": 373
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 12094,
+    "received": 11932
+  },
+  "dataChannel": {
+    "pings": 58,
+    "rttMs": {
+      "n": 116,
+      "p50": 1.1,
+      "p95": 8.3,
+      "p99": 36.4,
+      "max": 36.5
+    },
+    "echoedByFar": 116
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "detachedDrops": 2,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 2000,
+    "measuredMs": 2000
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 1824,
+    "videoDuringSecondAfter": 47
+  },
+  "shutdown": {
+    "ms": 47,
+    "ok": true,
+    "errors": [],
+    "notifyCallbacks": 13139,
+    "nativeSnapshots": [
+      {
+        "audio": {
+          "delivered": "5973",
+          "dropped": "0",
+          "observed": "5973",
+          "queued": 0,
+          "queuedBytes": 0
+        },
+        "closed": false,
+        "coalescedSignals": 625,
+        "notifications": 6526,
+        "queuedControl": 0,
+        "video": {
+          "delivered": "1397",
+          "dropped": "40",
+          "observed": "1437",
+          "queued": 0,
+          "queuedBytes": 0
+        }
+      },
+      {
+        "audio": {
+          "delivered": "5959",
+          "dropped": "0",
+          "observed": "5959",
+          "queued": 0,
+          "queuedBytes": 0
+        },
+        "closed": false,
+        "coalescedSignals": 636,
+        "notifications": 6613,
+        "queuedControl": 0,
+        "video": {
+          "delivered": "1385",
+          "dropped": "40",
+          "observed": "1425",
+          "queued": 0,
+          "queuedBytes": 0
+        }
+      }
+    ]
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 82.44,
+  "resources": {
+    "wallSeconds": 60.7,
+    "cpuSeconds": 44.46,
+    "cpuPercentOfOneCore": 73.2,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 221,
+      "peak": 246
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 26,
+    "eventLoopLagMs": {
+      "n": 2720,
+      "p50": 0.4,
+      "p95": 7.7,
+      "p99": 17.5,
+      "max": 2030.5
+    },
+    "threadpoolStatMs": {
+      "n": 1119,
+      "p50": 0.2,
+      "p95": 7,
+      "p99": 15,
+      "max": 48.3
+    }
+  }
+}

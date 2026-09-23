@@ -1,0 +1,112 @@
+{
+  "label": "A bridge (sessions=1, loss=0.02, delay=40ms)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 1391,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1466,
+    "farEncodedFramesSent": 1293,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 861,
+    "farNackCount": 1495,
+    "farTargetBitrate": 7429991,
+    "bytesSent": 96757134,
+    "received": 1289,
+    "latencyMs": {
+      "n": 1289,
+      "p50": 83.8,
+      "p95": 194.4,
+      "p99": 430.3,
+      "max": 487.7
+    },
+    "aroundBlock": {
+      "framesDuring": 30,
+      "latencyMaxMs": 350
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6107,
+    "received": 6088
+  },
+  "dataChannel": {
+    "pings": 59,
+    "rttMs": {
+      "n": 59,
+      "p50": 86.8,
+      "p95": 280.5,
+      "p99": 712.1,
+      "max": 712.1
+    },
+    "echoedByFar": 59
+  },
+  "drops": {
+    "badSize": 0,
+    "noMetadata": 0,
+    "readerFailures": [],
+    "koffiCallsInFlight": {
+      "n": 5488,
+      "p50": 3,
+      "p95": 3,
+      "p99": 3,
+      "max": 4
+    }
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 2.2,
+    "framesBefore": 811,
+    "videoDuringSecondAfter": 24
+  },
+  "shutdown": {
+    "ms": 27,
+    "ok": true,
+    "errors": [],
+    "koffiCallsInFlightAtShutdown": [3],
+    "nativeSnapshots": [
+      {
+        "droppedVideo": "0",
+        "droppedAudio": "0",
+        "deliveredVideo": "1289",
+        "deliveredAudio": "6095"
+      }
+    ]
+  },
+  "relay": {
+    "dropped": 1898,
+    "forwarded": 93787
+  },
+  "farPeerCpuSeconds": 42.54,
+  "resources": {
+    "wallSeconds": 61.4,
+    "cpuSeconds": 68.07,
+    "cpuPercentOfOneCore": 110.8,
+    "childCpuSeconds": 0,
+    "rssMiB": {
+      "mean": 204,
+      "peak": 275
+    },
+    "childRssMiB": {
+      "mean": 0,
+      "peak": 0
+    },
+    "peakThreads": 20,
+    "eventLoopLagMs": {
+      "n": 2900,
+      "p50": 0.3,
+      "p95": 6.4,
+      "p99": 10.6,
+      "max": 246.3
+    },
+    "threadpoolStatMs": {
+      "n": 1195,
+      "p50": 0.2,
+      "p95": 6,
+      "p99": 14.1,
+      "max": 18.5
+    }
+  }
+}

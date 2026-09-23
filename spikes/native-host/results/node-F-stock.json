@@ -1,0 +1,102 @@
+{
+  "label": "F werift+ffmpeg (jitter=100ms)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 9454,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1545,
+    "farEncodedFramesSent": 91,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 0,
+    "farNackCount": 0,
+    "farTargetBitrate": 300000,
+    "bytesSent": 2400204,
+    "received": 89,
+    "latencyMs": {
+      "n": 90,
+      "p50": 1413.2,
+      "p95": 1572.2,
+      "p99": 1865.4,
+      "max": 1865.4
+    },
+    "aroundBlock": {
+      "framesDuring": 2,
+      "latencyMaxMs": 1572
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6435,
+    "received": 6433
+  },
+  "dataChannel": {
+    "pings": 60,
+    "rttMs": {
+      "n": 60,
+      "p50": 1.2,
+      "p95": 3.5,
+      "p99": 12.1,
+      "max": 12.1
+    },
+    "echoedByFar": 60
+  },
+  "drops": {
+    "encodedFrames": 90,
+    "keyframes": 1,
+    "noTrailer": 0,
+    "detachedDrops": 0,
+    "ffmpegBacklogMax": 2,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 61,
+    "videoDuringSecondAfter": 1
+  },
+  "shutdown": {
+    "ms": 32,
+    "ok": true,
+    "ffmpegExited": true,
+    "receiverStats": {
+      "nackRequestsSent": 0,
+      "nackOutstanding": 0,
+      "twccEnabled": true,
+      "nackEnabled": true
+    }
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 8.13,
+  "resources": {
+    "wallSeconds": 69.5,
+    "cpuSeconds": 8.93,
+    "cpuPercentOfOneCore": 12.8,
+    "childCpuSeconds": 2.11,
+    "rssMiB": {
+      "mean": 119,
+      "peak": 126
+    },
+    "childRssMiB": {
+      "mean": 123,
+      "peak": 126
+    },
+    "peakThreads": 11,
+    "eventLoopLagMs": {
+      "n": 3426,
+      "p50": 0.1,
+      "p95": 1,
+      "p99": 1.4,
+      "max": 245.9
+    },
+    "threadpoolStatMs": {
+      "n": 1378,
+      "p50": 0.2,
+      "p95": 0.4,
+      "p99": 3.2,
+      "max": 14.4
+    }
+  }
+}

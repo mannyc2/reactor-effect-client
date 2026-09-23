@@ -1,0 +1,102 @@
+{
+  "label": "F werift+ffmpeg (jitter=100ms, patched TWCC, far min 6000 kbps)",
+  "runtime": "node v24.15.0",
+  "connectedMs": 5648,
+  "seconds": 60,
+  "video": {
+    "farSessions": 1,
+    "pushedByFarPeer": 1453,
+    "farEncodedFramesSent": 1439,
+    "farFrameSize": "1344x768",
+    "farRetransmittedPackets": 103,
+    "farNackCount": 11,
+    "farTargetBitrate": 6000000,
+    "bytesSent": 45067090,
+    "received": 1437,
+    "latencyMs": {
+      "n": 1439,
+      "p50": 74,
+      "p95": 121.3,
+      "p99": 289.2,
+      "max": 395.8
+    },
+    "aroundBlock": {
+      "framesDuring": 27,
+      "latencyMaxMs": 334
+    }
+  },
+  "audio": {
+    "pushedByFarPeer": 6054,
+    "received": 6043
+  },
+  "dataChannel": {
+    "pings": 60,
+    "rttMs": {
+      "n": 60,
+      "p50": 4.7,
+      "p95": 20.1,
+      "p99": 267,
+      "max": 267
+    },
+    "echoedByFar": 60
+  },
+  "drops": {
+    "encodedFrames": 1439,
+    "keyframes": 2,
+    "noTrailer": 0,
+    "detachedDrops": 0,
+    "ffmpegBacklogMax": 4,
+    "readerFailures": []
+  },
+  "block": {
+    "requestedMs": 250,
+    "measuredMs": 250
+  },
+  "interrupt": {
+    "interruptMs": 0,
+    "framesBefore": 957,
+    "videoDuringSecondAfter": 24
+  },
+  "shutdown": {
+    "ms": 26,
+    "ok": true,
+    "ffmpegExited": true,
+    "receiverStats": {
+      "nackRequestsSent": 11,
+      "nackOutstanding": 0,
+      "twccEnabled": true,
+      "nackEnabled": true
+    }
+  },
+  "relay": null,
+  "farPeerCpuSeconds": 42.05,
+  "resources": {
+    "wallSeconds": 65.7,
+    "cpuSeconds": 42,
+    "cpuPercentOfOneCore": 63.9,
+    "childCpuSeconds": 15.25,
+    "rssMiB": {
+      "mean": 169,
+      "peak": 188
+    },
+    "childRssMiB": {
+      "mean": 124,
+      "peak": 127
+    },
+    "peakThreads": 11,
+    "eventLoopLagMs": {
+      "n": 3195,
+      "p50": 0.2,
+      "p95": 2.6,
+      "p99": 6,
+      "max": 246
+    },
+    "threadpoolStatMs": {
+      "n": 1297,
+      "p50": 0.2,
+      "p95": 4.2,
+      "p99": 9.9,
+      "max": 21.4
+    }
+  }
+}

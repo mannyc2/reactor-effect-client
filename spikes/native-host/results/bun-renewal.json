@@ -1,0 +1,8 @@
+{
+  "label": "renewal stress via shipped bridge",
+  "runtime": "bun 1.4.2",
+  "cycles": 30,
+  "factoriesCreated": 31,
+  "shutdownMs": { "p50": 131, "max": 170 },
+  "ok": true
+}

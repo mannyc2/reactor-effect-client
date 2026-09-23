@@ -1,0 +1,8 @@
+{
+  "label": "renewal stress via shipped bridge",
+  "runtime": "node v24.15.0",
+  "cycles": 30,
+  "factoriesCreated": 31,
+  "shutdownMs": { "p50": 21, "max": 38 },
+  "ok": true
+}
