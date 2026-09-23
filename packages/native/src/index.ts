@@ -63,6 +63,8 @@ const acquire = (options: NativeOptions): Effect.Effect<PeerFactoryShape, Reacto
 export const layer = (options: NativeOptions = {}): Layer.Layer<PeerFactory, ReactorError> =>
   Layer.effect(PeerFactory, acquire(options));
 
+export * as Isolated from "./isolated.js";
+
 /** Acquire the current decoded-media generation after session.connect succeeds. */
 export const media = (session: Session): Effect.Effect<MediaGeneration, ReactorError> =>
   mediaGeneration(session);

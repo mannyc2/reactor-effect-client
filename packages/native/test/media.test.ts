@@ -1,10 +1,5 @@
-import { execFile, spawn } from "node:child_process";
-import type { ChildProcessByStdio } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { availableParallelism, loadavg, networkInterfaces } from "node:os";
-import { createInterface } from "node:readline";
-import type { Readable, Writable } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -24,7 +19,7 @@ import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
 import * as Native from "../src/index.js";
-import { libraryPath, nativeClient, until } from "./support.js";
+import { FarPeer, libraryPath, nativeClient, record, until } from "./support.js";
 
 /*
  * The shipped library under the load the decision record measured: a real
@@ -32,9 +27,6 @@ import { libraryPath, nativeClient, until } from "./support.js";
  * Koffi on whichever runtime runs this file. scripts/test.sh runs it on Node
  * and on Bun.
  */
-const farPeerPath =
-  process.env.REACTOR_NATIVE_FAR_PEER ??
-  fileURLToPath(new URL("../rust/target/release/examples/far_peer", import.meta.url));
 const WIDTH = 1344,
   HEIGHT = 768;
 /**
@@ -68,11 +60,6 @@ const stall = (ms: number): void => {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const round = (value: number): number => Math.round(value * 100) / 100;
-
-type Message = Readonly<Record<string, unknown>>;
-
-const record = (value: unknown): Message =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Message) : {};
 
 const execFileAsync = promisify(execFile);
 
@@ -110,92 +97,6 @@ const cpuSeconds = async (pid: number | undefined): Promise<number> => {
     (clock ?? "").split(":").reduce((total, part) => total * 60 + Number(part), 0)
   );
 };
-
-class FarPeer {
-  private readonly waiters: {
-    readonly op: string;
-    readonly id: string;
-    readonly resolve: (message: Message) => void;
-  }[] = [];
-  private readonly exited: Promise<unknown>;
-
-  private constructor(private readonly child: ChildProcessByStdio<Writable, Readable, null>) {
-    this.exited = new Promise((resolve) => child.once("exit", resolve));
-    createInterface({ input: child.stdout }).on("line", (line) => {
-      const message = JSON.parse(line) as Message;
-      const index = this.waiters.findIndex(
-        (waiter) => waiter.op === message.op && waiter.id === (message.id ?? ""),
-      );
-      if (index >= 0) this.waiters.splice(index, 1)[0]?.resolve(message);
-    });
-  }
-
-  static async start(): Promise<FarPeer> {
-    if (!existsSync(farPeerPath))
-      throw new Error(
-        `missing far peer ${farPeerPath}; build it with cargo build --release --example far_peer (scripts/test.sh does)`,
-      );
-    const far = new FarPeer(spawn(farPeerPath, [], { stdio: ["pipe", "pipe", "inherit"] }));
-    await far.next("ready", "");
-    return far;
-  }
-
-  private next(op: string, id: string): Promise<Message> {
-    return new Promise((resolve) => this.waiters.push({ op, id, resolve }));
-  }
-
-  private send(message: Message): void {
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
-  }
-
-  async answer(id: string, sdp: string): Promise<string> {
-    const reply = this.next("answer", id);
-    this.send({ op: "offer", id, sdp });
-    return String((await reply).sdp);
-  }
-
-  candidate(id: string, candidate: IceCandidate): void {
-    this.send({
-      op: "candidate",
-      id,
-      candidate: candidate.candidate,
-      sdpMid: candidate.sdp_mid,
-      sdpMLineIndex: candidate.sdp_mline_index,
-    });
-  }
-
-  /** One session's stats as far_peer.rs reports them: pacing, encoder and path. */
-  async stats(id: string): Promise<Message> {
-    const reply = this.next("stats", id);
-    this.send({ op: "stats", id });
-    return record((await reply).stats);
-  }
-
-  /** Frames the far peer's encoder actually sent, and their size. */
-  async sent(id: string): Promise<{ frames: number; width: number; height: number }> {
-    const video = record((await this.stats(id)).video);
-    return {
-      frames: Number(video.framesSent ?? 0),
-      width: Number(video.frameWidth ?? 0),
-      height: Number(video.frameHeight ?? 0),
-    };
-  }
-
-  get pid(): number | undefined {
-    return this.child.pid;
-  }
-
-  async close(id: string): Promise<void> {
-    const reply = this.next("closed", id);
-    this.send({ op: "close", id });
-    await reply;
-  }
-
-  async quit(): Promise<void> {
-    this.child.stdin.end();
-    await this.exited;
-  }
-}
 
 interface Receiver {
   readonly id: string;

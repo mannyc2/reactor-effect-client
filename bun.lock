@@ -91,9 +91,13 @@
         "koffi": "catalog:",
       },
       "peerDependencies": {
+        "@effect/platform-node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
       },
+      "optionalPeers": [
+        "@effect/platform-node",
+      ],
     },
     "packages/test-kit": {
       "name": "reactor-effect-test-kit",
