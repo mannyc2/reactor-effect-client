@@ -74,14 +74,14 @@ const checkPrebuilt = (linked, platform) => {
   if (sbom === undefined) throw new Error(`no WebRTC SBOM ships for ${platform}`);
   const component = JSON.parse(readFileSync(join(notices, "reactor-webrtc", sbom), "utf8"))
     ?.metadata?.component;
-  const version = /^branch-heads\/(\d+)\+([0-9a-f]{8,40})$/.exec(String(component?.version));
-  const [, milestone, commit] = tag;
+  const [, milestone = "", commit = ""] = tag;
+  const [, sbomMilestone, sbomCommit = ""] =
+    /^branch-heads\/(\d+)\+([0-9a-f]{8,40})$/.exec(String(component?.version)) ?? [];
   if (
-    version === null ||
-    version[1] !== milestone ||
-    !version[2].startsWith(commit) ||
+    sbomMilestone !== milestone ||
+    !sbomCommit.startsWith(commit) ||
     pinned === undefined ||
-    !pinned.startsWith(version[2])
+    !pinned.startsWith(sbomCommit)
   )
     throw new Error(
       `${sbom} describes WebRTC ${JSON.stringify(component?.version)}, not the linked ${tag[0]} at ${String(pinned)}`,
