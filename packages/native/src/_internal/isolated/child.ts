@@ -52,6 +52,7 @@ const videoToWire = (frame: VideoFrame): WireVideo => ({
   height: frame.height,
   frameId: frame.frameId,
   timestampMicros: frame.timestampMicros,
+  sequence: frame.sequence,
   data: frame.data as Uint8Array<ArrayBuffer>,
   metadata: frame.metadata as Uint8Array<ArrayBuffer>,
 });
@@ -59,6 +60,7 @@ const videoToWire = (frame: VideoFrame): WireVideo => ({
 const audioToWire = (frame: AudioFrame): WireAudio => ({
   sampleRate: frame.sampleRate,
   channels: frame.channels,
+  sequence: frame.sequence,
   samples: frame.samples as Int16Array<ArrayBuffer>,
 });
 

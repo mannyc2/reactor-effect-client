@@ -811,6 +811,10 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
         expect(frame.format).toBe("BGRA");
         expect(frame.data.byteLength).toBe(frame.width * frame.height * 4);
       }
+      // The native admission sequence crosses the process boundary: it only rises.
+      for (const frames of [result.video, result.audio])
+        for (let index = 1; index < frames.length; index++)
+          expect(frames[index]!.sequence).toBeGreaterThan(frames[index - 1]!.sequence);
       expect(result.pressure.deliveredVideo).toBeGreaterThanOrEqual(8n);
       expect(result.report.localClosed).toBe(true);
       expect(result.report.localErrors).toEqual([]);

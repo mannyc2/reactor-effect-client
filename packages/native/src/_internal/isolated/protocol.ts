@@ -88,11 +88,15 @@ export const PrepareItem = Schema.Union([
 ]);
 export type PrepareItem = typeof PrepareItem.Type;
 
+/** A frame's admission sequence, stamped natively before any queue could drop it. */
+const Sequence = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+
 export const WireVideo = Schema.Struct({
   width: Schema.Int,
   height: Schema.Int,
   frameId: Schema.BigInt,
   timestampMicros: Schema.BigInt,
+  sequence: Sequence,
   data: Bytes,
   metadata: Bytes,
 });
@@ -101,6 +105,7 @@ export type WireVideo = typeof WireVideo.Type;
 export const WireAudio = Schema.Struct({
   sampleRate: Schema.Int,
   channels: Schema.Int,
+  sequence: Sequence,
   samples: Samples,
 });
 export type WireAudio = typeof WireAudio.Type;
@@ -257,6 +262,13 @@ export const fromWire = (wire: WireFailure): ReactorError => {
         reason: new TransportFailed({ message: wire.message, pairs: wire.pairs ?? 0 }),
         context,
       });
+    case "ClipEnded":
+      // Only an H3 provider raises it, from clip evidence no native peer has.
+      return ReactorError.fromCode(
+        "Protocol",
+        "isolated native child sent a clip failure",
+        context,
+      );
     default:
       return ReactorError.fromCode(
         wire.code,

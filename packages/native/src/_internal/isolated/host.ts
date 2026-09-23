@@ -291,6 +291,9 @@ const videoFrame = (track: string, frame: WireVideo): VideoFrame =>
     height: frame.height,
     frameId: frame.frameId,
     timestampMicros: frame.timestampMicros,
+    // The native admission sequence, so a frame the child's handoff evicted
+    // is a gap here as it is for the in-process host.
+    sequence: frame.sequence,
     data: exact(frame.data),
     metadata: exact(frame.metadata),
   });
@@ -301,6 +304,7 @@ const audioFrame = (track: string, frame: WireAudio): AudioFrame =>
     track,
     sampleRate: frame.sampleRate,
     channels: frame.channels,
+    sequence: frame.sequence,
     samples: exact(frame.samples),
   });
 
