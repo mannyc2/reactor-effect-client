@@ -6,8 +6,8 @@
       "name": "reactor-effect-client-release-tools",
       "dependencies": {
         "@effect/platform-node": "4.0.0-rc.115",
-        "@mannyc1/ts-release": "0.4.1",
-        "@mannyc1/ts-release-npm": "0.4.1",
+        "@mannyc1/ts-release": "0.4.2",
+        "@mannyc1/ts-release-npm": "0.4.2",
         "@sigstore/tuf": "5.0.0",
         "effect": "4.0.0-rc.115",
       },
@@ -23,9 +23,9 @@
 
     "@gar/promise-retry": ["@gar/promise-retry@1.0.3", "", {}, "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="],
 
-    "@mannyc1/ts-release": ["@mannyc1/ts-release@0.4.1", "", { "dependencies": { "effect-build": "0.8.0", "undici": "8.10.1" }, "peerDependencies": { "@effect/platform-bun": ">=4.0.0-rc.115 <4.1.0-0", "@effect/platform-node": ">=4.0.0-rc.115 <4.1.0-0", "effect": ">=4.0.0-rc.115 <4.1.0-0", "effect-build-apple": "0.8.0" }, "optionalPeers": ["@effect/platform-bun", "@effect/platform-node", "effect-build-apple"], "bin": { "ts-release": "./dist/bin/ts-release.js" } }, "sha512-Dt4zpVNo2pttr8C+xSaTAHMvPySGEEcRl44leKiIeIhoW9udj+UIJArZi3e2TeXVUoHSvTVhTRNk42GzvKw1Yw=="],
+    "@mannyc1/ts-release": ["@mannyc1/ts-release@0.4.2", "", { "dependencies": { "effect-build": "0.8.0", "undici": "8.10.1" }, "peerDependencies": { "@effect/platform-bun": ">=4.0.0-rc.115 <4.1.0-0", "@effect/platform-node": ">=4.0.0-rc.115 <4.1.0-0", "effect": ">=4.0.0-rc.115 <4.1.0-0", "effect-build-apple": "0.8.0" }, "optionalPeers": ["@effect/platform-bun", "@effect/platform-node", "effect-build-apple"], "bin": { "ts-release": "./dist/bin/ts-release.js" } }, "sha512-J9ZQfkVbx8agEEq3qW7ogmqRvn05GGwd8U3uf/ebtuADN0xHanodFQPcUSgt7BIUMPU/JYTOZ3nVVfUrqaR6WA=="],
 
-    "@mannyc1/ts-release-npm": ["@mannyc1/ts-release-npm@0.4.1", "", { "dependencies": { "@sigstore/bundle": "5.0.0", "semver": "7.8.5", "sigstore": "5.0.0" }, "peerDependencies": { "@mannyc1/ts-release": ">=0.4.1 <0.5.0", "effect": ">=4.0.0-rc.115 <4.1.0-0" } }, "sha512-0RuNs4fxm854Y/HNblaM/lEmAAR07GlD286EK07DoLHMt3/Ba5h017fWZyPtb2VrXbg4iocvkMMUun4i1ffJzw=="],
+    "@mannyc1/ts-release-npm": ["@mannyc1/ts-release-npm@0.4.2", "", { "dependencies": { "@sigstore/bundle": "5.0.0", "semver": "7.8.5", "sigstore": "5.0.0" }, "peerDependencies": { "@mannyc1/ts-release": ">=0.4.2 <0.5.0", "effect": ">=4.0.0-rc.115 <4.1.0-0" } }, "sha512-vcGOac2Zu8jONUab2wNp7j43zUA3okxBJRwGbxWEsmeWYuI+yD6POOjDWtcyeemoIQ9HwdhJbaKEJQgd5j/F9w=="],
 
     "@noble/hashes": ["@noble/hashes@2.4.0", "", {}, "sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA=="],
 

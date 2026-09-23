@@ -172,7 +172,7 @@ const visible = (candidate, ports) =>
 const dispatchEvents = (ports) =>
   ports.events.filter((event) => event.body._tag === "DispatchStarted").length;
 
-// The core (ts-release 0.4.1) gates a dependent operation on its dependency's Satisfied
+// The core gates a dependent operation on its dependency's Satisfied
 // status: runRelease neither observes nor dispatches a host publication until the client's
 // publication is Satisfied, while observeRelease refreshes every package regardless.
 

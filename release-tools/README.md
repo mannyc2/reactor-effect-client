@@ -8,12 +8,12 @@ tests the three archives once; preparation and publication consume those exact
 archives.
 
 The private tooling workspace pins `@mannyc1/ts-release` and its npm provider to
-`0.4.1`, with Effect and the Node platform at `4.0.0-rc.115`. Its separate lockfile
+`0.4.2`, with Effect and the Node platform at `4.0.0-rc.115`. Its separate lockfile
 does not add release dependencies to the published packages or change their
-public export maps. The Action is pinned to the published `v0.4.1` commit:
+public export maps. The Action is pinned to the `v0.4.2` release source commit:
 
 ```text
-mannyc2/ts-release/apps/action@3f64048fe4dd75fb3e853d6d3e048e4b635a1b1a
+mannyc2/ts-release/apps/action@fa50ce368c50e9a28a2e57f667d454374e7b209c
 ```
 
 This integration uses ts-release's public npm provider, immutable Bundle/Plan,
@@ -124,14 +124,25 @@ publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-
 
 Use the candidate's exact version for every package, in this order, as printed
 by the preparation run. Stable versions target `latest`; prereleases target
-`next`. The publication job restores the application and locked dependencies
-from the preparation run's commit, not a newer main implementation. It admits
+`next`. Every job checks out the exact `github.sha` of the manually dispatched
+`main` workflow, including publication and observation. This reviewed execution
+host supplies the application, locked dependencies and pinned Action; it has no
+arbitrary-ref input. It admits
 the original Bundle, Plan, qualification and all three archives before
 credentials or journal access. The Plan holds exactly three permitted npm
 publications to `https://registry.npmjs.org/`: `reactor-effect-client` first,
 then `reactor-effect-browser` and `reactor-effect-native`, each depending on the
 client's publication because both pin it as an exact peer. That order guarantees
 the peer exists when a host package is published.
+
+The candidate's `applicationCommit` continues to mean its **original preparation
+application commit**, which must equal its original CI source and signed
+provenance source. Input admission checks the selected CI and preparation run IDs,
+their exact attempts, workflow paths and commits against that retained identity.
+The current `executionHostCommit` is recorded only in the invocation input and
+report. Both input construction and application startup require the actual
+checkout to equal the dispatched main SHA. The host's commit never replaces a
+candidate source, preparation identity, Bundle digest, Plan ID or journal ID.
 
 The final verifier refreshes actual registry observations for every package, not
 just receipt acceptance. A publication receipt alone does not establish current
@@ -159,7 +170,14 @@ published before the host packages, an interrupted run can leave the client
 visible while a host package is not; a missing registry version for a package
 after a lost response is not proof that its PUT failed. There is no automatic
 risk acceptance, Plan supersession, candidate replacement, or blind resend.
-Retain the same candidate, application commit, dependencies and remote journal.
+Retain the same candidate and remote journal. A reviewed tooling repair can be
+merged to `main` and used to observe or resume the original candidate from a new
+manual run, without preparing or packing again. Its locked dependencies may fix
+execution defects while the original candidate's archives, signed provenance,
+Bundle, Plan, preparation application commit and request identities remain
+unchanged. Before resuming, validate the retained candidate with the repaired
+host and compare its request hashes with the original journal evidence. A host
+upgrade grants no replay, risk-acceptance or Plan-supersession authority.
 
 Artifacts are retained for 90 days. Download and preserve the complete candidate
 and reports before expiration when an unresolved release needs longer recovery.

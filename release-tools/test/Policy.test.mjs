@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
+import { Effect } from "effect";
 import { makeInput } from "../input.mjs";
+import { validateExecutionHost } from "../host.mjs";
 import { confirmationFor, validateRun } from "../model.mjs";
 import { visibility } from "../report.mjs";
 import {
   applicationCommit,
   ciRunId,
+  executionEnvironment,
+  loadOffline,
+  preparationRun,
   prepared,
   sourceCommit,
   withFixture,
   workflowRun,
+  writeJson,
 } from "./Fixture.mjs";
 
 test("only successful main CI and manual release run identities are admitted", () => {
@@ -53,9 +63,11 @@ test("explicit confirmation of every package selects publication; observe cannot
     assert.equal(confirmationFor(identity.qualification), confirmation);
     const options = {
       ciRun: workflowRun(),
+      candidateRun: preparationRun(),
       ciRunId,
       candidateRunId: "8101",
-      applicationCommit,
+      executionHostCommit: applicationCommit,
+      environment: executionEnvironment(),
       candidateDirectory: fixture.candidateDirectory,
       mode: "observe",
       confirmation: "",
@@ -95,12 +107,13 @@ test("explicit confirmation of every package selects publication; observe cannot
       "candidateDirectory",
       "candidateRunId",
       "ciRunId",
+      "executionHostCommit",
       "planId",
       "sourceCommit",
     ]);
     assert.throws(() => makeInput(identity, { ...options, candidateRunId: "8102" }));
     assert.throws(() => makeInput(identity, { ...options, mode: "prepare" }));
-    assert.throws(() => makeInput(identity, { ...options, applicationCommit: "4".repeat(40) }));
+    assert.throws(() => makeInput(identity, { ...options, executionHostCommit: "4".repeat(40) }));
     assert.throws(() =>
       makeInput(identity, { ...options, ciRun: { ...workflowRun(), head_sha: "4".repeat(40) } }),
     );
@@ -116,9 +129,11 @@ test("a prerelease confirmation names every package at the exact prerelease vers
       assert.equal(confirmationFor(identity.qualification), expected);
       const options = {
         ciRun: workflowRun(),
+        candidateRun: preparationRun(),
         ciRunId,
         candidateRunId: "8101",
-        applicationCommit,
+        executionHostCommit: applicationCommit,
+        environment: executionEnvironment(),
         candidateDirectory: fixture.candidateDirectory,
         mode: "publish",
         confirmation: expected,
@@ -128,6 +143,140 @@ test("a prerelease confirmation names every package at the exact prerelease vers
     },
     { version: "0.2.0-rc.1" },
   ));
+
+test("a newer dispatched main host admits the original candidate without changing its identities or bytes", () =>
+  withFixture(async (fixture) => {
+    const { identity, input } = await prepared(fixture);
+    const original = await Effect.runPromise(loadOffline(input));
+    const executionHostCommit = "4".repeat(40);
+    const paths = [
+      "identity.json",
+      "bundle.json",
+      "plan.json",
+      ...original.bundle.artifacts.flatMap((file) =>
+        file._tag === "OwnedFile" ? [`content/${file.content.sha256}`] : [],
+      ),
+    ];
+    const before = paths.map((path) => readFileSync(join(fixture.candidateDirectory, path)));
+    const resumed = makeInput(identity, {
+      ciRun: workflowRun(),
+      candidateRun: preparationRun(),
+      ciRunId,
+      candidateRunId: "8101",
+      executionHostCommit,
+      environment: executionEnvironment(executionHostCommit),
+      candidateDirectory: fixture.candidateDirectory,
+      mode: "publish",
+      confirmation,
+    });
+    assert.equal(resumed.executionHostCommit, executionHostCommit);
+    assert.equal(resumed.applicationCommit, applicationCommit);
+    assert.equal(resumed.sourceCommit, sourceCommit);
+    assert.equal(resumed.bundleSha256, input.bundleSha256);
+    assert.equal(resumed.planId, input.planId);
+    assert.equal(resumed.candidateRunId, input.candidateRunId);
+    const restored = await Effect.runPromise(loadOffline(resumed));
+    assert.deepEqual(restored.bundle, original.bundle);
+    assert.deepEqual(restored.plan, original.plan);
+    assert.equal(restored.plan.journalId, original.plan.journalId);
+    assert.deepEqual(
+      paths.map((path) => readFileSync(join(fixture.candidateDirectory, path))),
+      before,
+    );
+    // The new host cannot rewrite the original application/source or signed invocation.
+    await assert.rejects(
+      Effect.runPromise(loadOffline({ ...resumed, applicationCommit: executionHostCommit })),
+    );
+    await assert.rejects(
+      Effect.runPromise(loadOffline({ ...resumed, sourceCommit: executionHostCommit })),
+    );
+    await assert.rejects(Effect.runPromise(loadOffline({ ...resumed, candidateRunId: "8102" })));
+  }));
+
+test("retained selection binds both run attempts and the original preparation and source commits", () =>
+  withFixture(async (fixture) => {
+    const { identity } = await prepared(fixture);
+    const options = {
+      ciRun: workflowRun(),
+      candidateRun: preparationRun(),
+      ciRunId,
+      candidateRunId: "8101",
+      executionHostCommit: applicationCommit,
+      environment: executionEnvironment(),
+      candidateDirectory: fixture.candidateDirectory,
+      mode: "observe",
+      confirmation: "",
+    };
+    for (const changes of [
+      { ciRun: { ...workflowRun(), run_attempt: 2 } },
+      { candidateRun: { ...preparationRun(), run_attempt: 2 } },
+      { candidateRun: { ...preparationRun(), head_sha: "4".repeat(40) } },
+      { candidateRun: { ...preparationRun(), path: ".github/workflows/ci.yml" } },
+      { candidateRun: { ...preparationRun(), id: 8102 } },
+    ])
+      assert.throws(() => makeInput(identity, { ...options, ...changes }));
+    for (const changes of [
+      { provenance: { ...identity.provenance, runId: "8102" } },
+      { provenance: { ...identity.provenance, runAttempt: "2" } },
+      { provenance: { ...identity.provenance, sourceCommit: "4".repeat(40) } },
+      { applicationCommit: "4".repeat(40) },
+      { qualification: { ...identity.qualification, ciRunAttempt: "2" } },
+    ])
+      assert.throws(() => makeInput({ ...identity, ...changes }, options));
+  }));
+
+test("execution authority is restricted to the exact manually dispatched main checkout", () => {
+  const environment = executionEnvironment();
+  assert.equal(validateExecutionHost(environment, applicationCommit), applicationCommit);
+  for (const changes of [
+    { GITHUB_REF: "refs/heads/recovery" },
+    { GITHUB_REF: "refs/tags/v0.2.0" },
+    { GITHUB_REPOSITORY: "other/reactor-effect-client" },
+    { GITHUB_EVENT_NAME: "push" },
+    { GITHUB_SHA: "main" },
+    { GITHUB_SHA: "4".repeat(40) },
+  ])
+    assert.throws(() => validateExecutionHost({ ...environment, ...changes }, applicationCommit));
+});
+
+test("workflow selection uses the dispatched host while retaining the original CI and preparation source", () =>
+  withFixture((fixture) => {
+    const host = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const ci = join(fixture.directory, "ci.json");
+    const candidate = join(fixture.directory, "candidate-run.json");
+    const output = join(fixture.directory, "output");
+    writeJson(ci, workflowRun());
+    writeJson(candidate, preparationRun());
+    /** @param {string} mode @param {Record<string, string>} [environment] */
+    const select = (mode, environment = {}) =>
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL("../ci.mjs", import.meta.url)), "select", ci, candidate],
+        {
+          env: {
+            ...process.env,
+            ...executionEnvironment(host),
+            CI_RUN_ID: ciRunId,
+            CANDIDATE_RUN_ID: "8101",
+            RELEASE_MODE: mode,
+            GITHUB_OUTPUT: output,
+            ...environment,
+          },
+          stdio: "pipe",
+        },
+      );
+    select("publish");
+    assert.match(readFileSync(output, "utf8"), new RegExp(`execution-host-commit=${host}`));
+    assert.match(readFileSync(output, "utf8"), new RegExp(`source-commit=${sourceCommit}`));
+    select("observe");
+    assert.throws(() => select("publish", { GITHUB_SHA: sourceCommit }));
+    assert.throws(() => select("publish", { GITHUB_REF: "refs/heads/recovery" }));
+    assert.throws(() => select("prepare"));
+    writeJson(candidate, { ...preparationRun(), head_sha: "4".repeat(40) });
+    assert.throws(() => select("publish"));
+    writeJson(ci, { ...workflowRun(), head_sha: host });
+    select("prepare");
+  }));
 
 const operationIds = ["client-operation", "browser-operation", "native-operation"];
 /** @param {string} status @param {string} [operationId] @param {string} [planId] */

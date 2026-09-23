@@ -40,7 +40,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           signal,
           "observe",
         );
-        writeFileSync(reportFile, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
+        // Host evidence belongs to this invocation, never to the retained Plan or Bundle.
+        writeFileSync(
+          reportFile,
+          JSON.stringify({ ...report, executionHostCommit: input.executionHostCommit }, null, 2) +
+            "\n",
+          { mode: 0o600 },
+        );
         const status = visibility(
           report.plan.planId,
           report.plan.operations.map((operation) => operation.operationId),
