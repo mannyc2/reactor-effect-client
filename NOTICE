@@ -39,7 +39,8 @@ optional dependency of reactor-effect-native only; its installed distribution
 retains its upstream license. Development tooling and node_modules are excluded
 from the npm packages.
 
-The reference archive's limited TypeScript WebRTC/codec implementation is not
-part of any package's production graph. Retained owned-webrtc notices under
-packages/client/notices/ document the supplied reference and vector provenance;
-they do not indicate that a second WebRTC engine is shipped or supported.
+Session, correlation and observation code carried from the effect-webrtc-standalone
+reference project keeps that project's MIT license in
+packages/client/notices/owned-webrtc-LICENSE. That project's own WebRTC and codec
+implementation (ICE, DTLS, SCTP, SRTP and a VP8 decoder) and the third-party
+notices it required are not part of this repository or any package.
