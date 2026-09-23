@@ -12,7 +12,9 @@ import {
   checked,
   commit,
   journalId,
-  packageName,
+  packages,
+  qualificationMatches,
+  qualifiedPackages,
   readBytes,
   reject,
   releaseFailure,
@@ -29,7 +31,18 @@ import {
   workflowRef,
 } from "./provenance.mjs";
 
-/** Adopt qualified bytes and retain a signed provenance statement before npm publication.
+/** Dependency evidence for an offline provider preparation: declared, never dispatched.
+ * @param {import("@mannyc1/ts-release").Plan} plan @param {import("@mannyc1/ts-release").Operation} operation */
+export const preparationContext = (plan, operation) => ({
+  own: { operation, receipts: [], observations: [] },
+  dependencies: operation.dependsOn.map((id) => {
+    const dependency = plan.operations.find((entry) => entry.operationId === id);
+    if (dependency === undefined) reject("Plan dependency is absent");
+    return { operation: dependency, receipts: [], observations: [] };
+  }),
+});
+
+/** Adopt the qualified archives and retain signed provenance for each before npm publication.
  * @param {{ qualifiedDirectory: string, candidateDirectory: string, applicationCommit: string, run: unknown, ciRunId: string, source: Npm.ProvenanceSource }} options
  * @param {{ attest: Npm.Attest, verifyProvenance: Npm.VerifyProvenance }} signing */
 export const prepareCandidate = (options, signing) =>
@@ -59,96 +72,131 @@ export const prepareCandidate = (options, signing) =>
         qualification.sourceCommit !== run.head_sha ||
         qualification.ciRunId !== String(run.id) ||
         qualification.ciRunAttempt !== String(run.run_attempt) ||
-        qualification.version !== identity.version ||
-        qualification.sha256 !== identity.sha256
+        !qualificationMatches(qualification, identity)
       )
-        reject("Qualified archive is not the selected successful CI input");
-      const bytes = readBytes(join(options.qualifiedDirectory, identity.tarball));
-      if (sha256(bytes) !== identity.sha256) reject("Qualified archive bytes changed");
-      return { identity, identityBytes, qualification, qualificationBytes, bytes, source };
+        reject("Qualified archives are not the selected successful CI input");
+      const archives = qualifiedPackages(identity).map((entry) => {
+        const bytes = readBytes(join(options.qualifiedDirectory, entry.tarball));
+        if (sha256(bytes) !== entry.sha256) reject("Qualified archive bytes changed");
+        return { ...entry, bytes };
+      });
+      return { identityBytes, qualification, qualificationBytes, archives, source };
     });
     const candidateDirectory = resolve(options.candidateDirectory);
     yield* checked("destination", () =>
       mkdirSync(candidateDirectory, { recursive: false, mode: 0o700 }),
     );
     const owner = fileContentOwner(join(candidateDirectory, "content"));
+    /** @param {string} logicalName @param {Uint8Array} bytes @param {string} producer */
+    const retainFile = (logicalName, bytes, producer) =>
+      owner.putOwned(bytes).pipe(
+        Effect.map(
+          (content) =>
+            new File({
+              logicalName,
+              content,
+              deliveryMode: 0o644,
+              executable: null,
+              producedBy: { name: producer, version: "1" },
+            }),
+        ),
+      );
     /** @type {File[]} */
     const files = [];
-    /** @type {Array<[string, Uint8Array]>} */
-    const sources = [
-      [data.identity.tarball, data.bytes],
-      ["package-identity.json", data.identityBytes],
-      ["qualification.json", data.qualificationBytes],
-    ];
-    for (const [logicalName, bytes] of sources) {
-      files.push(
-        new File({
-          logicalName,
-          content: yield* owner.putOwned(bytes),
-          deliveryMode: 0o644,
-          executable: null,
-          producedBy: { name: "reactor-qualified-ci", version: "1" },
-        }),
-      );
+    /** @type {Map<string, File>} */
+    const archiveFiles = new Map();
+    for (const archive of data.archives) {
+      const file = yield* retainFile(archive.tarball, archive.bytes, "reactor-qualified-ci");
+      files.push(file);
+      archiveFiles.set(archive.name, file);
     }
+    files.push(
+      yield* retainFile("package-identity.json", data.identityBytes, "reactor-qualified-ci"),
+      yield* retainFile("qualification.json", data.qualificationBytes, "reactor-qualified-ci"),
+    );
     let bundle = yield* finalize(files);
-    const tarball = files[0];
-    if (!tarball) return yield* checked("archive", () => reject("Missing tarball"));
     /** @type {import("@mannyc1/ts-release/bundle").ArtifactAccess} */
     const access = {
       bundle,
       readContent: (content) =>
         owner.read(content).pipe(Effect.mapError(() => releaseFailure("content"))),
     };
-    const metadata = yield* Npm.inspectTarball(tarball, access);
-    yield* checked("npm-metadata", () => {
-      if (
-        metadata.private ||
-        metadata.name !== packageName ||
-        metadata.version !== data.identity.version
-      )
-        reject("Native npm metadata differs from the qualified package");
-    });
-    const attestation = yield* Npm.createProvenance(
-      {
-        authorize: true,
-        name: packageName,
-        version: metadata.version,
-        tarball,
-        source: data.source,
-      },
-      { ...access, attest: signing.attest },
-    );
-    const provenanceFile = new File({
-      logicalName: `${data.identity.tarball}.sigstore.json`,
-      content: yield* owner.putOwned(attestation.bytes),
-      deliveryMode: 0o644,
-      executable: null,
-      producedBy: { name: "reactor-release-provenance", version: "1" },
-    });
-    files.push(provenanceFile);
-    bundle = yield* finalize(files);
-    const operation = yield* Npm.publish(
-      new Npm.PublishIntent({
-        registry: "https://registry.npmjs.org/",
-        name: packageName,
-        version: metadata.version,
-        tarball,
-        integrity: metadata.integrity,
-        shasum: metadata.shasum,
-        initialTag: metadata.version.includes("-") ? "next" : "latest",
-        access: "public",
-        authorization,
-        provenance: new Npm.GitHubActionsProvenance({
+    /** @type {Map<string, Npm.PackageMetadata>} */
+    const metadata = new Map();
+    for (const [name, file] of archiveFiles) {
+      const inspected = yield* Npm.inspectTarball(file, access);
+      yield* checked("npm-metadata", () => {
+        if (
+          inspected.private ||
+          inspected.name !== name ||
+          inspected.version !== data.qualification.version
+        )
+          reject("Native npm metadata differs from the qualified package");
+      });
+      metadata.set(name, inspected);
+    }
+    /** @type {Map<string, { file: File, mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json" }>} */
+    const provenance = new Map();
+    for (const [name, file] of archiveFiles) {
+      const attestation = yield* Npm.createProvenance(
+        {
+          authorize: true,
+          name,
+          version: data.qualification.version,
+          tarball: file,
           source: data.source,
-          bundle: provenanceFile,
-          mediaType: attestation.mediaType,
+        },
+        { ...access, attest: signing.attest },
+      );
+      const provenanceFile = yield* retainFile(
+        `${file.logicalName}.sigstore.json`,
+        attestation.bytes,
+        "reactor-release-provenance",
+      );
+      files.push(provenanceFile);
+      provenance.set(name, { file: provenanceFile, mediaType: attestation.mediaType });
+    }
+    bundle = yield* finalize(files);
+    // One operation per package; each host publication depends on the client's.
+    /** @type {Map<string, import("@mannyc1/ts-release").Operation>} */
+    const operations = new Map();
+    for (const entry of packages) {
+      const file = archiveFiles.get(entry.name);
+      const inspected = metadata.get(entry.name);
+      const proof = provenance.get(entry.name);
+      if (file === undefined || inspected === undefined || proof === undefined)
+        return yield* checked("archive", () => reject(`Missing archive for ${entry.name}`));
+      const dependsOn = entry.dependsOn.map(
+        (name) => operations.get(name)?.operationId ?? reject(`Unprepared dependency ${name}`),
+      );
+      const operation = yield* Npm.publish(
+        new Npm.PublishIntent({
+          registry: "https://registry.npmjs.org/",
+          name: entry.name,
+          version: inspected.version,
+          tarball: file,
+          integrity: inspected.integrity,
+          shasum: inspected.shasum,
+          initialTag: inspected.version.includes("-") ? "next" : "latest",
+          access: "public",
+          authorization,
+          provenance: new Npm.GitHubActionsProvenance({
+            source: data.source,
+            bundle: proof.file,
+            mediaType: proof.mediaType,
+          }),
         }),
-      }),
-    );
+        dependsOn,
+      );
+      operations.set(entry.name, operation);
+    }
     const bundleBytes = encodeBundle(bundle);
     const bundleSha256 = sha256(bundleBytes);
-    const plan = yield* createPlan(bundleSha256, [operation], journalId(metadata.version));
+    const plan = yield* createPlan(
+      bundleSha256,
+      [...operations.values()],
+      journalId(data.qualification.version),
+    );
     const noRead = () =>
       checked("preparation-network", () => reject("Preparation cannot contact a registry"));
     const providers = Npm.definitions({
@@ -157,18 +205,17 @@ export const prepareCandidate = (options, signing) =>
       read: noRead,
       verifyProvenance: signing.verifyProvenance,
     });
-    yield* loadPlan(plan, providers);
+    const loaded = yield* loadPlan(plan, providers);
     const provider =
       providers.find((entry) => entry.definitionId === "npm.publish") ??
       reject("Missing npm provider");
-    // Exercise the provider's real native encoder, including publishConfig policy,
-    // without acquiring credentials, retaining a dispatch permit or sending bytes.
-    yield* provider.prepare(operation, {
-      own: { operation, receipts: [], observations: [] },
-      dependencies: [],
-    });
+    // Exercise the provider's real native encoder for every publication, including
+    // publishConfig policy, without acquiring credentials, retaining a dispatch permit
+    // or sending bytes.
+    for (const operation of loaded.operations)
+      yield* provider.prepare(operation, preparationContext(loaded, operation));
     const identity = Schema.decodeUnknownSync(CandidateIdentity)({
-      format: "reactor-ts-release/v2",
+      format: "reactor-ts-release/v3",
       applicationCommit: options.applicationCommit,
       bundleSha256,
       planId: plan.planId,

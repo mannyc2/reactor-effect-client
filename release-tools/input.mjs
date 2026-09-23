@@ -3,7 +3,14 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Schema } from "effect";
-import { CandidateIdentity, readBytes, reject, repository, validateRun } from "./model.mjs";
+import {
+  CandidateIdentity,
+  confirmationFor,
+  readBytes,
+  reject,
+  repository,
+  validateRun,
+} from "./model.mjs";
 
 /** @param {unknown} raw @param {{ ciRun: unknown, ciRunId: string, candidateRunId: string, applicationCommit: string, mode: string, confirmation: string, candidateDirectory: string }} options */
 export const makeInput = (raw, options) => {
@@ -18,10 +25,8 @@ export const makeInput = (raw, options) => {
     reject("Selected candidate or release application changed");
   if (!["publish", "observe"].includes(options.mode))
     reject("Use publish or observe for a retained candidate");
-  if (
-    options.mode === "publish" &&
-    options.confirmation !== `publish ${saved.qualification.name}@${saved.qualification.version}`
-  )
+  // The operator confirms every package coordinate the candidate will publish.
+  if (options.mode === "publish" && options.confirmation !== confirmationFor(saved.qualification))
     reject("Explicit package/version publication confirmation is required");
   return {
     candidateDirectory: resolve(options.candidateDirectory),

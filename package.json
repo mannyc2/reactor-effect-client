@@ -58,6 +58,6 @@
     "native:build": "bun run --filter reactor-effect-native native:build",
     "native:test": "bun run --filter reactor-effect-native native:test",
     "native:linux-x64": "bun run --filter reactor-effect-native native:linux-x64",
-    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && bun --no-env-file test ./release-tools/test"
+    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && cd release-tools && bun --no-env-file test ./test"
   }
 }
