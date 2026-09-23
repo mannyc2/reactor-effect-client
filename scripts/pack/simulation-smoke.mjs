@@ -42,6 +42,7 @@ await Effect.runPromise(
               height: 64,
               frameId: 9007199254740993n,
               timestampMicros: 1234567890123456n,
+              sequence: 0n,
               data: pixels,
               metadata,
             });
@@ -50,6 +51,7 @@ await Effect.runPromise(
               track: "main_audio",
               sampleRate: 48000,
               channels: 1,
+              sequence: 0n,
               samples,
             });
             pixels.fill(0);

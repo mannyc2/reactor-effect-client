@@ -159,7 +159,7 @@ const fixture = (options = {}) => {
             platform,
             library,
             sha256: digest(bytes),
-            build: { abiVersion: 3, sourceSha256: nativeSourceSha256, profile: "release" },
+            build: { abiVersion: 4, sourceSha256: nativeSourceSha256, profile: "release" },
           };
           contents[`lib/${platform}/${library}`] = bytes;
           contents[`lib/${platform}/native-identity.json`] = JSON.stringify(identity) + "\n";

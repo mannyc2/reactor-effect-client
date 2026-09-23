@@ -163,6 +163,8 @@ describe("native canonical session boundary", () => {
         height: 1,
         frameId: 18446744073709551615n,
         timestampMicros: 9007199254740993n,
+        // The admission sequence crosses the ABI as a full 64-bit value.
+        sequence: 9007199254740993n,
       });
       expect([...result.video.data]).toEqual([1, 2, 3, 4]);
       expect([...result.video.metadata]).toEqual([9, 8, 7]);
@@ -171,6 +173,7 @@ describe("native canonical session boundary", () => {
         track: "main_audio",
         sampleRate: 48_000,
         channels: 2,
+        sequence: 3n,
       });
       expect([...result.audio.samples]).toEqual([1, -2, 300, -400]);
 

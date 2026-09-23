@@ -7,7 +7,7 @@ use crate::error::BridgeError;
 use serde::{Serialize, Serializer};
 
 /// The ABI version the header declares. The host refuses any other.
-pub(crate) const ABI_VERSION: u32 = 3;
+pub(crate) const ABI_VERSION: u32 = 4;
 
 /// The capacity of `ReactorEffectFailure::message`, in bytes.
 pub(crate) const FAILURE_MESSAGE_BYTES: usize = 1020;

@@ -18,6 +18,7 @@ const video = (fields: Partial<NativeVideo> = {}): NativeVideo => ({
   height: 1,
   frameId: 18446744073709551615n,
   timestampMicros: 9007199254740993n,
+  sequence: 0n,
   data: Uint8Array.of(1, 2, 3, 4),
   metadata: Uint8Array.of(9, 8, 7),
   ...fields,
@@ -27,6 +28,7 @@ const audio = (fields: Partial<NativeAudio> = {}): NativeAudio => ({
   track: 1,
   sampleRate: 48_000,
   channels: 2,
+  sequence: 0n,
   samples: Int16Array.of(1, -2, 300, -400),
   ...fields,
 });

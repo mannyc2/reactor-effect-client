@@ -256,6 +256,7 @@ const videoFrame = (tracks: readonly Track[], taken: NativeVideo): VideoFrame =>
     height: taken.height,
     frameId: taken.frameId,
     timestampMicros: taken.timestampMicros,
+    sequence: taken.sequence,
     data: taken.data,
     metadata: taken.metadata,
   });
@@ -270,6 +271,7 @@ const audioFrame = (tracks: readonly Track[], taken: NativeAudio): AudioFrame =>
     track,
     sampleRate: taken.sampleRate,
     channels: taken.channels,
+    sequence: taken.sequence,
     samples: taken.samples,
   });
 };

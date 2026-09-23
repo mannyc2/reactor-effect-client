@@ -17,7 +17,7 @@ import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { FetchHttp } from "reactor-effect-client";
+import { FetchHttp, recorder } from "reactor-effect-client";
 import type { ReactorError } from "reactor-effect-client";
 import type { IceCandidate, MediaPressure, PeerEvent } from "reactor-effect-client/host";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
@@ -201,8 +201,12 @@ interface Receiver {
   readonly id: string;
   readonly peer: NativePeer;
   readonly scope: Scope.Closeable;
-  /** Arrival time and sender-to-arrival latency of every frame, in order. */
-  readonly frames: { readonly at: number; readonly latencyMs: number }[];
+  /** Arrival time, sender-to-arrival latency and admission sequence of every frame, in order. */
+  readonly frames: {
+    readonly at: number;
+    readonly latencyMs: number;
+    readonly sequence: bigint;
+  }[];
   readonly sizes: Map<string, number>;
   readonly rtts: number[];
   /** Sampled frames the bridge held for this receiver; see sample(). */
@@ -257,6 +261,7 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
                 receiver.frames.push({
                   at: performance.now(),
                   latencyMs: wallMs() - Number(sent.getBigUint64(0, true)) / 1000,
+                  sequence: frame.sequence,
                 });
                 const size = `${frame.width}x${frame.height}`;
                 receiver.sizes.set(size, (receiver.sizes.get(size) ?? 0) + 1);
@@ -598,6 +603,16 @@ describe("native media under load", () => {
         Math.abs(Number(long.droppedVideo - short.droppedVideo) - (reached - 8)),
       ).toBeLessThanOrEqual(2);
       expect(long.droppedAudio).toBe(0n);
+      // Every eviction is a gap in the admission sequence, at its position: the
+      // recorder's Lost runs add up to the bridge's own count. The reader
+      // subscribed before the answer, so its first frame is the track's first.
+      const recorded = await run(
+        Stream.runCollect(recorder(Stream.fromIterable([...receiver.frames]))),
+      );
+      expect(receiver.frames[0]?.sequence).toBe(0n);
+      const lost = recorded.flatMap((entry) => (entry._tag === "Lost" ? [entry] : []));
+      expect(lost.reduce((sum, entry) => sum + entry.count, 0n)).toBe(long.droppedVideo);
+      expect(lost.length).toBeGreaterThanOrEqual(1);
       // The backlog reached the bounded observation queue at its reader's pace,
       // drained, and delivery went on.
       expect(receiver.failures).toEqual([]);

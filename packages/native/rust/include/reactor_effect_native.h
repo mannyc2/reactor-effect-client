@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-/* ABI 3. Every supported host is little-endian; headers are native-endian. */
+/* ABI 4. Every supported host is little-endian; headers are native-endian. */
 
 typedef struct ReactorEffectPeer ReactorEffectPeer;
 
@@ -70,14 +70,16 @@ typedef struct ReactorEffectVideoHeader {
   uint64_t timestamp_us; /* sender capture time; 0 when absent */
   uint32_t track;        /* index into the prepare request's tracks */
   uint32_t reserved;
-} ReactorEffectVideoHeader; /* 40 bytes */
+  uint64_t sequence;     /* per-track admission sequence from 0, stamped before any queue drop */
+} ReactorEffectVideoHeader; /* 48 bytes */
 
 typedef struct ReactorEffectAudioHeader {
   uint32_t sample_rate;
   uint32_t channels;
   uint32_t samples; /* interleaved int16_t samples: frames * channels */
   uint32_t track;   /* index into the prepare request's tracks */
-} ReactorEffectAudioHeader; /* 16 bytes */
+  uint64_t sequence; /* per-track admission sequence from 0, stamped before any queue drop */
+} ReactorEffectAudioHeader; /* 24 bytes */
 
 /*
  * Runs on the peer's notifier thread with the readiness bits of every queue

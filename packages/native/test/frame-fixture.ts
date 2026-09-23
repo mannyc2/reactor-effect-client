@@ -1,7 +1,7 @@
 import { compileLibrary } from "./support.js";
 
 /**
- * A minimal ABI 3 library whose video queue the test scripts frame by frame.
+ * A minimal ABI 4 library whose video queue the test scripts frame by frame.
  * take_video copies a preallocated source into caller memory with one memcpy,
  * as the Rust bridge's `OutSlice::copy_from` does, so the host's allocation
  * and copy behaviour is the only JavaScript-side variable.
@@ -30,7 +30,7 @@ void fixture_push(uint32_t width, uint32_t height, uint32_t metadata, uint32_t c
   for (uint32_t i = 0; i < count; i++) queue[tail++ % 256] = (Spec){width, height, metadata};
 }
 
-uint32_t reactor_effect_abi_version(void) { return 3; }
+uint32_t reactor_effect_abi_version(void) { return 4; }
 const char *reactor_effect_build_identity(void) { return "frame-allocation-fixture"; }
 ReactorEffectPeer *reactor_effect_peer_create(ReactorEffectNotify notify) {
   (void)notify;
@@ -67,6 +67,7 @@ int reactor_effect_peer_take_video(ReactorEffectPeer *peer, ReactorEffectVideoHe
     .width = spec.width, .height = spec.height,
     .data_len = (uint32_t)size, .metadata_len = spec.metadata,
     .frame_id = sequence + 1, .timestamp_us = 1000 * (sequence + 1), .track = 0,
+    .sequence = sequence,
   };
   if (bgra == NULL || bgra_cap < size || (spec.metadata != 0 && (metadata == NULL || metadata_cap < spec.metadata)))
     return REACTOR_EFFECT_BUFFER_TOO_SMALL;

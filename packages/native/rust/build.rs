@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
 /// The C ABI version. A library test checks it against `abi::ABI_VERSION`.
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 
 /// The source identity's inputs outside `src/`, which it covers entirely.
 const SOURCE_FILES: [&str; 5] = [

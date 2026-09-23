@@ -149,6 +149,7 @@ fn video_item(track: u32, fill: u8, metadata: &[u8]) -> VideoItem {
         height: 1,
         frame_id: u64::MAX,
         timestamp_us: 9_007_199_254_740_993,
+        sequence: u64::MAX - 1,
         bgra: vec![fill; 8],
         metadata: metadata.to_vec(),
     }
@@ -163,12 +164,14 @@ const OVERFLOW: i32 = Status::Overflow.code();
 
 #[test]
 fn c_structs_match_the_header_layout() {
-    assert_eq!(size_of::<ReactorEffectVideoHeader>(), 40);
+    assert_eq!(size_of::<ReactorEffectVideoHeader>(), 48);
     assert_eq!(offset_of!(ReactorEffectVideoHeader, frame_id), 16);
     assert_eq!(offset_of!(ReactorEffectVideoHeader, timestamp_us), 24);
     assert_eq!(offset_of!(ReactorEffectVideoHeader, track), 32);
-    assert_eq!(size_of::<ReactorEffectAudioHeader>(), 16);
+    assert_eq!(offset_of!(ReactorEffectVideoHeader, sequence), 40);
+    assert_eq!(size_of::<ReactorEffectAudioHeader>(), 24);
     assert_eq!(offset_of!(ReactorEffectAudioHeader, track), 12);
+    assert_eq!(offset_of!(ReactorEffectAudioHeader, sequence), 16);
     assert_eq!(size_of::<ReactorEffectFailure>(), 1024);
 }
 
@@ -230,6 +233,7 @@ fn media_takes_copy_typed_frames_into_caller_buffers() {
         track: 1,
         sample_rate: 48_000,
         channels: 2,
+        sequence: 9,
         pcm: pcm.clone(),
     });
 
@@ -291,6 +295,7 @@ fn media_takes_copy_typed_frames_into_caller_buffers() {
             channels: 2,
             samples: 4,
             track: 1,
+            sequence: 9,
         }
     );
     assert_eq!(samples, pcm);

@@ -57,13 +57,13 @@ The current public native peer accepts at most one incoming video track and one 
 
 The crate's `src/` follows the peer's threads. `ffi.rs` exports the C ABI and `abi.rs` mirrors the header's constants, which a test checks against the header. `peer/` holds the peer handle, its owner thread (`owner.rs`), which owns every libwebrtc object, and the libwebrtc callbacks (`callbacks.rs`, `media.rs`) that copy into the state the threads share (`shared.rs`). `protocol/` is the JSON of requests, responses and event headers, and `sync/` holds the bounded queues, the callback gate and the notifier. Unit tests sit beside the code they test; a module with a larger suite keeps it in a `tests.rs` of its own.
 
-## Media path (ABI 3)
+## Media path (ABI 4)
 
 The bridge owns one libwebrtc peer on a Rust thread. Every peer in a process shares one libwebrtc factory, created on the first `prepare` and never destroyed, because reactor-webrtc requires one factory per process.
 
 libwebrtc callbacks copy each decoded frame once into a bounded, typed Rust queue and set a readiness bit. They never invoke or wait for JavaScript. The queues hold 8 video frames (333 ms at 24 fps), 256 PCM blocks (2.56 s of 10 ms blocks) and 1,024 transport events. One notifier thread per peer passes the readiness bits to a Koffi callback; it is the only native thread that ever waits on JavaScript. The callback wakes one pump fiber per queue. Each pump reads with synchronous, nonblocking takes that copy a frame straight into memory its consumer then owns, and yields between items so observers run at their own pace. No media call uses the libuv thread pool, and none is in flight when a reader is interrupted.
 
-A full media queue evicts its oldest item and counts it, so `media.snapshot` reports what was dropped, delivered and still queued. A full event queue is not pruned: it retires the connection with an `Overflow` failure.
+Each decoded frame and PCM block is numbered on its track, from 0, as it enters its queue and before the queue can evict anything, and the number reaches JavaScript as the frame's `sequence`. A full media queue evicts its oldest item and counts it, so `media.snapshot` reports what was dropped, delivered and still queued, and each eviction is a gap in the sequences a reader receives, at its position: `recorder(stream)` from `reactor-effect-client` turns a track's frames into the frames plus a `Lost { after, count }` for each gap. The stall load test checks that those counts add up to the bridge's own drop count. A full event queue is not pruned: it retires the connection with an `Overflow` failure.
 
 The C header, `rust/include/reactor_effect_native.h`, is the ABI contract. Readiness is a callback passed to `reactor_effect_peer_create`; `reactor_effect_peer_take_event`, `_take_video` and `_take_audio` report `BUFFER_TOO_SMALL` with the required size and keep the item queued until a take succeeds.
 

@@ -312,7 +312,7 @@ const checkNativeArchive = (archive: Archive, packaged: (path: string) => Buffer
     const identity = JSON.parse(packaged(path).toString("utf8")) as NativeIdentity;
     if (
       identity.schemaVersion !== 1 ||
-      identity.build.abiVersion !== 3 ||
+      identity.build.abiVersion !== 4 ||
       identity.build.profile !== "release"
     )
       fail(`invalid native identity: ${path}`);
