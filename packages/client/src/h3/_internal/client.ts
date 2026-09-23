@@ -122,6 +122,23 @@ interface PendingAcceptance extends AcceptanceIdentity {
 }
 type ObservationResult = DecodedMessage | undefined;
 
+/**
+ * Whether a snapshot at `revision` already reflects `event`: the reducer
+ * handles session events in sequence order. An acceptance is local evidence
+ * that no snapshot holds, and a diagnostic without a source has no sequence,
+ * so neither is ever covered.
+ */
+const covered = (event: ProviderEvent, revision: bigint): boolean => {
+  switch (event._tag) {
+    case "Acceptance":
+      return false;
+    case "Diagnostic":
+      return event.source !== undefined && event.source.sequence <= revision;
+    default:
+      return event.source.sequence <= revision;
+  }
+};
+
 const build = (
   session: Session,
   options: Options,
@@ -762,7 +779,13 @@ const build = (
         Effect.gen(function* () {
           const stream = yield* events.subscribe(bounds);
           const initial = state.snapshot();
-          return { initial, revision: initial.revision, events: stream };
+          // The reducer may apply a queued event between the subscription and
+          // this read; the snapshot then covers it, so it is not repeated.
+          return {
+            initial,
+            revision: initial.revision,
+            events: Stream.filter(stream, (event) => !covered(event, initial.revision)),
+          };
         }),
       events: (bounds) => events.stream(bounds),
       failure: Deferred.await(fatal),
