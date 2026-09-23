@@ -1,3 +1,4 @@
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
@@ -49,6 +50,12 @@ const statsBigInts = new Set([
 ]);
 // Bound on reading statistics to classify a failed connection.
 const CLASSIFY_TIMEOUT_MS = 2000;
+/**
+ * How long closing a peer waits for its native owner join. A healthy join under
+ * real libwebrtc took 13-62 ms in the media load tests on Node and Bun, which
+ * require it under 2 s; the default leaves five times that bound.
+ */
+export const defaultShutdownTimeout: Duration.Duration = Duration.seconds(10);
 
 const validateNativeTracks = (tracks: readonly Track[]): void => {
   const incomingVideo = tracks.filter(
@@ -405,7 +412,10 @@ export class NativePeer implements Peer {
   private failureEmitted = false;
   private failure: ReactorError | undefined;
 
-  constructor(libraryPath: string) {
+  constructor(
+    libraryPath: string,
+    private readonly shutdownTimeout: Duration.Input = defaultShutdownTimeout,
+  ) {
     this.bridge = new NativeBridge(libraryPath, (ready) => this.wake(ready));
     this.rawMedia = Object.freeze({
       video: (name: string) =>
@@ -696,6 +706,12 @@ export class NativePeer implements Peer {
     }
   }
 
+  /**
+   * Close, then wait for the native owner join. Only the wait is bounded: the
+   * deadline races the interruptible wait inside the uninterruptible region, so
+   * expiry stops waiting while the join keeps the handle and callback, and the
+   * bridge is retained until the join completes.
+   */
   get shutdown(): Effect.Effect<void, ReactorError> {
     return bridgeEffect("shutdown native WebRTC", () => {
       this.close();
@@ -706,6 +722,20 @@ export class NativePeer implements Peer {
           ? error
           : new ReactorError({ code: "Shutdown", message: error.message, context: error.context }),
       ),
+      Effect.timeoutOrElse({
+        duration: this.shutdownTimeout,
+        orElse: () =>
+          Effect.suspend(() => {
+            this.bridge.retain();
+            return Effect.fail(
+              new ReactorError({
+                code: "Shutdown",
+                message: "native owner join exceeded its deadline; handle retained",
+                context: { operation: "shutdown native WebRTC" },
+              }),
+            );
+          }),
+      }),
       Effect.uninterruptible,
     );
   }

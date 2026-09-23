@@ -1,4 +1,6 @@
 import { rmSync } from "node:fs";
+import * as Cause from "effect/Cause";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -9,16 +11,17 @@ import * as PlatformHttp from "effect/unstable/http/HttpClient";
 import type * as Crypto from "effect/Crypto";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { describe, expect, test } from "vitest";
+import koffi from "koffi";
+import { describe, expect, test, vi } from "vitest";
 import { ReactorError } from "reactor-effect-client";
 import { FetchHttp } from "reactor-effect-client";
 import * as Native from "../src/index.js";
 import type { UploadReference } from "reactor-effect-client/wire";
-import { compileFixture } from "./support.js";
+import { compileFixture, until } from "./support.js";
 
 const sessionId = "sess_native_fixture";
-const descriptor = {
-  session_id: sessionId,
+const descriptor = (id: string) => ({
+  session_id: id,
   state: "ACTIVE",
   capabilities: {
     protocol_version: "1.0",
@@ -30,41 +33,50 @@ const descriptor = {
     commands: [{ name: "echo", schema: {} }],
   },
   selected_transport: { protocol: "webrtc", version: "1.0" },
-};
+});
 
-const coordinatorFetch = async (
-  input: string | Request | URL,
-  init?: RequestInit,
-): Promise<Response> => {
-  const request = new Request(input, init);
-  const path = new URL(request.url).pathname;
-  if (path === "/tokens") return Response.json({ jwt: "fixture-jwt" });
-  if ((path === "/sessions" && request.method === "POST") || path === "/start_session")
-    return Response.json(descriptor);
-  if ((path === `/sessions/${sessionId}` || path === "/session") && request.method === "GET")
-    return Response.json(descriptor);
-  if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
-  if (path.endsWith("/connections")) return Response.json({ connection_id: 1001 });
-  if (path.endsWith("/ice_candidates")) return new Response(null, { status: 204 });
-  if (path.endsWith("/sdp_params")) {
-    if (request.method !== "GET") return new Response(null, { status: 204 });
-    return Response.json({ sdp_answer: "fixture native answer" });
-  }
-  if (
-    (path === `/sessions/${sessionId}` && request.method === "DELETE") ||
-    path === "/stop_session"
-  )
-    return new Response(null, { status: 202 });
-  return Response.json({ error: `unhandled native fixture route ${path}` }, { status: 404 });
+/** A coordinator that allocates one session per POST; a deleted session reads as absent. */
+const coordinator = () => {
+  const allocated: string[] = [],
+    deleted = new Set<string>();
+  const fetch = async (input: string | Request | URL, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    const id = /^\/sessions\/([^/]+)/.exec(path)?.[1] ?? sessionId;
+    if (path === "/tokens") return Response.json({ jwt: "fixture-jwt" });
+    if ((path === "/sessions" && request.method === "POST") || path === "/start_session") {
+      const allocation = allocated.length === 0 ? sessionId : `${sessionId}_${allocated.length}`;
+      allocated.push(allocation);
+      return Response.json(descriptor(allocation));
+    }
+    if ((path === `/sessions/${id}` || path === "/session") && request.method === "GET")
+      return deleted.has(id)
+        ? Response.json({ error: "session not found" }, { status: 404 })
+        : Response.json(descriptor(id));
+    if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
+    if (path.endsWith("/connections")) return Response.json({ connection_id: 1001 });
+    if (path.endsWith("/ice_candidates")) return new Response(null, { status: 204 });
+    if (path.endsWith("/sdp_params")) {
+      if (request.method !== "GET") return new Response(null, { status: 204 });
+      return Response.json({ sdp_answer: "fixture native answer" });
+    }
+    if ((path === `/sessions/${id}` && request.method === "DELETE") || path === "/stop_session") {
+      deleted.add(id);
+      return new Response(null, { status: 202 });
+    }
+    return Response.json({ error: `unhandled native fixture route ${path}` }, { status: 404 });
+  };
+  return { fetch, allocated, deleted };
 };
 
 const runClient = <A>(
   effect: Effect.Effect<A, ReactorError, PlatformHttp.HttpClient | Crypto.Crypto>,
+  fetch: typeof globalThis.fetch = coordinator().fetch,
 ): Promise<A> =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
-      Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch),
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
     ),
   );
 
@@ -183,4 +195,124 @@ describe("native canonical session boundary", () => {
       rmSync(compiled.directory, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test("bounds a native owner join that never completes, retains its bridge and still terminates the remote session", async () => {
+    if (process.platform === "win32") return;
+    const compiled = compileFixture();
+    const library = koffi.load(compiled.path);
+    const hold: (held: number) => void = library.func("void fixture_shutdown_hold(int held)");
+    const stat: (which: number) => number = library.func("int fixture_lifetime_stat(int which)");
+    const unregister = vi.spyOn(koffi, "unregister");
+    const remote = coordinator();
+    const options = { libraryPath: compiled.path, shutdownTimeout: "250 millis" } as const;
+    const create = { model: "fixture/native-session", jwt: Redacted.make("fixture-token") };
+    try {
+      const result = await runClient(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const factory = yield* Native.make({ apiUrl: "https://coordinator.fixture" }, options);
+            const client = yield* factory.create(create);
+            yield* client.connect;
+            hold(1);
+            const started = performance.now();
+            const report = yield* client.close;
+            const closeMs = performance.now() - started;
+            // The wedged join keeps its handle and callback, and the process
+            // admits no new owner, so nothing is allocated for one.
+            const retained = {
+              entered: stat(8),
+              destroyed: stat(9),
+              unregistered: unregister.mock.calls.length,
+            };
+            const degraded = yield* Effect.result(factory.create(create));
+            const allocatedWhileDegraded = remote.allocated.length;
+            hold(0);
+            yield* Effect.promise(() =>
+              until(() => stat(9) === 1, "the released join never destroyed its handle"),
+            );
+            const recovered = yield* factory.create(create);
+            yield* recovered.connect;
+            const recoveredReport = yield* recovered.close;
+            return { report, closeMs, retained, degraded, allocatedWhileDegraded, recoveredReport };
+          }),
+        ),
+        remote.fetch,
+      );
+
+      expect(result.closeMs).toBeGreaterThanOrEqual(200);
+      expect(result.closeMs).toBeLessThan(2_000);
+      expect(result.report.localClosed).toBe(false);
+      expect(result.report.localErrors).toHaveLength(1);
+      const [shutdown] = result.report.localErrors;
+      expect(shutdown?.code).toBe("Shutdown");
+      // The connection finalizer dies with the typed deadline failure, which
+      // cleanup records before it goes on to terminate the owned session.
+      expect(Cause.squash(shutdown?.context.detail as Cause.Cause<unknown>)).toMatchObject({
+        code: "Shutdown",
+        message: "native owner join exceeded its deadline; handle retained",
+      });
+      expect(result.report.remote).toMatchObject({
+        attempted: true,
+        confirmed: true,
+        evidence: "absent",
+      });
+      expect(remote.deleted.has(sessionId)).toBe(true);
+      expect(result.retained).toEqual({ entered: 1, destroyed: 0, unregistered: 0 });
+
+      expect(result.degraded._tag).toBe("Failure");
+      if (result.degraded._tag === "Failure")
+        expect(result.degraded.failure).toMatchObject({
+          code: "Native",
+          context: expect.objectContaining({ outcome: "not-submitted" }),
+        });
+      expect(result.allocatedWhileDegraded).toBe(1);
+
+      // Once the join completes it destroys and unregisters, and the process
+      // admits peers again.
+      expect(unregister).toHaveBeenCalledTimes(2);
+      expect(result.recoveredReport.localClosed).toBe(true);
+      expect(result.recoveredReport.localErrors).toEqual([]);
+      expect(remote.allocated).toHaveLength(2);
+    } finally {
+      hold(0);
+      unregister.mockRestore();
+      rmSync(compiled.directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("rejects a shutdown deadline that is not a positive duration before allocating", async () => {
+    if (process.platform === "win32") return;
+    const compiled = compileFixture();
+    const remote = coordinator();
+    try {
+      for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
+        const result = await runClient(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const factory = yield* Native.make(
+                { apiUrl: "https://coordinator.fixture" },
+                { libraryPath: compiled.path, shutdownTimeout: shutdownTimeout as Duration.Input },
+              );
+              return yield* Effect.result(
+                factory.create({
+                  model: "fixture/native-session",
+                  jwt: Redacted.make("fixture-token"),
+                }),
+              );
+            }),
+          ),
+          remote.fetch,
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(result.failure).toMatchObject({
+            code: "InvalidInput",
+            context: expect.objectContaining({ outcome: "not-submitted" }),
+          });
+      }
+      expect(remote.allocated).toEqual([]);
+    } finally {
+      rmSync(compiled.directory, { recursive: true, force: true });
+    }
+  });
 });

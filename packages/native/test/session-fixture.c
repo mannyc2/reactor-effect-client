@@ -43,8 +43,11 @@ static atomic_int lifetime_release_others, lifetime_release_held, lifetime_shutd
 static atomic_int lifetime_destroyed, lifetime_destroy_pending, lifetime_late, lifetime_changed_input;
 static atomic_int notifier_joins;
 static int media_fault;
+/* A shutdown join held open, as a wedged native owner would leave it. */
+static atomic_int shutdown_held, shutdowns_entered, peers_destroyed;
 
 void fixture_media_fault(int enabled) { media_fault = enabled; }
+void fixture_shutdown_hold(int held) { atomic_store(&shutdown_held, held); }
 
 void fixture_lifetime_begin(int expected) {
   atomic_store(&lifetime_expected, expected);
@@ -70,6 +73,8 @@ int fixture_lifetime_stat(int which) {
     case 5: return atomic_load(&lifetime_late);
     case 6: return atomic_load(&lifetime_changed_input);
     case 7: return atomic_load(&notifier_joins);
+    case 8: return atomic_load(&shutdowns_entered);
+    case 9: return atomic_load(&peers_destroyed);
     default: return -1;
   }
 }
@@ -309,6 +314,8 @@ void reactor_effect_peer_close(ReactorEffectPeer *peer) {
 int reactor_effect_peer_shutdown(ReactorEffectPeer *peer, ReactorEffectFailure *failure) {
   (void)failure;
   if (peer == NULL) return REACTOR_EFFECT_INVALID_INPUT;
+  atomic_fetch_add(&shutdowns_entered, 1);
+  while (atomic_load(&shutdown_held)) usleep(1000);
   atomic_store(&peer->closed, 1);
   join_notifier(peer);
   if (atomic_load(&lifetime_enabled)) {
@@ -321,6 +328,7 @@ int reactor_effect_peer_shutdown(ReactorEffectPeer *peer, ReactorEffectFailure *
 
 void reactor_effect_peer_destroy(ReactorEffectPeer *peer) {
   if (peer == NULL) return;
+  atomic_fetch_add(&peers_destroyed, 1);
   atomic_store(&peer->closed, 1);
   join_notifier(peer);
   if (atomic_load(&lifetime_enabled)) {
