@@ -943,14 +943,17 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
         yield* observed(provider, source.sequence);
         expect((yield* provider.current).clips[0]!.clip.metadata).toBe("foreign metadata");
         expect((yield* provider.current).clips[0]!.lifecycle).toBe("clip_failed");
-        expect(
+        // The captured event stream is appended by its own consumer; the snapshot
+        // revision does not prove that consumer has run yet.
+        const failed = () =>
           events.some(
             (event) =>
               event._tag === "Message" &&
               event.message.type === "clip_failed" &&
               event.message.data.reason === "fixture rejected generation",
-          ),
-        ).toBe(true);
+          );
+        yield* waitFor(() => Effect.succeed(failed()));
+        expect(failed()).toBe(true);
         expect(yield* provider.acceptances).toEqual([]);
       }),
     ));
