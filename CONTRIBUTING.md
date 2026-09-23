@@ -13,7 +13,7 @@ Required for the TypeScript workspace:
 - CPython 3.13 for the wire generator;
 - the checked-in `bun.lock`.
 
-Native development additionally requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [packages/native/README.md](./packages/native/README.md); ordinary build commands never install system packages.
+Native development additionally requires Rust 1.90 (under rustup, `packages/native/rust-toolchain.toml` selects it), Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [packages/native/README.md](./packages/native/README.md); ordinary build commands never install system packages.
 
 ```sh
 bun install --frozen-lockfile
@@ -85,7 +85,7 @@ bun run native:build
 bun run native:test
 ```
 
-The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, builds the test far peer, then runs the JavaScript native suite, including the media load tests, against the staged artifact on Node and on Bun. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
+The build script owns release staging. The test script checks Rust formatting, runs the Rust tests, clippy and rustdoc with warnings denied, builds the test far peer, then runs the JavaScript native suite, including the media load tests, against the staged artifact on Node and on Bun. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
 
 ```sh
 DOCKER_CONTEXT=my-context bun run native:linux-x64
@@ -106,6 +106,8 @@ The native bridge is transport/media only. Do not put Reactor session allocation
 Callbacks from libwebrtc must never enter or wait for JavaScript. Copy into bounded native queues and signal readiness; only a peer's notifier thread calls into JavaScript. Keep one libwebrtc factory per process. Fence event admission synchronously on close, and keep callback/userdata storage and the Koffi callback registration alive until shutdown has joined the notifier. A native failure carries one of the ABI's failure classes; add a class to the header, the Rust bridge and the host mapping together rather than matching on error text.
 
 The public native peer currently accepts at most one incoming video and one incoming audio track because pinned `reactor-webrtc` does not expose the remote callback's MID/identity. Do not widen this contract by assuming same-kind callback order; expose a formal upstream identity join first.
+
+Rust code follows the lint set in `packages/native/rust/Cargo.toml`, which `bun run native:test` enforces with warnings denied: clippy's pedantic group, a `// SAFETY:` comment on every `unsafe` block and one unsafe operation per block, no `unwrap` outside tests, and a module with children as `name.rs` beside `name/`, never `name/mod.rs`. Silence a lint with `#[expect(lint, reason = "...")]` on the narrowest item, not a crate-wide `allow`. Parse C arguments and JSON into typed values at the boundary (`abi.rs`, `ffi/memory.rs`, `protocol/`), state each exported function's pointer contract in its `# Safety` section, and keep a module's unit tests beside it. Tests check the Rust constants against the C header and each JSON shape against what the host parses, so a change to either fails until both sides agree.
 
 ## Dependencies and notices
 
