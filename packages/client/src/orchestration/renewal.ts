@@ -7,6 +7,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
@@ -42,6 +43,8 @@ import type {
   Source,
   SourceCleanup,
 } from "./types.js";
+import { handleContext } from "./types.js";
+import type { Engine, Handle, Media } from "./types.js";
 
 export type { MediaTail, Renewal } from "./types.js";
 
@@ -1044,3 +1047,16 @@ export const make = <R>(
       },
     } satisfies HandleShape;
   });
+
+/**
+ * The handle's `Engine`, `Media` and `Handle` services from one orchestration,
+ * so the three can never come from two paid session chains. Each build of the
+ * layer opens its own chain: bind it to a `const` and provide that one value.
+ */
+export const layer = <R>(
+  options: Options<R>,
+): Layer.Layer<
+  Engine | Media | Handle,
+  ReactorError | AcquisitionFailure,
+  Crypto.Crypto | Exclude<R, Scope.Scope>
+> => Layer.effectContext(Effect.map(make(options), handleContext));

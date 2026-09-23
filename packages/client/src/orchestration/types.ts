@@ -322,3 +322,10 @@ export class Media extends Context.Service<Media, MediaShape>()(
 export class Handle extends Context.Service<Handle, HandleShape>()(
   "reactor-effect-client/Orchestration/Handle",
 ) {}
+
+/** The three services of one handle, so its facets can never come from two orchestrations. */
+export const handleContext = (handle: HandleShape): Context.Context<Engine | Media | Handle> =>
+  Context.make(Engine, handle.engine).pipe(
+    Context.add(Media, handle.media),
+    Context.add(Handle, handle),
+  );
