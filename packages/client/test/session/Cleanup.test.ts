@@ -209,6 +209,33 @@ for (const commandTimeout of [25, 5_000]) {
   });
 }
 
+test("cleanup phases: a host that throws while its generation retires is still reported, not a defect", async () => {
+  const lifecycle = new SessionLifecycle(() => {});
+  const peer = new MockPeer(new HttpFixture());
+  const hostBug = new TypeError("host close failed");
+  const connection = lifecycle.begin(false, false, () => peer);
+  lifecycle.transition("connecting");
+  lifecycle.transition("closing");
+  const report = await Effect.runPromise(
+    cleanupSession({
+      connection,
+      scope: lifecycle.scope,
+      remote: new RemoteSession(),
+      http: coordinator(),
+      commandTimeout: 50,
+      retire: () => {
+        throw hostBug;
+      },
+    }).pipe(Effect.uninterruptible),
+  );
+  expect(report.localErrors).toHaveLength(1);
+  expect(report.localErrors[0]).toMatchObject({
+    reason: { _tag: "Shutdown" },
+    message: "generation retirement failed",
+    context: { detail: hostBug },
+  });
+});
+
 test("session lifecycle: interrupted concurrent close joins shutdown and publishes one report before callbacks", () =>
   withFixture(async (fixture) => {
     const shutdownEntered = Deferred.makeUnsafe<void>();

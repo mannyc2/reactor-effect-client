@@ -499,12 +499,24 @@ export class NativeBridge {
   constructor(path: string, onReady: (ready: number) => void) {
     NativeBridge.requireUsable(path);
     this.api = checked(path);
-    this.notify = this.api.register((ready) => {
-      if (!this.closed) onReady(ready);
-    });
+    // Koffi throws its own errors from these calls: a native failure, not a bug.
+    const allocationFailed = (cause: unknown) =>
+      ReactorError.fromCode("Native", "native WebRTC peer allocation failed", {
+        outcome: "not-submitted",
+        detail: cause,
+      });
+    try {
+      this.notify = this.api.register((ready) => {
+        if (!this.closed) onReady(ready);
+      });
+    } catch (cause) {
+      throw allocationFailed(cause);
+    }
     let handle: bigint | null = null;
     try {
       handle = this.api.create(this.notify);
+    } catch (cause) {
+      throw allocationFailed(cause);
     } finally {
       if (handle === null) this.api.unregister(this.notify);
     }

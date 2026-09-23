@@ -4,7 +4,7 @@ import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import type { CoordinatorClient, Termination } from "../../coordinator/_internal/client.js";
-import { parsed, ReactorError } from "../../errors.js";
+import { ReactorError } from "../../errors.js";
 import type { CloseReport } from "../../SessionTypes.js";
 import * as W from "../../wire.generated.js";
 import type { Connection } from "./lifecycle.js";
@@ -101,10 +101,18 @@ export const cleanupSession = (options: {
     const { connection } = options;
     const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
     if (connection !== undefined) {
+      // Cleanup reports every failure, a host peer's included, rather than dying:
+      // retiring the generation runs the host's close.
       const retired = yield* Effect.result(
-        parsed(() =>
-          options.retire(connection, ReactorError.fromCode("Aborted", "session closed")),
-        ),
+        Effect.try({
+          try: () => options.retire(connection, ReactorError.fromCode("Aborted", "session closed")),
+          catch: (cause) =>
+            ReactorError.is(cause)
+              ? cause
+              : ReactorError.fromCode("Shutdown", "generation retirement failed", {
+                  detail: cause,
+                }),
+        }),
       );
       if (Result.isFailure(retired)) errors.push(retired.failure);
     }
