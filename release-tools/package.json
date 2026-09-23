@@ -9,8 +9,8 @@
     "release:input": "bun --no-env-file input.mjs"
   },
   "dependencies": {
-    "@mannyc1/ts-release": "0.4.1",
-    "@mannyc1/ts-release-npm": "0.4.1",
+    "@mannyc1/ts-release": "0.4.2",
+    "@mannyc1/ts-release-npm": "0.4.2",
     "@sigstore/tuf": "5.0.0",
     "effect": "4.0.0-rc.115",
     "@effect/platform-node": "4.0.0-rc.115"

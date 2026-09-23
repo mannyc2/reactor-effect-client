@@ -13,6 +13,7 @@ import {
   validatePackageIdentity,
   validateRun,
 } from "./model.mjs";
+import { currentExecutionHost } from "./host.mjs";
 
 const [command, file, output] = process.argv.slice(2);
 if (!file) reject("usage: ci.mjs select run.json | stamp package-identity.json qualification.json");
@@ -25,14 +26,15 @@ const emit = (key, value) => {
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `${key}=${value}\n`);
 };
 if (command === "select") {
-  if (env.GITHUB_EVENT_NAME !== "workflow_dispatch") reject("Release must be manually dispatched");
+  const executionHostCommit = currentExecutionHost();
   const mode = env.RELEASE_MODE;
   if (!["prepare", "publish", "observe"].includes(mode ?? "")) reject("Invalid release mode");
   const ci = validateRun(JSON.parse(readBytes(file).toString()), env.CI_RUN_ID ?? "", "ci");
   emit("source-commit", ci.head_sha);
+  emit("execution-host-commit", executionHostCommit);
   if (mode === "prepare") {
-    if (ci.head_sha !== env.GITHUB_SHA) reject("Prepare requires CI for the current main commit");
-    emit("application-commit", env.GITHUB_SHA);
+    if (ci.head_sha !== executionHostCommit)
+      reject("Prepare requires CI for the current main commit");
   } else {
     if (!output) reject("Publish/observe requires the preparation run JSON");
     const prepared = validateRun(
@@ -40,7 +42,7 @@ if (command === "select") {
       env.CANDIDATE_RUN_ID ?? "",
       "release",
     );
-    emit("application-commit", prepared.head_sha);
+    if (prepared.head_sha !== ci.head_sha) reject("Preparation and selected CI sources differ");
   }
 } else if (command === "stamp") {
   if (!output || !["push", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME ?? ""))

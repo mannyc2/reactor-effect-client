@@ -43,10 +43,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     outputs:
-      application-commit: ${{ steps.selection.outputs.application-commit }}
+      execution-host-commit: ${{ steps.selection.outputs.execution-host-commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -89,6 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.select.outputs.execution-host-commit }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -136,10 +138,10 @@ jobs:
       contents: write # Git CAS journal only.
       id-token: write # npm trusted-publisher exchange.
     steps:
-      - name: Restore the release application from the reviewed preparation run
+      - name: Restore the reviewed host at this exact dispatched main commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.select.outputs.application-commit }}
+          ref: ${{ needs.select.outputs.execution-host-commit }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -155,18 +157,21 @@ jobs:
           path: .release/candidate
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
-      - name: Read original CI source identity
+      - name: Read original CI and preparation identities
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > .release/ci-run.json
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > .release/ci-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > .release/candidate-run.json
       - name: Bind explicit approval to the retained package and version
         id: input
         env:
           CONFIRM: ${{ inputs.confirm }}
-        run: node release-tools/input.mjs .release/candidate .release/ci-run.json .release/input.json
+        run: node release-tools/input.mjs .release/candidate .release/ci-run.json .release/candidate-run.json .release/input.json
       - name: Execute the pinned ts-release Action over the durable journal
         id: release
-        uses: mannyc2/ts-release/apps/action@3f64048fe4dd75fb3e853d6d3e048e4b635a1b1a # v0.4.1
+        uses: mannyc2/ts-release/apps/action@fa50ce368c50e9a28a2e57f667d454374e7b209c # v0.4.2
         with:
           application: release-tools/application.mjs
           input: ${{ steps.input.outputs.application-input }}
@@ -185,6 +190,7 @@ jobs:
           name: ts-release-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .release/report.json
+            .release/input.json
             .release/candidate/identity.json
           include-hidden-files: true
           if-no-files-found: error

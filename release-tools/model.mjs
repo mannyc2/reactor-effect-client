@@ -103,6 +103,7 @@ export const PackageIdentity = Schema.Struct({
 });
 export const CandidateIdentity = Schema.Struct({
   format: Schema.Literal("reactor-ts-release/v3"),
+  // Immutable original preparation application, also bound by signed provenance.
   applicationCommit: commit,
   bundleSha256: digest,
   planId: digest,
@@ -115,6 +116,8 @@ export const ApplicationInput = Schema.Struct({
   bundleSha256: digest,
   planId: digest,
   applicationCommit: commit,
+  // Runtime evidence only; never substitutes for any retained candidate identity.
+  executionHostCommit: commit,
   ciRunId: runId,
   sourceCommit: commit,
   authorize: Schema.Boolean,

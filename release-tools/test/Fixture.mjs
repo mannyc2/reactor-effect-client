@@ -51,6 +51,20 @@ export const workflowRun = () => ({
   head_repository: { full_name: repository },
 });
 
+export const preparationRun = () => ({
+  ...workflowRun(),
+  id: 8101,
+  event: "workflow_dispatch",
+  path: ".github/workflows/release.yml",
+});
+/** @param {string} [executionHostCommit] */
+export const executionEnvironment = (executionHostCommit = applicationCommit) => ({
+  GITHUB_REPOSITORY: repository,
+  GITHUB_EVENT_NAME: "workflow_dispatch",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_SHA: executionHostCommit,
+});
+
 /** @param {string} path @param {unknown} value */
 export const writeJson = (path, value) =>
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
@@ -252,6 +266,7 @@ export const prepared = async (fixture) => {
       bundleSha256: identity.bundleSha256,
       planId: identity.planId,
       applicationCommit,
+      executionHostCommit: applicationCommit,
       ciRunId,
       sourceCommit,
       authorize: false,

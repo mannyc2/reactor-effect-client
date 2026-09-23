@@ -29,6 +29,7 @@ import {
   validatePackageIdentity,
 } from "./model.mjs";
 import { authorization, verifyProvenance, workflowRef } from "./provenance.mjs";
+import { currentExecutionHost } from "./host.mjs";
 
 /** Admit saved bytes and the workspace's npm operations before acquiring any credentials or journal.
  * @param {unknown} raw
@@ -198,7 +199,12 @@ export const npmCredentials = (binding, options) =>
 /** @type {import("@mannyc1/ts-release/node").CreateApplication} */
 export const createApplication = (raw) =>
   Effect.gen(function* () {
+    const executionHostCommit = yield* checked("execution-host", currentExecutionHost);
     const { input, bundle, plan, intents, readContent } = yield* loadCandidate(raw);
+    yield* checked("execution-host", () => {
+      if (input.executionHostCommit !== executionHostCommit)
+        reject("Application input names a different execution host");
+    });
     const bounds = { timeoutMilliseconds: 30_000, maximumResponseBytes: 16 * 1024 * 1024 };
     /** @type {import("@mannyc1/ts-release/http").ResolveCredentials} */
     const credentials = (binding) =>
