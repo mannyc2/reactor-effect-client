@@ -45,11 +45,6 @@
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*"
   },
-  "peerDependenciesMeta": {
-    "@effect/platform-node": {
-      "optional": true
-    }
-  },
   "optionalDependencies": {
     "koffi": "catalog:"
   },
