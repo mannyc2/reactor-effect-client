@@ -7,11 +7,15 @@
 //! `stage.mjs --source-hash` and the pack check in `scripts/pack.ts`.
 
 use std::env;
-use std::fmt::Write as _;
+use std::error::Error;
+use std::fmt::{self, Write as _};
 use std::fs;
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// A failed build step, which Cargo reports with the script's output.
+type BuildResult<T> = Result<T, Box<dyn Error>>;
 
 /// The C ABI version. A library test checks it against `abi::ABI_VERSION`.
 const ABI_VERSION: u32 = 3;
@@ -35,32 +39,34 @@ const BUILD_ENVIRONMENT: [&str; 6] = [
     "MACOSX_DEPLOYMENT_TARGET",
 ];
 
-fn main() {
-    let root =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets the manifest dir"));
-    let identity = build_identity(&root);
+fn main() -> BuildResult<()> {
+    let root = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok_or("Cargo sets CARGO_MANIFEST_DIR")?;
+    let identity = build_identity(&root)?;
     println!("cargo::rustc-env=REACTOR_EFFECT_BUILD_IDENTITY={identity}");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        link_compiler_rt();
+        link_compiler_rt()?;
     }
+    Ok(())
 }
 
 /// The identity JSON: the source hash, target and profile, the toolchain's
 /// versions and the build environment.
-fn build_identity(root: &Path) -> String {
+fn build_identity(root: &Path) -> BuildResult<String> {
     let cc = env::var("CC").unwrap_or_else(|_| "clang".to_owned());
     let cxx = env::var("CXX").unwrap_or_else(|_| "clang++".to_owned());
-    let rustc = env::var("RUSTC").expect("Cargo sets RUSTC");
+    let rustc = cargo_env("RUSTC")?;
     // Each value is already JSON.
     let mut fields = vec![
         ("schemaVersion", "1".to_owned()),
         ("abiVersion", ABI_VERSION.to_string()),
-        ("sourceSha256", json_string(&source_sha256(root))),
-        ("target", json_string(&cargo_env("TARGET"))),
-        ("profile", json_string(&cargo_env("PROFILE"))),
-        ("rustc", json_string(&tool_version(&rustc))),
-        ("cc", json_string(&tool_version(&cc))),
-        ("cxx", json_string(&tool_version(&cxx))),
+        ("sourceSha256", json_string(&source_sha256(root)?)),
+        ("target", json_string(&cargo_env("TARGET")?)),
+        ("profile", json_string(&cargo_env("PROFILE")?)),
+        ("rustc", json_string(&tool_version(&rustc)?)),
+        ("cc", json_string(&tool_version(&cc)?)),
+        ("cxx", json_string(&tool_version(&cxx)?)),
     ];
     for key in BUILD_ENVIRONMENT {
         println!("cargo::rerun-if-env-changed={key}");
@@ -72,17 +78,18 @@ fn build_identity(root: &Path) -> String {
         .iter()
         .map(|(key, value)| format!("{}:{value}", json_string(key)))
         .collect();
-    format!("{{{}}}", fields.join(","))
+    Ok(format!("{{{}}}", fields.join(",")))
 }
 
-fn cargo_env(key: &str) -> String {
-    env::var(key).unwrap_or_else(|_| panic!("Cargo sets {key}"))
+/// A variable Cargo sets for every build script.
+fn cargo_env(key: &str) -> BuildResult<String> {
+    env::var(key).map_err(|error| format!("Cargo sets {key}: {error}").into())
 }
 
 /// SHA-256 over each source input, as `path NUL contents NUL` in path order.
-fn source_sha256(root: &Path) -> String {
+fn source_sha256(root: &Path) -> BuildResult<String> {
     let mut files = SOURCE_FILES.map(str::to_owned).to_vec();
-    files.extend(files_under(root, &root.join("src")));
+    files.extend(files_under(root, &root.join("src"))?);
     files.sort();
     // The directory as well, so a new source file reruns this script.
     println!("cargo::rerun-if-changed=src");
@@ -90,7 +97,7 @@ fn source_sha256(root: &Path) -> String {
     for file in files {
         println!("cargo::rerun-if-changed={file}");
         let contents = fs::read(root.join(&file))
-            .unwrap_or_else(|error| panic!("read native build input {file}: {error}"));
+            .map_err(|error| format!("read native build input {file}: {error}"))?;
         input.extend_from_slice(file.as_bytes());
         input.push(0);
         input.extend_from_slice(&contents);
@@ -100,25 +107,26 @@ fn source_sha256(root: &Path) -> String {
 }
 
 /// Every file under `directory`, as a `/`-separated path relative to `root`.
-fn files_under(root: &Path, directory: &Path) -> Vec<String> {
+fn files_under(root: &Path, directory: &Path) -> BuildResult<Vec<String>> {
+    let unreadable = |error: io::Error| format!("read {}: {error}", directory.display());
     let mut files = Vec::new();
-    for entry in fs::read_dir(directory).expect("the native source directory exists") {
-        let path = entry.expect("a readable native source entry").path();
+    for entry in fs::read_dir(directory).map_err(unreadable)? {
+        let path = entry.map_err(unreadable)?.path();
         if path.is_dir() {
-            files.extend(files_under(root, &path));
+            files.extend(files_under(root, &path)?);
         } else if path.is_file() {
             let relative = path
-                .strip_prefix(root)
-                .expect("sources are under the crate root");
-            let relative = relative.to_str().expect("source paths are UTF-8");
+                .strip_prefix(root)?
+                .to_str()
+                .ok_or_else(|| format!("source path is not UTF-8: {}", path.display()))?;
             files.push(relative.replace('\\', "/"));
         }
     }
-    files
+    Ok(files)
 }
 
 /// SHA-256 as hex, from the platform's tool rather than a build dependency.
-fn sha256_hex(input: &[u8]) -> String {
+fn sha256_hex(input: &[u8]) -> BuildResult<String> {
     let mut command = if cfg!(target_os = "macos") {
         let mut shasum = Command::new("shasum");
         shasum.args(["-a", "256"]);
@@ -130,83 +138,90 @@ fn sha256_hex(input: &[u8]) -> String {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("a SHA-256 tool is required to identify native build inputs");
+        .map_err(|error| {
+            format!("a SHA-256 tool is required to identify native build inputs: {error}")
+        })?;
+    // The piped stdin closes at the end of this statement, ending the input.
     child
         .stdin
         .take()
-        .expect("stdin is piped")
-        .write_all(input)
-        .expect("hash native build inputs");
-    let output = child.wait_with_output().expect("join native source hash");
-    assert!(output.status.success(), "native source hash failed");
-    let text = String::from_utf8(output.stdout).expect("the hash tool prints UTF-8");
-    let digest = text
-        .split_whitespace()
-        .next()
-        .expect("the hash tool prints a digest");
-    assert!(
-        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "unexpected SHA-256 digest {digest:?}"
-    );
-    digest.to_owned()
+        .ok_or("the hash tool has no stdin")?
+        .write_all(input)?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!("native source hash failed: {}", output.status).into());
+    }
+    let text = String::from_utf8(output.stdout)?;
+    let digest = text.split_whitespace().next().unwrap_or_default();
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("unexpected SHA-256 digest {digest:?}").into());
+    }
+    Ok(digest.to_owned())
 }
 
 /// The first line of `program --version`.
-fn tool_version(program: &str) -> String {
+fn tool_version(program: &str) -> BuildResult<String> {
     let output = Command::new(program)
         .arg("--version")
         .output()
-        .unwrap_or_else(|error| panic!("could not inspect native build tool {program}: {error}"));
-    assert!(
-        output.status.success(),
-        "native build tool {program} failed"
-    );
-    let text = String::from_utf8(output.stdout).expect("build tool versions are UTF-8");
-    text.lines().next().unwrap_or_default().to_owned()
+        .map_err(|error| format!("could not inspect native build tool {program}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("native build tool {program} failed: {}", output.status).into());
+    }
+    let text = String::from_utf8(output.stdout)?;
+    Ok(text.lines().next().unwrap_or_default().to_owned())
 }
 
 /// `value` as a JSON string literal.
 fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => {
-                write!(out, "\\u{:04x}", u32::from(ch)).expect("writing to a String cannot fail");
+    JsonString(value).to_string()
+}
+
+/// Formats a string as a JSON string literal.
+struct JsonString<'a>(&'a str);
+
+impl fmt::Display for JsonString<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_char('"')?;
+        for ch in self.0.chars() {
+            match ch {
+                '"' => f.write_str("\\\"")?,
+                '\\' => f.write_str("\\\\")?,
+                '\n' => f.write_str("\\n")?,
+                '\r' => f.write_str("\\r")?,
+                '\t' => f.write_str("\\t")?,
+                ch if ch.is_control() => write!(f, "\\u{:04x}", u32::from(ch))?,
+                ch => f.write_char(ch)?,
             }
-            ch => out.push(ch),
         }
+        f.write_char('"')
     }
-    out.push('"');
-    out
 }
 
 /// The pinned Reactor libwebrtc archive contains `ScreenCaptureKit` objects
 /// produced by Clang. They reference compiler-rt's deployment-version helper,
 /// which rustc's macOS link line does not add on its own.
-fn link_compiler_rt() {
+fn link_compiler_rt() -> BuildResult<()> {
     let cc = env::var("CC").unwrap_or_else(|_| "clang".to_owned());
     let output = Command::new(cc)
         .arg("-print-resource-dir")
         .output()
-        .expect("clang is required to link the Reactor libwebrtc archive on macOS");
-    assert!(output.status.success(), "clang -print-resource-dir failed");
-    let resource = String::from_utf8(output.stdout).expect("clang's resource path is UTF-8");
+        .map_err(|error| {
+            format!("clang is required to link the Reactor libwebrtc archive on macOS: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format!("clang -print-resource-dir failed: {}", output.status).into());
+    }
+    let resource = String::from_utf8(output.stdout)?;
     let directory = PathBuf::from(resource.trim()).join("lib/darwin");
     let runtime = directory.join("libclang_rt.osx.a");
-    assert!(
-        runtime.is_file(),
-        "missing macOS compiler-rt archive at {}",
-        runtime.display()
-    );
+    if !runtime.is_file() {
+        return Err(format!("missing macOS compiler-rt archive at {}", runtime.display()).into());
+    }
     println!("cargo::rustc-link-search=native={}", directory.display());
     println!("cargo::rustc-link-lib=static=clang_rt.osx");
     // Cargo passes rustc-link-lib only to the library target, and the far-peer
     // example cannot link this cdylib, so it names the archive itself.
     println!("cargo::rustc-link-arg-examples={}", runtime.display());
+    Ok(())
 }

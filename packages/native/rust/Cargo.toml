@@ -20,20 +20,84 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 unused_qualifications = "warn"
+redundant_imports = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+# A foreign function that may unwind must not be called as if it cannot.
+ffi_unwind_calls = "warn"
 
+# pedantic, plus restriction and nursery lints chosen one at a time. Lints
+# that never fire still guard against the pattern arriving later.
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# Every unsafe block does one unsafe thing and says why it is sound.
+
+# Don't panic. reactor-webrtc runs callbacks behind `extern "C"` trampolines,
+# where a panic aborts the host process, and an entry point can at best report
+# one as a native failure. Library code returns errors instead; clippy.toml
+# exempts tests, and pedantic adds unchecked_duration_subtraction.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "warn"
+panic_in_result_fn = "warn"
+fallible_impl_from = "warn"
+exit = "warn"
+
+# Don't fail silently. An error is handled, returned, or ignored under an
+# #[expect] that says why.
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+# A new ABI or event variant must be routed, not absorbed by a catch-all arm.
+wildcard_enum_match_arm = "warn"
+
+# Don't do bad concurrency stuff. The crate uses threads and locks rather
+# than async; await_holding_lock and large_futures are already on for any
+# async code that arrives.
+significant_drop_in_scrutinee = "warn"
+infinite_loop = "warn"
+rc_mutex = "warn"
+debug_assert_with_mut_call = "warn"
+
+# Don't do unsafe things with memory. Every unsafe block does one unsafe
+# thing and says why it is sound.
 multiple_unsafe_ops_per_block = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
-# A panic outside tests names the invariant that broke.
-unwrap_used = "warn"
+mem_forget = "warn"
+as_ptr_cast_mut = "warn"
+non_send_fields_in_send_ty = "warn"
+
+# Don't do potentially incorrect things with numbers. pedantic already covers
+# lossy casts, float_cmp and invalid_upcast_comparisons.
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+suspicious_xor_used_as_pow = "warn"
+
+# Don't do bad things that are easy to avoid.
+dbg_macro = "warn"
+infallible_try_from = "warn"
+# Hash iteration order is unspecified; the bridge's output is ordered.
+iter_over_hash_type = "warn"
+# The host process owns stdout and stderr.
+print_stdout = "warn"
+print_stderr = "warn"
 # A module with children is `name.rs` beside `name/`, never `name/mod.rs`.
 mod_module_files = "warn"
-dbg_macro = "warn"
-todo = "warn"
+
+# Don't allow your way around these lints: a suppression is an
+# #[expect(lint, reason = "...")], which fails once nothing needs it.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 [profile.release]
 lto = "thin"

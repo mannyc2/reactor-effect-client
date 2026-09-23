@@ -2,6 +2,7 @@
 
 use crate::abi::Status;
 use std::fmt;
+use std::sync::mpsc::{RecvError, SendError};
 
 /// The failure class of a [`BridgeError`], which fixes the status the C ABI
 /// reports for it.
@@ -68,6 +69,20 @@ impl fmt::Display for BridgeError {
 
 impl std::error::Error for BridgeError {}
 
+/// A peer's channels to its owner thread disconnect only once that thread has
+/// stopped, so a failed send or receive means the peer has closed.
+impl<T> From<SendError<T>> for BridgeError {
+    fn from(_: SendError<T>) -> Self {
+        Self::closed()
+    }
+}
+
+impl From<RecvError> for BridgeError {
+    fn from(_: RecvError) -> Self {
+        Self::closed()
+    }
+}
+
 /// Classifies reactor-webrtc failures.
 ///
 /// reactor-webrtc reports every libwebrtc failure as an untyped string, so the
@@ -86,6 +101,7 @@ impl<T> Classify<T> for reactor_webrtc::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
     fn a_classified_failure_names_its_operation_and_keeps_the_libwebrtc_text() {
@@ -116,5 +132,18 @@ mod tests {
         }
         // Closed is an outcome the host expects, not a failure of the call.
         assert_eq!(FailureClass::Closed.status(), Status::Closed);
+    }
+
+    #[test]
+    fn a_disconnected_owner_channel_reads_as_a_closed_peer() {
+        let (sender, receiver) = mpsc::channel::<()>();
+        drop(receiver);
+        let unsent = sender.send(()).unwrap_err();
+        assert_eq!(BridgeError::from(unsent), BridgeError::closed());
+
+        let (sender, receiver) = mpsc::channel::<()>();
+        drop(sender);
+        let unreceived = receiver.recv().unwrap_err();
+        assert_eq!(BridgeError::from(unreceived), BridgeError::closed());
     }
 }

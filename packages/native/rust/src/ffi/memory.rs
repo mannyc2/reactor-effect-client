@@ -5,7 +5,7 @@
 //! then safe. Output views write through raw pointers and never form
 //! references, since caller memory may be uninitialized.
 
-use crate::error::BridgeError;
+use crate::error::{BridgeError, FailureClass};
 use crate::peer::ReactorEffectPeer;
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -56,20 +56,23 @@ impl<T: Copy> OutSlice<T> {
 
     /// Copy `items` to the start of the buffer.
     ///
-    /// # Panics
-    /// If the buffer cannot hold them; callers check [`holds`](Self::holds).
-    pub(super) fn copy_from(&mut self, items: &[T]) {
-        assert!(
-            self.holds(items.len()),
-            "the caller's buffer cannot hold the item"
-        );
-        if items.is_empty() {
-            return;
+    /// # Errors
+    /// A native failure, copying nothing, if the buffer cannot hold them.
+    /// Callers rule that out with [`holds`](Self::holds) first.
+    pub(super) fn copy_from(&mut self, items: &[T]) -> Result<(), BridgeError> {
+        if !self.holds(items.len()) {
+            return Err(BridgeError::new(
+                FailureClass::Native,
+                "the caller's buffer cannot hold the item",
+            ));
         }
-        // SAFETY: `holds` shows the buffer is non-null with room for `items`,
-        // `new`'s caller made it writable, and caller memory cannot overlap
-        // the bridge-owned `items`.
-        unsafe { ptr::copy_nonoverlapping(items.as_ptr(), self.ptr, items.len()) }
+        if !items.is_empty() {
+            // SAFETY: `holds` shows the buffer is non-null with room for
+            // `items`, `new`'s caller made it writable, and caller memory
+            // cannot overlap the bridge-owned `items`.
+            unsafe { ptr::copy_nonoverlapping(items.as_ptr(), self.ptr, items.len()) }
+        }
+        Ok(())
     }
 }
 
@@ -124,18 +127,26 @@ mod tests {
         let mut buffer = [9u8; 4];
         // SAFETY: `buffer` is writable for 4 bytes for the whole test.
         let mut view = unsafe { OutSlice::new(buffer.as_mut_ptr(), buffer.len()) };
-        view.copy_from(&[1, 2]);
-        view.copy_from(&[]);
+        assert_eq!(view.copy_from(&[1, 2]), Ok(()));
+        assert_eq!(view.copy_from(&[]), Ok(()));
         assert_eq!(buffer, [1, 2, 9, 9]);
     }
 
     #[test]
-    #[should_panic(expected = "cannot hold")]
-    fn a_slice_view_refuses_an_item_it_cannot_hold() {
+    fn a_slice_view_refuses_an_item_it_cannot_hold_and_copies_nothing() {
         let mut buffer = [0u8; 1];
         // SAFETY: `buffer` is writable for 1 byte for the whole test.
         let mut view = unsafe { OutSlice::new(buffer.as_mut_ptr(), buffer.len()) };
-        view.copy_from(&[1, 2]);
+        let error = view.copy_from(&[1, 2]).unwrap_err();
+        assert_eq!(error.class, FailureClass::Native);
+        // SAFETY: a null view is never written.
+        let mut null = unsafe { OutSlice::<u8>::new(ptr::null_mut(), 8) };
+        assert_eq!(
+            null.copy_from(&[1]).unwrap_err().class,
+            FailureClass::Native
+        );
+        assert_eq!(null.copy_from(&[]), Ok(()));
+        assert_eq!(buffer, [0]);
     }
 
     #[test]

@@ -33,11 +33,10 @@ pub(crate) fn decode<T: DeserializeOwned>(request: &[u8]) -> Result<T, BridgeErr
         .map_err(|error| BridgeError::invalid(format!("invalid JSON: {error}")))
 }
 
-/// Encode a JSON response.
-pub(crate) fn encode(response: &impl Serialize) -> Result<Vec<u8>, BridgeError> {
-    serde_json::to_vec(response).map_err(|error| {
-        BridgeError::new(FailureClass::Native, format!("serialize response: {error}"))
-    })
+/// Encode a JSON response or event header.
+pub(crate) fn encode(value: &impl Serialize) -> Result<Vec<u8>, BridgeError> {
+    serde_json::to_vec(value)
+        .map_err(|error| BridgeError::new(FailureClass::Native, format!("serialize JSON: {error}")))
 }
 
 /// The response of a call that returns nothing.

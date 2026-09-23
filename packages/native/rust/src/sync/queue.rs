@@ -138,20 +138,17 @@ impl<T: QueueItem> Queue<T> {
     /// producer never waits for that copy.
     pub(crate) fn take(&self, fits: impl FnOnce(&T) -> bool) -> Taken<T> {
         let mut state = lock(&self.state);
-        let Some(front) = state.items.front() else {
+        let Some(item) = state.items.pop_front() else {
             return if state.closed {
                 Taken::Closed
             } else {
                 Taken::Empty
             };
         };
-        if !fits(front) {
+        if !fits(&item) {
+            state.items.push_front(item);
             return Taken::TooSmall;
         }
-        let item = state
-            .items
-            .pop_front()
-            .expect("the front item was just inspected");
         state.bytes -= item.byte_len();
         state.taken += 1;
         Taken::Item(item)
@@ -198,7 +195,7 @@ mod tests {
     fn take_any<T: QueueItem>(queue: &Queue<T>) -> Option<T> {
         match queue.take(|_| true) {
             Taken::Item(item) => Some(item),
-            Taken::TooSmall => unreachable!("take_any accepts every item"),
+            Taken::TooSmall => panic!("take_any accepts every item"),
             Taken::Empty | Taken::Closed => None,
         }
     }

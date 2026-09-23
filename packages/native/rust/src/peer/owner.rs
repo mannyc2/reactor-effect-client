@@ -58,6 +58,16 @@ pub(crate) fn factory() -> Result<&'static PeerConnectionFactory, BridgeError> {
     Ok(factory)
 }
 
+/// Send a command's result to the peer that queued it.
+fn respond<T>(reply: &Reply<T>, result: Result<T, BridgeError>) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the peer waits for every reply, so a failed send means a panic unwound it \
+                  and no one is waiting"
+    )]
+    let _ = reply.send(result);
+}
+
 /// A negotiated connection and the libwebrtc objects created with it.
 struct Connection {
     peer: PeerConnection,
@@ -107,9 +117,7 @@ impl Owner {
                     reply,
                 } => {
                     let result = self.unless_closed(|owner| owner.call(operation, &request));
-                    // The peer waits for every reply; only a panic unwinding
-                    // it can have dropped the receiver.
-                    let _ = reply.send(result);
+                    respond(&reply, result);
                 }
                 Command::Send {
                     channel,
@@ -117,7 +125,7 @@ impl Owner {
                     reply,
                 } => {
                     let result = self.unless_closed(|owner| owner.send(channel, &bytes));
-                    let _ = reply.send(result);
+                    respond(&reply, result);
                 }
                 Command::Shutdown => break,
             }
@@ -229,9 +237,9 @@ impl Owner {
     }
 
     /// Apply the remote answer, which carries the remote peer's candidates.
-    fn answer(&mut self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
+    fn answer(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
         let sdp = std::str::from_utf8(request)
-            .map_err(|_| BridgeError::invalid("answer SDP is not UTF-8"))?;
+            .map_err(|error| BridgeError::invalid(format!("answer SDP is not UTF-8: {error}")))?;
         if sdp.is_empty() {
             return Err(BridgeError::invalid("answer SDP is empty"));
         }
@@ -247,7 +255,7 @@ impl Owner {
     }
 
     /// Pause a declared track, or resume it in its declared direction.
-    fn set_direction(&mut self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
+    fn set_direction(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
         let request: DirectionRequest = protocol::decode(request)?;
         let track = self.track(&request.name)?;
         let direction = if request.active {
@@ -263,7 +271,7 @@ impl Owner {
     }
 
     /// Cap an outgoing track's send bitrate.
-    fn set_max_bitrate(&mut self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
+    fn set_max_bitrate(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
         let request = BitrateRequest::parse(request)?;
         let track = self.track(&request.name)?;
         if track.direction != Direction::SendOnly {
@@ -279,7 +287,7 @@ impl Owner {
         Ok(protocol::empty_response())
     }
 
-    fn stats(&mut self) -> Result<Vec<u8>, BridgeError> {
+    fn stats(&self) -> Result<Vec<u8>, BridgeError> {
         let report = self
             .connection()?
             .peer
@@ -290,7 +298,7 @@ impl Owner {
 
     /// Send one binary message on an open bridge channel, unless it would
     /// push the channel's unsent bytes past their bound.
-    fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), BridgeError> {
+    fn send(&self, channel: Channel, bytes: &[u8]) -> Result<(), BridgeError> {
         let open = self
             .connection
             .as_ref()

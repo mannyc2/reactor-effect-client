@@ -29,11 +29,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use session::Session;
 use std::collections::HashMap;
+use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 /// Distinct pattern frames the video cycles through.
 const PATTERN_FRAMES: u32 = 12;
+
+/// A failure that ends the far peer, which prints it and exits nonzero.
+type FarResult<T> = Result<T, Box<dyn Error>>;
+
+/// Names the step behind a libwebrtc failure.
+trait Context<T> {
+    fn context(self, step: &str) -> FarResult<T>;
+}
+
+impl<T> Context<T> for reactor_webrtc::Result<T> {
+    fn context(self, step: &str) -> FarResult<T> {
+        self.map_err(|error| format!("{step}: {error}").into())
+    }
+}
 
 /// A request from the test host.
 #[derive(Debug, Deserialize)]
@@ -69,22 +84,24 @@ enum Reply<'a> {
     Closed { id: &'a str },
 }
 
-fn reply(reply: &Reply<'_>) {
-    let line = serde_json::to_string(reply).expect("a reply is plain JSON data");
+/// Write one reply line. Failing means the host has gone.
+fn reply(reply: &Reply<'_>) -> FarResult<()> {
+    let line = serde_json::to_string(reply)?;
     let mut stdout = io::stdout().lock();
-    // A host that closed stdout has gone, and there is no one left to tell.
-    let _ = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
+    writeln!(stdout, "{line}")?;
+    stdout.flush()?;
+    Ok(())
 }
 
-fn main() {
+fn main() -> FarResult<()> {
     let shape = Shape::from_args();
     let frames = Arc::new(media::pattern(shape, PATTERN_FRAMES));
     let factory = PeerConnectionFactory::builder()
         .with_synthetic_adm()
         .build()
-        .expect("far peer factory");
+        .context("far peer factory")?;
     let mut sessions = HashMap::new();
-    reply(&Reply::Ready);
+    reply(&Reply::Ready)?;
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         // A line that is not a request is not for this peer.
@@ -93,12 +110,12 @@ fn main() {
         };
         match request {
             Request::Offer { id, sdp } => {
-                let (session, answer) = Session::open(&factory, sdp, Arc::clone(&frames), shape);
+                let (session, answer) = Session::open(&factory, sdp, Arc::clone(&frames), shape)?;
                 sessions.insert(id.clone(), session);
                 reply(&Reply::Answer {
                     id: &id,
                     sdp: &answer,
-                });
+                })?;
             }
             Request::Candidate {
                 id,
@@ -118,19 +135,20 @@ fn main() {
             }
             Request::Stats { id } => {
                 let stats = sessions.get(&id).map_or(Value::Null, Session::stats);
-                reply(&Reply::Stats { id: &id, stats });
+                reply(&Reply::Stats { id: &id, stats })?;
             }
             Request::Close { id } => {
                 if let Some(session) = sessions.remove(&id) {
-                    session.close();
+                    session.close()?;
                 }
-                reply(&Reply::Closed { id: &id });
+                reply(&Reply::Closed { id: &id })?;
             }
         }
     }
     for session in sessions.into_values() {
-        session.close();
+        session.close()?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

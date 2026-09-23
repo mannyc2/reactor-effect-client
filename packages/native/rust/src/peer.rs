@@ -94,7 +94,11 @@ impl ReactorEffectPeer {
         self.ensure_open()?;
         match Operation::try_from(operation)? {
             Operation::MediaSnapshot => protocol::encode(&self.shared.snapshot()),
-            operation => self.on_owner(|reply| Command::Call {
+            operation @ (Operation::Prepare
+            | Operation::Answer
+            | Operation::Direction
+            | Operation::MaxBitrate
+            | Operation::Stats) => self.on_owner(|reply| Command::Call {
                 operation,
                 request: request.to_vec(),
                 reply,
@@ -132,7 +136,10 @@ impl ReactorEffectPeer {
         let mut threads = lock(&self.threads);
         let mut result = Ok(());
         if let Some(owner) = threads.owner.take() {
-            // A failed send means the owner has stopped already; join it anyway.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a failed send means the owner has stopped already; it is joined either way"
+            )]
             let _ = self.commands.send(Command::Shutdown);
             if owner.join().is_err() {
                 result = Err(BridgeError::new(
@@ -164,20 +171,23 @@ impl ReactorEffectPeer {
         }
     }
 
-    /// Queue a command for the owner thread and wait for its reply.
+    /// Queue a command for the owner thread and wait for its reply. Either
+    /// channel failing means the owner thread has stopped: the peer is closed.
     fn on_owner<T>(&self, command: impl FnOnce(Reply<T>) -> Command) -> Result<T, BridgeError> {
         let (reply, response) = mpsc::sync_channel(1);
-        self.commands
-            .send(command(reply))
-            .map_err(|_| BridgeError::closed())?;
-        response.recv().map_err(|_| BridgeError::closed())?
+        self.commands.send(command(reply))?;
+        response.recv()?
     }
 }
 
 impl Drop for ReactorEffectPeer {
     fn drop(&mut self) {
-        // Destruction has no failure channel; a host that needs the result
-        // calls `reactor_effect_peer_shutdown` first, and this is then a no-op.
+        // A host that needs the result calls `reactor_effect_peer_shutdown`
+        // first, and this is then a no-op.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "destruction has no failure channel"
+        )]
         let _ = self.shutdown();
     }
 }

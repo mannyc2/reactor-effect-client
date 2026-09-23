@@ -2,7 +2,8 @@
 
 use super::TrackKind;
 use crate::abi::Channel;
-use crate::error::FailureClass;
+use crate::error::{BridgeError, FailureClass};
+use crate::protocol;
 use reactor_webrtc::{IceCandidate, PeerConnectionState};
 use serde::Serialize;
 
@@ -52,18 +53,25 @@ impl<'a> Event<'a> {
     }
 
     /// Frame this event as a packet.
-    pub(crate) fn to_packet(&self) -> Vec<u8> {
-        let header = serde_json::to_vec(self).expect("an event header is plain JSON data");
-        let header_len = u32::try_from(header.len()).expect("an event header is under 4 GiB");
+    pub(crate) fn to_packet(&self) -> Result<Vec<u8>, BridgeError> {
+        let header = protocol::encode(self)?;
+        let header_len = u32::try_from(header.len()).map_err(|error| {
+            BridgeError::overflow(format!("event header length does not fit a u32: {error}"))
+        })?;
         let payload = match self {
-            Self::Message { bytes, .. } => *bytes,
-            _ => &[],
+            Self::Message { bytes, .. } => bytes,
+            Self::State { .. }
+            | Self::Ice { .. }
+            | Self::Channel { .. }
+            | Self::Track { .. }
+            | Self::Decoded { .. }
+            | Self::Error { .. } => &[][..],
         };
         let mut packet = Vec::with_capacity(4 + header.len() + payload.len());
         packet.extend_from_slice(&header_len.to_le_bytes());
         packet.extend_from_slice(&header);
         packet.extend_from_slice(payload);
-        packet
+        Ok(packet)
     }
 }
 
@@ -104,7 +112,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn header(event: &Event<'_>) -> Value {
-        let packet = event.to_packet();
+        let packet = event.to_packet().unwrap();
         let (header, payload) = parse_packet(&packet);
         assert!(payload.is_empty(), "only a message carries a payload");
         header
@@ -117,7 +125,7 @@ mod tests {
             channel: Channel::Data,
             bytes: &payload,
         };
-        let packet = event.to_packet();
+        let packet = event.to_packet().unwrap();
         let header = br#"{"type":"message","channel":"data"}"#;
         assert_eq!(
             packet[..4],

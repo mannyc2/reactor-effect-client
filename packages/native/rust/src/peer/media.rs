@@ -105,10 +105,11 @@ impl QueueItem for AudioItem {
     }
 }
 
-/// A length for a C header. Only queued items get headers, and every queue's
-/// byte bound is far below 4 GiB.
+/// A length for a C header. Only queued items get headers, and a queue refuses
+/// any item over its byte bound, which `Shared` keeps within `u32`: the
+/// saturation never happens.
 fn queued_len(len: usize) -> u32 {
-    u32::try_from(len).expect("a queued item is smaller than its queue's byte bound")
+    u32::try_from(len).unwrap_or(u32::MAX)
 }
 
 pub(crate) fn kind_of(track: &RemoteTrack) -> TrackKind {

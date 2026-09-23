@@ -8,7 +8,7 @@ use crate::protocol::Event;
 use crate::sync::Push;
 use crate::test_support::wait_until;
 use serde_json::Value;
-use std::mem::{offset_of, size_of};
+use std::mem::offset_of;
 use std::panic::resume_unwind;
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -200,7 +200,8 @@ fn take_event_reports_the_size_then_copies_the_event_once() {
         channel: Channel::Control,
         bytes: b"abc",
     }
-    .to_packet();
+    .to_packet()
+    .unwrap();
     assert_eq!(
         peer.shared().events.try_push(packet.clone()),
         Push::Accepted

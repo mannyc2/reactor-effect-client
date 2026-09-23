@@ -68,7 +68,7 @@ fn a_peer_prepares_once() {
 
 #[test]
 fn a_rejected_answer_is_classified_as_sdp_rejected() {
-    let mut owner = prepared();
+    let owner = prepared();
     let error = owner
         .answer(b"v=0\r\nthis is not an answer\r\n")
         .expect_err("libwebrtc must reject a malformed answer");
@@ -82,21 +82,23 @@ fn a_rejected_answer_is_classified_as_sdp_rejected() {
 
 #[test]
 fn an_empty_or_non_utf8_answer_is_invalid_input() {
-    let mut owner = prepared();
+    let owner = prepared();
     assert_eq!(
         owner.answer(b"").unwrap_err(),
         BridgeError::invalid("answer SDP is empty")
     );
-    assert_eq!(
-        owner.answer(&[0xff, 0xfe]).unwrap_err(),
-        BridgeError::invalid("answer SDP is not UTF-8")
+    let error = owner.answer(&[0xff, 0xfe]).unwrap_err();
+    assert_eq!(error.class, FailureClass::InvalidInput);
+    assert!(
+        error.message.starts_with("answer SDP is not UTF-8: "),
+        "{error}"
     );
     owner.shutdown();
 }
 
 #[test]
 fn before_prepare_each_call_fails_with_its_class() {
-    let mut owner = owner();
+    let owner = owner();
     assert_eq!(owner.answer(b"v=0").unwrap_err(), BridgeError::closed());
     assert_eq!(owner.stats().unwrap_err(), BridgeError::closed());
     let error = owner
@@ -113,7 +115,7 @@ fn before_prepare_each_call_fails_with_its_class() {
 
 #[test]
 fn a_declared_track_pauses_resumes_and_caps_its_bitrate() {
-    let mut owner = prepared();
+    let owner = prepared();
     for request in [
         br#"{"name":"out","active":false}"#.as_slice(),
         br#"{"name":"out","active":true}"#,
@@ -132,7 +134,7 @@ fn a_declared_track_pauses_resumes_and_caps_its_bitrate() {
 
 #[test]
 fn only_a_declared_sending_track_takes_a_bitrate() {
-    let mut owner = prepared();
+    let owner = prepared();
     assert_eq!(
         owner
             .set_max_bitrate(br#"{"name":"in","bitsPerSecond":1000}"#)
@@ -156,7 +158,7 @@ fn only_a_declared_sending_track_takes_a_bitrate() {
 
 #[test]
 fn a_prepared_peer_reports_stats_before_it_connects() {
-    let mut owner = prepared();
+    let owner = prepared();
     let stats: Value = serde_json::from_slice(&owner.stats().expect("stats")).unwrap();
     assert!(stats.is_array(), "{stats}");
     owner.shutdown();
@@ -166,9 +168,8 @@ fn a_prepared_peer_reports_stats_before_it_connects() {
 fn commands_queued_behind_close_are_refused() {
     let mut owner = prepared();
     owner.shared.close();
-    let refused = owner.unless_closed(|_| -> Result<(), BridgeError> {
-        unreachable!("a closed peer runs no command")
-    });
+    let refused = owner
+        .unless_closed(|_| -> Result<(), BridgeError> { panic!("a closed peer runs no command") });
     assert_eq!(refused, Err(BridgeError::closed()));
     owner.shutdown();
 }

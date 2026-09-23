@@ -73,24 +73,30 @@ pub struct ReactorEffectFailure {
 impl ReactorEffectFailure {
     /// The diagnostic for `message`, truncated to fit.
     fn new(message: &str) -> Self {
-        let text = truncate(message, FAILURE_MESSAGE_BYTES);
-        let mut bytes = [0; FAILURE_MESSAGE_BYTES];
-        bytes[..text.len()].copy_from_slice(text.as_bytes());
-        Self {
-            message_len: u32::try_from(text.len()).expect("the text fits the message array"),
-            message: bytes,
+        let text = truncate(message, FAILURE_MESSAGE_BYTES).as_bytes();
+        let mut failure = Self {
+            message_len: 0,
+            message: [0; FAILURE_MESSAGE_BYTES],
+        };
+        // `truncate` keeps the text within the array, so this always copies.
+        if let (Some(prefix), Ok(len)) = (
+            failure.message.get_mut(..text.len()),
+            u32::try_from(text.len()),
+        ) {
+            prefix.copy_from_slice(text);
+            failure.message_len = len;
         }
+        failure
     }
 }
 
 /// The longest prefix of `text` within `max` bytes that ends on a character
 /// boundary.
 fn truncate(text: &str, max: usize) -> &str {
-    let end = (0..=max.min(text.len()))
+    (0..=max.min(text.len()))
         .rev()
-        .find(|&end| text.is_char_boundary(end))
-        .unwrap_or(0);
-    &text[..end]
+        .find_map(|end| text.get(..end))
+        .unwrap_or_default()
 }
 
 /// This image's source and build identity: a NUL-terminated C string inside a
@@ -183,7 +189,7 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
                 "native call response exceeds its buffer",
             ));
         }
-        response.copy_from(&bytes);
+        response.copy_from(&bytes)?;
         response_len.write(bytes.len());
         Ok(Status::Ok)
     })
@@ -250,7 +256,7 @@ pub unsafe extern "C" fn reactor_effect_peer_take_event(
         });
         Ok(match taken {
             Taken::Item(packet) => {
-                out.copy_from(&packet);
+                out.copy_from(&packet)?;
                 Status::Ok
             }
             Taken::TooSmall => Status::BufferTooSmall,
@@ -302,8 +308,8 @@ pub unsafe extern "C" fn reactor_effect_peer_take_video(
         });
         Ok(match taken {
             Taken::Item(frame) => {
-                bgra.copy_from(&frame.bgra);
-                metadata.copy_from(&frame.metadata);
+                bgra.copy_from(&frame.bgra)?;
+                metadata.copy_from(&frame.metadata)?;
                 Status::Ok
             }
             Taken::TooSmall => Status::BufferTooSmall,
@@ -344,7 +350,7 @@ pub unsafe extern "C" fn reactor_effect_peer_take_audio(
         });
         Ok(match taken {
             Taken::Item(block) => {
-                pcm.copy_from(&block.pcm);
+                pcm.copy_from(&block.pcm)?;
                 Status::Ok
             }
             Taken::TooSmall => Status::BufferTooSmall,
@@ -363,9 +369,8 @@ pub unsafe extern "C" fn reactor_effect_peer_take_audio(
 pub unsafe extern "C" fn reactor_effect_peer_close(peer: *mut ReactorEffectPeer) {
     // SAFETY: `peer` is null or live for the call.
     if let Ok(peer) = unsafe { peer_ref(peer) } {
-        // Closing only stores flags and clears queues; a panic there has no
-        // status to report and must not unwind into C.
-        let _ = catch_unwind(AssertUnwindSafe(|| peer.close()));
+        // Closing only stores flags and clears queues.
+        discard_panic(|| peer.close());
     }
 }
 
@@ -408,8 +413,18 @@ pub unsafe extern "C" fn reactor_effect_peer_destroy(peer: *mut ReactorEffectPee
     // SAFETY: `peer` came from `Box::into_raw` in `reactor_effect_peer_create`,
     // is passed here once, and no other call still uses it.
     let peer = unsafe { Box::from_raw(peer) };
-    // Dropping shuts the peer down; a panic there must not unwind into C.
-    let _ = catch_unwind(AssertUnwindSafe(move || drop(peer)));
+    // Dropping shuts the peer down.
+    discard_panic(move || drop(peer));
+}
+
+/// Run the body of an entry point that returns no status: a panic there has
+/// nothing to report it and must not unwind into C.
+fn discard_panic(body: impl FnOnce()) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the entry point has no status to report a caught panic with"
+    )]
+    let _ = catch_unwind(AssertUnwindSafe(body));
 }
 
 /// The status of an entry point's body. A failure's diagnostic goes to

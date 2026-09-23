@@ -22,6 +22,9 @@ const VIDEO_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 /// 2.56 s of 10 ms blocks.
 const AUDIO_QUEUE_BLOCKS: usize = 256;
 const AUDIO_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+// A media item's C header states its lengths as `u32`.
+const _: () = assert!(VIDEO_QUEUE_BYTES <= u32::MAX as usize);
+const _: () = assert!(AUDIO_QUEUE_BYTES <= u32::MAX as usize);
 
 /// What a peer's threads share. libwebrtc callbacks copy into its queues and
 /// signal readiness; the host takes from the queues.
@@ -37,8 +40,8 @@ pub(crate) struct Shared {
     bindings: Mutex<Bindings>,
     /// Remote tracks, kept alive so their sinks keep delivering.
     remote_tracks: Mutex<Vec<RemoteTrack>>,
-    /// Set once the event queue overflows, which retires the connection.
-    overflowed: AtomicBool,
+    /// Set once an event is lost, which retires the connection.
+    retired: AtomicBool,
 }
 
 /// A declared receive track waiting for its remote track.
@@ -71,7 +74,7 @@ impl Shared {
             notifier: Notifier::default(),
             bindings: Mutex::default(),
             remote_tracks: Mutex::default(),
-            overflowed: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
         }
     }
 
@@ -83,13 +86,23 @@ impl Shared {
         }
     }
 
-    /// Queue a transport event for the host. A full queue retires the
-    /// connection rather than lose the event.
+    /// Queue a transport event for the host. An event that cannot be queued
+    /// retires the connection rather than go missing.
     pub(crate) fn emit(&self, event: &Event<'_>) {
-        match self.events.try_push(event.to_packet()) {
+        let packet = match event.to_packet() {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.retire(error.class, &error.message);
+                return;
+            }
+        };
+        match self.events.try_push(packet) {
             Push::Accepted => self.notifier.signal(Ready::Events),
             Push::Closed => {}
-            Push::Overflow => self.fail_overflow(),
+            Push::Overflow => self.retire(
+                FailureClass::Overflow,
+                "native transport event queue overflowed; connection retired",
+            ),
         }
     }
 
@@ -100,17 +113,19 @@ impl Shared {
 
     /// Retire the connection: fence admission and replace the event backlog
     /// with the one diagnostic that says why.
-    fn fail_overflow(&self) {
-        if self.overflowed.swap(true, Ordering::AcqRel) {
+    fn retire(&self, class: FailureClass, message: &str) {
+        if self.retired.swap(true, Ordering::AcqRel) {
             return;
         }
         self.gate.close();
-        let diagnostic = Event::error(
-            FailureClass::Overflow,
-            "native transport event queue overflowed; connection retired",
-        );
-        self.events.replace(diagnostic.to_packet());
-        self.notifier.signal(Ready::Events);
+        if let Ok(diagnostic) = Event::error(class, message).to_packet() {
+            self.events.replace(diagnostic);
+            self.notifier.signal(Ready::Events);
+        } else {
+            // Without its diagnostic, closed queues still tell the host that
+            // the connection is gone.
+            self.close_queues();
+        }
     }
 
     pub(crate) fn push_video(&self, frame: VideoItem) {

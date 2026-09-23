@@ -3,6 +3,7 @@
 
 use crate::media::{self, Pacing, Shape};
 use crate::sdp::with_candidates;
+use crate::{Context, FarResult};
 use reactor_webrtc::{
     AudioTrack, AudioTrackOptions, AudioTrackSource, DataChannel, IceCandidate, IceGatheringState,
     MediaKind, PeerConnection, PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState,
@@ -55,25 +56,25 @@ impl Session {
         offer: String,
         frames: Arc<Vec<Vec<u8>>>,
         shape: Shape,
-    ) -> (Self, String) {
+    ) -> FarResult<(Self, String)> {
         let signals = Arc::new(Signals::default());
         // Echo off libwebrtc's callback thread, which must not send re-entrantly.
         let (echo, echoes) = mpsc::channel();
         let peer = factory
             .create_peer_connection(&RtcConfiguration::default(), observer(&signals, echo))
-            .expect("far peer connection");
+            .context("far peer connection")?;
         peer.set_bitrate(Some(LOAD_BPS), Some(LOAD_BPS), Some(LOAD_BPS))
-            .expect("far peer bitrate");
+            .context("far peer bitrate")?;
         let offer = SessionDescription {
             kind: SdpType::Offer,
             sdp: offer,
         };
         peer.set_remote_description(&offer)
-            .expect("far peer accepts the bridge offer");
-        let (video, audio) = publish(factory, &peer);
-        let answer = peer.create_answer().expect("far answer");
+            .context("far peer accepts the bridge offer")?;
+        let (video, audio) = publish(factory, &peer)?;
+        let answer = peer.create_answer().context("far answer")?;
         peer.set_local_description(&answer)
-            .expect("far local answer");
+            .context("far local answer")?;
         let answer = with_candidates(&answer.sdp, &gathered(&signals));
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -99,11 +100,14 @@ impl Session {
             pump_thread,
             echo_thread,
         };
-        (session, answer)
+        Ok((session, answer))
     }
 
     pub(crate) fn add_candidate(&self, candidate: &IceCandidate) {
-        // A refused candidate only loses that one path.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a refused candidate only loses that one path"
+        )]
         let _ = self.peer.add_ice_candidate(candidate);
     }
 
@@ -156,15 +160,19 @@ impl Session {
         })
     }
 
-    pub(crate) fn close(self) {
+    /// Stop the pump, then the echo. A thread that panicked fails the close.
+    pub(crate) fn close(self) -> FarResult<()> {
         self.stop.store(true, Ordering::Release);
-        // Only the pump's stopping matters here, not how it ended.
-        let _ = self.pump_thread.join();
+        let pumped = self.pump_thread.join();
         // Dropping the connection drops its observer, and with it one echo
         // sender; the channels hold the others.
         lock(&self.signals.channels).clear();
         drop(self.peer);
-        let _ = self.echo_thread.join();
+        let echoed = self.echo_thread.join();
+        if pumped.is_err() || echoed.is_err() {
+            return Err("a far peer media thread panicked".into());
+        }
+        Ok(())
     }
 }
 
@@ -199,7 +207,10 @@ fn observer(signals: &Arc<Signals>, echo: Sender<Echo>) -> PeerConnectionObserve
             move |mut channel| {
                 let (label, echo) = (channel.label(), echo.clone());
                 channel.on_message(move |bytes, _binary| {
-                    // The echo thread only stops once the session closes.
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the echo thread stops only once the session closes"
+                    )]
                     let _ = echo.send((label.clone(), bytes.to_vec()));
                 });
                 lock(&signals.channels).push(channel);
@@ -209,32 +220,35 @@ fn observer(signals: &Arc<Signals>, echo: Sender<Echo>) -> PeerConnectionObserve
 
 /// Send one video and one audio track on every transceiver of the offer, as
 /// Reactor publishes into the bridge's receive tracks.
-fn publish(factory: &PeerConnectionFactory, peer: &PeerConnection) -> (VideoTrack, AudioTrack) {
+fn publish(
+    factory: &PeerConnectionFactory,
+    peer: &PeerConnection,
+) -> FarResult<(VideoTrack, AudioTrack)> {
     let video = factory
         .create_video_track("far-video")
-        .expect("far video track");
+        .context("far video track")?;
     let mut options = AudioTrackOptions::default();
     options.source = AudioTrackSource::LocalPush;
     let audio = factory
         .create_audio_track_with_options("far-audio", options)
-        .expect("far audio track");
+        .context("far audio track")?;
     for transceiver in peer.transceivers() {
         let kind = transceiver.kind();
         match kind {
-            MediaKind::Video => transceiver.set_track(&video).expect("send video"),
-            MediaKind::Audio => transceiver.set_track(&audio).expect("send audio"),
+            MediaKind::Video => transceiver.set_track(&video).context("send video")?,
+            MediaKind::Audio => transceiver.set_track(&audio).context("send audio")?,
             MediaKind::Unknown => continue,
         }
         transceiver
             .set_direction(TransceiverDirection::SendOnly)
-            .expect("send direction");
+            .context("send direction")?;
         if kind == MediaKind::Video {
             transceiver
                 .set_send_bitrate(Some(MIN_VIDEO_BPS), Some(LOAD_BPS))
-                .expect("video bitrate");
+                .context("video bitrate")?;
         }
     }
-    (video, audio)
+    Ok((video, audio))
 }
 
 /// The far peer's candidates once gathering completes, or those it has
@@ -263,7 +277,10 @@ fn echo_messages(signals: &Signals, echoes: &Receiver<Echo>) {
     while let Ok((label, bytes)) = echoes.recv() {
         let channels = lock(&signals.channels);
         if let Some(channel) = channels.iter().find(|channel| channel.label() == label) {
-            // A closing channel drops its echo, as a remote peer's would.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a closing channel drops its echo, as a remote peer's would"
+            )]
             let _ = channel.send(&bytes, true);
         }
     }

@@ -65,29 +65,35 @@ impl Rng {
 /// has no call for remote candidates. The far peer example has its own copy,
 /// since an example cannot use a library's test code.
 pub(crate) fn with_candidates(sdp: &str, candidates: &[IceCandidate]) -> String {
-    let mut sections: Vec<Vec<String>> = vec![Vec::new()];
+    // The session section, then one section per m-line.
+    let mut session = Vec::new();
+    let mut media: Vec<Vec<String>> = Vec::new();
     for line in sdp.split("\r\n").filter(|line| !line.is_empty()) {
         if line.starts_with("m=") {
-            sections.push(Vec::new());
+            media.push(Vec::new());
         }
-        sections
+        media
             .last_mut()
-            .expect("there is always a session section")
+            .unwrap_or(&mut session)
             .push(line.to_owned());
     }
     for candidate in candidates {
         let section = candidate
             .sdp_mline_index
-            .and_then(|index| sections.get_mut(usize::from(index) + 1));
+            .and_then(|index| media.get_mut(usize::from(index)));
         if let Some(section) = section {
             let attribute = candidate.candidate.trim_start_matches("a=");
             section.push(format!("a={attribute}"));
         }
     }
-    for section in sections.iter_mut().skip(1) {
+    for section in &mut media {
         section.push("a=end-of-candidates".to_owned());
     }
-    let mut sdp = sections.concat().join("\r\n");
+    let mut sdp = session
+        .into_iter()
+        .chain(media.into_iter().flatten())
+        .collect::<Vec<_>>()
+        .join("\r\n");
     sdp.push_str("\r\n");
     sdp
 }

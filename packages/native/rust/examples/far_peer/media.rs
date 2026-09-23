@@ -56,21 +56,17 @@ pub(crate) fn pattern(shape: Shape, frames: u32) -> Vec<Vec<u8>> {
     (0..frames)
         .map(|index| {
             let mut bgra = vec![255; width as usize * height as usize * 4];
-            let mut pixels = bgra.chunks_exact_mut(4);
-            for y in 0..height {
-                for x in 0..width {
-                    // The gradient wraps: only each sum's low byte is used.
-                    let mut pixel =
-                        [x + index * 8, y + index * 4, (x ^ y) + index * 16].map(low_byte);
-                    if y > height / 3 && y < height / 3 * 2 {
-                        let noise = noise.next();
-                        for (shift, channel) in (0..).step_by(8).zip(&mut pixel) {
-                            *channel = channel.wrapping_add(low_byte(noise >> shift) & 0x3f);
-                        }
+            let positions = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+            for ((x, y), [blue, green, red, _alpha]) in positions.zip(bgra.as_chunks_mut().0) {
+                // The gradient wraps: only each sum's low byte is used.
+                let mut pixel = [x + index * 8, y + index * 4, (x ^ y) + index * 16].map(low_byte);
+                if y > height / 3 && y < height / 3 * 2 {
+                    let noise = noise.next();
+                    for (shift, channel) in (0..).step_by(8).zip(&mut pixel) {
+                        *channel = channel.wrapping_add(low_byte(noise >> shift) & 0x3f);
                     }
-                    let bgra_pixel = pixels.next().expect("one BGRA pixel per position");
-                    bgra_pixel[..3].copy_from_slice(&pixel);
                 }
+                [*blue, *green, *red] = pixel;
             }
             bgra
         })
@@ -117,6 +113,7 @@ pub(crate) fn pump(
     let started = Instant::now();
     let (mut next_video, mut next_audio) = (started, started);
     let mut tone = Tone::default();
+    let mut pattern = frames.iter().cycle();
     let mut sequence = 0u64;
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -129,10 +126,11 @@ pub(crate) fn pump(
             let mut metadata = [0; 16];
             metadata[..8].copy_from_slice(&micros(wall_clock()).to_le_bytes());
             metadata[8..].copy_from_slice(&sequence.to_le_bytes());
-            let bgra = &frames[usize::try_from(sequence).unwrap_or_default() % frames.len()];
-            let frame = VideoFrame::new(bgra, shape.width, shape.height);
-            if video.push_frame_with_metadata(frame, &metadata).is_ok() {
-                pacing.pushed.fetch_add(1, Ordering::Relaxed);
+            if let Some(bgra) = pattern.next() {
+                let frame = VideoFrame::new(bgra, shape.width, shape.height);
+                if video.push_frame_with_metadata(frame, &metadata).is_ok() {
+                    pacing.pushed.fetch_add(1, Ordering::Relaxed);
+                }
             }
             sequence += 1;
             next_video += frame_interval;
@@ -145,7 +143,10 @@ pub(crate) fn pump(
                 channels: 1,
                 frames: BLOCK_SAMPLES,
             };
-            // Audio keeps flowing even if one block is refused.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "audio keeps flowing even if one block is refused"
+            )]
             let _ = audio.push_frame(block);
             next_audio += BLOCK_INTERVAL;
         }
