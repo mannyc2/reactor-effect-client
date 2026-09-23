@@ -1,14 +1,23 @@
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { collectBytes } from "../bytes.js";
-import { ReactorError } from "../errors.js";
+import { duration } from "../duration.js";
+import { parsed, ReactorError } from "../errors.js";
+import type { UploadTimeoutOptions } from "../SessionTypes.js";
 import type { Session, Uploaded } from "./index.js";
 
-export interface FileUploadOptions {
+export interface FileUploadOptions extends UploadTimeoutOptions {
   readonly mimeType?: string;
   readonly maxBytes?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * How long reading the file may take; 30 seconds by default. A bare number
+   * is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 
 /** Scoped, bounded host file loading shared by uploads and reference preparation. */
@@ -23,21 +32,20 @@ export const readFileBytes = (
       !Number.isSafeInteger(maxBytes) ||
       maxBytes <= 0
     ) {
-      return yield* new ReactorError({
-        code: "InvalidInput",
-        message: "A file and positive byte bound are required",
-        context: { outcome: "not-submitted" },
-      });
+      return yield* ReactorError.fromCode(
+        "InvalidInput",
+        "A file and positive byte bound are required",
+        { outcome: "not-submitted" },
+      );
     }
     const fs = yield* FileSystem.FileSystem;
     return yield* collectBytes(fs.stream(file, { bytesToRead: maxBytes + 1 }), maxBytes).pipe(
       Effect.mapError((cause) =>
-        cause instanceof ReactorError
+        ReactorError.is(cause)
           ? cause
-          : new ReactorError({
-              code: "Upload",
-              message: "Source file could not be read",
-              context: { outcome: "not-submitted", detail: cause },
+          : ReactorError.fromCode("Upload", "Source file could not be read", {
+              outcome: "not-submitted",
+              detail: cause,
             }),
       ),
     );
@@ -51,33 +59,27 @@ export const uploadFile = (
 ): Effect.Effect<Uploaded, ReactorError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const before = yield* session.ready;
-    const timeout = options.readTimeoutMs ?? 30_000;
-    if (!Number.isFinite(timeout) || timeout <= 0)
-      return yield* new ReactorError({
-        code: "InvalidInput",
-        message: "Invalid file-read deadline",
-        context: { outcome: "not-submitted" },
-      });
+    const timeout = yield* parsed(() =>
+      duration(options.readTimeout ?? "30 seconds", "file read timeout"),
+    );
     const bytes = yield* readFileBytes(file, options.maxBytes ?? 64 * 1024 * 1024).pipe(
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () =>
           Effect.fail(
-            new ReactorError({
-              code: "Upload",
-              message: "Source file read timed out",
-              context: { outcome: "not-submitted" },
+            ReactorError.fromCode("Upload", "Source file read timed out", {
+              outcome: "not-submitted",
             }),
           ),
       }),
     );
     const after = yield* session.ready;
     if (after.generation !== before.generation)
-      return yield* new ReactorError({
-        code: "Disconnected",
-        message: "Connection changed while reading the upload file",
-        context: { outcome: "not-submitted" },
-      });
+      return yield* ReactorError.fromCode(
+        "Disconnected",
+        "Connection changed while reading the upload file",
+        { outcome: "not-submitted" },
+      );
     const path = yield* Path.Path;
     const name = path.basename(file);
     const extension = path.extname(name).toLowerCase();
@@ -90,5 +92,10 @@ export const uploadFile = (
           : extension === ".jpg" || extension === ".jpeg"
             ? "image/jpeg"
             : "application/octet-stream");
-    return yield* session.upload(name, mime, bytes);
+    return yield* session.upload(
+      name,
+      mime,
+      bytes,
+      options.uploadTimeout === undefined ? {} : { uploadTimeout: options.uploadTimeout },
+    );
   });

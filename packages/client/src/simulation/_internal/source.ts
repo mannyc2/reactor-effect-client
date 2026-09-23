@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -10,7 +11,8 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { ReactorError, errorOf } from "../../errors.js";
+import { duration } from "../../duration.js";
+import { ReactorError, errorOf, parsed } from "../../errors.js";
 import {
   alignFrames,
   alignSecondsTo,
@@ -59,8 +61,14 @@ export const source = (
     const generationCapacity = options.queueLimit ?? profile.expectedCapacities.generation;
     const playoutCapacity = options.playoutLimit ?? profile.expectedCapacities.playout;
     const buildRatio = options.buildRatio ?? 0.1;
-    const buildFixedMs = options.buildFixedMs ?? 0;
-    const gap = options.playoutGapMs ?? 0;
+    const timing = yield* parsed(() => ({
+      fixedBuild: duration(options.fixedBuildTime ?? 0, "simulation fixedBuildTime", {
+        allowZero: true,
+      }),
+      gap: duration(options.playoutGap ?? 0, "simulation playoutGap", { allowZero: true }),
+    }));
+    const buildFixedMs = Duration.toMillis(timing.fixedBuild);
+    const gap = Duration.toMillis(timing.gap);
     if (
       !Number.isSafeInteger(generationCapacity) ||
       generationCapacity <= 0 ||
@@ -70,17 +78,13 @@ export const source = (
       playoutCapacity > 1024 ||
       !Number.isFinite(buildRatio) ||
       buildRatio < 0 ||
-      !Number.isFinite(buildFixedMs) ||
-      buildFixedMs < 0 ||
-      !Number.isFinite(gap) ||
-      gap < 0 ||
       !Number.isFinite(profile.fps) ||
       profile.fps <= 0
     ) {
-      return yield* new ReactorError({
-        code: "InvalidInput",
-        message: "Invalid simulation timing or queue bounds",
-      });
+      return yield* ReactorError.fromCode(
+        "InvalidInput",
+        "Invalid simulation timing or queue bounds",
+      );
     }
     const events = new Observations<EngineEvent>();
     const video = yield* Queue.bounded<VideoFrame, ReactorError | Cause.Done>(4);
@@ -114,11 +118,11 @@ export const source = (
     const emit = (event: EngineEvent): void => events.emit(Object.freeze(event), 256);
     const signalBuild = Queue.offer(buildSignal, undefined).pipe(Effect.asVoid);
     const signalPlay = Queue.offer(playSignal, undefined).pipe(Effect.asVoid);
-    const validate = (operation: string): Effect.Effect<void, CommandFailure> =>
-      Effect.suspend(() => {
+    const validate = (operation: string): Effect.Effect<void, CommandFailure | PolicyFailure> =>
+      Effect.suspend((): Effect.Effect<void, CommandFailure | PolicyFailure> => {
         if (closed)
           return Effect.fail(
-            PolicyFailure.refuse("session_closed", "Simulation is closed", operation),
+            PolicyFailure.refuse("SessionClosed", "Simulation is closed", operation),
           );
         if (failed !== undefined)
           return Effect.fail(CommandFailure.from(failed, { operation, outcome: "not-submitted" }));
@@ -322,11 +326,7 @@ export const source = (
     yield* builder.pipe(
       Effect.catchCause((cause) =>
         terminate(
-          new ReactorError({
-            code: "InvalidState",
-            message: "Simulation builder failed",
-            context: { detail: cause },
-          }),
+          ReactorError.fromCode("InvalidState", "Simulation builder failed", { detail: cause }),
         ),
       ),
       Effect.forkIn(workers),
@@ -334,10 +334,8 @@ export const source = (
     yield* player.pipe(
       Effect.catchCause((cause) =>
         terminate(
-          new ReactorError({
-            code: "InvalidState",
-            message: "Simulation presentation failed",
-            context: { detail: cause },
+          ReactorError.fromCode("InvalidState", "Simulation presentation failed", {
+            detail: cause,
           }),
         ),
       ),
@@ -359,7 +357,7 @@ export const source = (
               request.references.length > profile.references.max
             ) {
               return yield* PolicyFailure.refuse(
-                "invalid_request",
+                "InvalidRequest",
                 "Request exceeds the simulation profile limits",
               );
             }
@@ -368,20 +366,20 @@ export const source = (
               (!Number.isSafeInteger(plan.position) || plan.position < 0)
             ) {
               return yield* PolicyFailure.refuse(
-                "invalid_request",
+                "InvalidRequest",
                 "Insertion position must be a nonnegative integer",
               );
             }
             yield* Effect.acquireRelease(admission.take(1), () => admission.release(1));
             if (generation.filter((clip) => !clip.popped).length >= generationCapacity) {
               return yield* PolicyFailure.refuse(
-                "queue_full",
+                "QueueFull",
                 "Simulation generation queue is full",
               );
             }
             if (request.continueFrom !== undefined && !retained.includes(request.continueFrom)) {
               return yield* PolicyFailure.refuse(
-                "continuation_unavailable",
+                "ContinuationUnavailable",
                 "Simulation no longer retains the continuation target",
               );
             }
@@ -399,20 +397,19 @@ export const source = (
                 Effect.gen(function* () {
                   const seq = ++sequence;
                   if (options.faults?.sessionFails?.(seq) === true) {
-                    const uncertainty = CommandFailure.from(
-                      new ReactorError({
-                        code: "Disconnected",
-                        message: "Simulated loss after enqueue dispatch",
-                      }),
-                      {
-                        operation: "enqueue",
-                        outcome: "unknown",
-                        requestId: submissionId,
-                        generation: 1n,
-                      },
+                    // The session is lost after this enqueue was dispatched: the
+                    // source fails with the loss, the command with its evidence.
+                    const loss = ReactorError.fromCode(
+                      "Disconnected",
+                      "Simulated loss after enqueue dispatch",
                     );
-                    failed = uncertainty;
-                    return yield* uncertainty;
+                    failed = loss;
+                    return yield* CommandFailure.from(loss, {
+                      operation: "enqueue",
+                      outcome: "unknown",
+                      requestId: submissionId,
+                      generation: 1n,
+                    });
                   }
                   const clipId =
                     `${namespace.slice(0, 8)}-${namespace.slice(8, 12)}-4${namespace.slice(13, 16)}-8${namespace.slice(17, 20)}-${seq.toString(16).padStart(12, "0")}` as ClipId;
@@ -453,18 +450,16 @@ export const source = (
                     duration: "1 second",
                     orElse: () =>
                       terminate(
-                        new ReactorError({
-                          code: "InvalidState",
-                          message: "Simulation result accounting timed out",
-                        }),
+                        ReactorError.fromCode(
+                          "InvalidState",
+                          "Simulation result accounting timed out",
+                        ),
                       ),
                   }),
                   Effect.catchCause((cause) =>
                     terminate(
-                      new ReactorError({
-                        code: "InvalidState",
-                        message: "Simulation result accounting failed",
-                        context: { detail: cause },
+                      ReactorError.fromCode("InvalidState", "Simulation result accounting failed", {
+                        detail: cause,
                       }),
                     ),
                   ),
@@ -473,9 +468,11 @@ export const source = (
                 yield* signalBuild;
                 return result.success;
               }
-              events.fail(result.failure);
-              Queue.failCauseUnsafe(video, Cause.fail(result.failure));
-              Queue.failCauseUnsafe(audio, Cause.fail(result.failure));
+              if (failed !== undefined) {
+                events.fail(failed);
+                Queue.failCauseUnsafe(video, Cause.fail(failed));
+                Queue.failCauseUnsafe(audio, Cause.fail(failed));
+              }
               return yield* result.failure;
             }),
         }).pipe(Scope.provide(scope));
@@ -493,10 +490,8 @@ export const source = (
             const disposed = yield* Effect.exit(discard(clip).pipe(Effect.timeout("5 seconds")));
             if (Exit.isFailure(disposed))
               errors.push(
-                new ReactorError({
-                  code: "Shutdown",
-                  message: "Simulation renderer cleanup failed",
-                  context: { detail: disposed.cause },
+                ReactorError.fromCode("Shutdown", "Simulation renderer cleanup failed", {
+                  detail: disposed.cause,
                 }),
               );
           }
@@ -504,11 +499,11 @@ export const source = (
           droppedAudio += BigInt(Queue.sizeUnsafe(audio));
           Queue.failCauseUnsafe(
             video,
-            Cause.fail(new ReactorError({ code: "Closed", message: "Simulation is closed" })),
+            Cause.fail(ReactorError.fromCode("Closed", "Simulation is closed")),
           );
           Queue.failCauseUnsafe(
             audio,
-            Cause.fail(new ReactorError({ code: "Closed", message: "Simulation is closed" })),
+            Cause.fail(ReactorError.fromCode("Closed", "Simulation is closed")),
           );
           generation = [];
           playout = [];
@@ -551,11 +546,14 @@ export const source = (
       pendingRequests: pending,
       deliveredVideo,
       deliveredAudio,
+      // One bounded queue with no per-reader subscriptions: no reader is ever failed for lag.
+      readerOverflows: 0n,
     }));
     return {
       id,
       state,
       events: events.stream(),
+      observe: (options) => events.observeWith(state, options),
       prepareRouted,
       media: Effect.succeed({
         generation: 1n,
@@ -577,10 +575,10 @@ export const source = (
         videoFramesPerSecond: profile.fps,
       }),
       reconnect: Effect.fail(
-        new ReactorError({
-          code: "Disconnected",
-          message: "A failed simulated source requires explicit replacement",
-        }),
+        ReactorError.fromCode(
+          "Disconnected",
+          "A failed simulated source requires explicit replacement",
+        ),
       ),
       refresh: validate("refresh"),
       setAutoplay: (enabled) =>
@@ -610,7 +608,7 @@ export const source = (
               );
               if (clip === undefined)
                 return yield* PolicyFailure.refuse(
-                  "not_found",
+                  "NotFound",
                   "Clip is not in a simulated queue",
                   "pop",
                 );
@@ -628,40 +626,30 @@ export const source = (
       move: (clipId, position) =>
         validate("move").pipe(
           Effect.andThen(
-            Effect.try({
-              try: () => {
-                if (!Number.isSafeInteger(position) || position < 0)
-                  throw PolicyFailure.refuse(
-                    "invalid_request",
+            Effect.suspend((): Effect.Effect<void, PolicyFailure> => {
+              if (!Number.isSafeInteger(position) || position < 0)
+                return Effect.fail(
+                  PolicyFailure.refuse(
+                    "InvalidRequest",
                     "Move position must be a nonnegative integer",
                     "move",
-                  );
-                const queue = generation.some(
-                  (value) => value.record.clipId === clipId && !value.popped,
-                )
-                  ? generation
-                  : playout;
-                const index = queue.findIndex(
-                  (value) => value.record.clipId === clipId && !value.popped,
+                  ),
                 );
-                if (index < 0)
-                  throw PolicyFailure.refuse(
-                    "not_found",
-                    "Clip is not in a simulated queue",
-                    "move",
-                  );
-                const [clip] = queue.splice(index, 1);
-                queue.splice(Math.min(position, queue.length), 0, clip!);
-              },
-              catch: (cause) =>
-                cause instanceof CommandFailure
-                  ? cause
-                  : PolicyFailure.refuse(
-                      "invalid_request",
-                      "Invalid simulated move",
-                      "move",
-                      cause,
-                    ),
+              const queue = generation.some(
+                (value) => value.record.clipId === clipId && !value.popped,
+              )
+                ? generation
+                : playout;
+              const index = queue.findIndex(
+                (value) => value.record.clipId === clipId && !value.popped,
+              );
+              if (index < 0)
+                return Effect.fail(
+                  PolicyFailure.refuse("NotFound", "Clip is not in a simulated queue", "move"),
+                );
+              const [clip] = queue.splice(index, 1);
+              queue.splice(Math.min(position, queue.length), 0, clip!);
+              return Effect.void;
             }),
           ),
         ),
@@ -672,7 +660,7 @@ export const source = (
               if (generation.length > 0 || playout.length > 0 || playing !== undefined)
                 return Effect.fail(
                   PolicyFailure.refuse(
-                    "busy",
+                    "Busy",
                     "Simulation must be idle to change canvas",
                     "set_canvas",
                   ),
@@ -680,7 +668,7 @@ export const source = (
               if (!profile.canvases.some((value) => value.aspect === aspect))
                 return Effect.fail(
                   PolicyFailure.refuse(
-                    "invalid_request",
+                    "InvalidRequest",
                     "Unsupported simulation canvas",
                     "set_canvas",
                   ),

@@ -1,4 +1,4 @@
-import { Data, Effect, Ref, Semaphore } from "effect";
+import { Effect, Ref, Schema, Semaphore } from "effect";
 
 export type SequenceStatus = "open" | "sealed" | "indeterminate" | "retired";
 
@@ -29,25 +29,35 @@ export interface SequenceSnapshot<Owner> {
   readonly members: ReadonlyArray<MemberOutcome>;
 }
 
-export class InvalidSequenceOptions extends Data.TaggedError("InvalidSequenceOptions")<{
-  readonly reason: string;
-}> {}
+/** An affinity bound that is not a positive safe integer. */
+export class InvalidSequenceOptions extends Schema.TaggedError<InvalidSequenceOptions>(
+  "reactor-effect-client/InvalidSequenceOptions",
+)("InvalidSequenceOptions", { message: Schema.String }) {}
 
-export class SequenceError extends Data.TaggedError("SequenceError")<{
-  readonly sequenceId: string;
-  readonly reason:
-    | "capacity"
-    | "member-capacity"
-    | "owner-mismatch"
-    | "sealed"
-    | "sealing"
-    | "indeterminate"
-    | "retired"
-    | "missing"
-    | "member-missing"
-    | "member-duplicate"
-    | "not-releasable";
-}> {}
+/** Why a sequence refused an operation. */
+export const SequenceCode = Schema.Literals([
+  "capacity",
+  "member-capacity",
+  "owner-mismatch",
+  "sealed",
+  "sealing",
+  "indeterminate",
+  "retired",
+  "missing",
+  "member-missing",
+  "member-duplicate",
+  "not-releasable",
+]);
+export type SequenceCode = typeof SequenceCode.Type;
+
+/** A sequence operation the affinity state refused; `code` says why. */
+export class SequenceError extends Schema.TaggedError<SequenceError>(
+  "reactor-effect-client/SequenceError",
+)("SequenceError", { sequenceId: Schema.String, code: SequenceCode }) {
+  override get message(): string {
+    return `Sequence ${this.sequenceId}: ${this.code}`;
+  }
+}
 
 export interface Affinity<Owner> {
   readonly get: (id: string) => Effect.Effect<SequenceSnapshot<Owner> | undefined>;
@@ -131,7 +141,7 @@ const positiveInteger = (
   Number.isSafeInteger(value) && value > 0
     ? Effect.succeed(value)
     : Effect.fail(
-        new InvalidSequenceOptions({ reason: `${name} must be a positive safe integer` }),
+        new InvalidSequenceOptions({ message: `${name} must be a positive safe integer` }),
       );
 
 /**
@@ -158,13 +168,13 @@ export const makeAffinity = <Owner>(
 
     const unavailable = (id: string, entry: Entry<Owner>): SequenceError | undefined =>
       entry.status === "sealed"
-        ? new SequenceError({ sequenceId: id, reason: "sealed" })
+        ? new SequenceError({ sequenceId: id, code: "sealed" })
         : entry.status === "indeterminate"
-          ? new SequenceError({ sequenceId: id, reason: "indeterminate" })
+          ? new SequenceError({ sequenceId: id, code: "indeterminate" })
           : entry.status === "retired"
-            ? new SequenceError({ sequenceId: id, reason: "retired" })
+            ? new SequenceError({ sequenceId: id, code: "retired" })
             : entry.sealRequested
-              ? new SequenceError({ sequenceId: id, reason: "sealing" })
+              ? new SequenceError({ sequenceId: id, code: "sealing" })
               : undefined;
 
     const set = (all: ReadonlyMap<string, Entry<Owner>>, entry: Entry<Owner>) =>
@@ -177,13 +187,13 @@ export const makeAffinity = <Owner>(
           const existing = all.get(id);
           if (existing !== undefined) {
             if (!sameOwner(existing.owner, owner))
-              return yield* new SequenceError({ sequenceId: id, reason: "owner-mismatch" });
+              return yield* new SequenceError({ sequenceId: id, code: "owner-mismatch" });
             const failure = unavailable(id, existing);
             if (failure !== undefined) return yield* failure;
             return existing.owner;
           }
           if (all.size >= maxEntries)
-            return yield* new SequenceError({ sequenceId: id, reason: "capacity" });
+            return yield* new SequenceError({ sequenceId: id, code: "capacity" });
           const entry: Entry<Owner> = {
             id,
             owner,
@@ -206,17 +216,17 @@ export const makeAffinity = <Owner>(
           const all = yield* Ref.get(entries);
           const entry = all.get(id);
           if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, reason: "missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "missing" });
           const failure = unavailable(id, entry);
           if (failure !== undefined) return yield* failure;
           if (
             entry.pending.has(memberId) ||
             entry.members.some((member) => member.memberId === memberId)
           ) {
-            return yield* new SequenceError({ sequenceId: id, reason: "member-duplicate" });
+            return yield* new SequenceError({ sequenceId: id, code: "member-duplicate" });
           }
           if (entry.pending.size + entry.members.length >= maxMembers) {
-            return yield* new SequenceError({ sequenceId: id, reason: "member-capacity" });
+            return yield* new SequenceError({ sequenceId: id, code: "member-capacity" });
           }
           yield* set(all, { ...entry, pending: new Set(entry.pending).add(memberId) });
         }),
@@ -237,12 +247,12 @@ export const makeAffinity = <Owner>(
           const all = yield* Ref.get(entries);
           const entry = all.get(id);
           if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, reason: "missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "missing" });
           if (!entry.pending.has(memberId)) {
             if (entry.members.some((member) => member.memberId === memberId)) {
-              return yield* new SequenceError({ sequenceId: id, reason: "member-duplicate" });
+              return yield* new SequenceError({ sequenceId: id, code: "member-duplicate" });
             }
-            return yield* new SequenceError({ sequenceId: id, reason: "member-missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "member-missing" });
           }
           const pending = new Set(entry.pending);
           pending.delete(memberId);
@@ -314,11 +324,11 @@ export const makeAffinity = <Owner>(
           const all = yield* Ref.get(entries);
           const entry = all.get(id);
           if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, reason: "missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "missing" });
           if (entry.status === "indeterminate")
-            return yield* new SequenceError({ sequenceId: id, reason: "indeterminate" });
+            return yield* new SequenceError({ sequenceId: id, code: "indeterminate" });
           if (entry.status === "retired")
-            return yield* new SequenceError({ sequenceId: id, reason: "retired" });
+            return yield* new SequenceError({ sequenceId: id, code: "retired" });
           if (entry.status === "sealed") return;
           yield* set(all, {
             ...entry,
@@ -363,9 +373,9 @@ export const makeAffinity = <Owner>(
           const all = yield* Ref.get(entries);
           const entry = all.get(id);
           if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, reason: "missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "missing" });
           if (entry.status !== "indeterminate" || entry.pending.size !== 0) {
-            return yield* new SequenceError({ sequenceId: id, reason: "not-releasable" });
+            return yield* new SequenceError({ sequenceId: id, code: "not-releasable" });
           }
           yield* set(all, { ...entry, status: "retired" });
         }),
@@ -377,12 +387,12 @@ export const makeAffinity = <Owner>(
           const all = yield* Ref.get(entries);
           const entry = all.get(id);
           if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, reason: "missing" });
+            return yield* new SequenceError({ sequenceId: id, code: "missing" });
           if (
             entry.pending.size !== 0 ||
             (entry.status !== "sealed" && entry.status !== "retired")
           ) {
-            return yield* new SequenceError({ sequenceId: id, reason: "not-releasable" });
+            return yield* new SequenceError({ sequenceId: id, code: "not-releasable" });
           }
           const next = new Map(all);
           next.delete(id);

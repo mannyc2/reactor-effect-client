@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { make as makeClient } from "reactor-effect-client";
 import * as Native from "reactor-effect-native";
 
 const expected = JSON.parse(process.env.PACK_NATIVE_IDENTITY ?? "null");
@@ -47,14 +49,17 @@ const fetchFixture = async (input, init) => {
 await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const invalid = yield* Native.make(
-        { apiUrl: "https://native.pack.fixture" },
-        { libraryPath: join(directory, "does-not-exist") },
+      // Building the host layer is the preflight: a missing library fails
+      // there, before any Client exists to allocate a remote session.
+      const failed = yield* Effect.result(
+        Layer.build(Native.layer({ libraryPath: join(directory, "does-not-exist") })),
       );
-      const failed = yield* Effect.result(invalid.create({ model: "fixture/native-preflight" }));
       if (failed._tag !== "Failure" || requests !== 0)
         throw new Error("native preflight did not fail before remote allocation");
-      const factory = yield* Native.make({ apiUrl: "https://native.pack.fixture" });
+      const peers = yield* Layer.build(Native.layer());
+      const factory = yield* makeClient({ apiUrl: "https://native.pack.fixture" }).pipe(
+        Effect.provide(peers),
+      );
       const session = yield* factory.create({ model: "fixture/native-preflight" });
       const closed = yield* session.close;
       if (

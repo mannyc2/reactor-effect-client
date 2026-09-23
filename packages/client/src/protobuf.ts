@@ -17,7 +17,7 @@ interface Budget {
   fields: number;
 }
 const fail = (s: string): never => {
-  throw new ReactorError({ code: "Protocol", message: s });
+  throw ReactorError.fromCode("Protocol", s);
 };
 const validate = (l: WireLimits): void => {
   positiveLimit(l.bytes, "wire bytes", 16 * 1024 * 1024);
@@ -109,7 +109,7 @@ export class Reader {
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(this.bytes());
     } catch (e) {
-      if (e instanceof ReactorError) throw e;
+      if (ReactorError.is(e)) throw e;
       return fail("invalid UTF-8");
     }
   }

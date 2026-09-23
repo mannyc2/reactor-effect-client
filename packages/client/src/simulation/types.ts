@@ -1,3 +1,4 @@
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type { ModelProfile } from "../h3/profile.js";
 import type { LocalClipRecord } from "../orchestration/types.js";
@@ -14,13 +15,26 @@ export interface SimulatedMediaSink {
 }
 
 export interface SimOptions {
+  /** Simulated build time per second of clip, 0.1 by default. */
   readonly buildRatio?: number;
-  readonly buildFixedMs?: number;
+  /**
+   * Simulated build time added to every clip's, zero by default. A bare number
+   * is milliseconds.
+   */
+  readonly fixedBuildTime?: Duration.Input | undefined;
   readonly profile?: ModelProfile;
   readonly queueLimit?: number;
   readonly playoutLimit?: number;
   readonly timing?: "measured" | "unknown";
-  readonly playoutGapMs?: number;
+  /**
+   * A pause between presented clips, zero by default. A bare number is
+   * milliseconds.
+   */
+  readonly playoutGap?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `fixedBuildTime` (a bare number is milliseconds). */
+  readonly buildFixedMs?: never;
+  /** @deprecated Removed in 0.3.0: use `playoutGap` (a bare number is milliseconds). */
+  readonly playoutGapMs?: never;
   readonly faults?: SimulatedFaults;
   /** Completes before Ready and may extend duration to fit locally rendered speech. */
   readonly build?: (record: LocalClipRecord) => Effect.Effect<number, Error>;

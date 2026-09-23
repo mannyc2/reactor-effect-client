@@ -232,7 +232,7 @@ export class MockPeer implements Peer {
       catch: (cause) =>
         cause instanceof ReactorError
           ? cause
-          : new ReactorError({ code: "Disconnected", message: String(cause) }),
+          : ReactorError.fromCode("Disconnected", String(cause)),
     });
   }
   close(): void {
@@ -286,14 +286,14 @@ export const makeSession = (
   const configured: SessionOptions = {
     apiUrl: "https://coordinator.fixture",
     intent: { _tag: "Create", model: { name: "owner/model" } },
-    heartbeatMs: 0,
+    heartbeatInterval: "Infinity",
     credential: Effect.succeed("fixture-token"),
-    requestTimeoutMs: 100,
-    commandTimeoutMs: 50,
-    readyTimeoutMs: 200,
-    connectTimeoutMs: 1000,
-    sessionPoll: { attempts: 5, initialMs: 1, maxMs: 4 },
-    sdpPoll: { attempts: 5, initialMs: 1, maxMs: 4 },
+    requestTimeout: 100,
+    replyTimeout: 50,
+    readyTimeout: 200,
+    connectTimeout: 1000,
+    sessionPoll: { attempts: 5, initialDelay: 1, maxDelay: 4 },
+    sdpPoll: { attempts: 5, initialDelay: 1, maxDelay: 4 },
     ...options,
   };
   const session = new Session(

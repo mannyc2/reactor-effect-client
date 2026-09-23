@@ -6,9 +6,16 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { errorOf, positiveLimit, ReactorError } from "../../errors.js";
+import {
+  CommandFailure,
+  parsed,
+  PolicyFailure,
+  positiveLimit,
+  ReactorError,
+  Remote,
+} from "../../errors.js";
+import { duration } from "../../duration.js";
 import { Observations } from "../../observation.js";
-import { CommandFailure } from "../../session/commands.js";
 import type { CommandReply, Session, SessionEvent } from "../../session/index.js";
 import * as Submission from "../../Submission.js";
 import type { UploadReference } from "../../wire.generated.js";
@@ -23,6 +30,7 @@ import type {
   Provider,
   ProviderEvent,
   Reply,
+  Request,
 } from "../types.js";
 import { Commands } from "./contracts.js";
 import type {
@@ -40,17 +48,22 @@ import { captureRequest, clipId, enqueueArguments, nonnegative, seconds } from "
 import type { CapturedRequest } from "./request.js";
 import { ProviderState } from "./state.js";
 
-const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.try({ try: evaluate, catch: errorOf });
-const localFailure = (operation: string, cause: ReactorError): CommandFailure =>
+const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> => parsed(evaluate);
+const localFailure = (operation: string, cause: ReactorError | CommandFailure): CommandFailure =>
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
+/** A caller's local refusal already proves no dispatch; anything else becomes one. */
+const preparationFailure = <E extends PolicyFailure>(
+  operation: string,
+  cause: ReactorError | CommandFailure | E,
+): CommandFailure | E =>
+  ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure(operation, cause) : cause;
 const uncertain = (
   operation: string,
   source: CommandReply,
   message: string,
   cause?: ReactorError,
 ): CommandFailure =>
-  CommandFailure.from(cause ?? new ReactorError({ code: "UnexpectedReply", message }), {
+  CommandFailure.from(cause ?? ReactorError.fromCode("UnexpectedReply", message), {
     ...(cause?.context ?? {}),
     operation,
     outcome: "unknown",
@@ -59,16 +72,15 @@ const uncertain = (
   });
 /** The refusal reason is provider free text with no stable codes: kept for diagnosis only. */
 const rejected = (operation: string, source: CommandReply, reason: string): CommandFailure =>
-  CommandFailure.from(
-    new ReactorError({ code: "Remote", message: `H3 ${operation} was refused` }),
-    {
+  new CommandFailure({
+    reason: new Remote({ _tag: "Remote", message: `H3 ${operation} was refused`, body: reason }),
+    context: {
       operation,
       outcome: "replied",
       requestId: source.requestId,
       generation: source.generation,
-      body: reason,
     },
-  );
+  });
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -113,19 +125,26 @@ type ObservationResult = DecodedMessage | undefined;
 const build = (
   session: Session,
   options: Options,
-): Effect.Effect<Provider, ReactorError, Crypto.Crypto | Scope.Scope> =>
+): Effect.Effect<Provider, ReactorError | CommandFailure, Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const crypto = yield* Crypto.Crypto;
     const limits = yield* pure(() => ({
-      command: positiveLimit(options.commandTimeoutMs ?? 15000, "H3 command deadline", 600000),
-      setup: positiveLimit(options.setupTimeoutMs ?? 60000, "H3 setup deadline", 600000),
-      reconcile: positiveLimit(
-        options.reconcileWindowMs ?? 5000,
-        "H3 reconciliation deadline",
-        60000,
-      ),
-      hook: positiveLimit(options.resultHookTimeoutMs ?? 1000, "H3 result hook deadline", 60000),
+      command: duration(options.replyTimeout ?? "15 seconds", "H3 reply timeout", {
+        maximum: "10 minutes",
+      }),
+      upload: duration(options.uploadTimeout ?? "60 seconds", "H3 upload timeout", {
+        maximum: "10 minutes",
+      }),
+      setup: duration(options.setupTimeout ?? "60 seconds", "H3 setup timeout", {
+        maximum: "10 minutes",
+      }),
+      reconcile: duration(options.reconcileWindow ?? "5 seconds", "H3 reconciliation window", {
+        maximum: "1 minute",
+      }),
+      hook: duration(options.resultHookTimeout ?? "1 second", "H3 result hook timeout", {
+        maximum: "1 minute",
+      }),
       pending: positiveLimit(options.maxPending ?? 128, "H3 pending acceptance bound", 4096),
       clips: positiveLimit(options.maxTrackedClips ?? 4096, "H3 clip observation bound", 16384),
       acceptances: positiveLimit(
@@ -153,13 +172,10 @@ const build = (
     );
     const namespace = hex(
       yield* crypto.randomBytes(16).pipe(
-        Effect.mapError(
-          () =>
-            new ReactorError({
-              code: "InvalidState",
-              message: "Could not allocate H3 acceptance namespace",
-              context: { outcome: "not-submitted" },
-            }),
+        Effect.mapError(() =>
+          ReactorError.fromCode("InvalidState", "Could not allocate H3 acceptance namespace", {
+            outcome: "not-submitted",
+          }),
         ),
       ),
     );
@@ -193,10 +209,8 @@ const build = (
       Effect.sync(() => {
         closed = true;
         fail(
-          new ReactorError({
-            code: "Closed",
-            message: "H3 provider scope closed",
-            context: { operation: "H3 observation" },
+          ReactorError.fromCode("Closed", "H3 provider scope closed", {
+            operation: "H3 observation",
           }),
         );
         events.end();
@@ -217,10 +231,8 @@ const build = (
       if (previous !== undefined) {
         if (previous.clip.clip_id !== clip.clip_id)
           fail(
-            new ReactorError({
-              code: "Protocol",
-              message: "H3 acceptance identity named two clips",
-              context: { operation: "enqueue" },
+            ReactorError.fromCode("Protocol", "H3 acceptance identity named two clips", {
+              operation: "enqueue",
             }),
           );
         return;
@@ -246,11 +258,11 @@ const build = (
               Deferred.doneUnsafe(
                 entry.deferred,
                 Effect.fail(
-                  new ReactorError({
-                    code: "Disconnected",
-                    message: "H3 acceptance crossed a transport generation",
-                    context: { operation: "enqueue" },
-                  }),
+                  ReactorError.fromCode(
+                    "Disconnected",
+                    "H3 acceptance crossed a transport generation",
+                    { operation: "enqueue" },
+                  ),
                 ),
               );
         }
@@ -263,10 +275,10 @@ const build = (
           result =
             disposition === "stale"
               ? Result.fail(
-                  new ReactorError({
-                    code: "Disconnected",
-                    message: "H3 received a stale command acknowledgement",
-                  }),
+                  ReactorError.fromCode(
+                    "Disconnected",
+                    "H3 received a stale command acknowledgement",
+                  ),
                 )
               : Result.succeed(undefined);
           emit({ _tag: "Acknowledged", source });
@@ -276,10 +288,7 @@ const build = (
           result =
             disposition === "stale"
               ? Result.fail(
-                  new ReactorError({
-                    code: "Disconnected",
-                    message: "H3 received a stale command message",
-                  }),
+                  ReactorError.fromCode("Disconnected", "H3 received a stale command message"),
                 )
               : Result.succeed(message);
           if (disposition !== "stale" && message.type !== "unknown") {
@@ -306,14 +315,15 @@ const build = (
           limits.retained
         )
           fail(
-            new ReactorError({
-              code: "Overflow",
-              message: "H3 retained observation byte bound exceeded",
-              context: { operation: "H3 observation" },
+            ReactorError.fromCode("Overflow", "H3 retained observation byte bound exceeded", {
+              operation: "H3 observation",
             }),
           );
       } catch (cause) {
-        const error = errorOf(cause);
+        // The reducer rejects provider data with a ReactorError; anything else
+        // it throws is a bug, which stays a defect of the observation fiber.
+        if (!ReactorError.is(cause)) throw cause;
+        const error = cause;
         if (source._tag === "Model") {
           decoded.set(source, Result.fail(error));
           const waiter = observedWaiters.get(source);
@@ -327,8 +337,7 @@ const build = (
       Effect.catch((error) => Effect.sync(() => fail(error))),
       Effect.andThen(
         Effect.sync(() => {
-          if (!closed)
-            fail(new ReactorError({ code: "Closed", message: "H3 session observation ended" }));
+          if (!closed) fail(ReactorError.fromCode("Closed", "H3 session observation ended"));
         }),
       ),
       Effect.forkScoped,
@@ -338,13 +347,13 @@ const build = (
       Effect.suspend(() => {
         const current = state.snapshot();
         const error = closed
-          ? new ReactorError({ code: "Closed", message: "H3 provider scope is closed" })
+          ? ReactorError.fromCode("Closed", "H3 provider scope is closed")
           : (fatalError ??
             (needsFacts && current._tag !== "Ready"
-              ? new ReactorError({
-                  code: "InvalidState",
-                  message: "H3 provider needs current state and queue observations",
-                })
+              ? ReactorError.fromCode(
+                  "InvalidState",
+                  "H3 provider needs current state and queue observations",
+                )
               : undefined));
         return error === undefined ? Effect.void : Effect.fail(localFailure(operation, error));
       });
@@ -359,9 +368,7 @@ const build = (
             : Effect.fail(previous.failure);
         if (fatalError !== undefined) return Effect.fail(fatalError);
         if (observedWaiters.size >= limits.pending)
-          return Effect.fail(
-            new ReactorError({ code: "Overflow", message: "H3 reply observer bound exceeded" }),
-          );
+          return Effect.fail(ReactorError.fromCode("Overflow", "H3 reply observer bound exceeded"));
         const waiter = Deferred.makeUnsafe<ObservationResult, ReactorError>();
         observedWaiters.set(source, waiter);
         return Deferred.await(waiter).pipe(
@@ -369,10 +376,10 @@ const build = (
             duration: limits.command,
             orElse: () =>
               Effect.fail(
-                new ReactorError({
-                  code: "Timeout",
-                  message: "H3 did not observe the command's exact returned envelope",
-                }),
+                ReactorError.fromCode(
+                  "Timeout",
+                  "H3 did not observe the command's exact returned envelope",
+                ),
               ),
           }),
           Effect.ensuring(
@@ -385,7 +392,7 @@ const build = (
     const call = <K extends CommandName>(operation: K, args: CommandArgs<K>, needsFacts = true) =>
       Effect.gen(function* () {
         yield* active(operation, needsFacts);
-        const source = yield* session.command(operation, args, undefined, limits.command);
+        const source = yield* session.command(operation, args, { replyTimeout: limits.command });
         const message = yield* awaitObservation(source).pipe(
           Effect.mapError((error) =>
             uncertain(operation, source, "H3 reply observation failed", error),
@@ -424,10 +431,7 @@ const build = (
           ? Effect.void
           : Effect.fail(
               CommandFailure.from(
-                new ReactorError({
-                  code: "InvalidState",
-                  message: "H3 full snapshots changed during refresh",
-                }),
+                ReactorError.fromCode("InvalidState", "H3 full snapshots changed during refresh"),
                 {
                   operation: "H3 refresh",
                   outcome: "replied",
@@ -459,7 +463,7 @@ const build = (
         if (before._tag !== "Ready")
           return yield* localFailure(
             "enqueue",
-            new ReactorError({ code: "InvalidState", message: "H3 is not ready" }),
+            ReactorError.fromCode("InvalidState", "H3 is not ready"),
           );
         if (request.seconds !== undefined)
           yield* checked("enqueue", () =>
@@ -475,41 +479,36 @@ const build = (
             files.push(material.file);
             continue;
           }
-          const digest = yield* crypto.digest("SHA-256", material.bytes).pipe(
-            Effect.mapError(() =>
-              localFailure(
-                "enqueue",
-                new ReactorError({
-                  code: "InvalidState",
-                  message: "Could not hash H3 reference",
-                }),
+          const digest = yield* crypto
+            .digest("SHA-256", material.bytes)
+            .pipe(
+              Effect.mapError(() =>
+                localFailure(
+                  "enqueue",
+                  ReactorError.fromCode("InvalidState", "Could not hash H3 reference"),
+                ),
               ),
-            ),
-          );
+            );
           const key = `${before.transportGeneration}:${hex(digest)}`;
           const file = yield* uploadGate.withPermit(
             Effect.gen(function* () {
               const cached = uploads.get(key);
               if (cached !== undefined) return cached;
               const uploaded = yield* session
-                .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, limits.command)
+                .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, {
+                  uploadTimeout: limits.upload,
+                })
                 .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
               const file = yield* checked("enqueue", () => checkedUpload(uploaded.file));
               if (file.size !== BigInt(reference.size) || file.mime_type !== reference.mimeType)
                 return yield* localFailure(
                   "enqueue",
-                  new ReactorError({
-                    code: "Protocol",
-                    message: "H3 upload returned different file facts",
-                  }),
+                  ReactorError.fromCode("Protocol", "H3 upload returned different file facts"),
                 );
               if (state.snapshot().transportGeneration !== before.transportGeneration)
                 return yield* localFailure(
                   "enqueue",
-                  new ReactorError({
-                    code: "Disconnected",
-                    message: "H3 reference upload crossed a generation",
-                  }),
+                  ReactorError.fromCode("Disconnected", "H3 reference upload crossed a generation"),
                 );
               if (uploads.size >= limits.cache) {
                 const first = uploads.keys().next();
@@ -528,27 +527,28 @@ const build = (
     const nextId = () =>
       pure(() => {
         if (counter === 0xffffffffffffffffn)
-          throw new ReactorError({
-            code: "Overflow",
-            message: "H3 submission identity space exhausted",
-            context: { outcome: "not-submitted" },
+          throw ReactorError.fromCode("Overflow", "H3 submission identity space exhausted", {
+            outcome: "not-submitted",
           });
         return `${namespace}:${++counter}`;
       });
-    const prepared = (
+    const prepared = <E extends PolicyFailure>(
       id: string,
       input: Effect.Effect<
         { readonly request: CapturedRequest; readonly metadata: string },
-        ReactorError,
+        ReactorError | CommandFailure | E,
         Scope.Scope
       >,
-      hooks: PrepareHooks,
-    ): ReturnType<Provider["prepare"]> =>
+      hooks: PrepareHooks<E>,
+    ): Effect.Effect<
+      Submission.Submission<Acceptance, CommandFailure | E>,
+      ReactorError | CommandFailure
+    > =>
       Submission.make({
         id,
         prepare: Effect.gen(function* () {
           const { request, metadata } = yield* input.pipe(
-            Effect.mapError((error) => localFailure("enqueue", error)),
+            Effect.mapError((error) => preparationFailure("enqueue", error)),
           );
           const staged = yield* stage(request, metadata);
           return {
@@ -574,18 +574,15 @@ const build = (
             )
               return yield* localFailure(
                 "enqueue",
-                new ReactorError({
-                  code: "Disconnected",
-                  message: "H3 prepared input crossed a transport generation",
-                }),
+                ReactorError.fromCode(
+                  "Disconnected",
+                  "H3 prepared input crossed a transport generation",
+                ),
               );
             if (pending.size >= limits.pending)
               return yield* localFailure(
                 "enqueue",
-                new ReactorError({
-                  code: "Overflow",
-                  message: "H3 pending acceptance bound reached",
-                }),
+                ReactorError.fromCode("Overflow", "H3 pending acceptance bound reached"),
               );
             // Acceptance registration is inside the same commit boundary as the
             // orchestration hook and precedes Session.command's wire correlation.
@@ -604,7 +601,7 @@ const build = (
         execute: ({ args, entry }) => {
           const execution = Effect.gen(function* () {
             const sent = yield* Effect.result(
-              session.command("enqueue", args, undefined, limits.command),
+              session.command("enqueue", args, { replyTimeout: limits.command }),
             );
             let original: CommandFailure;
             if (Result.isFailure(sent)) {
@@ -652,10 +649,10 @@ const build = (
                           duration: limits.hook,
                           orElse: () =>
                             Effect.fail(
-                              new ReactorError({
-                                code: "Timeout",
-                                message: "H3 result hook exceeded its deadline",
-                              }),
+                              ReactorError.fromCode(
+                                "Timeout",
+                                "H3 result hook exceeded its deadline",
+                              ),
                             ),
                         }),
                       ),
@@ -665,10 +662,9 @@ const build = (
                     if (Exit.isFailure(hook))
                       emit({
                         _tag: "Diagnostic",
-                        error: new ReactorError({
-                          code: "InvalidState",
-                          message: "H3 result hook failed",
-                          context: { operation: "H3 result hook", detail: hook.cause },
+                        error: ReactorError.fromCode("InvalidState", "H3 result hook failed", {
+                          operation: "H3 result hook",
+                          detail: hook.cause,
                         }),
                       });
                     return yield* Result.isSuccess(result)
@@ -679,7 +675,10 @@ const build = (
               );
         },
       }).pipe(Scope.provide(scope));
-    const prepare: Provider["prepare"] = (input, hooks = {}) =>
+    const prepare: Provider["prepare"] = <E extends PolicyFailure = never>(
+      input: Request,
+      hooks: PrepareHooks<E> = {},
+    ) =>
       Effect.gen(function* () {
         yield* active("enqueue", true);
         const request = yield* pure(() => captureRequest(input, limits.prompt));
@@ -687,14 +686,15 @@ const build = (
         const metadata = yield* pure(() => encodeMetadata(namespace, id, request.metadata));
         return yield* prepared(id, Effect.succeed({ request, metadata }), hooks);
       });
-    const prepareFrom: Provider["prepareFrom"] = (preparation, hooks = {}) =>
+    const prepareFrom: Provider["prepareFrom"] = <E extends PolicyFailure = never>(
+      preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
+      hooks: PrepareHooks<E> = {},
+    ) =>
       Effect.gen(function* () {
         yield* active("enqueue", true);
         if (!Effect.isEffect(preparation))
-          return yield* new ReactorError({
-            code: "InvalidInput",
-            message: "H3 preparation must be an Effect",
-            context: { outcome: "not-submitted" },
+          return yield* ReactorError.fromCode("InvalidInput", "H3 preparation must be an Effect", {
+            outcome: "not-submitted",
           });
         const id = yield* nextId();
         return yield* prepared(
@@ -715,8 +715,7 @@ const build = (
       Effect.flatMap(({ openapi }) => pure(() => validateDeployment(openapi))),
       Effect.timeoutOrElse({
         duration: limits.setup,
-        orElse: () =>
-          Effect.fail(new ReactorError({ code: "Timeout", message: "H3 schema read timed out" })),
+        orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "H3 schema read timed out")),
       }),
     );
     yield* refresh.pipe(
@@ -724,20 +723,14 @@ const build = (
         duration: limits.setup,
         orElse: () =>
           Effect.fail(
-            new ReactorError({
-              code: "Timeout",
-              message: "H3 initial state and queue reads timed out",
-            }),
+            ReactorError.fromCode("Timeout", "H3 initial state and queue reads timed out"),
           ),
       }),
     );
     if (state.snapshot()._tag !== "Ready")
       return yield* (
         fatalError ??
-          new ReactorError({
-            code: "InvalidState",
-            message: "H3 initial observations are unavailable",
-          })
+          ReactorError.fromCode("InvalidState", "H3 initial observations are unavailable")
       );
 
     const provider: Provider = {
@@ -758,7 +751,9 @@ const build = (
       prepareFrom,
       enqueue: (request) =>
         prepare(request).pipe(
-          Effect.mapError((error) => localFailure("enqueue", error)),
+          Effect.mapError((error) =>
+            ReactorError.is(error) ? localFailure("enqueue", error) : error,
+          ),
           Effect.flatMap((submission) => submission.submit),
         ),
       getState,
@@ -799,25 +794,19 @@ const build = (
       setCanvas: (aspect) =>
         checked("set_canvas", () => {
           if (!Object.hasOwn(canvases, aspect))
-            throw new ReactorError({
-              code: "InvalidInput",
-              message: "Unsupported H3 canvas aspect",
-            });
+            throw ReactorError.fromCode("InvalidInput", "Unsupported H3 canvas aspect");
           return { aspect };
         }).pipe(Effect.flatMap((args) => named("set_canvas", args))),
       setAutoplay: (enabled) =>
         checked("set_autoplay", () => {
           if (typeof enabled !== "boolean")
-            throw new ReactorError({ code: "InvalidInput", message: "Autoplay must be boolean" });
+            throw ReactorError.fromCode("InvalidInput", "Autoplay must be boolean");
           return { enabled };
         }).pipe(Effect.flatMap((args) => named("set_autoplay", args))),
       setFlushOnClipEnd: (enabled) =>
         checked("set_flush_on_clip_end", () => {
           if (typeof enabled !== "boolean")
-            throw new ReactorError({
-              code: "InvalidInput",
-              message: "Flush setting must be boolean",
-            });
+            throw ReactorError.fromCode("InvalidInput", "Flush setting must be boolean");
           return { enabled };
         }).pipe(Effect.flatMap((args) => named("set_flush_on_clip_end", args))),
       reset: named("reset", {}),
@@ -829,7 +818,7 @@ const build = (
 export const make = (
   session: Session,
   options: Options = {},
-): Effect.Effect<Provider, ReactorError, Crypto.Crypto | Scope.Scope> =>
+): Effect.Effect<Provider, ReactorError | CommandFailure, Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const child = yield* Scope.fork(yield* Effect.scope);
     return yield* build(session, options).pipe(

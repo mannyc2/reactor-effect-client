@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { Effect, Option, Result } from "effect";
+import { Cause, Effect, Exit, Option, Result } from "effect";
 import { ClipId, PolicyFailure } from "../../src/orchestration/request.js";
 import { activeIds, generation, resolve } from "../../src/orchestration/routing.js";
 import type { Candidate } from "../../src/orchestration/routing.js";
 import type { SequenceSnapshot } from "../../src/Sequence.js";
-import { record, readyState, request } from "./SourceFixture.js";
+import { record, readyState, request, refusal } from "./SourceFixture.js";
 
 const first = record("first"),
   second = record("second"),
@@ -47,7 +47,7 @@ const assertFailure = (result: Result.Result<unknown, PolicyFailure>, reason: st
   expect(Result.isFailure(result)).toBe(true);
   if (Result.isFailure(result)) {
     expect(result.failure).toBeInstanceOf(PolicyFailure);
-    expect(result.failure.reason).toBe(reason);
+    expect(refusal(result.failure)).toBe(reason);
     expect(result.failure.context.outcome).toBe("not-submitted");
   }
 };
@@ -78,7 +78,7 @@ for (const [name, input, binding] of [
   test(`rejects ${name} conflict before choosing a dispatch`, async () => {
     assertFailure(
       await Effect.runPromise(Effect.result(resolve(input, [a, b], "warm", binding))),
-      "owner_conflict",
+      "OwnerConflict",
     );
   });
 
@@ -88,58 +88,58 @@ for (const [name, input, candidates, binding, reason] of [
     request({ before: ClipId.make("missing") }),
     [a, b],
     undefined,
-    "anchor_missing",
+    "Missing:anchor",
   ],
   [
     "missing continuation",
     request({ continueFrom: ClipId.make("missing") }),
     [a, b],
     undefined,
-    "continuation_missing",
+    "Missing:continuation",
   ],
   [
     "duplicate foreign identity",
     request({ before: first.clipId }),
     [a, candidate("warm", { accepted: new Set([first.clipId]) })],
     undefined,
-    "owner_conflict",
+    "OwnerConflict",
   ],
   [
     "retired owner",
     request({ continueFrom: first.clipId }),
     [{ ...a, closed: true }, b],
     undefined,
-    "session_retired",
+    "SessionRetired",
   ],
-  ["missing bound owner", request(), [b], sequence(), "session_retired"],
-  ["recovering owner", request(), [{ ...a, recovering: true }], sequence(), "session_recovering"],
+  ["missing bound owner", request(), [b], sequence(), "SessionRetired"],
+  ["recovering owner", request(), [{ ...a, recovering: true }], sequence(), "SessionRecovering"],
   [
     "incomplete snapshot",
     request(),
     [{ ...a, state: { ...a.state, availability: "Synchronizing" as const } }],
     sequence(),
-    "session_recovering",
+    "SessionRecovering",
   ],
   [
     "anchor already left generation",
     request({ before: first.clipId }),
     [candidate("old", { accepted: new Set([first.clipId]) })],
     undefined,
-    "anchor_unavailable",
+    "AnchorUnavailable",
   ],
   [
     "expired continuation",
     request({ continueFrom: second.clipId }),
     [a],
     undefined,
-    "continuation_unavailable",
+    "ContinuationUnavailable",
   ],
   [
     "position disagrees with anchor",
     request({ before: second.clipId, position: 0 }),
     [a],
     undefined,
-    "position_conflict",
+    "PositionConflict",
   ],
 ] as const)
   test(`routing rejects ${name} as a local policy failure`, async () => {
@@ -155,7 +155,7 @@ for (const status of ["sealed", "retired", "indeterminate"] as const)
       await Effect.runPromise(
         Effect.result(resolve(request(), [a, b], "warm", sequence({ status }))),
       ),
-      `sequence_${status}`,
+      `Sequence:${status}`,
     );
   });
 test("an explicitly sealing sequence rejects new members", async () => {
@@ -163,7 +163,7 @@ test("an explicitly sealing sequence rejects new members", async () => {
     await Effect.runPromise(
       Effect.result(resolve(request(), [a], "old", sequence({ sealRequested: true }))),
     ),
-    "sequence_sealing",
+    "Sequence:sealing",
   );
 });
 test("explicit positions including past end are unchanged and omitted append remains absent", async () => {
@@ -188,7 +188,7 @@ test("generation order preserves the provider's non-head build position and enfo
     await Effect.runPromise(
       Effect.result(resolve(request(), [candidate("old", { state })], "old", undefined)),
     ),
-    "queue_full",
+    "QueueFull",
   );
 });
 test("unknown foreign playback contributes ownership without inventing a record", async () => {
@@ -207,6 +207,15 @@ test("unknown foreign playback contributes ownership without inventing a record"
         ),
       ),
     ),
-    "continuation_unavailable",
+    "ContinuationUnavailable",
   );
+});
+
+test("a generation order naming a missing clip is a broken invariant: a defect, not a refusal", async () => {
+  const broken = readyState({ generationOrder: [first.clipId] });
+  const exit = await Effect.runPromiseExit(
+    resolve(request(), [candidate("old", { state: broken })], "old", undefined),
+  );
+  expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+  expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBe(false);
 });

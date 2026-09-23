@@ -15,8 +15,11 @@ const attached = factory.attach({ sessionId: "sess_fixture_existing" });
 declare const session: Root.Session;
 // H3 composes through the public canonical Session without introducing
 // filesystem/path requirements into portable provider construction.
-const provider: Effect.Effect<H3.Provider, Root.ReactorError, Crypto.Crypto | Scope.Scope> =
-  H3.make(session);
+const provider: Effect.Effect<
+  H3.Provider,
+  Root.ReactorError | Root.CommandFailure,
+  Crypto.Crypto | Scope.Scope
+> = H3.make(session);
 const coordinator: Effect.Effect<Root.Coordinator.Client, Root.ReactorError, Http.HttpClient> =
   Root.Coordinator.make();
 declare const simulated: Effect.Success<ReturnType<typeof Simulation.make>>;

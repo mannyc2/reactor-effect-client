@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { errorOf, positiveLimit, ReactorError } from "./errors.js";
+import { parsed, positiveLimit, ReactorError } from "./errors.js";
 
 interface Entry<A> {
   readonly value: A;
@@ -41,24 +41,19 @@ export class Observations<A> {
   ): Effect.Effect<Stream.Stream<A, ReactorError>, ReactorError, Scope.Scope> {
     const observations = this;
     return Effect.gen(function* () {
-      const bounds = yield* Effect.try({
-        try: () => ({
-          capacity: positiveLimit(options.capacity ?? 64, "observation capacity", 4096),
-          maxBytes: positiveLimit(
-            options.maxBytes ?? 1_048_576,
-            "observation bytes",
-            64 * 1024 * 1024,
-          ),
-        }),
-        catch: errorOf,
-      });
+      const bounds = yield* parsed(() => ({
+        capacity: positiveLimit(options.capacity ?? 64, "observation capacity", 4096),
+        maxBytes: positiveLimit(
+          options.maxBytes ?? 1_048_576,
+          "observation bytes",
+          64 * 1024 * 1024,
+        ),
+      }));
       const subscriber = yield* Effect.acquireRelease(
         Effect.gen(function* () {
           if (observations.subscribers.size >= observations.maxSubscribers) {
-            return yield* new ReactorError({
-              code: "Overflow",
-              message: "observer count bound reached",
-              context: { outcome: "not-submitted" },
+            return yield* ReactorError.fromCode("Overflow", "observer count bound reached", {
+              outcome: "not-submitted",
             });
           }
           const queue = yield* Queue.dropping<Entry<A>, ReactorError | Cause.Done>(bounds.capacity);
@@ -81,16 +76,13 @@ export class Observations<A> {
       return Stream.unwrap(
         Effect.gen(function* () {
           yield* Effect.acquireRelease(
-            Effect.try({
-              try: () => {
-                if (reading)
-                  throw new ReactorError({
-                    code: "AlreadyReading",
-                    message: "this observation already has an active reader",
-                  });
-                reading = true;
-              },
-              catch: errorOf,
+            parsed(() => {
+              if (reading)
+                throw ReactorError.fromCode(
+                  "AlreadyReading",
+                  "this observation already has an active reader",
+                );
+              reading = true;
             }),
             () =>
               Effect.sync(() => {
@@ -112,6 +104,24 @@ export class Observations<A> {
     });
   }
 
+  /**
+   * A state and every value emitted after it, with no gap: the subscription is
+   * acquired before `state` is read, so a value emitted in between is queued
+   * rather than lost (and may repeat what the state already reflects).
+   */
+  observeWith<S, E>(
+    state: Effect.Effect<S, E>,
+    options?: ObservationOptions,
+  ): Effect.Effect<
+    { readonly initial: S; readonly events: Stream.Stream<A, ReactorError> },
+    ReactorError | E,
+    Scope.Scope
+  > {
+    return Effect.flatMap(this.subscribe(options), (events) =>
+      Effect.map(state, (initial) => ({ initial, events })),
+    );
+  }
+
   stream(options?: ObservationOptions): Stream.Stream<A, ReactorError> {
     return Stream.unwrap(this.subscribe(options));
   }
@@ -127,10 +137,10 @@ export class Observations<A> {
         Queue.failCauseUnsafe(
           subscriber.queue,
           Cause.fail(
-            new ReactorError({
-              code: "Overflow",
-              message: "observation bound exceeded; acquire a new observation and snapshot",
-            }),
+            ReactorError.fromCode(
+              "Overflow",
+              "observation bound exceeded; acquire a new observation and snapshot",
+            ),
           ),
         );
         this.subscribers.delete(subscriber);

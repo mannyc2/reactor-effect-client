@@ -1,58 +1,46 @@
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Http from "effect/unstable/http/HttpClient";
-import { ReactorError } from "../errors.js";
+import * as Result from "effect/Result";
+import { duration } from "../duration.js";
+import { parse, ReactorError } from "../errors.js";
 import { collectBytes } from "../bytes.js";
 import { readFileBytes } from "../session/files.js";
 
 export interface LoadLimits {
   readonly maxBytes: number;
-  readonly timeoutMs: number;
+  /** How long loading one reference may take. A bare number is milliseconds. */
+  readonly loadTimeout: Duration.Input;
+  /** @deprecated Removed in 0.3.0: use `loadTimeout` (a bare number is milliseconds). */
+  readonly timeoutMs?: never;
 }
 
 const failure = (message: string, detail?: unknown): ReactorError =>
-  new ReactorError({
-    code: "Upload",
-    message,
-    context: {
-      operation: "load reference",
-      outcome: "not-submitted",
-      ...(detail === undefined ? {} : { detail }),
-    },
+  ReactorError.fromCode("Upload", message, {
+    operation: "load reference",
+    outcome: "not-submitted",
+    ...(detail === undefined ? {} : { detail }),
   });
 
-/**
- * Every call rereads the URI. The H3 provider deduplicates subsequent uploads by
- * the bytes' hash; a URI cache cannot establish that mutable content is unchanged.
- * This loader works independently of any live provider session.
- */
-export const loadReferenceBytes = (
+const load = (
   uri: string,
-  limits: LoadLimits,
+  maxBytes: number,
 ): Effect.Effect<Uint8Array, ReactorError, FileSystem.FileSystem | Path.Path | Http.HttpClient> =>
   Effect.gen(function* () {
-    if (
-      typeof uri !== "string" ||
-      !Number.isSafeInteger(limits.maxBytes) ||
-      limits.maxBytes <= 0 ||
-      !Number.isFinite(limits.timeoutMs) ||
-      limits.timeoutMs <= 0
-    ) {
-      return yield* failure("Reference URI and positive finite loading bounds are required");
-    }
     if (uri.startsWith("data:")) {
       const comma = uri.indexOf(",");
       if (comma < 0 || !uri.slice(0, comma).endsWith(";base64"))
         return yield* failure("Only base64 data URIs are supported");
       const encoded = uri.slice(comma + 1);
-      if (encoded.length > 4 * Math.ceil(limits.maxBytes / 3))
+      if (encoded.length > 4 * Math.ceil(maxBytes / 3))
         return yield* failure("Reference exceeds the byte bound");
       const result = Schema.decodeResult(Schema.Uint8ArrayFromBase64)(encoded);
       if (result._tag === "Failure")
         return yield* failure("Invalid base64 reference", result.failure);
-      if (result.success.byteLength > limits.maxBytes)
+      if (result.success.byteLength > maxBytes)
         return yield* failure("Reference exceeds the byte bound");
       return result.success;
     }
@@ -68,11 +56,9 @@ export const loadReferenceBytes = (
               .fromFileUrl(url)
               .pipe(Effect.mapError((cause) => failure("Invalid file URI", cause)));
           });
-      return yield* readFileBytes(path, limits.maxBytes).pipe(
+      return yield* readFileBytes(path, maxBytes).pipe(
         Effect.mapError((cause) =>
-          cause instanceof ReactorError
-            ? cause
-            : failure("Reference file could not be read", cause),
+          ReactorError.is(cause) ? cause : failure("Reference file could not be read", cause),
         ),
       );
     }
@@ -86,20 +72,42 @@ export const loadReferenceBytes = (
           if (response.status < 200 || response.status >= 300)
             return yield* failure(`Reference download returned HTTP ${response.status}`);
           const declared = Number(response.headers["content-length"] ?? "0");
-          if (Number.isFinite(declared) && declared > limits.maxBytes)
+          if (Number.isFinite(declared) && declared > maxBytes)
             return yield* failure("Reference exceeds the byte bound");
-          return yield* collectBytes(response.stream, limits.maxBytes).pipe(
+          return yield* collectBytes(response.stream, maxBytes).pipe(
             Effect.mapError((cause) =>
-              cause instanceof ReactorError ? cause : failure("Reference download failed", cause),
+              ReactorError.is(cause) ? cause : failure("Reference download failed", cause),
             ),
           );
         }),
       );
     }
     return yield* failure("Unsupported reference URI scheme");
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: limits.timeoutMs,
-      orElse: () => Effect.fail(failure("Reference loading timed out")),
-    }),
-  );
+  });
+
+/**
+ * Every call rereads the URI. The H3 provider deduplicates subsequent uploads by
+ * the bytes' hash; a URI cache cannot establish that mutable content is unchanged.
+ * This loader works independently of any live provider session.
+ */
+export const loadReferenceBytes = (
+  uri: string,
+  limits: LoadLimits,
+): Effect.Effect<Uint8Array, ReactorError, FileSystem.FileSystem | Path.Path | Http.HttpClient> =>
+  Effect.gen(function* () {
+    const timeout = parse(() => duration(limits.loadTimeout, "reference load timeout"));
+    if (
+      typeof uri !== "string" ||
+      !Number.isSafeInteger(limits.maxBytes) ||
+      limits.maxBytes <= 0 ||
+      Result.isFailure(timeout)
+    ) {
+      return yield* failure("Reference URI and positive finite loading bounds are required");
+    }
+    return yield* load(uri, limits.maxBytes).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout.success,
+        orElse: () => Effect.fail(failure("Reference loading timed out")),
+      }),
+    );
+  });

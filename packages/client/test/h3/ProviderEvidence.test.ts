@@ -6,7 +6,7 @@ import * as H3 from "../../src/h3/index.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 
-const options: H3.Options = { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 };
+const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
   Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const observed = (provider: H3.Provider, revision: bigint) =>
@@ -96,7 +96,7 @@ test("expired acceptance tokens cannot be revived by late matching clips and rel
       const next = yield* provider.prepare({ prompt: "next request" });
       const second = failure(yield* Effect.result(next.submit));
       expect(second.context.outcome).toBe("unknown");
-      expect(second.code).toBe("UnexpectedReply");
+      expect(second.reason._tag).toBe("UnexpectedReply");
       expect(next.id).not.toBe(prepared.id);
       expect(fake.calls.filter((entry) => entry.command === "enqueue")).toHaveLength(2);
       expect(yield* provider.acceptances).toEqual([]);
@@ -111,16 +111,13 @@ test("bounded reconciliation retains the exact unknown failure, original code an
       const fake = yield* fixture({
         command: {
           enqueue: ({ call }) => {
-            original = CommandFailure.from(
-              new ReactorError({ code: "Native", message: "fixture uncertainty" }),
-              {
-                operation: "enqueue",
-                outcome: "unknown",
-                requestId: call.requestId,
-                generation: call.generation,
-                detail: cause,
-              },
-            );
+            original = CommandFailure.from(ReactorError.fromCode("Native", "fixture uncertainty"), {
+              operation: "enqueue",
+              outcome: "unknown",
+              requestId: call.requestId,
+              generation: call.generation,
+              detail: cause,
+            });
             return Effect.fail(original);
           },
         },
@@ -129,7 +126,7 @@ test("bounded reconciliation retains the exact unknown failure, original code an
       const prepared = yield* provider.prepare({ prompt: "one uncertain dispatch" });
       const error = failure(yield* Effect.result(prepared.submit));
       expect(error).toBe(original!);
-      expect(error.code).toBe("Native");
+      expect(error.reason._tag).toBe("Native");
       expect(error.context.detail).toBe(cause);
       expect(error.context).toMatchObject({
         operation: "enqueue",

@@ -70,7 +70,7 @@ describe("native C ABI", () => {
         }),
       );
       await expect(verifyStagedNativeBridge(path)).rejects.toMatchObject({
-        code: "Native",
+        reason: { _tag: "Native" },
         context: { outcome: "not-submitted" },
       });
     } finally {
@@ -91,7 +91,7 @@ describe("native C ABI", () => {
         await expect(
           Effect.runPromise(Effect.scoped(peer.prepare([], tracks, () => undefined))),
         ).rejects.toMatchObject({
-          code: "UnsupportedCapability",
+          reason: { _tag: "UnsupportedCapability" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       } finally {
@@ -111,7 +111,7 @@ describe("native C ABI", () => {
       );
       fixtures.push(previous.directory);
       await expect(checkNativeBridge(previous.path)).rejects.toMatchObject({
-        code: "Native",
+        reason: { _tag: "Native" },
         message: "native WebRTC ABI mismatch: expected 3, received 2",
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
@@ -122,7 +122,7 @@ describe("native C ABI", () => {
       );
       fixtures.push(missing.directory);
       await expect(checkNativeBridge(missing.path)).rejects.toMatchObject({
-        code: "Native",
+        reason: { _tag: "Native" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
     } finally {
@@ -137,7 +137,7 @@ describe("native C ABI", () => {
       // These errors came back after entering the ABI. A native failure class
       // alone cannot establish execution history, unlike the local fence below.
       await expect(bridge.send("data", Uint8Array.of(1))).rejects.toMatchObject({
-        code: "ChannelClosed",
+        reason: { _tag: "ChannelClosed" },
         context: expect.objectContaining({
           outcome: "unknown",
           detail: expect.objectContaining({ channel: "data" }),
@@ -158,14 +158,14 @@ describe("native C ABI", () => {
       await expect(
         bridge.call(NativeCall.Answer, encodeNativeText("v=0\r\nnot an answer\r\n")),
       ).rejects.toMatchObject({
-        code: "SdpRejected",
+        reason: { _tag: "SdpRejected" },
         context: expect.objectContaining({
           outcome: "unknown",
           detail: expect.objectContaining({ status: -5 }),
         }),
       });
       await expect(bridge.call(NativeCall.Prepare, encodeNativeJson({}))).rejects.toMatchObject({
-        code: "InvalidInput",
+        reason: { _tag: "InvalidInput" },
       });
 
       const snapshot = (await bridge.call(NativeCall.MediaSnapshot)) as {
@@ -176,11 +176,11 @@ describe("native C ABI", () => {
 
       bridge.close();
       await expect(bridge.call(NativeCall.MediaSnapshot)).rejects.toMatchObject({
-        code: "Closed",
+        reason: { _tag: "Closed" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
       await expect(bridge.send("data", Uint8Array.of(1))).rejects.toMatchObject({
-        code: "Closed",
+        reason: { _tag: "Closed" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
       expect(bridge.takeEvent()).toBeNull();

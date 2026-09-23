@@ -24,7 +24,7 @@ import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
 import * as Native from "../src/index.js";
-import { libraryPath, until } from "./support.js";
+import { libraryPath, nativeClient, until } from "./support.js";
 
 /*
  * The shipped library under the load the decision record measured: a real
@@ -705,7 +705,7 @@ describe("native media under load", () => {
       const result = await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make(
+            const factory = yield* nativeClient(
               { apiUrl: "https://coordinator.far-peer" },
               { libraryPath },
             );
@@ -768,19 +768,18 @@ describe("native media under load", () => {
         checking.filter((entry) => entry.type === "candidate-pair" && entry.state === "succeeded"),
       ).toEqual([]);
       await until(() => errors.length > 0, "ICE never failed", 45_000);
-      console.log(
-        `ice-failure ${JSON.stringify({ runtime, states, detail: errors[0]?.context.detail })}`,
-      );
+      console.log(`ice-failure ${JSON.stringify({ runtime, states, reason: errors[0]?.reason })}`);
       expect(states).not.toContain("connected");
       // libwebrtc reports failure once it has pruned the last timed-out pair,
       // so the pairs the classification reads may already be gone.
       expect(errors).toEqual([
         expect.objectContaining({
-          code: "IceFailed",
-          message: "native peer found no working ICE candidate pair",
-          context: expect.objectContaining({
-            detail: { pairs: expect.any(Number), candidateTypes: expect.any(Array) },
+          reason: expect.objectContaining({
+            _tag: "IceFailed",
+            pairs: expect.any(Number),
+            candidateTypes: expect.any(Array),
           }),
+          message: "native peer found no working ICE candidate pair",
         }),
       ]);
     } finally {

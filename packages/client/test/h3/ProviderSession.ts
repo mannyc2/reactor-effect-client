@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Deferred, Effect } from "effect";
 import { ReactorError } from "../../src/errors.js";
+import type { MessageCode } from "../../src/errors.js";
 import { jsonObject, structFromObject } from "../../src/json.js";
 import type { JsonObject } from "../../src/json.js";
 import { Observations } from "../../src/observation.js";
@@ -12,6 +13,7 @@ import type {
   Snapshot,
   ReadyState,
   Uploaded,
+  UploadTimeoutOptions,
 } from "../../src/session/index.js";
 import { providerSchema } from "./ProviderSchema.js";
 
@@ -68,7 +70,7 @@ export interface ReplyContext {
   readonly defaults: Effect.Effect<WireMessage | undefined, CommandFailure>;
   readonly fail: (
     outcome: "unknown" | "replied" | "not-submitted",
-    code?: ReactorError["code"],
+    code?: MessageCode,
   ) => CommandFailure;
 }
 export interface Script {
@@ -103,6 +105,7 @@ export interface Fixture {
     readonly name: string;
     readonly mimeType: string;
     readonly bytes: Uint8Array;
+    readonly options: UploadTimeoutOptions | undefined;
   }[];
   readonly accepted: FixtureClip[];
   readonly returns: CommandReply[];
@@ -142,7 +145,12 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       accepted: FixtureClip[] = [],
       reads: string[] = [],
       returns: CommandReply[] = [];
-    const uploaded: { name: string; mimeType: string; bytes: Uint8Array }[] = [];
+    const uploaded: {
+      name: string;
+      mimeType: string;
+      bytes: Uint8Array;
+      options: UploadTimeoutOptions | undefined;
+    }[] = [];
     const lifecycleCalls = { connect: 0, reconnect: 0, close: 0 };
     const ready = (): ReadyState => ({
       status: "ready",
@@ -378,9 +386,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       ready: Effect.suspend(() =>
         status === "ready"
           ? Effect.succeed(ready())
-          : Effect.fail(
-              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
-            ),
+          : Effect.fail(ReactorError.fromCode("InvalidState", "Fixture session is not ready")),
       ),
       current: Effect.sync(current),
       events: (bounds) => observers.stream(bounds),
@@ -393,11 +399,11 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         reads.push("schema");
         return { openapi: script.schema ?? providerSchema() };
       }),
-      command: (command, input, attachments, timeout = 1000) =>
+      command: (command, input, options = {}) =>
         Effect.gen(function* () {
           if (status !== "ready")
             return yield* CommandFailure.from(
-              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+              ReactorError.fromCode("InvalidState", "Fixture session is not ready"),
               {
                 operation: command,
                 outcome: "not-submitted",
@@ -410,15 +416,15 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             generation,
           };
           calls.push(call);
-          if (attachments !== undefined)
+          if (options.uploads !== undefined)
             throw new Error(
               "H3 prompt/image fixture uses JSON reference arrays, not legacy attachment commands",
             );
           const fail = (
             outcome: "unknown" | "replied" | "not-submitted",
-            code: ReactorError["code"] = "Timeout",
+            code: MessageCode = "Timeout",
           ) =>
-            CommandFailure.from(new ReactorError({ code, message: "Fixture command failure" }), {
+            CommandFailure.from(ReactorError.fromCode(code, "Fixture command failure"), {
               operation: command,
               outcome,
               requestId: call.requestId,
@@ -428,7 +434,10 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             script.command?.[command]?.({ fake, call, defaults: defaults(call), fail }) ??
             defaults(call);
           const message = yield* commandEffect.pipe(
-            Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(fail("unknown")) }),
+            Effect.timeoutOrElse({
+              duration: options.replyTimeout ?? 1000,
+              orElse: () => Effect.fail(fail("unknown")),
+            }),
           );
           const result: CommandReply =
             message === undefined
@@ -447,9 +456,9 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           if (!script.omitObservation) sendEvent(result);
           return result;
         }),
-      upload: (name, mimeType, bytes) =>
+      upload: (name, mimeType, bytes, options) =>
         Effect.gen(function* () {
-          uploaded.push({ name, mimeType, bytes: new Uint8Array(bytes) });
+          uploaded.push({ name, mimeType, bytes: new Uint8Array(bytes), options });
           return yield* (
             script.upload?.(name, mimeType, bytes) ??
               Effect.succeed({
@@ -466,16 +475,10 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         }),
       requestRecordingClip: () =>
         Effect.fail(
-          new ReactorError({
-            code: "UnsupportedCapability",
-            message: "Not a fixture recording operation",
-          }),
+          ReactorError.fromCode("UnsupportedCapability", "Not a fixture recording operation"),
         ),
       recording: Effect.fail(
-        new ReactorError({
-          code: "UnsupportedCapability",
-          message: "Not a fixture recording operation",
-        }),
+        ReactorError.fromCode("UnsupportedCapability", "Not a fixture recording operation"),
       ),
       stats: Effect.succeed({ sampledAtMs: 0, generation, warnings: [] }),
       close: Effect.sync(() => {

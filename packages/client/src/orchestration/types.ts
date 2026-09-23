@@ -3,10 +3,12 @@ import * as Data from "effect/Data";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import type * as Result from "effect/Result";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { ReactorError } from "../errors.js";
+import type { ReactorError, ReactorFailure } from "../errors.js";
+import type { ObservationOptions } from "../observation.js";
 import type { Clip } from "../h3/messages.js";
-import type { CommandFailure } from "../session/commands.js";
+import type { CommandFailure, PolicyFailure } from "../errors.js";
 import type { CloseReport } from "../SessionTypes.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import type { Submission } from "../Submission.js";
@@ -93,52 +95,101 @@ export type EngineEvent =
       readonly sessionId?: string;
     }
   | { readonly _tag: "Starved"; readonly at: number }
-  | { readonly _tag: "SessionFailed"; readonly failure: ReactorError };
+  | { readonly _tag: "SessionFailed"; readonly failure: ReactorFailure };
 export const EngineEvent = Data.taggedEnum<EngineEvent>();
 
 export type RemoveOutcome = "unstarted" | "in_flight" | "generation" | "ready";
-export type EnqueueError = CommandFailure;
-export type CommandError = CommandFailure;
+/**
+ * What an orchestration command can fail with: a dispatched or undispatched
+ * command's `CommandFailure`, or a local `PolicyFailure` refusal. Both carry
+ * `context.outcome`, so a caller reads the dispatch evidence without narrowing.
+ */
+export type EngineError = CommandFailure | PolicyFailure;
+
+/**
+ * An engine's state and every event after it, with no gap between them: the
+ * subscription is acquired before the state is read. An event may repeat what
+ * `initial` already reflects, so apply events idempotently by `clipId`. The
+ * stream is bounded per observer like any observation; after an `Overflow`,
+ * observe again for a fresh state and subscription.
+ */
+export interface EngineObservation {
+  readonly initial: EngineState;
+  readonly events: Stream.Stream<EngineEvent, ReactorError>;
+}
+export type ObserveEngine = (
+  options?: ObservationOptions,
+) => Effect.Effect<EngineObservation, ReactorError, Scope.Scope>;
 
 export interface EngineShape {
   readonly prepare: (
     request: ClipRequest,
-  ) => Effect.Effect<Submission<ClipId, CommandFailure>, CommandFailure>;
-  readonly enqueue: (request: ClipRequest) => Effect.Effect<ClipId, CommandFailure>;
+  ) => Effect.Effect<Submission<ClipId, EngineError>, EngineError>;
+  readonly enqueue: (request: ClipRequest) => Effect.Effect<ClipId, EngineError>;
   readonly state: Effect.Effect<EngineState>;
+  /** Later events only, subscribed when the stream runs; use `observe` to pair them with a state. */
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
-  readonly failure: Effect.Effect<ReactorError>;
-  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
-  readonly pauseAndStop: Effect.Effect<void, CommandFailure>;
-  readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, CommandFailure>;
+  readonly observe: ObserveEngine;
+  /**
+   * The terminal failure, as it was raised: a session's `ReactorError`, a
+   * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
+   */
+  readonly failure: Effect.Effect<ReactorFailure>;
+  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
+  readonly pauseAndStop: Effect.Effect<void, EngineError>;
+  readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;
   readonly move: (
     id: ClipId,
     position: number,
     queue: "generation" | "playout",
-  ) => Effect.Effect<void, CommandFailure>;
-  readonly setCanvas: (canvas: Canvas) => Effect.Effect<void, CommandFailure>;
+  ) => Effect.Effect<void, EngineError>;
+  readonly setCanvas: (canvas: Canvas) => Effect.Effect<void, EngineError>;
 }
 
+/**
+ * An orchestration's recovering media output, one logical track per kind that
+ * continues across reconnects and source replacements, and ends with the
+ * orchestration's terminal failure.
+ *
+ * - Consumption is mandatory: while it runs, the orchestration buffers what the
+ *   reader has not taken (96 video frames, 192,000 audio samples), and an
+ *   output that stays undrained past that fails the orchestration with
+ *   `Overflow`. That failure is terminal.
+ * - Each output has one reader at a time. A second concurrent reader fails
+ *   with `AlreadyReading` rather than silently splitting the frames; a reader
+ *   that ends releases the output, and a later reader resumes from what is
+ *   retained. A preview that wants only the newest frame derives it per
+ *   consumer with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
+ * - `pressure` reports the loss of the logical output: `droppedVideo`,
+ *   `droppedAudio` and `readerOverflows` accumulate across generations and
+ *   across source replacements, counting each source only while it fed this
+ *   output. A total that cannot be read fails `pressure` with `InvalidState`
+ *   rather than reporting zero.
+ */
 export interface MediaShape {
-  readonly video: Stream.Stream<VideoFrame, ReactorError>;
-  readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  readonly video: Stream.Stream<VideoFrame, ReactorFailure>;
+  readonly audio: Stream.Stream<AudioFrame, ReactorFailure>;
   readonly pressure: Effect.Effect<MediaPressure, ReactorError>;
   readonly videoFramesPerSecond: number;
 }
 
 export type MediaState =
   | { readonly _tag: "Ready"; readonly sessionId: string; readonly generation: bigint }
-  | { readonly _tag: "Recovering"; readonly sessionId: string; readonly cause: ReactorError }
-  | { readonly _tag: "Failed"; readonly cause: ReactorError }
+  | { readonly _tag: "Recovering"; readonly sessionId: string; readonly cause: ReactorFailure }
+  | { readonly _tag: "Failed"; readonly cause: ReactorFailure }
   | { readonly _tag: "Closed" };
 
-export interface MediaSource extends MediaShape {
+export interface MediaSource {
+  readonly video: Stream.Stream<VideoFrame, ReactorError>;
+  readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  readonly pressure: Effect.Effect<MediaPressure, ReactorError>;
+  readonly videoFramesPerSecond: number;
   readonly generation: bigint;
 }
 
 export interface PolicyCleanup {
   readonly operation: string;
-  readonly result: Result.Result<void, CommandFailure>;
+  readonly result: Result.Result<void, EngineError>;
 }
 
 export interface SourceCleanup {
@@ -158,10 +209,10 @@ export interface RoutedRequest {
 }
 
 export interface EnqueueHooks {
-  readonly commit?: (submissionId: string) => Effect.Effect<void, CommandFailure>;
+  readonly commit?: (submissionId: string) => Effect.Effect<void, EngineError>;
   readonly result?: (
     submissionId: string,
-    result: Result.Result<ClipId, CommandFailure>,
+    result: Result.Result<ClipId, EngineError>,
   ) => Effect.Effect<void>;
 }
 
@@ -173,18 +224,19 @@ export interface Source {
   readonly id: string;
   readonly state: Effect.Effect<EngineState>;
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
+  readonly observe: ObserveEngine;
   readonly prepareRouted: (
     request: RoutedRequest,
     hooks?: EnqueueHooks,
-  ) => Effect.Effect<Submission<ClipId, CommandFailure>, CommandFailure>;
+  ) => Effect.Effect<Submission<ClipId, EngineError>, EngineError>;
   readonly media: Effect.Effect<MediaSource, ReactorError>;
-  readonly reconnect: Effect.Effect<void, ReactorError>;
-  readonly refresh: Effect.Effect<void, CommandFailure>;
-  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
-  readonly stop: Effect.Effect<void, CommandFailure>;
-  readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, CommandFailure>;
-  readonly move: (id: ClipId, position: number) => Effect.Effect<void, CommandFailure>;
-  readonly setCanvas: (canvas: Canvas) => Effect.Effect<void, CommandFailure>;
+  readonly reconnect: Effect.Effect<void, ReactorError | CommandFailure>;
+  readonly refresh: Effect.Effect<void, EngineError>;
+  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
+  readonly stop: Effect.Effect<void, EngineError>;
+  readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;
+  readonly move: (id: ClipId, position: number) => Effect.Effect<void, EngineError>;
+  readonly setCanvas: (canvas: Canvas) => Effect.Effect<void, EngineError>;
   readonly close: Effect.Effect<SourceCleanup>;
 }
 

@@ -1,5 +1,5 @@
+import * as Predicate from "effect/Predicate";
 import { ReactorError } from "./errors.js";
-import { isRecord } from "./json.js";
 export interface Statistics {
   /** Injected monotonic clock in milliseconds, not wall time or an RTC sample timestamp. */
   readonly sampledAtMs: number;
@@ -47,9 +47,9 @@ export class StatsSampler {
   }
   sample(raw: readonly unknown[], generation: bigint, atMs: number): Statistics {
     if (!Number.isFinite(atMs) || raw.length > 4096)
-      throw new ReactorError({ code: "Protocol", message: "invalid statistics sample/bound" });
+      throw ReactorError.fromCode("Protocol", "invalid statistics sample/bound");
     const warnings: string[] = [],
-      entries = raw.filter(isRecord),
+      entries = raw.filter(Predicate.isObject),
       byId = new Map(
         entries.flatMap((e) => (typeof e.id === "string" ? [[e.id, e] as const] : [])),
       );

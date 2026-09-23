@@ -29,7 +29,8 @@ test("sequence affinity exposes accepted identities, partial outcomes and explic
         ],
       });
       const late = yield* Effect.result(affinity.bind("run", "session-a"));
-      expect(Result.isFailure(late) && late.failure.reason).toBe("sealed");
+      expect(Result.isFailure(late) && late.failure.code).toBe("sealed");
+      expect(Result.isFailure(late) && late.failure.message).toBe("Sequence run: sealed");
       yield* affinity.release("run");
       expect(yield* affinity.get("run")).toBeUndefined();
     }),
@@ -71,9 +72,9 @@ test("indeterminate sequences never migrate or evict and require explicit accoun
       expect((yield* affinity.get("unknown"))?.status).toBe("indeterminate");
       expect((yield* Effect.result(affinity.bind("unknown", {})))._tag).toBe("Failure");
       const full = yield* Effect.result(affinity.bind("other", {}));
-      expect(Result.isFailure(full) && full.failure.reason).toBe("capacity");
+      expect(Result.isFailure(full) && full.failure.code).toBe("capacity");
       const release = yield* Effect.result(affinity.release("unknown"));
-      expect(Result.isFailure(release) && release.failure.reason).toBe("not-releasable");
+      expect(Result.isFailure(release) && release.failure.code).toBe("not-releasable");
       yield* affinity.acknowledgeIndeterminate("unknown");
       expect((yield* affinity.get("unknown"))?.status).toBe("retired");
       yield* affinity.release("unknown");
@@ -87,6 +88,9 @@ test("member and sequence bounds are explicit and invalid configuration is typed
     Effect.result(Sequence.makeAffinity({ maxEntries: Number.NaN })),
   );
   expect(Result.isFailure(badEntries) && badEntries.failure._tag).toBe("InvalidSequenceOptions");
+  expect(Result.isFailure(badEntries) && badEntries.failure.message).toBe(
+    "maxEntries must be a positive safe integer",
+  );
   const badMembers = await Effect.runPromise(
     Effect.result(Sequence.makeAffinity({ maxMembers: 0 })),
   );
@@ -98,12 +102,10 @@ test("member and sequence bounds are explicit and invalid configuration is typed
       yield* affinity.bind("bounded", "session");
       yield* affinity.begin("bounded", "one");
       const second = yield* Effect.result(affinity.begin("bounded", "two"));
-      expect(Result.isFailure(second) && second.failure.reason).toBe("member-capacity");
+      expect(Result.isFailure(second) && second.failure.code).toBe("member-capacity");
       yield* affinity.rejected("bounded", "one", "no");
       const afterResolved = yield* Effect.result(affinity.begin("bounded", "two"));
-      expect(Result.isFailure(afterResolved) && afterResolved.failure.reason).toBe(
-        "member-capacity",
-      );
+      expect(Result.isFailure(afterResolved) && afterResolved.failure.code).toBe("member-capacity");
     }),
   );
 });
@@ -146,7 +148,7 @@ test("indeterminate status is absorbing when a later final member is accepted", 
       expect(snapshot?.indeterminateCount).toBe(1);
       expect(snapshot?.pendingCount).toBe(0);
       const release = yield* Effect.result(affinity.release("mixed"));
-      expect(Result.isFailure(release) && release.failure.reason).toBe("not-releasable");
+      expect(Result.isFailure(release) && release.failure.code).toBe("not-releasable");
       yield* affinity.acknowledgeIndeterminate("mixed");
       yield* affinity.release("mixed");
       expect(yield* affinity.get("mixed")).toBeUndefined();
@@ -190,7 +192,7 @@ test("a rejected final member seals only after earlier pending members settle", 
       expect(pending?.sealRequested).toBe(true);
       expect(pending?.pendingCount).toBe(1);
       const late = yield* Effect.result(affinity.begin("final-rejected", "late"));
-      expect(Result.isFailure(late) && late.failure.reason).toBe("sealing");
+      expect(Result.isFailure(late) && late.failure.code).toBe("sealing");
 
       yield* affinity.accepted("final-rejected", "earlier", "clip-earlier");
       const sealed = yield* affinity.get("final-rejected");

@@ -1,3 +1,4 @@
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
@@ -27,12 +28,69 @@ export type AcquisitionIntent =
     }
   | { readonly _tag: "Attach"; readonly sessionId: string; readonly connectionId?: number };
 
-export interface SessionOptions extends HttpOptions {
+/**
+ * The session-owned reply budget. The session's default and a call's override
+ * share this key. It is the library's own deadline, not a caller's wait:
+ * after dispatch, expiry fails with `Timeout`, outcome `"unknown"`, and the
+ * command's `requestId` and generation, and the pending slot stays held until a
+ * late reply or the generation retires. To only stop waiting, fork the command
+ * and bound `Fiber.join` with `Effect.timeout`.
+ */
+export interface ReplyTimeoutOptions {
+  /**
+   * How long a command or control request waits for its reply; 10 seconds by
+   * default and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly replyTimeout?: Duration.Input | undefined;
+}
+
+/** The whole-upload budget. The session's default and a call's override share this key. */
+export interface UploadTimeoutOptions {
+  /**
+   * How long an upload may take from allocation to notification; 60 seconds by
+   * default and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly uploadTimeout?: Duration.Input | undefined;
+}
+
+export interface SessionTimeouts extends ReplyTimeoutOptions, UploadTimeoutOptions {
+  /**
+   * How long connecting or reconnecting may take in all; 3 minutes by default
+   * and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly connectTimeout?: Duration.Input | undefined;
+  /**
+   * How long the peer and both channels may take to become ready after the
+   * answer; 30 seconds by default and at most 10 minutes. A bare number is
+   * milliseconds.
+   */
+  readonly readyTimeout?: Duration.Input | undefined;
+  /**
+   * The interval between heartbeats; 10 seconds by default and at most 10
+   * minutes. `"Infinity"` disables the heartbeat. A bare number is milliseconds.
+   */
+  readonly heartbeatInterval?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `readyTimeout` (a bare number is milliseconds). */
+  readonly readyTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `connectTimeout` (a bare number is milliseconds). */
+  readonly connectTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `replyTimeout` (a bare number is milliseconds). */
+  readonly commandTimeoutMs?: never;
+  /**
+   * @deprecated Removed in 0.3.0: use `heartbeatInterval` (a bare number is
+   * milliseconds, and `"Infinity"` disables the heartbeat).
+   */
+  readonly heartbeatMs?: never;
+}
+
+/** A command's options. */
+export interface CommandOptions extends ReplyTimeoutOptions {
+  /** Uploaded files the command refers to, by the name the command uses. */
+  readonly uploads?: ReadonlyMap<string, W.UploadReference> | undefined;
+}
+
+export interface SessionOptions extends HttpOptions, SessionTimeouts {
   readonly intent: AcquisitionIntent;
-  readonly readyTimeoutMs?: number;
-  readonly connectTimeoutMs?: number;
-  readonly commandTimeoutMs?: number;
-  readonly heartbeatMs?: number;
   readonly autoResumeTracks?: boolean;
   readonly maxPending?: number;
   readonly requestNamespace?: string;

@@ -13,6 +13,7 @@ import { assert, equal, run, test } from "./harness.js";
 
 const videoFrame = (marker: number): VideoFrame => ({
   _tag: "VideoFrame",
+  format: "BGRA",
   track: "main_video",
   width: 1,
   height: 1,
@@ -74,6 +75,7 @@ class MediaPeer extends MockPeer {
       pendingRequests: 0,
       deliveredVideo: 0n,
       deliveredAudio: 0n,
+      readerOverflows: 0n,
     })),
   };
 
@@ -117,7 +119,7 @@ test("media generations: retirement preserves pressure evidence and fences queue
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const previous = yield* mediaGeneration(session);
@@ -177,7 +179,7 @@ test("media generations: a failed frame source reaches a frame-only consumer", (
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const media = yield* mediaGeneration(session);
@@ -186,10 +188,7 @@ test("media generations: a failed frame source reaches a frame-only consumer", (
           );
           yield* Effect.yieldNow;
           equal((yield* session.current).subscribers, 0);
-          const sourceFailure = new ReactorError({
-            code: "Native",
-            message: "decoded source fixture failed",
-          });
+          const sourceFailure = ReactorError.fromCode("Native", "decoded source fixture failed");
           const peer = peers[0];
           assert(peer !== undefined);
           yield* Effect.sync(() => Queue.failCauseUnsafe(peer.videos, Cause.fail(sourceFailure)));
@@ -212,7 +211,7 @@ test("media generations: reconnect retires a parked read without requiring a pee
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/media" });
           const media = yield* mediaGeneration(session);
@@ -223,7 +222,7 @@ test("media generations: reconnect retires a parked read without requiring a pee
           yield* session.reconnect;
           const result = yield* Fiber.join(reading).pipe(Effect.timeout("1 second"), Effect.orDie);
           assert(result._tag === "Failure");
-          equal(result.failure.code, "Disconnected");
+          equal(result.failure.reason._tag, "Disconnected");
           equal((yield* session.ready).generation, media.generation + 1n);
         }),
       ).pipe(Effect.provideService(PeerFactory, dependencies(fixture, peers))),
@@ -241,7 +240,7 @@ test("browser generation projection: retired capabilities cannot publish into a 
         Effect.gen(function* () {
           const factory = yield* Client.make({
             apiUrl: "https://coordinator.fixture",
-            session: { heartbeatMs: 0 },
+            session: { heartbeatInterval: "Infinity" },
           });
           const session = yield* factory.createConnected({ model: "fixture/browser-capability" });
           const old = yield* trackGeneration(session);

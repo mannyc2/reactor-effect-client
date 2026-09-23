@@ -8,11 +8,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ReactorError } from "../errors.js";
 import type { Submission } from "../Submission.js";
-import type { CommandFailure } from "../session/commands.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import { PolicyFailure, type ClipId } from "./request.js";
 import * as Lifecycle from "./renewal-state.js";
-import type { EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
+import type { EngineError, EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
 
 interface Options extends Lifecycle.Lifetime {
   readonly source: Source;
@@ -32,6 +31,34 @@ interface MediaReaders {
 const sumDrops = (retained: bigint | null, latest: bigint | null): bigint | null =>
   retained === null || latest === null ? null : retained + latest;
 
+/** Loss counters; `null` when a retired generation's counters could not be read. */
+export interface Loss {
+  readonly video: bigint | null;
+  readonly audio: bigint | null;
+  readonly readers: bigint | null;
+}
+export const noLoss: Loss = { video: 0n, audio: 0n, readers: 0n };
+export const lossOf = (pressure: Result.Result<MediaPressure, unknown>): Loss =>
+  Result.isSuccess(pressure)
+    ? {
+        video: pressure.success.droppedVideo,
+        audio: pressure.success.droppedAudio,
+        readers: pressure.success.readerOverflows,
+      }
+    : { video: null, audio: null, readers: null };
+export const addLoss = (a: Loss, b: Loss): Loss => ({
+  video: sumDrops(a.video, b.video),
+  audio: sumDrops(a.audio, b.audio),
+  readers: sumDrops(a.readers, b.readers),
+});
+const minus = (a: bigint | null, b: bigint | null): bigint | null =>
+  a === null || b === null ? null : a - b;
+export const subtractLoss = (a: Loss, b: Loss): Loss => ({
+  video: minus(a.video, b.video),
+  audio: minus(a.audio, b.audio),
+  readers: minus(a.readers, b.readers),
+});
+
 /**
  * One physical source's local owner. The source closes its remote lease; this
  * owner then joins its registered committed executions before closing their scope.
@@ -46,7 +73,7 @@ export const make = (options: Options) =>
     let inFlight = 0;
     let settled = yield* Deferred.make<void>();
     yield* Deferred.succeed(settled, undefined);
-    const submissions = new Set<Submission<ClipId, CommandFailure>>();
+    const submissions = new Set<Submission<ClipId, EngineError>>();
     const accepted = new Set<ClipId>();
     const started = new Set<ClipId>();
     let media = options.media;
@@ -54,10 +81,7 @@ export const make = (options: Options) =>
     let expectedFrames = 0;
     let receivedFrames = 0;
     let receivedAudioSamples = 0;
-    let retiredDrops: { readonly video: bigint | null; readonly audio: bigint | null } = {
-      video: 0n,
-      audio: 0n,
-    };
+    let retiredDrops: Loss = noLoss;
 
     const closed = () => Lifecycle.isClosed(phase);
     const recoveryBudget = () =>
@@ -154,8 +178,8 @@ export const make = (options: Options) =>
       closeMedia,
       /** Called only from the physical Submission's existing commit hook, under admission serialization. */
       register: (
-        submission: Submission<ClipId, CommandFailure>,
-        admit: Effect.Effect<void, CommandFailure>,
+        submission: Submission<ClipId, EngineError>,
+        admit: Effect.Effect<void, EngineError>,
       ) =>
         Effect.gen(function* () {
           for (const previous of submissions) {
@@ -163,40 +187,50 @@ export const make = (options: Options) =>
           }
           if (submissions.size >= 4096)
             return yield* PolicyFailure.refuse(
-              "submission_capacity",
+              "SubmissionCapacity",
               "Committed source submissions reached their bound",
             );
           yield* admit;
           if (inFlight++ === 0) settled = Deferred.makeUnsafe<void>();
           submissions.add(submission);
         }),
-      recordResult: (result: Result.Result<ClipId, CommandFailure>): void => {
+      recordResult: (result: Result.Result<ClipId, EngineError>): void => {
         if (Result.isSuccess(result)) accepted.add(result.success);
         else if (result.failure.context.outcome === "unknown") indeterminate = true;
       },
       finishAccounting: (): void => {
         if (--inFlight === 0) Deferred.doneUnsafe(settled, Effect.void);
       },
-      forgetCompleted: (submission: Submission<ClipId, CommandFailure>): void => {
+      forgetCompleted: (submission: Submission<ClipId, EngineError>): void => {
         submissions.delete(submission);
       },
+      // Subscribed in the slot's scope when the slot starts observing, before
+      // anything else runs, so a source event is never emitted between the two.
       observe: (
         receive: (event: EngineEvent) => Effect.Effect<void>,
         failed: (cause: ReactorError) => Effect.Effect<void>,
       ) =>
-        options.source.events.pipe(
-          Stream.runForEach((event) =>
-            Effect.suspend(() => {
-              if (closed()) return Effect.void;
-              if (event._tag === "Started" && !started.has(event.clipId)) {
-                started.add(event.clipId);
-                expectedFrames += Math.round(event.durationSeconds * media.videoFramesPerSecond);
-              }
-              return receive(event);
-            }),
+        options.source.observe().pipe(
+          Scope.provide(options.scope),
+          Effect.flatMap(({ events }) =>
+            events.pipe(
+              Stream.runForEach((event) =>
+                Effect.suspend(() => {
+                  if (closed()) return Effect.void;
+                  if (event._tag === "Started" && !started.has(event.clipId)) {
+                    started.add(event.clipId);
+                    expectedFrames += Math.round(
+                      event.durationSeconds * media.videoFramesPerSecond,
+                    );
+                  }
+                  return receive(event);
+                }),
+              ),
+              Effect.catch(failed),
+              Effect.forkIn(options.scope),
+            ),
           ),
           Effect.catch(failed),
-          Effect.forkIn(options.scope),
           Effect.asVoid,
         ),
       startMedia: (readers: MediaReaders) =>
@@ -211,9 +245,7 @@ export const make = (options: Options) =>
             Stream.runForEach((frame) =>
               closed() || media.generation !== generation ? Effect.void : readers.video(frame),
             ),
-            Effect.andThen(
-              lost(new ReactorError({ code: "Disconnected", message: "Video generation ended" })),
-            ),
+            Effect.andThen(lost(ReactorError.fromCode("Disconnected", "Video generation ended"))),
             Effect.catch(lost),
             Effect.forkIn(owned),
           );
@@ -221,9 +253,7 @@ export const make = (options: Options) =>
             Stream.runForEach((frame) =>
               closed() || media.generation !== generation ? Effect.void : readers.audio(frame),
             ),
-            Effect.andThen(
-              lost(new ReactorError({ code: "Disconnected", message: "Audio generation ended" })),
-            ),
+            Effect.andThen(lost(ReactorError.fromCode("Disconnected", "Audio generation ended"))),
             Effect.catch(lost),
             Effect.forkIn(owned),
           );
@@ -235,28 +265,13 @@ export const make = (options: Options) =>
         Effect.suspend(() => {
           if (closed())
             return Effect.fail(
-              new ReactorError({
-                code: "Closed",
-                message: "Retired source cannot acquire a media generation",
-              }),
+              ReactorError.fromCode("Closed", "Retired source cannot acquire a media generation"),
             );
           if (next.generation <= media.generation)
             return Effect.fail(
-              new ReactorError({
-                code: "Protocol",
-                message: "Reconnect did not acquire a new media generation",
-              }),
+              ReactorError.fromCode("Protocol", "Reconnect did not acquire a new media generation"),
             );
-          retiredDrops = {
-            video: sumDrops(
-              retiredDrops.video,
-              Result.isSuccess(previous) ? previous.success.droppedVideo : null,
-            ),
-            audio: sumDrops(
-              retiredDrops.audio,
-              Result.isSuccess(previous) ? previous.success.droppedAudio : null,
-            ),
-          };
+          retiredDrops = addLoss(retiredDrops, lossOf(previous));
           media = next;
           return Effect.void;
         }),
@@ -269,16 +284,20 @@ export const make = (options: Options) =>
       pressure: Effect.suspend(() =>
         media.pressure.pipe(
           Effect.flatMap((pressure) => {
-            const droppedVideo = sumDrops(retiredDrops.video, pressure.droppedVideo);
-            const droppedAudio = sumDrops(retiredDrops.audio, pressure.droppedAudio);
-            return droppedVideo === null || droppedAudio === null
+            const loss = addLoss(retiredDrops, lossOf(Result.succeed(pressure)));
+            return loss.video === null || loss.audio === null || loss.readers === null
               ? Effect.fail(
-                  new ReactorError({
-                    code: "InvalidState",
-                    message: "Retired media generation drop totals are unknown",
-                  }),
+                  ReactorError.fromCode(
+                    "InvalidState",
+                    "Retired media generation drop totals are unknown",
+                  ),
                 )
-              : Effect.succeed({ ...pressure, droppedVideo, droppedAudio });
+              : Effect.succeed({
+                  ...pressure,
+                  droppedVideo: loss.video,
+                  droppedAudio: loss.audio,
+                  readerOverflows: loss.readers,
+                });
           }),
         ),
       ),

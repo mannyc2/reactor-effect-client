@@ -1,9 +1,15 @@
+import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as Result from "effect/Result";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { ReactorError } from "../errors.js";
-import type { CommandFailure, CommandReply, SessionEvent } from "../session/index.js";
+import type { CommandFailure, PolicyFailure, ReactorError } from "../errors.js";
+import type {
+  CommandReply,
+  ReplyTimeoutOptions,
+  SessionEvent,
+  UploadTimeoutOptions,
+} from "../session/index.js";
 import type { Submission } from "../Submission.js";
 import type { UploadReference } from "../wire.generated.js";
 import type {
@@ -114,19 +120,49 @@ export interface ProviderObservation {
   readonly revision: bigint;
   readonly events: Stream.Stream<ProviderEvent, ReactorError>;
 }
-export interface PrepareHooks {
-  readonly commit?: (submissionId: string) => Effect.Effect<void, CommandFailure>;
+/**
+ * A commit hook may refuse locally with a `PolicyFailure` (`E`); the submission
+ * fails with it unchanged, since nothing was dispatched.
+ */
+export interface PrepareHooks<E extends PolicyFailure = never> {
+  readonly commit?: (submissionId: string) => Effect.Effect<void, CommandFailure | E>;
   /** A post-commit observer. Failure is diagnostic and cannot rewrite remote evidence. */
   readonly result?: (
     submissionId: string,
-    result: Result.Result<Acceptance, CommandFailure>,
+    result: Result.Result<Acceptance, CommandFailure | E>,
   ) => Effect.Effect<void>;
 }
-export interface Options {
-  readonly commandTimeoutMs?: number;
-  readonly setupTimeoutMs?: number;
-  readonly reconcileWindowMs?: number;
-  readonly resultHookTimeoutMs?: number;
+/**
+ * The provider's options. `replyTimeout` bounds each H3 command through the
+ * observation of its returned envelope, 15 seconds by default; `uploadTimeout`
+ * bounds each reference upload, 60 seconds by default. Both are at most 10
+ * minutes, and a bare number is milliseconds.
+ */
+export interface Options extends ReplyTimeoutOptions, UploadTimeoutOptions {
+  /**
+   * How long reading the deployment schema, and then the initial state and
+   * queue, may each take; 60 seconds by default and at most 10 minutes. A bare
+   * number is milliseconds.
+   */
+  readonly setupTimeout?: Duration.Input | undefined;
+  /**
+   * How long an uncertain enqueue waits for evidence that settles it; 5
+   * seconds by default and at most 1 minute. A bare number is milliseconds.
+   */
+  readonly reconcileWindow?: Duration.Input | undefined;
+  /**
+   * How long a `PrepareHooks.result` observer may run; 1 second by default and
+   * at most 1 minute. A bare number is milliseconds.
+   */
+  readonly resultHookTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `replyTimeout` (a bare number is milliseconds). */
+  readonly commandTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `setupTimeout` (a bare number is milliseconds). */
+  readonly setupTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `reconcileWindow` (a bare number is milliseconds). */
+  readonly reconcileWindowMs?: never;
+  /** @deprecated Removed in 0.3.0: use `resultHookTimeout` (a bare number is milliseconds). */
+  readonly resultHookTimeoutMs?: never;
   readonly maxPending?: number;
   readonly maxTrackedClips?: number;
   readonly maxAcceptances?: number;
@@ -148,15 +184,19 @@ export interface Provider {
   /** Local annotations are separate from the provider's authoritative state. */
   readonly acceptances: Effect.Effect<readonly Acceptance[]>;
   readonly acceptance: (submissionId: string) => Effect.Effect<Acceptance | undefined>;
-  readonly prepare: (
+  readonly prepare: <E extends PolicyFailure = never>(
     request: Request,
-    hooks?: PrepareHooks,
-  ) => Effect.Effect<Submission<Acceptance, CommandFailure>, ReactorError>;
-  /** Host IO belongs to the same provisional scope and commit owner as static preparation. */
-  readonly prepareFrom: (
-    preparation: Effect.Effect<Request, ReactorError, Scope.Scope>,
-    hooks?: PrepareHooks,
-  ) => Effect.Effect<Submission<Acceptance, CommandFailure>, ReactorError>;
+    hooks?: PrepareHooks<E>,
+  ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
+  /**
+   * Host IO belongs to the same provisional scope and commit owner as static
+   * preparation. A `PolicyFailure` from the preparation fails the submission
+   * unchanged; any other failure becomes a not-submitted `CommandFailure`.
+   */
+  readonly prepareFrom: <E extends PolicyFailure = never>(
+    preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
+    hooks?: PrepareHooks<E>,
+  ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
   readonly enqueue: (request: Request) => Effect.Effect<Acceptance, CommandFailure>;
   readonly getState: Effect.Effect<Reply<"state_update">, CommandFailure>;
   readonly getQueue: Effect.Effect<Reply<"queue_update">, CommandFailure>;

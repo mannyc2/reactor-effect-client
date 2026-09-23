@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   Crypto,
+  Duration,
   Effect,
   Fiber,
   FileSystem,
@@ -81,12 +82,12 @@ const setup = (script: Script = {}, stream?: FileSystem.FileSystem["stream"]) =>
     };
     const fake = yield* fixture(script);
     const provider = yield* H3.make(fake.session, {
-      commandTimeoutMs: 1000,
-      setupTimeoutMs: 1000,
-      reconcileWindowMs: 100,
+      replyTimeout: 1000,
+      setupTimeout: 1000,
+      reconcileWindow: 100,
     });
     const load = (uri: string, maxBytes = H3.referenceLimits.maxBytes) =>
-      loadReferenceBytes(uri, { maxBytes, timeoutMs: 1000 }).pipe(
+      loadReferenceBytes(uri, { maxBytes, loadTimeout: 1000 }).pipe(
         Effect.provideService(FileSystem.FileSystem, readonlyFs),
         Effect.provideService(Path.Path, path),
         Effect.provideService(HttpClient.HttpClient, http),
@@ -241,8 +242,7 @@ test("upload failure leaves a closed source reader and no staging files or gener
   run(
     Effect.gen(function* () {
       const h = yield* setup({
-        upload: () =>
-          Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload failed" })),
+        upload: () => Effect.fail(ReactorError.fromCode("Upload", "fixture upload failed")),
       });
       const source = h.path.join(h.directory, "upload-fails.png");
       yield* h.fs.writeFile(source, pngBytes(32, 24));
@@ -284,7 +284,7 @@ test("the standalone URI loader retains typed malformed-URL and encoded-byte bou
       expect(Result.isFailure(malformed) && malformed.failure.context.outcome).toBe(
         "not-submitted",
       );
-      expect(Result.isFailure(malformed) && malformed.failure.code).toBe("Upload");
+      expect(Result.isFailure(malformed) && malformed.failure.reason._tag).toBe("Upload");
       const oversized = yield* Effect.result(
         h.load(`data:image/png;base64,${"A".repeat(10000)}`, 8),
       );
@@ -294,6 +294,20 @@ test("the standalone URI loader retains typed malformed-URL and encoded-byte bou
       expect(h.fake.uploaded).toHaveLength(0);
       expect(yield* h.entries()).toEqual([]);
       expect(h.stagingAttempts()).toBe(0);
+    }),
+  ));
+
+test("reference uploads run under H3's upload budget, not its one-second reply budget", () =>
+  run(
+    Effect.gen(function* () {
+      const h = yield* setup();
+      const source = h.path.join(h.directory, "budget.png");
+      yield* h.fs.writeFile(source, pngBytes(32, 24));
+      yield* (yield* h.prepare(source)).submit;
+      const budget = h.fake.uploaded[0]?.options?.uploadTimeout;
+      expect(budget !== undefined && Duration.toMillis(Duration.fromInputUnsafe(budget))).toBe(
+        60_000,
+      );
     }),
   ));
 

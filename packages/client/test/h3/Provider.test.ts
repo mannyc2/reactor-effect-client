@@ -10,7 +10,7 @@ import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSessi
 import type { Fixture, Script } from "./ProviderSession.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 
-const options: H3.Options = { commandTimeoutMs: 80, setupTimeoutMs: 500, reconcileWindowMs: 30 };
+const options: H3.Options = { replyTimeout: 80, setupTimeout: 500, reconcileWindow: 30 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
   Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const capture = (provider: H3.Provider) =>
@@ -315,7 +315,8 @@ describe("H3 structural deployment compatibility", () => {
           const fake = yield* fixture({ schema });
           const result = yield* Effect.result(H3.make(fake.session, options));
           expect(Result.isFailure(result)).toBe(true);
-          if (Result.isFailure(result)) expect(result.failure.code).toBe("UnsupportedCapability");
+          if (Result.isFailure(result))
+            expect(result.failure.reason._tag).toBe("UnsupportedCapability");
           expect(fake.calls).toEqual([]);
           expect(fake.subscribers()).toBe(0);
         }),
@@ -561,7 +562,7 @@ describe("H3 command and observation authority", () => {
                 }),
             },
           },
-          { reconcileWindowMs: 200 },
+          { reconcileWindow: 200 },
         );
         const fiber = yield* provider.enqueue(request()).pipe(Effect.forkScoped);
         yield* waitFor(() =>
@@ -635,7 +636,7 @@ describe("H3 command and observation authority", () => {
         const unknown = yield* Effect.result(provider.enqueue(request()));
         expect(Result.isFailure(unknown)).toBe(true);
         if (Result.isFailure(unknown)) {
-          expect(unknown.failure.code).toBe("InvalidInput");
+          expect(unknown.failure.reason._tag).toBe("InvalidInput");
           expect(unknown.failure.context).toMatchObject({
             outcome: "unknown",
             operation: "enqueue",
@@ -672,12 +673,18 @@ describe("H3 command and observation authority", () => {
         expect(Result.isFailure(rejected) && rejected.failure.message).toBe(
           "H3 enqueue was refused",
         );
-        expect(Result.isFailure(rejected) && rejected.failure.context.body).toBe("full");
+        expect(
+          Result.isFailure(rejected) &&
+            rejected.failure.reason._tag === "Remote" &&
+            rejected.failure.reason.body,
+        ).toBe("full");
         const refused = yield* Effect.result(direct.provider.stop);
         expect(Result.isFailure(refused) && refused.failure.message).toBe("H3 stop was refused");
-        expect(Result.isFailure(refused) && refused.failure.context.body).toBe(
-          "Fixture refused the requested operation",
-        );
+        expect(
+          Result.isFailure(refused) &&
+            refused.failure.reason._tag === "Remote" &&
+            refused.failure.reason.body,
+        ).toBe("Fixture refused the requested operation");
         const unrelated = yield* setup({
           command: {
             enqueue: ({ fake }) =>
@@ -795,7 +802,7 @@ describe("H3 command and observation authority", () => {
       Effect.gen(function* () {
         const fake = yield* fixture({ omitObservation: true });
         const result = yield* Effect.result(
-          H3.make(fake.session, { ...options, commandTimeoutMs: 10 }),
+          H3.make(fake.session, { ...options, replyTimeout: 10 }),
         );
         expect(Result.isFailure(result)).toBe(true);
         expect(fake.calls.map((call) => call.command)).toEqual(["get_state"]);
@@ -1221,7 +1228,7 @@ describe("H3 preparation, cancellation and bounds", () => {
       Effect.gen(function* () {
         const { provider, fake } = yield* setup(
           { command: { enqueue: ({ fail }) => Effect.fail(fail("replied", "Remote")) } },
-          { resultHookTimeoutMs: 10 },
+          { resultHookTimeout: 10 },
         );
         let hooks = 0,
           recorded: CommandFailure | undefined;
@@ -1295,9 +1302,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         const { fake, provider } = yield* setup({
           upload: () =>
             held.wait.pipe(
-              Effect.andThen(
-                Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload ends" })),
-              ),
+              Effect.andThen(Effect.fail(ReactorError.fromCode("Upload", "fixture upload ends"))),
             ),
         });
         const prepared = yield* provider.prepare(request({ references: [bytesReference()] }));
@@ -1320,13 +1325,10 @@ describe("H3 preparation, cancellation and bounds", () => {
           commit: () =>
             refuse
               ? Effect.fail(
-                  CommandFailure.from(
-                    new ReactorError({ code: "InvalidState", message: "affinity refused" }),
-                    {
-                      operation: "enqueue",
-                      outcome: "not-submitted",
-                    },
-                  ),
+                  CommandFailure.from(ReactorError.fromCode("InvalidState", "affinity refused"), {
+                    operation: "enqueue",
+                    outcome: "not-submitted",
+                  }),
                 )
               : Effect.void,
         });
@@ -1347,7 +1349,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         let resultHooks = 0;
         const { fake, provider } = yield* setup(
           { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
-          { commandTimeoutMs: 1000 },
+          { replyTimeout: 1000 },
         );
         const prepared = yield* provider.prepare(request(), {
           result: () =>
@@ -1377,7 +1379,7 @@ describe("H3 preparation, cancellation and bounds", () => {
                 yield* defaults;
                 yield* Effect.sleep(5);
                 yield* fake.failObservation(
-                  new ReactorError({ code: "Closed", message: "fixture source ended" }),
+                  ReactorError.fromCode("Closed", "fixture source ended"),
                 );
                 return yield* fail("unknown", "Disconnected");
               }),
@@ -1396,17 +1398,18 @@ describe("H3 preparation, cancellation and bounds", () => {
         const held = yield* gate;
         const { fake, provider } = yield* setup(
           { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
-          { maxPending: 1, maxAcceptances: 1, commandTimeoutMs: 1000 },
+          { maxPending: 1, maxAcceptances: 1, replyTimeout: 1000 },
         );
         const first = yield* provider.prepare(request());
         const inflight = yield* first.submit.pipe(Effect.forkScoped);
         yield* waitFor(() => Effect.succeed(fake.calls.some((call) => call.command === "enqueue")));
         const other = yield* provider.prepare(request());
         const overflow = yield* Effect.result(other.submit);
-        expect(Result.isFailure(overflow) && overflow.failure.code).toBe("Overflow");
+        expect(Result.isFailure(overflow) && overflow.failure.reason._tag).toBe("Overflow");
         expect(Result.isFailure(overflow) && overflow.failure.context.outcome).toBe(
           "not-submitted",
         );
+        expect(Result.isFailure(overflow) && overflow.failure.isRetryable).toBe(true);
         yield* held.release;
         const firstAccepted = yield* Fiber.join(inflight);
         const secondAccepted = yield* other.submit;
@@ -1428,7 +1431,7 @@ describe("H3 preparation, cancellation and bounds", () => {
           const { fake, provider } = yield* setup();
           yield* fake.emit(type, { ...data, private: "secret fixture token" });
           const error = yield* provider.failure;
-          expect(error.code).toBe("Protocol");
+          expect(error.reason._tag).toBe("Protocol");
           expect(JSON.stringify(error)).not.toContain("secret fixture token");
           expect((yield* provider.current)._tag).toBe("Unavailable");
           expect(Result.isFailure(yield* Effect.result(provider.enqueue(request())))).toBe(true);
@@ -1467,7 +1470,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         yield* observed(provider, source.sequence);
         yield* fake.emit("clip_failed", { clip: { ...fixtureClip() }, reason: "fixture" });
         const error = yield* provider.failure;
-        expect(error.code).toBe("Overflow");
+        expect(error.reason._tag).toBe("Overflow");
         expect((yield* provider.current).clips).toHaveLength(1);
       }),
     ));
@@ -1505,7 +1508,7 @@ describe("H3 preparation, cancellation and bounds", () => {
         yield* Effect.sleep(5);
         yield* held.release;
         const result = yield* Effect.result(Fiber.join(reader));
-        expect(Result.isFailure(result) && result.failure.code).toBe("Overflow");
+        expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Overflow");
         const next = yield* provider.observe();
         expect(next.initial._tag).toBe("Ready");
         expect((yield* provider.enqueue(request())).clip.clip_id).toBe(fake.accepted[0]!.clip_id);
@@ -1525,6 +1528,6 @@ describe("H3 preparation, cancellation and bounds", () => {
     expect(fake!.lifecycleCalls).toEqual({ connect: 0, reconnect: 0, close: 0 });
     const result = await Effect.runPromise(Effect.result(retained!.enqueue(request())));
     expect(Result.isFailure(result) && result.failure.context.outcome).toBe("not-submitted");
-    expect(Result.isFailure(result) && result.failure.code).toBe("Closed");
+    expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Closed");
   });
 });

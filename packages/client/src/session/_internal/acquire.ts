@@ -1,13 +1,11 @@
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
-import * as Schema from "effect/Schema";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../coordinator/_internal/client.js";
-import { errorOf, ReactorError } from "../../errors.js";
+import { AcquisitionFailure, parsed, ReactorError } from "../../errors.js";
 import { json, nonempty, uint32 } from "../../json.js";
 import type { PeerFactoryShape } from "../../PeerFactory.js";
 import { Session as SessionImplementation } from "../../session.js";
@@ -19,30 +17,10 @@ type Input =
   | { readonly _tag: "Create"; readonly options: CreateOptions }
   | { readonly _tag: "Attach"; readonly options: AttachOptions };
 
-/** The report a lease produced, kept by reference rather than copied. */
-const Cleanup = Schema.declare(
-  (input: unknown): input is CloseReport =>
-    Predicate.isObject(input) && typeof input.localClosed === "boolean",
-  { expected: "CloseReport" },
-);
+export { AcquisitionFailure };
 
-/** A failed acquisition still returns the lifetime evidence of its partial lease. */
-export class AcquisitionFailure extends ReactorError.extend<AcquisitionFailure>(
-  "reactor-effect-client/AcquisitionFailure",
-)({ cleanup: Cleanup }) {
-  /** `error`'s failure, with the cleanup its partial lease reported. */
-  static from(error: ReactorError, cleanup: CloseReport): AcquisitionFailure {
-    return new AcquisitionFailure({
-      code: error.code,
-      message: error.message,
-      context: error.context,
-      ...(error.nativeError === undefined ? {} : { nativeError: error.nativeError }),
-      cleanup,
-    });
-  }
-}
-
-const noAcquisition: CloseReport = Object.freeze({
+/** The report of an acquisition that allocated and attached nothing. */
+export const noAcquisition: CloseReport = Object.freeze({
   localClosed: true,
   allocation: "none",
   remote: Object.freeze({
@@ -64,17 +42,11 @@ const implementations = new WeakMap<Session, SessionImplementation>();
 export const implementationOf = (
   session: Session,
 ): Effect.Effect<SessionImplementation, ReactorError> =>
-  Effect.try({
-    try: () => {
-      const implementation = implementations.get(session);
-      if (implementation === undefined)
-        throw new ReactorError({
-          code: "InvalidInput",
-          message: "session was not acquired by this client",
-        });
-      return implementation;
-    },
-    catch: errorOf,
+  parsed(() => {
+    const implementation = implementations.get(session);
+    if (implementation === undefined)
+      throw ReactorError.fromCode("InvalidInput", "session was not acquired by this client");
+    return implementation;
   });
 
 /** A host's decoded-media projection of the current negotiated generation. */
@@ -90,17 +62,13 @@ const validate = (
 ): { readonly intent: AcquisitionIntent; readonly jwt?: Redacted.Redacted<string> } => {
   const options = input.options;
   if (options === null || typeof options !== "object") {
-    throw new ReactorError({
-      code: "InvalidInput",
-      message: "session options must be an object",
-      context: { outcome: "not-submitted" },
+    throw ReactorError.fromCode("InvalidInput", "session options must be an object", {
+      outcome: "not-submitted",
     });
   }
   if (options.jwt !== undefined && !Redacted.isRedacted(options.jwt)) {
-    throw new ReactorError({
-      code: "InvalidInput",
-      message: "jwt must be Redacted",
-      context: { outcome: "not-submitted" },
+    throw ReactorError.fromCode("InvalidInput", "jwt must be Redacted", {
+      outcome: "not-submitted",
     });
   }
   const credential = options.jwt === undefined ? {} : { jwt: options.jwt };
@@ -147,24 +115,22 @@ export const makeFactory = (
     Effect.uninterruptibleMask((restore) => {
       let acquired: SessionImplementation | undefined;
       return Effect.gen(function* () {
-        const validated = yield* Effect.try({
-          try: () => validate(input),
-          catch: (cause) =>
-            new ReactorError({
-              code: "InvalidInput",
-              message: "invalid session acquisition input",
-              context: { detail: cause, outcome: "not-submitted" },
+        // A rejected option is invalid input; a bug in the checks stays a defect.
+        const validated = yield* parsed(() => validate(input)).pipe(
+          Effect.mapError((cause) =>
+            ReactorError.fromCode("InvalidInput", "invalid session acquisition input", {
+              detail: cause,
+              outcome: "not-submitted",
             }),
-        });
-        yield* restore(peers.check);
+          ),
+        );
+        if (peers.check !== undefined) yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ReactorError({
-                code: "InvalidState",
-                message: "could not allocate a request identity",
-                context: { outcome: "not-submitted", detail: cause },
-              }),
+          Effect.mapError((cause) =>
+            ReactorError.fromCode("InvalidState", "could not allocate a request identity", {
+              outcome: "not-submitted",
+              detail: cause,
+            }),
           ),
         );
         const credential =
@@ -186,16 +152,13 @@ export const makeFactory = (
         const scope = yield* Scope.fork(yield* Effect.scope);
         const acquisition = Effect.gen(function* () {
           const implementation = yield* Effect.acquireRelease(
-            Effect.try({
-              try: () => {
-                acquired = new SessionImplementation(
-                  options,
-                  peers.make,
-                  new CoordinatorClient(options, http),
-                );
-                return acquired;
-              },
-              catch: errorOf,
+            parsed(() => {
+              acquired = new SessionImplementation(
+                options,
+                peers.make,
+                new CoordinatorClient(options, http),
+              );
+              return acquired;
             }),
             (value) => value.close(),
           );
@@ -209,11 +172,10 @@ export const makeFactory = (
             ready: implementation.readyState(),
             events: (bounds) => implementation.events(bounds),
             observe: (bounds) => implementation.observe(bounds),
-            command: (name, data, uploads, timeoutMs) =>
-              implementation.command(name, data, uploads, timeoutMs),
+            command: (name, data, options) => implementation.command(name, data, options),
             schema: implementation.schema(),
-            upload: (name, mimeType, data, timeoutMs) =>
-              implementation.upload(name, mimeType, data, timeoutMs),
+            upload: (name, mimeType, data, options) =>
+              implementation.upload(name, mimeType, data, options),
             requestRecordingClip: (seconds) => implementation.requestClip(seconds),
             recording: implementation.recording(),
             stats: implementation.stats(),

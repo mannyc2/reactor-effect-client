@@ -15,7 +15,7 @@ import { HttpClient } from "effect/unstable/http";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
 import { Observations } from "../../src/observation.js";
-import { ClipId, ClipRequest } from "../../src/orchestration/request.js";
+import { ClipId, ClipRequest, PolicyFailure } from "../../src/orchestration/request.js";
 import { emptyState } from "../../src/orchestration/queries.js";
 import type {
   ClipRecord,
@@ -78,9 +78,11 @@ export const cleanPressure: MediaPressure = {
   pendingRequests: 0,
   deliveredVideo: 0n,
   deliveredAudio: 0n,
+  readerOverflows: 0n,
 };
 export const videoFrame = (value = 1): VideoFrame => ({
   _tag: "VideoFrame",
+  format: "BGRA",
   track: "video",
   width: 1,
   height: 1,
@@ -127,13 +129,26 @@ export const untilEffect = <E, R>(
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
     }
   });
+/**
+ * A local refusal's reason as one comparable label: its tag, with a Missing
+ * reason's purpose or a Sequence reason's code; undefined for any other value.
+ */
+export const refusal = (failure: unknown): string | undefined => {
+  if (!PolicyFailure.is(failure)) return undefined;
+  const reason = failure.reason;
+  return reason._tag === "Missing"
+    ? `Missing:${reason.purpose}`
+    : reason._tag === "Sequence"
+      ? `Sequence:${reason.code}`
+      : reason._tag;
+};
 export const failure = (
   outcome: "unknown" | "replied" | "not-submitted",
   message = "fixture outcome",
   operation = "enqueue",
 ) =>
   CommandFailure.from(
-    new ReactorError({ code: "Remote", message }),
+    ReactorError.fromCode("Remote", message),
     outcome === "not-submitted"
       ? { operation, outcome }
       : { operation, outcome, requestId: "fixture-dispatch", generation: 1n },
@@ -232,6 +247,11 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
       id,
       state: Effect.sync(() => state),
       events: events.stream(),
+      observe: (options) =>
+        events.observeWith(
+          Effect.sync(() => state),
+          options,
+        ),
       media,
       prepareRouted: (plan, hooks = {}) =>
         Effect.gen(function* () {

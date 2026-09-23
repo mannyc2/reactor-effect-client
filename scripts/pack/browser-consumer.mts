@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import type * as Crypto from "effect/Crypto";
+import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Root from "reactor-effect-client";
 import * as Browser from "reactor-effect-browser";
@@ -9,14 +10,18 @@ import * as Simulation from "reactor-effect-client/simulation";
 import * as Testing from "reactor-effect-client/testing";
 import * as Wire from "reactor-effect-client/wire";
 
-declare const factory: Effect.Success<ReturnType<typeof Browser.make>>;
+declare const factory: Root.Factory;
+const browserHost: Layer.Layer<Root.PeerFactory, Root.ReactorError> = Browser.layer;
 declare const session: Root.Session;
 const sameSession: Effect.Success<ReturnType<typeof factory.create>> = session;
-const provider: Effect.Effect<H3.Provider, Root.ReactorError, Crypto.Crypto | Scope.Scope> =
-  H3.make(session);
+const provider: Effect.Effect<
+  H3.Provider,
+  Root.ReactorError | Root.CommandFailure,
+  Crypto.Crypto | Scope.Scope
+> = H3.make(session);
 const track = Effect.flatMap(Browser.media(session), (media) => media.track("video"));
 const browserTrack: Effect.Effect<MediaStreamTrack, Root.ReactorError, Scope.Scope> = track;
-void [Root.make, H3, Orchestration, Simulation, sameSession, provider, browserTrack];
+void [Root.make, H3, Orchestration, Simulation, sameSession, provider, browserTrack, browserHost];
 const fixtureBytes: Uint8Array = Testing.pngBytes(2, 2);
 const fixtureUri: string = Testing.dataUri(fixtureBytes);
 void [Wire.ControlClientMessage, fixtureUri];

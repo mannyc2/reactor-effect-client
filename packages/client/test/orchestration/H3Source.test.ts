@@ -1,15 +1,16 @@
 import { expect, test } from "vitest";
 import { Effect, Fiber, Option, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
-import { fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
+import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
-import { ClipId, PolicyFailure } from "../../src/orchestration/request.js";
+import { ClipId } from "../../src/orchestration/request.js";
 import { isIdle } from "../../src/orchestration/queries.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import type { EngineEvent } from "../../src/orchestration/types.js";
 import type { CloseReport, Session } from "../../src/session/index.js";
 import type { MediaGeneration } from "../../src/session/media.js";
 import type { JsonObject } from "../../src/json.js";
+import { ReactorError } from "../../src/errors.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
 import type { Script } from "../h3/ProviderSession.js";
@@ -22,6 +23,7 @@ import {
   run,
   until,
   untilEffect,
+  refusal,
 } from "./SourceFixture.js";
 
 const media: MediaGeneration = {
@@ -51,9 +53,9 @@ const setup = (
       ),
     };
     const provider = yield* H3.make(session, {
-      commandTimeoutMs: 100,
-      setupTimeoutMs: 1000,
-      reconcileWindowMs: 20,
+      replyTimeout: 100,
+      setupTimeout: 1000,
+      reconcileWindow: 20,
     });
     const source = yield* fromH3(session, provider, { media: Effect.succeed(media), ...options });
     const events: EngineEvent[] = [];
@@ -165,11 +167,7 @@ test("foreign startup playback may lack a record and never receives an invented 
       );
       const before = fake.calls.length;
       const result = yield* Effect.result(source.setCanvas("1:1"));
-      expect(
-        Result.isFailure(result) &&
-          result.failure instanceof PolicyFailure &&
-          result.failure.reason,
-      ).toBe("busy");
+      expect(Result.isFailure(result) && refusal(result.failure)).toBe("Busy");
       expect(fake.calls).toHaveLength(before);
       expect(events).toEqual([]);
     }),
@@ -247,11 +245,7 @@ test("source commit refusal releases its annotation reservation and preserves no
       yield* prepared.submit;
       const overflow = yield* source.prepareRouted({ request: request(), position: undefined });
       const result = yield* Effect.result(overflow.submit);
-      expect(
-        Result.isFailure(result) &&
-          result.failure instanceof PolicyFailure &&
-          result.failure.reason,
-      ).toBe("annotation_capacity");
+      expect(Result.isFailure(result) && refusal(result.failure)).toBe("AnnotationCapacity");
       expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
     }),
   ));
@@ -397,11 +391,7 @@ test("real H3 removal reports only observed generation or playout membership and
       expect(yield* source.remove(ClipId.make(ready.clip_id))).toBe("ready");
       const before = fake.calls.length;
       const result = yield* Effect.result(source.remove(ClipId.make(fixtureClip().clip_id)));
-      expect(
-        Result.isFailure(result) &&
-          result.failure instanceof PolicyFailure &&
-          result.failure.reason,
-      ).toBe("not_found");
+      expect(Result.isFailure(result) && refusal(result.failure)).toBe("NotFound");
       expect(fake.calls).toHaveLength(before);
       expect((yield* source.state).generationOrder).toEqual([]);
     }),
@@ -466,9 +456,55 @@ test("source observation fails for malformed provider lifecycle without requirin
       yield* Effect.yieldNow;
       yield* fake.emit("clip_generated", { clip: { clip_id: fixtureClip().clip_id, ready: true } });
       const result = yield* Fiber.join(reader).pipe(Effect.timeout(1000));
-      expect(Result.isFailure(result) && result.failure.code).toBe("Protocol");
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Protocol");
       expect((yield* source.state).availability).toBe("Unavailable");
       expect(fake.calls.filter((call) => call.command === "enqueue")).toEqual([]);
+    }),
+  ));
+
+test("a session-bound source derives its provider and media from the one session", () =>
+  run(
+    Effect.gen(function* () {
+      const fake = yield* fixture();
+      const acquired: Session[] = [];
+      const fromSession = bindSession((session) =>
+        Effect.sync(() => {
+          acquired.push(session);
+          return media;
+        }),
+      );
+      const source = yield* fromSession(fake.session, {
+        provider: { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 },
+      });
+      // One provider view, over the same session, is part of the source.
+      expect(source.provider.sessionId).toBe(fake.session.id);
+      expect(fake.calls.map((call) => call.command)).toEqual(["get_state", "get_queue"]);
+      yield* source.provider.refresh;
+      // The media is re-derived from the same session on each read.
+      expect(yield* source.media).toMatchObject({ generation: 1n });
+      expect(acquired.every((session) => session === fake.session)).toBe(true);
+      expect(acquired.length).toBeGreaterThanOrEqual(2);
+      // Closing the source closes the session.
+      yield* source.close;
+      expect(fake.lifecycleCalls.close).toBe(1);
+    }),
+  ));
+
+test("a session-bound source checks its media before any provider command", () =>
+  run(
+    Effect.gen(function* () {
+      const fake = yield* fixture();
+      const fromSession = bindSession(() =>
+        Effect.fail(
+          ReactorError.fromCode("UnsupportedCapability", "no decoded media on this host", {
+            outcome: "not-submitted",
+          }),
+        ),
+      );
+      const result = yield* Effect.result(fromSession(fake.session));
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("UnsupportedCapability");
+      expect(fake.calls).toEqual([]);
+      expect(fake.lifecycleCalls.close).toBe(0);
     }),
   ));
 
@@ -480,7 +516,7 @@ test("source refuses mismatched session identity before taking session ownership
       const result = yield* Effect.result(
         fromH3({ ...fake.session, id: "different" }, provider, { media: Effect.succeed(media) }),
       );
-      expect(Result.isFailure(result) && result.failure.code).toBe("InvalidInput");
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("InvalidInput");
       expect(fake.lifecycleCalls.close).toBe(0);
     }),
   ));
@@ -550,7 +586,7 @@ test("one stalled source observer fails with Overflow without blocking other obs
       yield* until(() => events.filter((event) => event._tag === "Ready").length === 301);
       yield* held.release;
       const result = yield* Fiber.join(reader).pipe(Effect.timeout(1000));
-      expect(Result.isFailure(result) && result.failure.code).toBe("Overflow");
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Overflow");
       // Foreign lifecycle records require the provider's explicit full-snapshot barrier.
       yield* source.refresh;
       const accepted = yield* (yield* source.prepareRouted({
@@ -567,7 +603,7 @@ test("orchestration establishes autoplay before the first H3 admission without c
     Effect.gen(function* () {
       const { source, fake } = yield* setup();
       const handle = yield* Renewal.make({
-        open: Effect.succeed({ source, maxSeconds: Infinity }),
+        open: Effect.succeed({ source, lifetime: "Infinity" }),
       });
       yield* handle.engine.enqueue(request());
       const commands = fake.calls.map((call) => call.command);
@@ -605,7 +641,7 @@ for (const outcome of ["replied", "unknown", "not-submitted", "ack", "timeout"] 
           },
         });
         const result = yield* Effect.result(
-          Renewal.make({ open: Effect.succeed({ source, maxSeconds: Infinity }) }),
+          Renewal.make({ open: Effect.succeed({ source, lifetime: "Infinity" }) }),
         );
         expect(Result.isFailure(result)).toBe(true);
         expect(fake.lifecycleCalls.close).toBe(1);
@@ -678,7 +714,7 @@ test("orchestration timing retention fails at its own bound without unbounded fo
         yield* Effect.yieldNow;
       }
       const result = yield* Fiber.join(reader).pipe(Effect.timeout(1000));
-      expect(Result.isFailure(result) && result.failure.code).toBe("Overflow");
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Overflow");
       expect(Result.isFailure(result) && result.failure.message).toContain(
         "timing observation bound",
       );

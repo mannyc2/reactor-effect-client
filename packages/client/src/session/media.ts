@@ -6,6 +6,13 @@ import type { ReactorError } from "../errors.js";
 import type { MediaTrack } from "../PeerTypes.js";
 
 /**
+ * How a frame's `data` lays out its pixels: four bytes per pixel, rows packed
+ * without padding, in this channel order. A host declares the format it
+ * produces; nothing converts between formats implicitly.
+ */
+export type VideoFormat = "BGRA" | "RGBA";
+
+/**
  * One decoded video frame. Every subscriber to a track receives the same frame
  * object and the same buffers, so a reader treats them as read-only and copies
  * the bytes before changing them.
@@ -19,7 +26,9 @@ export interface VideoFrame {
   readonly frameId: bigint;
   /** Sender-clock microseconds; zero means absent. */
   readonly timestampMicros: bigint;
-  /** Owned BGRA bytes. Retaining a frame never retains native memory. */
+  /** The pixel layout of `data`; the native host produces `"BGRA"`. */
+  readonly format: VideoFormat;
+  /** Owned pixel bytes in `format`, `width * height * 4` of them. Retaining a frame never retains native memory. */
   readonly data: Uint8Array;
   readonly metadata: Uint8Array;
 }
@@ -49,6 +58,13 @@ export interface MediaPressure {
   readonly pendingRequests: number;
   readonly deliveredVideo: bigint;
   readonly deliveredAudio: bigint;
+  /**
+   * Readers of this generation's tracks that fell behind their per-reader
+   * bound. Each such reader failed with `Overflow` and missed every frame
+   * after it: the loss a recorder cannot see in `droppedVideo`/`droppedAudio`,
+   * which count what the transport discarded before any reader.
+   */
+  readonly readerOverflows: bigint;
 }
 
 /** A peer capability. It owns its bounded buffers and source termination. */
@@ -59,7 +75,17 @@ export interface RawMedia {
 }
 
 /**
- * A generation's streams end or fail with their source. Reconnect creates a new
+ * A generation's streams end or fail with their source.
+ *
+ * Two ways to consume a track over one generation:
+ * - **Recorder:** read the stream directly. Every element is an admitted
+ *   frame. Loss before admission shows as a rise in `droppedVideo` or
+ *   `droppedAudio`; a reader that falls behind its bound fails with
+ *   `Overflow` (and counts in `readerOverflows`); the generation's end is
+ *   `retired`.
+ * - **Preview:** keep only the newest frame, per consumer, with
+ *   `Stream.buffer({ capacity: 1, strategy: "sliding" })`. It never overflows
+ *   and never delays other readers. Reconnect creates a new
  * value; it never silently replaces the source underneath an existing reader.
  */
 export interface MediaGeneration extends RawMedia {

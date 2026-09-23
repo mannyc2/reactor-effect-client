@@ -1,20 +1,29 @@
 export { audioContext, webAudioSamples } from "./audio.js";
-export type { WebAudioOptions, WebAudioSample } from "./audio.js";
+export type { AudioContextOptions, WebAudioOptions, WebAudioSample } from "./audio.js";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 import { ReactorError } from "reactor-effect-client";
 import {
+  duration,
   errorOf,
   finite,
   fromOwnedReadableStream,
+  parsed,
   positiveLimit,
   record,
 } from "reactor-effect-client/host";
 
 export interface MediaOptions {
   readonly maxSampleBytes?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * How long reading and copying each sample may take; 10 seconds by default
+   * and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 export interface VideoSample {
   readonly format: "RGBA";
@@ -46,15 +55,15 @@ export const mediaFacilities = (): Readonly<Record<string, boolean>> =>
   });
 
 const unsupported = (message: string): never => {
-  throw new ReactorError({ code: "UnsupportedCapability", message });
+  throw ReactorError.fromCode("UnsupportedCapability", message);
 };
 const timestamp = (input: unknown): number => {
   const value = finite(input, "media timestamp");
   if (!Number.isSafeInteger(value))
-    throw new ReactorError({
-      code: "Protocol",
-      message: "media timestamp cannot be represented exactly in this host",
-    });
+    throw ReactorError.fromCode(
+      "Protocol",
+      "media timestamp cannot be represented exactly in this host",
+    );
   return value;
 };
 
@@ -66,12 +75,10 @@ const deadline = async <A>(promise: Promise<A>, ms: number, signal?: AbortSignal
       promise,
       new Promise<never>((_, reject) => {
         handle = setTimeout(
-          () =>
-            reject(new ReactorError({ code: "Timeout", message: "media read/copy/play deadline" })),
+          () => reject(ReactorError.fromCode("Timeout", "media read/copy/play deadline")),
           ms,
         );
-        aborted = () =>
-          reject(new ReactorError({ code: "Aborted", message: "media operation cancelled" }));
+        aborted = () => reject(ReactorError.fromCode("Aborted", "media operation cancelled"));
         if (signal?.aborted) aborted();
         else signal?.addEventListener("abort", aborted, { once: true });
       }),
@@ -175,9 +182,12 @@ function copiedSamples<A>(
     "media sample bytes",
     64 * 1024 * 1024,
   );
-  const timeoutMs = positiveLimit(options.readTimeoutMs ?? 10_000, "media read timeout", 600_000);
+  // The deadline races host promises inside the stream's callbacks, in milliseconds.
+  const timeoutMs = Duration.toMillis(
+    duration(options.readTimeout ?? "10 seconds", "media read timeout", { maximum: "10 minutes" }),
+  );
   if (source.kind !== kind || source.readyState !== "live")
-    throw new ReactorError({ code: "InvalidState", message: `expected a live ${kind} track` });
+    throw ReactorError.fromCode("InvalidState", `expected a live ${kind} track`);
   const operation = kind === "audio" ? "audioSamples" : "videoFrames";
   const track = source.clone();
   let constructed = false,
@@ -187,8 +197,7 @@ function copiedSamples<A>(
   const cleanupFailures: { phase: string; message: string }[] = [];
 
   const annotate = (cause: unknown, phase: string): ReactorError => {
-    const name =
-      cause instanceof Error && !(cause instanceof ReactorError) ? cause.name : undefined;
+    const name = cause instanceof Error && !ReactorError.is(cause) ? cause.name : undefined;
     const error = errorOf(
       cause,
       name === "NotSupportedError" || (name === "TypeError" && phase === "processor")
@@ -215,8 +224,7 @@ function copiedSamples<A>(
       cleanupFailures,
     };
     return new ReactorError({
-      code: error.code,
-      message: error.message,
+      reason: error.reason,
       context: { ...error.context, operation: `${operation}.${phase}`, detail },
     });
   };
@@ -235,10 +243,10 @@ function copiedSamples<A>(
       kind === "audio" &&
       (!("AudioData" in globalThis) || typeof globalThis.AudioData !== "function")
     ) {
-      throw new ReactorError({
-        code: "UnsupportedCapability",
-        message: "AudioData is not exposed in this realm",
-      });
+      throw ReactorError.fromCode(
+        "UnsupportedCapability",
+        "AudioData is not exposed in this realm",
+      );
     }
     acquisitionPhase = "processor";
     const native = processor(track);
@@ -246,10 +254,10 @@ function copiedSamples<A>(
     acquisitionPhase = "readable";
     const readable: unknown = record(native, "track processor").readable;
     if (!(readable instanceof ReadableStream))
-      throw new ReactorError({
-        code: "UnsupportedCapability",
-        message: "track processor did not supply a ReadableStream",
-      });
+      throw ReactorError.fromCode(
+        "UnsupportedCapability",
+        "track processor did not supply a ReadableStream",
+      );
     acquisitionPhase = "reader";
     reader = readable.getReader();
     acquired = true;
@@ -308,10 +316,10 @@ function copiedSamples<A>(
   const ended = (): void =>
     fail(
       annotate(
-        new ReactorError({
-          code: "Disconnected",
-          message: "media source lease ended; reacquire after reconnect",
-        }),
+        ReactorError.fromCode(
+          "Disconnected",
+          "media source lease ended; reacquire after reconnect",
+        ),
         "track",
       ),
     );
@@ -414,10 +422,13 @@ const nativeSamples = <A>(
   Stream.unwrap(
     Effect.gen(function* () {
       const owned = yield* Effect.acquireRelease(
-        Effect.try({ try: () => copiedSamples(source, kind, options, copy), catch: errorOf }),
+        parsed(() => copiedSamples(source, kind, options, copy)),
         (owned) => Effect.promise(() => owned.close()),
       );
-      return fromOwnedReadableStream({ evaluate: () => owned.readable, onError: errorOf });
+      return fromOwnedReadableStream({
+        evaluate: () => owned.readable,
+        onError: (cause) => errorOf(cause, "Protocol", `${kind} samples`),
+      });
     }),
   );
 
@@ -441,10 +452,7 @@ export const videoFrames = (
     }
     const size = raw.allocationSize({ format: "RGBA" });
     if (!Number.isSafeInteger(size) || size !== width * height * 4 || size > maxBytes)
-      throw new ReactorError({
-        code: "Overflow",
-        message: "RGBA sample byte bound/layout mismatch",
-      });
+      throw ReactorError.fromCode("Overflow", "RGBA sample byte bound/layout mismatch");
     const data = new Uint8Array(size);
     await raw.copyTo(data, { format: "RGBA" });
     return Object.freeze({
@@ -468,7 +476,7 @@ export const audioSamples = (
   nativeSamples(track, "audio", options, async (raw, maxBytes) => {
     const audio = nativeAudio(raw);
     if (audio.frames * audio.channels * 4 > maxBytes)
-      throw new ReactorError({ code: "Overflow", message: "PCM sample byte bound" });
+      throw ReactorError.fromCode("Overflow", "PCM sample byte bound");
     const planes: Float32Array<ArrayBuffer>[] = [];
     for (let channel = 0; channel < audio.channels; channel++) {
       const plane = new Float32Array(audio.frames);
@@ -486,29 +494,29 @@ export const audioSamples = (
   });
 
 /** Scoped local playback. Starting playback does not establish audience output. */
+export interface PlayOptions {
+  /**
+   * How long starting playback may take; 10 seconds by default and at most 10
+   * minutes. A bare number is milliseconds.
+   */
+  readonly playTimeout?: Duration.Input | undefined;
+}
 export const play = (
   track: MediaStreamTrack,
   element: HTMLMediaElement,
-  timeoutMs = 10_000,
+  options: PlayOptions = {},
 ): Effect.Effect<void, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const timeout = yield* Effect.try({
-      try: () => positiveLimit(timeoutMs, "playback timeout", 600_000),
-      catch: errorOf,
-    });
+    const timeout = yield* parsed(() =>
+      duration(options.playTimeout ?? "10 seconds", "playback timeout", { maximum: "10 minutes" }),
+    );
     const owned = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {
           if (track.readyState !== "live")
-            throw new ReactorError({
-              code: "InvalidState",
-              message: "playback requires a live track",
-            });
+            throw ReactorError.fromCode("InvalidState", "playback requires a live track");
           if (element.srcObject !== null || element.getAttribute("src"))
-            throw new ReactorError({
-              code: "InvalidState",
-              message: "playback element already has a source",
-            });
+            throw ReactorError.fromCode("InvalidState", "playback element already has a source");
           const clone = track.clone();
           try {
             const stream = new MediaStream([clone]);
@@ -519,7 +527,8 @@ export const play = (
             throw error;
           }
         },
-        catch: errorOf,
+        // MediaStream and srcObject are platform calls: their exceptions are expected.
+        catch: (cause) => errorOf(cause, "UnsupportedCapability", "HTMLMediaElement source"),
       }),
       ({ clone, stream }) =>
         Effect.sync(() => {
@@ -536,15 +545,11 @@ export const play = (
     }).pipe(
       Effect.timeoutOrElse({
         duration: timeout,
-        orElse: () =>
-          Effect.fail(new ReactorError({ code: "Timeout", message: "media play deadline" })),
+        orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "media play deadline")),
       }),
     );
     if (owned.clone.readyState !== "live")
-      return yield* new ReactorError({
-        code: "Disconnected",
-        message: "playback track ended during start",
-      });
+      return yield* ReactorError.fromCode("Disconnected", "playback track ended during start");
   });
 
 export interface Presentation {
@@ -561,18 +566,17 @@ export const nextPresentation = (
 ): Effect.Effect<Presentation, ReactorError> =>
   Effect.suspend(() =>
     Effect.gen(function* () {
-      const timeout = yield* Effect.try({
-        try: () => positiveLimit(timeoutMs, "presentation timeout", 600_000),
-        catch: errorOf,
-      });
+      const timeout = yield* parsed(() =>
+        positiveLimit(timeoutMs, "presentation timeout", 600_000),
+      );
       return yield* Effect.callback<Presentation, ReactorError>((resume) => {
         if (typeof element.requestVideoFrameCallback !== "function") {
           resume(
             Effect.fail(
-              new ReactorError({
-                code: "UnsupportedCapability",
-                message: "requestVideoFrameCallback unavailable",
-              }),
+              ReactorError.fromCode(
+                "UnsupportedCapability",
+                "requestVideoFrameCallback unavailable",
+              ),
             ),
           );
           return;
@@ -593,12 +597,7 @@ export const nextPresentation = (
         Effect.timeoutOrElse({
           duration: timeout,
           orElse: () =>
-            Effect.fail(
-              new ReactorError({
-                code: "Timeout",
-                message: "no local video presentation callback",
-              }),
-            ),
+            Effect.fail(ReactorError.fromCode("Timeout", "no local video presentation callback")),
         }),
       );
     }),

@@ -39,14 +39,14 @@ test("create resolves on the session id alone; describe fails with that id", asy
   expect(allocation.sessionId).toBe("session-one");
   const failure = await Effect.runPromise(Effect.flip(client.describe(allocation)));
   expect(failure).toMatchObject({
-    code: "Protocol",
+    reason: { _tag: "Protocol" },
     context: { operation: "create session", sessionId: "session-one", outcome: "replied" },
   });
   // Without a usable id the allocation itself fails, and names nothing to own.
   for (const unnamed of [{ state: "WAITING" }, { session_id: "", state: "WAITING" }, []]) {
     reply = unnamed;
     const error = await Effect.runPromise(Effect.flip(client.create({ name: "selected/model" })));
-    expect(error.code).toBe("Protocol");
+    expect(error.reason._tag).toBe("Protocol");
     expect(error.context.sessionId).toBeUndefined();
   }
 });
@@ -88,7 +88,7 @@ test("empty bodies differ from JSON null and actual response bytes are bounded",
     const result = await Effect.runPromise(Effect.result(client.create({ name: "model" })));
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure")
-      expect(result.failure.code).toBe(body.length > 16 ? "Overflow" : "Protocol");
+      expect(result.failure.reason._tag).toBe(body.length > 16 ? "Overflow" : "Protocol");
   }
 });
 
@@ -134,7 +134,7 @@ test("a lost DELETE reply is followed by independent remote-termination confirma
     }),
   );
   const client = new Http.CoordinatorClient(
-    { apiUrl: "https://injected.invalid", requestTimeoutMs: 5 },
+    { apiUrl: "https://injected.invalid", requestTimeout: 5 },
     platform,
   );
   const result = await Effect.runPromise(client.terminate("owned-session"));
@@ -150,8 +150,8 @@ const matrixSessionUrl = `${matrixUrl}/sessions/session%20%2F%20one`;
 const matrixOptions: Coordinator.TokenOptions = {
   apiKey: Redacted.make("matrix-key-secret"),
   modelName: "matrix/model",
-  maxSessionDurationSeconds: 60,
-  expiresAfterSeconds: 300,
+  maxSessionDuration: "60 seconds",
+  expiresAfter: "300 seconds",
 };
 const matrixToken = {
   jwt: `header.${Encoding.encodeBase64Url(
@@ -323,14 +323,14 @@ for (const operation of matrixOperations)
         const report = result.success as Coordinator.Termination;
         expect(report.confirmed).toBe(code === undefined);
         expect(report.evidence).toBe(code === undefined ? "terminal" : null);
-        expect(report.error?.code).toBe(code);
+        expect(report.error?.reason._tag).toBe(code);
         expect(report.deleteStatus).toBe(204);
         expect(calls).toEqual([`DELETE ${operation.url}`, `GET ${operation.url}`]);
       } else {
         expect(result._tag).toBe(code === undefined ? "Success" : "Failure");
         if (result._tag === "Failure") {
           if (code === undefined) throw new Error("A valid response must not fail");
-          expect(result.failure.code).toBe(code);
+          expect(result.failure.reason._tag).toBe(code);
         }
         if (sample.name === "literal null" && result._tag === "Success")
           expect(result.success).toBeNull();
@@ -386,7 +386,7 @@ for (const publicClient of [false, true]) {
       expect(calls).toEqual(["DELETE", "GET"]);
       if (deleteStatus === 401 || (deleteStatus === 403 && getStatus === 404))
         expect(report.error).toBeInstanceOf(ReactorError);
-      if (body !== null && "session_id" in body) expect(report.error?.code).toBe("Protocol");
+      if (body !== null && "session_id" in body) expect(report.error?.reason._tag).toBe("Protocol");
     }
   });
 }

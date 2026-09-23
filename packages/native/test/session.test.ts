@@ -13,11 +13,11 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
-import { ReactorError } from "reactor-effect-client";
 import { FetchHttp } from "reactor-effect-client";
+import type { ReactorFailure } from "reactor-effect-client";
 import * as Native from "../src/index.js";
 import type { UploadReference } from "reactor-effect-client/wire";
-import { compileFixture, until } from "./support.js";
+import { compileFixture, nativeClient, until } from "./support.js";
 
 const sessionId = "sess_native_fixture";
 const descriptor = (id: string) => ({
@@ -69,8 +69,8 @@ const coordinator = () => {
   return { fetch, allocated, deleted };
 };
 
-const runClient = <A>(
-  effect: Effect.Effect<A, ReactorError, PlatformHttp.HttpClient | Crypto.Crypto>,
+const runClient = <A, E extends ReactorFailure>(
+  effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
   fetch: typeof globalThis.fetch = coordinator().fetch,
 ): Promise<A> =>
   Effect.runPromise(
@@ -88,7 +88,7 @@ describe("native canonical session boundary", () => {
       const result = await runClient(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make(
+            const factory = yield* nativeClient(
               {
                 apiUrl: "https://coordinator.fixture",
                 session: { maxPending: 32 },
@@ -113,12 +113,12 @@ describe("native canonical session boundary", () => {
                 size,
               } as unknown as UploadReference;
               const invalid = yield* Effect.result(
-                client.command("echo", {}, new Map([["picture", reference]])),
+                client.command("echo", {}, { uploads: new Map([["picture", reference]]) }),
               );
               expect(invalid._tag).toBe("Failure");
               if (invalid._tag === "Failure")
                 expect(invalid.failure).toMatchObject({
-                  code: "InvalidInput",
+                  reason: { _tag: "InvalidInput" },
                   context: expect.objectContaining({ outcome: "not-submitted" }),
                 });
             }
@@ -157,6 +157,7 @@ describe("native canonical session boundary", () => {
 
       expect(result.video).toMatchObject({
         _tag: "VideoFrame",
+        format: "BGRA",
         track: "main_video",
         width: 1,
         height: 1,
@@ -177,14 +178,14 @@ describe("native canonical session boundary", () => {
       expect(result.overflow._tag).toBe("Failure");
       if (result.overflow._tag === "Failure") {
         expect(result.overflow.failure).toMatchObject({
-          code: "Overflow",
+          reason: { _tag: "Overflow" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       }
       expect(result.afterClose._tag).toBe("Failure");
       if (result.afterClose._tag === "Failure") {
         expect(result.afterClose.failure).toMatchObject({
-          code: "Closed",
+          reason: { _tag: "Closed" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       }
@@ -210,7 +211,7 @@ describe("native canonical session boundary", () => {
       const result = await runClient(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make({ apiUrl: "https://coordinator.fixture" }, options);
+            const factory = yield* nativeClient({ apiUrl: "https://coordinator.fixture" }, options);
             const client = yield* factory.create(create);
             yield* client.connect;
             hold(1);
@@ -244,11 +245,11 @@ describe("native canonical session boundary", () => {
       expect(result.report.localClosed).toBe(false);
       expect(result.report.localErrors).toHaveLength(1);
       const [shutdown] = result.report.localErrors;
-      expect(shutdown?.code).toBe("Shutdown");
+      expect(shutdown?.reason._tag).toBe("Shutdown");
       // The connection finalizer dies with the typed deadline failure, which
       // cleanup records before it goes on to terminate the owned session.
       expect(Cause.squash(shutdown?.context.detail as Cause.Cause<unknown>)).toMatchObject({
-        code: "Shutdown",
+        reason: { _tag: "Shutdown" },
         message: "native owner join exceeded its deadline; handle retained",
       });
       expect(result.report.remote).toMatchObject({
@@ -262,7 +263,7 @@ describe("native canonical session boundary", () => {
       expect(result.degraded._tag).toBe("Failure");
       if (result.degraded._tag === "Failure")
         expect(result.degraded.failure).toMatchObject({
-          code: "Native",
+          reason: { _tag: "Native" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       expect(result.allocatedWhileDegraded).toBe(1);
@@ -280,33 +281,28 @@ describe("native canonical session boundary", () => {
     }
   }, 15_000);
 
-  test("rejects a shutdown deadline that is not a positive duration before allocating", async () => {
+  test("rejects a shutdown deadline that is not a positive duration when the layer is built", async () => {
     if (process.platform === "win32") return;
     const compiled = compileFixture();
     const remote = coordinator();
     try {
       for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
+        // No Client can exist, so nothing can allocate a remote session.
         const result = await runClient(
           Effect.scoped(
-            Effect.gen(function* () {
-              const factory = yield* Native.make(
+            Effect.result(
+              nativeClient(
                 { apiUrl: "https://coordinator.fixture" },
                 { libraryPath: compiled.path, shutdownTimeout: shutdownTimeout as Duration.Input },
-              );
-              return yield* Effect.result(
-                factory.create({
-                  model: "fixture/native-session",
-                  jwt: Redacted.make("fixture-token"),
-                }),
-              );
-            }),
+              ),
+            ),
           ),
           remote.fetch,
         );
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure")
           expect(result.failure).toMatchObject({
-            code: "InvalidInput",
+            reason: { _tag: "InvalidInput" },
             context: expect.objectContaining({ outcome: "not-submitted" }),
           });
       }
@@ -314,5 +310,27 @@ describe("native canonical session boundary", () => {
     } finally {
       rmSync(compiled.directory, { recursive: true, force: true });
     }
+  });
+
+  test("fails to build the layer, before any allocation, when the library cannot load", async () => {
+    const remote = coordinator();
+    const result = await runClient(
+      Effect.scoped(
+        Effect.result(
+          nativeClient(
+            { apiUrl: "https://coordinator.fixture" },
+            { libraryPath: "/nonexistent/libreactor_effect_native.so" },
+          ),
+        ),
+      ),
+      remote.fetch,
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure")
+      expect(result.failure).toMatchObject({
+        reason: expect.objectContaining({ _tag: "Native" }),
+        context: expect.objectContaining({ outcome: "not-submitted" }),
+      });
+    expect(remote.allocated).toEqual([]);
   });
 });

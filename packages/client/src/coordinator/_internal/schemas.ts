@@ -1,11 +1,12 @@
-import { Clock, Effect, Redacted, Schema } from "effect";
-import { positiveLimit, ReactorError } from "../../errors.js";
+import { Clock, Duration, Effect, Redacted, Result, Schema } from "effect";
+import { duration } from "../../duration.js";
+import { parse, parsedInput, ReactorError } from "../../errors.js";
 
 const failure = (operation: string, message: string, cause?: unknown) =>
-  new ReactorError({
-    code: "Protocol",
-    message,
-    context: { operation, outcome: "replied", ...(cause === undefined ? {} : { detail: cause }) },
+  ReactorError.fromCode("Protocol", message, {
+    operation,
+    outcome: "replied",
+    ...(cause === undefined ? {} : { detail: cause }),
   });
 const PositiveInteger = Schema.Number.check(
   Schema.isFinite(),
@@ -56,6 +57,34 @@ export const modelRate = (value: unknown, model: string) =>
 export interface TokenOptions {
   readonly apiKey: Redacted.Redacted<string>;
   readonly modelName: string;
+  /**
+   * The longest session the token may start, a whole number of seconds up to
+   * one day. A bare number is milliseconds.
+   */
+  readonly maxSessionDuration: Duration.Input;
+  /**
+   * How long the token stays valid, a whole number of seconds more than 30
+   * seconds past `maxSessionDuration`, so cleanup still holds a valid token. A
+   * bare number is milliseconds.
+   */
+  readonly expiresAfter: Duration.Input;
+  /**
+   * @deprecated Removed in 0.3.0: use `maxSessionDuration` (a bare number is
+   * milliseconds, so `maxSessionDurationSeconds: 60` becomes
+   * `maxSessionDuration: "60 seconds"`).
+   */
+  readonly maxSessionDurationSeconds?: never;
+  /**
+   * @deprecated Removed in 0.3.0: use `expiresAfter` (a bare number is
+   * milliseconds, so `expiresAfterSeconds: 300` becomes
+   * `expiresAfter: "300 seconds"`).
+   */
+  readonly expiresAfterSeconds?: never;
+}
+/** Token options after validation, in the wire's whole seconds. */
+export interface TokenRequest {
+  readonly apiKey: Redacted.Redacted<string>;
+  readonly modelName: string;
   readonly maxSessionDurationSeconds: number;
   readonly expiresAfterSeconds: number;
 }
@@ -64,37 +93,50 @@ export interface TokenGrant {
   readonly expiresAt: number;
   readonly granted: { readonly maxSessions: 1; readonly maxSessionSeconds: number };
 }
+const wholeSeconds = (value: Duration.Duration): number => Math.round(Duration.toSeconds(value));
 export const validateTokenOptions = (
   input: TokenOptions,
-): Effect.Effect<TokenOptions, ReactorError> =>
-  Effect.try({
-    try: () => {
-      const options: TokenOptions = {
-        apiKey: input.apiKey,
-        modelName: input.modelName,
-        maxSessionDurationSeconds: input.maxSessionDurationSeconds,
-        expiresAfterSeconds: input.expiresAfterSeconds,
-      };
-      if (
-        !Redacted.isRedacted(options.apiKey) ||
-        Redacted.value(options.apiKey).length === 0 ||
-        typeof options.modelName !== "string" ||
-        options.modelName.length === 0 ||
-        options.expiresAfterSeconds <= options.maxSessionDurationSeconds + 30
-      )
-        throw new Error("Invalid bounded grant input");
-      positiveLimit(options.maxSessionDurationSeconds, "session duration", 86_400);
-      positiveLimit(options.expiresAfterSeconds, "token expiry", Number.MAX_SAFE_INTEGER);
-      return Object.freeze(options);
-    },
-    catch: () =>
-      new ReactorError({
-        code: "InvalidInput",
-        message:
-          "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
-        context: { operation: "token", outcome: "not-submitted" },
-      }),
-  });
+): Effect.Effect<TokenRequest, ReactorError> =>
+  parsedInput(() => {
+    const reject = (): never => {
+      throw ReactorError.fromCode(
+        "InvalidInput",
+        "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
+        { operation: "token", outcome: "not-submitted" },
+      );
+    };
+    if (input === null || typeof input !== "object") return reject();
+    const bounded = parse(() => ({
+      maxSessionDurationSeconds: wholeSeconds(
+        duration(input.maxSessionDuration, "session duration", {
+          maximum: "1 day",
+          wholeSeconds: true,
+        }),
+      ),
+      // Whole milliseconds stay exact up to this bound, so the seconds do too.
+      expiresAfterSeconds: wholeSeconds(
+        duration(input.expiresAfter, "token expiry", {
+          maximum: Duration.millis(Number.MAX_SAFE_INTEGER),
+          wholeSeconds: true,
+        }),
+      ),
+    }));
+    if (Result.isFailure(bounded)) return reject();
+    const options: TokenRequest = {
+      apiKey: input.apiKey,
+      modelName: input.modelName,
+      ...bounded.success,
+    };
+    if (
+      !Redacted.isRedacted(options.apiKey) ||
+      Redacted.value(options.apiKey).length === 0 ||
+      typeof options.modelName !== "string" ||
+      options.modelName.length === 0 ||
+      options.expiresAfterSeconds <= options.maxSessionDurationSeconds + 30
+    )
+      return reject();
+    return Object.freeze(options);
+  }, "token");
 
 const Token = Schema.Struct({
   jwt: Schema.NonEmptyString,
@@ -124,7 +166,7 @@ export const decodeToken = (raw: unknown) =>
   );
 
 /** Validate the issuer's returned authority; token expiry alone never caps a remote session. */
-export const grantedLimits = (jwt: string, options: TokenOptions) =>
+export const grantedLimits = (jwt: string, options: TokenRequest) =>
   Effect.gen(function* () {
     const payload = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/.exec(jwt)?.[1];
     const claims = yield* Schema.decodeUnknownEffect(TokenClaims)(payload);

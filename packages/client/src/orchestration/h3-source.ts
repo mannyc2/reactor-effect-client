@@ -8,17 +8,21 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Crypto from "effect/Crypto";
 import type * as Http from "effect/unstable/http/HttpClient";
-import { ReactorError } from "../errors.js";
+import { CommandFailure, ReactorError } from "../errors.js";
 import type { Clip as ProviderClip } from "../h3/messages.js";
+import { make as makeProvider } from "../h3/_internal/client.js";
 import { h3ReferenceTurboRealtime } from "../h3/profile.js";
 import type {
+  Options as ProviderOptions,
   Provider,
   ProviderEvent,
   ProviderSnapshot,
   Request as ProviderRequest,
 } from "../h3/types.js";
 import { Observations } from "../observation.js";
+import { mediaGeneration } from "../session/_internal/acquire.js";
 import type { Session } from "../session/index.js";
 import type { MediaGeneration } from "../session/media.js";
 import * as Submission from "../Submission.js";
@@ -135,10 +139,64 @@ const project = (
   });
 };
 
+/** Broadcast policy and limits for a session-bound H3 source. */
+export interface SessionSourceOptions extends Omit<H3SourceOptions, "media"> {
+  /** Acquisition and observation options for the session's H3 provider view. */
+  readonly provider?: ProviderOptions | undefined;
+}
+
+/** A physical source whose H3 provider view is exposed for the operations the source does not project. */
+export interface H3Source extends Source {
+  readonly provider: Provider;
+}
+
+/**
+ * The session-bound constructor over a media accessor. The accessor is a
+ * parameter only so tests can bind the media of a fake session; the public
+ * constructor binds the session's own decoded-media generation.
+ */
+export const bindSession =
+  (media: (session: Session) => Effect.Effect<MediaGeneration, ReactorError>) =>
+  (
+    session: Session,
+    options: SessionSourceOptions = {},
+  ): Effect.Effect<
+    H3Source,
+    ReactorError | PolicyFailure | CommandFailure,
+    Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
+  > =>
+    Effect.gen(function* () {
+      // The host capability and the ready connection are checked before any
+      // provider observation or policy command.
+      yield* media(session);
+      const child = yield* Scope.fork(yield* Effect.scope);
+      const { provider: providerOptions, ...policy } = options;
+      return yield* Effect.gen(function* () {
+        const provider = yield* makeProvider(session, providerOptions);
+        const source = yield* fromH3(session, provider, { ...policy, media: media(session) });
+        return Object.freeze({ ...source, provider });
+      }).pipe(
+        Scope.provide(child),
+        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),
+      );
+    });
+
+/**
+ * A physical H3 source for one connected session, with its provider view and
+ * its decoded media both derived from that session, so a source can never pair
+ * one session's commands with another session's media. It needs a host with
+ * decoded media (the native host); on a host without it, or before the session
+ * is connected, it fails before any provider observation or policy command.
+ * Closing the source closes the session.
+ */
+export const fromH3Session = bindSession(mediaGeneration);
+
 /**
  * Bind explicit broadcast policy and host reference loading to an H3 view.
  * Acquisition, provider facts, dispatch evidence, and media remain with their
- * existing owners; this source only annotates and projects them.
+ * existing owners; this source only annotates and projects them. Internal:
+ * the public constructor is `fromH3Session`, which derives both views from
+ * one session.
  */
 export const fromH3 = (
   session: Session,
@@ -146,15 +204,15 @@ export const fromH3 = (
   options: H3SourceOptions,
 ): Effect.Effect<
   Source,
-  ReactorError,
+  ReactorError | PolicyFailure | CommandFailure,
   Scope.Scope | FileSystem.FileSystem | Path.Path | Http.HttpClient
 > =>
   Effect.gen(function* () {
     if (session.id !== provider.sessionId)
-      return yield* new ReactorError({
-        code: "InvalidInput",
-        message: "H3 provider and session identities differ",
-      });
+      return yield* ReactorError.fromCode(
+        "InvalidInput",
+        "H3 provider and session identities differ",
+      );
     const environment = yield* Effect.context<
       FileSystem.FileSystem | Path.Path | Http.HttpClient
     >();
@@ -164,7 +222,7 @@ export const fromH3 = (
     const observations = new Observations<EngineEvent>();
     const limit = options.maxAnnotations ?? 2048;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16384)
-      return yield* new ReactorError({ code: "InvalidInput", message: "Invalid annotation bound" });
+      return yield* ReactorError.fromCode("InvalidInput", "Invalid annotation bound");
     let reservations = 0;
     let sequence = 0;
     let closed = false;
@@ -197,10 +255,7 @@ export const fromH3 = (
           const previous = times.get(clipId) ?? {};
           if (!times.has(clipId) && times.size >= limit * 2) {
             observations.fail(
-              new ReactorError({
-                code: "Overflow",
-                message: "Orchestration timing observation bound exceeded",
-              }),
+              ReactorError.fromCode("Overflow", "Orchestration timing observation bound exceeded"),
             );
             return;
           }
@@ -272,7 +327,7 @@ export const fromH3 = (
     const requireReady = (operation: string) =>
       Effect.gen(function* () {
         if (closed)
-          return yield* PolicyFailure.refuse("session_closed", "Source is closed", operation);
+          return yield* PolicyFailure.refuse("SessionClosed", "Source is closed", operation);
         let snapshot = yield* provider.current;
         if (snapshot._tag === "Synchronizing") {
           yield* provider.refresh;
@@ -280,7 +335,7 @@ export const fromH3 = (
         }
         if (snapshot._tag !== "Ready")
           return yield* PolicyFailure.refuse(
-            "session_recovering",
+            "SessionRecovering",
             "Provider state is unavailable",
             operation,
           );
@@ -291,42 +346,44 @@ export const fromH3 = (
       Effect.gen(function* () {
         const request = yield* captureRequest(plan.request);
         let annotation: Annotation | undefined;
-        const input: Effect.Effect<ProviderRequest, ReactorError, Scope.Scope> = Effect.gen(
-          function* () {
-            yield* requireReady("enqueue");
-            const references = yield* Effect.forEach(request.references, ({ uri }) =>
-              loadReferenceBytes(uri, {
-                maxBytes:
-                  options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
-                timeoutMs: options.references?.timeoutMs ?? 5000,
-              }).pipe(
-                Effect.provideContext(environment),
-                Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),
-              ),
-            );
-            return {
-              prompt: request.prompt,
-              references,
-              seconds: request.durationSeconds,
-              metadata: JSON.stringify(request.metadata),
-              ...(request.seed === undefined ? {} : { seed: request.seed }),
-              ...(request.continueFrom === undefined ? {} : { continueFrom: request.continueFrom }),
-              ...(plan.position === undefined ? {} : { position: plan.position }),
-            };
-          },
-        );
+        const input: Effect.Effect<
+          ProviderRequest,
+          ReactorError | CommandFailure | PolicyFailure,
+          Scope.Scope
+        > = Effect.gen(function* () {
+          yield* requireReady("enqueue");
+          const references = yield* Effect.forEach(request.references, ({ uri }) =>
+            loadReferenceBytes(uri, {
+              maxBytes:
+                options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
+              loadTimeout: options.references?.loadTimeout ?? "5 seconds",
+            }).pipe(
+              Effect.provideContext(environment),
+              Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),
+            ),
+          );
+          return {
+            prompt: request.prompt,
+            references,
+            seconds: request.durationSeconds,
+            metadata: JSON.stringify(request.metadata),
+            ...(request.seed === undefined ? {} : { seed: request.seed }),
+            ...(request.continueFrom === undefined ? {} : { continueFrom: request.continueFrom }),
+            ...(plan.position === undefined ? {} : { position: plan.position }),
+          };
+        });
         const prepared = yield* provider
           .prepareFrom(input, {
             commit: (id) =>
               Effect.gen(function* () {
                 if (annotations.size + reservations >= limit)
                   return yield* PolicyFailure.refuse(
-                    "annotation_capacity",
+                    "AnnotationCapacity",
                     "Local submission annotations are full",
                   );
                 if (sequence >= Number.MAX_SAFE_INTEGER)
                   return yield* PolicyFailure.refuse(
-                    "identity_exhausted",
+                    "IdentityExhausted",
                     "Local submission sequence is exhausted",
                   );
                 reservations++;
@@ -389,7 +446,7 @@ export const fromH3 = (
     if (options.canvas !== undefined) {
       if (!isIdle(yield* state))
         return yield* PolicyFailure.refuse(
-          "busy",
+          "Busy",
           "Canvas can only change while the provider is idle",
           "set_canvas",
         );
@@ -414,6 +471,7 @@ export const fromH3 = (
       id: session.id,
       state,
       events: observations.stream(),
+      observe: (options) => observations.observeWith(state, options),
       prepareRouted,
       media,
       reconnect: session.reconnect.pipe(Effect.andThen(provider.refresh)),
@@ -427,7 +485,7 @@ export const fromH3 = (
           const ready = snapshot.queue.playout.some((clip) => clip.clip_id === id);
           if (!queued && !ready)
             return yield* PolicyFailure.refuse(
-              "not_found",
+              "NotFound",
               "Clip is not present in a provider queue",
               "pop",
             );
@@ -440,7 +498,7 @@ export const fromH3 = (
           yield* requireReady("set_canvas");
           if (!isIdle(yield* state))
             return yield* PolicyFailure.refuse(
-              "busy",
+              "Busy",
               "Canvas can only change while the provider is idle",
               "set_canvas",
             );

@@ -75,7 +75,7 @@ test("simulation autoplay consumes clips in order while playout capacity keeps t
       expect((yield* engine.state).playing).toEqual(Option.none());
     }).pipe(
       Effect.provide(
-        Simulation.layerSim({ buildFixedMs: 100, buildRatio: 0, queueLimit: 3, playoutLimit: 1 }),
+        Simulation.layerSim({ fixedBuildTime: 100, buildRatio: 0, queueLimit: 3, playoutLimit: 1 }),
       ),
     ),
   ));
@@ -100,7 +100,7 @@ test("removing a simulated ready clip immediately releases the next build withou
       ).toEqual([a, c]);
     }).pipe(
       Effect.provide(
-        Simulation.layerSim({ buildFixedMs: 100, buildRatio: 0, queueLimit: 3, playoutLimit: 1 }),
+        Simulation.layerSim({ fixedBuildTime: 100, buildRatio: 0, queueLimit: 3, playoutLimit: 1 }),
       ),
     ),
   ));
@@ -129,7 +129,7 @@ test("failed simulated generation is skipped and closing the scope cancels unfin
         }).pipe(
           Effect.provide(
             Simulation.layerSim({
-              buildFixedMs: 100,
+              fixedBuildTime: 100,
               buildRatio: 0,
               queueLimit: 3,
               faults: buildFailsEveryNth(2),
@@ -147,7 +147,7 @@ test("actual simulation build ownership stays distinct from generation position 
   runClock(
     Effect.gen(function* () {
       for (const timing of ["measured", "unknown"] as const) {
-        const source = yield* Simulation.source({ buildFixedMs: 500, buildRatio: 0, timing });
+        const source = yield* Simulation.source({ fixedBuildTime: 500, buildRatio: 0, timing });
         const a = yield* (yield* source.prepareRouted({ request: input(), position: undefined }))
           .submit;
         yield* TestClock.adjust(0);
@@ -211,7 +211,7 @@ test("simulation media copies renderer buffers and explicit pauseAndStop joins t
       const video = videoFrame(4),
         audio = audioFrame(5, 6);
       const handle = yield* Simulation.make({
-        buildFixedMs: 0,
+        fixedBuildTime: 0,
         buildRatio: 0,
         present: (_, __, sink) =>
           Effect.gen(function* () {
@@ -266,11 +266,11 @@ test("simulation source rejects invalid options and layerSim provides one shared
         { queueLimit: 0 },
         { playoutLimit: -1 },
         { buildRatio: NaN },
-        { buildFixedMs: -1 },
-        { playoutGapMs: Infinity },
+        { fixedBuildTime: -1 },
+        { playoutGap: "Infinity" },
       ] satisfies SimOptions[]) {
         const invalid = yield* Effect.result(Simulation.source(options));
-        expect(Result.isFailure(invalid) && invalid.failure.code).toBe("InvalidInput");
+        expect(Result.isFailure(invalid) && invalid.failure.reason._tag).toBe("InvalidInput");
       }
       yield* Effect.gen(function* () {
         const handle = yield* Handle,

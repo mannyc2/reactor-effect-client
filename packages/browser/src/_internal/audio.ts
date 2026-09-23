@@ -1,8 +1,15 @@
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import { ReactorError } from "reactor-effect-client";
-import { errorOf, fromOwnedReadableStream, positiveLimit } from "reactor-effect-client/host";
+import {
+  duration,
+  errorOf,
+  fromOwnedReadableStream,
+  parsed,
+  positiveLimit,
+} from "reactor-effect-client/host";
 import { decodeAudioPacket } from "./audio-packet.js";
 import type { WebAudioSample } from "./audio-packet.js";
 export type { WebAudioSample } from "./audio-packet.js";
@@ -19,11 +26,8 @@ const bounded = async <A>(
     return await Promise.race([
       work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new ReactorError({ code: "Timeout", message: label })),
-          timeout,
-        );
-        rejectAbort = () => reject(new ReactorError({ code: "Aborted", message: label }));
+        timer = setTimeout(() => reject(ReactorError.fromCode("Timeout", label)), timeout);
+        rejectAbort = () => reject(ReactorError.fromCode("Aborted", label));
         if (signal?.aborted) rejectAbort();
         else signal?.addEventListener("abort", rejectAbort, { once: true });
       }),
@@ -35,22 +39,33 @@ const bounded = async <A>(
 };
 /** Call from an ordinary start click. No autoplay-policy workaround is attempted.
  * The scope owns this context; audio streams borrow it and own their nodes/track clones. */
+export interface AudioContextOptions {
+  readonly sampleRate?: number;
+  /**
+   * How long resuming the context, and closing it on release, may each take; 5
+   * seconds by default and at most 1 minute. A bare number is milliseconds.
+   */
+  readonly transitionTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `transitionTimeout` (a bare number is milliseconds). */
+  readonly timeoutMs?: never;
+}
 export const audioContext = (
-  options: { readonly sampleRate?: number; readonly timeoutMs?: number } = {},
+  options: AudioContextOptions = {},
 ): Effect.Effect<AudioContext, ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const timeout = yield* Effect.try({
-      try: () => positiveLimit(options.timeoutMs ?? 5000, "audio context timeout", 60000),
-      catch: errorOf,
-    });
+    const timeout = yield* parsed(() =>
+      duration(options.transitionTimeout ?? "5 seconds", "audio context transition timeout", {
+        maximum: "1 minute",
+      }),
+    );
     const context = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {
           if (typeof AudioContext !== "function" || typeof AudioWorkletNode !== "function")
-            throw new ReactorError({
-              code: "UnsupportedCapability",
-              message: "built-in AudioContext and AudioWorkletNode are required",
-            });
+            throw ReactorError.fromCode(
+              "UnsupportedCapability",
+              "built-in AudioContext and AudioWorkletNode are required",
+            );
           return new AudioContext(
             options.sampleRate === undefined ? {} : { sampleRate: options.sampleRate },
           );
@@ -59,36 +74,36 @@ export const audioContext = (
       }),
       // Neither browser promise can be cancelled; each deadline only stops waiting for it.
       (context) =>
-        Effect.tryPromise({ try: () => context.close(), catch: errorOf }).pipe(
-          Effect.timeout(timeout),
-          Effect.ignore,
-        ),
+        Effect.tryPromise({
+          try: () => context.close(),
+          catch: (cause) => errorOf(cause, "Shutdown", "AudioContext.close"),
+        }).pipe(Effect.timeout(timeout), Effect.ignore),
     );
     yield* Effect.tryPromise({
       try: () => context.resume(),
       catch: (cause) =>
-        new ReactorError({
-          code: "UnsupportedCapability",
-          message: "AudioContext resume failed; ordinary user activation is required",
-          context: { detail: cause },
-        }),
+        ReactorError.fromCode(
+          "UnsupportedCapability",
+          "AudioContext resume failed; ordinary user activation is required",
+          { detail: cause },
+        ),
     }).pipe(
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () =>
           Effect.fail(
-            new ReactorError({
-              code: "Timeout",
-              message: "AudioContext resume deadline; supply user activation",
-            }),
+            ReactorError.fromCode(
+              "Timeout",
+              "AudioContext resume deadline; supply user activation",
+            ),
           ),
       }),
     );
     if (context.state !== "running")
-      return yield* new ReactorError({
-        code: "UnsupportedCapability",
-        message: `AudioContext is ${context.state}, not running`,
-      });
+      return yield* ReactorError.fromCode(
+        "UnsupportedCapability",
+        `AudioContext is ${context.state}, not running`,
+      );
     return context;
   });
 export interface WebAudioOptions {
@@ -97,10 +112,22 @@ export interface WebAudioOptions {
   /** Serve dist/browser/_internal/pcm-worklet.js locally. A bundler must preserve/copy this asset. */
   readonly workletUrl?: string | URL;
   readonly maxSampleBytes?: number;
-  /** Each consumption owns a muted HTMLAudioElement and waits for its ordinary play().
-   * This deadline is separate from worklet registration and individual PCM reads. */
-  readonly activationTimeoutMs?: number;
-  readonly readTimeoutMs?: number;
+  /**
+   * Each consumption owns a muted HTMLAudioElement and waits for its ordinary
+   * play(). This deadline is separate from worklet registration and individual
+   * PCM reads; 5 seconds by default and at most 1 minute. A bare number is
+   * milliseconds.
+   */
+  readonly activationTimeout?: Duration.Input | undefined;
+  /**
+   * How long registering the worklet, and then each PCM read, may take; 10
+   * seconds by default and at most 10 minutes. A bare number is milliseconds.
+   */
+  readonly readTimeout?: Duration.Input | undefined;
+  /** @deprecated Removed in 0.3.0: use `activationTimeout` (a bare number is milliseconds). */
+  readonly activationTimeoutMs?: never;
+  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
+  readonly readTimeoutMs?: never;
 }
 // A worklet is registered once per context and URL. Failed registration is retryable, not cached success.
 const modules = new WeakMap<AudioContext, Map<string, Promise<void>>>();
@@ -134,11 +161,16 @@ export const webAudioSamples = (
 ): Stream.Stream<WebAudioSample, ReactorError> =>
   fromOwnedReadableStream({
     evaluate: () => {
-      const timeout = positiveLimit(options.readTimeoutMs ?? 10000, "PCM read timeout", 600000);
-      const activationTimeout = positiveLimit(
-        options.activationTimeoutMs ?? 5000,
-        "PCM activation timeout",
-        60000,
+      // The deadlines race host promises inside the stream's callbacks, in milliseconds.
+      const timeout = Duration.toMillis(
+        duration(options.readTimeout ?? "10 seconds", "PCM read timeout", {
+          maximum: "10 minutes",
+        }),
+      );
+      const activationTimeout = Duration.toMillis(
+        duration(options.activationTimeout ?? "5 seconds", "PCM activation timeout", {
+          maximum: "1 minute",
+        }),
       );
       const maxBytes = positiveLimit(
         options.maxSampleBytes ?? 1048576,
@@ -147,12 +179,12 @@ export const webAudioSamples = (
       );
       const context = options.context;
       if (source.kind !== "audio" || source.readyState !== "live")
-        throw new ReactorError({ code: "InvalidState", message: "expected a live audio track" });
+        throw ReactorError.fromCode("InvalidState", "expected a live audio track");
       if (typeof AudioWorkletNode !== "function" || context.audioWorklet === undefined)
-        throw new ReactorError({
-          code: "UnsupportedCapability",
-          message: "built-in AudioWorklet is unavailable in this realm",
-        });
+        throw ReactorError.fromCode(
+          "UnsupportedCapability",
+          "built-in AudioWorklet is unavailable in this realm",
+        );
       if (
         typeof document === "undefined" ||
         // Feature detection reads the method itself, not its deprecated overload.
@@ -160,24 +192,24 @@ export const webAudioSamples = (
         typeof document.createElement !== "function" ||
         typeof MediaStream !== "function"
       )
-        throw new ReactorError({
-          code: "UnsupportedCapability",
-          message: "PCM activation requires a Window document and built-in HTML audio playback",
-        });
+        throw ReactorError.fromCode(
+          "UnsupportedCapability",
+          "PCM activation requires a Window document and built-in HTML audio playback",
+        );
       if (context.state !== "running")
-        throw new ReactorError({
-          code: "UnsupportedCapability",
-          message: "PCM requires an explicitly resumed, running AudioContext",
-        });
+        throw ReactorError.fromCode(
+          "UnsupportedCapability",
+          "PCM requires an explicitly resumed, running AudioContext",
+        );
       const url = new URL(
         options.workletUrl ?? new URL("./pcm-worklet.js", import.meta.url),
         import.meta.url,
       );
       if (!/^(https?:|file:)$/.test(url.protocol))
-        throw new ReactorError({
-          code: "Protocol",
-          message: "serve the PCM worklet as a normal local module, not a data/blob URL",
-        });
+        throw ReactorError.fromCode(
+          "Protocol",
+          "serve the PCM worklet as a normal local module, not a data/blob URL",
+        );
       const track = source.clone(),
         lifetime = new AbortController();
       let input: MediaStreamAudioSourceNode | undefined, node: AudioWorkletNode | undefined;
@@ -203,7 +235,7 @@ export const webAudioSamples = (
           sink.pause();
           sink.srcObject = null;
         }
-        pending?.reject(new ReactorError({ code: "Aborted", message: "PCM reader closed" }));
+        pending?.reject(ReactorError.fromCode("Aborted", "PCM reader closed"));
         pending = undefined;
         input?.disconnect();
         if (node !== undefined) {
@@ -222,11 +254,10 @@ export const webAudioSamples = (
           close();
         }
       };
-      const ended = (): void =>
-        fail(new ReactorError({ code: "Disconnected", message: "PCM track ended" }));
+      const ended = (): void => fail(ReactorError.fromCode("Disconnected", "PCM track ended"));
       const state = (): void => {
         if (context.state !== "running")
-          fail(new ReactorError({ code: "Disconnected", message: `PCM context ${context.state}` }));
+          fail(ReactorError.fromCode("Disconnected", `PCM context ${context.state}`));
       };
       const live = (): boolean => {
         if (source.readyState !== "live" || track.readyState !== "live") ended();
@@ -276,32 +307,22 @@ export const webAudioSamples = (
           if (!live()) return;
           try {
             if (pending === undefined)
-              throw new ReactorError({
-                code: "Protocol",
-                message: "unsolicited PCM block without a read credit",
-              });
+              throw ReactorError.fromCode(
+                "Protocol",
+                "unsolicited PCM block without a read credit",
+              );
             const sample = decodeAudioPacket(event.data, maxBytes),
               waiter = pending;
             pending = undefined;
             waiter.resolve(sample);
           } catch (error) {
-            fail(errorOf(error));
+            fail(errorOf(error, "Protocol", "PCM block"));
           }
         };
         node.port.onmessageerror = () =>
-          fail(
-            new ReactorError({
-              code: "Protocol",
-              message: "PCM transfer could not be deserialized",
-            }),
-          );
+          fail(ReactorError.fromCode("Protocol", "PCM transfer could not be deserialized"));
         node.onprocessorerror = () =>
-          fail(
-            new ReactorError({
-              code: "UnsupportedCapability",
-              message: "PCM AudioWorklet processor failed",
-            }),
-          );
+          fail(ReactorError.fromCode("UnsupportedCapability", "PCM AudioWorklet processor failed"));
         input.connect(node);
         node.connect(context.destination);
       };
@@ -329,7 +350,7 @@ export const webAudioSamples = (
               );
               if (live()) c.enqueue(sample);
             } catch (error) {
-              fail(errorOf(error));
+              fail(errorOf(error, "Protocol", "PCM read"));
             }
           },
           cancel: close,

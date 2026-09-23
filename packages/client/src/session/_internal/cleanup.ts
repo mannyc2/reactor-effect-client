@@ -1,10 +1,11 @@
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import type { CoordinatorClient, Termination } from "../../coordinator/_internal/client.js";
-import { errorOf, ReactorError } from "../../errors.js";
+import { ReactorError } from "../../errors.js";
 import type { CloseReport } from "../../SessionTypes.js";
 import * as W from "../../wire.generated.js";
 import type { Connection } from "./lifecycle.js";
@@ -13,7 +14,7 @@ import type { Remote, RemoteSession } from "./remote.js";
 
 const releasePublications = (
   connection: Connection | undefined,
-  commandTimeout: number,
+  replyTimeout: Duration.Duration,
 ): Effect.Effect<{ readonly submitted: string[]; readonly errors: ReactorError[] }> =>
   Effect.gen(function* () {
     const submitted: string[] = [],
@@ -34,11 +35,9 @@ const releasePublications = (
             ),
           ).pipe(
             Effect.timeoutOrElse({
-              duration: Math.min(1000, commandTimeout),
+              duration: Duration.min(Duration.seconds(1), replyTimeout),
               orElse: () =>
-                Effect.fail(
-                  new ReactorError({ code: "Timeout", message: "close unpublish: deadline" }),
-                ),
+                Effect.fail(ReactorError.fromCode("Timeout", "close unpublish: deadline")),
             }),
           ),
         );
@@ -46,12 +45,10 @@ const releasePublications = (
         else {
           const failure = Cause.findError(result.cause);
           errors.push(
-            failure._tag === "Success" && failure.success instanceof ReactorError
+            failure._tag === "Success" && ReactorError.is(failure.success)
               ? failure.success
-              : new ReactorError({
-                  code: "Shutdown",
-                  message: "publication cleanup failed",
-                  context: { detail: result.cause },
+              : ReactorError.fromCode("Shutdown", "publication cleanup failed", {
+                  detail: result.cause,
                 }),
           );
         }
@@ -83,10 +80,10 @@ const terminateOwnedRemote = (
           evidence: null,
           deleteStatus: null,
           state: null,
-          error: new ReactorError({
-            code: "Shutdown",
-            message: "remote cleanup did not complete",
-            context: { detail: result.cause, sessionId: remote.id, outcome: "unknown" },
+          error: ReactorError.fromCode("Shutdown", "remote cleanup did not complete", {
+            detail: result.cause,
+            sessionId: remote.id,
+            outcome: "unknown",
           }),
         };
   });
@@ -98,21 +95,24 @@ export const cleanupSession = (options: {
   readonly scope: Scope.Closeable;
   readonly remote: RemoteSession;
   readonly http: CoordinatorClient;
-  readonly commandTimeout: number;
+  readonly replyTimeout: Duration.Duration;
   readonly retire: (connection: Connection, error: ReactorError) => void;
 }): Effect.Effect<CloseReport> =>
   Effect.gen(function* () {
     const { connection } = options;
-    const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
+    const { submitted, errors } = yield* releasePublications(connection, options.replyTimeout);
     if (connection !== undefined) {
+      // Cleanup reports every failure, a host peer's included, rather than dying:
+      // retiring the generation runs the host's close.
       const retired = yield* Effect.result(
         Effect.try({
-          try: () =>
-            options.retire(
-              connection,
-              new ReactorError({ code: "Aborted", message: "session closed" }),
-            ),
-          catch: errorOf,
+          try: () => options.retire(connection, ReactorError.fromCode("Aborted", "session closed")),
+          catch: (cause) =>
+            ReactorError.is(cause)
+              ? cause
+              : ReactorError.fromCode("Shutdown", "generation retirement failed", {
+                  detail: cause,
+                }),
         }),
       );
       if (Result.isFailure(retired)) errors.push(retired.failure);
@@ -120,10 +120,8 @@ export const cleanupSession = (options: {
     const shutdown = yield* Effect.exit(Scope.close(options.scope, Exit.void));
     if (Exit.isFailure(shutdown))
       errors.push(
-        new ReactorError({
-          code: "Shutdown",
-          message: "local cleanup did not complete cleanly",
-          context: { detail: shutdown.cause },
+        ReactorError.fromCode("Shutdown", "local cleanup did not complete cleanly", {
+          detail: shutdown.cause,
         }),
       );
     // Inspect ownership after joining local work: interrupted allocation may

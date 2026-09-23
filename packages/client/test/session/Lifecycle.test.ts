@@ -49,10 +49,7 @@ test("lifecycle: replacing a generation fences callbacks before retiring the old
     expect(lifecycle.accepts(first)).toBe(false);
     expect(lifecycle.accepts(second)).toBe(true);
     expect(() => lifecycle.assertCurrent(first)).toThrow("retired connection generation");
-    const oldFailure = new ReactorError({
-      code: "Disconnected",
-      message: "old generation failure",
-    });
+    const oldFailure = ReactorError.fromCode("Disconnected", "old generation failure");
     first.failure = oldFailure;
     const retired = Effect.runSyncExit(Effect.sync(() => lifecycle.assertCurrent(first)));
     if (!Exit.isFailure(retired)) throw new Error("retired generation was accepted");
@@ -63,10 +60,7 @@ test("lifecycle: replacing a generation fences callbacks before retiring the old
     expect(lifecycle.status).toBe("connecting");
     expect(lifecycle.lastError).toBeUndefined();
 
-    const currentFailure = new ReactorError({
-      code: "Disconnected",
-      message: "current generation failure",
-    });
+    const currentFailure = ReactorError.fromCode("Disconnected", "current generation failure");
     expect(lifecycle.disconnect(second, currentFailure)).toBe(true);
     expect(lifecycle.lastError).toBe(currentFailure);
     expect(lifecycle.disconnect(first, oldFailure)).toBe(false);
@@ -102,7 +96,7 @@ test("lifecycle: readiness requires all three signals in any order and cannot re
         expect(Effect.runSyncExit(Deferred.await(connection.ready))).toEqual(Exit.void);
       }
     const failed = new Connection(2n, scope, new MockPeer(new HttpFixture()));
-    failed.failure = new ReactorError({ code: "Disconnected", message: "failed before readiness" });
+    failed.failure = ReactorError.fromCode("Disconnected", "failed before readiness");
     for (const signal of signals) failed[signal] = true;
     failed.readyGate();
     expect(Deferred.isDoneUnsafe(failed.ready)).toBe(false);
@@ -134,12 +128,12 @@ test("lifecycle: missing negotiated state stays a defect, while close refuses ne
     const refusal = Cause.findDefect(closed.cause);
     if (refusal._tag !== "Success") throw new Error("missing closed refusal");
     expect(refusal.success).toMatchObject({
-      code: "Closed",
+      reason: { _tag: "Closed" },
       context: { outcome: "not-submitted" },
     });
-    expect(
-      lifecycle.disconnect(connection, new ReactorError({ code: "Disconnected", message: "late" })),
-    ).toBe(false);
+    expect(lifecycle.disconnect(connection, ReactorError.fromCode("Disconnected", "late"))).toBe(
+      false,
+    );
     expect(lifecycle.lastError).toBeUndefined();
     lifecycle.transition("closed");
     expect(() => lifecycle.begin(true, true, () => connection.peer)).toThrow(

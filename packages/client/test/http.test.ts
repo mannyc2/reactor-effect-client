@@ -1,4 +1,5 @@
 import { test } from "vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { tokenBody } from "../src/coordinator/_internal/client.js";
 import { retryAfterMs } from "../src/coordinator/_internal/response.js";
@@ -17,7 +18,7 @@ test("HTTP source headers, cloud create shape, readiness 202/backoff and per-req
     const http = new HttpClient({
       apiUrl: "https://coordinator.fixture",
       credential: Effect.sync(() => `token-${++credentials}`),
-      sessionPoll: { attempts: 5, initialMs: 1, maxMs: 2 },
+      sessionPoll: { attempts: 5, initialDelay: 1, maxDelay: 2 },
     });
     const allocation = await run(
       http.create({ name: "owner/model", version: "v1" }, { temperature: 1 }),
@@ -62,7 +63,7 @@ test("HTTP local start excludes model and auth; local signaling still uses auth"
     );
     equal(JSON.parse(f.calls[0]?.body ?? "null"), { extra_args: { key: 1 } });
     equal(f.calls[2]?.headers.get("Reactor-WebRTC-Version"), "1.0");
-    equal((await failure(http.read("another-session"), { signal })).code, "Protocol");
+    equal((await failure(http.read("another-session"), { signal })).reason._tag, "Protocol");
   }));
 test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal and unknown states", ({
   signal,
@@ -72,7 +73,7 @@ test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal 
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
     equal((await run(http.ready(f.sessionId), { signal })).state, "WAITING");
     f.state = "INACTIVE";
-    equal((await failure(http.ready(f.sessionId), { signal })).code, "TerminalSession");
+    equal((await failure(http.ready(f.sessionId), { signal })).reason._tag, "TerminalSession");
     f.state = "FUTURE_STATE";
     equal(parseDescriptor(f.descriptor).state, "FUTURE_STATE");
     throws(
@@ -88,19 +89,39 @@ test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal 
       "Protocol",
     );
   }));
-test("HTTP 426/501 are nonretryable version mismatches and preserve body/status", ({ signal }) =>
+test("HTTP 426/501 are nonretryable version mismatches that keep body/status for inspection", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
     for (const status of [426, 501]) {
       f.hook = () =>
         new Response("wire version unsupported", { status, headers: { "retry-after": "1.25" } });
       const e = await failure(http.ready(f.sessionId), { signal });
-      equal(e.code, "VersionMismatch");
-      equal(e.context.status, status);
-      equal(e.context.retryAfterMs, 1250);
-      equal(e.context.body, "wire version unsupported");
+      equal(e.reason._tag, "VersionMismatch");
+      equal(e.context.detail, { status, body: "wire version unsupported" });
     }
     equal(f.calls.length, 2);
+  }));
+test("HTTP refusals keep status, Retry-After and body in the Http reason, not the message", ({
+  signal,
+}) =>
+  withFixture(async (f) => {
+    const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
+    for (const status of [429, 503]) {
+      f.hook = () =>
+        new Response("provider says slow down", { status, headers: { "retry-after": "1.25" } });
+      const e = await failure(http.ready(f.sessionId), { signal });
+      assert(e.reason._tag === "Http");
+      equal(e.reason.status, status);
+      equal(
+        e.reason.retryAfter === undefined ? undefined : Duration.toMillis(e.reason.retryAfter),
+        1250,
+      );
+      equal(e.reason.body, "provider says slow down");
+      assert(!e.message.includes("slow down"));
+      assert(!JSON.stringify(e).includes("slow down"));
+    }
   }));
 test("HTTP deadlines cover response reads and cancel stalled readers", ({ signal }) =>
   withFixture(async (f) => {
@@ -116,24 +137,24 @@ test("HTTP deadlines cover response reads and cancel stalled readers", ({ signal
           },
         }),
       );
-    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
-    equal((await failure(http.read(f.sessionId), { signal })).code, "Timeout");
+    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeout: 10 });
+    equal((await failure(http.read(f.sessionId), { signal })).reason._tag, "Timeout");
     await eventually(() => cancelled);
   }));
 test("HTTP response byte limit and strict UTF8/JSON decoding", ({ signal }) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture", maxResponseBytes: 16 });
     f.hook = () => new Response("x".repeat(17));
-    equal((await failure(http.read(f.sessionId), { signal })).code, "Overflow");
+    equal((await failure(http.read(f.sessionId), { signal })).reason._tag, "Overflow");
     f.hook = () => new Response(new Uint8Array([0xff]));
-    equal((await failure(http.read(f.sessionId), { signal })).code, "Protocol");
+    equal((await failure(http.read(f.sessionId), { signal })).reason._tag, "Protocol");
   }));
 test("HTTP no unsafe retries of creation after a network/ack timeout", ({ signal }) =>
   withFixture(async (f) => {
     f.hook = (c) => stall(c.signal);
-    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
+    const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeout: 10 });
     const e = await failure(http.create({ name: "owner/model" }), { signal });
-    equal(e.code, "Timeout");
+    equal(e.reason._tag, "Timeout");
     equal(e.context.outcome, "unknown");
     equal(f.calls.length, 1);
   }));
@@ -160,7 +181,7 @@ test("token source contract: null, scoped restrictions, exact uint64, reject typ
     equal(f.calls[0]?.headers.get("authorization"), null);
     equal(f.calls[0]?.headers.get("Reactor-API-Key"), "fixture-key");
     f.hook = () => jsonResponse({ jwt: "" });
-    equal((await failure(http.exchangeKey("x"), { signal })).code, "Protocol");
+    equal((await failure(http.exchangeKey("x"), { signal })).reason._tag, "Protocol");
   }));
 test("HTTP termination request response and terminal confirmation are separate facts", ({
   signal,

@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { ReactorError } from "../../errors.js";
+import { parsedInput, ReactorError } from "../../errors.js";
 import type { UploadReference } from "../../wire.generated.js";
 import { imageMimeTypes, referenceLimits } from "../profile.js";
 import type { Reference, ValidatedReference } from "../types.js";
@@ -14,10 +14,9 @@ export type Material =
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
 const materials = new WeakMap<ValidatedReference, Material>();
 const invalid = (message: string): never => {
-  throw new ReactorError({
-    code: "InvalidInput",
-    message,
-    context: { operation: "H3 reference", outcome: "not-submitted" },
+  throw ReactorError.fromCode("InvalidInput", message, {
+    operation: "H3 reference",
+    outcome: "not-submitted",
   });
 };
 const uint16 = (b: Uint8Array, o: number) => b[o]! * 256 + b[o + 1]!;
@@ -208,14 +207,4 @@ export const referenceMaterial = (reference: ValidatedReference): Material =>
 export const validateReference = (
   input: Reference,
 ): Effect.Effect<ValidatedReference, ReactorError> =>
-  Effect.try({
-    try: () => captureReference(input),
-    catch: (error) =>
-      error instanceof ReactorError
-        ? error
-        : new ReactorError({
-            code: "InvalidInput",
-            message: "Invalid H3 reference",
-            context: { outcome: "not-submitted" },
-          }),
-  });
+  parsedInput(() => captureReference(input), "H3 reference");

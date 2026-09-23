@@ -9,7 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Native from "reactor-effect-native";
-import { FetchHttp, ReactorError } from "reactor-effect-client";
+import { FetchHttp, ReactorError, make as makeClient } from "reactor-effect-client";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = resolve(process.argv[2] ?? join(root, "../.check/browser-native/browser.js"));
@@ -318,10 +318,8 @@ const testEffect = (run) =>
   Effect.try({
     try: run,
     catch: (cause) =>
-      new ReactorError({
-        code: "Protocol",
-        message: "public native media fixture assertion failed",
-        context: { detail: cause },
+      ReactorError.fromCode("Protocol", "public native media fixture assertion failed", {
+        detail: cause,
       }),
   });
 /** @template T @param {Stream.Stream<T, ReactorError>} source @param {(frame: T) => void} visit @returns {Effect.Effect<void>} */
@@ -386,11 +384,16 @@ try {
   const result = await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const factory = yield* Native.make({
+        const peers = yield* Layer.build(Native.layer());
+        const factory = yield* makeClient({
           apiUrl: url,
-          sdpPoll: { attempts: 200, initialMs: 50, maxMs: 200 },
-          session: { connectTimeoutMs: 45_000, readyTimeoutMs: 45_000, commandTimeoutMs: 5000 },
-        });
+          sdpPoll: { attempts: 200, initialDelay: 50, maxDelay: 200 },
+          session: {
+            connectTimeout: "45 seconds",
+            readyTimeout: "45 seconds",
+            replyTimeout: "5 seconds",
+          },
+        }).pipe(Effect.provide(peers));
         const session = yield* factory.createConnected({ model: "fixture/native-browser" });
         const ready = yield* session.ready;
         assert(ready.remote.ownership === "owned", "native public session lost ownership");

@@ -67,13 +67,63 @@ const clientLayer = Reactor.layer().pipe(
 const main = Effect.scoped(useSession).pipe(Effect.provide(clientLayer));
 ```
 
-`Native.make(configuration, nativeOptions)` and `Browser.make(configuration)` also construct the canonical factory with their host peer already selected. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement.
+Building a host layer is its preflight: `Native.layer()` loads and verifies the native library, and `Browser.layer` detects WebRTC, so an unsupported host fails while the layer is built, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement. A custom host provides `PeerFactory` itself: `make` returns a fresh `Peer` for each connection generation, and an optional `check` fails when the host cannot create one right now; the factory runs it before every remote allocation.
 
-Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams.
+Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams. Each `VideoFrame` declares its pixel `format` (`"BGRA"` from the native host); nothing converts between formats implicitly. A recorder reads a track directly and sees loss before admission as a rise in `pressure`'s `droppedVideo`/`droppedAudio`, and a reader that falls behind its bound fails with `Overflow` and counts in `readerOverflows`. A preview keeps only the newest frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
+
+## Errors
+
+Every failure the client raises is one of four classes, each with its own `_tag`, so `Effect.catchTag` and a Schema union tell them apart:
+
+- `ReactorError`: a session, coordinator or host failure;
+- `CommandFailure`: a failed command, with the dispatch evidence its owner established;
+- `AcquisitionFailure`: a failed acquisition, with the `cleanup` report of its partial lease, kept by reference;
+- `PolicyFailure`, from `/orchestration`: a local refusal, which was never dispatched.
+
+`isReactorFailure` recognizes any of them, and each class has an `is` guard. Re-raise a known failure through a guard rather than `instanceof ReactorError`, which none of the other three satisfies.
+
+Each carries a tagged `reason`: route on `reason._tag`, with `Effect.catchReason`, `catchReasons` or `unwrapReason`. A `ReactorError`, `CommandFailure` or `AcquisitionFailure` reason is `Failure`, whose tag is a code such as `Timeout`, `Disconnected` or `InvalidInput`, or one of the reasons with fields of their own: `Http` (`status`, `retryAfter`, `body`), `Remote` and `RecorderDisabled` (`remoteCode`, `body`), `Native` (`status`, a Redacted `backendMessage`), `IceFailed` (`pairs`, `candidateTypes`) and `TransportFailed` (`pairs`). `ErrorCode` is the union of those tags. A `PolicyFailure` reason is a `Refusal` such as `QueueFull`, `SessionRecovering` or `Busy`, `Missing` with the request field whose clip has no known owner, or `Sequence` with the sequence's code.
+
+`context.outcome` says whether the remote may have applied the request: `not-submitted`, `unknown` or `replied`. A `PolicyFailure`'s outcome is always `not-submitted`, so an `EngineError = CommandFailure | PolicyFailure` is read without narrowing. `isRetryable` is true for local backpressure, a connection lost before dispatch, an HTTP refusal that names a delay, and the `QueueFull` and `SessionRecovering` refusals, and never when the outcome is `unknown`; `retryAfter` is the delay an `Http` reason named.
+
+```ts
+const admission = (failure: EngineError) =>
+  failure.context.outcome === "unknown" ? "reconcile" : failure.isRetryable ? "defer" : "reject";
+
+const enqueued = engine.enqueue(request).pipe(
+  Effect.catchReasons("PolicyFailure", {
+    QueueFull: () => Effect.succeed("wait for a free generation slot"),
+    SessionRecovering: () => Effect.succeed("wait for the session to recover"),
+  }),
+);
+```
+
+`message` is written by the library and never contains provider or payload text, so spans and logs that record it stay payload-free. Provider and backend text is kept only for explicit inspection: `Http.body`, `Remote.body`, the Redacted `Native.backendMessage` and `context.detail`. Diagnostic JSON leaves all of them out, and none of them is part of the cause chain that exporters render.
+
+## Time options
+
+Every time option is an Effect `Duration.Input` named by its role:
+
+- on the session, `connectTimeout`, `readyTimeout`, `heartbeatInterval`, `replyTimeout` and `uploadTimeout`;
+- on the coordinator, `requestTimeout` and the poll's `initialDelay` and `maxDelay`, and on a token, `maxSessionDuration` and `expiresAfter`, which must be whole seconds;
+- on H3, `replyTimeout`, `uploadTimeout`, `setupTimeout`, `reconcileWindow` and `resultHookTimeout`;
+- in orchestration, `lead`, `reconnectTimeout` and the `lifetime` that `open` returns.
+
+A bare number is milliseconds, as everywhere in Effect, so write the unit: `lead: "30 seconds"`, because `lead: 30` is 30 milliseconds. `"Infinity"` disables the heartbeat and marks a source that never expires. A value that is NaN, negative, zero where zero means nothing, or longer than the option's maximum fails with `InvalidInput`, not submitted. Measurements, instants and media lengths stay numbers in the unit their name carries: `requestRecordingClip(seconds)`, `ClipRequest.durationSeconds`, a renewal's `ageSeconds`.
+
+`replyTimeout` is the session's own deadline for a reply. The session's default and a command's override share the key: `session.command(name, data, { uploads, replyTimeout })`. It is not a caller's wait. After dispatch it fails with `Timeout`, outcome `unknown`, and the command's `requestId`, and the request's slot stays held until a late reply or the connection generation retires. To stop waiting without abandoning the command, fork it and bound only the join:
+
+```ts
+const fiber = yield * Effect.forkScoped(session.command("set_seed", { seed: 1 }));
+const reply = yield * Fiber.join(fiber).pipe(Effect.timeout("2 seconds"));
+// Later, Fiber.await(fiber) still reads the command's own outcome.
+```
+
+When the command must be replayed rather than awaited, prepare it as an `Orchestration.Submission`.
 
 ## Coordinator helpers
 
-`Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, and termination reports through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation.
+`Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, termination reports, and `downloadClip` for a prepared recording (`clip_ready`), which polls its HLS playlist and concatenates its segments within a caller wall deadline, through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation. The root exports the Schemas the client decodes a session descriptor with, `SessionDescriptor`, `Capabilities`, `Track` and `Mapping`, and derives their types from them.
 
 ## H3 provider
 
@@ -100,11 +150,11 @@ The adapter exposes autoplay, flush, playback, reset, and other model controls a
 
 ## Orchestration and simulation
 
-`reactor-effect-client/orchestration` owns opt-in scheduling, sequence routing, renewal, and recovering media. `fromH3` adapts a provider into a physical source, and `make({ open, ...options })` returns a handle with `engine`, `media`, `mediaState`, sequence operations, and joined cleanup reports. The `open` effect supplies each source and its lifetime budget. Application scheduling, pricing, persona, and show policy stay outside the session and H3 layers.
+`reactor-effect-client/orchestration` owns opt-in scheduling, sequence routing, renewal, and recovering media. `fromH3Session(session, options)` builds a physical source from one connected session, deriving its H3 provider view (exposed as `source.provider`) and its decoded media from that session, so a source cannot pair one session's commands with another's media; it needs a host with decoded media (the native host), and `make({ open, ...options })` returns a handle with `engine`, `media`, `mediaState`, sequence operations, and joined cleanup reports. The `open` effect supplies each source and its lifetime budget. `engine.observe(options)` is the engine's gap-free observation, as `session.observe` and `provider.observe` are for theirs: it subscribes before reading, returning the current `EngineState` with a stream of every later event (apply events idempotently by `clipId`; after an `Overflow`, observe again). Application scheduling, pricing, persona, and show policy stay outside the session and H3 layers.
 
 `ClipRequest.sameSessionAs` targets the physical session that owns a known clip, including one already ready or playing, while leaving queue position unchanged. `before` requests insertion ahead of a clip still in the generation queue. Source affinity, insertion anchors, continuation, and sequence ownership must agree; missing, conflicting, retired, or recovering ownership fails locally with a `not-submitted` outcome. This keeps a dependent request on its required session during renewal without inventing an insertion point.
 
-`Orchestration.Submission` models an inert prepared operation. Preparation may be interrupted before commit; once execution commits, callers joining or abandoning the result do not replay the dispatch. `CommandFailure.context` distinguishes `not-submitted`, `unknown`, and `replied` outcomes independently of the transport error category.
+`Orchestration.Submission` models an inert prepared operation. Preparation may be interrupted before commit; once execution commits, callers joining or abandoning the result do not replay the dispatch. `CommandFailure.context` distinguishes `not-submitted`, `unknown`, and `replied` outcomes independently of the transport error category, and an engine command fails with `EngineError`, a `CommandFailure` or a local `PolicyFailure`.
 
 `Orchestration.Sequences` owns bounded sequence affinity and explicit member outcomes. Partial admission is represented member-by-member as accepted, rejected, or indeterminate, and a sequence remains bound to one owner until it is sealed/retired and explicitly released.
 

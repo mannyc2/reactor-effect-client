@@ -291,7 +291,7 @@ test("recording harness policy: rejected normal playback releases URL, element, 
     },
     async (context) => {
       const error = await failure(recordingPlayback(bytes, context, { timeoutMs: 500 }));
-      equal(error.code, "UnsupportedCapability");
+      equal(error.reason._tag, "UnsupportedCapability");
       assert(error.message.includes("activation"));
     },
   ));
@@ -300,13 +300,13 @@ test("recording harness policy: stalled play has a distinct activation deadline 
     const error = await failure(
       recordingPlayback(bytes, context, { activationTimeoutMs: 20, timeoutMs: 500 }),
     );
-    equal(error.code, "Timeout");
+    equal(error.reason._tag, "Timeout");
     assert(error.message.includes("activation"));
   }));
 test("recording harness policy: play resolution alone is not playback evidence; missing callbacks time out", () =>
   host({}, async (context) => {
     const error = await failure(recordingPlayback(bytes, context, { timeoutMs: 20 }));
-    equal(error.code, "Timeout");
+    equal(error.reason._tag, "Timeout");
   }));
 test("recording harness policy: interruption releases resources and late play fulfillment cannot rearm callbacks", async () => {
   let finish: (() => void) | undefined;
@@ -335,7 +335,7 @@ test("recording harness policy: media error events fail with observed diagnostic
     h.video.error = { code: 3, message: "model codec failure" };
     h.video.dispatchEvent(new Event("error"));
     const error = await result;
-    equal(error.code, "UnsupportedCapability");
+    equal(error.reason._tag, "UnsupportedCapability");
     assert(error.context.detail !== undefined);
   }));
 test("recording harness policy: stopped context fails instead of relabelling a static audio clock", () =>
@@ -344,7 +344,7 @@ test("recording harness policy: stopped context fails instead of relabelling a s
     await eventually(() => h.video.callbacks.size === 1);
     h.model.state = "suspended";
     h.model.dispatchEvent(new Event("statechange"));
-    equal((await result).code, "Disconnected");
+    equal((await result).reason._tag, "Disconnected");
     h.model.state = "running"; // owner, not helper, restores its context
   }));
 test("recording harness policy: failed graph acquisition still revokes the already-created URL", () =>
@@ -354,7 +354,7 @@ test("recording harness policy: failed graph acquisition still revokes the alrea
 test("recording harness policy: unsupported frame callbacks do not become a byte-only playback pass", () =>
   host({ noFrameCallbacks: true }, async (context) => {
     const error = await failure(recordingPlayback(bytes, context));
-    equal(error.code, "UnsupportedCapability");
+    equal(error.reason._tag, "UnsupportedCapability");
     assert(error.message.includes("requestVideoFrameCallback"));
   }));
 test("recording harness policy: canvas readback failure unwinds the element and its audio route", () =>
@@ -369,11 +369,14 @@ test("recording harness policy: observation storage is bounded even for an unexp
     const result = failure(recordingPlayback(bytes, context));
     await eventually(() => h.video.callbacks.size === 1);
     for (let i = 1; i <= 129; i++) h.video.frame(i / 20, i);
-    equal((await result).code, "Overflow");
+    equal((await result).reason._tag, "Overflow");
   }));
 test("recording harness policy: invalid limits or empty input do not allocate a recording URL", () =>
   host({}, async (context, h) => {
-    equal((await failure(recordingPlayback(bytes, context, { timeoutMs: 0 }))).code, "Protocol");
-    equal((await failure(recordingPlayback(new Uint8Array(), context))).code, "Overflow");
+    equal(
+      (await failure(recordingPlayback(bytes, context, { timeoutMs: 0 }))).reason._tag,
+      "Protocol",
+    );
+    equal((await failure(recordingPlayback(new Uint8Array(), context))).reason._tag, "Overflow");
     equal(h.blobs.length, 0);
   }));

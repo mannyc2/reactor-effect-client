@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../src/coordinator/_internal/client.js";
@@ -26,15 +26,10 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
   const remote = new RemoteSession();
   const http = coordinator();
   const order: string[] = [];
-  const submissionError = new ReactorError({
-    code: "Disconnected",
-    message: "release submission failed",
-    context: { outcome: "unknown" },
+  const submissionError = ReactorError.fromCode("Disconnected", "release submission failed", {
+    outcome: "unknown",
   });
-  const retirementError = new ReactorError({
-    code: "Shutdown",
-    message: "synchronous peer close failed",
-  });
+  const retirementError = ReactorError.fromCode("Shutdown", "synchronous peer close failed");
   const peer = new MockPeer(new HttpFixture());
   http.create = () =>
     Effect.succeed({
@@ -85,7 +80,7 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
         scope: lifecycle.scope,
         remote,
         http,
-        commandTimeout: 50,
+        replyTimeout: Duration.millis(50),
         retire: () => {
           order.push("retire");
           throw retirementError;
@@ -105,12 +100,12 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
     expect(report.localErrors).toHaveLength(4);
     expect(report.localErrors[0]).toBe(submissionError);
     expect(report.localErrors[1]).toMatchObject({
-      code: "Shutdown",
+      reason: { _tag: "Shutdown" },
       message: "publication cleanup failed",
     });
     expect(report.localErrors[2]).toBe(retirementError);
     expect(report.localErrors[3]).toMatchObject({
-      code: "Shutdown",
+      reason: { _tag: "Shutdown" },
       message: "local cleanup did not complete cleanly",
     });
     const scopeCause = report.localErrors[3]?.context.detail;
@@ -121,7 +116,10 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
       attempted: true,
       confirmed: false,
       responseReceived: false,
-      error: { code: "Shutdown", context: { outcome: "unknown", sessionId: "cleanup-fixture" } },
+      error: {
+        reason: { _tag: "Shutdown" },
+        context: { outcome: "unknown", sessionId: "cleanup-fixture" },
+      },
     });
     expect(report.unpublishSubmitted).toEqual(["released"]);
     expect(report.unresolvedPublications).toEqual(["unresolved-track"]);
@@ -137,7 +135,7 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
 });
 
 for (const commandTimeout of [25, 5_000]) {
-  test(`cleanup phases: publication deadline remains bounded under the close mask (${commandTimeout} ms command budget)`, async () => {
+  test(`cleanup phases: publication deadline remains bounded under the close mask (${commandTimeout} ms reply budget)`, async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const lifecycle = new SessionLifecycle(() => {});
@@ -177,7 +175,7 @@ for (const commandTimeout of [25, 5_000]) {
           scope: lifecycle.scope,
           remote,
           http,
-          commandTimeout,
+          replyTimeout: Duration.millis(commandTimeout),
           retire: () => {
             order.push("retire");
             peer.close();
@@ -200,7 +198,7 @@ for (const commandTimeout of [25, 5_000]) {
         expect(order).toEqual(["unpublish", "publication interrupted", "retire", "shutdown"]);
         expect(report.localErrors).toHaveLength(1);
         expect(report.localErrors[0]).toMatchObject({
-          code: "Timeout",
+          reason: { _tag: "Timeout" },
           message: "close unpublish: deadline",
         });
         expect(report.unpublishSubmitted).toEqual([]);
@@ -210,6 +208,33 @@ for (const commandTimeout of [25, 5_000]) {
     );
   });
 }
+
+test("cleanup phases: a host that throws while its generation retires is still reported, not a defect", async () => {
+  const lifecycle = new SessionLifecycle(() => {});
+  const peer = new MockPeer(new HttpFixture());
+  const hostBug = new TypeError("host close failed");
+  const connection = lifecycle.begin(false, false, () => peer);
+  lifecycle.transition("connecting");
+  lifecycle.transition("closing");
+  const report = await Effect.runPromise(
+    cleanupSession({
+      connection,
+      scope: lifecycle.scope,
+      remote: new RemoteSession(),
+      http: coordinator(),
+      replyTimeout: Duration.millis(50),
+      retire: () => {
+        throw hostBug;
+      },
+    }).pipe(Effect.uninterruptible),
+  );
+  expect(report.localErrors).toHaveLength(1);
+  expect(report.localErrors[0]).toMatchObject({
+    reason: { _tag: "Shutdown" },
+    message: "generation retirement failed",
+    context: { detail: hostBug },
+  });
+});
 
 test("session lifecycle: interrupted concurrent close joins shutdown and publishes one report before callbacks", () =>
   withFixture(async (fixture) => {
@@ -275,7 +300,10 @@ test("session lifecycle: interrupted concurrent close joins shutdown and publish
       expect(callbacks).toBe(0);
       const sent = peer.sent.length;
       const refused = await Effect.runPromise(Effect.flip(session.command("closed-command", {})));
-      expect(refused).toMatchObject({ code: "Closed", context: { outcome: "not-submitted" } });
+      expect(refused).toMatchObject({
+        reason: { _tag: "Closed" },
+        context: { outcome: "not-submitted" },
+      });
       peer.emit({ type: "track", name: "late-track", mid: "late" });
       peer.emit({ type: "state", state: "failed" });
       expect(session.snapshot.receivedTracks).toEqual([]);
@@ -357,10 +385,7 @@ test("session lifecycle: phase events retain their generation and order through 
 
 test("session lifecycle: a retired generation's shutdown defect reaches reconnect without reviving its callbacks", () =>
   withFixture(async (fixture) => {
-    const shutdownError = new ReactorError({
-      code: "Shutdown",
-      message: "retired native shutdown failed",
-    });
+    const shutdownError = ReactorError.fromCode("Shutdown", "retired native shutdown failed");
     const shutdowns: number[] = [];
     let generations = 0;
     const { session, peers } = makeSession(fixture, {}, (peer) => {
@@ -401,7 +426,7 @@ test("session lifecycle: a retired generation's shutdown defect reaches reconnec
 test("session lifecycle: close preserves an unresolved publication and fences its late claim response", () =>
   withFixture(async (fixture) => {
     const entered = Deferred.makeUnsafe<string>();
-    const { session, peers } = makeSession(fixture, { commandTimeoutMs: 1_000 });
+    const { session, peers } = makeSession(fixture, { replyTimeout: 1_000 });
     await Effect.runPromise(session.start());
     const peer = peers[0]!;
     peer.autoReply = false;

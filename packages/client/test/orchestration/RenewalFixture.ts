@@ -14,13 +14,13 @@ export const renewalFixture = (
     const recorded = signals<Renewal.Renewal>();
     const renewals = recorded.values;
     const handle = yield* Renewal.make({
-      leadSeconds: 0.5,
-      reconnectTimeoutMs: 50,
+      lead: "500 millis",
+      reconnectTimeout: 50,
       ...options,
       open: Effect.gen(function* () {
         const entry = yield* sourceFixture(`source-${sources.length + 1}`, script(sources.length));
         sources.push(entry);
-        return { source: entry.source, maxSeconds: 1 };
+        return { source: entry.source, lifetime: "1 second" };
       }),
       onRenewal: (event) =>
         Effect.sync(() => {

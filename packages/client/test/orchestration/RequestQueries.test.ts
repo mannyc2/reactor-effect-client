@@ -9,7 +9,7 @@ import {
   pendingCount,
   securedMs,
 } from "../../src/orchestration/queries.js";
-import { failure, record, readyState, request } from "./SourceFixture.js";
+import { failure, record, readyState, request, refusal } from "./SourceFixture.js";
 
 test("capture detaches and freezes nested input without changing the caller's objects", async () => {
   const metadata = { nested: { title: "original" }, order: [1, 2] };
@@ -71,7 +71,7 @@ test("malformed request objects, accessors and unsupported provider fields fail 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
       expect(result.failure).toBeInstanceOf(PolicyFailure);
-      expect(result.failure.reason).toBe("invalid_request");
+      expect(refusal(result.failure)).toBe("InvalidRequest");
       expect(result.failure.context.outcome).toBe("not-submitted");
     }
   }
