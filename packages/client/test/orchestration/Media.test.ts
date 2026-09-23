@@ -109,7 +109,7 @@ test("planned handoff retains queued old video and audio instead of claiming the
       const video = yield* handle.media.video.pipe(Stream.take(4), Stream.runCollect);
       expect(video.map((frame) => frame.data[0])).toEqual([1, 2, 3, 4]);
       const audio = yield* handle.media.audio.pipe(Stream.take(1), Stream.runCollect);
-      expect([...audio[0]!.samples]).toEqual(new Array(7).fill(8));
+      expect([...audio[0]!.samples]).toEqual(new Array<number>(7).fill(8));
       expect((yield* handle.media.pressure).queuedVideo).toBe(0);
       expect((yield* handle.media.pressure).queuedAudio).toBe(0);
     }),

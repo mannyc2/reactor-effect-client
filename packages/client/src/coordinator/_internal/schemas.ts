@@ -180,7 +180,7 @@ const sensitiveField = /secret|token|credential|password|key|jwt|url|auth/i;
 const additionalFacts = (raw: unknown): Record<string, string | number | boolean | null> => {
   const facts: [string, string | number | boolean | null][] = [];
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
-  for (const [key, value] of Object.entries(raw).slice(0, 64)) {
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>).slice(0, 64)) {
     if (modeledFields.has(key) || sensitiveField.test(key)) continue;
     if (value === null || typeof value === "number" || typeof value === "boolean")
       facts.push([key, value]);

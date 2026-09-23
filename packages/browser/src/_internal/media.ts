@@ -38,7 +38,7 @@ export const mediaFacilities = (): Readonly<Record<string, boolean>> =>
   Object.freeze({
     peer: typeof RTCPeerConnection === "function",
     videoFrame: typeof VideoFrame === "function",
-    trackProcessor: typeof record(globalThis)["MediaStreamTrackProcessor"] === "function",
+    trackProcessor: typeof record(globalThis).MediaStreamTrackProcessor === "function",
     audioData: "AudioData" in globalThis && typeof globalThis.AudioData === "function",
     playback: typeof HTMLMediaElement === "function",
     audioContext: typeof AudioContext === "function",
@@ -87,7 +87,7 @@ interface Block {
 }
 
 const processor = (track: MediaStreamTrack): unknown => {
-  const constructor = record(globalThis)["MediaStreamTrackProcessor"];
+  const constructor = record(globalThis).MediaStreamTrackProcessor;
   if (typeof constructor !== "function")
     return unsupported("MediaStreamTrackProcessor is unavailable in this realm");
   return Reflect.construct(constructor, [{ track, maxBufferSize: 1 }]);
@@ -462,6 +462,9 @@ export const audioSamples = (
   track: MediaStreamTrack,
   options: MediaOptions = {},
 ): Stream.Stream<AudioSample, ReactorError> =>
+  // The copy contract returns a promise. Audio copies synchronously, and async
+  // turns its throws into that promise's rejection.
+  // oxlint-disable-next-line typescript/require-await
   nativeSamples(track, "audio", options, async (raw, maxBytes) => {
     const audio = nativeAudio(raw);
     if (audio.frames * audio.channels * 4 > maxBytes)

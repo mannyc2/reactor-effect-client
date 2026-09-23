@@ -29,7 +29,11 @@ const fetchLayer = (request: RequestFixture) =>
       Layer.succeed(
         FetchHttpClient.Fetch,
         Object.assign(
-          (input: string | Request | URL, init?: RequestInit) => request(String(input), init ?? {}),
+          (input: string | Request | URL, init?: RequestInit) =>
+            request(
+              typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+              init ?? {},
+            ),
           { preconnect: fetch.preconnect },
         ),
       ),
@@ -479,9 +483,10 @@ describe("Reactor HTTP session contract (offline)", () => {
       { ...options, expiresAfterSeconds: 130 },
       { ...options, modelName: "" },
     ]) {
-      await expect(
-        Effect.runPromise(mintToken(invalid).pipe(Effect.provide(fetchLayer(request)))),
-      ).rejects.toThrow();
+      const exit = await Effect.runPromiseExit(
+        mintToken(invalid).pipe(Effect.provide(fetchLayer(request))),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     }
     expect(calls).toBe(0);
   });

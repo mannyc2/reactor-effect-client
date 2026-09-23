@@ -52,6 +52,16 @@ export interface Call {
   readonly requestId: string;
   readonly generation: bigint;
 }
+/** A command argument the wire carries as text; anything else is an adapter bug. */
+export const textArg = (value: unknown): string => {
+  if (typeof value !== "string")
+    throw new TypeError(`expected a text argument, got ${typeof value}`);
+  return value;
+};
+/** The fields the adapter encodes into a clip's metadata text. */
+export const metadataOf = (metadata: string): Readonly<Record<string, unknown>> =>
+  JSON.parse(metadata) as Record<string, unknown>;
+
 export interface ReplyContext {
   readonly fake: Fixture;
   readonly call: Call;
@@ -237,8 +247,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             );
             const count = Array.isArray(args.reference_images) ? args.reference_images.length : 0;
             const clip = fixtureClip({
-              prompt: String(args.prompt),
-              metadata: String(args.metadata),
+              prompt: textArg(args.prompt),
+              metadata: textArg(args.metadata),
               frames,
               seconds: frames / 24,
               seed: typeof args.seed === "number" ? args.seed : seed++,
@@ -319,7 +329,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             return { type: "clip_length_accepted", data: { frames, clip_seconds: duration } };
           }
           case "set_canvas":
-            aspect = String(args.aspect);
+            aspect = textArg(args.aspect);
             broadcast("state_update", state());
             return {
               type: "canvas_accepted",

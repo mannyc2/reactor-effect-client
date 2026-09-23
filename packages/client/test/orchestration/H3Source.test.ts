@@ -11,7 +11,7 @@ import type { CloseReport, Session } from "../../src/session/index.js";
 import type { MediaGeneration } from "../../src/session/media.js";
 import type { JsonObject } from "../../src/json.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
-import { fixture, fixtureClip } from "../h3/ProviderSession.js";
+import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
 import type { Script } from "../h3/ProviderSession.js";
 import {
   cleanPressure,
@@ -217,7 +217,7 @@ test("source preparation snapshots metadata, preserves URI order and shares one 
       expect(call.args.seconds).toBe(7);
       expect(call.args.sequence).toBeUndefined();
       expect(call.args.before).toBeUndefined();
-      expect(JSON.parse(JSON.parse(String(call.args.metadata)).caller)).toEqual({
+      expect(JSON.parse(textArg(metadataOf(textArg(call.args.metadata)).caller))).toEqual({
         nested: { original: true },
       });
       const clip = (yield* source.state).queued.find((clip) => clip.clipId === firstId)!;
@@ -638,8 +638,8 @@ test("early observed start and finish survive late enqueue acceptance without sy
           enqueue: ({ fake, call }) =>
             Effect.gen(function* () {
               const clip = fixtureClip({
-                prompt: String(call.args.prompt),
-                metadata: String(call.args.metadata),
+                prompt: textArg(call.args.prompt),
+                metadata: textArg(call.args.metadata),
                 ready: true,
               });
               yield* fake.emit("clip_started", { clip: { ...clip } });

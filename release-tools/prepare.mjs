@@ -39,8 +39,8 @@ export const prepareCandidate = (options, signing) =>
   Effect.gen(function* () {
     const data = yield* checked("qualification", () => {
       const run = validateRun(options.run, options.ciRunId, "ci");
-      Schema.decodeUnknownSync(commit)(options.applicationCommit);
-      const source = Schema.decodeUnknownSync(Npm.ProvenanceSource)(options.source);
+      Schema.decodeSync(commit)(options.applicationCommit);
+      const source = Schema.decodeSync(Npm.ProvenanceSource)(options.source);
       if (
         options.applicationCommit !== run.head_sha ||
         source.sourceCommit !== run.head_sha ||
@@ -204,14 +204,14 @@ export const prepareCandidate = (options, signing) =>
     // or sending bytes.
     for (const operation of loaded.operations)
       yield* provider.prepare(operation, preparationContext(loaded, operation));
-    const identity = Schema.decodeUnknownSync(CandidateIdentity)({
+    const identity = yield* Schema.decodeEffect(CandidateIdentity)({
       format: "reactor-ts-release/v3",
       applicationCommit: options.applicationCommit,
       bundleSha256,
       planId: plan.planId,
       qualification: data.qualification,
       provenance: data.source,
-    });
+    }).pipe(Effect.mapError(() => releaseFailure("identity")));
     yield* checked("retain", () => {
       /** @type {Array<[string, Uint8Array | string]>} */
       const retained = [

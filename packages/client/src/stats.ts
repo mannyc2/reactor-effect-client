@@ -96,8 +96,7 @@ export class StatsSampler {
         const key = `${generation}:${pair.id}`,
           previous = this.baseline;
         if (
-          previous !== undefined &&
-          previous.key === key &&
+          previous?.key === key &&
           atMs >= previous.at &&
           sent >= previous.sent &&
           received >= previous.received

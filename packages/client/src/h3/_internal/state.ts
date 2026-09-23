@@ -218,6 +218,8 @@ export class ProviderState {
             if (this.state?.playing_clip_id === clip.clip_id || this.state === undefined)
               this.invalidate(true, false);
             break;
+          default:
+            break;
         }
       }
     } else {
@@ -249,6 +251,8 @@ export class ProviderState {
             this.queue.playout.length !== 0
           )
             this.invalidate(true, true);
+          break;
+        default:
           break;
       }
     }

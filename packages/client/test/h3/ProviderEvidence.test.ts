@@ -4,7 +4,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
 import { CommandFailure } from "../../src/session/commands.js";
-import { fixture, fixtureClip } from "./ProviderSession.js";
+import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 
 const options: H3.Options = { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 };
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
@@ -27,8 +27,8 @@ test("matching submission fields still require the exact captured prompt and met
           enqueue: ({ fake, call }) =>
             Effect.gen(function* () {
               const clip = fixtureClip({
-                prompt: String(call.args.prompt),
-                metadata: String(call.args.metadata),
+                prompt: textArg(call.args.prompt),
+                metadata: textArg(call.args.metadata),
               });
               const annotation = JSON.parse(clip.metadata) as Record<string, unknown>;
               yield* fake.emit("clip_queued", { clip: { ...clip, prompt: "changed prompt" } });
@@ -57,7 +57,7 @@ test("matching submission fields still require the exact captured prompt and met
       const acceptance = yield* prepared.submit;
       expect(acceptance.submissionId).toBe(prepared.id);
       expect(acceptance.clip.prompt).toBe("captured prompt");
-      expect(acceptance.clip.metadata).toBe(String(fake.calls[2]!.args.metadata));
+      expect(acceptance.clip.metadata).toBe(textArg(fake.calls[2]!.args.metadata));
       expect(acceptance.evidence.kind).toBe("correlated");
       expect(acceptance.evidence.source).toBe(fake.returns[2]!);
       expect(yield* provider.acceptances).toEqual([acceptance]);
@@ -76,8 +76,8 @@ test("expired acceptance tokens cannot be revived by late matching clips and rel
       expect(first.context.outcome).toBe("unknown");
       const call = fake.calls[2]!;
       const clip = fixtureClip({
-        prompt: String(call.args.prompt),
-        metadata: String(call.args.metadata),
+        prompt: textArg(call.args.prompt),
+        metadata: textArg(call.args.metadata),
       });
       const source = yield* fake.emit(
         "clip_generated",

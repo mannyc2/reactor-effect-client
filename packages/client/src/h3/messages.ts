@@ -107,9 +107,7 @@ export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
     });
   try {
     const schema = Payloads[type as MessageType];
-    const data: unknown = Schema.decodeUnknownSync(schema as Schema.ConstraintDecoder<unknown>)(
-      input,
-    );
+    const data: unknown = Schema.decodeUnknownSync(schema)(input);
     const message = { type, data } as Message;
     if (message.type === "state_update") {
       const state = message.data;

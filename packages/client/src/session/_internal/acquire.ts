@@ -22,7 +22,7 @@ type Input =
 /** The report a lease produced, kept by reference rather than copied. */
 const Cleanup = Schema.declare(
   (input: unknown): input is CloseReport =>
-    Predicate.isObject(input) && typeof input["localClosed"] === "boolean",
+    Predicate.isObject(input) && typeof input.localClosed === "boolean",
   { expected: "CloseReport" },
 );
 

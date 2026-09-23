@@ -32,6 +32,7 @@
     "@types/node": "catalog:",
     "oxfmt": "0.70.0",
     "oxlint": "1.81.0",
+    "oxlint-tsgolint": "7.0.2001",
     "reactor-effect-browser": "workspace:*",
     "reactor-effect-client": "workspace:*",
     "reactor-effect-native": "workspace:*",

@@ -268,7 +268,7 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
 /** The native track index is the position of the track in the prepare request. */
 const receiving = (tracks: readonly Track[], index: number, kind: "video" | "audio"): string => {
   const track = tracks[index];
-  if (track === undefined || track.direction !== "recvonly" || track.kind !== kind)
+  if (track?.direction !== "recvonly" || track.kind !== kind)
     throw new ReactorError({
       code: "Protocol",
       message: `native ${kind} was delivered without its declared receive mapping`,

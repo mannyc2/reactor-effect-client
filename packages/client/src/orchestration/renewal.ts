@@ -313,7 +313,7 @@ export const make = <R>(
       Effect.gen(function* () {
         if (slot.closed || closing || terminalFailure !== undefined) return;
         if (!slot.beginRecovery(mode)) return;
-        yield* recover(slot, cause).pipe(commands.withPermit, Effect.forkIn(scope));
+        yield* recover(slot, cause).pipe(commands.withPermits(1), Effect.forkIn(scope));
       });
 
     const startMedia = (slot: Slot): Effect.Effect<void> =>
@@ -531,7 +531,7 @@ export const make = <R>(
               // A committed submission remains a readable outcome after the handle
               // closes. Only selecting or committing fresh work needs a live owner.
               yield* guard("enqueue", Effect.void);
-              const decision = yield* route(request).pipe(commands.withPermit);
+              const decision = yield* route(request).pipe(commands.withPermits(1));
               const target = slots.get(decision.owner);
               if (target === undefined)
                 return yield* PolicyFailure.refuse(

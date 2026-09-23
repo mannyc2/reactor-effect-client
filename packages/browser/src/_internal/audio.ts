@@ -151,6 +151,8 @@ export const webAudioSamples = (
         });
       if (
         typeof document === "undefined" ||
+        // Feature detection reads the method itself, not its deprecated overload.
+        // oxlint-disable-next-line typescript/no-deprecated
         typeof document.createElement !== "function" ||
         typeof MediaStream !== "function"
       )

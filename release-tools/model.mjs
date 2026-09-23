@@ -252,7 +252,7 @@ const WorkflowRun = Schema.Struct({
 /** Only artifacts from the real successful workflow on this repository's main are eligible.
  * @param {unknown} raw @param {string} id @param {"ci" | "release"} kind */
 export const validateRun = (raw, id, kind) => {
-  Schema.decodeUnknownSync(runId)(id);
+  Schema.decodeSync(runId)(id);
   const run = Schema.decodeUnknownSync(WorkflowRun)(raw);
   if (
     String(run.id) !== id ||

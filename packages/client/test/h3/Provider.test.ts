@@ -6,7 +6,7 @@ import { ReactorError } from "../../src/errors.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import type { JsonObject } from "../../src/json.js";
 import { pngBytes } from "../../src/testing/Png.js";
-import { fixture, fixtureClip, gate } from "./ProviderSession.js";
+import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSession.js";
 import type { Fixture, Script } from "./ProviderSession.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 
@@ -425,7 +425,7 @@ describe("H3 request capture and references", () => {
         expect(second).toBe(first);
         expect(fake.uploaded[0]!.bytes).toEqual(expected);
         expect(first.clip.prompt).toBe("captured prompt");
-        expect(JSON.parse(first.clip.metadata).caller).toBe("captured metadata");
+        expect(metadataOf(first.clip.metadata).caller).toBe("captured metadata");
         expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
         expect((yield* prepared.state)._tag).toBe("Completed");
       }),
@@ -554,8 +554,8 @@ describe("H3 command and observation authority", () => {
                 Effect.sync(() => {
                   commandId = call.requestId;
                   pendingClip = fixtureClip({
-                    prompt: String(call.args.prompt),
-                    metadata: String(call.args.metadata),
+                    prompt: textArg(call.args.prompt),
+                    metadata: textArg(call.args.metadata),
                   });
                   return undefined;
                 }),
@@ -697,8 +697,8 @@ describe("H3 command and observation authority", () => {
             enqueue: ({ fake, call, fail }) =>
               Effect.gen(function* () {
                 const clip = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                 });
                 yield* fake.emit(
                   "clip_generated",
@@ -725,8 +725,8 @@ describe("H3 command and observation authority", () => {
           second = yield* H3.make(fake.session, options);
         const a = yield* first.enqueue(request({ metadata: "first" }));
         const b = yield* second.enqueue(request({ metadata: "second" }));
-        expect(JSON.parse(a.clip.metadata).namespace).not.toBe(
-          JSON.parse(b.clip.metadata).namespace,
+        expect(metadataOf(a.clip.metadata).namespace).not.toBe(
+          metadataOf(b.clip.metadata).namespace,
         );
         expect((yield* first.acceptances).map((entry) => entry.submissionId)).toEqual([
           a.submissionId,
@@ -758,7 +758,7 @@ describe("H3 command and observation authority", () => {
                 data: {
                   clip: {
                     ...fixtureClip({
-                      prompt: String(call.args.prompt),
+                      prompt: textArg(call.args.prompt),
                       metadata: JSON.stringify({
                         reactor_effect_h3: 1,
                         namespace: "someone-else",
@@ -805,8 +805,8 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
             enqueue: ({ call }) =>
               Effect.sync(() => {
                 accepted = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                 });
                 return { type: "clip_queued", data: { clip: { ...accepted } } };
               }),
@@ -873,8 +873,8 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
             enqueue: ({ fake, call }) =>
               Effect.gen(function* () {
                 const clip = fixtureClip({
-                  prompt: String(call.args.prompt),
-                  metadata: String(call.args.metadata),
+                  prompt: textArg(call.args.prompt),
+                  metadata: textArg(call.args.metadata),
                   ready: true,
                 });
                 yield* fake.emit("clip_started", { clip: { ...clip } });

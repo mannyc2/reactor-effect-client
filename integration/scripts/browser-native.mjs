@@ -336,7 +336,8 @@ const joinMedia = (source, visit) =>
   );
 let summary, runError;
 try {
-  const fixtureServer = createServer(requestHandler);
+  // requestHandler answers its own failures, so its promise is not awaited.
+  const fixtureServer = createServer((request, response) => void requestHandler(request, response));
   server = fixtureServer;
   await new Promise((resolveListen, rejectListen) => {
     fixtureServer.once("error", rejectListen);
@@ -636,7 +637,9 @@ if (runError !== undefined) {
       [runError, ...cleanupErrors],
       "browser/native qualification and cleanup failed",
     );
-  throw runError;
+  throw runError instanceof Error
+    ? runError
+    : new Error("browser/native qualification failed", { cause: runError });
 }
 if (cleanupErrors.length > 0)
   throw new AggregateError(cleanupErrors, "browser/native cleanup failed");

@@ -118,8 +118,7 @@ await Effect.runPromise(
         "simulation omitted its playing clip from the production engine state",
       );
       assert(
-        rendered !== undefined &&
-          rendered.clipId === accepted &&
+        rendered?.clipId === accepted &&
           rendered.request.metadata.fixture === "installed-simulation",
         "simulation renderer lost local request annotation",
       );

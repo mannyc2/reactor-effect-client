@@ -200,7 +200,7 @@ export class BrowserPeer implements Peer {
   send(kind: Channel, bytes: Uint8Array<ArrayBuffer>): Effect.Effect<void, ReactorError> {
     return attempt(() => {
       const channel = this.channels?.[kind];
-      if (channel === undefined || channel.readyState !== "open")
+      if (channel?.readyState !== "open")
         throw new ReactorError({
           code: "Disconnected",
           message: `${kind} channel is not open`,
@@ -225,7 +225,7 @@ export class BrowserPeer implements Peer {
   lease(name: string): MediaStreamTrack {
     this.require();
     const track = this.received.get(name);
-    if (track === undefined || track.readyState !== "live")
+    if (track?.readyState !== "live")
       throw new ReactorError({ code: "InvalidState", message: `no live received track: ${name}` });
     const clone = track.clone();
     this.leases.add(clone);

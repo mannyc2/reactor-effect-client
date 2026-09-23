@@ -24,7 +24,9 @@ describe("native foreign-call ownership", () => {
     if (process.platform === "win32") return;
     const fixture = compile();
     const begin = fixture.library.func("void fixture_lifetime_begin(int expected)");
-    const stat = fixture.library.func("int fixture_lifetime_stat(int which)");
+    const stat: (which: number) => number = fixture.library.func(
+      "int fixture_lifetime_stat(int which)",
+    );
     const release = fixture.library.func("void fixture_lifetime_release(int which)");
     const dispose = fixture.library.func("int fixture_lifetime_dispose(void)");
     const expected = 96;
@@ -99,7 +101,9 @@ describe("native foreign-call ownership", () => {
   test("unregisters the readiness callback only after shutdown joined the notifier thread", async () => {
     if (process.platform === "win32") return;
     const fixture = compile();
-    const stat = fixture.library.func("int fixture_lifetime_stat(int which)");
+    const stat: (which: number) => number = fixture.library.func(
+      "int fixture_lifetime_stat(int which)",
+    );
     const unregister = koffi.unregister;
     const joinsAtUnregister: number[] = [];
     const spy = vi.spyOn(koffi, "unregister").mockImplementation((callback) => {

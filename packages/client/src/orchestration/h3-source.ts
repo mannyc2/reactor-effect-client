@@ -64,7 +64,7 @@ const record = (clip: ProviderClip, annotations: ReadonlyMap<string, Annotation>
     clipId: clip.clip_id as ClipId,
     durationSeconds: clip.seconds,
     provider: clip,
-    ...(annotation === undefined ? {} : annotation),
+    ...(annotation ?? {}),
   });
 };
 
@@ -241,6 +241,8 @@ export const fromH3 = (
               break;
             case "clip_failed":
               emit({ _tag: "Failed", clipId, reason: message.data.reason });
+              break;
+            default:
               break;
           }
         }

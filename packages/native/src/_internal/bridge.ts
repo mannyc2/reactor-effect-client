@@ -387,7 +387,15 @@ const failureOf = (
 
 const asyncStatus = (fn: AsyncNativeFunction, args: readonly unknown[]): Promise<number> =>
   new Promise((resolve, reject) => {
-    fn.async(...args, (error, result) => (error == null ? resolve(result) : reject(error)));
+    fn.async(...args, (error, result) =>
+      error == null
+        ? resolve(result)
+        : reject(
+            error instanceof Error
+              ? error
+              : new Error("native async call failed", { cause: error }),
+          ),
+    );
   });
 
 export interface NativePacket {
@@ -561,7 +569,8 @@ export class NativeBridge {
           message: "native call response exceeded its declared buffer",
         });
       try {
-        return JSON.parse(new TextDecoder().decode(response.subarray(0, length)));
+        const reply: unknown = JSON.parse(new TextDecoder().decode(response.subarray(0, length)));
+        return reply;
       } catch (cause) {
         throw new ReactorError({
           code: "Protocol",

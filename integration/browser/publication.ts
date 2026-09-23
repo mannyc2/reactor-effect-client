@@ -113,8 +113,7 @@ export class PublicationReceiver {
       );
   }
   private fail(error: unknown): void {
-    if (this.fault === undefined)
-      this.fault = error instanceof Error ? error : new Error(String(error));
+    this.fault ??= error instanceof Error ? error : new Error(String(error));
     this.close();
   }
   private async activate(signal: AbortSignal, options: PublicationOptions): Promise<void> {
