@@ -155,7 +155,8 @@ export interface EngineShape {
  * orchestration's terminal failure.
  *
  * - Consumption is mandatory: while it runs, the orchestration buffers what the
- *   reader has not taken (96 video frames, 192,000 audio samples), and an
+ *   reader has not taken (by default 96 video frames and 192,000 audio
+ *   samples; see `maxQueuedVideoFrames` and `maxQueuedAudioSamples`), and an
  *   output that stays undrained past that fails the orchestration with
  *   `Overflow`. That failure is terminal.
  * - Each output has one reader at a time. A second concurrent reader fails

@@ -310,6 +310,32 @@ for (const kind of ["video", "audio"] as const)
       }),
     ));
 
+test("the media tolerance is an orchestration option, validated when it is made", () =>
+  run(
+    Effect.gen(function* () {
+      const { handle, sources } = yield* renewalFixture(() => ({}), {
+        maxQueuedVideoFrames: 2,
+        maxQueuedAudioSamples: 10,
+      });
+      yield* sources[0]!.audio(audioFrame(10));
+      for (let frame = 0; frame < 2; frame++) yield* sources[0]!.video(videoFrame());
+      // Exactly the bound is retained without failing.
+      yield* untilEffect(
+        handle.media.pressure.pipe(
+          Effect.map((pressure) => pressure.queuedVideo === 2 && pressure.queuedAudio === 1),
+        ),
+      );
+      expect((yield* handle.mediaState)._tag).not.toBe("Failed");
+      yield* sources[0]!.video(videoFrame());
+      const fatal = yield* handle.engine.failure.pipe(Effect.timeout(1000));
+      expect(fatal.reason._tag).toBe("Overflow");
+      for (const invalid of [{ maxQueuedVideoFrames: 0 }, { maxQueuedAudioSamples: 1.5 }]) {
+        const refused = yield* Effect.flip(renewalFixture(() => ({}), invalid));
+        expect(refused.reason._tag).toBe("InvalidInput");
+      }
+    }),
+  ));
+
 for (const outcome of ["success", "replied", "unknown"] as const)
   test(`a committed ${outcome} result survives handle closure without a fresh dispatch`, () =>
     run(

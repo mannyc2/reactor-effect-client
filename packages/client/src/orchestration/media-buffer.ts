@@ -53,72 +53,82 @@ const singleReader = <A, E>(
   );
 };
 
+/** What the output retains for a reader that has not taken it. */
+export interface Limits {
+  readonly videoFrames: number;
+  readonly audioSamples: number;
+}
+
+/** Four seconds at 24 fps, and four seconds of 48 kHz audio. */
+export const defaultLimits: Limits = { videoFrames: 96, audioSamples: 48_000 * 4 };
+
 /** The output queue owns admission and accounting together; source readers cannot bypass its bounds. */
-export const make = Effect.gen(function* () {
-  const video = yield* Queue.unbounded<VideoFrame, ReactorFailure | Cause.Done>();
-  const audio = yield* Queue.unbounded<AudioFrame, ReactorFailure | Cause.Done>();
-  let ended = false;
-  let queuedFrames = 0;
-  let queuedSamples = 0;
-  let queuedAudioFrames = 0;
-  let queuedVideoBytes = 0;
+export const make = (limits: Limits = defaultLimits) =>
+  Effect.gen(function* () {
+    const video = yield* Queue.unbounded<VideoFrame, ReactorFailure | Cause.Done>();
+    const audio = yield* Queue.unbounded<AudioFrame, ReactorFailure | Cause.Done>();
+    let ended = false;
+    let queuedFrames = 0;
+    let queuedSamples = 0;
+    let queuedAudioFrames = 0;
+    let queuedVideoBytes = 0;
 
-  const offerVideo = (frame: VideoFrame): Effect.Effect<void, ReactorError> =>
-    Effect.suspend(() => {
-      if (ended) return Effect.void;
-      if (queuedFrames >= 96)
-        return Effect.fail(
-          ReactorError.fromCode("Overflow", "Orchestration video receiver overflow"),
-        );
-      // The private queues are nonblocking. Admission and counters change in one synchronous turn.
-      if (Queue.offerUnsafe(video, frame)) {
-        queuedFrames++;
-        queuedVideoBytes += frame.data.byteLength + frame.metadata.byteLength;
-      }
-      return Effect.void;
-    });
-  const offerAudio = (frame: AudioFrame): Effect.Effect<void, ReactorError> =>
-    Effect.suspend(() => {
-      if (ended) return Effect.void;
-      if (queuedSamples + frame.samples.length > 48_000 * 4)
-        return Effect.fail(
-          ReactorError.fromCode("Overflow", "Orchestration audio receiver overflow"),
-        );
-      if (Queue.offerUnsafe(audio, frame)) {
-        queuedSamples += frame.samples.length;
-        queuedAudioFrames++;
-      }
-      return Effect.void;
-    });
+    const offerVideo = (frame: VideoFrame): Effect.Effect<void, ReactorError> =>
+      Effect.suspend(() => {
+        if (ended) return Effect.void;
+        if (queuedFrames >= limits.videoFrames)
+          return Effect.fail(
+            ReactorError.fromCode("Overflow", "Orchestration video receiver overflow"),
+          );
+        // The private queues are nonblocking. Admission and counters change in one synchronous turn.
+        if (Queue.offerUnsafe(video, frame)) {
+          queuedFrames++;
+          queuedVideoBytes += frame.data.byteLength + frame.metadata.byteLength;
+        }
+        return Effect.void;
+      });
+    const offerAudio = (frame: AudioFrame): Effect.Effect<void, ReactorError> =>
+      Effect.suspend(() => {
+        if (ended) return Effect.void;
+        if (queuedSamples + frame.samples.length > limits.audioSamples)
+          return Effect.fail(
+            ReactorError.fromCode("Overflow", "Orchestration audio receiver overflow"),
+          );
+        if (Queue.offerUnsafe(audio, frame)) {
+          queuedSamples += frame.samples.length;
+          queuedAudioFrames++;
+        }
+        return Effect.void;
+      });
 
-  return {
-    offerVideo,
-    offerAudio,
-    video: singleReader("video", video, (frame) => {
-      queuedFrames--;
-      queuedVideoBytes -= frame.data.byteLength + frame.metadata.byteLength;
-    }),
-    audio: singleReader("audio", audio, (frame) => {
-      queuedSamples -= frame.samples.length;
-      queuedAudioFrames--;
-    }),
-    pressure: () => ({
-      queuedVideo: queuedFrames,
-      queuedAudio: queuedAudioFrames,
-      queuedBytes: queuedVideoBytes + queuedSamples * 2,
-    }),
-    forwarded: () => ({ queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples }),
-    fail: (cause: ReactorFailure): void => {
-      if (ended) return;
-      ended = true;
-      Queue.failCauseUnsafe(video, Cause.fail(cause));
-      Queue.failCauseUnsafe(audio, Cause.fail(cause));
-    },
-    end: (): void => {
-      if (ended) return;
-      ended = true;
-      Queue.endUnsafe(video);
-      Queue.endUnsafe(audio);
-    },
-  };
-});
+    return {
+      offerVideo,
+      offerAudio,
+      video: singleReader("video", video, (frame) => {
+        queuedFrames--;
+        queuedVideoBytes -= frame.data.byteLength + frame.metadata.byteLength;
+      }),
+      audio: singleReader("audio", audio, (frame) => {
+        queuedSamples -= frame.samples.length;
+        queuedAudioFrames--;
+      }),
+      pressure: () => ({
+        queuedVideo: queuedFrames,
+        queuedAudio: queuedAudioFrames,
+        queuedBytes: queuedVideoBytes + queuedSamples * 2,
+      }),
+      forwarded: () => ({ queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples }),
+      fail: (cause: ReactorFailure): void => {
+        if (ended) return;
+        ended = true;
+        Queue.failCauseUnsafe(video, Cause.fail(cause));
+        Queue.failCauseUnsafe(audio, Cause.fail(cause));
+      },
+      end: (): void => {
+        if (ended) return;
+        ended = true;
+        Queue.endUnsafe(video);
+        Queue.endUnsafe(audio);
+      },
+    };
+  });

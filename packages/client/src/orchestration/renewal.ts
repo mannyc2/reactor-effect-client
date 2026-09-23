@@ -14,7 +14,14 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { duration } from "../duration.js";
-import { AcquisitionFailure, CommandFailure, ReactorError, errorOf, parsed } from "../errors.js";
+import {
+  AcquisitionFailure,
+  CommandFailure,
+  ReactorError,
+  errorOf,
+  parsed,
+  positiveLimit,
+} from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
 import { Observations } from "../observation.js";
 import { noAcquisition } from "../session/_internal/acquire.js";
@@ -79,6 +86,18 @@ export interface Options<R = never> {
   readonly reconnectTimeoutMs?: never;
   readonly maxSessions?: number;
   /**
+   * The video frames the media output keeps for a reader that has not taken
+   * them, 96 by default (4 seconds at 24 fps). Past it the orchestration fails
+   * with `Overflow`.
+   */
+  readonly maxQueuedVideoFrames?: number;
+  /**
+   * The interleaved audio samples the media output keeps for a reader that has
+   * not taken them, 192,000 by default (4 seconds at 48 kHz). Past it the
+   * orchestration fails with `Overflow`.
+   */
+  readonly maxQueuedAudioSamples?: number;
+  /**
    * Runs for each renewal event, in order, on a reader the handle forks: it
    * never holds the handle's command permit, so a slow observer delays no
    * enqueue or control. A failure is logged and the next event still runs.
@@ -125,7 +144,18 @@ export const make = <R>(
     );
     // One ordered stream: engine events, renewals and media transitions.
     const observations = new Observations<HandleEvent>();
-    const buffer = yield* MediaBuffer.make;
+    const buffer = yield* MediaBuffer.make(
+      yield* parsed(() => ({
+        videoFrames: positiveLimit(
+          options.maxQueuedVideoFrames ?? MediaBuffer.defaultLimits.videoFrames,
+          "orchestration maxQueuedVideoFrames",
+        ),
+        audioSamples: positiveLimit(
+          options.maxQueuedAudioSamples ?? MediaBuffer.defaultLimits.audioSamples,
+          "orchestration maxQueuedAudioSamples",
+        ),
+      })),
+    );
     const fatal = yield* Deferred.make<ReactorFailure>();
     const slots = new Map<string, Slot>();
     const cleanups: SourceCleanup[] = [];
