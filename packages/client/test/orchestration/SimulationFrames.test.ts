@@ -1,5 +1,5 @@
 /** Simulated media hands its readers exactly owned buffers, whatever views a renderer passes. */
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,7 +8,9 @@ import { ClipRequest } from "../../src/orchestration/request.js";
 import type { AudioFrame, VideoFrame } from "../../src/session/media.js";
 import * as Simulation from "../../src/simulation/index.js";
 
-test("simulation media gives each frame its own exact buffer when the renderer passes views into one slab", () =>
+test("simulation media gives each frame its own exact buffer when the renderer passes views into one slab", ({
+  signal,
+}) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -68,4 +70,5 @@ test("simulation media gives each frame its own exact buffer when the renderer p
         yield* handle.close;
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+    { signal },
   ));

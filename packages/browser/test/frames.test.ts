@@ -1,5 +1,5 @@
 /** Copied browser samples are exactly owned buffers. Simulated media host; no browser is involved. */
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { FakeTrack, withGlobals } from "reactor-effect-test-kit";
@@ -44,12 +44,13 @@ const processor = (samples: readonly unknown[]) =>
     });
   };
 
-test("copied video frames are each the whole of their own RGBA buffer", () =>
+test("copied video frames are each the whole of their own RGBA buffer", ({ signal }) =>
   withGlobals(
     { VideoFrame: Frame, MediaStreamTrackProcessor: processor([1, 2, 3].map((t) => new Frame(t))) },
     async () => {
       const samples = await Effect.runPromise(
         videoFrames(new FakeTrack("video")).pipe(Stream.take(3), Stream.runCollect),
+        { signal },
       );
       assertExactFrames(samples, (sample) => sample.data);
       // The declared format: four bytes per RGBA pixel.
@@ -59,12 +60,13 @@ test("copied video frames are each the whole of their own RGBA buffer", () =>
     },
   ));
 
-test("copied audio planes are each the whole of their own buffer", () =>
+test("copied audio planes are each the whole of their own buffer", ({ signal }) =>
   withGlobals(
     { AudioData: Audio, MediaStreamTrackProcessor: processor([1, 2, 3].map((t) => new Audio(t))) },
     async () => {
       const samples = await Effect.runPromise(
         audioSamples(new FakeTrack("audio")).pipe(Stream.take(3), Stream.runCollect),
+        { signal },
       );
       const planes = samples.flatMap((sample) => sample.planes);
       assertExactFrames(planes, (plane) => plane);
