@@ -16,6 +16,7 @@ import {
   parseConnectionId,
   parseDescriptor,
   parseIce,
+  parseSessionId,
   terminal,
 } from "../../contract.js";
 import type { Descriptor, IceCandidate, IceServer, Mapping } from "../../contract.js";
@@ -59,6 +60,11 @@ interface Request {
   readonly accepted?: readonly number[];
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
+}
+/** A create reply whose session id is valid; nothing else in it has been checked yet. */
+export interface Allocation {
+  readonly sessionId: string;
+  readonly reply: unknown;
 }
 export interface UploadAllocation {
   readonly presigned_id: string;
@@ -286,10 +292,11 @@ export class CoordinatorClient {
       Effect.flatMap((reply) => pure(() => decodeJsonReply(reply, request.operation))),
     );
   }
+  /** Resolves once the reply names the allocated session; `describe` decodes the rest. */
   create(
     model: { readonly name: string; readonly version?: string },
     extraArgs?: Json,
-  ): Effect.Effect<Descriptor, ReactorError> {
+  ): Effect.Effect<Allocation, ReactorError> {
     return pure(() =>
       json(
         this.local
@@ -315,7 +322,27 @@ export class CoordinatorClient {
           body,
         ),
       ),
-      Effect.flatMap((raw) => pure(() => parseDescriptor(raw))),
+      Effect.flatMap((reply) =>
+        pure((): Allocation => ({ sessionId: parseSessionId(reply), reply })),
+      ),
+    );
+  }
+  /** A reply that cannot describe its session still names one its owner must terminate. */
+  describe(allocation: Allocation): Effect.Effect<Descriptor, ReactorError> {
+    return pure(() => parseDescriptor(allocation.reply)).pipe(
+      Effect.mapError(
+        (error) =>
+          new ReactorError({
+            code: "Protocol",
+            message: error.message,
+            context: {
+              ...error.context,
+              operation: "create session",
+              sessionId: allocation.sessionId,
+              outcome: "replied",
+            },
+          }),
+      ),
     );
   }
   read(id: string): Effect.Effect<Descriptor, ReactorError> {

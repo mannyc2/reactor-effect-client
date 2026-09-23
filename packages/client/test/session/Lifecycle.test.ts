@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Cause, Deferred, Effect, Exit, Scope } from "effect";
 import { ReactorError } from "../../src/errors.js";
 import { Connection, SessionLifecycle } from "../../src/session/_internal/lifecycle.js";

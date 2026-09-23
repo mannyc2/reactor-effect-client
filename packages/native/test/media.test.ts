@@ -1,20 +1,29 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
-import { availableParallelism, loadavg } from "node:os";
+import { availableParallelism, loadavg, networkInterfaces } from "node:os";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { FetchHttp } from "reactor-effect-client";
 import type { ReactorError } from "reactor-effect-client";
-import type { IceCandidate, MediaPressure } from "reactor-effect-client/host";
+import type { IceCandidate, MediaPressure, PeerEvent } from "reactor-effect-client/host";
+import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
-import { NativePeer } from "../src/_internal/peer.js";
+import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
+import * as Native from "../src/index.js";
 import { libraryPath, until } from "./support.js";
 
 /*
@@ -28,6 +37,12 @@ const farPeerPath =
   fileURLToPath(new URL("../rust/target/release/examples/far_peer", import.meta.url));
 const WIDTH = 1344,
   HEIGHT = 768;
+/**
+ * A healthy close joins its native owner well inside the shutdown deadline,
+ * which fires only on a wedged join; each close here must take under a fifth
+ * of it, so a deadline that would fire on a slow but healthy join fails.
+ */
+const closeBound = Duration.toMillis(defaultShutdownTimeout) / 5;
 
 const tracks = [
   { name: "main_video", kind: "video", direction: "recvonly" },
@@ -309,12 +324,21 @@ const sample = async (receiver: Receiver): Promise<MediaPressure> => {
   return snapshot;
 };
 
-/** Close the receiver's scope, which shuts its peer down; returns milliseconds taken. */
-const close = async (far: FarPeer, receiver: Receiver): Promise<number> => {
+/**
+ * Close the receiver's scope, which shuts its peer down, and require a clean
+ * close: the native owner joined, without the Shutdown a session's close would
+ * record in localErrors, inside closeBound. Returns milliseconds taken.
+ */
+const close = async (far: FarPeer, receiver: Pick<Receiver, "id" | "scope">): Promise<number> => {
   const started = performance.now();
-  await run(Scope.close(receiver.scope, Exit.void));
+  const exit = await Effect.runPromiseExit(Scope.close(receiver.scope, Exit.void));
   const elapsed = performance.now() - started;
   await far.close(receiver.id);
+  expect(
+    Exit.isSuccess(exit),
+    `${receiver.id} shutdown ${Exit.isFailure(exit) ? Cause.pretty(exit.cause) : ""}`,
+  ).toBe(true);
+  expect(elapsed, `${receiver.id} close milliseconds`).toBeLessThan(closeBound);
   return elapsed;
 };
 
@@ -414,6 +438,39 @@ const report = async (
     })}`,
   );
 };
+
+/**
+ * A documentation address (RFC 5737) on none of this host's networks, which
+ * may use one of those blocks itself: a container can sit on 192.0.2.0/24.
+ */
+const unreachable = (): string => {
+  const local = Object.values(networkInterfaces())
+    .flat()
+    .map((entry) => entry?.address ?? "");
+  const block = ["192.0.2", "198.51.100", "203.0.113"].find(
+    (prefix) => !local.some((address) => address.startsWith(`${prefix}.`)),
+  );
+  if (block === undefined) throw new Error("every documentation block is a local network");
+  return `${block}.1`;
+};
+
+/**
+ * Point every UDP candidate in an answer at `address` and drop the TCP ones.
+ * An unanswered UDP pair times out in libwebrtc's 15 s write timeout; a TCP
+ * pair waits for its connect, which a dropped SYN holds for minutes.
+ */
+const unreachableAnswer = (sdp: string, address: string): string =>
+  sdp
+    .split("\r\n")
+    .filter((line) => !(line.startsWith("a=candidate:") && / tcp /i.test(line)))
+    .map((line) =>
+      line.startsWith("a=candidate:")
+        ? line.replace(/^(a=candidate:\S+ \d+ \S+ \d+ )\S+/, `$1${address}`)
+        : line.startsWith("c=IN IP4 ")
+          ? `c=IN IP4 ${address}`
+          : line,
+    )
+    .join("\r\n");
 
 const ping = (receiver: Receiver): Promise<void> => {
   const bytes = new Uint8Array(8);
@@ -597,4 +654,137 @@ describe("native media under load", () => {
       await close(far, current);
     }
   }, 120_000);
+
+  test("delivers exact frames through a canonical session over real libwebrtc and closes it cleanly", async () => {
+    const id = "canonical";
+    const descriptor = {
+      session_id: id,
+      state: "ACTIVE",
+      capabilities: {
+        protocol_version: "1.0",
+        tracks,
+        commands: [{ name: "echo", schema: {} }],
+      },
+      selected_transport: { protocol: "webrtc", version: "1.0" },
+    };
+    let answer: Promise<string> | undefined;
+    let deleted = false;
+    // A coordinator that relays signaling to the far peer, which drops
+    // candidates sent before the offer; its own arrive in its answer.
+    const coordinator = async (
+      input: string | Request | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (path === "/sessions" && request.method === "POST") return Response.json(descriptor);
+      if (path === `/sessions/${id}` && request.method === "GET")
+        return deleted
+          ? Response.json({ error: "session not found" }, { status: 404 })
+          : Response.json(descriptor);
+      if (path === `/sessions/${id}` && request.method === "DELETE") {
+        deleted = true;
+        return new Response(null, { status: 202 });
+      }
+      if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
+      if (path.endsWith("/connections")) return Response.json({ connection_id: 1 });
+      if (path.endsWith("/ice_candidates")) {
+        const body = record(await request.json());
+        for (const candidate of Array.isArray(body.candidates) ? body.candidates : [])
+          far.candidate(id, candidate as IceCandidate);
+        return new Response(null, { status: 204 });
+      }
+      if (path.endsWith("/sdp_params")) {
+        if (request.method === "GET") return Response.json({ sdp_answer: await answer });
+        answer = far.answer(id, String(record(await request.json()).sdp_offer));
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({ error: `unhandled route ${path}` }, { status: 404 });
+    };
+    try {
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const factory = yield* Native.make(
+              { apiUrl: "https://coordinator.far-peer" },
+              { libraryPath },
+            );
+            const client = yield* factory.create({
+              model: "far-peer",
+              jwt: Redacted.make("far-peer-token"),
+            });
+            yield* client.connect;
+            const media = yield* Native.media(client);
+            const frames = yield* media.video("main_video").pipe(Stream.take(8), Stream.runCollect);
+            const started = performance.now();
+            const report = yield* client.close;
+            return { frames, report, closeMs: performance.now() - started };
+          }),
+        ).pipe(
+          Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
+          Effect.provideService(FetchHttpClient.Fetch, coordinator),
+        ),
+      );
+      console.log(`native-close ${JSON.stringify({ runtime, closeMs: round(result.closeMs) })}`);
+      expect(result.frames).toHaveLength(8);
+      // Each frame is its own exact BGRA allocation, as the bridge took it.
+      assertExactFrames(result.frames, (frame) => frame.data);
+      for (const frame of result.frames)
+        expect(frame.data.byteLength).toBe(frame.width * frame.height * 4);
+      expect(result.report.localClosed).toBe(true);
+      expect(result.report.localErrors).toEqual([]);
+      expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
+      expect(result.closeMs).toBeLessThan(closeBound);
+    } finally {
+      await far.close(id);
+    }
+  }, 60_000);
+
+  test("reports a real ICE failure as IceFailed with its candidate-pair detail through the events pump", async () => {
+    const id = "ice-failure";
+    const peer = new NativePeer(libraryPath);
+    const scope = await run(Scope.make());
+    const errors: ReactorError[] = [];
+    const states: string[] = [];
+    try {
+      const checking = await run(
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => peer.shutdown.pipe(Effect.orDie));
+          // The bridge's own candidates never reach the far peer, so it cannot
+          // reach the bridge either and teach it a peer-reflexive candidate.
+          const prepared = yield* peer.prepare([], tracks, (event: PeerEvent) => {
+            if (event.type === "state") states.push(event.state);
+            else if (event.type === "error") errors.push(event.error);
+          });
+          const answer = yield* Effect.promise(() => far.answer(id, prepared.sdp));
+          yield* peer.answer(unreachableAnswer(answer, unreachable()));
+          // While ICE checks the pairs, they are there to see.
+          yield* Effect.promise(() => sleep(1000));
+          return (yield* peer.stats).map(record);
+        }).pipe(Scope.provide(scope)),
+      );
+      expect(checking.some((entry) => entry.type === "candidate-pair")).toBe(true);
+      expect(
+        checking.filter((entry) => entry.type === "candidate-pair" && entry.state === "succeeded"),
+      ).toEqual([]);
+      await until(() => errors.length > 0, "ICE never failed", 45_000);
+      console.log(
+        `ice-failure ${JSON.stringify({ runtime, states, detail: errors[0]?.context.detail })}`,
+      );
+      expect(states).not.toContain("connected");
+      // libwebrtc reports failure once it has pruned the last timed-out pair,
+      // so the pairs the classification reads may already be gone.
+      expect(errors).toEqual([
+        expect.objectContaining({
+          code: "IceFailed",
+          message: "native peer found no working ICE candidate pair",
+          context: expect.objectContaining({
+            detail: { pairs: expect.any(Number), candidateTypes: expect.any(Array) },
+          }),
+        }),
+      ]);
+    } finally {
+      await close(far, { id, scope });
+    }
+  }, 60_000);
 });

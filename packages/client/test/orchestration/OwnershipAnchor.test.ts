@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Fiber, Result } from "effect";
 import { ClipId, captureRequest } from "../../src/orchestration/request.js";
 import { resolve } from "../../src/orchestration/routing.js";

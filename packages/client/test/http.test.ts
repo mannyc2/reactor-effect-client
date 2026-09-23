@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import * as Effect from "effect/Effect";
 import { tokenBody } from "../src/coordinator/_internal/client.js";
 import { retryAfterMs } from "../src/coordinator/_internal/response.js";
@@ -7,7 +7,9 @@ import { parseDescriptor, parseCapabilities } from "../src/contract.js";
 import { record } from "../src/json.js";
 import { withFixture, jsonResponse, stall } from "./fixtures.js";
 import { assert, equal, failure, run, throws, eventually } from "./harness.js";
-test("HTTP source headers, cloud create shape, readiness 202/backoff and per-request credentials", () =>
+test("HTTP source headers, cloud create shape, readiness 202/backoff and per-request credentials", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     f.createSlim = true;
     f.readsUntilReady = 1;
@@ -17,11 +19,13 @@ test("HTTP source headers, cloud create shape, readiness 202/backoff and per-req
       credential: Effect.sync(() => `token-${++credentials}`),
       sessionPoll: { attempts: 5, initialMs: 1, maxMs: 2 },
     });
-    const initial = await run(
+    const allocation = await run(
       http.create({ name: "owner/model", version: "v1" }, { temperature: 1 }),
+      { signal },
     );
+    const initial = await run(http.describe(allocation), { signal });
     equal(initial.state, "CREATED");
-    const ready = await run(http.ready(initial.session_id, initial));
+    const ready = await run(http.ready(allocation.sessionId, initial), { signal });
     assert(ready.capabilities !== undefined);
     const first = f.calls[0];
     assert(first !== undefined);
@@ -38,16 +42,16 @@ test("HTTP source headers, cloud create shape, readiness 202/backoff and per-req
     equal(credentials, f.calls.length);
     equal(ready.raw.future_extension, { retained: true });
   }));
-test("HTTP local start excludes model and auth; local signaling still uses auth", () =>
+test("HTTP local start excludes model and auth; local signaling still uses auth", ({ signal }) =>
   withFixture(async (f) => {
     const http = new HttpClient({
       apiUrl: "https://coordinator.fixture",
       local: true,
       credential: Effect.succeed("local-signaling-jwt"),
     });
-    await run(http.create({ name: "ignored" }, { key: 1 }));
-    await run(http.read(f.sessionId));
-    await run(http.iceServers(f.sessionId));
+    await run(http.create({ name: "ignored" }, { key: 1 }), { signal });
+    await run(http.read(f.sessionId), { signal });
+    await run(http.iceServers(f.sessionId), { signal });
     equal(
       f.calls.map((c) => [c.url.pathname, c.headers.get("authorization")]),
       [
@@ -58,15 +62,17 @@ test("HTTP local start excludes model and auth; local signaling still uses auth"
     );
     equal(JSON.parse(f.calls[0]?.body ?? "null"), { extra_args: { key: 1 } });
     equal(f.calls[2]?.headers.get("Reactor-WebRTC-Version"), "1.0");
-    equal((await failure(http.read("another-session"))).code, "Protocol");
+    equal((await failure(http.read("another-session"), { signal })).code, "Protocol");
   }));
-test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal and unknown states", () =>
+test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal and unknown states", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     f.state = "WAITING";
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
-    equal((await run(http.ready(f.sessionId))).state, "WAITING");
+    equal((await run(http.ready(f.sessionId), { signal })).state, "WAITING");
     f.state = "INACTIVE";
-    equal((await failure(http.ready(f.sessionId))).code, "TerminalSession");
+    equal((await failure(http.ready(f.sessionId), { signal })).code, "TerminalSession");
     f.state = "FUTURE_STATE";
     equal(parseDescriptor(f.descriptor).state, "FUTURE_STATE");
     throws(
@@ -82,13 +88,13 @@ test("HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal 
       "Protocol",
     );
   }));
-test("HTTP 426/501 are nonretryable version mismatches and preserve body/status", () =>
+test("HTTP 426/501 are nonretryable version mismatches and preserve body/status", ({ signal }) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
     for (const status of [426, 501]) {
       f.hook = () =>
         new Response("wire version unsupported", { status, headers: { "retry-after": "1.25" } });
-      const e = await failure(http.ready(f.sessionId));
+      const e = await failure(http.ready(f.sessionId), { signal });
       equal(e.code, "VersionMismatch");
       equal(e.context.status, status);
       equal(e.context.retryAfterMs, 1250);
@@ -96,7 +102,7 @@ test("HTTP 426/501 are nonretryable version mismatches and preserve body/status"
     }
     equal(f.calls.length, 2);
   }));
-test("HTTP deadlines cover response reads and cancel stalled readers", () =>
+test("HTTP deadlines cover response reads and cancel stalled readers", ({ signal }) =>
   withFixture(async (f) => {
     let cancelled = false;
     f.hook = () =>
@@ -111,27 +117,27 @@ test("HTTP deadlines cover response reads and cancel stalled readers", () =>
         }),
       );
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
-    equal((await failure(http.read(f.sessionId))).code, "Timeout");
+    equal((await failure(http.read(f.sessionId), { signal })).code, "Timeout");
     await eventually(() => cancelled);
   }));
-test("HTTP response byte limit and strict UTF8/JSON decoding", () =>
+test("HTTP response byte limit and strict UTF8/JSON decoding", ({ signal }) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture", maxResponseBytes: 16 });
     f.hook = () => new Response("x".repeat(17));
-    equal((await failure(http.read(f.sessionId))).code, "Overflow");
+    equal((await failure(http.read(f.sessionId), { signal })).code, "Overflow");
     f.hook = () => new Response(new Uint8Array([0xff]));
-    equal((await failure(http.read(f.sessionId))).code, "Protocol");
+    equal((await failure(http.read(f.sessionId), { signal })).code, "Protocol");
   }));
-test("HTTP no unsafe retries of creation after a network/ack timeout", () =>
+test("HTTP no unsafe retries of creation after a network/ack timeout", ({ signal }) =>
   withFixture(async (f) => {
     f.hook = (c) => stall(c.signal);
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture", requestTimeoutMs: 10 });
-    const e = await failure(http.create({ name: "owner/model" }));
+    const e = await failure(http.create({ name: "owner/model" }), { signal });
     equal(e.code, "Timeout");
     equal(e.context.outcome, "unknown");
     equal(f.calls.length, 1);
   }));
-test("token source contract: null, scoped restrictions, exact uint64, reject typo", () =>
+test("token source contract: null, scoped restrictions, exact uint64, reject typo", ({ signal }) =>
   withFixture(async (f) => {
     equal(tokenBody({}), "null");
     equal(tokenBody({ max_sessions: 3 }), "null");
@@ -149,18 +155,20 @@ test("token source contract: null, scoped restrictions, exact uint64, reject typ
       apiUrl: "https://coordinator.fixture",
       credential: Effect.succeed("must-not-leak"),
     });
-    equal(await run(http.exchangeKey("fixture-key")), "fixture-jwt");
+    equal(await run(http.exchangeKey("fixture-key"), { signal }), "fixture-jwt");
     equal(f.calls[0]?.body, "null");
     equal(f.calls[0]?.headers.get("authorization"), null);
     equal(f.calls[0]?.headers.get("Reactor-API-Key"), "fixture-key");
     f.hook = () => jsonResponse({ jwt: "" });
-    equal((await failure(http.exchangeKey("x"))).code, "Protocol");
+    equal((await failure(http.exchangeKey("x"), { signal })).code, "Protocol");
   }));
-test("HTTP termination request response and terminal confirmation are separate facts", () =>
+test("HTTP termination request response and terminal confirmation are separate facts", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
     f.terminateConfirms = false;
-    equal(await run(http.terminate(f.sessionId)), {
+    equal(await run(http.terminate(f.sessionId), { signal }), {
       attempted: true,
       responseReceived: true,
       confirmed: false,
@@ -169,26 +177,26 @@ test("HTTP termination request response and terminal confirmation are separate f
       state: "ACTIVE",
     });
     f.terminateConfirms = true;
-    equal((await run(http.terminate(f.sessionId))).evidence, "terminal");
+    equal((await run(http.terminate(f.sessionId), { signal })).evidence, "terminal");
     f.hook = () => new Response(null, { status: 404 });
-    equal((await run(http.terminate(f.sessionId))).evidence, "absent");
+    equal((await run(http.terminate(f.sessionId), { signal })).evidence, "absent");
   }));
 test("Retry-After accepts only finite nonnegative delta seconds", () => {
   for (const raw of ["-1", "Infinity", "Wed, 21 Oct 2015 07:28:00 GMT", "", "1e9"])
     equal(retryAfterMs(new Headers({ "retry-after": raw })), undefined);
   equal(retryAfterMs(new Headers({ "retry-after": "0.2" })), 200);
 });
-test("source ICE and SDP HTTP paths/bodies and registration full uint32", () =>
+test("source ICE and SDP HTTP paths/bodies and registration full uint32", ({ signal }) =>
   withFixture(async (f) => {
     const http = new HttpClient({ apiUrl: "https://coordinator.fixture" });
     f.hook = (c) =>
       c.url.pathname.endsWith("/connections")
         ? jsonResponse({ connection_id: 4294967295 })
         : undefined;
-    const cid = await run(http.register(f.sessionId));
+    const cid = await run(http.register(f.sessionId), { signal });
     equal(cid, 4294967295);
-    await run(http.ice(f.sessionId, cid, [], true));
-    await run(http.offer(f.sessionId, cid, "offer", [], true));
+    await run(http.ice(f.sessionId, cid, [], true), { signal });
+    await run(http.offer(f.sessionId, cid, "offer", [], true), { signal });
     const ice = f.calls[1];
     assert(ice !== undefined);
     equal(record(JSON.parse(ice.body)).is_final, true);

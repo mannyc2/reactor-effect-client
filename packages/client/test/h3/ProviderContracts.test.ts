@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Crypto, Effect, Result, Scope } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { ReactorError } from "../../src/errors.js";

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Deferred, Effect, Exit, Fiber, Scope } from "effect";
 import * as Submission from "../src/Submission.js";
 

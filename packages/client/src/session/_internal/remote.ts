@@ -82,13 +82,21 @@ export class RemoteSession {
             .create(intent.model, intent.extraArgs)
             .pipe(Effect.raceFirst(Deferred.await(lifecycle.closing))),
         ).pipe(
-          Effect.map((descriptor) => {
-            self.value = { ownership: "owned", id: descriptor.session_id, descriptor };
-            return descriptor.session_id;
-          }),
           Effect.onExit((exit) =>
             Exit.isFailure(exit) ? Effect.sync(() => self.allocationLost()) : Effect.void,
           ),
+          // Ownership rests on the id alone: if the rest of the reply cannot
+          // describe the session, owned cleanup still has an id to terminate.
+          Effect.flatMap((allocation) => {
+            const owned: KnownRemote = { ownership: "owned", id: allocation.sessionId };
+            self.value = owned;
+            return http.describe(allocation).pipe(
+              Effect.map((descriptor) => {
+                owned.descriptor = descriptor;
+                return owned.id;
+              }),
+            );
+          }),
         );
       }),
     );

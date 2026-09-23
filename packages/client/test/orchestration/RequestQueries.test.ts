@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Option, Result } from "effect";
 import { captureRequest, PolicyFailure, preworkFailure } from "../../src/orchestration/request.js";
 import {

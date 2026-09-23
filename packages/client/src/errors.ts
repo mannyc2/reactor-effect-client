@@ -49,7 +49,13 @@ export const ErrorContext = Schema.Struct({
   status: Schema.optionalKey(Schema.Finite),
   retryAfterMs: Schema.optionalKey(Schema.Finite),
   remoteCode: Schema.optionalKey(Schema.String),
-  /** Explicit inspection only. Diagnostic serialization excludes response bodies and causes. */
+  /**
+   * Provider text (an HTTP response body, a remote error's message, a refusal or
+   * clip-failure reason), for explicit inspection only. `message` is written by
+   * the library and never contains provider or payload text, so spans and logs
+   * that record it stay payload-free. Diagnostic serialization excludes response
+   * bodies and causes.
+   */
   body: Schema.optionalKey(Schema.String),
   detail: Schema.optionalKey(Schema.Unknown),
 });

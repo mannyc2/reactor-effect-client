@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Cause, Crypto, Effect, Exit, Fiber, Result, Scope, Stream } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as H3 from "../../src/h3/index.js";
@@ -668,6 +668,16 @@ describe("H3 command and observation authority", () => {
         });
         const rejected = yield* Effect.result(direct.provider.enqueue(request()));
         expect(Result.isFailure(rejected) && rejected.failure.context.outcome).toBe("replied");
+        // The provider's reason is kept for inspection, never in the message.
+        expect(Result.isFailure(rejected) && rejected.failure.message).toBe(
+          "H3 enqueue was refused",
+        );
+        expect(Result.isFailure(rejected) && rejected.failure.context.body).toBe("full");
+        const refused = yield* Effect.result(direct.provider.stop);
+        expect(Result.isFailure(refused) && refused.failure.message).toBe("H3 stop was refused");
+        expect(Result.isFailure(refused) && refused.failure.context.body).toBe(
+          "Fixture refused the requested operation",
+        );
         const unrelated = yield* setup({
           command: {
             enqueue: ({ fake }) =>
@@ -933,14 +943,17 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
         yield* observed(provider, source.sequence);
         expect((yield* provider.current).clips[0]!.clip.metadata).toBe("foreign metadata");
         expect((yield* provider.current).clips[0]!.lifecycle).toBe("clip_failed");
-        expect(
+        // The captured event stream is appended by its own consumer; the snapshot
+        // revision does not prove that consumer has run yet.
+        const failed = () =>
           events.some(
             (event) =>
               event._tag === "Message" &&
               event.message.type === "clip_failed" &&
               event.message.data.reason === "fixture rejected generation",
-          ),
-        ).toBe(true);
+          );
+        yield* waitFor(() => Effect.succeed(failed()));
+        expect(failed()).toBe(true);
         expect(yield* provider.acceptances).toEqual([]);
       }),
     ));

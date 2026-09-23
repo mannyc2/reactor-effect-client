@@ -43,8 +43,24 @@ static atomic_int lifetime_release_others, lifetime_release_held, lifetime_shutd
 static atomic_int lifetime_destroyed, lifetime_destroy_pending, lifetime_late, lifetime_changed_input;
 static atomic_int notifier_joins;
 static int media_fault;
+/* A shutdown join held open, as a wedged native owner would leave it. */
+static atomic_int shutdown_held, shutdowns_entered, peers_destroyed;
+/* A statistics call held open, and a connection failure to classify. */
+static atomic_int stats_held, stats_entered, failure_pending;
+static ReactorEffectPeer *_Atomic newest_peer;
+
+static void signal_ready(ReactorEffectPeer *peer, uint32_t bits);
 
 void fixture_media_fault(int enabled) { media_fault = enabled; }
+void fixture_shutdown_hold(int held) { atomic_store(&shutdown_held, held); }
+void fixture_stats_hold(int held) { atomic_store(&stats_held, held); }
+
+/* Queue a "failed" connection state on the newest peer and wake its host. */
+void fixture_connection_fail(void) {
+  ReactorEffectPeer *peer = atomic_load(&newest_peer);
+  atomic_store(&failure_pending, 1);
+  if (peer != NULL) signal_ready(peer, REACTOR_EFFECT_READY_EVENTS);
+}
 
 void fixture_lifetime_begin(int expected) {
   atomic_store(&lifetime_expected, expected);
@@ -70,6 +86,9 @@ int fixture_lifetime_stat(int which) {
     case 5: return atomic_load(&lifetime_late);
     case 6: return atomic_load(&lifetime_changed_input);
     case 7: return atomic_load(&notifier_joins);
+    case 8: return atomic_load(&shutdowns_entered);
+    case 9: return atomic_load(&peers_destroyed);
+    case 10: return atomic_load(&stats_entered);
     default: return -1;
   }
 }
@@ -185,6 +204,7 @@ ReactorEffectPeer *reactor_effect_peer_create(ReactorEffectNotify notify) {
   peer->notify = notify;
   if (notify != NULL) peer->notifying = pthread_create(&peer->notifier, NULL, notifier_main, peer) == 0;
   if (atomic_load(&lifetime_enabled)) controlled_peer = peer;
+  atomic_store(&newest_peer, peer);
   return peer;
 }
 
@@ -206,6 +226,8 @@ int reactor_effect_peer_call(ReactorEffectPeer *peer, uint32_t operation, const 
     case REACTOR_EFFECT_MAX_BITRATE:
       return copy_text("{}", response, response_cap, response_len);
     case REACTOR_EFFECT_STATS:
+      atomic_fetch_add(&stats_entered, 1);
+      while (atomic_load(&stats_held)) usleep(1000);
       return copy_text("[]", response, response_cap, response_len);
     case REACTOR_EFFECT_MEDIA_SNAPSHOT:
       /* An explicit test gate: readers subscribe before media is released. */
@@ -250,6 +272,14 @@ int reactor_effect_peer_take_event(ReactorEffectPeer *peer, uint8_t *out, size_t
     "{\"type\":\"channel\",\"channel\":\"control\",\"open\":true}",
     "{\"type\":\"channel\",\"channel\":\"data\",\"open\":true}"
   };
+  if (atomic_load(&failure_pending)) {
+    static const char *failed = "{\"type\":\"state\",\"state\":\"failed\"}";
+    *out_len = make_packet(failed, NULL, 0);
+    if (out_cap < *out_len) return REACTOR_EFFECT_BUFFER_TOO_SMALL;
+    make_packet(failed, out, out_cap);
+    atomic_store(&failure_pending, 0);
+    return REACTOR_EFFECT_OK;
+  }
   const int index = atomic_load(&peer->event_index);
   if (!atomic_load(&peer->answered) || index >= 3) return REACTOR_EFFECT_AGAIN;
   *out_len = make_packet(events[index], NULL, 0);
@@ -309,6 +339,8 @@ void reactor_effect_peer_close(ReactorEffectPeer *peer) {
 int reactor_effect_peer_shutdown(ReactorEffectPeer *peer, ReactorEffectFailure *failure) {
   (void)failure;
   if (peer == NULL) return REACTOR_EFFECT_INVALID_INPUT;
+  atomic_fetch_add(&shutdowns_entered, 1);
+  while (atomic_load(&shutdown_held)) usleep(1000);
   atomic_store(&peer->closed, 1);
   join_notifier(peer);
   if (atomic_load(&lifetime_enabled)) {
@@ -321,6 +353,9 @@ int reactor_effect_peer_shutdown(ReactorEffectPeer *peer, ReactorEffectFailure *
 
 void reactor_effect_peer_destroy(ReactorEffectPeer *peer) {
   if (peer == NULL) return;
+  atomic_fetch_add(&peers_destroyed, 1);
+  ReactorEffectPeer *expected = peer;
+  atomic_compare_exchange_strong(&newest_peer, &expected, NULL);
   atomic_store(&peer->closed, 1);
   join_notifier(peer);
   if (atomic_load(&lifetime_enabled)) {

@@ -5,6 +5,11 @@ import type { Track } from "../contract.js";
 import type { ReactorError } from "../errors.js";
 import type { MediaTrack } from "../PeerTypes.js";
 
+/**
+ * One decoded video frame. Every subscriber to a track receives the same frame
+ * object and the same buffers, so a reader treats them as read-only and copies
+ * the bytes before changing them.
+ */
 export interface VideoFrame {
   readonly _tag: "VideoFrame";
   readonly track: string;
@@ -19,6 +24,10 @@ export interface VideoFrame {
   readonly metadata: Uint8Array;
 }
 
+/**
+ * One block of decoded audio, shared read-only across a track's subscribers
+ * as a `VideoFrame` is.
+ */
 export interface AudioFrame {
   readonly _tag: "AudioFrame";
   readonly track: string;

@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 /**
  * Runtime projects discover their own files; there is no test filename registry.
- *   portable    Bun discovery from the workspace root (bunfig.toml excludes the others)
+ *   portable    Vitest in packages/client and packages/browser, each on Node then Bun,
+ *               then Bun discovery from the workspace root for the integration
+ *               modeled-host and script tests (bunfig.toml excludes the others)
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  */
@@ -17,18 +19,26 @@ const env = { ...process.env };
 for (const name of Object.keys(env)) {
   if (/REACTOR.*(?:KEY|TOKEN|JWT)|OPENAI_API_KEY|OPENROUTER_API_KEY/.test(name)) delete env[name];
 }
-const directory = project === "native" ? join(root, "packages", "native") : join(root, project);
-const vitest = join(directory, "node_modules/vitest/vitest.mjs");
 const node = process.env.NODE_BINARY ?? "node";
-const runs: readonly (readonly [string, readonly string[], string])[] =
+const bun = process.env.BUN_BINARY ?? process.execPath;
+type Run = readonly [string, readonly string[], string];
+const vitest = (directory: string) => join(directory, "node_modules/vitest/vitest.mjs");
+/** A Vitest project runs on Node, which the engines declare, and then on Bun. */
+const nodeAndBun = (directory: string): readonly Run[] => [
+  [node, [vitest(directory), "run"], directory],
+  [bun, ["--bun", vitest(directory), "run"], directory],
+];
+const packages = join(root, "packages");
+const runs: readonly Run[] =
   project === "portable"
-    ? [[process.execPath, ["--no-env-file", "test"], root]]
+    ? [
+        ...nodeAndBun(join(packages, "client")),
+        ...nodeAndBun(join(packages, "browser")),
+        [bun, ["--no-env-file", "test"], root],
+      ]
     : project === "native"
-      ? [
-          [node, [vitest, "run"], directory],
-          [process.env.BUN_BINARY ?? process.execPath, ["--bun", vitest, "run"], directory],
-        ]
-      : [[node, [vitest, "run"], directory]];
+      ? nodeAndBun(join(packages, "native"))
+      : [[node, [vitest(join(root, "integration")), "run"], join(root, "integration")]];
 for (const [command, args, cwd] of runs) {
   const result = spawnSync(command, args, { cwd, env, stdio: "inherit", timeout: 180_000 });
   if (result.error !== undefined) throw result.error;

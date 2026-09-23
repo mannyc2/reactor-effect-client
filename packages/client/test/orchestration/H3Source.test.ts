@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Fiber, Option, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";

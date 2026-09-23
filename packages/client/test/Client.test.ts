@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Exit, Layer, Redacted, Scope } from "effect";
 import * as Http from "effect/unstable/http/HttpClient";
 import * as Response from "effect/unstable/http/HttpClientResponse";
@@ -7,7 +7,13 @@ import * as Client from "../src/session/index.js";
 import { PeerFactory } from "../src/PeerFactory.js";
 import { ReactorError } from "../src/errors.js";
 
-const fixture = (options: { readonly refuseTermination?: boolean } = {}) => {
+const fixture = (
+  options: {
+    readonly refuseTermination?: boolean;
+    /** Later fields of every create reply, after its valid session id. */
+    readonly createFields?: Readonly<Record<string, unknown>>;
+  } = {},
+) => {
   const open = new Set<string>();
   const calls: string[] = [];
   let allocated = 0,
@@ -20,7 +26,7 @@ const fixture = (options: { readonly refuseTermination?: boolean } = {}) => {
         open.add(id);
         return Response.fromWeb(
           request,
-          globalThis.Response.json({ session_id: id, state: "WAITING" }),
+          globalThis.Response.json({ session_id: id, state: "WAITING", ...options.createFields }),
         );
       }
       const id = url.pathname.split("/").at(-1)!;
@@ -109,6 +115,57 @@ test("owned allocation is cleaned up when the caller fails before connect", asyn
     "GET /sessions/session-1",
   ]);
 });
+
+const invalidDescriptions: readonly (readonly [string, Readonly<Record<string, unknown>>])[] = [
+  [
+    "an unknown track kind",
+    {
+      capabilities: {
+        protocol_version: "1.0",
+        tracks: [{ name: "main_video", kind: "hologram", direction: "recvonly" }],
+      },
+    },
+  ],
+  ["malformed capabilities", { capabilities: "every track" }],
+];
+for (const [name, createFields] of invalidDescriptions)
+  test(`a create reply with a valid id and ${name} still terminates the session it names`, async () => {
+    const fake = fixture({ createFields });
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* Client.make();
+          const result = yield* Effect.result(client.create({ model: "selected/model" }));
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") {
+            expect(result.failure).toBeInstanceOf(Client.AcquisitionFailure);
+            expect(result.failure.code).toBe("Protocol");
+            expect(result.failure.context).toMatchObject({
+              operation: "create session",
+              sessionId: "session-1",
+              outcome: "replied",
+            });
+            const cleanup = result.failure.cleanup;
+            expect(cleanup.allocation).toBe("known");
+            expect(cleanup.ownership).toBe("owned");
+            expect(cleanup.sessionId).toBe("session-1");
+            expect(cleanup.remote).toMatchObject({
+              attempted: true,
+              confirmed: true,
+              evidence: "absent",
+            });
+          }
+          expect(fake.peers).toBe(0);
+          expect(fake.open.size).toBe(0);
+          expect(fake.calls).toEqual([
+            "POST /sessions",
+            "DELETE /sessions/session-1",
+            "GET /sessions/session-1",
+          ]);
+        }),
+      ).pipe(Effect.provide(fake.dependencies)),
+    );
+  });
 
 test("closing an attached session does not clear or terminate the remote owner", async () => {
   const fake = fixture();

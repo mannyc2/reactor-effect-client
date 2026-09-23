@@ -50,10 +50,10 @@
       "name": "reactor-effect-browser",
       "version": "0.2.0",
       "devDependencies": {
-        "@types/bun": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
         "reactor-effect-test-kit": "workspace:*",
+        "vitest": "catalog:",
       },
       "peerDependencies": {
         "effect": "catalog:",
@@ -66,10 +66,10 @@
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
-        "@types/bun": "catalog:",
         "@types/node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-test-kit": "workspace:*",
+        "vitest": "catalog:",
       },
       "peerDependencies": {
         "effect": "catalog:",
@@ -83,6 +83,7 @@
         "@types/node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
+        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
       "optionalDependencies": {

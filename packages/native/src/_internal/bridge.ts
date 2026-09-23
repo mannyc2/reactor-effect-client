@@ -447,12 +447,39 @@ const overSized = (what: string, size: number): ReactorError =>
   });
 
 /**
+ * Bridges whose owner join outlived the host's shutdown deadline. The pending
+ * join still owns the handle and needs the registered callback until the
+ * notifier is joined; holding the bridge here keeps both reachable whatever
+ * its peer's owner drops. A bridge leaves once its join completes and has
+ * destroyed the handle; one whose join fails stays.
+ */
+const retained = new Set<NativeBridge>();
+
+/**
  * One native peer. Media and transport events never cross into JavaScript on
  * their own: a native notifier thread invokes `onReady` on the JavaScript
  * thread, and the host drains each named queue with synchronous takes, one
  * copy per item into memory the consumer then owns.
  */
 export class NativeBridge {
+  /**
+   * Refuse a new peer on a library that holds a retained join. Every peer of a
+   * loaded library shares its one libwebrtc factory, so an owner that did not
+   * join may have wedged the threads a new owner would need; failing here keeps
+   * a caller from stacking wedged owners and allocating remote sessions for them.
+   */
+  static requireUsable(path: string): void {
+    const api = checked(path);
+    for (const bridge of retained)
+      if (bridge.api === api)
+        throw new ReactorError({
+          code: "Native",
+          message:
+            "native WebRTC runtime is degraded: an earlier peer's owner join exceeded its shutdown deadline and is still retained",
+          context: { outcome: "not-submitted" },
+        });
+  }
+
   private readonly api: NativeApi;
   private readonly notify: unknown;
   private handle: bigint | undefined;
@@ -471,6 +498,7 @@ export class NativeBridge {
   private nextAudio = new Int16Array(0);
 
   constructor(path: string, onReady: (ready: number) => void) {
+    NativeBridge.requireUsable(path);
     this.api = checked(path);
     this.notify = this.api.register((ready) => {
       if (!this.closed) onReady(ready);
@@ -749,6 +777,20 @@ export class NativeBridge {
     this.close();
     this.shutdownTask = this.finishShutdown(handle);
     return this.shutdownTask;
+  }
+
+  /**
+   * The host stopped waiting for this bridge's join. The join still owns the
+   * handle: destruction and unregistration run only once it completes.
+   */
+  retain(): void {
+    const task = this.shutdownTask;
+    if (task === undefined || retained.has(this)) return;
+    retained.add(this);
+    void task.then(
+      () => retained.delete(this),
+      () => undefined,
+    );
   }
 
   private async finishShutdown(handle: bigint): Promise<void> {

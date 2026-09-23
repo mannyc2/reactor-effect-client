@@ -10,7 +10,7 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. No SDK version has been published yet: `reactor-effect-client` on npm is a `0.0.0-reserved.0` placeholder, and the [release workflow](./.github/workflows/release.yml) is configuration until a maintainer dispatches it.
+This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. Version 0.2.0 of all three packages was published to npm with provenance on September 23, 2026, by the [release workflow](./.github/workflows/release.yml), from commit `eb0db13`. `main` has since changed the public API incompatibly, so its next release is 0.3.0; [CHANGELOG.md](./CHANGELOG.md) lists what each release changes.
 
 ## Which package do I install?
 
@@ -40,9 +40,9 @@ The package READMEs document the session contract, coordinator helpers, H3 provi
 ## Workspace layout
 
 ```text
-packages/client      reactor-effect-client   src/, test/ (Bun), wire/ (proto inputs + generator), notices/
-packages/browser     reactor-effect-browser  src/, test/ (Bun)
-packages/native      reactor-effect-native   src/, test/ (Node/Vitest), rust/ (crate), lib/ (staged binaries), scripts/
+packages/client      reactor-effect-client   src/, test/ (Vitest on Node and Bun), wire/ (proto inputs + generator), notices/
+packages/browser     reactor-effect-browser  src/, test/ (Vitest on Node and Bun)
+packages/native      reactor-effect-native   src/, test/ (Vitest on Node and Bun), rust/ (crate), lib/ (staged binaries), scripts/
 packages/test-kit    private                 runner-agnostic assertion helpers and host fakes shared by the suites
 examples             private                 documentation examples compiled against the built packages
 integration          private                 real Chrome/native WebRTC qualification (Node/Vitest) and its browser bundle
@@ -64,7 +64,7 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 | ------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                |
 | `bun run typecheck`                   | Checks every workspace's tests and tooling against the built declarations                           |
-| `bun run test`                        | Portable suites under Bun (`packages/client`, `packages/browser`, `integration` helpers, `scripts`) |
+| `bun run test`                        | Client and browser Vitest suites on Node and on Bun; the `integration` helpers and `scripts` on Bun |
 | `bun run test:native`                 | Vitest tests in `packages/native` against the staged library, on Node and then on Bun               |
 | `bun run test:integration`            | Real local browser/native session through the public packages                                       |
 | `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                |

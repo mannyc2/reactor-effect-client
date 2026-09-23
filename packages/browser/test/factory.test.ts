@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test } from "vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";

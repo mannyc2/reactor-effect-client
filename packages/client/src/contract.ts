@@ -75,13 +75,16 @@ export const parseCapabilities = (input: unknown): Capabilities => {
     ...(c.emission_fps == null ? {} : { emission_fps: finite(c.emission_fps, "emission_fps") }),
   });
 };
+/** A create reply's session id alone, so ownership never depends on the reply's later fields. */
+export const parseSessionId = (input: unknown): string =>
+  nonempty(record(input).session_id, "session_id");
 export const parseDescriptor = (input: unknown): Descriptor => {
   const raw = jsonObject(input),
     d = record(raw);
   const transport =
     d.selected_transport == null ? undefined : record(d.selected_transport, "selected_transport");
   return Object.freeze({
-    session_id: nonempty(d.session_id, "session_id"),
+    session_id: parseSessionId(d),
     state: nonempty(d.state, "session.state"),
     raw,
     ...(d.capabilities == null ? {} : { capabilities: parseCapabilities(d.capabilities) }),

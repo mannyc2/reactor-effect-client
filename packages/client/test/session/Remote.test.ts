@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect";
 import * as Http from "effect/unstable/http/HttpClient";
-import type { Descriptor } from "../../src/contract.js";
 import { CoordinatorClient } from "../../src/coordinator/_internal/client.js";
+import type { Allocation } from "../../src/coordinator/_internal/client.js";
 import { ReactorError } from "../../src/errors.js";
 import { SessionLifecycle } from "../../src/session/_internal/lifecycle.js";
 import { RemoteSession } from "../../src/session/_internal/remote.js";
@@ -12,7 +12,10 @@ const options: SessionOptions = {
   apiUrl: "https://lifecycle.fixture",
   intent: { _tag: "Create", model: { name: "fixture/model" } },
 };
-const descriptor: Descriptor = { session_id: "owned-fixture", state: "ACTIVE", raw: {} };
+const allocation: Allocation = {
+  sessionId: "owned-fixture",
+  reply: { session_id: "owned-fixture", state: "ACTIVE" },
+};
 const coordinator = () =>
   new CoordinatorClient(
     options,
@@ -24,7 +27,7 @@ test("remote lifecycle: interrupted allocation cannot be retried or claimed by a
   const lifecycle = new SessionLifecycle(() => {});
   const http = coordinator();
   const entered = Deferred.makeUnsafe<void>();
-  const response = Deferred.makeUnsafe<Descriptor>();
+  const response = Deferred.makeUnsafe<Allocation>();
   let creates = 0;
   let finalized = false;
   http.create = () =>
@@ -50,14 +53,14 @@ test("remote lifecycle: interrupted allocation cannot be retried or claimed by a
     await Effect.runPromise(Fiber.interrupt(pending));
     expect(finalized).toBe(true);
     expect(remote.current).toEqual({ ownership: "unknown" });
-    Deferred.doneUnsafe(response, Effect.succeed(descriptor));
+    Deferred.doneUnsafe(response, Effect.succeed(allocation));
     const retried = await Effect.runPromise(Effect.flip(allocate));
     expect(retried).toMatchObject({ code: "InvalidState", context: { outcome: "unknown" } });
     expect(remote.id).toBeUndefined();
     expect(remote.isKnown).toBe(false);
     expect(creates).toBe(1);
   } finally {
-    Deferred.doneUnsafe(response, Effect.succeed(descriptor));
+    Deferred.doneUnsafe(response, Effect.succeed(allocation));
     await Effect.runPromise(Fiber.interrupt(pending));
     await Effect.runPromise(Scope.close(lifecycle.scope, Exit.void));
   }
@@ -106,24 +109,28 @@ test("remote lifecycle: owned evidence survives reconnect facts, attached identi
   http.create = () =>
     Effect.sync(() => {
       creates++;
-      return descriptor;
+      return allocation;
     });
   try {
     const owned = new RemoteSession();
     expect(await Effect.runPromise(owned.allocate(options, http, lifecycle))).toBe(
-      descriptor.session_id,
+      allocation.sessionId,
     );
     const evidence = owned.requireKnown();
     evidence.connectionId = 42;
     owned.allocationLost();
     expect(await Effect.runPromise(owned.allocate(options, http, lifecycle))).toBe(
-      descriptor.session_id,
+      allocation.sessionId,
     );
     expect(owned.requireKnown()).toBe(evidence);
     expect(evidence.connectionId).toBe(42);
-    expect(evidence.descriptor).toBe(descriptor);
+    expect(evidence.descriptor).toEqual({
+      session_id: "owned-fixture",
+      state: "ACTIVE",
+      raw: { session_id: "owned-fixture", state: "ACTIVE" },
+    });
     expect(owned.isKnownTerminal()).toBe(false);
-    evidence.descriptor = { ...descriptor, state: "CLOSED" };
+    evidence.descriptor = { session_id: "owned-fixture", state: "CLOSED", raw: {} };
     expect(owned.isKnownTerminal()).toBe(true);
 
     const attached = new RemoteSession();
@@ -150,6 +157,47 @@ test("remote lifecycle: owned evidence survives reconnect facts, attached identi
       );
       expect(refusal).toMatchObject({ code: "Closed", context: { outcome: "not-submitted" } });
     }
+    expect(creates).toBe(1);
+  } finally {
+    await Effect.runPromise(Scope.close(lifecycle.scope, Exit.void));
+  }
+});
+
+test("remote lifecycle: a reply that names its session but cannot describe it is still owned", async () => {
+  const lifecycle = new SessionLifecycle(() => {});
+  const http = coordinator();
+  let creates = 0;
+  http.create = () =>
+    Effect.sync(() => {
+      creates++;
+      return {
+        sessionId: "owned-fixture",
+        reply: {
+          session_id: "owned-fixture",
+          state: "ACTIVE",
+          capabilities: {
+            protocol_version: "1.0",
+            tracks: [{ name: "main_video", kind: "hologram", direction: "recvonly" }],
+          },
+        },
+      };
+    });
+  try {
+    const remote = new RemoteSession();
+    const failure = await Effect.runPromise(Effect.flip(remote.allocate(options, http, lifecycle)));
+    expect(failure).toMatchObject({
+      code: "Protocol",
+      message: "unknown track kind",
+      context: { operation: "create session", sessionId: "owned-fixture", outcome: "replied" },
+    });
+    // Ownership was recorded from the id before the rest of the reply failed.
+    expect(remote.current).toEqual({ ownership: "owned", id: "owned-fixture" });
+    remote.allocationLost();
+    expect(remote.id).toBe("owned-fixture");
+    expect(remote.isKnownTerminal()).toBe(false);
+    expect(await Effect.runPromise(remote.allocate(options, http, lifecycle))).toBe(
+      "owned-fixture",
+    );
     expect(creates).toBe(1);
   } finally {
     await Effect.runPromise(Scope.close(lifecycle.scope, Exit.void));

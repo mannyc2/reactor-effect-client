@@ -120,7 +120,7 @@ Effect `4.0.0-rc.115` itself references the global `TextDecoderOptions` type in 
 
 ## Development
 
-This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Inside `packages/client`, `bun test` runs the portable suites and `bun run typecheck` checks the source closure both with browser types and with Node types.
+This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Inside `packages/client`, `bun run test` runs the portable suite under Vitest and `bun run typecheck` checks the source closure both with browser types and with Node types.
 
 ## License
 

@@ -306,9 +306,10 @@ export class Session {
         if (payload?.case === "error") {
           const error = new ReactorError({
             code: "Remote",
-            message: payload.value.message,
+            message: `remote command error ${payload.value.code}`,
             context: {
               remoteCode: payload.value.code,
+              body: payload.value.message,
               requestId: message.request_id,
               generation: c.generation,
               outcome: "replied",
@@ -378,9 +379,10 @@ export class Session {
             ? Effect.fail(
                 new ReactorError({
                   code: "Remote",
-                  message: payload.value.message,
+                  message: `remote command error ${payload.value.code}`,
                   context: {
                     remoteCode: payload.value.code,
+                    body: payload.value.message,
                     requestId: message.request_id,
                     outcome: "replied",
                     detail: message,
@@ -795,6 +797,36 @@ export class Session {
               // reply or retiring this generation releases the slot; a timeout does not.
             }),
           ),
+          // The span covers the owned execution, not the caller's wait: the wire has no
+          // cancel, so it ends with the request's own outcome even after the caller stops
+          // waiting. It records identity and dispatch evidence only; failure messages are
+          // library-written, so its Exit carries no input, reply or provider text.
+          Effect.onExit((exit) => {
+            const error = Exit.findError(exit);
+            return Effect.annotateCurrentSpan(
+              Exit.isSuccess(exit)
+                ? { "reactor.command.outcome": "replied" }
+                : error._tag === "Success"
+                  ? {
+                      "reactor.command.outcome": error.success.context.outcome,
+                      "error.type": error.success.code,
+                    }
+                  : // No typed failure: the connection scope closed, or a defect.
+                    { "reactor.command.outcome": pending.submitted ? "unknown" : "not-submitted" },
+            );
+          }),
+          Effect.withSpan(
+            channel === "data" ? "reactor.session.command" : "reactor.session.control",
+            {
+              kind: "client",
+              attributes: {
+                "reactor.operation": operation,
+                "reactor.request.id": pending.id,
+                "reactor.connection.generation": c.generation,
+              },
+            },
+            { captureStackTrace: false },
+          ),
         );
         const owner = yield* Effect.forkIn(execution, c.scope, { startImmediately: true });
         return yield* restore(Fiber.join(owner));
@@ -928,11 +960,15 @@ export class Session {
         pure(() => {
           if (reply.case === "clip_failed")
             throw new ReactorError({
+              // The one regex classification of provider free text, a deliberate exception:
+              // ClipFailed carries only a reason string, and a caller must tell a disabled
+              // recorder from other clip failures. Add no others; drop this once the wire
+              // carries a code.
               code: /recorder disabled|encoder crashed/i.test(reply.value.reason)
                 ? "RecorderDisabled"
                 : "Remote",
-              message: reply.value.reason,
-              context: { outcome: "replied" },
+              message: "clip failed",
+              context: { outcome: "replied", body: reply.value.reason },
             });
           if (reply.case !== "clip_ready")
             throw new ReactorError({

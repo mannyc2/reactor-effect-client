@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Option, Result, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { Engine, Handle } from "../../src/orchestration/types.js";
