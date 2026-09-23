@@ -19,13 +19,13 @@ The SDK deliberately keeps several boundaries explicit:
 - Remote command errors distinguish `not-submitted`, `unknown`, and `replied` outcomes. A local cancellation after submission is not treated as proof that the remote mutation did not happen.
 - One canonical session owns the allocation or attachment. Its close report retains local cleanup failures and unconfirmed remote termination; closing an attachment does not acquire authority over the remote allocation.
 - H3 provider facts and acceptance evidence remain separate from orchestration's local annotations and playback/renewal policy. Acknowledgement alone cannot invent a model state transition.
-- Package/release validation installs the npm tarball into isolated consumers so undeclared workspace dependencies cannot be hidden by a parent `node_modules` tree.
+- Package/release validation installs the three npm tarballs into isolated consumers so undeclared workspace dependencies cannot be hidden by a parent `node_modules` tree.
 
 ## Supply chain
 
 GitHub Actions in this repository are pinned to immutable commit SHAs. Native `reactor-webrtc` is pinned to a Git revision; its libwebrtc prebuilt is selected by that revision and checksum-verified by its build script. The Linux native build also pins the Rust builder image by digest. Staged native libraries carry an embedded ABI/source/build identity and a SHA-256 sidecar. Pack validation checks the library bytes and native source identity before exercising the installed public native factory.
 
-The npm release workflow is manual-only, validates the exact version tag and repository identity, and publishes only the tarball that passed the isolated package smoke after both native artifacts were assembled. Its publish job references the protected GitHub Environment `npm` and uses OIDC. Maintainers must configure that environment with required reviewers/prevent-self-review and configure npm Trusted Publishing for `release.yml` plus environment `npm` before enabling a release. Long-lived npm write tokens should not be introduced when OIDC trusted publishing is available.
+The npm release workflow is manual-only and never builds the SDK. It publishes only the three archives (`reactor-effect-client`, `reactor-effect-browser` and `reactor-effect-native`, one shared version) that a successful main CI run qualified after both native artifacts were assembled, in two separate runs: preparation signs Sigstore provenance for each archive and retains an immutable ts-release candidate, and publication promotes that exact candidate only after an explicit per-package confirmation. Both runs use GitHub's OIDC identity, preparation for Sigstore signing and publication for the npm trusted-publisher exchange configured for `release.yml` with no GitHub environment; there is no protected environment or approval gate, so branch protection and account access controls remain the maintainers' responsibility. Long-lived npm write tokens are not used and should not be introduced. See [release-tools/README.md](./release-tools/README.md).
 
 ## Validation limits
 

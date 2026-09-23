@@ -10,7 +10,7 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. No release has been published yet; the [release workflow](./.github/workflows/release.yml) is configuration until a maintainer dispatches it.
+This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. No SDK version has been published yet: `reactor-effect-client` on npm is a `0.0.0-reserved.0` placeholder, and the [release workflow](./.github/workflows/release.yml) is configuration until a maintainer dispatches it.
 
 ## Which package do I install?
 
@@ -76,7 +76,11 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 
 ## Continuous integration
 
-The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. The native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes; when no Rust input changed it restores the qualified library, runs only the JavaScript native and integration tests, and skips the Rust toolchain entirely. The package job then installs the three archives into isolated consumers and uploads the validated tarballs.
+The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. The native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes; when no Rust input changed it restores the qualified library, runs only the JavaScript native and integration tests, and skips the Rust toolchain entirely. The package job then installs the three archives into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the three archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
+
+## Releases
+
+Publication is manual and separate from CI. The [release workflow](./.github/workflows/release.yml) never builds the SDK: a `prepare` run adopts the three archives from a successful main CI run, signs Sigstore provenance for each and retains an immutable ts-release candidate; a separate `publish` run promotes that candidate only after an operator enters the exact `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native@<version>` confirmation printed by the preparation. All three packages share one version, and `reactor-effect-client` is published first because the host packages pin it as an exact peer. npm trusted publishing (OIDC) replaces any token, and an `observe` run re-checks registry visibility without publishing. [release-tools/README.md](./release-tools/README.md) documents the npm prerequisites, the procedure and recovery.
 
 ## Qualification evidence
 
