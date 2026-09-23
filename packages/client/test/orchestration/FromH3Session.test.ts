@@ -40,7 +40,7 @@ test("fromH3Session fails before any provider command on a host without decoded 
       { signal },
     );
     assert(Result.isFailure(outcome.result));
-    equal(outcome.result.failure.code, "UnsupportedCapability");
+    equal(outcome.result.failure.reason._tag, "UnsupportedCapability");
     equal(outcome.sent, 0);
   }));
 

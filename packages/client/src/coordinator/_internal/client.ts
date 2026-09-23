@@ -31,6 +31,9 @@ import {
   validateTokenOptions,
 } from "./schemas.js";
 import type { TokenOptions } from "./schemas.js";
+import { downloadClip } from "./recording.js";
+import type { DownloadedClip, DownloadOptions } from "./recording.js";
+import type { ClipReady } from "../../wire.generated.js";
 
 export interface Poll {
   readonly attempts: number;
@@ -366,6 +369,13 @@ export class CoordinatorClient {
         }),
       ),
     );
+  }
+  /** Assemble a prepared recording's bytes within a caller wall deadline. */
+  downloadClip(
+    clip: ClipReady,
+    options?: DownloadOptions,
+  ): Effect.Effect<DownloadedClip, ReactorError> {
+    return downloadClip(this, clip, options);
   }
   read(id: string): Effect.Effect<Descriptor, ReactorError> {
     return pure(() => (this.local ? this.path("/session") : this.sessionPath(id))).pipe(

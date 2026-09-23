@@ -15,8 +15,6 @@ export { terminal } from "./contract.js";
 export type { IceCandidate, IceServer } from "./contract.js";
 export { Observations } from "./observation.js";
 export type { ObservationOptions } from "./observation.js";
-export { CoordinatorClient } from "./coordinator/_internal/client.js";
-export { retryAfterMs } from "./coordinator/_internal/response.js";
 export { mediaGeneration, trackGeneration } from "./session/_internal/acquire.js";
 export type { Channel, MediaTrack, Peer, PeerEvent, PeerState, Prepared } from "./PeerTypes.js";
 export type {

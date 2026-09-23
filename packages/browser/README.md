@@ -39,7 +39,7 @@ The application also provides Effect's `Crypto` service, backed by Web Crypto.
 
 `Browser.media(session)` obtains the negotiated generation; `media.track(name)` acquires a scoped `MediaStreamTrack`, and `media.publish(name, track)` publishes through that generation. Media values stay bound to the generation that negotiated them. A reconnect creates a new generation; existing readers end or fail with their source, and applications obtain the new generation explicitly.
 
-The entry point also exports `videoFrames`, `audioSamples`, `webAudioSamples`, `audioContext`, `play`, `nextPresentation` and the `Recording` namespace, whose `downloadClip` transfers a prepared recording within a caller wall deadline.
+The entry point also exports `videoFrames`, `audioSamples`, `webAudioSamples`, `audioContext`, `play`, `nextPresentation` and the `Recording` namespace, whose `downloadClip(coordinator, clip, options)` transfers a prepared recording within a caller wall deadline through the portable `Coordinator.Client` from `Coordinator.make()`; it is the same operation as `coordinator.downloadClip(clip, options)`.
 
 If the host lacks `RTCPeerConnection` or `MediaStream`, building `Browser.layer` fails with `UnsupportedHost`, before any coordinator request can be made.
 

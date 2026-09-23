@@ -496,15 +496,13 @@ test("a session-bound source checks its media before any provider command", () =
       const fake = yield* fixture();
       const fromSession = bindSession(() =>
         Effect.fail(
-          new ReactorError({
-            code: "UnsupportedCapability",
-            message: "no decoded media on this host",
-            context: { outcome: "not-submitted" },
+          ReactorError.fromCode("UnsupportedCapability", "no decoded media on this host", {
+            outcome: "not-submitted",
           }),
         ),
       );
       const result = yield* Effect.result(fromSession(fake.session));
-      expect(Result.isFailure(result) && result.failure.code).toBe("UnsupportedCapability");
+      expect(Result.isFailure(result) && result.failure.reason._tag).toBe("UnsupportedCapability");
       expect(fake.calls).toEqual([]);
       expect(fake.lifecycleCalls.close).toBe(0);
     }),

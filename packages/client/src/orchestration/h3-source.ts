@@ -162,7 +162,7 @@ export const bindSession =
     options: SessionSourceOptions = {},
   ): Effect.Effect<
     H3Source,
-    ReactorError,
+    ReactorError | PolicyFailure | CommandFailure,
     Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
   > =>
     Effect.gen(function* () {

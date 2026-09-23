@@ -6,10 +6,14 @@ import type { Json } from "../json.js";
 import { CoordinatorClient } from "./_internal/client.js";
 import type { HttpOptions, Termination } from "./_internal/client.js";
 import type { Inspection, TokenGrant, TokenOptions } from "./_internal/schemas.js";
+import type { DownloadedClip, DownloadOptions } from "./_internal/recording.js";
+import type { ClipReady } from "../wire.generated.js";
 
 export { Inspection, modelRate } from "./_internal/schemas.js";
 export type { TokenGrant, TokenOptions } from "./_internal/schemas.js";
 export type { Termination, Poll } from "./_internal/client.js";
+export { parsePlaylist } from "./_internal/recording.js";
+export type { DownloadedClip, DownloadOptions, Segment } from "./_internal/recording.js";
 export type {
   Capabilities,
   Descriptor,
@@ -33,6 +37,16 @@ export interface Client {
   readonly inspect: (sessionId: string) => Effect.Effect<Inspection, ReactorError>;
   /** Uncertainty is retained in the report; supervisors choose their own failure policy. */
   readonly terminate: (sessionId: string) => Effect.Effect<Termination>;
+  /**
+   * Bounded transport of a prepared recording (`clip_ready`): polls its HLS
+   * playlist, then fetches and concatenates its segments within a caller wall
+   * deadline. It does not decode or play the clip, and a deadline does not
+   * change the remote generation outcome.
+   */
+  readonly downloadClip: (
+    clip: ClipReady,
+    options?: DownloadOptions,
+  ) => Effect.Effect<DownloadedClip, ReactorError>;
 }
 
 /** No network request or remote allocation occurs while constructing a coordinator client. */
