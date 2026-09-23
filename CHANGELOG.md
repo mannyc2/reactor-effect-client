@@ -11,6 +11,7 @@ The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.
 ### Added
 
 - Each dispatched model command and control request runs in a `reactor.session.command` or `reactor.session.control` client span on the session-owned execution. The span is a child of the caller's span and ends with the request's own outcome, even after the caller stopped waiting. It carries `reactor.operation`, `reactor.request.id` and `reactor.connection.generation`, and on exit `reactor.command.outcome` and, for a typed failure, `error.type` set to the error's code. It never carries the input, the reply or provider text. A request refused before dispatch opens no span, and heartbeats are not traced.
+- `reactor-effect-native`: `NativeOptions.shutdownTimeout`, a `Duration.Input` that defaults to 10 seconds, bounds how long closing a connection waits for the native owner join. A value that is not a positive duration fails preflight with `InvalidInput` before any allocation; `"Infinity"` restores the unbounded wait.
 
 ### Changed
 
@@ -22,6 +23,8 @@ The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.
 - **Breaking (`/host` only):** `CoordinatorClient.create` resolves with the allocated session id and the reply, and the new `describe` decodes the session descriptor from it. `/host` serves the first-party host packages, which pin the exact client version.
 - The three `ReactorError` messages that repeated provider text now carry a message written by the library: a data or control command's `Remote` error reads `remote command error <code>`, and a failed clip request reads `clip failed`. The provider's text moves to `context.body`, which diagnostic serialization excludes, so code that read it from `message` reads `context.body`, and routes on `code` and `context.remoteCode`. A disabled recorder is still reported as `RecorderDisabled`, recognized from the clip failure's text; it is the one documented exception to never classifying provider text, until the wire carries a code for it.
 - `reactor-effect-browser`: a `play()` timeout's message reads `media play deadline` instead of `media read/copy/play deadline`; its code is still `Timeout`.
+- `reactor-effect-native`: while a timed-out owner join is still retained, preflight (`PeerFactory.check`) and peer creation for that library fail with a `Native` error that was not submitted, before any allocation, instead of starting another owner on a libwebrtc factory that may be wedged. The library admits peers again once the join completes.
+- `VideoFrame` and `AudioFrame` document that every subscriber to a track receives the same frame object and buffers, so readers treat them as read-only and copy before writing. This was already the behavior.
 - `reactor-effect-native`: the Rust library no longer panics outside tests, where a panic in a libwebrtc callback would abort the host process, and checks every pointer's alignment and length bound before touching caller memory ([efd9e51]).
 
 ### Fixed
@@ -30,6 +33,8 @@ The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.
 - JSON validation of caller input (command data, `extraArgs`, orchestration clip requests, H3 command data and `/wire`'s `structFromObject`) enforces its documented bounds. Object keys count toward the 4 MiB text budget; array holes and index accessors are rejected, and an accessor never runs; an array's length is charged against the node budget before any slot is read, so a sparse array with 100 million slots fails in milliseconds instead of passing after seconds. Each violation is still a typed failure that was not submitted. An array's non-index own keys are ignored, as `JSON.stringify` ignores them.
 - An H3 refusal (`command_error`) keeps the provider's reason in `context.body` instead of dropping it.
 - `reactor-effect-browser`: the deadlines for resuming and closing the `AudioContext` in `audioContext()` and for starting playback in `play()` run on Effect's `Clock` instead of a wall-clock `setTimeout`, so `TestClock` controls them. Under the live clock they behave as before.
+- `reactor-effect-native`: a native owner join that never completes no longer blocks `Session.close` and leaves the paid session running. At the `shutdownTimeout` deadline the close stops waiting, `CloseReport.localErrors` records a `Shutdown` failure ("native owner join exceeded its deadline; handle retained") and `localClosed` is false, and cleanup still terminates the remote session. The join keeps the native handle and its Koffi callback, and destroys and unregisters them only when it completes.
+- `reactor-effect-native`: classifying a failed connection as `IceFailed`, `TransportFailed` or `Disconnected` runs in the events pump under a 2 second deadline on Effect's `Clock`, instead of an unowned wall-clock `setTimeout`, so `TestClock` controls it and closing the connection stops it. Its outcomes are unchanged.
 
 ## [0.2.0] - 2026-09-23
 
