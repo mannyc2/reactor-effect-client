@@ -678,13 +678,15 @@ export class Session {
         );
         self.assertCurrent(c);
         yield* phase("ready");
-        c.negotiated = Object.freeze({
-          ownership: remote.ownership,
-          sessionId: remote.id,
-          descriptor: readyDescriptor,
-          connectionId: c.connectionId,
-        });
-        self.lifecycle.transition("ready");
+        self.lifecycle.ready(
+          c,
+          Object.freeze({
+            ownership: remote.ownership,
+            sessionId: remote.id,
+            descriptor: readyDescriptor,
+            connectionId: c.connectionId,
+          }),
+        );
         if (self.options.autoResumeTracks ?? self.options.intent._tag === "Create")
           for (const track of capabilities.tracks)
             if (track.direction === "recvonly") {

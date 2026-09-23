@@ -258,9 +258,9 @@ const build = (
     const reduce = (source: SessionEvent): void => {
       if (closed || fatalError !== undefined) return;
       try {
-        const before = state.snapshot().transportGeneration;
+        const before = state.transportGeneration;
         let disposition = state.admit(source);
-        if (state.snapshot().transportGeneration !== before) {
+        if (state.transportGeneration !== before) {
           uploads.clear();
           for (const entry of pending.values())
             if (entry.generation !== source.generation)

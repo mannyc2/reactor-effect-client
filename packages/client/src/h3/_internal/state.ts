@@ -32,7 +32,6 @@ export class ProviderState {
   private stateDirty = true;
   private queueDirty = true;
   private readonly bodies = new Map<string, bigint>();
-  private availability: "Synchronizing" | "Ready" | "Unavailable" = "Synchronizing";
   /** What the snapshot holds, kept current by every write below. */
   readonly retained = new Retained();
 
@@ -62,6 +61,16 @@ export class ProviderState {
     this.cause = next;
   }
 
+  /** The transport generation whose facts this state holds. */
+  get transportGeneration(): bigint {
+    return this.generation;
+  }
+
+  /**
+   * Availability is derived, never stored: a cause makes the provider
+   * unavailable, and otherwise it is ready exactly when its state and queue
+   * are coherent.
+   */
   snapshot(): ProviderSnapshot {
     const base = {
       sessionId: this.sessionId,
@@ -69,21 +78,20 @@ export class ProviderState {
       revision: this.revision,
       clips: Object.freeze([...this.clips.values()]),
     };
-    if (this.availability === "Ready" && this.state !== undefined && this.queue !== undefined)
-      return Object.freeze({ ...base, _tag: "Ready", state: this.state, queue: this.queue });
-    if (this.availability === "Unavailable")
+    if (this.cause !== undefined)
       return Object.freeze({
         ...base,
         _tag: "Unavailable",
-        cause: this.cause!,
+        cause: this.cause,
         lastFacts: this.lastFacts,
       });
+    if (this.state !== undefined && this.queue !== undefined && this.coherent())
+      return Object.freeze({ ...base, _tag: "Ready", state: this.state, queue: this.queue });
     return Object.freeze({ ...base, _tag: "Synchronizing", lastFacts: this.lastFacts });
   }
 
   unavailable(cause: ReactorError): void {
     this.rememberFacts();
-    this.availability = "Unavailable";
     this.setCause(cause);
   }
 
@@ -109,7 +117,6 @@ export class ProviderState {
       this.stateDirty = true;
       this.queueDirty = true;
       this.bodies.clear();
-      this.availability = "Synchronizing";
       this.setCause(undefined);
     }
     if (source._tag === "Model" && source.correlation === "stale-generation") return "stale";
@@ -140,12 +147,11 @@ export class ProviderState {
             { operation: "H3 observation" },
           ),
         );
-      } else if (source.status === "ready" && this.availability === "Unavailable") {
+      } else if (source.status === "ready" && this.cause !== undefined) {
         this.setState(undefined);
         this.setQueue(undefined);
         this.stateDirty = true;
         this.queueDirty = true;
-        this.availability = "Synchronizing";
         this.setCause(undefined);
       }
     }
@@ -168,7 +174,6 @@ export class ProviderState {
     this.rememberFacts();
     this.stateDirty ||= state;
     this.queueDirty ||= queue;
-    if (this.availability !== "Unavailable") this.availability = "Synchronizing";
   }
 
   private coherent(): boolean {
@@ -285,10 +290,7 @@ export class ProviderState {
     }
     // Settings/stop ACKs never fabricate state. Only the model's complete
     // state and queue snapshots establish synchronized provider facts.
-    if (this.coherent() && this.availability !== "Unavailable") {
-      this.availability = "Ready";
-      this.rememberFacts();
-    } else if (this.availability !== "Unavailable") this.availability = "Synchronizing";
+    if (this.cause === undefined) this.rememberFacts();
     return "applied";
   }
 }

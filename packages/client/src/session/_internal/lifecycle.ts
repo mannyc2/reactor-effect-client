@@ -98,6 +98,16 @@ export class SessionLifecycle {
     this.onStatus(status);
   }
 
+  /**
+   * The one transition to ready: a connection becomes ready together with
+   * what it negotiated, so a ready connection always has it.
+   */
+  ready(connection: Connection, negotiated: ReadyState["remote"]): void {
+    this.assertCurrent(connection);
+    connection.negotiated = negotiated;
+    this.transition("ready");
+  }
+
   /** Called synchronously with Session's sampling reset and connecting event. */
   begin(reconnect: boolean, hasKnownRemote: boolean, makePeer: () => Peer): Connection {
     if (reconnect ? this.phase !== "ready" && this.phase !== "disconnected" : this.phase !== "idle")
@@ -138,6 +148,7 @@ export class SessionLifecycle {
         outcome: "not-submitted",
       });
     this.assertCurrent(connection);
+    // `ready` sets both together; this is a backstop against a bug, so it is a defect.
     if (!isNegotiated(connection)) throw new Error("ready connection has no negotiated descriptor");
     return connection;
   }
