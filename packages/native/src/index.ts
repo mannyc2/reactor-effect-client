@@ -76,6 +76,7 @@ export const media = (session: Session): Effect.Effect<MediaGeneration, ReactorE
   mediaGeneration(session);
 
 export type {
+  VideoFormat,
   VideoFrame,
   AudioFrame,
   MediaGeneration,

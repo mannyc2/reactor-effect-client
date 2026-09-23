@@ -31,6 +31,34 @@ interface MediaReaders {
 const sumDrops = (retained: bigint | null, latest: bigint | null): bigint | null =>
   retained === null || latest === null ? null : retained + latest;
 
+/** Loss counters; `null` when a retired generation's counters could not be read. */
+export interface Loss {
+  readonly video: bigint | null;
+  readonly audio: bigint | null;
+  readonly readers: bigint | null;
+}
+export const noLoss: Loss = { video: 0n, audio: 0n, readers: 0n };
+export const lossOf = (pressure: Result.Result<MediaPressure, unknown>): Loss =>
+  Result.isSuccess(pressure)
+    ? {
+        video: pressure.success.droppedVideo,
+        audio: pressure.success.droppedAudio,
+        readers: pressure.success.readerOverflows,
+      }
+    : { video: null, audio: null, readers: null };
+export const addLoss = (a: Loss, b: Loss): Loss => ({
+  video: sumDrops(a.video, b.video),
+  audio: sumDrops(a.audio, b.audio),
+  readers: sumDrops(a.readers, b.readers),
+});
+const minus = (a: bigint | null, b: bigint | null): bigint | null =>
+  a === null || b === null ? null : a - b;
+export const subtractLoss = (a: Loss, b: Loss): Loss => ({
+  video: minus(a.video, b.video),
+  audio: minus(a.audio, b.audio),
+  readers: minus(a.readers, b.readers),
+});
+
 /**
  * One physical source's local owner. The source closes its remote lease; this
  * owner then joins its registered committed executions before closing their scope.
@@ -53,10 +81,7 @@ export const make = (options: Options) =>
     let expectedFrames = 0;
     let receivedFrames = 0;
     let receivedAudioSamples = 0;
-    let retiredDrops: { readonly video: bigint | null; readonly audio: bigint | null } = {
-      video: 0n,
-      audio: 0n,
-    };
+    let retiredDrops: Loss = noLoss;
 
     const closed = () => Lifecycle.isClosed(phase);
     const recoveryBudget = () =>
@@ -236,16 +261,7 @@ export const make = (options: Options) =>
             return Effect.fail(
               ReactorError.fromCode("Protocol", "Reconnect did not acquire a new media generation"),
             );
-          retiredDrops = {
-            video: sumDrops(
-              retiredDrops.video,
-              Result.isSuccess(previous) ? previous.success.droppedVideo : null,
-            ),
-            audio: sumDrops(
-              retiredDrops.audio,
-              Result.isSuccess(previous) ? previous.success.droppedAudio : null,
-            ),
-          };
+          retiredDrops = addLoss(retiredDrops, lossOf(previous));
           media = next;
           return Effect.void;
         }),
@@ -258,16 +274,20 @@ export const make = (options: Options) =>
       pressure: Effect.suspend(() =>
         media.pressure.pipe(
           Effect.flatMap((pressure) => {
-            const droppedVideo = sumDrops(retiredDrops.video, pressure.droppedVideo);
-            const droppedAudio = sumDrops(retiredDrops.audio, pressure.droppedAudio);
-            return droppedVideo === null || droppedAudio === null
+            const loss = addLoss(retiredDrops, lossOf(Result.succeed(pressure)));
+            return loss.video === null || loss.audio === null || loss.readers === null
               ? Effect.fail(
                   ReactorError.fromCode(
                     "InvalidState",
                     "Retired media generation drop totals are unknown",
                   ),
                 )
-              : Effect.succeed({ ...pressure, droppedVideo, droppedAudio });
+              : Effect.succeed({
+                  ...pressure,
+                  droppedVideo: loss.video,
+                  droppedAudio: loss.audio,
+                  readerOverflows: loss.readers,
+                });
           }),
         ),
       ),

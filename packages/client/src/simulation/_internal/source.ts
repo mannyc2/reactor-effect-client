@@ -542,6 +542,8 @@ export const source = (
       pendingRequests: pending,
       deliveredVideo,
       deliveredAudio,
+      // One bounded queue with no per-reader subscriptions: no reader is ever failed for lag.
+      readerOverflows: 0n,
     }));
     return {
       id,

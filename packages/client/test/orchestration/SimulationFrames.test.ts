@@ -18,6 +18,7 @@ test("simulation media gives each frame its own exact buffer when the renderer p
         const slab = new ArrayBuffer(4096);
         const video = (index: number): VideoFrame => ({
           _tag: "VideoFrame",
+          format: "BGRA",
           track: "video",
           width: 2,
           height: 2,

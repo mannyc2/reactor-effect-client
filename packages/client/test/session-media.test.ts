@@ -13,6 +13,7 @@ import { assert, equal, run, test } from "./harness.js";
 
 const videoFrame = (marker: number): VideoFrame => ({
   _tag: "VideoFrame",
+  format: "BGRA",
   track: "main_video",
   width: 1,
   height: 1,
@@ -74,6 +75,7 @@ class MediaPeer extends MockPeer {
       pendingRequests: 0,
       deliveredVideo: 0n,
       deliveredAudio: 0n,
+      readerOverflows: 0n,
     })),
   };
 

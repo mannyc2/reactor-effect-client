@@ -78,9 +78,11 @@ export const cleanPressure: MediaPressure = {
   pendingRequests: 0,
   deliveredVideo: 0n,
   deliveredAudio: 0n,
+  readerOverflows: 0n,
 };
 export const videoFrame = (value = 1): VideoFrame => ({
   _tag: "VideoFrame",
+  format: "BGRA",
   track: "video",
   width: 1,
   height: 1,

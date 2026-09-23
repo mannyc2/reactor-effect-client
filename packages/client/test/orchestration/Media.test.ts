@@ -357,6 +357,49 @@ test("reconnect retains known drop evidence from retired media generations", () 
     }),
   ));
 
+test("the output's loss totals carry a lost owner's losses into its replacement", () =>
+  run(
+    Effect.gen(function* () {
+      const { handle, sources, renewals } = yield* renewalFixture(() => ({
+        reconnect: Effect.fail(ReactorError.fromCode("Closed", "expired")),
+      }));
+      yield* sources[0]!.setPressure({ droppedVideo: 4n, droppedAudio: 1n, readerOverflows: 1n });
+      yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "connection lost"));
+      yield* until(() => renewals.some((event) => event._tag === "Replaced"));
+      expect(yield* handle.sessionId).toEqual(Option.some("source-2"));
+      // The replacement's own counters start at zero; the output keeps the loss.
+      expect(yield* handle.media.pressure).toMatchObject({
+        droppedVideo: 4n,
+        droppedAudio: 1n,
+        readerOverflows: 1n,
+      });
+      yield* sources[1]!.setPressure({ droppedVideo: 2n });
+      expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 6n, droppedAudio: 1n });
+    }),
+  ));
+
+test("a prepared replacement's losses before it feeds the output are not the output's", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { handle, sources, renewals, warm } = yield* renewalFixture();
+      yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      // Loss on the prepared session while the old one still feeds the output.
+      yield* sources[1]!.setPressure({ droppedVideo: 3n, readerOverflows: 2n });
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.setState(readyState());
+      yield* until(
+        () => renewals.some((event) => event._tag === "Switched"),
+        TestClock.adjust(100),
+      );
+      expect(yield* handle.sessionId).toEqual(Option.some("source-2"));
+      expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 0n, readerOverflows: 0n });
+      yield* sources[1]!.setPressure({ droppedVideo: 5n, readerOverflows: 2n });
+      expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 2n, readerOverflows: 0n });
+    }),
+  ));
+
 test("unavailable source pressure stays unknown in replacement evidence instead of becoming zero", () =>
   runClock(
     Effect.gen(function* () {

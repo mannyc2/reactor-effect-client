@@ -127,7 +127,26 @@ export interface EngineShape {
   readonly setCanvas: (canvas: Canvas) => Effect.Effect<void, EngineError>;
 }
 
-/** Orchestrated media ends with the orchestration's terminal failure. */
+/**
+ * An orchestration's recovering media output, one logical track per kind that
+ * continues across reconnects and source replacements, and ends with the
+ * orchestration's terminal failure.
+ *
+ * - Consumption is mandatory: while it runs, the orchestration buffers what the
+ *   reader has not taken (96 video frames, 192,000 audio samples), and an
+ *   output that stays undrained past that fails the orchestration with
+ *   `Overflow`. That failure is terminal.
+ * - Each output has one reader at a time. A second concurrent reader fails
+ *   with `AlreadyReading` rather than silently splitting the frames; a reader
+ *   that ends releases the output, and a later reader resumes from what is
+ *   retained. A preview that wants only the newest frame derives it per
+ *   consumer with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
+ * - `pressure` reports the loss of the logical output: `droppedVideo`,
+ *   `droppedAudio` and `readerOverflows` accumulate across generations and
+ *   across source replacements, counting each source only while it fed this
+ *   output. A total that cannot be read fails `pressure` with `InvalidState`
+ *   rather than reporting zero.
+ */
 export interface MediaShape {
   readonly video: Stream.Stream<VideoFrame, ReactorFailure>;
   readonly audio: Stream.Stream<AudioFrame, ReactorFailure>;

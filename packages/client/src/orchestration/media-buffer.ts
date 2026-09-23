@@ -6,6 +6,53 @@ import { ReactorError } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
 import type { AudioFrame, VideoFrame } from "../session/media.js";
 
+/**
+ * One reader at a time drains a queue. A second concurrent reader fails with
+ * `AlreadyReading` instead of silently splitting the frames with the first; a
+ * reader that ends releases the output, and a later one resumes from the
+ * retained frames.
+ */
+const singleReader = <A, E>(
+  kind: string,
+  queue: Queue.Queue<A, E | Cause.Done>,
+  taken: (value: A) => void,
+): Stream.Stream<A, E | ReactorError> => {
+  let reading = false;
+  return Stream.unwrap(
+    Effect.acquireRelease(
+      Effect.suspend(() => {
+        if (reading)
+          return Effect.fail(
+            ReactorError.fromCode(
+              "AlreadyReading",
+              `orchestration ${kind} already has an active reader`,
+              { outcome: "not-submitted" },
+            ),
+          );
+        reading = true;
+        return Effect.void;
+      }),
+      () =>
+        Effect.sync(() => {
+          reading = false;
+        }),
+    ).pipe(
+      Effect.as(
+        Stream.fromEffectRepeat(
+          Effect.uninterruptibleMask((restore) =>
+            restore(Queue.take(queue)).pipe(
+              Effect.map((value) => {
+                taken(value);
+                return value;
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+};
+
 /** The output queue owns admission and accounting together; source readers cannot bypass its bounds. */
 export const make = Effect.gen(function* () {
   const video = yield* Queue.unbounded<VideoFrame, ReactorFailure | Cause.Done>();
@@ -47,28 +94,14 @@ export const make = Effect.gen(function* () {
   return {
     offerVideo,
     offerAudio,
-    video: Stream.fromEffectRepeat(
-      Effect.uninterruptibleMask((restore) =>
-        restore(Queue.take(video)).pipe(
-          Effect.map((frame) => {
-            queuedFrames--;
-            queuedVideoBytes -= frame.data.byteLength + frame.metadata.byteLength;
-            return frame;
-          }),
-        ),
-      ),
-    ),
-    audio: Stream.fromEffectRepeat(
-      Effect.uninterruptibleMask((restore) =>
-        restore(Queue.take(audio)).pipe(
-          Effect.map((frame) => {
-            queuedSamples -= frame.samples.length;
-            queuedAudioFrames--;
-            return frame;
-          }),
-        ),
-      ),
-    ),
+    video: singleReader("video", video, (frame) => {
+      queuedFrames--;
+      queuedVideoBytes -= frame.data.byteLength + frame.metadata.byteLength;
+    }),
+    audio: singleReader("audio", audio, (frame) => {
+      queuedSamples -= frame.samples.length;
+      queuedAudioFrames--;
+    }),
     pressure: () => ({
       queuedVideo: queuedFrames,
       queuedAudio: queuedAudioFrames,

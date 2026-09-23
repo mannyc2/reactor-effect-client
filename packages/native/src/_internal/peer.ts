@@ -253,6 +253,7 @@ const videoFrame = (tracks: readonly Track[], taken: NativeVideo): VideoFrame =>
   return Object.freeze({
     _tag: "VideoFrame",
     track,
+    format: "BGRA",
     width: taken.width,
     height: taken.height,
     frameId: taken.frameId,
@@ -275,7 +276,8 @@ const audioFrame = (tracks: readonly Track[], taken: NativeAudio): AudioFrame =>
   });
 };
 
-const parseSnapshot = (value: unknown): MediaPressure => {
+/** The native snapshot's transport counters; the host adds its own reader overflows. */
+const parseSnapshot = (value: unknown): Omit<MediaPressure, "readerOverflows"> => {
   const s = record(value, "media snapshot");
   if (typeof s.closed !== "boolean")
     throw ReactorError.fromCode("Protocol", "native media snapshot omitted closed state");
@@ -395,6 +397,14 @@ export class NativePeer implements Peer {
         "native media requires a declared receive track of the requested kind",
         { outcome: "not-submitted" },
       );
+  }
+
+  /** Readers failed for falling behind, across this peer's video and audio tracks. */
+  private readerOverflows(): bigint {
+    let overflows = 0n;
+    for (const feed of this.video.values()) overflows += feed.overflowCount;
+    for (const feed of this.audio.values()) overflows += feed.overflowCount;
+    return overflows;
   }
 
   private videoFeed(name: string): Observations<VideoFrame> {
@@ -617,7 +627,8 @@ export class NativePeer implements Peer {
     ).pipe(
       Effect.flatMap((value) =>
         Effect.try({
-          try: () => parseSnapshot(value),
+          try: (): MediaPressure =>
+            Object.freeze({ ...parseSnapshot(value), readerOverflows: this.readerOverflows() }),
           catch: (cause) => nativeError(cause, "decode native media snapshot"),
         }),
       ),

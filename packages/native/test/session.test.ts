@@ -157,6 +157,7 @@ describe("native canonical session boundary", () => {
 
       expect(result.video).toMatchObject({
         _tag: "VideoFrame",
+        format: "BGRA",
         track: "main_video",
         width: 1,
         height: 1,

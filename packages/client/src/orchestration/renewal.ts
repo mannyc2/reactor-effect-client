@@ -176,6 +176,28 @@ export const make = <R>(
       );
     const expired = (slot: Slot) => slot.expired();
     const recoveryBudget = (slot: Slot) => slot.recoveryBudget();
+    // The logical output's loss: every former owner's loss while it fed the
+    // output, plus the current owner's since it became the owner. A prepared
+    // replacement's loss before it fed the output is not the output's.
+    let outputLoss: SourceSlot.Loss = SourceSlot.noLoss;
+    let ownerBaseline: SourceSlot.Loss = SourceSlot.noLoss;
+    const ownerLoss = (slot: Slot) =>
+      Effect.result(slot.pressure.pipe(Effect.timeout(recoveryBudget(slot)))).pipe(
+        Effect.map(SourceSlot.lossOf),
+      );
+    const activateOwner = (slot: Slot) =>
+      ownerLoss(slot).pipe(
+        Effect.map((loss) => {
+          ownerBaseline = loss;
+        }),
+      );
+    const retireOwner = (slot: Slot) =>
+      ownerLoss(slot).pipe(
+        Effect.map((loss) => {
+          outputLoss = SourceSlot.addLoss(outputLoss, SourceSlot.subtractLoss(loss, ownerBaseline));
+          ownerBaseline = SourceSlot.noLoss;
+        }),
+      );
     const retired = (slot: Slot) => slot.retired(buffer.forwarded);
     const closeSlot = (slot: Slot) => slot.close;
 
@@ -192,6 +214,7 @@ export const make = <R>(
             reason: `Session lost: ${cause.message}`,
             sessionId: slot.source.id,
           });
+        if (slot === current) yield* retireOwner(slot);
         yield* closeSlot(slot);
         yield* observe({
           _tag: "Replaced",
@@ -213,6 +236,7 @@ export const make = <R>(
           return;
         }
         current = selected;
+        yield* activateOwner(selected);
         yield* current.source.setAutoplay(autoplay);
         if (!publishReady(current)) return;
         yield* log("Replaced lost session; local queue resumes on the new connection");
@@ -458,6 +482,7 @@ export const make = <R>(
         ),
       ),
     );
+    // The first owner's loss from its start is the output's: no baseline.
     mediaState = {
       _tag: "Ready",
       sessionId: current.source.id,
@@ -861,7 +886,9 @@ export const make = <R>(
           )
             return;
           const old = current;
+          yield* retireOwner(old);
           current = next;
+          yield* activateOwner(next);
           replacement = { _tag: "Absent" };
           yield* current.source.setAutoplay(autoplay);
           const activated = publishReady(current);
@@ -879,15 +906,29 @@ export const make = <R>(
         return Effect.fail(ReactorError.fromCode("InvalidState", "No active media source"));
       const owner = current;
       return owner.pressure.pipe(
-        Effect.map((source) => {
+        Effect.flatMap((source) => {
           const queued = buffer.pressure();
-          return {
+          const loss = SourceSlot.addLoss(
+            outputLoss,
+            SourceSlot.subtractLoss(SourceSlot.lossOf(Result.succeed(source)), ownerBaseline),
+          );
+          if (loss.video === null || loss.audio === null || loss.readers === null)
+            return Effect.fail(
+              ReactorError.fromCode(
+                "InvalidState",
+                "A former media owner's loss totals are unknown",
+              ),
+            );
+          return Effect.succeed({
             ...source,
             closed: closing,
             queuedVideo: source.queuedVideo + queued.queuedVideo,
             queuedAudio: source.queuedAudio + queued.queuedAudio,
             queuedBytes: source.queuedBytes + queued.queuedBytes,
-          };
+            droppedVideo: loss.video,
+            droppedAudio: loss.audio,
+            readerOverflows: loss.readers,
+          });
         }),
       );
     });

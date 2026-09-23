@@ -50,6 +50,7 @@ describe("native media and event decoding", () => {
     const frame = nativePeerTesting.videoFrame(tracks, taken);
     expect(frame).toMatchObject({
       _tag: "VideoFrame",
+      format: "BGRA",
       track: "main_video",
       width: 1,
       height: 1,

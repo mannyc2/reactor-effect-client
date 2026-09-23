@@ -23,6 +23,7 @@ export type {
   MediaPressure,
   RawMedia,
   TrackGeneration,
+  VideoFormat,
   VideoFrame,
 } from "./session/media.js";
 export { readFileBytes, uploadFile } from "./session/files.js";
