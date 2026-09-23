@@ -166,7 +166,7 @@ jobs:
         shell: bash
         run: |
           source=$(node packages/native/scripts/stage.mjs --source-hash)
-          recipe='${{ hashFiles('packages/native/scripts/build.sh', 'packages/native/scripts/stage.sh', 'packages/native/scripts/stage.mjs', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/Dockerfile', 'packages/native/rust/examples/**') }}'
+          recipe='${{ hashFiles('packages/native/scripts/build.sh', 'packages/native/scripts/stage.sh', 'packages/native/scripts/stage.mjs', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/scripts/test.sh', 'packages/native/Dockerfile', 'packages/native/rust-toolchain.toml', 'packages/native/rust/clippy.toml', 'packages/native/rust/examples/**') }}'
           echo "key=native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-image${ImageVersion:-unknown}-source${source}-recipe${recipe}" >> "$GITHUB_OUTPUT"
 
       - name: Restore qualified native library

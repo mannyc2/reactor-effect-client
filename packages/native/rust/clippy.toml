@@ -1,0 +1,4 @@
+# Lint levels live in Cargo.toml's [lints] table; this file only configures them.
+
+# In a test, a failed unwrap is the assertion.
+allow-unwrap-in-tests = true
