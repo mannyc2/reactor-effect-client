@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Effect, Fiber, Option, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
-import { fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
+import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
 import { ClipId } from "../../src/orchestration/request.js";
 import { isIdle } from "../../src/orchestration/queries.js";
@@ -10,6 +10,7 @@ import type { EngineEvent } from "../../src/orchestration/types.js";
 import type { CloseReport, Session } from "../../src/session/index.js";
 import type { MediaGeneration } from "../../src/session/media.js";
 import type { JsonObject } from "../../src/json.js";
+import { ReactorError } from "../../src/errors.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
 import type { Script } from "../h3/ProviderSession.js";
@@ -458,6 +459,54 @@ test("source observation fails for malformed provider lifecycle without requirin
       expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Protocol");
       expect((yield* source.state).availability).toBe("Unavailable");
       expect(fake.calls.filter((call) => call.command === "enqueue")).toEqual([]);
+    }),
+  ));
+
+test("a session-bound source derives its provider and media from the one session", () =>
+  run(
+    Effect.gen(function* () {
+      const fake = yield* fixture();
+      const acquired: Session[] = [];
+      const fromSession = bindSession((session) =>
+        Effect.sync(() => {
+          acquired.push(session);
+          return media;
+        }),
+      );
+      const source = yield* fromSession(fake.session, {
+        provider: { commandTimeoutMs: 100, setupTimeoutMs: 1000, reconcileWindowMs: 20 },
+      });
+      // One provider view, over the same session, is part of the source.
+      expect(source.provider.sessionId).toBe(fake.session.id);
+      expect(fake.calls.map((call) => call.command)).toEqual(["get_state", "get_queue"]);
+      yield* source.provider.refresh;
+      // The media is re-derived from the same session on each read.
+      expect(yield* source.media).toMatchObject({ generation: 1n });
+      expect(acquired.every((session) => session === fake.session)).toBe(true);
+      expect(acquired.length).toBeGreaterThanOrEqual(2);
+      // Closing the source closes the session.
+      yield* source.close;
+      expect(fake.lifecycleCalls.close).toBe(1);
+    }),
+  ));
+
+test("a session-bound source checks its media before any provider command", () =>
+  run(
+    Effect.gen(function* () {
+      const fake = yield* fixture();
+      const fromSession = bindSession(() =>
+        Effect.fail(
+          new ReactorError({
+            code: "UnsupportedCapability",
+            message: "no decoded media on this host",
+            context: { outcome: "not-submitted" },
+          }),
+        ),
+      );
+      const result = yield* Effect.result(fromSession(fake.session));
+      expect(Result.isFailure(result) && result.failure.code).toBe("UnsupportedCapability");
+      expect(fake.calls).toEqual([]);
+      expect(fake.lifecycleCalls.close).toBe(0);
     }),
   ));
 

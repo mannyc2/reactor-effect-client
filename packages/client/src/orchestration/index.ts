@@ -26,8 +26,8 @@ export type {
   RemoveOutcome,
 } from "./types.js";
 export { emptyState, isIdle, isLive, committedMs, securedMs, pendingCount } from "./queries.js";
-export { fromH3, isLocalClip } from "./h3-source.js";
-export type { H3SourceOptions } from "./h3-source.js";
+export { fromH3Session, isLocalClip } from "./h3-source.js";
+export type { H3Source, SessionSourceOptions } from "./h3-source.js";
 export { make } from "./renewal.js";
 export type { Options, Renewal, MediaTail } from "./renewal.js";
 export * as References from "./references.js";

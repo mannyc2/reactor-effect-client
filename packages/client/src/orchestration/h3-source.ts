@@ -8,17 +8,21 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import type * as Crypto from "effect/Crypto";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CommandFailure, ReactorError } from "../errors.js";
 import type { Clip as ProviderClip } from "../h3/messages.js";
+import { make as makeProvider } from "../h3/_internal/client.js";
 import { h3ReferenceTurboRealtime } from "../h3/profile.js";
 import type {
+  Options as ProviderOptions,
   Provider,
   ProviderEvent,
   ProviderSnapshot,
   Request as ProviderRequest,
 } from "../h3/types.js";
 import { Observations } from "../observation.js";
+import { mediaGeneration } from "../session/_internal/acquire.js";
 import type { Session } from "../session/index.js";
 import type { MediaGeneration } from "../session/media.js";
 import * as Submission from "../Submission.js";
@@ -135,10 +139,64 @@ const project = (
   });
 };
 
+/** Broadcast policy and limits for a session-bound H3 source. */
+export interface SessionSourceOptions extends Omit<H3SourceOptions, "media"> {
+  /** Acquisition and observation options for the session's H3 provider view. */
+  readonly provider?: ProviderOptions | undefined;
+}
+
+/** A physical source whose H3 provider view is exposed for the operations the source does not project. */
+export interface H3Source extends Source {
+  readonly provider: Provider;
+}
+
+/**
+ * The session-bound constructor over a media accessor. The accessor is a
+ * parameter only so tests can bind the media of a fake session; the public
+ * constructor binds the session's own decoded-media generation.
+ */
+export const bindSession =
+  (media: (session: Session) => Effect.Effect<MediaGeneration, ReactorError>) =>
+  (
+    session: Session,
+    options: SessionSourceOptions = {},
+  ): Effect.Effect<
+    H3Source,
+    ReactorError,
+    Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
+  > =>
+    Effect.gen(function* () {
+      // The host capability and the ready connection are checked before any
+      // provider observation or policy command.
+      yield* media(session);
+      const child = yield* Scope.fork(yield* Effect.scope);
+      const { provider: providerOptions, ...policy } = options;
+      return yield* Effect.gen(function* () {
+        const provider = yield* makeProvider(session, providerOptions);
+        const source = yield* fromH3(session, provider, { ...policy, media: media(session) });
+        return Object.freeze({ ...source, provider });
+      }).pipe(
+        Scope.provide(child),
+        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),
+      );
+    });
+
+/**
+ * A physical H3 source for one connected session, with its provider view and
+ * its decoded media both derived from that session, so a source can never pair
+ * one session's commands with another session's media. It needs a host with
+ * decoded media (the native host); on a host without it, or before the session
+ * is connected, it fails before any provider observation or policy command.
+ * Closing the source closes the session.
+ */
+export const fromH3Session = bindSession(mediaGeneration);
+
 /**
  * Bind explicit broadcast policy and host reference loading to an H3 view.
  * Acquisition, provider facts, dispatch evidence, and media remain with their
- * existing owners; this source only annotates and projects them.
+ * existing owners; this source only annotates and projects them. Internal:
+ * the public constructor is `fromH3Session`, which derives both views from
+ * one session.
  */
 export const fromH3 = (
   session: Session,
