@@ -111,6 +111,10 @@ The following retained September 22 records predate the canonical API migration;
 - Local Mac iteration still used Bun 1.4.0 because the task-local Bun 1.4.2 binary stalled before JavaScript execution in that host harness. Linux runtime preflight did execute Bun 1.4.2 successfully. CI pins 1.4.2 explicitly.
 - No paid or hosted Reactor generation was run. The local relay test does not prove hosted TURN credentials, Internet NAT/firewall traversal, or sustained production behavior. Chrome did not originate Reactor's custom frame metadata; that extension remains covered by the native/native loopback, not the browser test. Browser-to-native media was exercised; native-to-browser media publication was not.
 
+### Hosted qualification
+
+No hosted Reactor generation has run yet. `integration/hosted/qualify.ts` is the maintainer-run, opt-in check for it, within $1.50 in all: a one-session vertical check (correlated acceptance, lifecycle progression, changing non-black BGRA frames, audio when offered, the selected ICE pair and confirmed termination), a process-kill-and-attach takeover within 5 s of the owner's death, and hosted TURN only if neither selected a relay pair. Each check writes its evidence, never a token, to a new file; its result belongs in this section when it runs.
+
 ## Contributing and security
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workspace workflow, validation expectations and third-party notice rules. See [SECURITY.md](./SECURITY.md) for private vulnerability reporting guidance and the project's security boundaries.

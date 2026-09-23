@@ -20,6 +20,7 @@ import type { CommandReply, Session, SessionEvent } from "../../session/index.js
 import * as Submission from "../../Submission.js";
 import type { UploadReference } from "../../wire.generated.js";
 import { decodeMessage } from "../messages.js";
+import { Operations } from "./operations.js";
 import type { Clip, DecodedMessage, Payload } from "../messages.js";
 import { canvases } from "../profile.js";
 import type {
@@ -122,6 +123,23 @@ interface PendingAcceptance extends AcceptanceIdentity {
 }
 type ObservationResult = DecodedMessage | undefined;
 
+/**
+ * Whether a snapshot at `revision` already reflects `event`: the reducer
+ * handles session events in sequence order. An acceptance is local evidence
+ * that no snapshot holds, and a diagnostic without a source has no sequence,
+ * so neither is ever covered.
+ */
+const covered = (event: ProviderEvent, revision: bigint): boolean => {
+  switch (event._tag) {
+    case "Acceptance":
+      return false;
+    case "Diagnostic":
+      return event.source !== undefined && event.source.sequence <= revision;
+    default:
+      return event.source.sequence <= revision;
+  }
+};
+
 const build = (
   session: Session,
   options: Options,
@@ -153,6 +171,7 @@ const build = (
         16384,
       ),
       cache: positiveLimit(options.maxCachedUploads ?? 256, "H3 upload cache bound", 4096),
+      operations: positiveLimit(options.maxOperations ?? 1024, "H3 clip operation bound", 16384),
       prompt: positiveLimit(options.maxPromptBytes ?? 1048576, "H3 prompt byte bound", 4194304),
       retained: positiveLimit(
         options.maxRetainedBytes ?? 16777216,
@@ -186,6 +205,7 @@ const build = (
     const events = new Observations<ProviderEvent>();
     const pending = new Map<string, PendingAcceptance>();
     const acceptances = new Map<string, Acceptance>();
+    const operations = new Operations(limits.operations);
     const decoded = new WeakMap<CommandReply, Result.Result<ObservationResult, ReactorError>>();
     const observedWaiters = new Map<
       CommandReply,
@@ -213,6 +233,7 @@ const build = (
             operation: "H3 observation",
           }),
         );
+        operations.retire();
         events.end();
         pending.clear();
         observedWaiters.clear();
@@ -224,9 +245,13 @@ const build = (
       const id = submissionFromMetadata(namespace, clip.metadata);
       if (id === undefined) return;
       const entry = pending.get(id);
-      if (entry === undefined) return;
-      const acceptance = acceptanceFor(entry, clip, source);
-      if (acceptance === undefined) return;
+      const acceptance = entry === undefined ? undefined : acceptanceFor(entry, clip, source);
+      if (entry === undefined || acceptance === undefined) {
+        // After the reconcile window, or in a later transport generation, the
+        // evidence can still resolve the operation, never the acceptances.
+        operations.lateEvidence(id, clip, source);
+        return;
+      }
       const previous = acceptances.get(entry.id);
       if (previous !== undefined) {
         if (previous.clip.clip_id !== clip.clip_id)
@@ -242,6 +267,7 @@ const build = (
         if (!first.done) acceptances.delete(first.value);
       }
       acceptances.set(entry.id, acceptance);
+      operations.accept(acceptance);
       Deferred.doneUnsafe(entry.deferred, Effect.succeed(acceptance));
       emit({ _tag: "Acceptance", acceptance });
     };
@@ -300,6 +326,7 @@ const build = (
               ])
                 accept(clip, source);
             } else if ("clip" in message.data) accept(message.data.clip, source);
+            operations.observe(message, source);
           }
           emit({ _tag: "Message", message, source, disposition });
         }
@@ -584,6 +611,10 @@ const build = (
                 "enqueue",
                 ReactorError.fromCode("Overflow", "H3 pending acceptance bound reached"),
               );
+            // The operation's slot is taken before anything is sent.
+            yield* pure(() => operations.reserve(entry)).pipe(
+              Effect.mapError((error) => localFailure("enqueue", error)),
+            );
             // Acceptance registration is inside the same commit boundary as the
             // orchestration hook and precedes Session.command's wire correlation.
             pending.set(id, entry);
@@ -593,6 +624,7 @@ const build = (
                   Exit.isFailure(exit)
                     ? Effect.sync(() => {
                         pending.delete(id);
+                        operations.abandon(id);
                       })
                     : Effect.void,
                 ),
@@ -629,12 +661,38 @@ const build = (
                 orElse: () => Effect.fail(original),
               }),
               Effect.mapError(() => original),
+              Effect.withSpan("reactor.h3.reconcile", {}, { captureStackTrace: false }),
             );
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 pending.delete(id);
               }),
+            ),
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                operations.settle(id, exit);
+              }),
+            ),
+            // The submission's own execution fiber carries the span, so it ends with
+            // the enqueue's outcome even when the caller stopped waiting.
+            Effect.onExit((exit) => {
+              const error = Exit.findError(exit);
+              return Effect.annotateCurrentSpan(
+                Exit.isSuccess(exit)
+                  ? { "reactor.command.outcome": "replied" }
+                  : error._tag === "Success"
+                    ? {
+                        "reactor.command.outcome": error.success.context.outcome,
+                        "error.type": error.success.reason._tag,
+                      }
+                    : {},
+              );
+            }),
+            Effect.withSpan(
+              "reactor.h3.enqueue",
+              { kind: "client", attributes: { "reactor.h3.submission.id": id } },
+              { captureStackTrace: false },
             ),
           );
           return hooks.result === undefined
@@ -741,12 +799,19 @@ const build = (
         Effect.gen(function* () {
           const stream = yield* events.subscribe(bounds);
           const initial = state.snapshot();
-          return { initial, revision: initial.revision, events: stream };
+          // The reducer may apply a queued event between the subscription and
+          // this read; the snapshot then covers it, so it is not repeated.
+          return {
+            initial,
+            revision: initial.revision,
+            events: Stream.filter(stream, (event) => !covered(event, initial.revision)),
+          };
         }),
       events: (bounds) => events.stream(bounds),
       failure: Deferred.await(fatal),
       acceptances: Effect.sync(() => Object.freeze([...acceptances.values()])),
       acceptance: (id) => Effect.sync(() => acceptances.get(id)),
+      operation: (submission) => operations.attach(submission.id),
       prepare,
       prepareFrom,
       enqueue: (request) =>

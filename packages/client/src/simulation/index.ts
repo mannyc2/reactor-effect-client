@@ -1,12 +1,11 @@
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
 import type { AcquisitionFailure, ReactorError } from "../errors.js";
 import { make as orchestrate } from "../orchestration/renewal.js";
-import { Engine, Handle, Media } from "../orchestration/types.js";
-import type { HandleShape } from "../orchestration/types.js";
+import { handleContext } from "../orchestration/types.js";
+import type { Engine, Handle, HandleShape, Media } from "../orchestration/types.js";
 import { source } from "./_internal/source.js";
 import type { SimOptions } from "./types.js";
 
@@ -24,13 +23,4 @@ export const make = (
 export const layerSim = (
   options: SimOptions = {},
 ): Layer.Layer<Engine | Media | Handle, ReactorError | AcquisitionFailure, Crypto.Crypto> =>
-  Layer.effectContext(
-    make(options).pipe(
-      Effect.map((handle) =>
-        Context.make(Engine, handle.engine).pipe(
-          Context.add(Media, handle.media),
-          Context.add(Handle, handle),
-        ),
-      ),
-    ),
-  );
+  Layer.effectContext(Effect.map(make(options), handleContext));

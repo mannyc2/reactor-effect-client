@@ -24,6 +24,7 @@ test("simulation media gives each frame its own exact buffer when the renderer p
           height: 2,
           frameId: BigInt(index + 1),
           timestampMicros: 0n,
+          sequence: BigInt(index),
           data: new Uint8Array(slab, 64 + index * 16, 16).fill(index + 1),
           metadata: new Uint8Array(slab, 1024 + index * 4, 4),
         });
@@ -32,6 +33,7 @@ test("simulation media gives each frame its own exact buffer when the renderer p
           track: "audio",
           sampleRate: 48_000,
           channels: 1,
+          sequence: BigInt(index),
           samples: new Int16Array(slab, 2048 + index * 64, 32).fill(index + 1),
         });
         const handle = yield* Simulation.make({

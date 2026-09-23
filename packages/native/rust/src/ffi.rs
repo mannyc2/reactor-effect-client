@@ -50,6 +50,9 @@ pub struct ReactorEffectVideoHeader {
     pub track: u32,
     /// Always 0.
     pub reserved: u32,
+    /// The frame's admission sequence on its track, from 0, stamped before
+    /// the queue can drop it: a gap is a frame the queue dropped.
+    pub sequence: u64,
 }
 
 /// The header of one interleaved PCM block, written by
@@ -65,6 +68,9 @@ pub struct ReactorEffectAudioHeader {
     pub samples: u32,
     /// The track's index in the prepare request.
     pub track: u32,
+    /// The block's admission sequence on its track, from 0, stamped before
+    /// the queue can drop it: a gap is a block the queue dropped.
+    pub sequence: u64,
 }
 
 /// Diagnostic text beside a failure status. Never match on it: the status is

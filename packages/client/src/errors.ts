@@ -53,6 +53,7 @@ export const FailureCode = Schema.Literals([
   "Shutdown",
   "SdpRejected",
   "ChannelClosed",
+  "Indeterminate",
 ]);
 export type FailureCode = typeof FailureCode.Type;
 
@@ -174,6 +175,26 @@ export class TransportFailed extends Schema.Error<TransportFailed>(
   }
 }
 
+/**
+ * A clip ended before it reached the phase awaited: it failed, or it was
+ * popped from the queue, first.
+ */
+export class ClipEnded extends Schema.Error<ClipEnded>(
+  "reactor-effect-client/ReactorError/ClipEnded",
+)({
+  _tag: Schema.tag("ClipEnded"),
+  message: Schema.String,
+  clipId: Schema.String,
+  /** The lifecycle message that ended the clip. */
+  lifecycle: Schema.Literals(["clip_failed", "clip_popped"]),
+  /** The transport generation whose evidence ended it. */
+  transportGeneration: Schema.BigInt,
+}) {
+  get isRetryable(): boolean {
+    return false;
+  }
+}
+
 export const ReactorErrorReason = Schema.Union([
   Failure,
   Http,
@@ -181,6 +202,7 @@ export const ReactorErrorReason = Schema.Union([
   Native,
   IceFailed,
   TransportFailed,
+  ClipEnded,
 ]);
 export type ReactorErrorReason = typeof ReactorErrorReason.Type;
 
@@ -193,11 +215,12 @@ export const ErrorCode = Schema.Literals([
   "Native",
   "IceFailed",
   "TransportFailed",
+  "ClipEnded",
 ]);
 export type ErrorCode = ReactorErrorReason["_tag"];
 
 /** The codes a reason can be built from with a message alone. */
-export type MessageCode = Exclude<ErrorCode, "IceFailed" | "TransportFailed">;
+export type MessageCode = Exclude<ErrorCode, "IceFailed" | "TransportFailed" | "ClipEnded">;
 
 const reasonFor = (code: MessageCode, message: string): ReactorErrorReason => {
   switch (code) {

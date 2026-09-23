@@ -7,6 +7,7 @@ use crate::protocol::TrackKind;
 use crate::sync::QueueItem;
 use reactor_webrtc::{AudioFrame, RemoteTrack, VideoFrame};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One decoded BGRA frame and its sender metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub(crate) struct VideoItem {
     pub(crate) frame_id: u64,
     /// The sender's capture time; 0 when absent.
     pub(crate) timestamp_us: u64,
+    /// The frame's admission sequence on its track.
+    pub(crate) sequence: u64,
     pub(crate) bgra: Vec<u8>,
     pub(crate) metadata: Vec<u8>,
 }
@@ -26,7 +29,7 @@ pub(crate) struct VideoItem {
 impl VideoItem {
     /// Copy a frame that libwebrtc lends only for the duration of its
     /// callback. This is the one native copy of each frame.
-    fn copy(track: u32, frame: VideoFrame<'_>) -> Self {
+    fn copy(track: u32, sequence: u64, frame: VideoFrame<'_>) -> Self {
         let (frame_id, timestamp_us, metadata) = frame
             .metadata
             .map(|metadata| {
@@ -43,6 +46,7 @@ impl VideoItem {
             height: frame.height,
             frame_id,
             timestamp_us,
+            sequence,
             bgra: frame.bgra.to_vec(),
             metadata,
         }
@@ -58,6 +62,7 @@ impl VideoItem {
             timestamp_us: self.timestamp_us,
             track: self.track,
             reserved: 0,
+            sequence: self.sequence,
         }
     }
 }
@@ -75,16 +80,19 @@ pub(crate) struct AudioItem {
     pub(crate) track: u32,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u32,
+    /// The block's admission sequence on its track.
+    pub(crate) sequence: u64,
     pub(crate) pcm: Vec<i16>,
 }
 
 impl AudioItem {
     /// Copy a block that libwebrtc lends only for the duration of its callback.
-    fn copy(track: u32, frame: &AudioFrame<'_>) -> Self {
+    fn copy(track: u32, sequence: u64, frame: &AudioFrame<'_>) -> Self {
         Self {
             track,
             sample_rate: frame.sample_rate,
             channels: frame.channels,
+            sequence,
             pcm: frame.pcm.to_vec(),
         }
     }
@@ -95,6 +103,7 @@ impl AudioItem {
             channels: self.channels,
             samples: queued_len(self.pcm.len()),
             track: self.track,
+            sequence: self.sequence,
         }
     }
 }
@@ -120,15 +129,20 @@ pub(crate) fn kind_of(track: &RemoteTrack) -> TrackKind {
 }
 
 /// Copy a remote track's decoded frames into the media queues, labelled with
-/// the declared track's index.
+/// the declared track's index and numbered in admission order. The number is
+/// taken before the queue can drop the frame, so a reader sees each drop as a
+/// gap. libwebrtc delivers one track's frames on one thread, in order.
 pub(crate) fn route(track: &RemoteTrack, index: u32, shared: &Arc<Shared>) {
     let shared = Arc::clone(shared);
+    let admitted = AtomicU64::new(0);
     match track {
         RemoteTrack::Video(video) => video.on_frame(move |frame| {
-            shared.admit(|| shared.push_video(VideoItem::copy(index, frame)));
+            let sequence = admitted.fetch_add(1, Ordering::Relaxed);
+            shared.admit(|| shared.push_video(VideoItem::copy(index, sequence, frame)));
         }),
         RemoteTrack::Audio(audio) => audio.on_frame(move |frame| {
-            shared.admit(|| shared.push_audio(AudioItem::copy(index, &frame)));
+            let sequence = admitted.fetch_add(1, Ordering::Relaxed);
+            shared.admit(|| shared.push_audio(AudioItem::copy(index, sequence, &frame)));
         }),
     }
 }
@@ -145,6 +159,7 @@ mod tests {
             height: 1,
             frame_id: 0,
             timestamp_us: 0,
+            sequence: 0,
             bgra: vec![0; 8],
             metadata: vec![0; 3],
         };
@@ -152,6 +167,7 @@ mod tests {
             track: 1,
             sample_rate: 48_000,
             channels: 2,
+            sequence: 0,
             pcm: vec![0; 480],
         };
         assert_eq!(video.byte_len(), 11);
@@ -166,6 +182,7 @@ mod tests {
             height: 1,
             frame_id: u64::MAX,
             timestamp_us: 9_007_199_254_740_993,
+            sequence: 41,
             bgra: vec![0x21; 8],
             metadata: b"meta".to_vec(),
         };
@@ -180,12 +197,14 @@ mod tests {
                 timestamp_us: 9_007_199_254_740_993,
                 track: 3,
                 reserved: 0,
+                sequence: 41,
             }
         );
         let audio = AudioItem {
             track: 1,
             sample_rate: 48_000,
             channels: 2,
+            sequence: 7,
             pcm: vec![0; 960],
         };
         assert_eq!(
@@ -195,6 +214,7 @@ mod tests {
                 channels: 2,
                 samples: 960,
                 track: 1,
+                sequence: 7,
             }
         );
     }

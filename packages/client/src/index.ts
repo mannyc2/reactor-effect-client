@@ -20,11 +20,14 @@ export {
   Native,
   IceFailed,
   TransportFailed,
+  ClipEnded,
   ReactorErrorReason,
   isReactorFailure,
 } from "./errors.js";
 export type { ErrorContext, MessageCode, ReactorFailure, RemoteOutcome } from "./errors.js";
 export { PeerFactory } from "./PeerFactory.js";
+export { recorder } from "./session/recorder.js";
+export type { Recorded } from "./session/recorder.js";
 export type { PeerFactoryShape } from "./PeerFactory.js";
 export type {
   SessionEvent,

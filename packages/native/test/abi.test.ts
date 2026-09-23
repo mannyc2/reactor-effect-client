@@ -20,7 +20,7 @@ describe("native C ABI", () => {
     const manifest = await verifyStagedNativeBridge(libraryPath);
     expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(manifest.build).toMatchObject({
-      abiVersion: 3,
+      abiVersion: 4,
       profile: "release",
       sourceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
@@ -34,7 +34,7 @@ describe("native C ABI", () => {
     // the actual codec artifact is independently exercised by the other tests.
     const build = {
       schemaVersion: 1,
-      abiVersion: 3,
+      abiVersion: 4,
       profile: "release",
       sourceSha256: "0".repeat(64),
     };
@@ -101,23 +101,23 @@ describe("native C ABI", () => {
     }
   });
 
-  test("rejects an ABI 2 library and missing required symbols before peer allocation", async () => {
+  test("rejects an ABI 3 library and missing required symbols before peer allocation", async () => {
     if (process.platform === "win32") return;
     const fixtures: string[] = [];
     try {
       const previous = compileLibrary(
-        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 2; }\n",
-        "abi_two",
+        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 3; }\n",
+        "abi_three",
       );
       fixtures.push(previous.directory);
       await expect(checkNativeBridge(previous.path)).rejects.toMatchObject({
         reason: { _tag: "Native" },
-        message: "native WebRTC ABI mismatch: expected 3, received 2",
+        message: "native WebRTC ABI mismatch: expected 4, received 3",
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
 
       const missing = compileLibrary(
-        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 3; }\n",
+        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 4; }\n",
         "missing_symbols",
       );
       fixtures.push(missing.directory);

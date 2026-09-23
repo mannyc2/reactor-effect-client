@@ -90,12 +90,14 @@ export const videoFrame = (value = 1): VideoFrame => ({
   metadata: new Uint8Array(),
   frameId: 0n,
   timestampMicros: 0n,
+  sequence: 0n,
 });
 export const audioFrame = (length = 480, value = 1): AudioFrame => ({
   _tag: "AudioFrame",
   track: "audio",
   sampleRate: 48000,
   channels: 1,
+  sequence: 0n,
   samples: new Int16Array(length).fill(value),
 });
 export const gate = Effect.gen(function* () {

@@ -17,7 +17,7 @@ import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { FetchHttp } from "reactor-effect-client";
+import { FetchHttp, recorder } from "reactor-effect-client";
 import type { ReactorError } from "reactor-effect-client";
 import type { IceCandidate, MediaPressure, PeerEvent } from "reactor-effect-client/host";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
@@ -201,8 +201,12 @@ interface Receiver {
   readonly id: string;
   readonly peer: NativePeer;
   readonly scope: Scope.Closeable;
-  /** Arrival time and sender-to-arrival latency of every frame, in order. */
-  readonly frames: { readonly at: number; readonly latencyMs: number }[];
+  /** Arrival time, sender-to-arrival latency and admission sequence of every frame, in order. */
+  readonly frames: {
+    readonly at: number;
+    readonly latencyMs: number;
+    readonly sequence: bigint;
+  }[];
   readonly sizes: Map<string, number>;
   readonly rtts: number[];
   /** Sampled frames the bridge held for this receiver; see sample(). */
@@ -257,6 +261,7 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
                 receiver.frames.push({
                   at: performance.now(),
                   latencyMs: wallMs() - Number(sent.getBigUint64(0, true)) / 1000,
+                  sequence: frame.sequence,
                 });
                 const size = `${frame.width}x${frame.height}`;
                 receiver.sizes.set(size, (receiver.sizes.get(size) ?? 0) + 1);
@@ -570,17 +575,25 @@ describe("native media under load", () => {
     }
   }, 60_000);
 
-  test("drops at most one frame across a 250 ms stall and evicts only the overflow of a 2 s stall, without losing audio", async () => {
+  test("evicts only what overflows the queue across a 250 ms and a 2 s stall, without losing audio", async () => {
     const receiver = await open(far, "stall");
     try {
       await until(() => receiver.frames.length >= 24, "media did not start", 15_000);
       const measured = await begin(far);
       const before = await drained(receiver);
       stall(250);
+      // What reached the bridge while JavaScript was blocked. The native video
+      // queue holds 8 frames, 333 ms at 24 fps, so at that rate nothing is
+      // evicted; a far peer that falls behind and then catches up can deliver
+      // more in the same 250 ms, and only those beyond 8 may be evicted.
+      const released = await pressure(receiver);
       await sleep(2000);
       const short = await drained(receiver);
-      // The native video queue holds 8 frames, 333 ms at 24 fps.
-      expect(short.droppedVideo - before.droppedVideo).toBeLessThanOrEqual(1n);
+      const burst = arrived(released) - arrived(before);
+      // A frame arriving before the pump resumes can evict one more.
+      expect(Number(short.droppedVideo - before.droppedVideo)).toBeLessThanOrEqual(
+        Math.max(0, burst - 8) + 1,
+      );
       expect(short.droppedAudio).toBe(0n);
 
       const stalledAt = performance.now();
@@ -598,6 +611,16 @@ describe("native media under load", () => {
         Math.abs(Number(long.droppedVideo - short.droppedVideo) - (reached - 8)),
       ).toBeLessThanOrEqual(2);
       expect(long.droppedAudio).toBe(0n);
+      // Every eviction is a gap in the admission sequence, at its position: the
+      // recorder's Lost runs add up to the bridge's own count. The reader
+      // subscribed before the answer, so its first frame is the track's first.
+      const recorded = await run(
+        Stream.runCollect(recorder(Stream.fromIterable([...receiver.frames]))),
+      );
+      expect(receiver.frames[0]?.sequence).toBe(0n);
+      const lost = recorded.flatMap((entry) => (entry._tag === "Lost" ? [entry] : []));
+      expect(lost.reduce((sum, entry) => sum + entry.count, 0n)).toBe(long.droppedVideo);
+      expect(lost.length).toBeGreaterThanOrEqual(1);
       // The backlog reached the bounded observation queue at its reader's pace,
       // drained, and delivery went on.
       expect(receiver.failures).toEqual([]);

@@ -8,5 +8,5 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["test/**/*.ts", "scripts/*.mjs", "vitest.config.ts"]
+  "include": ["test/**/*.ts", "hosted/**/*.ts", "scripts/*.mjs", "vitest.config.ts"]
 }

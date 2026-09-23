@@ -19,6 +19,7 @@ const videoFrame = (marker: number): VideoFrame => ({
   height: 1,
   frameId: BigInt(marker),
   timestampMicros: BigInt(marker),
+  sequence: BigInt(marker),
   data: new Uint8Array([marker, 0, 0, 255]),
   metadata: new Uint8Array(),
 });
@@ -27,6 +28,7 @@ const audioFrame = (marker: number): AudioFrame => ({
   track: "main_audio",
   sampleRate: 48_000,
   channels: 1,
+  sequence: BigInt(marker),
   samples: new Int16Array([marker]),
 });
 

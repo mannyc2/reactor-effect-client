@@ -8,11 +8,11 @@ import * as Redacted from "effect/Redacted";
 import { Native, ReactorError } from "reactor-effect-client";
 import type { ErrorContext, FailureCode } from "reactor-effect-client";
 
-const ABI_VERSION = 3;
+const ABI_VERSION = 4;
 const CALL_BUFFER_BYTES = 4 * 1024 * 1024;
 const FAILURE_BYTES = 1024;
-const VIDEO_HEADER_BYTES = 40;
-const AUDIO_HEADER_BYTES = 16;
+const VIDEO_HEADER_BYTES = 48;
+const AUDIO_HEADER_BYTES = 24;
 const EVENT_BUFFER_BYTES = 64 * 1024;
 // The native queues' byte bounds: no single item can exceed them.
 const MAX_EVENT_BYTES = 16 * 1024 * 1024;
@@ -418,6 +418,7 @@ export interface NativeVideo {
   readonly height: number;
   readonly frameId: bigint;
   readonly timestampMicros: bigint;
+  readonly sequence: bigint;
   readonly data: Uint8Array<ArrayBuffer>;
   readonly metadata: Uint8Array<ArrayBuffer>;
 }
@@ -426,6 +427,7 @@ export interface NativeAudio {
   readonly track: number;
   readonly sampleRate: number;
   readonly channels: number;
+  readonly sequence: bigint;
   readonly samples: Int16Array<ArrayBuffer>;
 }
 
@@ -690,6 +692,7 @@ export class NativeBridge {
           height: header.getUint32(4, true),
           frameId: header.getBigUint64(16, true),
           timestampMicros: header.getBigUint64(24, true),
+          sequence: header.getBigUint64(40, true),
           // A smaller frame than its predecessor leaves slack; never expose it.
           data: dataLength === data.byteLength ? data : data.slice(0, dataLength),
           metadata: this.metadata.slice(0, metadataLength),
@@ -730,6 +733,7 @@ export class NativeBridge {
           sampleRate: header.getUint32(0, true),
           channels: header.getUint32(4, true),
           track: header.getUint32(12, true),
+          sequence: header.getBigUint64(16, true),
           samples: samples === pcm.length ? pcm : pcm.slice(0, samples),
         };
       }

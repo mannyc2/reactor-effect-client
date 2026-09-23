@@ -90,6 +90,49 @@ export interface Acceptance {
   readonly clip: Clip;
   readonly evidence: { readonly kind: "correlated" | "metadata"; readonly source: CommandReply };
 }
+/** A phase a clip can be awaited to reach. */
+export type ClipPhase = "generated" | "started";
+
+/** One piece of evidence about a clip, and the transport generation that carried it. */
+export interface ClipFact {
+  readonly clipId: string;
+  /**
+   * The lifecycle message that established it, or the `queue_update` or
+   * `state_update` snapshot that listed the clip.
+   */
+  readonly message: MessageType;
+  readonly transportGeneration: bigint;
+  readonly source: CommandReply;
+}
+
+/** What one clip operation has established so far; monotone. */
+export interface OperationFacts {
+  readonly submissionId: string;
+  readonly acceptance?: Acceptance;
+  readonly generated?: ClipFact;
+  readonly started?: ClipFact;
+  readonly ended?: ClipFact;
+  /** The provider retired before evidence decided the rest. */
+  readonly indeterminate: boolean;
+}
+
+/**
+ * A committed clip's facts as they arrive. Each resolves at most once, from
+ * the provider's own reducer: a phase completes when it or a later one is
+ * observed, fails with `ClipEnded` when the clip failed or was popped first,
+ * and fails `Indeterminate` if the provider retires before evidence decides it.
+ * every fact fails with the enqueue's own failure when that failure was
+ * definite. Evidence from a later transport generation of the same session
+ * still resolves the operation.
+ */
+export interface ClipOperation {
+  readonly submissionId: string;
+  readonly accepted: Effect.Effect<Acceptance, ReactorError | CommandFailure>;
+  readonly reached: (phase: ClipPhase) => Effect.Effect<ClipFact, ReactorError | CommandFailure>;
+  readonly ended: Effect.Effect<ClipFact, ReactorError | CommandFailure>;
+  readonly facts: Effect.Effect<OperationFacts>;
+}
+
 export interface Reply<K extends MessageType> {
   readonly value: Payload<K>;
   readonly source: CommandReply;
@@ -166,6 +209,12 @@ export interface Options extends ReplyTimeoutOptions, UploadTimeoutOptions {
   readonly maxPending?: number;
   readonly maxTrackedClips?: number;
   readonly maxAcceptances?: number;
+  /**
+   * Clip operations retained for `operation`, 1024 by default. A commit takes a
+   * slot before it sends anything; when every slot holds an operation that has
+   * not ended, the commit is refused with `Overflow`, not submitted.
+   */
+  readonly maxOperations?: number;
   readonly maxCachedUploads?: number;
   readonly maxRetainedBytes?: number;
   readonly maxPromptBytes?: number;
@@ -184,6 +233,16 @@ export interface Provider {
   /** Local annotations are separate from the provider's authoritative state. */
   readonly acceptances: Effect.Effect<readonly Acceptance[]>;
   readonly acceptance: (submissionId: string) => Effect.Effect<Acceptance | undefined>;
+  /**
+   * The retained facts of a committed submission's clip, from acceptance to its
+   * end, for as long as the scope holds them: releasing the scope acknowledges
+   * the operation and frees its slot. Call it once `submit` has started; a
+   * submission that never committed, or whose ended operation was evicted,
+   * fails with `InvalidState`.
+   */
+  readonly operation: (
+    submission: Pick<Submission<Acceptance, unknown>, "id">,
+  ) => Effect.Effect<ClipOperation, ReactorError, Scope.Scope>;
   readonly prepare: <E extends PolicyFailure = never>(
     request: Request,
     hooks?: PrepareHooks<E>,

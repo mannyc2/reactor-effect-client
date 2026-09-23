@@ -132,7 +132,13 @@ export const make = (options: Options) =>
           }),
         ),
       )
-      .pipe(Effect.withSpan("reactor.orchestration.source.close"));
+      .pipe(
+        Effect.withSpan(
+          "reactor.orchestration.source.close",
+          { attributes: { "reactor.session.id": options.source.id } },
+          { captureStackTrace: false },
+        ),
+      );
 
     return {
       source: options.source,

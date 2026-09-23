@@ -42,7 +42,7 @@ export const compileLibrary = (
   return { directory, path };
 };
 
-/** The scripted ABI 3 fixture; `prefix` is prepended to its source. */
+/** The scripted ABI 4 fixture; `prefix` is prepended to its source. */
 export const compileFixture = (
   prefix = "",
 ): { readonly directory: string; readonly path: string } =>

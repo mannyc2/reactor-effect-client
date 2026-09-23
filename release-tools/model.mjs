@@ -75,7 +75,7 @@ const NativeIdentity = Schema.Struct({
   library: text,
   sha256: digest,
   build: Schema.Struct({
-    abiVersion: Schema.Literal(3),
+    abiVersion: Schema.Literal(4),
     sourceSha256: digest,
     profile: Schema.Literal("release"),
   }),

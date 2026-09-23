@@ -6,12 +6,12 @@
 #include <string.h>
 #include <unistd.h>
 
-/* The real header: every function below must match its ABI 3 prototype. */
+/* The real header: every function below must match its ABI 4 prototype. */
 #include "reactor_effect_native.h"
 
 /* The layouts the host decodes, also asserted against the Rust definitions. */
-_Static_assert(sizeof(ReactorEffectVideoHeader) == 40, "video header layout");
-_Static_assert(sizeof(ReactorEffectAudioHeader) == 16, "audio header layout");
+_Static_assert(sizeof(ReactorEffectVideoHeader) == 48, "video header layout");
+_Static_assert(sizeof(ReactorEffectAudioHeader) == 24, "audio header layout");
 _Static_assert(sizeof(ReactorEffectFailure) == 1024, "failure layout");
 
 /* A scripted stand-in for the bridge, without libwebrtc, so tests control
@@ -190,7 +190,7 @@ static size_t make_packet(const char *header, uint8_t *out, size_t cap) {
   return needed;
 }
 
-uint32_t reactor_effect_abi_version(void) { return 3; }
+uint32_t reactor_effect_abi_version(void) { return 4; }
 #ifndef REACTOR_EFFECT_FIXTURE_BUILD_IDENTITY
 #define REACTOR_EFFECT_FIXTURE_BUILD_IDENTITY "explicit-native-test-fixture"
 #endif
@@ -305,6 +305,7 @@ int reactor_effect_peer_take_video(ReactorEffectPeer *peer, ReactorEffectVideoHe
     .frame_id = UINT64_MAX,
     .timestamp_us = 9007199254740993ULL,
     .track = media_fault ? 1 : 0,
+    .sequence = 9007199254740993ULL,
   };
   if (bgra == NULL || bgra_cap < sizeof(pixel) || metadata == NULL || metadata_cap < sizeof(trailer))
     return REACTOR_EFFECT_BUFFER_TOO_SMALL;
@@ -325,6 +326,7 @@ int reactor_effect_peer_take_audio(ReactorEffectPeer *peer, ReactorEffectAudioHe
     .channels = 2,
     .samples = 4,
     .track = 1,
+    .sequence = 3,
   };
   if (pcm == NULL || pcm_cap < 4) return REACTOR_EFFECT_BUFFER_TOO_SMALL;
   memcpy(pcm, samples, sizeof(samples));

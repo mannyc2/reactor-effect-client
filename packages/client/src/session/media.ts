@@ -26,6 +26,13 @@ export interface VideoFrame {
   readonly frameId: bigint;
   /** Sender-clock microseconds; zero means absent. */
   readonly timestampMicros: bigint;
+  /**
+   * The frame's admission sequence on its track in this generation, from 0,
+   * taken before any bounded queue could drop it: a gap between consecutive
+   * frames is the count of frames the host dropped there. `recorder` makes the
+   * gaps explicit.
+   */
+  readonly sequence: bigint;
   /** The pixel layout of `data`; the native host produces `"BGRA"`. */
   readonly format: VideoFormat;
   /** Owned pixel bytes in `format`, `width * height * 4` of them. Retaining a frame never retains native memory. */
@@ -42,6 +49,8 @@ export interface AudioFrame {
   readonly track: string;
   readonly sampleRate: number;
   readonly channels: number;
+  /** The block's admission sequence on its track in this generation, as a `VideoFrame`'s. */
+  readonly sequence: bigint;
   /** Owned, interleaved signed 16-bit PCM samples. */
   readonly samples: Int16Array;
 }
