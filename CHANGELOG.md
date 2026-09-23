@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.0` range does not include 0.3.0, so applications move to it deliberately.
 
+Qualification: on September 23, 2026 the ABI 3 media path passed `native:test` in a linux-x64 container (Rust 1.90.0, Clang 21.1.8, Node 24.15.0, Bun 1.4.2) and in CI on GitHub's linux-x64 and darwin-arm64 runners on Node and Bun, with the Chrome integration test on each; the README's support section keeps its measured limits, and the full record is in the README at [c2e6618]. Against the ABI 2 bridge, the same load tests had failed throughput, stall and renewal on Bun and the two-session test on Node. Getting them to pass on the darwin-arm64 runner took linking the far peer against compiler-rt, holding its congestion controller at a fixed rate and stopping Spotlight during the native job.
+
 ### Added
 
 - `EngineShape.observe(options)` and `Source.observe(options)` return an `EngineObservation`: the engine's state and a stream of every event after it, subscribed before the state is read, so no event falls between them. Events may repeat what the state already reflects and are applied by `clipId`; after an `Overflow`, observe again. `Observations.observeWith(state, options)` builds the same pairing for a host's own observations.
@@ -94,6 +96,8 @@ The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.
 
 ## [0.2.0] - 2026-09-23
 
+Qualification: on September 22, 2026, before the canonical API migration and the workspace split, the ABI 2 bridge passed its Rust tests (including the real libwebrtc loopback), clippy with warnings denied and its JavaScript native tests on macOS arm64, and again in Linux x64 userspace under Rosetta translation, with glibc 2.36 on Node 24.14.1 and Bun 1.4.2. That Linux run found that Clang 14 cannot compile the pinned WebRTC headers, so the build recipes select Clang 21. Chrome 153 exchanged binary messages and media with the native bridge, directly and through a loopback-only Coturn 4.18.0 relay. No hosted Reactor generation was run. The full records are in the README at [eb0db13].
+
 ### Added
 
 - First publication of the three packages, built from commit [eb0db13] and published to npm with SLSA provenance by the release workflow.
@@ -104,6 +108,7 @@ The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.
 [unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149...main
 [0.2.0]: https://github.com/mannyc2/reactor-effect-client/tree/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
 [eb0db13]: https://github.com/mannyc2/reactor-effect-client/commit/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
+[c2e6618]: https://github.com/mannyc2/reactor-effect-client/commit/c2e66189d8e6d18782b8a2b5afcc47a9fc9fd8ee
 [3f48e19]: https://github.com/mannyc2/reactor-effect-client/commit/3f48e19a095eee8e9d538390fd4b6dfa8d5431e2
 [6291dc5]: https://github.com/mannyc2/reactor-effect-client/commit/6291dc5ca27ea0111d76a4a22e40d04d64bc4498
 [90f3b05]: https://github.com/mannyc2/reactor-effect-client/commit/90f3b05541277d9ca1ef290bed173e77bb2c48d8
