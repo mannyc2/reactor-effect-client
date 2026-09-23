@@ -797,6 +797,36 @@ export class Session {
               // reply or retiring this generation releases the slot; a timeout does not.
             }),
           ),
+          // The span covers the owned execution, not the caller's wait: the wire has no
+          // cancel, so it ends with the request's own outcome even after the caller stops
+          // waiting. It records identity and dispatch evidence only; failure messages are
+          // library-written, so its Exit carries no input, reply or provider text.
+          Effect.onExit((exit) => {
+            const error = Exit.findError(exit);
+            return Effect.annotateCurrentSpan(
+              Exit.isSuccess(exit)
+                ? { "reactor.command.outcome": "replied" }
+                : error._tag === "Success"
+                  ? {
+                      "reactor.command.outcome": error.success.context.outcome,
+                      "error.type": error.success.code,
+                    }
+                  : // No typed failure: the connection scope closed, or a defect.
+                    { "reactor.command.outcome": pending.submitted ? "unknown" : "not-submitted" },
+            );
+          }),
+          Effect.withSpan(
+            channel === "data" ? "reactor.session.command" : "reactor.session.control",
+            {
+              kind: "client",
+              attributes: {
+                "reactor.operation": operation,
+                "reactor.request.id": pending.id,
+                "reactor.connection.generation": c.generation,
+              },
+            },
+            { captureStackTrace: false },
+          ),
         );
         const owner = yield* Effect.forkIn(execution, c.scope, { startImmediately: true });
         return yield* restore(Fiber.join(owner));
