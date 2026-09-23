@@ -21,6 +21,10 @@ export const ErrorCode = Schema.Literals([
   "Closed",
   "AlreadyReading",
   "Shutdown",
+  "SdpRejected",
+  "IceFailed",
+  "TransportFailed",
+  "ChannelClosed",
 ]);
 export type ErrorCode = typeof ErrorCode.Type;
 export type RemoteOutcome = "not-submitted" | "unknown" | "replied";

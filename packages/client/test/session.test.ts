@@ -292,6 +292,23 @@ test("session policy: failure DURING setRemoteDescription preserves the actual p
       await run(s.close());
     }
   }));
+test("session policy: a closed data channel fails the connection as ChannelClosed naming it", () =>
+  withFixture(async (f) => {
+    const { session: s, peers } = makeSession(f);
+    try {
+      await run(s.start());
+      const generation = s.snapshot.generation;
+      peerAt(peers).emit({ type: "channel", channel: "control", open: false });
+      await eventually(() => s.snapshot.status === "disconnected");
+      const error = s.snapshot.lastError;
+      assert(error !== undefined, "channel closure left no diagnostic");
+      equal(error.code, "ChannelClosed");
+      equal(error.context.generation, generation);
+      equal(error.context.detail, { channel: "control" });
+    } finally {
+      await run(s.close());
+    }
+  }));
 test("session policy: missing readiness times out and releases the generation", () =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { readyTimeoutMs: 10 }, (p) => {
