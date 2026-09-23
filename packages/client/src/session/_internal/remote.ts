@@ -55,22 +55,18 @@ export class RemoteSession {
     return Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         if (lifecycle.isClosing)
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "Closed",
-              message: "session is closed",
-              context: { outcome: "not-submitted" },
-            }),
-          );
+          return yield* new ReactorError({
+            code: "Closed",
+            message: "session is closed",
+            context: { outcome: "not-submitted" },
+          });
         if (isKnownRemote(self.value)) return self.value.id;
         if (self.value !== undefined)
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "InvalidState",
-              message: "session allocation is already pending or unresolved",
-              context: { outcome: "unknown" },
-            }),
-          );
+          return yield* new ReactorError({
+            code: "InvalidState",
+            message: "session allocation is already pending or unresolved",
+            context: { outcome: "unknown" },
+          });
         const intent = options.intent;
         if (intent._tag === "Attach") {
           self.value = {

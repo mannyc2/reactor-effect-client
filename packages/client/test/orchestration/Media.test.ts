@@ -232,7 +232,7 @@ test("unrecoverable media reports each lost clip with its source and replacement
 test("reconnect reports clips missing from refreshed active state without inventing their lifecycle", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate(),
+      const held = yield* gate,
         events: EngineEvent[] = [];
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
       yield* handle.engine.events.pipe(

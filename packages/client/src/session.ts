@@ -485,7 +485,7 @@ export class Session {
                 context: { generation: c.generation },
               }),
             );
-          if (c.peer.shutdown !== undefined) yield* c.peer.shutdown().pipe(Effect.orDie);
+          if (c.peer.shutdown !== undefined) yield* c.peer.shutdown.pipe(Effect.orDie);
         }),
       );
       if (previous !== undefined) {
@@ -600,16 +600,15 @@ export class Session {
         const capabilities = descriptor.capabilities,
           transport = descriptor.selected_transport;
         if (capabilities === undefined || transport === undefined)
-          return yield* Effect.fail(
-            new ReactorError({ code: "Protocol", message: "missing ready capabilities/transport" }),
-          );
+          return yield* new ReactorError({
+            code: "Protocol",
+            message: "missing ready capabilities/transport",
+          });
         if (transport.protocol !== "webrtc" || transport.version !== "1.0")
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "VersionMismatch",
-              message: `unsupported transport ${transport.protocol}/${transport.version}`,
-            }),
-          );
+          return yield* new ReactorError({
+            code: "VersionMismatch",
+            message: `unsupported transport ${transport.protocol}/${transport.version}`,
+          });
         const readyDescriptor: ReadyDescriptor = Object.freeze({
           ...descriptor,
           capabilities,
@@ -733,19 +732,17 @@ export class Session {
         if (encoded._tag === "Failure") {
           correlator.cancel(pending);
           c.pendingClaims.delete(pending.id);
-          return yield* Effect.fail(
-            new ReactorError({
-              code: encoded.failure.code,
-              message: encoded.failure.message,
-              context: {
-                ...encoded.failure.context,
-                operation,
-                requestId: pending.id,
-                generation: c.generation,
-                outcome: "not-submitted",
-              },
-            }),
-          );
+          return yield* new ReactorError({
+            code: encoded.failure.code,
+            message: encoded.failure.message,
+            context: {
+              ...encoded.failure.context,
+              operation,
+              requestId: pending.id,
+              generation: c.generation,
+              outcome: "not-submitted",
+            },
+          });
         }
         const failure = (error: ReactorError) =>
           new ReactorError({
@@ -1112,24 +1109,20 @@ export class Session {
       (c, track) =>
         Effect.gen(function* () {
           if (c.peer.nativeTracks === false)
-            return yield* Effect.fail(
-              new ReactorError({
-                code: "UnsupportedCapability",
-                message: "this peer does not accept browser media tracks",
-                context: { outcome: "not-submitted" },
-              }),
-            );
+            return yield* new ReactorError({
+              code: "UnsupportedCapability",
+              message: "this peer does not accept browser media tracks",
+              context: { outcome: "not-submitted" },
+            });
           if (
             track.direction !== "sendonly" ||
             source.kind !== track.kind ||
             source.readyState !== "live"
           )
-            return yield* Effect.fail(
-              new ReactorError({
-                code: "InvalidState",
-                message: "publish requires a live matching input track",
-              }),
-            );
+            return yield* new ReactorError({
+              code: "InvalidState",
+              message: "publish requires a live matching input track",
+            });
           if (!c.claimed.has(name)) {
             const reply = yield* self.controlRequest(
               "publish_track",
@@ -1137,13 +1130,11 @@ export class Session {
               c,
             );
             if (reply.case !== "publish_track" || reply.value.name !== name)
-              return yield* Effect.fail(
-                new ReactorError({
-                  code: "UnexpectedReply",
-                  message: "publisher claim reply mismatch",
-                  context: { outcome: "replied" },
-                }),
-              );
+              return yield* new ReactorError({
+                code: "UnexpectedReply",
+                message: "publisher claim reply mismatch",
+                context: { outcome: "replied" },
+              });
             c.claimed.add(name);
           }
           yield* self.replaceSender(c, name, source);
@@ -1215,7 +1206,7 @@ export class Session {
     const self = this;
     return Effect.gen(function* () {
       const connection = yield* pure(() => self.currentReady());
-      const raw = yield* self.guard(connection, connection.peer.stats());
+      const raw = yield* self.guard(connection, connection.peer.stats);
       // Elapsed sampling time belongs to this Effect boundary, not the pure sampler.
       const atNanos = yield* Clock.monotonicTimeNanos;
       const atMs = Number(atNanos) / 1_000_000;
@@ -1223,9 +1214,7 @@ export class Session {
     });
   }
   rawStats(): Effect.Effect<readonly unknown[], ReactorError> {
-    return pure(() => this.currentReady()).pipe(
-      Effect.flatMap((c) => this.guard(c, c.peer.stats())),
-    );
+    return pure(() => this.currentReady()).pipe(Effect.flatMap((c) => this.guard(c, c.peer.stats)));
   }
   upload(
     name: string,
@@ -1323,11 +1312,8 @@ export class Session {
           self.lifecycle.transition("closed");
           self.observations.end();
           Deferred.doneUnsafe(gate, Effect.succeed(report));
-          try {
-            self.options.onClose?.(report);
-          } catch {
-            /* Consumer callbacks cannot undo or stall cleanup. */
-          }
+          // Consumer callbacks cannot undo or stall cleanup.
+          yield* Effect.ignore(Effect.try(() => self.options.onClose?.(report)));
           return report;
         });
       }),

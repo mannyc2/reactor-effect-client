@@ -351,12 +351,10 @@ export const recordingPlayback = (
       const timeout = options.timeoutMs ?? 10000,
         activation = options.activationTimeoutMs ?? 5000;
       if (![timeout, activation].every((n) => Number.isSafeInteger(n) && n > 0 && n <= 60000))
-        return yield* Effect.fail(
-          new ReactorError({
-            code: "Protocol",
-            message: "recording check deadlines must be 1..60000 ms",
-          }),
-        );
+        return yield* new ReactorError({
+          code: "Protocol",
+          message: "recording check deadlines must be 1..60000 ms",
+        });
       const resources = yield* Effect.acquireRelease(
         Effect.try({ try: () => open(bytes, context, options.preview), catch: failure }),
         (resources) => Effect.sync(() => resources.close()),

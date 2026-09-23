@@ -55,7 +55,7 @@ export interface Call {
 export interface ReplyContext {
   readonly fake: Fixture;
   readonly call: Call;
-  readonly defaults: () => Effect.Effect<WireMessage | undefined, CommandFailure>;
+  readonly defaults: Effect.Effect<WireMessage | undefined, CommandFailure>;
   readonly fail: (
     outcome: "unknown" | "replied" | "not-submitted",
     code?: ReactorError["code"],
@@ -386,14 +386,12 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       command: (command, input, attachments, timeout = 1000) =>
         Effect.gen(function* () {
           if (status !== "ready")
-            return yield* Effect.fail(
-              CommandFailure.from(
-                new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
-                {
-                  operation: command,
-                  outcome: "not-submitted",
-                },
-              ),
+            return yield* CommandFailure.from(
+              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+              {
+                operation: command,
+                outcome: "not-submitted",
+              },
             );
           const call: Call = {
             command,
@@ -417,7 +415,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               generation: call.generation,
             });
           const commandEffect =
-            script.command?.[command]?.({ fake, call, defaults: () => defaults(call), fail }) ??
+            script.command?.[command]?.({ fake, call, defaults: defaults(call), fail }) ??
             defaults(call);
           const message = yield* commandEffect.pipe(
             Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(fail("unknown")) }),
@@ -526,8 +524,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
     return fake;
   });
 
-export const gate = () =>
-  Effect.gen(function* () {
-    const signal = yield* Deferred.make<void>();
-    return { wait: Deferred.await(signal), release: Deferred.succeed(signal, undefined) };
-  });
+export const gate = Effect.gen(function* () {
+  const signal = yield* Deferred.make<void>();
+  return { wait: Deferred.await(signal), release: Deferred.succeed(signal, undefined) };
+});

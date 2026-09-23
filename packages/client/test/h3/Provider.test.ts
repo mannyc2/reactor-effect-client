@@ -140,7 +140,7 @@ describe("canonical H3 provider acquisition", () => {
   test("interrupting acquisition joins its local reader and never resets someone else's Session", () =>
     run(
       Effect.gen(function* () {
-        const entered = yield* gate();
+        const entered = yield* gate;
         const fake = yield* fixture({
           command: { get_state: () => entered.release.pipe(Effect.andThen(Effect.never)) },
         });
@@ -606,7 +606,7 @@ describe("H3 command and observation authority", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
-          command: { enqueue: () => Effect.succeed(undefined) },
+          command: { enqueue: () => Effect.undefined },
         });
         const prepared = yield* provider.prepare(request());
         const first = yield* Effect.result(prepared.submit),
@@ -705,7 +705,7 @@ describe("H3 command and observation authority", () => {
                   { clip: { ...clip, ready: true } },
                   { requestId: call.requestId, correlation: "late" },
                 );
-                return yield* Effect.fail(fail("unknown", "Disconnected"));
+                return yield* fail("unknown", "Disconnected");
               }),
           },
         });
@@ -1110,7 +1110,7 @@ describe("H3 explicit commands", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
-          command: { set_autoplay: ({ defaults }) => defaults().pipe(Effect.as(undefined)) },
+          command: { set_autoplay: ({ defaults }) => defaults.pipe(Effect.as(undefined)) },
         });
         const result = yield* Effect.result(provider.setAutoplay(true));
         expect(Result.isFailure(result) && result.failure.context.outcome).toBe("unknown");
@@ -1232,7 +1232,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup();
-        const held = yield* gate();
+        const held = yield* gate;
         let entered = false,
           released = 0,
           attempts = 0,
@@ -1278,7 +1278,7 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("cancelling upload prework never dispatches the clip later", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         const { fake, provider } = yield* setup({
           upload: () =>
             held.wait.pipe(
@@ -1330,10 +1330,10 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("caller cancellation after commit does not cancel or replay a late accepted enqueue", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         let resultHooks = 0;
         const { fake, provider } = yield* setup(
-          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults())) } },
+          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
           { commandTimeoutMs: 1000 },
         );
         const prepared = yield* provider.prepare(request(), {
@@ -1361,12 +1361,12 @@ describe("H3 preparation, cancellation and bounds", () => {
           command: {
             enqueue: ({ defaults, fake, fail }) =>
               Effect.gen(function* () {
-                yield* defaults();
+                yield* defaults;
                 yield* Effect.sleep(5);
                 yield* fake.failObservation(
                   new ReactorError({ code: "Closed", message: "fixture source ended" }),
                 );
-                return yield* Effect.fail(fail("unknown", "Disconnected"));
+                return yield* fail("unknown", "Disconnected");
               }),
           },
         });
@@ -1380,9 +1380,9 @@ describe("H3 preparation, cancellation and bounds", () => {
   test("pending acceptance and retained annotation counts are bounded without replay", () =>
     run(
       Effect.gen(function* () {
-        const held = yield* gate();
+        const held = yield* gate;
         const { fake, provider } = yield* setup(
-          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults())) } },
+          { command: { enqueue: ({ defaults }) => held.wait.pipe(Effect.andThen(defaults)) } },
           { maxPending: 1, maxAcceptances: 1, commandTimeoutMs: 1000 },
         );
         const first = yield* provider.prepare(request());
@@ -1475,7 +1475,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     run(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup();
-        const held = yield* gate();
+        const held = yield* gate;
         let blocked = false;
         const observation = yield* provider.observe({ capacity: 1 });
         const reader = yield* observation.events.pipe(

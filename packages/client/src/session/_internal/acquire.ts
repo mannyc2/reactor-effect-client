@@ -174,9 +174,7 @@ export const makeFactory = (
           ...configuration.session,
           apiUrl: configuration.apiUrl ?? "https://api.reactor.inc",
           credential:
-            credential === undefined
-              ? Effect.succeed(undefined)
-              : Effect.map(credential, Redacted.value),
+            credential === undefined ? Effect.undefined : Effect.map(credential, Redacted.value),
           requestNamespace: Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
             "",
           ),

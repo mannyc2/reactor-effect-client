@@ -259,7 +259,7 @@ test("upload failure leaves a closed source reader and no staging files or gener
 test("cancelling after file read while upload waits cannot leave temporary files or enqueue", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       const h = yield* setup({ upload: () => held.wait.pipe(Effect.andThen(Effect.never)) });
       const source = h.path.join(h.directory, "upload-waits.png");
       yield* h.fs.writeFile(source, pngBytes(32, 24));
@@ -300,8 +300,8 @@ test("the standalone URI loader retains typed malformed-URL and encoded-byte bou
 test("concurrent submissions single-flight identical reference uploads without a URI cache", () =>
   run(
     Effect.gen(function* () {
-      const entered = yield* gate(),
-        held = yield* gate();
+      const entered = yield* gate,
+        held = yield* gate;
       const h = yield* setup({
         upload: (name, mimeType, bytes) =>
           entered.release.pipe(

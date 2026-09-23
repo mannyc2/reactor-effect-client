@@ -628,7 +628,7 @@ export class NativePeer implements Peer {
       this.bridge.call(NativeCall.MaxBitrate, encodeNativeJson({ name, bitsPerSecond })),
     ).pipe(Effect.asVoid);
   }
-  stats(): Effect.Effect<readonly unknown[], ReactorError> {
+  get stats(): Effect.Effect<readonly unknown[], ReactorError> {
     return bridgeEffect("native WebRTC statistics", () => this.bridge.call(NativeCall.Stats)).pipe(
       Effect.flatMap((value) =>
         Effect.try({
@@ -696,7 +696,7 @@ export class NativePeer implements Peer {
     }
   }
 
-  shutdown(): Effect.Effect<void, ReactorError> {
+  get shutdown(): Effect.Effect<void, ReactorError> {
     return bridgeEffect("shutdown native WebRTC", () => {
       this.close();
       return this.bridge.shutdown();

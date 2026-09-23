@@ -390,7 +390,7 @@ const build = (
           ),
         );
         if (message?.type === "command_error" && message.data.command === operation)
-          return yield* Effect.fail(rejected(operation, source));
+          return yield* rejected(operation, source);
         return { source, message };
       });
     const named = <K extends ReplyCommand>(
@@ -455,11 +455,9 @@ const build = (
         yield* active("enqueue", true);
         const before = state.snapshot();
         if (before._tag !== "Ready")
-          return yield* Effect.fail(
-            localFailure(
-              "enqueue",
-              new ReactorError({ code: "InvalidState", message: "H3 is not ready" }),
-            ),
+          return yield* localFailure(
+            "enqueue",
+            new ReactorError({ code: "InvalidState", message: "H3 is not ready" }),
           );
         if (request.seconds !== undefined)
           yield* checked("enqueue", () =>
@@ -496,24 +494,20 @@ const build = (
                 .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
               const file = yield* checked("enqueue", () => checkedUpload(uploaded.file));
               if (file.size !== BigInt(reference.size) || file.mime_type !== reference.mimeType)
-                return yield* Effect.fail(
-                  localFailure(
-                    "enqueue",
-                    new ReactorError({
-                      code: "Protocol",
-                      message: "H3 upload returned different file facts",
-                    }),
-                  ),
+                return yield* localFailure(
+                  "enqueue",
+                  new ReactorError({
+                    code: "Protocol",
+                    message: "H3 upload returned different file facts",
+                  }),
                 );
               if (state.snapshot().transportGeneration !== before.transportGeneration)
-                return yield* Effect.fail(
-                  localFailure(
-                    "enqueue",
-                    new ReactorError({
-                      code: "Disconnected",
-                      message: "H3 reference upload crossed a generation",
-                    }),
-                  ),
+                return yield* localFailure(
+                  "enqueue",
+                  new ReactorError({
+                    code: "Disconnected",
+                    message: "H3 reference upload crossed a generation",
+                  }),
                 );
               if (uploads.size >= limits.cache) {
                 const first = uploads.keys().next();
@@ -576,24 +570,20 @@ const build = (
               entry.generation !== state.snapshot().transportGeneration ||
               live.generation !== entry.generation
             )
-              return yield* Effect.fail(
-                localFailure(
-                  "enqueue",
-                  new ReactorError({
-                    code: "Disconnected",
-                    message: "H3 prepared input crossed a transport generation",
-                  }),
-                ),
+              return yield* localFailure(
+                "enqueue",
+                new ReactorError({
+                  code: "Disconnected",
+                  message: "H3 prepared input crossed a transport generation",
+                }),
               );
             if (pending.size >= limits.pending)
-              return yield* Effect.fail(
-                localFailure(
-                  "enqueue",
-                  new ReactorError({
-                    code: "Overflow",
-                    message: "H3 pending acceptance bound reached",
-                  }),
-                ),
+              return yield* localFailure(
+                "enqueue",
+                new ReactorError({
+                  code: "Overflow",
+                  message: "H3 pending acceptance bound reached",
+                }),
               );
             // Acceptance registration is inside the same commit boundary as the
             // orchestration hook and precedes Session.command's wire correlation.
@@ -616,8 +606,7 @@ const build = (
             );
             let original: CommandFailure;
             if (Result.isFailure(sent)) {
-              if (sent.failure.context.outcome !== "unknown")
-                return yield* Effect.fail(sent.failure);
+              if (sent.failure.context.outcome !== "unknown") return yield* sent.failure;
               original = sent.failure;
             } else {
               const source = sent.success;
@@ -627,7 +616,7 @@ const build = (
                 observed.success?.type === "command_error" &&
                 observed.success.data.command === "enqueue"
               )
-                return yield* Effect.fail(rejected("enqueue", source));
+                return yield* rejected("enqueue", source);
               original = uncertain(
                 "enqueue",
                 source,
@@ -700,13 +689,11 @@ const build = (
       Effect.gen(function* () {
         yield* active("enqueue", true);
         if (!Effect.isEffect(preparation))
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "InvalidInput",
-              message: "H3 preparation must be an Effect",
-              context: { outcome: "not-submitted" },
-            }),
-          );
+          return yield* new ReactorError({
+            code: "InvalidInput",
+            message: "H3 preparation must be an Effect",
+            context: { outcome: "not-submitted" },
+          });
         const id = yield* nextId();
         return yield* prepared(
           id,
@@ -743,12 +730,12 @@ const build = (
       }),
     );
     if (state.snapshot()._tag !== "Ready")
-      return yield* Effect.fail(
+      return yield* (
         fatalError ??
           new ReactorError({
             code: "InvalidState",
             message: "H3 initial observations are unavailable",
-          }),
+          })
       );
 
     const provider: Provider = {
@@ -778,10 +765,9 @@ const build = (
       pop: (id) =>
         checked("pop", () => clipId(id)).pipe(
           Effect.flatMap((id) => named("pop", { clip_id: id })),
-          Effect.flatMap((reply) =>
-            reply.value.clip.clip_id === id
-              ? Effect.succeed(reply)
-              : Effect.fail(uncertain("pop", reply.source, "H3 pop returned a different clip")),
+          Effect.filterOrFail(
+            (reply) => reply.value.clip.clip_id === id,
+            (reply) => uncertain("pop", reply.source, "H3 pop returned a different clip"),
           ),
         ),
       move: (id, position) =>
@@ -790,10 +776,9 @@ const build = (
           position: nonnegative(position, "position"),
         })).pipe(
           Effect.flatMap((args) => named("move", args)),
-          Effect.flatMap((reply) =>
-            reply.value.clip.clip_id === id
-              ? Effect.succeed(reply)
-              : Effect.fail(uncertain("move", reply.source, "H3 move returned a different clip")),
+          Effect.filterOrFail(
+            (reply) => reply.value.clip.clip_id === id,
+            (reply) => uncertain("move", reply.source, "H3 move returned a different clip"),
           ),
         ),
       play: (id) =>

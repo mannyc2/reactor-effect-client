@@ -162,11 +162,9 @@ export const make = (options: Options) =>
             if ((yield* previous.state)._tag === "Completed") submissions.delete(previous);
           }
           if (submissions.size >= 4096)
-            return yield* Effect.fail(
-              PolicyFailure.refuse(
-                "submission_capacity",
-                "Committed source submissions reached their bound",
-              ),
+            return yield* PolicyFailure.refuse(
+              "submission_capacity",
+              "Committed source submissions reached their bound",
             );
           yield* admit;
           if (inFlight++ === 0) settled = Deferred.makeUnsafe<void>();

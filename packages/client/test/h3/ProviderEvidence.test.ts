@@ -69,7 +69,7 @@ test("matching submission fields still require the exact captured prompt and met
 test("expired acceptance tokens cannot be revived by late matching clips and release their pending capacity", () =>
   run(
     Effect.gen(function* () {
-      const fake = yield* fixture({ command: { enqueue: () => Effect.succeed(undefined) } });
+      const fake = yield* fixture({ command: { enqueue: () => Effect.undefined } });
       const provider = yield* H3.make(fake.session, { ...options, maxPending: 1 });
       const prepared = yield* provider.prepare({ prompt: "expired request" });
       const first = failure(yield* Effect.result(prepared.submit));

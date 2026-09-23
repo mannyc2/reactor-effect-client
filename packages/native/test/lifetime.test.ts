@@ -62,10 +62,10 @@ describe("native foreign-call ownership", () => {
       }
 
       let finished = false;
-      const shutdown = Effect.runPromise(peer.shutdown()).then(() => {
+      const shutdown = Effect.runPromise(peer.shutdown).then(() => {
         finished = true;
       });
-      const concurrent = Effect.runPromise(peer.shutdown());
+      const concurrent = Effect.runPromise(peer.shutdown);
       release(0); // Drain the queued work while the oldest foreign call stays held.
       await until(
         () => stat(1) === expected - 1,
@@ -89,7 +89,7 @@ describe("native foreign-call ownership", () => {
     } finally {
       release(2);
       if (peer !== undefined) {
-        await Effect.runPromise(peer.shutdown());
+        await Effect.runPromise(peer.shutdown);
         dispose();
       }
       rmSync(fixture.directory, { recursive: true, force: true });
@@ -110,8 +110,8 @@ describe("native foreign-call ownership", () => {
       await checkNativeBridge(fixture.path);
       const joins = stat(7);
       const peer = new NativePeer(fixture.path);
-      await Effect.runPromise(peer.shutdown());
-      await Effect.runPromise(peer.shutdown());
+      await Effect.runPromise(peer.shutdown);
+      await Effect.runPromise(peer.shutdown);
       expect(joinsAtUnregister).toEqual([joins + 1]);
     } finally {
       spy.mockRestore();
@@ -133,7 +133,7 @@ describe("native foreign-call ownership", () => {
         Effect.scoped(
           Effect.gen(function* () {
             // Finalizers have no typed error channel; a shutdown defect must still fail this test.
-            yield* Effect.addFinalizer(() => ownedPeer.shutdown().pipe(Effect.orDie));
+            yield* Effect.addFinalizer(() => ownedPeer.shutdown.pipe(Effect.orDie));
             yield* ownedPeer.prepare([], tracks, (event) => {
               if (event.type === "error") errors.push(event.error);
             });
@@ -156,7 +156,7 @@ describe("native foreign-call ownership", () => {
       );
     } finally {
       fault(0);
-      if (peer !== undefined) await Effect.runPromise(peer.shutdown());
+      if (peer !== undefined) await Effect.runPromise(peer.shutdown);
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });
@@ -172,7 +172,7 @@ describe("native foreign-call ownership", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            yield* Effect.addFinalizer(() => ownedPeer.shutdown().pipe(Effect.orDie));
+            yield* Effect.addFinalizer(() => ownedPeer.shutdown.pipe(Effect.orDie));
             yield* ownedPeer.prepare([], tracks, () => {});
             for (const name of ["missing", "main_audio", "input_audio"]) {
               const result = yield* Effect.result(
@@ -187,7 +187,7 @@ describe("native foreign-call ownership", () => {
               ownedPeer.rawMedia.video("main_video").pipe(Stream.runCollect),
             );
             yield* Effect.yieldNow;
-            yield* ownedPeer.shutdown();
+            yield* ownedPeer.shutdown;
             expect(yield* Fiber.join(reader)).toEqual([]);
             expect(yield* ownedPeer.rawMedia.audio("main_audio").pipe(Stream.runCollect)).toEqual(
               [],
@@ -196,7 +196,7 @@ describe("native foreign-call ownership", () => {
         ),
       );
     } finally {
-      if (peer !== undefined) await Effect.runPromise(peer.shutdown());
+      if (peer !== undefined) await Effect.runPromise(peer.shutdown);
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });

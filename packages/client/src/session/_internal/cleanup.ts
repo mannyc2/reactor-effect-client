@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import type { CoordinatorClient, Termination } from "../../coordinator/_internal/client.js";
 import { errorOf, ReactorError } from "../../errors.js";
@@ -104,14 +105,17 @@ export const cleanupSession = (options: {
     const { connection } = options;
     const { submitted, errors } = yield* releasePublications(connection, options.commandTimeout);
     if (connection !== undefined) {
-      try {
-        options.retire(
-          connection,
-          new ReactorError({ code: "Aborted", message: "session closed" }),
-        );
-      } catch (error) {
-        errors.push(errorOf(error));
-      }
+      const retired = yield* Effect.result(
+        Effect.try({
+          try: () =>
+            options.retire(
+              connection,
+              new ReactorError({ code: "Aborted", message: "session closed" }),
+            ),
+          catch: errorOf,
+        }),
+      );
+      if (Result.isFailure(retired)) errors.push(retired.failure);
     }
     const shutdown = yield* Effect.exit(Scope.close(options.scope, Exit.void));
     if (Exit.isFailure(shutdown))

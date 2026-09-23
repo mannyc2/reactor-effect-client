@@ -81,12 +81,10 @@ export const audioContext = (
             }),
     });
     if (context.state !== "running")
-      return yield* Effect.fail(
-        new ReactorError({
-          code: "UnsupportedCapability",
-          message: `AudioContext is ${context.state}, not running`,
-        }),
-      );
+      return yield* new ReactorError({
+        code: "UnsupportedCapability",
+        message: `AudioContext is ${context.state}, not running`,
+      });
     return context;
   });
 export interface WebAudioOptions {

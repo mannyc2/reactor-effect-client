@@ -77,12 +77,10 @@ export const source = (
       !Number.isFinite(profile.fps) ||
       profile.fps <= 0
     ) {
-      return yield* Effect.fail(
-        new ReactorError({
-          code: "InvalidInput",
-          message: "Invalid simulation timing or queue bounds",
-        }),
-      );
+      return yield* new ReactorError({
+        code: "InvalidInput",
+        message: "Invalid simulation timing or queue bounds",
+      });
     }
     const events = new Observations<EngineEvent>();
     const video = yield* Queue.bounded<VideoFrame, ReactorError | Cause.Done>(4);
@@ -360,36 +358,31 @@ export const source = (
               request.prompt.length > profile.prompt.maxChars ||
               request.references.length > profile.references.max
             ) {
-              return yield* Effect.fail(
-                PolicyFailure.refuse(
-                  "invalid_request",
-                  "Request exceeds the simulation profile limits",
-                ),
+              return yield* PolicyFailure.refuse(
+                "invalid_request",
+                "Request exceeds the simulation profile limits",
               );
             }
             if (
               plan.position !== undefined &&
               (!Number.isSafeInteger(plan.position) || plan.position < 0)
             ) {
-              return yield* Effect.fail(
-                PolicyFailure.refuse(
-                  "invalid_request",
-                  "Insertion position must be a nonnegative integer",
-                ),
+              return yield* PolicyFailure.refuse(
+                "invalid_request",
+                "Insertion position must be a nonnegative integer",
               );
             }
             yield* Effect.acquireRelease(admission.take(1), () => admission.release(1));
             if (generation.filter((clip) => !clip.popped).length >= generationCapacity) {
-              return yield* Effect.fail(
-                PolicyFailure.refuse("queue_full", "Simulation generation queue is full"),
+              return yield* PolicyFailure.refuse(
+                "queue_full",
+                "Simulation generation queue is full",
               );
             }
             if (request.continueFrom !== undefined && !retained.includes(request.continueFrom)) {
-              return yield* Effect.fail(
-                PolicyFailure.refuse(
-                  "continuation_unavailable",
-                  "Simulation no longer retains the continuation target",
-                ),
+              return yield* PolicyFailure.refuse(
+                "continuation_unavailable",
+                "Simulation no longer retains the continuation target",
               );
             }
             return request;
@@ -419,7 +412,7 @@ export const source = (
                       },
                     );
                     failed = uncertainty;
-                    return yield* Effect.fail(uncertainty);
+                    return yield* uncertainty;
                   }
                   const clipId =
                     `${namespace.slice(0, 8)}-${namespace.slice(8, 12)}-4${namespace.slice(13, 16)}-8${namespace.slice(17, 20)}-${seq.toString(16).padStart(12, "0")}` as ClipId;
@@ -483,7 +476,7 @@ export const source = (
               events.fail(result.failure);
               Queue.failCauseUnsafe(video, Cause.fail(result.failure));
               Queue.failCauseUnsafe(audio, Cause.fail(result.failure));
-              return yield* Effect.fail(result.failure);
+              return yield* result.failure;
             }),
         }).pipe(Scope.provide(scope));
       });
@@ -616,8 +609,10 @@ export const source = (
                 (value) => !value.popped && value.record.clipId === clipId,
               );
               if (clip === undefined)
-                return yield* Effect.fail(
-                  PolicyFailure.refuse("not_found", "Clip is not in a simulated queue", "pop"),
+                return yield* PolicyFailure.refuse(
+                  "not_found",
+                  "Clip is not in a simulated queue",
+                  "pop",
                 );
               const outcome =
                 clip === building ? "in_flight" : playout.includes(clip) ? "ready" : "unstarted";

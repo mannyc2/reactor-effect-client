@@ -55,13 +55,11 @@ export class Observations<A> {
       const subscriber = yield* Effect.acquireRelease(
         Effect.gen(function* () {
           if (observations.subscribers.size >= observations.maxSubscribers) {
-            return yield* Effect.fail(
-              new ReactorError({
-                code: "Overflow",
-                message: "observer count bound reached",
-                context: { outcome: "not-submitted" },
-              }),
-            );
+            return yield* new ReactorError({
+              code: "Overflow",
+              message: "observer count bound reached",
+              context: { outcome: "not-submitted" },
+            });
           }
           const queue = yield* Queue.dropping<Entry<A>, ReactorError | Cause.Done>(bounds.capacity);
           const subscriber: Subscriber<A> = { queue, maxBytes: bounds.maxBytes, bufferedBytes: 0 };

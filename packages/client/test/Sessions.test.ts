@@ -62,7 +62,7 @@ const client = (jwt: Redacted.Redacted<string> = inspectionToken) =>
     apiUrl: "https://configured.fixture/api",
     credential: Effect.succeed(jwt),
   });
-const pricing = () => client().pipe(Effect.flatMap((coordinator) => coordinator.pricing()));
+const pricing = () => client().pipe(Effect.flatMap((coordinator) => coordinator.pricing));
 const mintToken = (input: Coordinator.TokenOptions) =>
   client().pipe(Effect.flatMap((coordinator) => coordinator.mintToken(input)));
 const inspect = (jwt: Redacted.Redacted<string>, sessionId: string) =>
@@ -957,18 +957,17 @@ describe("Reactor HTTP session contract (offline)", () => {
         const started = performance.now();
         const error = await Effect.runPromise(
           Effect.flip(
-            inspect(inspectionToken, "session")
-              .pipe(
-                Effect.provide(
-                  fetchLayer(async (_url, init) => {
-                    signal = init.signal ?? undefined;
-                    const response = await fetch(`http://127.0.0.1:${server.port}/session`, init);
-                    headersReceived = true;
-                    return response;
-                  }),
-                ),
-              )
-              .pipe(Effect.timeout(2_000)),
+            inspect(inspectionToken, "session").pipe(
+              Effect.provide(
+                fetchLayer(async (_url, init) => {
+                  signal = init.signal ?? undefined;
+                  const response = await fetch(`http://127.0.0.1:${server.port}/session`, init);
+                  headersReceived = true;
+                  return response;
+                }),
+              ),
+              Effect.timeout(2_000),
+            ),
           ),
         );
         expect(error).toBeInstanceOf(ReactorError);

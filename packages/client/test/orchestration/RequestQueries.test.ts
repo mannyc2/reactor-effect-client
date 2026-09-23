@@ -55,8 +55,8 @@ test("malformed request objects, accessors and unsupported provider fields fail 
     { ...request(), startingFrame: {} },
     { ...request(), endingFrame: {} },
     { ...request(), reference_audio: [] },
-    request({ durationSeconds: NaN }),
-    request({ durationSeconds: Infinity }),
+    { ...request(), durationSeconds: NaN },
+    { ...request(), durationSeconds: Infinity },
     request({ durationSeconds: 0 }),
     request({ prompt: "  " }),
     request({ position: -1 }),
@@ -76,6 +76,9 @@ test("malformed request objects, accessors and unsupported provider fields fail 
     }
   }
   expect(getters).toBe(0);
+  // The schema itself admits only finite numbers, so no ClipRequest carries one.
+  expect(() => request({ durationSeconds: NaN })).toThrow();
+  expect(() => request({ seed: Infinity })).toThrow();
 });
 test("prompt-only input is valid and request prework cannot borrow a command's unknown dispatch outcome", async () => {
   expect((await Effect.runPromise(captureRequest(request()))).references).toEqual([]);

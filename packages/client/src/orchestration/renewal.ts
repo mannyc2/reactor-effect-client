@@ -127,9 +127,10 @@ export const make = <R>(
       !Number.isFinite(leadSeconds) ||
       leadSeconds < 0
     ) {
-      return yield* Effect.fail(
-        new ReactorError({ code: "InvalidInput", message: "Invalid orchestration bounds" }),
-      );
+      return yield* new ReactorError({
+        code: "InvalidInput",
+        message: "Invalid orchestration bounds",
+      });
     }
     let current: Slot | undefined;
     let replacement: Replacement = { _tag: "Absent" };
@@ -341,12 +342,10 @@ export const make = <R>(
     const acquire: Effect.Effect<Slot, ReactorError> = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         if (opened >= maxSessions)
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "Overflow",
-              message: "Orchestration session and cleanup-history bound reached",
-            }),
-          );
+          return yield* new ReactorError({
+            code: "Overflow",
+            message: "Orchestration session and cleanup-history bound reached",
+          });
         const owned = yield* Scope.make();
         let acquired: Slot | undefined;
         let acquiredSource: Source | undefined;
@@ -373,20 +372,16 @@ export const make = <R>(
               !(value.maxSeconds > 0) ||
               (value.maxSeconds !== Infinity && !Number.isFinite(value.maxSeconds))
             ) {
-              return yield* Effect.fail(
-                new ReactorError({
-                  code: "InvalidInput",
-                  message: "Source lifetime must be positive or infinite",
-                }),
-              );
+              return yield* new ReactorError({
+                code: "InvalidInput",
+                message: "Source lifetime must be positive or infinite",
+              });
             }
             if (slots.has(value.source.id))
-              return yield* Effect.fail(
-                new ReactorError({
-                  code: "InvalidInput",
-                  message: "Orchestration sources must have distinct session identities",
-                }),
-              );
+              return yield* new ReactorError({
+                code: "InvalidInput",
+                message: "Orchestration sources must have distinct session identities",
+              });
             const media = yield* value.source.media;
             const slot = yield* SourceSlot.make({
               source: value.source,
@@ -480,16 +475,16 @@ export const make = <R>(
     ): Effect.Effect<A, E | CommandFailure> =>
       Effect.gen(function* () {
         if (closing)
-          return yield* Effect.fail(
-            PolicyFailure.refuse("session_closed", "Orchestration is closed", operation),
+          return yield* PolicyFailure.refuse(
+            "session_closed",
+            "Orchestration is closed",
+            operation,
           );
         if (yield* Deferred.isDone(fatal))
-          return yield* Effect.fail(
-            CommandFailure.from(yield* Deferred.await(fatal), {
-              operation,
-              outcome: "not-submitted",
-            }),
-          );
+          return yield* CommandFailure.from(yield* Deferred.await(fatal), {
+            operation,
+            outcome: "not-submitted",
+          });
         return yield* effect;
       });
 
@@ -514,9 +509,7 @@ export const make = <R>(
             ? next
             : current;
         if (preferred === undefined)
-          return yield* Effect.fail(
-            PolicyFailure.refuse("session_recovering", "No source is ready"),
-          );
+          return yield* PolicyFailure.refuse("session_recovering", "No source is ready");
         return yield* resolve(request, values, preferred.source.id, binding);
       });
     const sequenceError = (error: Sequence.SequenceError) =>
@@ -541,8 +534,9 @@ export const make = <R>(
               const decision = yield* route(request).pipe(commands.withPermit);
               const target = slots.get(decision.owner);
               if (target === undefined)
-                return yield* Effect.fail(
-                  PolicyFailure.refuse("session_retired", "Selected source was retired"),
+                return yield* PolicyFailure.refuse(
+                  "session_retired",
+                  "Selected source was retired",
                 );
               const sequence = request.sequence;
               active = yield* target.source.prepareRouted(
@@ -558,11 +552,9 @@ export const make = <R>(
                             checked.owner !== decision.owner ||
                             checked.position !== decision.position
                           ) {
-                            return yield* Effect.fail(
-                              PolicyFailure.refuse(
-                                "route_changed",
-                                "Request ownership or insertion position changed during preparation",
-                              ),
+                            return yield* PolicyFailure.refuse(
+                              "route_changed",
+                              "Request ownership or insertion position changed during preparation",
                             );
                           }
                           if (active === undefined)
@@ -573,14 +565,13 @@ export const make = <R>(
                             active,
                             Effect.gen(function* () {
                               if (sequence !== undefined) {
-                                yield* affinity
-                                  .bind(sequence.id, target.source.id)
-                                  .pipe(Effect.mapError(sequenceError));
-                                yield* affinity
-                                  .begin(sequence.id, sequence.memberId ?? submissionId)
-                                  .pipe(Effect.mapError(sequenceError));
+                                yield* affinity.bind(sequence.id, target.source.id);
+                                yield* affinity.begin(
+                                  sequence.id,
+                                  sequence.memberId ?? submissionId,
+                                );
                               }
-                            }),
+                            }).pipe(Effect.mapError(sequenceError)),
                           );
                         }),
                       ),
@@ -701,16 +692,16 @@ export const make = <R>(
         );
         const found = matches.filter(({ state }) => activeIds(state).includes(id));
         if (found.length !== 1)
-          return yield* Effect.fail(
-            PolicyFailure.refuse(
-              found.length === 0 ? "not_found" : "owner_conflict",
-              "Clip has no unique active owning session",
-              operation,
-            ),
+          return yield* PolicyFailure.refuse(
+            found.length === 0 ? "not_found" : "owner_conflict",
+            "Clip has no unique active owning session",
+            operation,
           );
         if (found[0]!.slot.recovering)
-          return yield* Effect.fail(
-            PolicyFailure.refuse("session_recovering", "Owning session is recovering", operation),
+          return yield* PolicyFailure.refuse(
+            "session_recovering",
+            "Owning session is recovering",
+            operation,
           );
         return found[0]!;
       });
@@ -756,23 +747,19 @@ export const make = <R>(
             "move",
             Effect.gen(function* () {
               if (!Number.isSafeInteger(position) || position < 0)
-                return yield* Effect.fail(
-                  PolicyFailure.refuse(
-                    "invalid_request",
-                    "Move position must be a nonnegative integer",
-                    "move",
-                  ),
+                return yield* PolicyFailure.refuse(
+                  "invalid_request",
+                  "Move position must be a nonnegative integer",
+                  "move",
                 );
               const selected = yield* owner(id, "move");
               const own =
                 queue === "generation" ? generation(selected.state) : selected.state.ready;
               if (!own.some((clip) => clip.clipId === id))
-                return yield* Effect.fail(
-                  PolicyFailure.refuse(
-                    "queue_changed",
-                    "Clip is no longer in the selected application queue",
-                    "move",
-                  ),
+                return yield* PolicyFailure.refuse(
+                  "queue_changed",
+                  "Clip is no longer in the selected application queue",
+                  "move",
                 );
               let preceding = 0;
               for (const slot of slots.values()) {
@@ -791,12 +778,10 @@ export const make = <R>(
             "set_canvas",
             Effect.gen(function* () {
               if (!isIdle(yield* state))
-                return yield* Effect.fail(
-                  PolicyFailure.refuse(
-                    "busy",
-                    "Canvas can only change while every source is idle",
-                    "set_canvas",
-                  ),
+                return yield* PolicyFailure.refuse(
+                  "busy",
+                  "Canvas can only change while every source is idle",
+                  "set_canvas",
                 );
               for (const slot of slots.values())
                 if (!slot.closed) yield* slot.source.setCanvas(canvas);

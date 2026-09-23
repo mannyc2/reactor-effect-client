@@ -292,7 +292,7 @@ export class BrowserPeer implements Peer {
       catch: (e) => errorOf(e, "UnsupportedCapability", "sender bitrate"),
     });
   }
-  stats(): Effect.Effect<readonly unknown[], ReactorError> {
+  get stats(): Effect.Effect<readonly unknown[], ReactorError> {
     return Effect.tryPromise({
       try: async () => {
         const pc = this.require(),

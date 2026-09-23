@@ -8,7 +8,7 @@ test("cancelling a video reader retains unconsumed frames and their byte account
   runClock(
     Effect.gen(function* () {
       const buffer = yield* MediaBuffer.make;
-      const received = yield* gate();
+      const received = yield* gate;
       yield* buffer.offerVideo(videoFrame(1));
       yield* buffer.offerVideo({ ...videoFrame(2), metadata: new Uint8Array([3, 4]) });
       const reader = yield* buffer.video.pipe(
@@ -29,7 +29,7 @@ test("cancelling an audio reader preserves the next packet and exact sample coun
   runClock(
     Effect.gen(function* () {
       const buffer = yield* MediaBuffer.make;
-      const received = yield* gate();
+      const received = yield* gate;
       yield* buffer.offerAudio(audioFrame(7, 1));
       yield* buffer.offerAudio(audioFrame(11, 2));
       const reader = yield* buffer.audio.pipe(

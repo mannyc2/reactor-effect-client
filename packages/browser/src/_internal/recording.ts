@@ -142,12 +142,10 @@ export const downloadClip = (
           // A local peer disconnection does not prove stopped inference. Query the remote descriptor.
           const descriptor = yield* http.read(clip.session_id);
           if (terminal(descriptor.state))
-            return yield* Effect.fail(
-              new ReactorError({
-                code: "TerminalSession",
-                message: "session terminated before playlist became available",
-              }),
-            );
+            return yield* new ReactorError({
+              code: "TerminalSession",
+              message: "session terminated before playlist became available",
+            });
           yield* Effect.sleep(
             Math.max(200, Math.min(retryAfterMs(response.headers) ?? 2000, 2000)),
           );
@@ -162,17 +160,16 @@ export const downloadClip = (
             maxBytes: Math.min(bounds.segment, bounds.total - size || 1),
           });
           if (response.status === 202)
-            return yield* Effect.fail(
-              new ReactorError({
-                code: "Protocol",
-                message: "playlist referenced a segment that is not ready",
-              }),
-            );
+            return yield* new ReactorError({
+              code: "Protocol",
+              message: "playlist referenced a segment that is not ready",
+            });
           size += response.bytes.length;
           if (size > bounds.total)
-            return yield* Effect.fail(
-              new ReactorError({ code: "Overflow", message: "assembled clip byte bound exceeded" }),
-            );
+            return yield* new ReactorError({
+              code: "Overflow",
+              message: "assembled clip byte bound exceeded",
+            });
           chunks.push(response.bytes);
         }
         const bytes = new Uint8Array(size);

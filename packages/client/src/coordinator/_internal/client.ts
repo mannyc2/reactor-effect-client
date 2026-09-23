@@ -199,7 +199,7 @@ export class CoordinatorClient {
           (auth === "coordinator" && !self.local) ||
           (auth === "same-origin" && url.origin === new URL(self.apiUrl).origin);
         if (authenticate) {
-          const token = yield* self.options.credential ?? Effect.succeed(undefined);
+          const token = yield* self.options.credential ?? Effect.void;
           if (token !== undefined)
             yield* pure(() => headers.set("Authorization", `Bearer ${nonempty(token, "JWT")}`));
         }
@@ -229,19 +229,17 @@ export class CoordinatorClient {
         )
           return reply;
         const retry = retryAfterMs(reply.headers);
-        return yield* Effect.fail(
-          new ReactorError({
-            code: response.status === 426 || response.status === 501 ? "VersionMismatch" : "Http",
-            message: `${operation}: HTTP ${response.status}`,
-            context: {
-              operation,
-              status: response.status,
-              body: new TextDecoder().decode(bytes),
-              outcome: "replied",
-              ...(retry === undefined ? {} : { retryAfterMs: retry }),
-            },
-          }),
-        );
+        return yield* new ReactorError({
+          code: response.status === 426 || response.status === 501 ? "VersionMismatch" : "Http",
+          message: `${operation}: HTTP ${response.status}`,
+          context: {
+            operation,
+            status: response.status,
+            body: new TextDecoder().decode(bytes),
+            outcome: "replied",
+            ...(retry === undefined ? {} : { retryAfterMs: retry }),
+          },
+        });
       });
       return action.pipe(
         Effect.mapError(networkError),
@@ -342,17 +340,16 @@ export class CoordinatorClient {
       for (let attempt = 0; attempt < self.sessionPoll.attempts; attempt++) {
         const descriptor = attempt === 0 && initial !== undefined ? initial : yield* self.read(id);
         if (descriptor.session_id !== id)
-          return yield* Effect.fail(
-            new ReactorError({ code: "Protocol", message: "ready descriptor id mismatch" }),
-          );
+          return yield* new ReactorError({
+            code: "Protocol",
+            message: "ready descriptor id mismatch",
+          });
         if (terminal(descriptor.state))
-          return yield* Effect.fail(
-            new ReactorError({
-              code: "TerminalSession",
-              message: descriptor.state,
-              context: { sessionId: id },
-            }),
-          );
+          return yield* new ReactorError({
+            code: "TerminalSession",
+            message: descriptor.state,
+            context: { sessionId: id },
+          });
         if (descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined)
           return descriptor;
         if (attempt + 1 < self.sessionPoll.attempts)
@@ -360,13 +357,11 @@ export class CoordinatorClient {
             Math.min(self.sessionPoll.initialMs * 2 ** attempt, self.sessionPoll.maxMs),
           );
       }
-      return yield* Effect.fail(
-        new ReactorError({
-          code: "Timeout",
-          message: "session capabilities/transport not ready",
-          context: { sessionId: id },
-        }),
-      );
+      return yield* new ReactorError({
+        code: "Timeout",
+        message: "session capabilities/transport not ready",
+        context: { sessionId: id },
+      });
     });
   }
   iceServers(id: string): Effect.Effect<IceServer[], ReactorError> {
@@ -430,13 +425,11 @@ export class CoordinatorClient {
         if (attempt + 1 < self.sdpPoll.attempts)
           yield* Effect.sleep(Math.min(self.sdpPoll.initialMs * 2 ** attempt, self.sdpPoll.maxMs));
       }
-      return yield* Effect.fail(
-        new ReactorError({
-          code: "Timeout",
-          message: "SDP answer not ready",
-          context: { sessionId: id },
-        }),
-      );
+      return yield* new ReactorError({
+        code: "Timeout",
+        message: "SDP answer not ready",
+        context: { sessionId: id },
+      });
     });
   }
   ice(
@@ -609,7 +602,7 @@ export class CoordinatorClient {
     }).pipe(Effect.withSpan("reactor.coordinator.terminate"));
   }
   /** Pricing remains provider JSON; modelRate interprets only known rate units. */
-  pricing(): Effect.Effect<Json, ReactorError> {
+  get pricing(): Effect.Effect<Json, ReactorError> {
     return this.jsonRequest({
       operation: "pricing",
       url: this.path("/pricing"),
@@ -638,14 +631,12 @@ export class CoordinatorClient {
         value.expires_at * 1_000 <
         (yield* Clock.currentTimeMillis) + (options.maxSessionDurationSeconds + 30) * 1_000
       )
-        return yield* Effect.fail(
-          new ReactorError({
-            code: "Protocol",
-            message:
-              "Reactor returned a token without enough lifetime for the bounded session and cleanup",
-            context: { operation: "token", outcome: "replied" },
-          }),
-        );
+        return yield* new ReactorError({
+          code: "Protocol",
+          message:
+            "Reactor returned a token without enough lifetime for the bounded session and cleanup",
+          context: { operation: "token", outcome: "replied" },
+        });
       const granted = yield* grantedLimits(value.jwt, options);
       return { jwt: Redacted.make(value.jwt), expiresAt: value.expires_at, granted };
     }).pipe(Effect.withSpan("reactor.coordinator.mintToken"));

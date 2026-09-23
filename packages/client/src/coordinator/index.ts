@@ -28,7 +28,7 @@ export interface Configuration extends Omit<HttpOptions, "apiUrl" | "credential"
 /** Coordinator operations share configuration and the supplied Effect HTTP client. */
 export interface Client {
   readonly apiUrl: string;
-  readonly pricing: () => Effect.Effect<Json, ReactorError>;
+  readonly pricing: Effect.Effect<Json, ReactorError>;
   readonly mintToken: (options: TokenOptions) => Effect.Effect<TokenGrant, ReactorError>;
   readonly inspect: (sessionId: string) => Effect.Effect<Inspection, ReactorError>;
   /** Uncertainty is retained in the report; supervisors choose their own failure policy. */
@@ -48,7 +48,7 @@ export const make = (
             apiUrl: configuration.apiUrl ?? "https://api.reactor.inc",
             credential:
               configuration.credential === undefined
-                ? Effect.succeed(undefined)
+                ? Effect.undefined
                 : configuration.credential.pipe(
                     Effect.flatMap((credential) =>
                       Effect.try({

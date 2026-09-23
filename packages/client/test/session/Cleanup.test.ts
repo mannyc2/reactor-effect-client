@@ -233,13 +233,12 @@ test("session lifecycle: interrupted concurrent close joins shutdown and publish
           close();
         };
         Object.assign(peer, {
-          shutdown: () =>
-            Effect.gen(function* () {
-              order.push("shutdown started");
-              yield* Deferred.succeed(shutdownEntered, undefined);
-              yield* Deferred.await(releaseShutdown);
-              order.push("shutdown joined");
-            }),
+          shutdown: Effect.gen(function* () {
+            order.push("shutdown started");
+            yield* Deferred.succeed(shutdownEntered, undefined);
+            yield* Deferred.await(releaseShutdown);
+            order.push("shutdown joined");
+          }),
         });
       },
     );
@@ -363,11 +362,10 @@ test("session lifecycle: a retired generation's shutdown defect reaches reconnec
     const { session, peers } = makeSession(fixture, {}, (peer) => {
       const generation = ++generations;
       Object.assign(peer, {
-        shutdown: () =>
-          Effect.suspend(() => {
-            shutdowns.push(generation);
-            return generation === 1 ? Effect.fail(shutdownError) : Effect.void;
-          }),
+        shutdown: Effect.suspend(() => {
+          shutdowns.push(generation);
+          return generation === 1 ? Effect.fail(shutdownError) : Effect.void;
+        }),
       });
     });
     try {

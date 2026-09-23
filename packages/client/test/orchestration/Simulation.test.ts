@@ -205,7 +205,7 @@ test("simulation renderer hooks receive local annotations, extend duration, and 
 test("simulation media copies renderer buffers and explicit pauseAndStop joins the active presentation", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       let entered = false,
         released = 0;
       const video = videoFrame(4),

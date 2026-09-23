@@ -532,9 +532,10 @@ export const play = (
       catch: (e) => errorOf(e, "UnsupportedCapability", "HTMLMediaElement.play"),
     });
     if (owned.clone.readyState !== "live")
-      return yield* Effect.fail(
-        new ReactorError({ code: "Disconnected", message: "playback track ended during start" }),
-      );
+      return yield* new ReactorError({
+        code: "Disconnected",
+        message: "playback track ended during start",
+      });
   });
 
 export interface Presentation {

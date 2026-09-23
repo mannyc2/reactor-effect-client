@@ -8,7 +8,7 @@ import { cleanPressure, gate, member, readyState, record, run, runClock } from "
 test("expiry closes the remote lease while allowing bounded local accounting of an already known acceptance", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       let accounted = false;
       const { handle, sources } = yield* renewalFixture(
         (index) =>
@@ -68,7 +68,7 @@ test("a stalled reconnect is bounded by the source lifetime rather than the long
 test("recovery waiting on a committed command closes its source at expiry and retains the unknown outcome", () =>
   runClock(
     Effect.gen(function* () {
-      const entered = yield* gate();
+      const entered = yield* gate;
       const { handle, sources, awaitRenewal } = yield* renewalFixture(
         (index) =>
           index === 0
@@ -155,7 +155,7 @@ test("an unreadable retired generation prevents a later zero-drop sample from es
 test("a reconnect returning after explicit close cannot publish a ready handle or reopen readers", () =>
   runClock(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
       yield* sources[0]!.failVideo(
         new ReactorError({ code: "Disconnected", message: "controlled reconnect" }),
@@ -176,8 +176,8 @@ for (const operation of ["switch", "replace"] as const)
   test(`a ${operation} completing autoplay after close cannot restore Ready`, () =>
     runClock(
       Effect.gen(function* () {
-        const entered = yield* gate();
-        const held = yield* gate();
+        const entered = yield* gate;
+        const held = yield* gate;
         const { handle, sources, warm } = yield* renewalFixture((index) =>
           index === 1
             ? {

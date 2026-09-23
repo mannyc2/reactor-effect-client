@@ -35,8 +35,8 @@ export const ProviderFailure = Schema.Struct({
   message: Schema.String,
   recoverable: Schema.Boolean,
   operation: Schema.optionalKey(Schema.String),
-  status: Schema.optionalKey(Schema.Number),
-  retryAfterMs: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Finite),
+  retryAfterMs: Schema.optionalKey(Schema.Finite),
 });
 export type ProviderFailure = typeof ProviderFailure.Type;
 
@@ -46,8 +46,8 @@ export const ErrorContext = Schema.Struct({
   sessionId: Schema.optionalKey(Schema.String),
   generation: Schema.optionalKey(Schema.BigInt),
   outcome: Schema.optionalKey(Schema.Literals(["not-submitted", "unknown", "replied"])),
-  status: Schema.optionalKey(Schema.Number),
-  retryAfterMs: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Finite),
+  retryAfterMs: Schema.optionalKey(Schema.Finite),
   remoteCode: Schema.optionalKey(Schema.String),
   /** Explicit inspection only. Diagnostic serialization excludes response bodies and causes. */
   body: Schema.optionalKey(Schema.String),

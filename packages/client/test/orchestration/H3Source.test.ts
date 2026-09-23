@@ -259,7 +259,7 @@ test("source commit refusal releases its annotation reservation and preserves no
 test("cancelled source reference prework remains inert and does not leave a hidden committed submission", () =>
   run(
     Effect.gen(function* () {
-      const held = yield* gate();
+      const held = yield* gate;
       const { source, fake } = yield* setup({
         upload: () => held.wait.pipe(Effect.andThen(Effect.never)),
       });
@@ -411,7 +411,7 @@ test("named mutation acknowledgement without its payload remains unknown even wh
   run(
     Effect.gen(function* () {
       const { source, fake } = yield* setup({
-        command: { set_canvas: ({ defaults }) => defaults().pipe(Effect.as(undefined)) },
+        command: { set_canvas: ({ defaults }) => defaults.pipe(Effect.as(undefined)) },
       });
       const outcome = yield* Effect.result(source.setCanvas("9:16"));
       expect(Result.isFailure(outcome) && outcome.failure.context.outcome).toBe("unknown");
@@ -514,7 +514,7 @@ test("deployment duration limits are read live and invalid lengths never upload 
 test("pop ACK without a named model reply cannot claim removal or trigger a retry", () =>
   run(
     Effect.gen(function* () {
-      const { source, fake } = yield* setup({ command: { pop: () => Effect.succeed(undefined) } });
+      const { source, fake } = yield* setup({ command: { pop: () => Effect.undefined } });
       const clip = yield* (yield* source.prepareRouted({ request: request(), position: undefined }))
         .submit;
       const result = yield* Effect.result(source.remove(clip));
@@ -528,7 +528,7 @@ test("one stalled source observer fails with Overflow without blocking other obs
   run(
     Effect.gen(function* () {
       const { source, fake, events } = yield* setup({}, { maxAnnotations: 512 });
-      const held = yield* gate();
+      const held = yield* gate;
       let entered = false;
       const reader = yield* source.events.pipe(
         Stream.runForEach(() => {
@@ -600,7 +600,7 @@ for (const outcome of ["replied", "unknown", "not-submitted", "ack", "timeout"] 
               outcome === "timeout"
                 ? Effect.never
                 : outcome === "ack"
-                  ? Effect.succeed(undefined)
+                  ? Effect.undefined
                   : Effect.fail(fail(outcome)),
           },
         });

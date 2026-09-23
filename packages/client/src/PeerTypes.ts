@@ -37,7 +37,7 @@ export interface Prepared {
 /** Transport only. Coordinator allocation and Reactor protocol state remain session-owned. */
 export interface Peer {
   readonly rawMedia?: RawMedia;
-  readonly shutdown?: () => Effect.Effect<void, ReactorError>;
+  readonly shutdown?: Effect.Effect<void, ReactorError>;
   readonly nativeTracks?: boolean;
   readonly mediaSupported?: boolean;
   prepare(
@@ -54,5 +54,5 @@ export interface Peer {
   direction(name: string, active: boolean): Effect.Effect<void, ReactorError>;
   replace(name: string, track: MediaTrack | null): Effect.Effect<void, ReactorError>;
   maxBitrate(name: string, bitsPerSecond: number): Effect.Effect<void, ReactorError>;
-  stats(): Effect.Effect<readonly unknown[], ReactorError>;
+  readonly stats: Effect.Effect<readonly unknown[], ReactorError>;
 }
