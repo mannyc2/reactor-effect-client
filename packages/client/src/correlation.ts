@@ -41,12 +41,13 @@ export class Correlator<A> {
   }
   register(generation: bigint, operation: string): Pending<A> {
     if (this.pending.size >= this.limit)
-      throw new ReactorError("Overflow", "pending request bound reached", {
-        operation,
-        outcome: "not-submitted",
+      throw new ReactorError({
+        code: "Overflow",
+        message: "pending request bound reached",
+        context: { operation, outcome: "not-submitted" },
       });
     if (this.counter === 0xffffffffffffffffn)
-      throw new ReactorError("Overflow", "request identity space exhausted");
+      throw new ReactorError({ code: "Overflow", message: "request identity space exhausted" });
     const id = `${this.prefix}_${this.namespace ? `${this.namespace}_` : ""}${++this.counter}`;
     const pending = {
       id,
@@ -122,12 +123,16 @@ export class Correlator<A> {
       Deferred.doneUnsafe(
         pending.deferred,
         Effect.fail(
-          new ReactorError(failure.code, failure.message, {
-            ...failure.context,
-            operation: pending.operation,
-            requestId: pending.id,
-            generation,
-            outcome: pending.submitted ? "unknown" : "not-submitted",
+          new ReactorError({
+            code: failure.code,
+            message: failure.message,
+            context: {
+              ...failure.context,
+              operation: pending.operation,
+              requestId: pending.id,
+              generation,
+              outcome: pending.submitted ? "unknown" : "not-submitted",
+            },
           }),
         ),
       );

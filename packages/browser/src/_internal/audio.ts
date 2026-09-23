@@ -19,8 +19,11 @@ const bounded = async <A>(
     return await Promise.race([
       work,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new ReactorError("Timeout", label)), timeout);
-        rejectAbort = () => reject(new ReactorError("Aborted", label));
+        timer = setTimeout(
+          () => reject(new ReactorError({ code: "Timeout", message: label })),
+          timeout,
+        );
+        rejectAbort = () => reject(new ReactorError({ code: "Aborted", message: label }));
         if (signal?.aborted) rejectAbort();
         else signal?.addEventListener("abort", rejectAbort, { once: true });
       }),
@@ -44,10 +47,10 @@ export const audioContext = (
       Effect.try({
         try: () => {
           if (typeof AudioContext !== "function" || typeof AudioWorkletNode !== "function")
-            throw new ReactorError(
-              "UnsupportedCapability",
-              "built-in AudioContext and AudioWorkletNode are required",
-            );
+            throw new ReactorError({
+              code: "UnsupportedCapability",
+              message: "built-in AudioContext and AudioWorkletNode are required",
+            });
           return new AudioContext(
             options.sampleRate === undefined ? {} : { sampleRate: options.sampleRate },
           );
@@ -71,15 +74,18 @@ export const audioContext = (
       catch: (cause) =>
         cause instanceof ReactorError
           ? cause
-          : new ReactorError(
-              "UnsupportedCapability",
-              "AudioContext resume failed; ordinary user activation is required",
-              { detail: cause },
-            ),
+          : new ReactorError({
+              code: "UnsupportedCapability",
+              message: "AudioContext resume failed; ordinary user activation is required",
+              context: { detail: cause },
+            }),
     });
     if (context.state !== "running")
       return yield* Effect.fail(
-        new ReactorError("UnsupportedCapability", `AudioContext is ${context.state}, not running`),
+        new ReactorError({
+          code: "UnsupportedCapability",
+          message: `AudioContext is ${context.state}, not running`,
+        }),
       );
     return context;
   });
@@ -139,35 +145,35 @@ export const webAudioSamples = (
       );
       const context = options.context;
       if (source.kind !== "audio" || source.readyState !== "live")
-        throw new ReactorError("InvalidState", "expected a live audio track");
+        throw new ReactorError({ code: "InvalidState", message: "expected a live audio track" });
       if (typeof AudioWorkletNode !== "function" || context.audioWorklet === undefined)
-        throw new ReactorError(
-          "UnsupportedCapability",
-          "built-in AudioWorklet is unavailable in this realm",
-        );
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "built-in AudioWorklet is unavailable in this realm",
+        });
       if (
         typeof document === "undefined" ||
         typeof document.createElement !== "function" ||
         typeof MediaStream !== "function"
       )
-        throw new ReactorError(
-          "UnsupportedCapability",
-          "PCM activation requires a Window document and built-in HTML audio playback",
-        );
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "PCM activation requires a Window document and built-in HTML audio playback",
+        });
       if (context.state !== "running")
-        throw new ReactorError(
-          "UnsupportedCapability",
-          "PCM requires an explicitly resumed, running AudioContext",
-        );
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "PCM requires an explicitly resumed, running AudioContext",
+        });
       const url = new URL(
         options.workletUrl ?? new URL("./pcm-worklet.js", import.meta.url),
         import.meta.url,
       );
       if (!/^(https?:|file:)$/.test(url.protocol))
-        throw new ReactorError(
-          "Protocol",
-          "serve the PCM worklet as a normal local module, not a data/blob URL",
-        );
+        throw new ReactorError({
+          code: "Protocol",
+          message: "serve the PCM worklet as a normal local module, not a data/blob URL",
+        });
       const track = source.clone(),
         lifetime = new AbortController();
       let input: MediaStreamAudioSourceNode | undefined, node: AudioWorkletNode | undefined;
@@ -193,7 +199,7 @@ export const webAudioSamples = (
           sink.pause();
           sink.srcObject = null;
         }
-        pending?.reject(new ReactorError("Aborted", "PCM reader closed"));
+        pending?.reject(new ReactorError({ code: "Aborted", message: "PCM reader closed" }));
         pending = undefined;
         input?.disconnect();
         if (node !== undefined) {
@@ -212,10 +218,11 @@ export const webAudioSamples = (
           close();
         }
       };
-      const ended = (): void => fail(new ReactorError("Disconnected", "PCM track ended"));
+      const ended = (): void =>
+        fail(new ReactorError({ code: "Disconnected", message: "PCM track ended" }));
       const state = (): void => {
         if (context.state !== "running")
-          fail(new ReactorError("Disconnected", `PCM context ${context.state}`));
+          fail(new ReactorError({ code: "Disconnected", message: `PCM context ${context.state}` }));
       };
       const live = (): boolean => {
         if (source.readyState !== "live" || track.readyState !== "live") ended();
@@ -265,7 +272,10 @@ export const webAudioSamples = (
           if (!live()) return;
           try {
             if (pending === undefined)
-              throw new ReactorError("Protocol", "unsolicited PCM block without a read credit");
+              throw new ReactorError({
+                code: "Protocol",
+                message: "unsolicited PCM block without a read credit",
+              });
             const sample = decodeAudioPacket(event.data, maxBytes),
               waiter = pending;
             pending = undefined;
@@ -275,9 +285,19 @@ export const webAudioSamples = (
           }
         };
         node.port.onmessageerror = () =>
-          fail(new ReactorError("Protocol", "PCM transfer could not be deserialized"));
+          fail(
+            new ReactorError({
+              code: "Protocol",
+              message: "PCM transfer could not be deserialized",
+            }),
+          );
         node.onprocessorerror = () =>
-          fail(new ReactorError("UnsupportedCapability", "PCM AudioWorklet processor failed"));
+          fail(
+            new ReactorError({
+              code: "UnsupportedCapability",
+              message: "PCM AudioWorklet processor failed",
+            }),
+          );
         input.connect(node);
         node.connect(context.destination);
       };

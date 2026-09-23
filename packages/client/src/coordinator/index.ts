@@ -54,11 +54,11 @@ export const make = (
                       Effect.try({
                         try: () => {
                           if (!Redacted.isRedacted(credential))
-                            throw new ReactorError(
-                              "InvalidInput",
-                              "Coordinator credential must be Redacted",
-                              { outcome: "not-submitted" },
-                            );
+                            throw new ReactorError({
+                              code: "InvalidInput",
+                              message: "Coordinator credential must be Redacted",
+                              context: { outcome: "not-submitted" },
+                            });
                           return Redacted.value(credential);
                         },
                         catch: errorOf,

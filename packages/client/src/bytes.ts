@@ -10,8 +10,10 @@ export const collectBytes = <E, R>(
   Effect.suspend(() => {
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
       return Effect.fail(
-        new ReactorError("InvalidInput", "Invalid byte collection bound", {
-          outcome: "not-submitted",
+        new ReactorError({
+          code: "InvalidInput",
+          message: "Invalid byte collection bound",
+          context: { outcome: "not-submitted" },
         }),
       );
     return Stream.runFoldEffect(
@@ -20,14 +22,18 @@ export const collectBytes = <E, R>(
       (buffer, chunk) => {
         if (chunk.byteLength > maxBytes - buffer.total)
           return Effect.fail(
-            new ReactorError("Upload", "Source exceeds the byte bound", {
-              outcome: "not-submitted",
+            new ReactorError({
+              code: "Upload",
+              message: "Source exceeds the byte bound",
+              context: { outcome: "not-submitted" },
             }),
           );
         if (buffer.chunks.length >= 16_384)
           return Effect.fail(
-            new ReactorError("Upload", "Source exceeds the chunk bound", {
-              outcome: "not-submitted",
+            new ReactorError({
+              code: "Upload",
+              message: "Source exceeds the chunk bound",
+              context: { outcome: "not-submitted" },
             }),
           );
         buffer.total += chunk.byteLength;

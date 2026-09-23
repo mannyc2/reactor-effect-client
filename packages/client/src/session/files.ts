@@ -24,8 +24,10 @@ export const readFileBytes = (
       maxBytes <= 0
     ) {
       return yield* Effect.fail(
-        new ReactorError("InvalidInput", "A file and positive byte bound are required", {
-          outcome: "not-submitted",
+        new ReactorError({
+          code: "InvalidInput",
+          message: "A file and positive byte bound are required",
+          context: { outcome: "not-submitted" },
         }),
       );
     }
@@ -34,9 +36,10 @@ export const readFileBytes = (
       Effect.mapError((cause) =>
         cause instanceof ReactorError
           ? cause
-          : new ReactorError("Upload", "Source file could not be read", {
-              outcome: "not-submitted",
-              detail: cause,
+          : new ReactorError({
+              code: "Upload",
+              message: "Source file could not be read",
+              context: { outcome: "not-submitted", detail: cause },
             }),
       ),
     );
@@ -53,8 +56,10 @@ export const uploadFile = (
     const timeout = options.readTimeoutMs ?? 30_000;
     if (!Number.isFinite(timeout) || timeout <= 0)
       return yield* Effect.fail(
-        new ReactorError("InvalidInput", "Invalid file-read deadline", {
-          outcome: "not-submitted",
+        new ReactorError({
+          code: "InvalidInput",
+          message: "Invalid file-read deadline",
+          context: { outcome: "not-submitted" },
         }),
       );
     const bytes = yield* readFileBytes(file, options.maxBytes ?? 64 * 1024 * 1024).pipe(
@@ -62,15 +67,21 @@ export const uploadFile = (
         duration: timeout,
         orElse: () =>
           Effect.fail(
-            new ReactorError("Upload", "Source file read timed out", { outcome: "not-submitted" }),
+            new ReactorError({
+              code: "Upload",
+              message: "Source file read timed out",
+              context: { outcome: "not-submitted" },
+            }),
           ),
       }),
     );
     const after = yield* session.ready;
     if (after.generation !== before.generation)
       return yield* Effect.fail(
-        new ReactorError("Disconnected", "Connection changed while reading the upload file", {
-          outcome: "not-submitted",
+        new ReactorError({
+          code: "Disconnected",
+          message: "Connection changed while reading the upload file",
+          context: { outcome: "not-submitted" },
         }),
       );
     const path = yield* Path.Path;

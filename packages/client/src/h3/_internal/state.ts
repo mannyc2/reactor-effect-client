@@ -107,11 +107,11 @@ export class ProviderState {
         source.status === "closed"
       ) {
         this.unavailable(
-          new ReactorError(
-            source.status === "disconnected" ? "Disconnected" : "Closed",
-            `H3 session is ${source.status}`,
-            { operation: "H3 observation" },
-          ),
+          new ReactorError({
+            code: source.status === "disconnected" ? "Disconnected" : "Closed",
+            message: `H3 session is ${source.status}`,
+            context: { operation: "H3 observation" },
+          }),
         );
       } else if (source.status === "ready" && this.availability === "Unavailable") {
         this.state = undefined;
@@ -127,8 +127,10 @@ export class ProviderState {
 
   private put(clip: Clip, source: CommandReply, lifecycle: ClipObservation["lifecycle"]): void {
     if (!this.clips.has(clip.clip_id) && this.clips.size >= this.maxClips)
-      throw new ReactorError("Overflow", "H3 clip observation bound exceeded", {
-        operation: "H3 observation",
+      throw new ReactorError({
+        code: "Overflow",
+        message: "H3 clip observation bound exceeded",
+        context: { operation: "H3 observation" },
       });
     this.clips.set(clip.clip_id, Object.freeze({ clip, source, lifecycle }));
   }
@@ -163,8 +165,10 @@ export class ProviderState {
       const clips = [...message.data.generation, ...message.data.playout, ...message.data.history];
       const ids = new Set([...this.clips.keys(), ...clips.map((clip) => clip.clip_id)]);
       if (ids.size > this.maxClips)
-        throw new ReactorError("Overflow", "H3 clip observation bound exceeded", {
-          operation: "H3 observation",
+        throw new ReactorError({
+          code: "Overflow",
+          message: "H3 clip observation bound exceeded",
+          context: { operation: "H3 observation" },
         });
       this.queue = message.data;
       this.queueDirty = false;

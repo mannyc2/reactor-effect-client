@@ -56,8 +56,10 @@ export class Observations<A> {
         Effect.gen(function* () {
           if (observations.subscribers.size >= observations.maxSubscribers) {
             return yield* Effect.fail(
-              new ReactorError("Overflow", "observer count bound reached", {
-                outcome: "not-submitted",
+              new ReactorError({
+                code: "Overflow",
+                message: "observer count bound reached",
+                context: { outcome: "not-submitted" },
               }),
             );
           }
@@ -84,10 +86,10 @@ export class Observations<A> {
             Effect.try({
               try: () => {
                 if (reading)
-                  throw new ReactorError(
-                    "AlreadyReading",
-                    "this observation already has an active reader",
-                  );
+                  throw new ReactorError({
+                    code: "AlreadyReading",
+                    message: "this observation already has an active reader",
+                  });
                 reading = true;
               },
               catch: errorOf,
@@ -127,10 +129,10 @@ export class Observations<A> {
         Queue.failCauseUnsafe(
           subscriber.queue,
           Cause.fail(
-            new ReactorError(
-              "Overflow",
-              "observation bound exceeded; acquire a new observation and snapshot",
-            ),
+            new ReactorError({
+              code: "Overflow",
+              message: "observation bound exceeded; acquire a new observation and snapshot",
+            }),
           ),
         );
         this.subscribers.delete(subscriber);

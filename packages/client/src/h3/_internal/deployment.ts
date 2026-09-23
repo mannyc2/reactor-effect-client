@@ -6,11 +6,11 @@ import { deploymentCommands, messageShapes } from "./contracts.js";
 import type { Shape } from "./contracts.js";
 
 const incompatible = (location: string): never => {
-  throw new ReactorError(
-    "UnsupportedCapability",
-    `Deployment does not structurally support H3 ${documentedVersion}: ${location}`,
-    { operation: "H3 schema", outcome: "not-submitted" },
-  );
+  throw new ReactorError({
+    code: "UnsupportedCapability",
+    message: `Deployment does not structurally support H3 ${documentedVersion}: ${location}`,
+    context: { operation: "H3 schema", outcome: "not-submitted" },
+  });
 };
 const record = (input: unknown, path: string): Record<string, unknown> =>
   isRecord(input) ? input : incompatible(path);

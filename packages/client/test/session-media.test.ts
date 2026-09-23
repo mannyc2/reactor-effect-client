@@ -183,7 +183,10 @@ test("media generations: a failed frame source reaches a frame-only consumer", (
           );
           yield* Effect.yieldNow;
           equal((yield* session.current).subscribers, 0);
-          const sourceFailure = new ReactorError("Native", "decoded source fixture failed");
+          const sourceFailure = new ReactorError({
+            code: "Native",
+            message: "decoded source fixture failed",
+          });
           const peer = peers[0];
           assert(peer !== undefined);
           yield* Effect.sync(() => Queue.failCauseUnsafe(peer.videos, Cause.fail(sourceFailure)));

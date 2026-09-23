@@ -19,7 +19,9 @@ export const make = Effect.gen(function* () {
     Effect.suspend(() => {
       if (ended) return Effect.void;
       if (queuedFrames >= 96)
-        return Effect.fail(new ReactorError("Overflow", "Orchestration video receiver overflow"));
+        return Effect.fail(
+          new ReactorError({ code: "Overflow", message: "Orchestration video receiver overflow" }),
+        );
       // The private queues are nonblocking. Admission and counters change in one synchronous turn.
       if (Queue.offerUnsafe(video, frame)) {
         queuedFrames++;
@@ -31,7 +33,9 @@ export const make = Effect.gen(function* () {
     Effect.suspend(() => {
       if (ended) return Effect.void;
       if (queuedSamples + frame.samples.length > 48_000 * 4)
-        return Effect.fail(new ReactorError("Overflow", "Orchestration audio receiver overflow"));
+        return Effect.fail(
+          new ReactorError({ code: "Overflow", message: "Orchestration audio receiver overflow" }),
+        );
       if (Queue.offerUnsafe(audio, frame)) {
         queuedSamples += frame.samples.length;
         queuedAudioFrames++;

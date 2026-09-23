@@ -241,7 +241,8 @@ test("upload failure leaves a closed source reader and no staging files or gener
   run(
     Effect.gen(function* () {
       const h = yield* setup({
-        upload: () => Effect.fail(new ReactorError("Upload", "fixture upload failed")),
+        upload: () =>
+          Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload failed" })),
       });
       const source = h.path.join(h.directory, "upload-fails.png");
       yield* h.fs.writeFile(source, pngBytes(32, 24));

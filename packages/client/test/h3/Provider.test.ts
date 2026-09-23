@@ -1282,7 +1282,9 @@ describe("H3 preparation, cancellation and bounds", () => {
         const { fake, provider } = yield* setup({
           upload: () =>
             held.wait.pipe(
-              Effect.andThen(Effect.fail(new ReactorError("Upload", "fixture upload ends"))),
+              Effect.andThen(
+                Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload ends" })),
+              ),
             ),
         });
         const prepared = yield* provider.prepare(request({ references: [bytesReference()] }));
@@ -1305,10 +1307,13 @@ describe("H3 preparation, cancellation and bounds", () => {
           commit: () =>
             refuse
               ? Effect.fail(
-                  new CommandFailure(new ReactorError("InvalidState", "affinity refused"), {
-                    operation: "enqueue",
-                    outcome: "not-submitted",
-                  }),
+                  CommandFailure.from(
+                    new ReactorError({ code: "InvalidState", message: "affinity refused" }),
+                    {
+                      operation: "enqueue",
+                      outcome: "not-submitted",
+                    },
+                  ),
                 )
               : Effect.void,
         });
@@ -1358,7 +1363,9 @@ describe("H3 preparation, cancellation and bounds", () => {
               Effect.gen(function* () {
                 yield* defaults();
                 yield* Effect.sleep(5);
-                yield* fake.failObservation(new ReactorError("Closed", "fixture source ended"));
+                yield* fake.failObservation(
+                  new ReactorError({ code: "Closed", message: "fixture source ended" }),
+                );
                 return yield* Effect.fail(fail("unknown", "Disconnected"));
               }),
           },

@@ -39,7 +39,10 @@ test("media policy: acquisition exceptions are typed failures, not stream defect
   const error = await failure(
     fromOwnedReadableStream({
       evaluate: () => {
-        throw new ReactorError("UnsupportedCapability", "not exposed in this realm");
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "not exposed in this realm",
+        });
       },
       onError: errorOf,
     }).pipe(Stream.runDrain),

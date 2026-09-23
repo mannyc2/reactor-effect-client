@@ -62,7 +62,8 @@ const withDeadline = <A, R>(
   effect.pipe(
     Effect.timeoutOrElse({
       duration: ms,
-      orElse: () => Effect.fail(new ReactorError("Timeout", `${operation}: deadline`)),
+      orElse: () =>
+        Effect.fail(new ReactorError({ code: "Timeout", message: `${operation}: deadline` })),
     }),
   );
 
@@ -236,8 +237,10 @@ export class Session {
         if (event.state === "failed" || event.state === "disconnected" || event.state === "closed")
           this.fail(
             c,
-            new ReactorError("Disconnected", `peer state ${event.state}`, {
-              generation: c.generation,
+            new ReactorError({
+              code: "Disconnected",
+              message: `peer state ${event.state}`,
+              context: { generation: c.generation },
             }),
           );
         else {
@@ -249,9 +252,10 @@ export class Session {
         if (!event.open) {
           this.fail(
             c,
-            new ReactorError("ChannelClosed", `${event.channel} channel closed`, {
-              generation: c.generation,
-              detail: { channel: event.channel },
+            new ReactorError({
+              code: "ChannelClosed",
+              message: `${event.channel} channel closed`,
+              context: { generation: c.generation, detail: { channel: event.channel } },
             }),
           );
           break;
@@ -267,7 +271,10 @@ export class Session {
           if (c.iceBuffer.length >= 256 || c.iceBytes > 262_144 || c.finalSent) {
             this.fail(
               c,
-              new ReactorError("Overflow", "ICE buffer bound or candidate after final batch"),
+              new ReactorError({
+                code: "Overflow",
+                message: "ICE buffer bound or candidate after final batch",
+              }),
             );
             break;
           }
@@ -297,12 +304,16 @@ export class Session {
         const message = W.DataServerMessage.decode(bytes),
           payload = message.payload;
         if (payload?.case === "error") {
-          const error = new ReactorError("Remote", payload.value.message, {
-            remoteCode: payload.value.code,
-            requestId: message.request_id,
-            generation: c.generation,
-            outcome: "replied",
-            detail: message,
+          const error = new ReactorError({
+            code: "Remote",
+            message: payload.value.message,
+            context: {
+              remoteCode: payload.value.code,
+              requestId: message.request_id,
+              generation: c.generation,
+              outcome: "replied",
+              detail: message,
+            },
           });
           this.data.settleWith(message.request_id, c.generation, (correlation) => {
             this.emit(
@@ -352,11 +363,11 @@ export class Session {
           this.emit(
             {
               _tag: "Diagnostic",
-              error: new ReactorError(
-                "Protocol",
-                "bodyless control response does not resolve a request",
-                { requestId: message.request_id },
-              ),
+              error: new ReactorError({
+                code: "Protocol",
+                message: "bodyless control response does not resolve a request",
+                context: { requestId: message.request_id },
+              }),
             },
             bytes.length,
           );
@@ -365,11 +376,15 @@ export class Session {
         const result =
           payload.case === "error"
             ? Effect.fail(
-                new ReactorError("Remote", payload.value.message, {
-                  remoteCode: payload.value.code,
-                  requestId: message.request_id,
-                  outcome: "replied",
-                  detail: message,
+                new ReactorError({
+                  code: "Remote",
+                  message: payload.value.message,
+                  context: {
+                    remoteCode: payload.value.code,
+                    requestId: message.request_id,
+                    outcome: "replied",
+                    detail: message,
+                  },
                 }),
               )
             : Effect.succeed(payload);
@@ -384,15 +399,15 @@ export class Session {
           else {
             this.fail(
               c,
-              new ReactorError(
-                "UnexpectedReply",
-                "publisher claim reply did not identify the requested track",
-                {
+              new ReactorError({
+                code: "UnexpectedReply",
+                message: "publisher claim reply did not identify the requested track",
+                context: {
                   operation: "publish_track",
                   requestId: message.request_id,
                   outcome: "unknown",
                 },
-              ),
+              }),
             );
             return;
           }
@@ -433,9 +448,10 @@ export class Session {
               c,
               failure._tag === "Success" && failure.success instanceof ReactorError
                 ? failure.success
-                : new ReactorError("Protocol", "session task failed", {
-                    detail: cause,
-                    generation: c.generation,
+                : new ReactorError({
+                    code: "Protocol",
+                    message: "session task failed",
+                    context: { detail: cause, generation: c.generation },
                   }),
             );
           }),
@@ -463,13 +479,20 @@ export class Session {
           if (c.failure === undefined)
             self.fail(
               c,
-              new ReactorError("Aborted", "connection scope closed", { generation: c.generation }),
+              new ReactorError({
+                code: "Aborted",
+                message: "connection scope closed",
+                context: { generation: c.generation },
+              }),
             );
           if (c.peer.shutdown !== undefined) yield* c.peer.shutdown().pipe(Effect.orDie);
         }),
       );
       if (previous !== undefined) {
-        self.fail(previous, new ReactorError("Disconnected", "connection retired for reconnect"));
+        self.fail(
+          previous,
+          new ReactorError({ code: "Disconnected", message: "connection retired for reconnect" }),
+        );
         yield* Scope.close(previous.scope, Exit.void);
       }
       return c;
@@ -503,8 +526,10 @@ export class Session {
       const connection = this.currentReady();
       const media = connection.peer.rawMedia;
       if (media === undefined)
-        throw new ReactorError("UnsupportedCapability", "peer has no decoded media capability", {
-          outcome: "not-submitted",
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "peer has no decoded media capability",
+          context: { outcome: "not-submitted" },
         });
       const owned = <A>(source: Stream.Stream<A, ReactorError>): Stream.Stream<A, ReactorError> =>
         Stream.transformPull(source, (pull) =>
@@ -531,8 +556,10 @@ export class Session {
     return pure(() => {
       const connection = this.currentReady();
       if (connection.peer.nativeTracks !== true) {
-        throw new ReactorError("UnsupportedCapability", "peer has no browser track capability", {
-          outcome: "not-submitted",
+        throw new ReactorError({
+          code: "UnsupportedCapability",
+          message: "peer has no browser track capability",
+          context: { outcome: "not-submitted" },
         });
       }
       return Object.freeze({
@@ -574,14 +601,14 @@ export class Session {
           transport = descriptor.selected_transport;
         if (capabilities === undefined || transport === undefined)
           return yield* Effect.fail(
-            new ReactorError("Protocol", "missing ready capabilities/transport"),
+            new ReactorError({ code: "Protocol", message: "missing ready capabilities/transport" }),
           );
         if (transport.protocol !== "webrtc" || transport.version !== "1.0")
           return yield* Effect.fail(
-            new ReactorError(
-              "VersionMismatch",
-              `unsupported transport ${transport.protocol}/${transport.version}`,
-            ),
+            new ReactorError({
+              code: "VersionMismatch",
+              message: `unsupported transport ${transport.protocol}/${transport.version}`,
+            }),
           );
         const readyDescriptor: ReadyDescriptor = Object.freeze({
           ...descriptor,
@@ -673,7 +700,10 @@ export class Session {
                   c,
                   error._tag === "Success" && error.success instanceof ReactorError
                     ? error.success
-                    : new ReactorError("Aborted", "connection attempt interrupted"),
+                    : new ReactorError({
+                        code: "Aborted",
+                        message: "connection attempt interrupted",
+                      }),
                 );
                 yield* Scope.close(c.scope, Exit.void);
               })
@@ -704,22 +734,30 @@ export class Session {
           correlator.cancel(pending);
           c.pendingClaims.delete(pending.id);
           return yield* Effect.fail(
-            new ReactorError(encoded.failure.code, encoded.failure.message, {
-              ...encoded.failure.context,
-              operation,
-              requestId: pending.id,
-              generation: c.generation,
-              outcome: "not-submitted",
+            new ReactorError({
+              code: encoded.failure.code,
+              message: encoded.failure.message,
+              context: {
+                ...encoded.failure.context,
+                operation,
+                requestId: pending.id,
+                generation: c.generation,
+                outcome: "not-submitted",
+              },
             }),
           );
         }
         const failure = (error: ReactorError) =>
-          new ReactorError(error.code, error.message, {
-            ...error.context,
-            operation,
-            requestId: pending.id,
-            generation: c.generation,
-            outcome: error.context.outcome ?? (pending.submitted ? "unknown" : "not-submitted"),
+          new ReactorError({
+            code: error.code,
+            message: error.message,
+            context: {
+              ...error.context,
+              operation,
+              requestId: pending.id,
+              generation: c.generation,
+              outcome: error.context.outcome ?? (pending.submitted ? "unknown" : "not-submitted"),
+            },
           });
         const sending = pure(() => {
           self.assertCurrent(c);
@@ -782,13 +820,12 @@ export class Session {
       positiveLimit(timeoutMs, "command timeout", 600_000);
       return { c, payload };
     }).pipe(
-      Effect.mapError(
-        (error) =>
-          new CommandFailure(error, {
-            ...error.context,
-            operation: type,
-            outcome: "not-submitted",
-          }),
+      Effect.mapError((error) =>
+        CommandFailure.from(error, {
+          ...error.context,
+          operation: type,
+          outcome: "not-submitted",
+        }),
       ),
       Effect.flatMap(({ c, payload }) =>
         this.request(
@@ -816,9 +853,9 @@ export class Session {
                 requestId,
                 generation,
               };
-              return new CommandFailure(error, context);
+              return CommandFailure.from(error, context);
             }
-            return new CommandFailure(error, {
+            return CommandFailure.from(error, {
               ...error.context,
               operation: type,
               outcome: "not-submitted",
@@ -873,8 +910,10 @@ export class Session {
       Effect.flatMap((reply) =>
         pure(() => {
           if (reply.case !== "model_schema")
-            throw new ReactorError("UnexpectedReply", `schema reply was ${reply.case}`, {
-              outcome: "replied",
+            throw new ReactorError({
+              code: "UnexpectedReply",
+              message: `schema reply was ${reply.case}`,
+              context: { outcome: "replied" },
             });
           return {
             raw: reply.value,
@@ -891,16 +930,18 @@ export class Session {
       Effect.flatMap((reply) =>
         pure(() => {
           if (reply.case === "clip_failed")
-            throw new ReactorError(
-              /recorder disabled|encoder crashed/i.test(reply.value.reason)
+            throw new ReactorError({
+              code: /recorder disabled|encoder crashed/i.test(reply.value.reason)
                 ? "RecorderDisabled"
                 : "Remote",
-              reply.value.reason,
-              { outcome: "replied" },
-            );
+              message: reply.value.reason,
+              context: { outcome: "replied" },
+            });
           if (reply.case !== "clip_ready")
-            throw new ReactorError("UnexpectedReply", `clip reply was ${reply.case}`, {
-              outcome: "replied",
+            throw new ReactorError({
+              code: "UnexpectedReply",
+              message: `clip reply was ${reply.case}`,
+              context: { outcome: "replied" },
             });
           return {
             ...reply.value,
@@ -913,7 +954,10 @@ export class Session {
   requestClip(seconds: number): Effect.Effect<W.ClipReady, ReactorError> {
     return pure(() => {
       if (!Number.isFinite(seconds) || seconds <= 0)
-        throw new ReactorError("Protocol", "clip duration must be finite and positive");
+        throw new ReactorError({
+          code: "Protocol",
+          message: "clip duration must be finite and positive",
+        });
     }).pipe(
       Effect.andThen(this.clip({ case: "request_clip", value: { duration_seconds: seconds } })),
     );
@@ -923,13 +967,14 @@ export class Session {
   }
   private namedTrack(name: string, connection: ReadyConnection): Track {
     if (connection.peer.mediaSupported === false)
-      throw new ReactorError(
-        "UnsupportedCapability",
-        "This peer is data-only; track/media operations are unavailable",
-        { outcome: "not-submitted" },
-      );
+      throw new ReactorError({
+        code: "UnsupportedCapability",
+        message: "This peer is data-only; track/media operations are unavailable",
+        context: { outcome: "not-submitted" },
+      });
     const track = connection.negotiated.descriptor.capabilities.tracks.find((t) => t.name === name);
-    if (track === undefined) throw new ReactorError("InvalidState", `unknown track: ${name}`);
+    if (track === undefined)
+      throw new ReactorError({ code: "InvalidState", message: `unknown track: ${name}` });
     return track;
   }
   private trackOperation<A>(
@@ -943,7 +988,10 @@ export class Session {
         this.assertCurrent(c);
         const track = this.namedTrack(name, c);
         if (c.trackBusy.has(name))
-          throw new ReactorError("InvalidState", `another track operation is in flight: ${name}`);
+          throw new ReactorError({
+            code: "InvalidState",
+            message: `another track operation is in flight: ${name}`,
+          });
         c.trackBusy.add(name);
         return { c, track };
       }),
@@ -1008,11 +1056,11 @@ export class Session {
             orElse: () => {
               deadline = true;
               return Effect.fail(
-                new ReactorError(
-                  "Timeout",
-                  "sender replacement deadline; local generation retired",
-                  { operation: name, outcome: "unknown" },
-                ),
+                new ReactorError({
+                  code: "Timeout",
+                  message: "sender replacement deadline; local generation retired",
+                  context: { operation: name, outcome: "unknown" },
+                }),
               );
             },
           }),
@@ -1025,11 +1073,12 @@ export class Session {
                   if (invoked && (deadline || Cause.hasInterrupts(exit.cause)))
                     self.fail(
                       c,
-                      new ReactorError(
-                        deadline ? "Timeout" : "Disconnected",
-                        "native sender replacement abandoned; reconnect explicitly before reusing publication",
-                        { operation: name, outcome: "unknown" },
-                      ),
+                      new ReactorError({
+                        code: deadline ? "Timeout" : "Disconnected",
+                        message:
+                          "native sender replacement abandoned; reconnect explicitly before reusing publication",
+                        context: { operation: name, outcome: "unknown" },
+                      }),
                     );
                 })
               : Effect.void,
@@ -1064,11 +1113,11 @@ export class Session {
         Effect.gen(function* () {
           if (c.peer.nativeTracks === false)
             return yield* Effect.fail(
-              new ReactorError(
-                "UnsupportedCapability",
-                "this peer does not accept browser media tracks",
-                { outcome: "not-submitted" },
-              ),
+              new ReactorError({
+                code: "UnsupportedCapability",
+                message: "this peer does not accept browser media tracks",
+                context: { outcome: "not-submitted" },
+              }),
             );
           if (
             track.direction !== "sendonly" ||
@@ -1076,7 +1125,10 @@ export class Session {
             source.readyState !== "live"
           )
             return yield* Effect.fail(
-              new ReactorError("InvalidState", "publish requires a live matching input track"),
+              new ReactorError({
+                code: "InvalidState",
+                message: "publish requires a live matching input track",
+              }),
             );
           if (!c.claimed.has(name)) {
             const reply = yield* self.controlRequest(
@@ -1086,8 +1138,10 @@ export class Session {
             );
             if (reply.case !== "publish_track" || reply.value.name !== name)
               return yield* Effect.fail(
-                new ReactorError("UnexpectedReply", "publisher claim reply mismatch", {
-                  outcome: "replied",
+                new ReactorError({
+                  code: "UnexpectedReply",
+                  message: "publisher claim reply mismatch",
+                  context: { outcome: "replied" },
                 }),
               );
             c.claimed.add(name);
@@ -1103,11 +1157,11 @@ export class Session {
       (c) =>
         c.peer.nativeTracks === false
           ? Effect.fail(
-              new ReactorError(
-                "UnsupportedCapability",
-                "this peer does not expose browser track publication",
-                { outcome: "not-submitted" },
-              ),
+              new ReactorError({
+                code: "UnsupportedCapability",
+                message: "this peer does not expose browser track publication",
+                context: { outcome: "not-submitted" },
+              }),
             )
           : this.replaceSender(c, name, null).pipe(
               Effect.andThen(this.notification(c, { case: "unpublish_track", value: { name } })),
@@ -1129,11 +1183,11 @@ export class Session {
         const c = expected ?? this.currentReady();
         this.assertCurrent(c);
         if (c.peer.nativeTracks === false)
-          throw new ReactorError(
-            "UnsupportedCapability",
-            "this peer exposes owned decoded frames instead of browser tracks",
-            { outcome: "not-submitted" },
-          );
+          throw new ReactorError({
+            code: "UnsupportedCapability",
+            message: "this peer exposes owned decoded frames instead of browser tracks",
+            context: { outcome: "not-submitted" },
+          });
         return { peer: c.peer, track: c.peer.lease(name) };
       }),
       ({ peer, track }) => Effect.sync(() => peer.release(track)),
@@ -1225,10 +1279,14 @@ export class Session {
       return withDeadline(operation, timeoutMs, "upload").pipe(
         Effect.mapError(
           (e) =>
-            new ReactorError("Upload", e.message, {
-              ...e.context,
-              operation: "upload",
-              detail: { cause: e, progress: { ...progress } },
+            new ReactorError({
+              code: "Upload",
+              message: e.message,
+              context: {
+                ...e.context,
+                operation: "upload",
+                detail: { cause: e, progress: { ...progress } },
+              },
             }),
         ),
         Effect.ensuring(
@@ -1251,7 +1309,7 @@ export class Session {
           self.lifecycle.transition("closing");
           Deferred.doneUnsafe(
             self.lifecycle.closing,
-            Effect.fail(new ReactorError("Closed", "session closing")),
+            Effect.fail(new ReactorError({ code: "Closed", message: "session closing" })),
           );
           const report = yield* cleanupSession({
             connection: self.lifecycle.connection,

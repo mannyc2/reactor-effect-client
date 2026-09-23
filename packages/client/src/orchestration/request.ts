@@ -36,22 +36,26 @@ export class ClipRequest extends Schema.Class<ClipRequest>("OrchestrationClipReq
 }) {}
 
 /** Local admission is a policy decision, with explicit proof of no dispatch. */
-export class PolicyFailure extends CommandFailure {
-  readonly reason: string;
-
-  // Built from a local policy decision; never decoded through the ReactorError
-  // schema.
-  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(reason: string, message: string, operation = "enqueue", cause?: unknown) {
-    super(
-      new ReactorError(reason === "invalid_request" ? "InvalidInput" : "InvalidState", message),
-      {
+export class PolicyFailure extends CommandFailure.extend<PolicyFailure>(
+  "reactor-effect-client/PolicyFailure",
+)({ reason: Schema.String }) {
+  /** A local refusal of `operation`, which was therefore never dispatched. */
+  static refuse(
+    reason: string,
+    message: string,
+    operation = "enqueue",
+    cause?: unknown,
+  ): PolicyFailure {
+    return new PolicyFailure({
+      code: reason === "invalid_request" ? "InvalidInput" : "InvalidState",
+      message,
+      context: {
         operation,
         outcome: "not-submitted",
         ...(cause === undefined ? {} : { detail: cause }),
       },
-    );
-    this.reason = reason;
+      reason,
+    });
   }
 }
 
@@ -132,7 +136,7 @@ export const captureRequest = (input: ClipRequest): Effect.Effect<ClipRequest, P
       return request;
     },
     catch: (cause) =>
-      new PolicyFailure(
+      PolicyFailure.refuse(
         "invalid_request",
         "Clip request is malformed or contains unsupported fields",
         "enqueue",
@@ -144,10 +148,10 @@ export const captureRequest = (input: ClipRequest): Effect.Effect<ClipRequest, P
 export const preworkFailure = (operation: string, cause: unknown): CommandFailure =>
   cause instanceof CommandFailure && cause.context.outcome === "not-submitted"
     ? cause
-    : new CommandFailure(
+    : CommandFailure.from(
         cause instanceof ReactorError
           ? cause
-          : new ReactorError("InvalidInput", `${operation} preparation failed`),
+          : new ReactorError({ code: "InvalidInput", message: `${operation} preparation failed` }),
         {
           operation,
           outcome: "not-submitted",

@@ -368,7 +368,9 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       ready: Effect.suspend(() =>
         status === "ready"
           ? Effect.succeed(ready())
-          : Effect.fail(new ReactorError("InvalidState", "Fixture session is not ready")),
+          : Effect.fail(
+              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+            ),
       ),
       current: Effect.sync(current),
       events: (bounds) => observers.stream(bounds),
@@ -385,10 +387,13 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         Effect.gen(function* () {
           if (status !== "ready")
             return yield* Effect.fail(
-              new CommandFailure(new ReactorError("InvalidState", "Fixture session is not ready"), {
-                operation: command,
-                outcome: "not-submitted",
-              }),
+              CommandFailure.from(
+                new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+                {
+                  operation: command,
+                  outcome: "not-submitted",
+                },
+              ),
             );
           const call: Call = {
             command,
@@ -405,7 +410,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             outcome: "unknown" | "replied" | "not-submitted",
             code: ReactorError["code"] = "Timeout",
           ) =>
-            new CommandFailure(new ReactorError(code, "Fixture command failure"), {
+            CommandFailure.from(new ReactorError({ code, message: "Fixture command failure" }), {
               operation: command,
               outcome,
               requestId: call.requestId,
@@ -452,9 +457,17 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           );
         }),
       requestRecordingClip: () =>
-        Effect.fail(new ReactorError("UnsupportedCapability", "Not a fixture recording operation")),
+        Effect.fail(
+          new ReactorError({
+            code: "UnsupportedCapability",
+            message: "Not a fixture recording operation",
+          }),
+        ),
       recording: Effect.fail(
-        new ReactorError("UnsupportedCapability", "Not a fixture recording operation"),
+        new ReactorError({
+          code: "UnsupportedCapability",
+          message: "Not a fixture recording operation",
+        }),
       ),
       stats: Effect.succeed({ sampledAtMs: 0, generation, warnings: [] }),
       close: Effect.sync(() => {

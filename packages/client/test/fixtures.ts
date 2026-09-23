@@ -230,7 +230,9 @@ export class MockPeer implements Peer {
         }
       },
       catch: (cause) =>
-        cause instanceof ReactorError ? cause : new ReactorError("Disconnected", String(cause)),
+        cause instanceof ReactorError
+          ? cause
+          : new ReactorError({ code: "Disconnected", message: String(cause) }),
     });
   }
   close(): void {

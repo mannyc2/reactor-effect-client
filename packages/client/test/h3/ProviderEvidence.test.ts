@@ -111,13 +111,16 @@ test("bounded reconciliation retains the exact unknown failure, original code an
       const fake = yield* fixture({
         command: {
           enqueue: ({ call }) => {
-            original = new CommandFailure(new ReactorError("Native", "fixture uncertainty"), {
-              operation: "enqueue",
-              outcome: "unknown",
-              requestId: call.requestId,
-              generation: call.generation,
-              detail: cause,
-            });
+            original = CommandFailure.from(
+              new ReactorError({ code: "Native", message: "fixture uncertainty" }),
+              {
+                operation: "enqueue",
+                outcome: "unknown",
+                requestId: call.requestId,
+                generation: call.generation,
+                detail: cause,
+              },
+            );
             return Effect.fail(original);
           },
         },

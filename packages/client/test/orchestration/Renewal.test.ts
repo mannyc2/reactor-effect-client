@@ -441,7 +441,9 @@ test("frame failure exposes recovery without an application control reader and r
       const held = yield* gate();
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
       const accepted = yield* handle.engine.enqueue(member("retained", false));
-      yield* sources[0]!.failVideo(new ReactorError("Disconnected", "frame receiver ended"));
+      yield* sources[0]!.failVideo(
+        new ReactorError({ code: "Disconnected", message: "frame receiver ended" }),
+      );
       yield* untilEffect(
         handle.mediaState.pipe(Effect.map((state) => state._tag === "Recovering")),
       );
@@ -478,7 +480,10 @@ test("queued removal and committed work cannot deadlock recovery", () =>
       yield* entered.wait;
       const removal = yield* handle.engine.remove(first).pipe(Effect.result, Effect.forkScoped);
       yield* sources[0]!.failVideo(
-        new ReactorError("Disconnected", "reconnect during an outstanding mutation"),
+        new ReactorError({
+          code: "Disconnected",
+          message: "reconnect during an outstanding mutation",
+        }),
       );
       yield* held.release;
       yield* Fiber.join(pending).pipe(Effect.timeout(1000));

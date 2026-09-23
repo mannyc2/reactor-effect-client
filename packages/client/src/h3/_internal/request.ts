@@ -10,9 +10,10 @@ export interface CapturedRequest extends Omit<Request, "references"> {
   readonly references: readonly ValidatedReference[];
 }
 const bad = (message: string): never => {
-  throw new ReactorError("InvalidInput", message, {
-    operation: "enqueue",
-    outcome: "not-submitted",
+  throw new ReactorError({
+    code: "InvalidInput",
+    message,
+    context: { operation: "enqueue", outcome: "not-submitted" },
   });
 };
 export const nonnegative = (value: unknown, field: string): number => {

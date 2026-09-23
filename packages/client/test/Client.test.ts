@@ -45,7 +45,10 @@ const fixture = (options: { readonly refuseTermination?: boolean } = {}) => {
       check: Effect.void,
       make: () => {
         peers++;
-        throw new ReactorError("InvalidState", "unexpected connection in allocation test");
+        throw new ReactorError({
+          code: "InvalidState",
+          message: "unexpected connection in allocation test",
+        });
       },
     }),
   );
@@ -140,7 +143,11 @@ test("preflight refuses an unsupported peer before remote allocation", async () 
       ).pipe(
         Effect.provideService(PeerFactory, {
           check: Effect.fail(
-            new ReactorError("UnsupportedHost", "fixture platform", { outcome: "not-submitted" }),
+            new ReactorError({
+              code: "UnsupportedHost",
+              message: "fixture platform",
+              context: { outcome: "not-submitted" },
+            }),
           ),
           make: () => {
             throw new Error("must not allocate");

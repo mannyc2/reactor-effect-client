@@ -133,8 +133,8 @@ export const failure = (
   message = "fixture outcome",
   operation = "enqueue",
 ) =>
-  new CommandFailure(
-    new ReactorError("Remote", message),
+  CommandFailure.from(
+    new ReactorError({ code: "Remote", message }),
     outcome === "not-submitted"
       ? { operation, outcome }
       : { operation, outcome, requestId: "fixture-dispatch", generation: 1n },

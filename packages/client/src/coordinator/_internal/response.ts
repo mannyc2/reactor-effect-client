@@ -28,11 +28,11 @@ export const readBody = (
           count++;
           if (size > maxBytes || count > maxChunks)
             return yield* Effect.fail(
-              new ReactorError(
-                "Overflow",
-                `${operation} response exceeds its ${maxBytes} byte/${maxChunks} chunk bound`,
-                { operation, status: response.status, outcome: "replied" },
-              ),
+              new ReactorError({
+                code: "Overflow",
+                message: `${operation} response exceeds its ${maxBytes} byte/${maxChunks} chunk bound`,
+                context: { operation, status: response.status, outcome: "replied" },
+              }),
             );
           // A supplied HTTP implementation may reuse its transport buffer.
           if (chunk.byteLength !== 0) chunks.push(new Uint8Array(chunk));
@@ -63,18 +63,19 @@ export const decodeJsonReply = (reply: HttpReply, operation?: string): unknown =
     );
     return result;
   } catch (cause) {
-    throw new ReactorError(
-      "Protocol",
-      operation === undefined
-        ? "invalid UTF-8/JSON HTTP response"
-        : `Reactor ${operation} request or response failed`,
-      {
+    throw new ReactorError({
+      code: "Protocol",
+      message:
+        operation === undefined
+          ? "invalid UTF-8/JSON HTTP response"
+          : `Reactor ${operation} request or response failed`,
+      context: {
         status: reply.status,
         ...(operation === undefined ? {} : { operation }),
         outcome: "replied",
         detail: cause,
       },
-    );
+    });
   }
 };
 

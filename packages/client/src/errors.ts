@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 export const ErrorCode = Schema.Literals([
@@ -54,32 +55,19 @@ export const ErrorContext = Schema.Struct({
 });
 export type ErrorContext = typeof ErrorContext.Type;
 
-interface Fields {
-  readonly code: ErrorCode;
-  readonly message: string;
-  readonly context?: ErrorContext;
-  readonly nativeError?: ProviderFailure;
-}
-
-/** A failure category never implies a mutation was rolled back. Inspect context.outcome. */
+/**
+ * A failure category never implies a mutation was rolled back. Inspect context.outcome.
+ *
+ * Construct it from its fields, as with any Schema class; `context` defaults to empty.
+ */
 export class ReactorError extends Schema.TaggedError<ReactorError>(
   "reactor-effect-client/ReactorError",
 )("ReactorError", {
   code: ErrorCode,
   message: Schema.String,
-  context: ErrorContext,
+  context: ErrorContext.pipe(Schema.withConstructorDefault(Effect.succeed({}))),
   nativeError: Schema.optionalKey(ProviderFailure),
 }) {
-  // Schema decoding passes a fields object, which the first overload accepts;
-  // the positional overload is the SDK's public constructor.
-  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(fields: Fields);
-  constructor(code: ErrorCode, message: string, context?: ErrorContext);
-  constructor(code: ErrorCode | Fields, message?: string, context: ErrorContext = {}) {
-    const fields = typeof code === "string" ? { code, message: message ?? code, context } : code;
-    super({ ...fields, context: fields.context ?? {} });
-  }
-
   override toJSON() {
     const { body: _body, detail: _detail, generation, ...context } = this.context;
     return {
@@ -111,15 +99,18 @@ export const errorOf = (
 ): ReactorError =>
   cause instanceof ReactorError
     ? cause
-    : new ReactorError(code, operation === undefined ? code : `${operation} failed`, {
-        ...(operation === undefined ? {} : { operation }),
-        detail: cause,
+    : new ReactorError({
+        code,
+        message: operation === undefined ? code : `${operation} failed`,
+        context: { ...(operation === undefined ? {} : { operation }), detail: cause },
       });
 
 export const positiveLimit = (value: number, name: string, maximum = 0x7fffffff): number => {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
-    throw new ReactorError("InvalidInput", `${name} must be an integer in 1..${maximum}`, {
-      outcome: "not-submitted",
+    throw new ReactorError({
+      code: "InvalidInput",
+      message: `${name} must be an integer in 1..${maximum}`,
+      context: { outcome: "not-submitted" },
     });
   }
   return value;

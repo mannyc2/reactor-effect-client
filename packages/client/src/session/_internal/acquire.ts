@@ -1,8 +1,10 @@
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CoordinatorClient } from "../../coordinator/_internal/client.js";
 import { errorOf, ReactorError } from "../../errors.js";
@@ -17,21 +19,26 @@ type Input =
   | { readonly _tag: "Create"; readonly options: CreateOptions }
   | { readonly _tag: "Attach"; readonly options: AttachOptions };
 
-/** A failed acquisition still returns the lifetime evidence of its partial lease. */
-export class AcquisitionFailure extends ReactorError {
-  readonly cleanup: CloseReport;
+/** The report a lease produced, kept by reference rather than copied. */
+const Cleanup = Schema.declare(
+  (input: unknown): input is CloseReport =>
+    Predicate.isObject(input) && typeof input["localClosed"] === "boolean",
+  { expected: "CloseReport" },
+);
 
-  // Built from a ReactorError and its cleanup evidence; never decoded through
-  // the ReactorError schema.
-  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(error: ReactorError, cleanup: CloseReport) {
-    super({
+/** A failed acquisition still returns the lifetime evidence of its partial lease. */
+export class AcquisitionFailure extends ReactorError.extend<AcquisitionFailure>(
+  "reactor-effect-client/AcquisitionFailure",
+)({ cleanup: Cleanup }) {
+  /** `error`'s failure, with the cleanup its partial lease reported. */
+  static from(error: ReactorError, cleanup: CloseReport): AcquisitionFailure {
+    return new AcquisitionFailure({
       code: error.code,
       message: error.message,
       context: error.context,
       ...(error.nativeError === undefined ? {} : { nativeError: error.nativeError }),
+      cleanup,
     });
-    this.cleanup = cleanup;
   }
 }
 
@@ -61,7 +68,10 @@ export const implementationOf = (
     try: () => {
       const implementation = implementations.get(session);
       if (implementation === undefined)
-        throw new ReactorError("InvalidInput", "session was not acquired by this client");
+        throw new ReactorError({
+          code: "InvalidInput",
+          message: "session was not acquired by this client",
+        });
       return implementation;
     },
     catch: errorOf,
@@ -80,12 +90,18 @@ const validate = (
 ): { readonly intent: AcquisitionIntent; readonly jwt?: Redacted.Redacted<string> } => {
   const options = input.options;
   if (options === null || typeof options !== "object") {
-    throw new ReactorError("InvalidInput", "session options must be an object", {
-      outcome: "not-submitted",
+    throw new ReactorError({
+      code: "InvalidInput",
+      message: "session options must be an object",
+      context: { outcome: "not-submitted" },
     });
   }
   if (options.jwt !== undefined && !Redacted.isRedacted(options.jwt)) {
-    throw new ReactorError("InvalidInput", "jwt must be Redacted", { outcome: "not-submitted" });
+    throw new ReactorError({
+      code: "InvalidInput",
+      message: "jwt must be Redacted",
+      context: { outcome: "not-submitted" },
+    });
   }
   const credential = options.jwt === undefined ? {} : { jwt: options.jwt };
   if (input._tag === "Attach") {
@@ -134,18 +150,20 @@ export const makeFactory = (
         const validated = yield* Effect.try({
           try: () => validate(input),
           catch: (cause) =>
-            new ReactorError("InvalidInput", "invalid session acquisition input", {
-              detail: cause,
-              outcome: "not-submitted",
+            new ReactorError({
+              code: "InvalidInput",
+              message: "invalid session acquisition input",
+              context: { detail: cause, outcome: "not-submitted" },
             }),
         });
         yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
           Effect.mapError(
             (cause) =>
-              new ReactorError("InvalidState", "could not allocate a request identity", {
-                outcome: "not-submitted",
-                detail: cause,
+              new ReactorError({
+                code: "InvalidState",
+                message: "could not allocate a request identity",
+                context: { outcome: "not-submitted", detail: cause },
               }),
           ),
         );
@@ -215,7 +233,7 @@ export const makeFactory = (
         Effect.catch((error) => {
           const cleanup = acquired === undefined ? Effect.succeed(noAcquisition) : acquired.close();
           return cleanup.pipe(
-            Effect.flatMap((report) => Effect.fail(new AcquisitionFailure(error, report))),
+            Effect.flatMap((report) => Effect.fail(AcquisitionFailure.from(error, report))),
           );
         }),
       );
