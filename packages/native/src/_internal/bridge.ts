@@ -4,13 +4,19 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import * as Schema from "effect/Schema";
-import { ReactorError, ErrorCode } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client";
+import type { ErrorCode } from "reactor-effect-client";
 
-const ABI_VERSION = 2;
+const ABI_VERSION = 3;
 const CALL_BUFFER_BYTES = 4 * 1024 * 1024;
-const ERROR_BUFFER_BYTES = 4096;
-const MAX_PACKET_BYTES = 96 * 1024 * 1024;
+const FAILURE_BYTES = 1024;
+const VIDEO_HEADER_BYTES = 40;
+const AUDIO_HEADER_BYTES = 16;
+const EVENT_BUFFER_BYTES = 64 * 1024;
+// The native queues' byte bounds: no single item can exceed them.
+const MAX_EVENT_BYTES = 16 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
+const MAX_AUDIO_SAMPLES = 2 * 1024 * 1024;
 const MAX_IN_FLIGHT_CALLS = 128;
 const MAX_IN_FLIGHT_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -20,6 +26,20 @@ const STATUS_OK = 0;
 const STATUS_AGAIN = 1;
 const STATUS_BUFFER_TOO_SMALL = 2;
 const STATUS_CLOSED = 3;
+
+/** The C ABI's closed set of failure classes, keyed by status. */
+const FAILURE_CODES: ReadonlyMap<number, ErrorCode> = new Map([
+  [STATUS_CLOSED, "Closed"],
+  [-1, "InvalidInput"],
+  [-2, "Native"],
+  [-3, "Overflow"],
+  [-4, "Protocol"],
+  [-5, "SdpRejected"],
+  [-6, "ChannelClosed"],
+]);
+
+/** A status outside the ABI's classes is an unclassified native failure. */
+export const failureCode = (status: number): ErrorCode => FAILURE_CODES.get(status) ?? "Native";
 
 export const NativeCall = Object.freeze({
   Prepare: 1,
@@ -31,6 +51,9 @@ export const NativeCall = Object.freeze({
 } as const);
 
 export type NativeCall = (typeof NativeCall)[keyof typeof NativeCall];
+
+/** Readiness bits the native notifier passes to the host callback. */
+export const Ready = Object.freeze({ Events: 1, Video: 2, Audio: 4 } as const);
 
 interface AsyncNativeFunction {
   readonly async: (
@@ -44,24 +67,46 @@ interface NativeLibrary {
 
 interface KoffiModule {
   readonly load: (path: string) => NativeLibrary;
+  readonly proto: (result: string, parameters: readonly string[]) => unknown;
+  readonly pointer: (type: unknown) => unknown;
+  readonly register: (callback: (ready: number) => void, type: unknown) => unknown;
+  readonly unregister: (callback: unknown) => void;
 }
+
+type OutLength = Array<number | bigint | null>;
 
 interface NativeApi {
   readonly library: NativeLibrary;
   readonly binarySha256: string;
   readonly buildIdentity: string;
-  readonly create: () => bigint | null;
+  readonly register: (callback: (ready: number) => void) => unknown;
+  readonly unregister: (callback: unknown) => void;
+  readonly create: (notify: unknown) => bigint | null;
   readonly call: AsyncNativeFunction;
   readonly send: AsyncNativeFunction;
-  readonly pollEvent: AsyncNativeFunction;
-  readonly pollVideo: AsyncNativeFunction;
-  readonly pollAudio: AsyncNativeFunction;
+  readonly takeEvent: (handle: bigint, out: Uint8Array, cap: number, length: OutLength) => number;
+  readonly takeVideo: (
+    handle: bigint,
+    header: Uint8Array,
+    bgra: Uint8Array,
+    bgraCap: number,
+    metadata: Uint8Array,
+    metadataCap: number,
+  ) => number;
+  readonly takeAudio: (
+    handle: bigint,
+    header: Uint8Array,
+    pcm: Int16Array,
+    pcmCap: number,
+  ) => number;
   readonly close: (handle: bigint) => void;
   readonly shutdown: AsyncNativeFunction;
   readonly destroy: (handle: bigint) => void;
 }
 
 const APIs = new Map<string, NativeApi>();
+// Koffi type names are process-global; one anonymous prototype serves every library.
+let notifyType: unknown;
 
 const libraryName = (): string => {
   switch (process.platform) {
@@ -141,46 +186,41 @@ const loadAt = async (path: string): Promise<NativeApi> => {
       `native WebRTC ABI mismatch: expected ${ABI_VERSION}, received ${actual}`,
       { outcome: "not-submitted" },
     );
+  notifyType ??= koffi.pointer(koffi.proto("void", ["uint32_t"]));
+  const notify = notifyType;
   const api: NativeApi = {
     library,
     binarySha256,
     buildIdentity: (symbol("const char *reactor_effect_build_identity(void)") as () => string)(),
-    create: symbol("void *reactor_effect_peer_create(void)") as () => bigint | null,
+    register: (callback) => koffi.register(callback, notify),
+    unregister: (callback) => koffi.unregister(callback),
+    create: symbol("void *reactor_effect_peer_create(void *notify)") as (
+      notify: unknown,
+    ) => bigint | null,
     call: asAsync(
       symbol(
-        "int reactor_effect_peer_call(void *peer, uint32_t operation, const uint8_t *request, size_t request_len, _Out_ uint8_t *response, size_t response_cap, _Out_ size_t *response_len)",
+        "int reactor_effect_peer_call(void *peer, uint32_t operation, const uint8_t *request, size_t request_len, _Out_ uint8_t *response, size_t response_cap, _Out_ size_t *response_len, _Out_ uint8_t *failure)",
       ),
       "reactor_effect_peer_call",
     ),
     send: asAsync(
       symbol(
-        "int reactor_effect_peer_send(void *peer, uint32_t channel, const uint8_t *data, size_t data_len, _Out_ uint8_t *error, size_t error_cap, _Out_ size_t *error_len)",
+        "int reactor_effect_peer_send(void *peer, uint32_t channel, const uint8_t *data, size_t data_len, _Out_ uint8_t *failure)",
       ),
       "reactor_effect_peer_send",
     ),
-    pollEvent: asAsync(
-      symbol(
-        "int reactor_effect_peer_poll_event(void *peer, uint32_t timeout_ms, _Out_ uint8_t *out, size_t out_cap, _Out_ size_t *out_len)",
-      ),
-      "reactor_effect_peer_poll_event",
-    ),
-    pollVideo: asAsync(
-      symbol(
-        "int reactor_effect_peer_poll_video(void *peer, uint32_t timeout_ms, _Out_ uint8_t *out, size_t out_cap, _Out_ size_t *out_len)",
-      ),
-      "reactor_effect_peer_poll_video",
-    ),
-    pollAudio: asAsync(
-      symbol(
-        "int reactor_effect_peer_poll_audio(void *peer, uint32_t timeout_ms, _Out_ uint8_t *out, size_t out_cap, _Out_ size_t *out_len)",
-      ),
-      "reactor_effect_peer_poll_audio",
-    ),
+    takeEvent: symbol(
+      "int reactor_effect_peer_take_event(void *peer, _Out_ uint8_t *out, size_t out_cap, _Out_ size_t *out_len)",
+    ) as NativeApi["takeEvent"],
+    takeVideo: symbol(
+      "int reactor_effect_peer_take_video(void *peer, _Out_ uint8_t *header, _Out_ uint8_t *bgra, size_t bgra_cap, _Out_ uint8_t *metadata, size_t metadata_cap)",
+    ) as NativeApi["takeVideo"],
+    takeAudio: symbol(
+      "int reactor_effect_peer_take_audio(void *peer, _Out_ uint8_t *header, _Out_ int16_t *pcm, size_t pcm_cap)",
+    ) as NativeApi["takeAudio"],
     close: symbol("void reactor_effect_peer_close(void *peer)") as (handle: bigint) => void,
     shutdown: asAsync(
-      symbol(
-        "int reactor_effect_peer_shutdown(void *peer, _Out_ uint8_t *error, size_t error_cap, _Out_ size_t *error_len)",
-      ),
+      symbol("int reactor_effect_peer_shutdown(void *peer, _Out_ uint8_t *failure)"),
       "reactor_effect_peer_shutdown",
     ),
     destroy: symbol("void reactor_effect_peer_destroy(void *peer)") as (handle: bigint) => void,
@@ -299,19 +339,28 @@ export const verifyStagedNativeBridge = async (
   }
 };
 
-const isErrorCode = Schema.is(ErrorCode);
-
-const operationError = (status: number, bytes: Uint8Array, operation: string): ReactorError => {
-  const response = bytes.length === 0 ? {} : jsonRecord(bytes, operation);
-  const rawCode = typeof response.code === "string" ? response.code : undefined;
-  const code = isErrorCode(rawCode) ? rawCode : status === STATUS_CLOSED ? "Closed" : "Native";
-  // A native status/code does not establish whether a side effect executed.
-  // Keep backend messages for explicit inspection rather than diagnostics: a
+const failureOf = (
+  status: number,
+  failure: Uint8Array,
+  operation: string,
+  detail: Readonly<Record<string, unknown>> = {},
+): ReactorError => {
+  const code = failureCode(status);
+  const length = Math.min(
+    new DataView(failure.buffer, failure.byteOffset, failure.byteLength).getUint32(0, true),
+    failure.byteLength - 4,
+  );
+  // A native status does not establish whether a side effect executed. Keep
+  // backend messages for explicit inspection rather than diagnostics: a
   // libwebrtc error can contain peer SDP or caller-supplied signaling material.
   return new ReactorError(code, `native ${operation} failed (${code})`, {
     operation,
     outcome: "unknown",
-    detail: response,
+    detail: {
+      status,
+      message: new TextDecoder().decode(failure.subarray(4, 4 + length)),
+      ...detail,
+    },
   });
 };
 
@@ -325,10 +374,25 @@ export interface NativePacket {
   readonly payload: Uint8Array<ArrayBuffer>;
 }
 
-export type NativePoll =
-  | { readonly _tag: "Packet"; readonly packet: NativePacket }
-  | { readonly _tag: "Again" }
-  | { readonly _tag: "Closed" };
+export interface NativeVideo {
+  readonly track: number;
+  readonly width: number;
+  readonly height: number;
+  readonly frameId: bigint;
+  readonly timestampMicros: bigint;
+  readonly data: Uint8Array<ArrayBuffer>;
+  readonly metadata: Uint8Array<ArrayBuffer>;
+}
+
+export interface NativeAudio {
+  readonly track: number;
+  readonly sampleRate: number;
+  readonly channels: number;
+  readonly samples: Int16Array<ArrayBuffer>;
+}
+
+/** A take: the item, `undefined` when the queue is empty, `null` once it is closed. */
+export type Take<A> = A | undefined | null;
 
 const parsePacket = (bytes: Uint8Array): NativePacket => {
   if (bytes.length < 4)
@@ -338,21 +402,47 @@ const parsePacket = (bytes: Uint8Array): NativePacket => {
   if (headerLength > bytes.length - 4)
     throw new ReactorError("Protocol", "native packet header length exceeds packet size");
   const header = jsonRecord(bytes.subarray(4, 4 + headerLength), "packet");
-  const payload = Uint8Array.from(bytes.subarray(4 + headerLength));
-  return { header: Object.freeze(header), payload };
+  return { header: Object.freeze(header), payload: bytes.slice(4 + headerLength) };
 };
 
+const overSized = (what: string, size: number): ReactorError =>
+  new ReactorError("Protocol", `native ${what} of ${size} exceeds the native queue bound`);
+
+/**
+ * One native peer. Media and transport events never cross into JavaScript on
+ * their own: a native notifier thread invokes `onReady` on the JavaScript
+ * thread, and the host drains each named queue with synchronous takes, one
+ * copy per item into memory the consumer then owns.
+ */
 export class NativeBridge {
   private readonly api: NativeApi;
+  private readonly notify: unknown;
   private handle: bigint | undefined;
   private closed = false;
   private readonly active = new Set<Promise<void>>();
-  private readonly readers = new Set<AsyncNativeFunction>();
   private requestBytes = 0;
   private shutdownTask: Promise<void> | undefined;
-  constructor(path: string) {
+  private readonly videoHeader = new Uint8Array(VIDEO_HEADER_BYTES);
+  private readonly audioHeader = new Uint8Array(AUDIO_HEADER_BYTES);
+  private readonly eventLength: OutLength = [0];
+  private event = new Uint8Array(EVENT_BUFFER_BYTES);
+  private metadata = new Uint8Array(256);
+  // The buffer the next take copies into. Frames keep their size, so each is
+  // allocated once at the previous frame's size and handed to its consumer.
+  private nextVideo = new Uint8Array(0);
+  private nextAudio = new Int16Array(0);
+
+  constructor(path: string, onReady: (ready: number) => void) {
     this.api = checked(path);
-    const handle = this.api.create();
+    this.notify = this.api.register((ready) => {
+      if (!this.closed) onReady(ready);
+    });
+    let handle: bigint | null = null;
+    try {
+      handle = this.api.create(this.notify);
+    } finally {
+      if (handle === null) this.api.unregister(this.notify);
+    }
     if (handle === null)
       throw new ReactorError("Native", "native WebRTC peer allocation failed", {
         outcome: "not-submitted",
@@ -384,7 +474,7 @@ export class NativeBridge {
     });
     // Register before dispatching to Koffi. Effect interruption may abandon the
     // waiter, but the lease belongs to actual native completion, including time
-    // spent queued on Koffi's executor and both halves of a packet poll.
+    // spent queued on Koffi's executor.
     this.active.add(lease);
     this.requestBytes += bytes;
     try {
@@ -403,7 +493,8 @@ export class NativeBridge {
       });
     return this.withHandle(CALL_BUFFER_BYTES + request.byteLength, async (handle) => {
       const response = Buffer.allocUnsafe(CALL_BUFFER_BYTES),
-        responseLength: Array<number | bigint | null> = [0];
+        responseLength: OutLength = [0],
+        failure = Buffer.alloc(FAILURE_BYTES);
       const input = Buffer.from(request);
       let status: number;
       try {
@@ -415,6 +506,7 @@ export class NativeBridge {
           response,
           response.byteLength,
           responseLength,
+          failure,
         ]);
       } catch (cause) {
         throw new ReactorError("Native", "native WebRTC call completion failed", {
@@ -422,13 +514,12 @@ export class NativeBridge {
           outcome: "unknown",
         });
       }
+      if (status !== STATUS_OK) throw failureOf(status, failure, `call:${operation}`);
       const length = toNumber(responseLength[0], "call response length");
       if (length > response.byteLength)
         throw new ReactorError("Protocol", "native call response exceeded its declared buffer");
-      const bytes = Uint8Array.from(response.subarray(0, length));
-      if (status !== STATUS_OK) throw operationError(status, bytes, `call:${operation}`);
       try {
-        return JSON.parse(new TextDecoder().decode(bytes));
+        return JSON.parse(new TextDecoder().decode(response.subarray(0, length)));
       } catch (cause) {
         throw new ReactorError("Protocol", "native call returned invalid JSON", { detail: cause });
       }
@@ -440,9 +531,8 @@ export class NativeBridge {
       throw new ReactorError("Overflow", "native data channel message exceeds 262144 bytes", {
         outcome: "not-submitted",
       });
-    return this.withHandle(ERROR_BUFFER_BYTES + bytes.byteLength, async (handle) => {
-      const error = Buffer.allocUnsafe(ERROR_BUFFER_BYTES),
-        errorLength: Array<number | bigint | null> = [0];
+    return this.withHandle(FAILURE_BYTES + bytes.byteLength, async (handle) => {
+      const failure = Buffer.alloc(FAILURE_BYTES);
       const input = Buffer.from(bytes);
       let status: number;
       try {
@@ -451,9 +541,7 @@ export class NativeBridge {
           channel === "control" ? 0 : 1,
           input,
           input.byteLength,
-          error,
-          error.byteLength,
-          errorLength,
+          failure,
         ]);
       } catch (cause) {
         throw new ReactorError("Native", `native ${channel} send completion failed`, {
@@ -461,80 +549,114 @@ export class NativeBridge {
           outcome: "unknown",
         });
       }
-      const length = toNumber(errorLength[0], "send error length");
-      if (length > error.byteLength)
-        throw new ReactorError("Protocol", "native send error exceeded its declared buffer");
-      if (status !== STATUS_OK)
-        throw operationError(status, Uint8Array.from(error.subarray(0, length)), `send:${channel}`);
+      if (status !== STATUS_OK) throw failureOf(status, failure, `send:${channel}`, { channel });
     });
   }
 
-  private async poll(fn: AsyncNativeFunction, timeoutMs: number): Promise<NativePoll> {
-    if (this.closed) return { _tag: "Closed" };
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0xffffffff) {
-      throw new ReactorError(
-        "InvalidInput",
-        "native poll timeout must be an unsigned 32-bit integer",
-        { outcome: "not-submitted" },
+  /** Synchronous and nonblocking; call from the readiness callback until empty. */
+  takeEvent(): Take<NativePacket> {
+    const handle = this.handle;
+    if (this.closed || handle === undefined) return null;
+    for (;;) {
+      const status = this.api.takeEvent(
+        handle,
+        this.event,
+        this.event.byteLength,
+        this.eventLength,
       );
-    }
-    if (this.readers.has(fn))
-      throw new ReactorError("AlreadyReading", "native packet queue already has a reader", {
-        outcome: "not-submitted",
-      });
-    this.readers.add(fn);
-    try {
-      return await this.withHandle(0, async (handle) => {
-        const needed: Array<number | bigint | null> = [0];
-        let status: number;
-        try {
-          status = await asyncStatus(fn, [handle, timeoutMs, null, 0, needed]);
-        } catch (cause) {
-          throw new ReactorError("Native", "native event poll could not execute", {
-            detail: cause,
-          });
-        }
-        if (this.closed) return { _tag: "Closed" };
-        if (status === STATUS_AGAIN) return { _tag: "Again" };
-        if (status === STATUS_CLOSED) return { _tag: "Closed" };
-        if (status !== STATUS_BUFFER_TOO_SMALL)
-          throw new ReactorError("Native", `native event poll failed with status ${status}`);
-        const length = toNumber(needed[0], "packet length");
-        if (length < 4 || length > MAX_PACKET_BYTES)
-          throw new ReactorError(
-            "Overflow",
-            `native packet size ${length} exceeds the local bound`,
-          );
-        const output = Buffer.allocUnsafe(length),
-          actual: Array<number | bigint | null> = [0];
-        try {
-          status = await asyncStatus(fn, [handle, 0, output, output.byteLength, actual]);
-        } catch (cause) {
-          throw new ReactorError("Native", "native packet copy could not execute", {
-            detail: cause,
-          });
-        }
-        if (this.closed || status === STATUS_CLOSED) return { _tag: "Closed" };
-        if (status !== STATUS_OK)
-          throw new ReactorError("Native", `native packet copy failed with status ${status}`);
-        const actualLength = toNumber(actual[0], "copied packet length");
-        if (actualLength !== length)
-          throw new ReactorError("Protocol", "native packet changed between size and copy polls");
-        return { _tag: "Packet", packet: parsePacket(Uint8Array.from(output)) };
-      });
-    } finally {
-      this.readers.delete(fn);
+      if (status === STATUS_AGAIN) return undefined;
+      if (status === STATUS_CLOSED) return null;
+      const length = toNumber(this.eventLength[0], "event length");
+      if (status === STATUS_OK) {
+        if (length > this.event.byteLength)
+          throw new ReactorError("Protocol", "native event exceeded its declared buffer");
+        return parsePacket(this.event.subarray(0, length));
+      }
+      if (status !== STATUS_BUFFER_TOO_SMALL)
+        throw new ReactorError("Native", `native event take failed with status ${status}`);
+      if (length <= this.event.byteLength || length > MAX_EVENT_BYTES)
+        throw overSized("event", length);
+      this.event = new Uint8Array(length);
     }
   }
 
-  pollEvent(timeoutMs = 100): Promise<NativePoll> {
-    return this.poll(this.api.pollEvent, timeoutMs);
+  /** Synchronous and nonblocking; the returned bytes belong to the caller. */
+  takeVideo(): Take<NativeVideo> {
+    const handle = this.handle;
+    if (this.closed || handle === undefined) return null;
+    const header = new DataView(this.videoHeader.buffer);
+    for (;;) {
+      const status = this.api.takeVideo(
+        handle,
+        this.videoHeader,
+        this.nextVideo,
+        this.nextVideo.byteLength,
+        this.metadata,
+        this.metadata.byteLength,
+      );
+      if (status === STATUS_AGAIN) return undefined;
+      if (status === STATUS_CLOSED) return null;
+      const dataLength = header.getUint32(8, true),
+        metadataLength = header.getUint32(12, true);
+      if (status === STATUS_OK) {
+        const data = this.nextVideo;
+        this.nextVideo = new Uint8Array(dataLength);
+        return {
+          track: header.getUint32(32, true),
+          width: header.getUint32(0, true),
+          height: header.getUint32(4, true),
+          frameId: header.getBigUint64(16, true),
+          timestampMicros: header.getBigUint64(24, true),
+          // A smaller frame than its predecessor leaves slack; never expose it.
+          data: dataLength === data.byteLength ? data : data.slice(0, dataLength),
+          metadata: this.metadata.slice(0, metadataLength),
+        };
+      }
+      if (status !== STATUS_BUFFER_TOO_SMALL)
+        throw new ReactorError("Native", `native video take failed with status ${status}`);
+      if (dataLength + metadataLength > MAX_VIDEO_BYTES)
+        throw overSized("video frame", dataLength + metadataLength);
+      const growData = dataLength > this.nextVideo.byteLength,
+        growMetadata = metadataLength > this.metadata.byteLength;
+      if (!growData && !growMetadata)
+        throw new ReactorError("Protocol", "native video take refused a fitting frame");
+      if (growData) this.nextVideo = new Uint8Array(dataLength);
+      if (growMetadata) this.metadata = new Uint8Array(metadataLength);
+    }
   }
-  pollVideo(timeoutMs = 100): Promise<NativePoll> {
-    return this.poll(this.api.pollVideo, timeoutMs);
-  }
-  pollAudio(timeoutMs = 100): Promise<NativePoll> {
-    return this.poll(this.api.pollAudio, timeoutMs);
+
+  /** Synchronous and nonblocking; the returned samples belong to the caller. */
+  takeAudio(): Take<NativeAudio> {
+    const handle = this.handle;
+    if (this.closed || handle === undefined) return null;
+    const header = new DataView(this.audioHeader.buffer);
+    for (;;) {
+      const status = this.api.takeAudio(
+        handle,
+        this.audioHeader,
+        this.nextAudio,
+        this.nextAudio.length,
+      );
+      if (status === STATUS_AGAIN) return undefined;
+      if (status === STATUS_CLOSED) return null;
+      const samples = header.getUint32(8, true);
+      if (status === STATUS_OK) {
+        const pcm = this.nextAudio;
+        this.nextAudio = new Int16Array(samples);
+        return {
+          sampleRate: header.getUint32(0, true),
+          channels: header.getUint32(4, true),
+          track: header.getUint32(12, true),
+          samples: samples === pcm.length ? pcm : pcm.slice(0, samples),
+        };
+      }
+      if (status !== STATUS_BUFFER_TOO_SMALL)
+        throw new ReactorError("Native", `native audio take failed with status ${status}`);
+      if (samples > MAX_AUDIO_SAMPLES) throw overSized("audio block", samples);
+      if (samples <= this.nextAudio.length)
+        throw new ReactorError("Protocol", "native audio take refused a fitting block");
+      this.nextAudio = new Int16Array(samples);
+    }
   }
 
   close(): void {
@@ -554,15 +676,16 @@ export class NativeBridge {
   }
 
   private async finishShutdown(handle: bigint): Promise<void> {
-    // close() fences new host admission and wakes native polls. Drain all host
-    // foreign calls before joining and destroying the native owner. A native
-    // owner join cannot see work that is still queued in Koffi.
+    // close() fences new host admission. Drain all host foreign calls before
+    // joining and destroying the native owner. A native owner join cannot see
+    // work that is still queued in Koffi.
     await Promise.all(this.active);
-    const error = Buffer.allocUnsafe(ERROR_BUFFER_BYTES),
-      errorLength: Array<number | bigint | null> = [0];
+    const failure = Buffer.alloc(FAILURE_BYTES);
     let status: number;
     try {
-      status = await asyncStatus(this.api.shutdown, [handle, error, error.byteLength, errorLength]);
+      // Asynchronous on purpose: the join waits for a notifier that may be
+      // blocked until this thread runs its readiness callback.
+      status = await asyncStatus(this.api.shutdown, [handle, failure]);
     } catch (cause) {
       throw new ReactorError(
         "Shutdown",
@@ -570,16 +693,14 @@ export class NativeBridge {
         { detail: cause },
       );
     }
-    const length = toNumber(errorLength[0], "shutdown error length");
-    if (length > error.byteLength)
-      throw new ReactorError("Shutdown", "native shutdown error exceeded its declared buffer");
-    if (status !== STATUS_OK)
-      throw new ReactorError(
-        "Shutdown",
-        operationError(status, Uint8Array.from(error.subarray(0, length)), "shutdown").message,
-      );
+    if (status !== STATUS_OK) {
+      const error = failureOf(status, failure, "shutdown");
+      throw new ReactorError("Shutdown", error.message, error.context);
+    }
     this.api.destroy(handle);
     this.handle = undefined;
+    // The notifier thread is joined: nothing can invoke the callback again.
+    this.api.unregister(this.notify);
   }
 }
 

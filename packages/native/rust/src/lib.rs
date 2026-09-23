@@ -14,16 +14,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
-const ABI_VERSION: u32 = 2;
+const ABI_VERSION: u32 = 3;
+
+// Non-negative statuses are outcomes. Negative statuses are failure classes,
+// closed for this ABI; the host maps each one to its own error type.
 const STATUS_OK: i32 = 0;
 const STATUS_AGAIN: i32 = 1;
 const STATUS_BUFFER_TOO_SMALL: i32 = 2;
 const STATUS_CLOSED: i32 = 3;
-const STATUS_INVALID: i32 = -1;
+const STATUS_INVALID_INPUT: i32 = -1;
 const STATUS_NATIVE: i32 = -2;
 const STATUS_OVERFLOW: i32 = -3;
+const STATUS_PROTOCOL: i32 = -4;
+const STATUS_SDP_REJECTED: i32 = -5;
+const STATUS_CHANNEL_CLOSED: i32 = -6;
 
 const CALL_PREPARE: u32 = 1;
 const CALL_ANSWER: u32 = 2;
@@ -35,58 +40,72 @@ const CALL_MEDIA_SNAPSHOT: u32 = 6;
 const CHANNEL_CONTROL: u32 = 0;
 const CHANNEL_DATA: u32 = 1;
 
+const READY_EVENTS: u32 = 1;
+const READY_VIDEO: u32 = 2;
+const READY_AUDIO: u32 = 4;
+
 const CALL_BUFFER_MIN: usize = 4 * 1024 * 1024;
-const ERROR_BUFFER_MIN: usize = 4096;
+const FAILURE_MESSAGE_BYTES: usize = 1020;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_MESSAGE_BYTES: usize = 262_144;
 const MAX_BUFFERED_SEND_BYTES: u64 = 1_048_576;
 
+/// The failure class of a bridge error, and the status the C ABI reports for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Closed,
+    InvalidInput,
+    Native,
+    Overflow,
+    Protocol,
+    SdpRejected,
+    ChannelClosed,
+}
+
+impl Class {
+    fn status(self) -> i32 {
+        match self {
+            Class::Closed => STATUS_CLOSED,
+            Class::InvalidInput => STATUS_INVALID_INPUT,
+            Class::Native => STATUS_NATIVE,
+            Class::Overflow => STATUS_OVERFLOW,
+            Class::Protocol => STATUS_PROTOCOL,
+            Class::SdpRejected => STATUS_SDP_REJECTED,
+            Class::ChannelClosed => STATUS_CHANNEL_CLOSED,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BridgeError {
-    code: &'static str,
+    class: Class,
     message: String,
 }
 
 impl BridgeError {
-    fn invalid(message: impl Into<String>) -> Self {
+    fn new(class: Class, message: impl Into<String>) -> Self {
         Self {
-            code: "InvalidInput",
+            class,
             message: message.into(),
         }
     }
 
-    fn native(message: impl Into<String>) -> Self {
-        Self {
-            code: "Native",
-            message: message.into(),
-        }
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::new(Class::InvalidInput, message)
     }
 
     fn closed() -> Self {
-        Self {
-            code: "Closed",
-            message: "native peer is closed".into(),
-        }
-    }
-
-    fn overflow(message: impl Into<String>) -> Self {
-        Self {
-            code: "Overflow",
-            message: message.into(),
-        }
-    }
-
-    fn json(&self) -> Vec<u8> {
-        serde_json::to_vec(&json!({ "code": self.code, "message": self.message })).unwrap_or_else(
-            |_| br#"{"code":"Native","message":"failed to serialize native error"}"#.to_vec(),
-        )
+        Self::new(Class::Closed, "native peer is closed")
     }
 }
 
-impl From<reactor_webrtc::Error> for BridgeError {
-    fn from(value: reactor_webrtc::Error) -> Self {
-        Self::native(value.to_string())
-    }
+/// reactor-webrtc reports every libwebrtc failure as an untyped string, so the
+/// class comes from the operation that failed rather than from the error.
+fn webrtc(
+    class: Class,
+    operation: &'static str,
+) -> impl FnOnce(reactor_webrtc::Error) -> BridgeError {
+    move |error| BridgeError::new(class, format!("{operation}: {error}"))
 }
 
 #[derive(Default)]
@@ -105,12 +124,16 @@ impl CallbackGate {
         }
     }
 
+    fn accepting(&self) -> bool {
+        self.accepting.load(Ordering::Acquire)
+    }
+
     fn enter(self: &Arc<Self>) -> Option<CallbackGuard> {
-        if !self.accepting.load(Ordering::Acquire) {
+        if !self.accepting() {
             return None;
         }
         let mut active = lock(&self.active);
-        if !self.accepting.load(Ordering::Acquire) {
+        if !self.accepting() {
             return None;
         }
         *active += 1;
@@ -150,235 +173,281 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-#[derive(Debug)]
-enum PushResult {
+#[derive(Debug, PartialEq, Eq)]
+enum Push {
     Accepted,
     Closed,
     Overflow,
 }
 
-struct PacketQueue {
-    inner: Mutex<PacketQueueInner>,
-    wake: Condvar,
-    max_items: usize,
-    max_bytes: usize,
-}
-
-struct PacketQueueInner {
-    packets: VecDeque<Vec<u8>>,
-    // A size probe transfers the front packet into the reader's retained slot.
-    // Producers may evict queued media, but must never replace this packet.
-    // Retained packets count toward both bounds until copy or close.
-    retained: Option<Vec<u8>>,
-    bytes: usize,
-    closed: bool,
-}
-
-impl PacketQueueInner {
-    fn len(&self) -> usize {
-        self.packets.len() + usize::from(self.retained.is_some())
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct QueueSnapshot {
-    queued: usize,
-    bytes: usize,
-    closed: bool,
-}
-
-impl PacketQueue {
-    fn new(max_items: usize, max_bytes: usize) -> Self {
-        Self {
-            inner: Mutex::new(PacketQueueInner {
-                packets: VecDeque::new(),
-                retained: None,
-                bytes: 0,
-                closed: false,
-            }),
-            wake: Condvar::new(),
-            max_items,
-            max_bytes,
-        }
-    }
-
-    fn push(&self, packet: Vec<u8>) -> PushResult {
-        let mut inner = lock(&self.inner);
-        if inner.closed {
-            return PushResult::Closed;
-        }
-        if packet.len() > self.max_bytes
-            || inner.len() >= self.max_items
-            || inner.bytes.saturating_add(packet.len()) > self.max_bytes
-        {
-            return PushResult::Overflow;
-        }
-        inner.bytes += packet.len();
-        inner.packets.push_back(packet);
-        self.wake.notify_one();
-        PushResult::Accepted
-    }
-
-    fn replace_with(&self, packet: Vec<u8>) {
-        let mut inner = lock(&self.inner);
-        if inner.closed {
-            return;
-        }
-        inner.packets.clear();
-        inner.bytes = inner.retained.as_ref().map_or(0, Vec::len);
-        // The critical-event queue has room for its small terminal diagnostic
-        // even with one maximum-sized transport event retained by its reader.
-        if inner.len() < self.max_items
-            && inner.bytes.saturating_add(packet.len()) <= self.max_bytes
-        {
-            inner.bytes += packet.len();
-            inner.packets.push_back(packet);
-        }
-        self.wake.notify_all();
-    }
-
-    fn close(&self) {
-        let mut inner = lock(&self.inner);
-        inner.closed = true;
-        inner.packets.clear();
-        inner.retained = None;
-        inner.bytes = 0;
-        self.wake.notify_all();
-    }
-
-    fn snapshot(&self) -> QueueSnapshot {
-        let inner = lock(&self.inner);
-        QueueSnapshot {
-            queued: inner.len(),
-            bytes: inner.bytes,
-            closed: inner.closed,
-        }
-    }
-
-    fn poll(&self, timeout: Duration, capacity: usize) -> PollResult {
-        let started = Instant::now();
-        let mut inner = lock(&self.inner);
-        loop {
-            if inner.retained.is_none() {
-                inner.retained = inner.packets.pop_front();
-            }
-            if let Some(packet) = inner.retained.as_ref() {
-                if capacity < packet.len() {
-                    return PollResult::Need(packet.len());
-                }
-                let packet = inner.retained.take().expect("retained packet exists");
-                inner.bytes -= packet.len();
-                return PollResult::Packet(packet);
-            }
-            if inner.closed {
-                return PollResult::Closed;
-            }
-            if timeout.is_zero() {
-                return PollResult::Again;
-            }
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                return PollResult::Again;
-            }
-            let (next, timed) = self
-                .wake
-                .wait_timeout(inner, remaining)
-                .unwrap_or_else(|p| p.into_inner());
-            inner = next;
-            if timed.timed_out() && inner.packets.is_empty() {
-                return PollResult::Again;
-            }
-        }
-    }
-}
-
-enum PollResult {
-    Packet(Vec<u8>),
-    Need(usize),
-    Again,
+enum Taken<T> {
+    Item(T),
+    TooSmall,
+    Empty,
     Closed,
 }
 
-#[derive(Default)]
-struct MediaCounters {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Counts {
+    dropped: u64,
+    taken: u64,
+    queued: usize,
+    bytes: usize,
+}
+
+struct QueueState<T> {
+    items: VecDeque<(T, usize)>,
+    bytes: usize,
+    closed: bool,
+}
+
+/// A bounded FIFO between libwebrtc producers and one host reader. Every item
+/// is observed exactly once and then either taken, dropped or still queued.
+struct Queue<T> {
+    state: Mutex<QueueState<T>>,
+    max_items: usize,
+    max_bytes: usize,
     observed: AtomicU64,
     dropped: AtomicU64,
+    taken: AtomicU64,
 }
 
-struct MediaQueue {
-    queue: PacketQueue,
-    counters: MediaCounters,
-}
-
-impl MediaQueue {
+impl<T> Queue<T> {
     fn new(max_items: usize, max_bytes: usize) -> Self {
         Self {
-            queue: PacketQueue::new(max_items, max_bytes),
-            counters: MediaCounters::default(),
+            state: Mutex::new(QueueState {
+                items: VecDeque::new(),
+                bytes: 0,
+                closed: false,
+            }),
+            max_items,
+            max_bytes,
+            observed: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            taken: AtomicU64::new(0),
         }
     }
 
-    fn push_drop_oldest(&self, packet: Vec<u8>) {
-        let mut inner = lock(&self.queue.inner);
-        if inner.closed {
-            return;
+    /// Media: the newest item always wins. Returns whether it was queued.
+    fn push_drop_oldest(&self, item: T, size: usize) -> bool {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return false;
         }
-        self.counters.observed.fetch_add(1, Ordering::Relaxed);
-        if packet.len() > self.queue.max_bytes {
-            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
+        self.observed.fetch_add(1, Ordering::Relaxed);
+        if size > self.max_bytes {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
-        while !inner.packets.is_empty()
-            && (inner.len() >= self.queue.max_items
-                || inner.bytes.saturating_add(packet.len()) > self.queue.max_bytes)
-        {
-            if let Some(old) = inner.packets.pop_front() {
-                inner.bytes -= old.len();
-                self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        while state.items.len() >= self.max_items || state.bytes + size > self.max_bytes {
+            let Some((_, evicted)) = state.items.pop_front() else {
+                break;
+            };
+            state.bytes -= evicted;
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        // A reader can occupy the remaining budget. Drop incoming media rather
-        // than evict retained bytes or exceed either queue bound.
-        if inner.len() >= self.queue.max_items
-            || inner.bytes.saturating_add(packet.len()) > self.queue.max_bytes
-        {
-            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        inner.bytes += packet.len();
-        inner.packets.push_back(packet);
-        self.queue.wake.notify_one();
+        state.bytes += size;
+        state.items.push_back((item, size));
+        true
     }
 
-    fn snapshot(&self) -> Value {
-        let inner = self.queue.snapshot();
-        let observed = self.counters.observed.load(Ordering::Relaxed);
-        let dropped = self.counters.dropped.load(Ordering::Relaxed);
-        let queued = inner.queued as u64;
-        let delivered = observed.saturating_sub(dropped).saturating_sub(queued);
-        json!({
-            "observed": observed.to_string(),
-            "dropped": dropped.to_string(),
-            "delivered": delivered.to_string(),
-            "queued": inner.queued,
-            "queuedBytes": inner.bytes,
-            "closed": inner.closed,
-        })
+    /// Transport events are never evicted: a full queue refuses the event and
+    /// the caller retires the connection.
+    fn push(&self, item: T, size: usize) -> Push {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return Push::Closed;
+        }
+        self.observed.fetch_add(1, Ordering::Relaxed);
+        if state.items.len() >= self.max_items || state.bytes + size > self.max_bytes {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return Push::Overflow;
+        }
+        state.bytes += size;
+        state.items.push_back((item, size));
+        Push::Accepted
+    }
+
+    /// Discard the backlog, counting it as dropped, and keep only `item`.
+    fn replace(&self, item: T, size: usize) {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return;
+        }
+        self.observed.fetch_add(1, Ordering::Relaxed);
+        self.dropped
+            .fetch_add(state.items.len() as u64, Ordering::Relaxed);
+        state.items.clear();
+        state.bytes = size;
+        state.items.push_back((item, size));
+    }
+
+    /// Remove the front item when `fits` accepts it. `fits` sees the item under
+    /// the queue lock so it can report its sizes; the caller copies after the
+    /// lock is released, so a producer never waits for that copy.
+    fn take(&self, fits: impl FnOnce(&T) -> bool) -> Taken<T> {
+        let mut state = lock(&self.state);
+        let Some((front, _)) = state.items.front() else {
+            return if state.closed {
+                Taken::Closed
+            } else {
+                Taken::Empty
+            };
+        };
+        if !fits(front) {
+            return Taken::TooSmall;
+        }
+        let (item, size) = state.items.pop_front().expect("front item exists");
+        state.bytes -= size;
+        self.taken.fetch_add(1, Ordering::Relaxed);
+        Taken::Item(item)
+    }
+
+    /// Closing discards what the reader never took; those items count as dropped.
+    fn close(&self) {
+        let mut state = lock(&self.state);
+        self.dropped
+            .fetch_add(state.items.len() as u64, Ordering::Relaxed);
+        state.items.clear();
+        state.bytes = 0;
+        state.closed = true;
+    }
+
+    fn counts(&self) -> Counts {
+        let state = lock(&self.state);
+        Counts {
+            dropped: self.dropped.load(Ordering::Relaxed),
+            taken: self.taken.load(Ordering::Relaxed),
+            queued: state.items.len(),
+            bytes: state.bytes,
+        }
+    }
+}
+
+/// Header of one decoded BGRA frame, written by `reactor_effect_peer_take_video`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReactorEffectVideoHeader {
+    pub width: u32,
+    pub height: u32,
+    pub data_len: u32,
+    pub metadata_len: u32,
+    pub frame_id: u64,
+    pub timestamp_us: u64,
+    pub track: u32,
+    pub reserved: u32,
+}
+
+/// Header of one interleaved PCM block, written by `reactor_effect_peer_take_audio`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReactorEffectAudioHeader {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub samples: u32,
+    pub track: u32,
+}
+
+/// Diagnostic text beside a failure status. It is never matched on: the status
+/// is the failure class.
+#[repr(C)]
+pub struct ReactorEffectFailure {
+    pub message_len: u32,
+    pub message: [u8; FAILURE_MESSAGE_BYTES],
+}
+
+struct VideoItem {
+    track: u32,
+    width: u32,
+    height: u32,
+    frame_id: u64,
+    timestamp_us: u64,
+    bgra: Vec<u8>,
+    metadata: Vec<u8>,
+}
+
+impl VideoItem {
+    fn header(&self) -> ReactorEffectVideoHeader {
+        ReactorEffectVideoHeader {
+            width: self.width,
+            height: self.height,
+            data_len: self.bgra.len() as u32,
+            metadata_len: self.metadata.len() as u32,
+            frame_id: self.frame_id,
+            timestamp_us: self.timestamp_us,
+            track: self.track,
+            reserved: 0,
+        }
+    }
+}
+
+struct AudioItem {
+    track: u32,
+    sample_rate: u32,
+    channels: u32,
+    pcm: Vec<i16>,
+}
+
+impl AudioItem {
+    fn header(&self) -> ReactorEffectAudioHeader {
+        ReactorEffectAudioHeader {
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            samples: self.pcm.len() as u32,
+            track: self.track,
+        }
+    }
+}
+
+/// Called with the queues that became readable since the previous call.
+type NotifyFn = extern "C" fn(u32);
+
+#[derive(Default)]
+struct NotifierState {
+    ready: u32,
+    closed: bool,
+}
+
+/// Readiness hand-off to the host. libwebrtc threads only set bits here; the
+/// peer's notifier thread is the one thread that ever waits on the host.
+#[derive(Default)]
+struct Notifier {
+    state: Mutex<NotifierState>,
+    wake: Condvar,
+}
+
+impl Notifier {
+    fn signal(&self, bit: u32) {
+        let mut state = lock(&self.state);
+        if state.closed || state.ready & bit != 0 {
+            return;
+        }
+        let idle = state.ready == 0;
+        state.ready |= bit;
+        if idle {
+            self.wake.notify_one();
+        }
     }
 
     fn close(&self) {
-        let mut inner = lock(&self.queue.inner);
-        let discarded = inner.len() as u64;
-        if discarded != 0 {
-            self.counters
-                .dropped
-                .fetch_add(discarded, Ordering::Relaxed);
+        lock(&self.state).closed = true;
+        self.wake.notify_all();
+    }
+
+    fn run(&self, notify: NotifyFn) {
+        loop {
+            let ready = {
+                let mut state = lock(&self.state);
+                while state.ready == 0 && !state.closed {
+                    state = self.wake.wait(state).unwrap_or_else(|p| p.into_inner());
+                }
+                if state.closed {
+                    return;
+                }
+                std::mem::take(&mut state.ready)
+            };
+            notify(ready);
         }
-        inner.closed = true;
-        inner.packets.clear();
-        inner.retained = None;
-        inner.bytes = 0;
-        self.queue.wake.notify_all();
     }
 }
 
@@ -386,6 +455,7 @@ impl MediaQueue {
 struct Binding {
     name: String,
     mid: String,
+    index: u32,
 }
 
 #[derive(Default)]
@@ -396,21 +466,23 @@ struct Bindings {
 
 struct Shared {
     gate: Arc<CallbackGate>,
-    events: PacketQueue,
-    video: MediaQueue,
-    audio: MediaQueue,
+    events: Queue<Vec<u8>>,
+    video: Queue<VideoItem>,
+    audio: Queue<AudioItem>,
+    notifier: Notifier,
     bindings: Mutex<Bindings>,
     remote_tracks: Mutex<Vec<RemoteTrack>>,
     overflowed: AtomicBool,
 }
 
 impl Shared {
-    fn new(gate: Arc<CallbackGate>) -> Self {
+    fn new() -> Self {
         Self {
-            gate,
-            events: PacketQueue::new(1024, 16 * 1024 * 1024),
-            video: MediaQueue::new(8, 64 * 1024 * 1024),
-            audio: MediaQueue::new(256, 4 * 1024 * 1024),
+            gate: Arc::new(CallbackGate::new()),
+            events: Queue::new(1024, 16 * 1024 * 1024),
+            video: Queue::new(8, 64 * 1024 * 1024),
+            audio: Queue::new(256, 4 * 1024 * 1024),
+            notifier: Notifier::default(),
             bindings: Mutex::new(Bindings::default()),
             remote_tracks: Mutex::new(Vec::new()),
             overflowed: AtomicBool::new(false),
@@ -419,10 +491,19 @@ impl Shared {
 
     fn emit(&self, header: Value, payload: &[u8]) {
         let packet = packet(header, payload);
-        match self.events.push(packet) {
-            PushResult::Accepted | PushResult::Closed => {}
-            PushResult::Overflow => self.fail_overflow(),
+        let size = packet.len();
+        match self.events.push(packet, size) {
+            Push::Accepted => self.notifier.signal(READY_EVENTS),
+            Push::Closed => {}
+            Push::Overflow => self.fail_overflow(),
         }
+    }
+
+    fn emit_error(&self, class: Class, message: impl Into<String>) {
+        self.emit(
+            json!({ "type": "error", "status": class.status(), "message": message.into() }),
+            &[],
+        );
     }
 
     fn fail_overflow(&self) {
@@ -430,24 +511,31 @@ impl Shared {
             return;
         }
         self.gate.close();
-        self.events.replace_with(packet(
+        let diagnostic = packet(
             json!({
                 "type": "error",
-                "code": "Overflow",
+                "status": STATUS_OVERFLOW,
                 "message": "native transport event queue overflowed; connection retired"
             }),
             &[],
-        ));
+        );
+        let size = diagnostic.len();
+        self.events.replace(diagnostic, size);
+        self.notifier.signal(READY_EVENTS);
     }
 
     fn set_bindings(&self, mappings: &[MappingSpec]) {
         let mut bindings = lock(&self.bindings);
         bindings.video.clear();
         bindings.audio.clear();
-        for mapping in mappings.iter().filter(|m| m.direction == "recvonly") {
+        for (index, mapping) in mappings.iter().enumerate() {
+            if mapping.direction != "recvonly" {
+                continue;
+            }
             let binding = Binding {
                 name: mapping.name.clone(),
                 mid: mapping.mid.clone(),
+                index: index as u32,
             };
             if mapping.kind == "video" {
                 bindings.video.push_back(binding);
@@ -472,13 +560,9 @@ impl Shared {
         };
         let kind = track.kind();
         let Some(binding) = self.take_binding(kind) else {
-            self.emit(
-                json!({
-                    "type": "error",
-                    "code": "Protocol",
-                    "message": "received native track without a declared receive mapping"
-                }),
-                &[],
+            self.emit_error(
+                Class::Protocol,
+                "received native track without a declared receive mapping",
             );
             return;
         };
@@ -486,58 +570,49 @@ impl Shared {
         match &track {
             RemoteTrack::Video(video) => {
                 let shared = Arc::clone(self);
-                let frame_binding = binding.clone();
+                let index = binding.index;
                 video.on_frame(move |frame| {
                     let Some(_guard) = shared.gate.enter() else {
                         return;
                     };
-                    let (frame_id, timestamp_micros, metadata) = frame
+                    let (frame_id, timestamp_us, metadata) = frame
                         .metadata
-                        .as_ref()
-                        .map(|m| (m.frame_id, m.capture_time_us, m.user_data.as_slice()))
-                        .unwrap_or((0, 0, &[]));
-                    let header = json!({
-                        "type": "video",
-                        "track": frame_binding.name,
-                        "mid": frame_binding.mid,
-                        "width": frame.width,
-                        "height": frame.height,
-                        "frameId": frame_id.to_string(),
-                        "timestampMicros": timestamp_micros.to_string(),
-                        "dataLength": frame.bgra.len(),
-                        "metadataLength": metadata.len(),
-                        "format": "BGRA"
-                    });
-                    let mut payload = Vec::with_capacity(frame.bgra.len() + metadata.len());
-                    payload.extend_from_slice(frame.bgra);
-                    payload.extend_from_slice(metadata);
-                    shared.video.push_drop_oldest(packet(header, &payload));
+                        .map(|m| (m.frame_id, m.capture_time_us, m.user_data))
+                        .unwrap_or_default();
+                    // The one native copy: libwebrtc lends the pixels only for
+                    // the duration of this callback.
+                    let item = VideoItem {
+                        track: index,
+                        width: frame.width,
+                        height: frame.height,
+                        frame_id,
+                        timestamp_us,
+                        bgra: frame.bgra.to_vec(),
+                        metadata,
+                    };
+                    let size = item.bgra.len() + item.metadata.len();
+                    if shared.video.push_drop_oldest(item, size) {
+                        shared.notifier.signal(READY_VIDEO);
+                    }
                 });
             }
             RemoteTrack::Audio(audio) => {
                 let shared = Arc::clone(self);
-                let frame_binding = binding.clone();
+                let index = binding.index;
                 audio.on_frame(move |frame| {
                     let Some(_guard) = shared.gate.enter() else {
                         return;
                     };
-                    let mut payload = Vec::with_capacity(frame.pcm.len() * 2);
-                    for sample in frame.pcm {
-                        payload.extend_from_slice(&sample.to_le_bytes());
+                    let item = AudioItem {
+                        track: index,
+                        sample_rate: frame.sample_rate,
+                        channels: frame.channels,
+                        pcm: frame.pcm.to_vec(),
+                    };
+                    let size = item.pcm.len() * 2;
+                    if shared.audio.push_drop_oldest(item, size) {
+                        shared.notifier.signal(READY_AUDIO);
                     }
-                    shared.audio.push_drop_oldest(packet(
-                        json!({
-                            "type": "audio",
-                            "track": frame_binding.name,
-                            "mid": frame_binding.mid,
-                            "sampleRate": frame.sample_rate,
-                            "channels": frame.channels,
-                            "frames": frame.frames,
-                            "samples": frame.pcm.len(),
-                            "format": "s16le"
-                        }),
-                        &payload,
-                    ));
                 });
             }
         }
@@ -558,10 +633,29 @@ impl Shared {
         lock(&self.remote_tracks).push(track);
     }
 
+    fn pressure(&self) -> Value {
+        let events = self.events.counts();
+        let video = self.video.counts();
+        let audio = self.audio.counts();
+        json!({
+            "closed": !self.gate.accepting(),
+            "queuedControl": events.queued,
+            "queuedVideo": video.queued,
+            "queuedAudio": audio.queued,
+            "queuedBytes": events.bytes + video.bytes + audio.bytes,
+            "droppedVideo": video.dropped.to_string(),
+            "droppedAudio": audio.dropped.to_string(),
+            "deliveredVideo": video.taken.to_string(),
+            "deliveredAudio": audio.taken.to_string(),
+            "pendingRequests": 0,
+        })
+    }
+
     fn close_queues(&self) {
         self.events.close();
         self.video.close();
         self.audio.close();
+        self.notifier.close();
     }
 }
 
@@ -628,9 +722,27 @@ struct Channels {
     data: DataChannel,
 }
 
+// libwebrtc's threads are process-global: reactor-webrtc requires one factory
+// per process (docs/architecture.md, "One factory per process"). Every peer
+// shares this one; it is created on first use and never destroyed.
+static FACTORY: Mutex<Option<&'static PeerConnectionFactory>> = Mutex::new(None);
+
+fn factory() -> Result<&'static PeerConnectionFactory, BridgeError> {
+    let mut slot = lock(&FACTORY);
+    if let Some(factory) = *slot {
+        return Ok(factory);
+    }
+    let factory = PeerConnectionFactory::builder()
+        .with_synthetic_adm()
+        .build()
+        .map_err(webrtc(Class::Native, "create_factory"))?;
+    let factory: &'static PeerConnectionFactory = Box::leak(Box::new(factory));
+    *slot = Some(factory);
+    Ok(factory)
+}
+
 struct WorkerState {
     shared: Arc<Shared>,
-    factory: Option<PeerConnectionFactory>,
     peer: Option<PeerConnection>,
     channels: Option<Channels>,
     tracks: HashMap<String, NativeTrack>,
@@ -640,7 +752,6 @@ impl WorkerState {
     fn new(shared: Arc<Shared>) -> Self {
         Self {
             shared,
-            factory: None,
             peer: None,
             channels: None,
             tracks: HashMap::new(),
@@ -667,22 +778,16 @@ impl WorkerState {
             ..RtcConfiguration::default()
         };
 
-        let factory = PeerConnectionFactory::builder()
-            .with_synthetic_adm()
-            .build()
-            .map_err(BridgeError::from)?;
-
-        let observer = observer(Arc::clone(&self.shared));
-        let peer = factory
-            .create_peer_connection(&config, observer)
-            .map_err(BridgeError::from)?;
+        let peer = factory()?
+            .create_peer_connection(&config, observer(Arc::clone(&self.shared)))
+            .map_err(webrtc(Class::Native, "create_peer_connection"))?;
 
         let mut control = peer
             .create_data_channel("control")
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::Native, "create_data_channel"))?;
         let mut data = peer
             .create_data_channel("data")
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::Native, "create_data_channel"))?;
         wire_channel(&mut control, "control", Arc::clone(&self.shared));
         wire_channel(&mut data, "data", Arc::clone(&self.shared));
 
@@ -693,22 +798,27 @@ impl WorkerState {
             let direction = direction(&spec.direction)?;
             let transceiver = peer
                 .add_transceiver(kind, direction)
-                .map_err(BridgeError::from)?;
+                .map_err(webrtc(Class::Native, "add_transceiver"))?;
             order.push(spec.name.clone());
             tracks.insert(spec.name.clone(), NativeTrack { spec, transceiver });
         }
 
-        let offer = peer.create_offer().map_err(BridgeError::from)?;
+        let offer = peer
+            .create_offer()
+            .map_err(webrtc(Class::SdpRejected, "create_offer"))?;
         peer.set_local_description(&offer)
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::SdpRejected, "set_local_description"))?;
 
         let mut mappings = Vec::with_capacity(order.len());
         for name in &order {
-            let entry = tracks
-                .get(name)
-                .ok_or_else(|| BridgeError::native("track map changed while preparing"))?;
+            let entry = tracks.get(name).ok_or_else(|| {
+                BridgeError::new(Class::Native, "track map changed while preparing")
+            })?;
             let mid = entry.transceiver.mid().ok_or_else(|| {
-                BridgeError::native(format!("missing MID after local description: {name}"))
+                BridgeError::new(
+                    Class::Native,
+                    format!("missing MID after local description: {name}"),
+                )
             })?;
             mappings.push(MappingSpec {
                 name: entry.spec.name.clone(),
@@ -719,13 +829,13 @@ impl WorkerState {
         }
         self.shared.set_bindings(&mappings);
 
-        self.factory = Some(factory);
         self.peer = Some(peer);
         self.channels = Some(Channels { control, data });
         self.tracks = tracks;
 
-        serde_json::to_vec(&json!({ "sdp": offer.sdp, "mapping": mappings }))
-            .map_err(|e| BridgeError::native(format!("serialize prepare response: {e}")))
+        serde_json::to_vec(&json!({ "sdp": offer.sdp, "mapping": mappings })).map_err(|e| {
+            BridgeError::new(Class::Native, format!("serialize prepare response: {e}"))
+        })
     }
 
     fn answer(&mut self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
@@ -739,7 +849,7 @@ impl WorkerState {
                 kind: SdpType::Answer,
                 sdp: sdp.to_owned(),
             })
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::SdpRejected, "set_remote_description"))?;
         Ok(b"{}".to_vec())
     }
 
@@ -757,7 +867,7 @@ impl WorkerState {
         entry
             .transceiver
             .set_direction(value)
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::Native, "set_direction"))?;
         Ok(b"{}".to_vec())
     }
 
@@ -781,7 +891,7 @@ impl WorkerState {
         entry
             .transceiver
             .set_send_bitrate(None, Some(request.bits_per_second as i32))
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::Native, "set_send_bitrate"))?;
         Ok(b"{}".to_vec())
     }
 
@@ -789,59 +899,43 @@ impl WorkerState {
         let report = self
             .require_peer()?
             .get_stats()
-            .map_err(BridgeError::from)?;
+            .map_err(webrtc(Class::Native, "get_stats"))?;
         serde_json::to_vec(&stats_json(report))
-            .map_err(|e| BridgeError::native(format!("serialize stats response: {e}")))
-    }
-
-    fn media_snapshot(&self) -> Result<Vec<u8>, BridgeError> {
-        let control = self.shared.events.snapshot();
-        let video = self.shared.video.snapshot();
-        let audio = self.shared.audio.snapshot();
-        let video_bytes = video
-            .get("queuedBytes")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let audio_bytes = audio
-            .get("queuedBytes")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        serde_json::to_vec(&json!({
-            "closed": !self.shared.gate.accepting.load(Ordering::Acquire),
-            "queuedControl": control.queued,
-            "queuedVideo": video.get("queued").and_then(Value::as_u64).unwrap_or(0),
-            "queuedAudio": audio.get("queued").and_then(Value::as_u64).unwrap_or(0),
-            "queuedBytes": (control.bytes as u64).saturating_add(video_bytes).saturating_add(audio_bytes),
-            "droppedVideo": video.get("dropped").and_then(Value::as_str).unwrap_or("0"),
-            "droppedAudio": audio.get("dropped").and_then(Value::as_str).unwrap_or("0"),
-            "deliveredVideo": video.get("delivered").and_then(Value::as_str).unwrap_or("0"),
-            "deliveredAudio": audio.get("delivered").and_then(Value::as_str).unwrap_or("0"),
-            "pendingRequests": 0,
-        }))
-        .map_err(|e| BridgeError::native(format!("serialize media snapshot: {e}")))
+            .map_err(|e| BridgeError::new(Class::Native, format!("serialize stats response: {e}")))
     }
 
     fn send(&mut self, channel: u32, bytes: &[u8]) -> Result<(), BridgeError> {
         if bytes.len() > MAX_MESSAGE_BYTES {
-            return Err(BridgeError::overflow(format!(
-                "data channel message exceeds {MAX_MESSAGE_BYTES} bytes"
-            )));
+            return Err(BridgeError::new(
+                Class::Overflow,
+                format!("data channel message exceeds {MAX_MESSAGE_BYTES} bytes"),
+            ));
         }
-        let channels = self.channels.as_ref().ok_or_else(BridgeError::closed)?;
-        let channel = match channel {
-            CHANNEL_CONTROL => &channels.control,
-            CHANNEL_DATA => &channels.data,
+        let name = match channel {
+            CHANNEL_CONTROL => "control",
+            CHANNEL_DATA => "data",
             _ => return Err(BridgeError::invalid("unknown data channel")),
         };
-        if channel.state() != DataChannelState::Open {
-            return Err(BridgeError::closed());
-        }
+        let channel = self.channels.as_ref().map(|channels| match channel {
+            CHANNEL_CONTROL => &channels.control,
+            _ => &channels.data,
+        });
+        let Some(channel) = channel.filter(|channel| channel.state() == DataChannelState::Open)
+        else {
+            return Err(BridgeError::new(
+                Class::ChannelClosed,
+                format!("{name} channel is not open"),
+            ));
+        };
         if channel.buffered_amount().saturating_add(bytes.len() as u64) > MAX_BUFFERED_SEND_BYTES {
-            return Err(BridgeError::overflow(
+            return Err(BridgeError::new(
+                Class::Overflow,
                 "native data channel buffered amount bound exceeded",
             ));
         }
-        channel.send(bytes, true).map_err(BridgeError::from)
+        channel
+            .send(bytes, true)
+            .map_err(webrtc(Class::Native, "send"))
     }
 
     fn call(&mut self, operation: u32, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
@@ -851,7 +945,6 @@ impl WorkerState {
             CALL_DIRECTION => self.set_direction(request),
             CALL_MAX_BITRATE => self.max_bitrate(request),
             CALL_STATS => self.stats(),
-            CALL_MEDIA_SNAPSHOT => self.media_snapshot(),
             _ => Err(BridgeError::invalid("unknown native call operation")),
         }
     }
@@ -865,7 +958,6 @@ impl WorkerState {
         lock(&self.shared.remote_tracks).clear();
         self.tracks.clear();
         self.peer.take();
-        self.factory.take();
         self.shared.gate.wait_zero();
         self.shared.close_queues();
     }
@@ -984,24 +1076,16 @@ fn wire_channel(channel: &mut DataChannel, name: &'static str, shared: Arc<Share
                 return;
             };
             if !binary {
-                shared.emit(
-                    json!({
-                        "type": "error",
-                        "code": "Protocol",
-                        "message": format!("{name} data channel delivered a nonbinary message")
-                    }),
-                    &[],
+                shared.emit_error(
+                    Class::Protocol,
+                    format!("{name} data channel delivered a nonbinary message"),
                 );
                 return;
             }
             if bytes.len() > MAX_MESSAGE_BYTES {
-                shared.emit(
-                    json!({
-                        "type": "error",
-                        "code": "Overflow",
-                        "message": format!("{name} data channel message exceeds local bound")
-                    }),
-                    &[],
+                shared.emit_error(
+                    Class::Overflow,
+                    format!("{name} data channel message exceeds local bound"),
                 );
                 return;
             }
@@ -1174,7 +1258,7 @@ fn worker_loop(shared: Arc<Shared>, commands: Receiver<Command>) {
                 request,
                 reply,
             } => {
-                let result = if shared.gate.accepting.load(Ordering::Acquire) {
+                let result = if shared.gate.accepting() {
                     state.call(operation, &request)
                 } else {
                     Err(BridgeError::closed())
@@ -1186,7 +1270,7 @@ fn worker_loop(shared: Arc<Shared>, commands: Receiver<Command>) {
                 bytes,
                 reply,
             } => {
-                let result = if shared.gate.accepting.load(Ordering::Acquire) {
+                let result = if shared.gate.accepting() {
                     state.send(channel, &bytes)
                 } else {
                     Err(BridgeError::closed())
@@ -1199,18 +1283,61 @@ fn worker_loop(shared: Arc<Shared>, commands: Receiver<Command>) {
     state.shutdown();
 }
 
-#[repr(C)]
+#[derive(Default)]
+struct Threads {
+    worker: Option<JoinHandle<()>>,
+    notifier: Option<JoinHandle<()>>,
+}
+
 pub struct ReactorEffectPeer {
-    gate: Arc<CallbackGate>,
     shared: Arc<Shared>,
     commands: Sender<Command>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    threads: Mutex<Threads>,
 }
 
 impl ReactorEffectPeer {
+    fn create(notify: Option<NotifyFn>) -> Option<Self> {
+        let shared = Arc::new(Shared::new());
+        let (commands, receiver) = mpsc::channel();
+        let worker_shared = Arc::clone(&shared);
+        let worker = thread::Builder::new()
+            .name("reactor-effect-native".into())
+            .spawn(move || worker_loop(worker_shared, receiver))
+            .ok()?;
+        let peer = Self {
+            shared: Arc::clone(&shared),
+            commands,
+            threads: Mutex::new(Threads {
+                worker: Some(worker),
+                notifier: None,
+            }),
+        };
+        if let Some(notify) = notify {
+            let spawned = thread::Builder::new()
+                .name("reactor-effect-notify".into())
+                .spawn(move || shared.notifier.run(notify));
+            match spawned {
+                Ok(notifier) => lock(&peer.threads).notifier = Some(notifier),
+                Err(_) => {
+                    // Joins the worker; no notifier exists to join.
+                    let _ = peer.shutdown();
+                    return None;
+                }
+            }
+        }
+        Some(peer)
+    }
+
     fn request(&self, operation: u32, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
-        if !self.gate.accepting.load(Ordering::Acquire) {
+        if !self.shared.gate.accepting() {
             return Err(BridgeError::closed());
+        }
+        if operation == CALL_MEDIA_SNAPSHOT {
+            // Counters need no libwebrtc work; never queue them behind a
+            // blocking operation on the owner thread.
+            return serde_json::to_vec(&self.shared.pressure()).map_err(|e| {
+                BridgeError::new(Class::Native, format!("serialize media snapshot: {e}"))
+            });
         }
         let (tx, rx) = mpsc::sync_channel(1);
         self.commands
@@ -1224,7 +1351,7 @@ impl ReactorEffectPeer {
     }
 
     fn send(&self, channel: u32, bytes: &[u8]) -> Result<(), BridgeError> {
-        if !self.gate.accepting.load(Ordering::Acquire) {
+        if !self.shared.gate.accepting() {
             return Err(BridgeError::closed());
         }
         let (tx, rx) = mpsc::sync_channel(1);
@@ -1239,20 +1366,37 @@ impl ReactorEffectPeer {
     }
 
     fn close(&self) {
-        self.gate.close();
+        self.shared.gate.close();
         self.shared.close_queues();
     }
 
+    /// Holding the thread lock throughout makes a concurrent shutdown wait for
+    /// this one to finish joining rather than return early.
     fn shutdown(&self) -> Result<(), BridgeError> {
         self.close();
-        let mut worker = lock(&self.worker);
-        let Some(handle) = worker.take() else {
-            return Ok(());
-        };
-        let _ = self.commands.send(Command::Shutdown);
-        handle
-            .join()
-            .map_err(|_| BridgeError::native("native owner thread panicked"))
+        let mut threads = lock(&self.threads);
+        let mut result = Ok(());
+        if let Some(worker) = threads.worker.take() {
+            let _ = self.commands.send(Command::Shutdown);
+            if worker.join().is_err() {
+                result = Err(BridgeError::new(
+                    Class::Native,
+                    "native owner thread panicked",
+                ));
+            }
+        }
+        // The notifier may be inside the host callback, waiting for the host
+        // to run it. The host therefore joins from a thread other than the one
+        // that runs its callback.
+        if let Some(notifier) = threads.notifier.take() {
+            if notifier.join().is_err() && result.is_ok() {
+                result = Err(BridgeError::new(
+                    Class::Native,
+                    "native notifier thread panicked",
+                ));
+            }
+        }
+        result
     }
 }
 
@@ -1276,27 +1420,14 @@ pub extern "C" fn reactor_effect_build_identity() -> *const std::ffi::c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn reactor_effect_peer_create() -> *mut ReactorEffectPeer {
-    catch_unwind(AssertUnwindSafe(|| {
-        let gate = Arc::new(CallbackGate::new());
-        let shared = Arc::new(Shared::new(Arc::clone(&gate)));
-        let (commands, receiver) = mpsc::channel();
-        let worker_shared = Arc::clone(&shared);
-        let handle = match thread::Builder::new()
-            .name("reactor-effect-native".into())
-            .spawn(move || worker_loop(worker_shared, receiver))
-        {
-            Ok(handle) => handle,
-            Err(_) => return ptr::null_mut(),
-        };
-        Box::into_raw(Box::new(ReactorEffectPeer {
-            gate,
-            shared,
-            commands,
-            worker: Mutex::new(Some(handle)),
-        }))
-    }))
-    .unwrap_or(ptr::null_mut())
+/// Allocate a peer. When `notify` is non-null, a notifier thread calls it with
+/// the readiness bits of the queues that received items since its previous
+/// call, until shutdown joins that thread.
+pub extern "C" fn reactor_effect_peer_create(notify: Option<NotifyFn>) -> *mut ReactorEffectPeer {
+    catch_unwind(|| ReactorEffectPeer::create(notify))
+        .ok()
+        .flatten()
+        .map_or(ptr::null_mut(), |peer| Box::into_raw(Box::new(peer)))
 }
 
 #[no_mangle]
@@ -1305,7 +1436,8 @@ pub extern "C" fn reactor_effect_peer_create() -> *mut ReactorEffectPeer {
 /// # Safety
 /// `peer` must be a live handle returned by [`reactor_effect_peer_create`].
 /// Non-null input/output pointers must reference at least their declared byte
-/// lengths, and `response_len` must be writable for one `usize`.
+/// lengths, `response_len` must be writable for one `usize`, and `failure`
+/// must be null or writable for one [`ReactorEffectFailure`].
 pub unsafe extern "C" fn reactor_effect_peer_call(
     peer: *mut ReactorEffectPeer,
     operation: u32,
@@ -1314,29 +1446,35 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
     response: *mut u8,
     response_cap: usize,
     response_len: *mut usize,
+    failure: *mut ReactorEffectFailure,
 ) -> i32 {
-    ffi_status(|| {
+    with_failure(failure, || {
         let peer = peer_ref(peer)?;
-        require_call_buffer(response, response_cap, response_len)?;
+        if response.is_null() || response_len.is_null() {
+            return Err(BridgeError::invalid("call requires a response buffer"));
+        }
+        *response_len = 0;
+        if response_cap < CALL_BUFFER_MIN {
+            *response_len = CALL_BUFFER_MIN;
+            return Ok(STATUS_BUFFER_TOO_SMALL);
+        }
         let request = input(request, request_len)?;
         if request.len() > MAX_REQUEST_BYTES {
-            let native = BridgeError::overflow("native request exceeds 1 MiB");
-            let bytes = native.json();
-            copy_out(&bytes, response, response_cap, response_len);
-            return Ok(status_for(&native));
+            return Err(BridgeError::new(
+                Class::Overflow,
+                "native request exceeds 1 MiB",
+            ));
         }
-        let (status, bytes) = match peer.request(operation, request) {
-            Ok(bytes) => (STATUS_OK, bytes),
-            Err(error) => (status_for(&error), error.json()),
-        };
+        let bytes = peer.request(operation, request)?;
         if bytes.len() > response_cap {
-            let native = BridgeError::overflow("native call response exceeds 4 MiB");
-            let bytes = native.json();
-            copy_out(&bytes, response, response_cap, response_len);
-            return Ok(status_for(&native));
+            return Err(BridgeError::new(
+                Class::Overflow,
+                "native call response exceeds its buffer",
+            ));
         }
-        copy_out(&bytes, response, response_cap, response_len);
-        Ok(status)
+        ptr::copy_nonoverlapping(bytes.as_ptr(), response, bytes.len());
+        *response_len = bytes.len();
+        Ok(STATUS_OK)
     })
 }
 
@@ -1345,102 +1483,144 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
 ///
 /// # Safety
 /// `peer` must be live. `data` must reference `data_len` readable bytes when
-/// nonempty; `error` must reference `error_cap` writable bytes and `error_len`
-/// must be writable for one `usize`.
+/// nonempty, and `failure` must be null or writable for one
+/// [`ReactorEffectFailure`].
 pub unsafe extern "C" fn reactor_effect_peer_send(
     peer: *mut ReactorEffectPeer,
     channel: u32,
     data: *const u8,
     data_len: usize,
-    error: *mut u8,
-    error_cap: usize,
-    error_len: *mut usize,
+    failure: *mut ReactorEffectFailure,
 ) -> i32 {
-    ffi_status(|| {
-        require_error_buffer(error, error_cap, error_len)?;
+    with_failure(failure, || {
         let peer = peer_ref(peer)?;
-        let data = input(data, data_len)?;
-        match peer.send(channel, data) {
-            Ok(()) => {
-                copy_out(&[], error, error_cap, error_len);
-                Ok(STATUS_OK)
-            }
-            Err(native) => {
-                let bytes = native.json();
-                copy_out(&bytes, error, error_cap, error_len);
-                Ok(status_for(&native))
-            }
-        }
+        peer.send(channel, input(data, data_len)?)?;
+        Ok(STATUS_OK)
     })
 }
 
 #[no_mangle]
-/// Poll the critical transport event queue.
+/// Nonblocking: copy the oldest transport event into caller memory.
 ///
 /// # Safety
-/// `peer` must be live. When `out_cap` is nonzero, `out` must reference that
-/// many writable bytes; `out_len` must be writable for one `usize`.
-pub unsafe extern "C" fn reactor_effect_peer_poll_event(
+/// `peer` must be live, `out_len` writable for one `usize`, and `out` valid
+/// for `out_cap` writable bytes when `out_cap` is nonzero.
+pub unsafe extern "C" fn reactor_effect_peer_take_event(
     peer: *mut ReactorEffectPeer,
-    timeout_ms: u32,
     out: *mut u8,
     out_cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    ffi_poll(
-        peer,
-        &|p| &p.shared.events,
-        timeout_ms,
-        out,
-        out_cap,
-        out_len,
-    )
+    ffi_status(|| {
+        let peer = peer_ref(peer).ok()?;
+        if out_len.is_null() || (out_cap != 0 && out.is_null()) {
+            return None;
+        }
+        Some(
+            match peer.shared.events.take(|packet| {
+                *out_len = packet.len();
+                packet.len() <= out_cap
+            }) {
+                Taken::Item(packet) => {
+                    if !packet.is_empty() {
+                        ptr::copy_nonoverlapping(packet.as_ptr(), out, packet.len());
+                    }
+                    STATUS_OK
+                }
+                Taken::TooSmall => STATUS_BUFFER_TOO_SMALL,
+                Taken::Empty => {
+                    *out_len = 0;
+                    STATUS_AGAIN
+                }
+                Taken::Closed => {
+                    *out_len = 0;
+                    STATUS_CLOSED
+                }
+            },
+        )
+    })
 }
 
 #[no_mangle]
-/// Poll the decoded-video queue.
+/// Nonblocking: copy the oldest decoded frame into caller memory. The header
+/// is written for OK and BUFFER_TOO_SMALL; the latter keeps the frame queued.
 ///
 /// # Safety
-/// `peer` must be live. When `out_cap` is nonzero, `out` must reference that
-/// many writable bytes; `out_len` must be writable for one `usize`.
-pub unsafe extern "C" fn reactor_effect_peer_poll_video(
+/// `peer` must be live, `header` writable, `bgra` valid for `bgra_cap` bytes
+/// and `metadata` for `metadata_cap` bytes when they are non-null.
+pub unsafe extern "C" fn reactor_effect_peer_take_video(
     peer: *mut ReactorEffectPeer,
-    timeout_ms: u32,
-    out: *mut u8,
-    out_cap: usize,
-    out_len: *mut usize,
+    header: *mut ReactorEffectVideoHeader,
+    bgra: *mut u8,
+    bgra_cap: usize,
+    metadata: *mut u8,
+    metadata_cap: usize,
 ) -> i32 {
-    ffi_poll(
-        peer,
-        &|p| &p.shared.video.queue,
-        timeout_ms,
-        out,
-        out_cap,
-        out_len,
-    )
+    ffi_status(|| {
+        let peer = peer_ref(peer).ok()?;
+        if header.is_null() {
+            return None;
+        }
+        Some(
+            match peer.shared.video.take(|item| {
+                *header = item.header();
+                !bgra.is_null()
+                    && item.bgra.len() <= bgra_cap
+                    && item.metadata.len() <= metadata_cap
+                    && (item.metadata.is_empty() || !metadata.is_null())
+            }) {
+                Taken::Item(item) => {
+                    ptr::copy_nonoverlapping(item.bgra.as_ptr(), bgra, item.bgra.len());
+                    if !item.metadata.is_empty() {
+                        ptr::copy_nonoverlapping(
+                            item.metadata.as_ptr(),
+                            metadata,
+                            item.metadata.len(),
+                        );
+                    }
+                    STATUS_OK
+                }
+                Taken::TooSmall => STATUS_BUFFER_TOO_SMALL,
+                Taken::Empty => STATUS_AGAIN,
+                Taken::Closed => STATUS_CLOSED,
+            },
+        )
+    })
 }
 
 #[no_mangle]
-/// Poll the decoded-audio queue.
+/// Nonblocking: copy the oldest PCM block (native-endian interleaved `int16_t`)
+/// into caller memory. The header is written for OK and BUFFER_TOO_SMALL.
 ///
 /// # Safety
-/// `peer` must be live. When `out_cap` is nonzero, `out` must reference that
-/// many writable bytes; `out_len` must be writable for one `usize`.
-pub unsafe extern "C" fn reactor_effect_peer_poll_audio(
+/// `peer` must be live, `header` writable, and `pcm` valid for `pcm_cap`
+/// samples when non-null.
+pub unsafe extern "C" fn reactor_effect_peer_take_audio(
     peer: *mut ReactorEffectPeer,
-    timeout_ms: u32,
-    out: *mut u8,
-    out_cap: usize,
-    out_len: *mut usize,
+    header: *mut ReactorEffectAudioHeader,
+    pcm: *mut i16,
+    pcm_cap: usize,
 ) -> i32 {
-    ffi_poll(
-        peer,
-        &|p| &p.shared.audio.queue,
-        timeout_ms,
-        out,
-        out_cap,
-        out_len,
-    )
+    ffi_status(|| {
+        let peer = peer_ref(peer).ok()?;
+        if header.is_null() {
+            return None;
+        }
+        Some(
+            match peer.shared.audio.take(|item| {
+                *header = item.header();
+                !pcm.is_null() && item.pcm.len() <= pcm_cap
+            }) {
+                Taken::Item(item) => {
+                    ptr::copy_nonoverlapping(item.pcm.as_ptr(), pcm, item.pcm.len());
+                    STATUS_OK
+                }
+                Taken::TooSmall => STATUS_BUFFER_TOO_SMALL,
+                Taken::Empty => STATUS_AGAIN,
+                Taken::Closed => STATUS_CLOSED,
+            },
+        )
+    })
 }
 
 #[no_mangle]
@@ -1458,31 +1638,20 @@ pub unsafe extern "C" fn reactor_effect_peer_close(peer: *mut ReactorEffectPeer)
 }
 
 #[no_mangle]
-/// Join native ownership after callback admission has been fenced.
+/// Join native ownership: the owner thread, every admitted libwebrtc callback
+/// and the notifier thread.
 ///
 /// # Safety
-/// `peer` must be live. `error` must reference `error_cap` writable bytes and
-/// `error_len` must be writable for one `usize`.
+/// `peer` must be live and `failure` null or writable for one
+/// [`ReactorEffectFailure`]. The caller must not be the thread that runs the
+/// notify callback.
 pub unsafe extern "C" fn reactor_effect_peer_shutdown(
     peer: *mut ReactorEffectPeer,
-    error: *mut u8,
-    error_cap: usize,
-    error_len: *mut usize,
+    failure: *mut ReactorEffectFailure,
 ) -> i32 {
-    ffi_status(|| {
-        require_error_buffer(error, error_cap, error_len)?;
-        let peer = peer_ref(peer)?;
-        match peer.shutdown() {
-            Ok(()) => {
-                copy_out(&[], error, error_cap, error_len);
-                Ok(STATUS_OK)
-            }
-            Err(native) => {
-                let bytes = native.json();
-                copy_out(&bytes, error, error_cap, error_len);
-                Ok(status_for(&native))
-            }
-        }
+    with_failure(failure, || {
+        peer_ref(peer)?.shutdown()?;
+        Ok(STATUS_OK)
     })
 }
 
@@ -1494,6 +1663,8 @@ pub unsafe extern "C" fn reactor_effect_peer_shutdown(
 /// that has not already been passed to this function. All foreign calls using
 /// the handle, including calls queued in a host FFI executor, must have returned.
 /// Joining the native owner alone does not establish that host-side condition.
+/// It shuts the peer down if needed, so it must not run on the thread that runs
+/// the notify callback either.
 pub unsafe extern "C" fn reactor_effect_peer_destroy(peer: *mut ReactorEffectPeer) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if peer.is_null() {
@@ -1504,109 +1675,58 @@ pub unsafe extern "C" fn reactor_effect_peer_destroy(peer: *mut ReactorEffectPee
     }));
 }
 
-unsafe fn ffi_poll(
-    peer: *mut ReactorEffectPeer,
-    queue: &dyn Fn(&ReactorEffectPeer) -> &PacketQueue,
-    timeout_ms: u32,
-    out: *mut u8,
-    out_cap: usize,
-    out_len: *mut usize,
+/// Run an FFI body that reports failures through a [`ReactorEffectFailure`].
+/// A caught panic is a native failure.
+unsafe fn with_failure(
+    failure: *mut ReactorEffectFailure,
+    body: impl FnOnce() -> Result<i32, BridgeError>,
 ) -> i32 {
-    ffi_status(|| {
-        let peer = peer_ref(peer)?;
-        if out_len.is_null() || (out_cap != 0 && out.is_null()) {
-            return Err(FfiError::Invalid);
-        }
-        match queue(peer).poll(Duration::from_millis(timeout_ms as u64), out_cap) {
-            PollResult::Packet(packet) => {
-                if out.is_null() && !packet.is_empty() {
-                    return Err(FfiError::Invalid);
-                }
-                copy_out(&packet, out, out_cap, out_len);
-                Ok(STATUS_OK)
-            }
-            PollResult::Need(required) => {
-                *out_len = required;
-                Ok(STATUS_BUFFER_TOO_SMALL)
-            }
-            PollResult::Again => {
-                *out_len = 0;
-                Ok(STATUS_AGAIN)
-            }
-            PollResult::Closed => {
-                *out_len = 0;
-                Ok(STATUS_CLOSED)
-            }
-        }
-    })
+    let error = match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(Ok(status)) => return status,
+        Ok(Err(error)) => error,
+        Err(_) => BridgeError::new(Class::Native, "native bridge panicked"),
+    };
+    if let Some(failure) = failure.as_mut() {
+        let message = truncate(&error.message, FAILURE_MESSAGE_BYTES);
+        failure.message[..message.len()].copy_from_slice(message.as_bytes());
+        failure.message_len = message.len() as u32;
+    }
+    error.class.status()
 }
 
-enum FfiError {
-    Invalid,
-    Status(i32),
-}
-
-fn ffi_status(body: impl FnOnce() -> Result<i32, FfiError>) -> i32 {
+/// Run an FFI body without a failure channel; `None` means invalid arguments.
+fn ffi_status(body: impl FnOnce() -> Option<i32>) -> i32 {
     match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(Ok(status)) => status,
-        Ok(Err(FfiError::Invalid)) => STATUS_INVALID,
-        Ok(Err(FfiError::Status(status))) => status,
+        Ok(Some(status)) => status,
+        Ok(None) => STATUS_INVALID_INPUT,
         Err(_) => STATUS_NATIVE,
     }
 }
 
-unsafe fn peer_ref<'a>(peer: *mut ReactorEffectPeer) -> Result<&'a ReactorEffectPeer, FfiError> {
-    peer.as_ref().ok_or(FfiError::Invalid)
+fn truncate(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
-unsafe fn input<'a>(data: *const u8, len: usize) -> Result<&'a [u8], FfiError> {
+unsafe fn peer_ref<'a>(peer: *mut ReactorEffectPeer) -> Result<&'a ReactorEffectPeer, BridgeError> {
+    peer.as_ref()
+        .ok_or_else(|| BridgeError::invalid("null native peer handle"))
+}
+
+unsafe fn input<'a>(data: *const u8, len: usize) -> Result<&'a [u8], BridgeError> {
     if len == 0 {
         return Ok(&[]);
     }
     if data.is_null() {
-        return Err(FfiError::Invalid);
+        return Err(BridgeError::invalid("null input with a nonzero length"));
     }
     Ok(slice::from_raw_parts(data, len))
-}
-
-unsafe fn require_call_buffer(out: *mut u8, cap: usize, len: *mut usize) -> Result<(), FfiError> {
-    if len.is_null() || out.is_null() {
-        return Err(FfiError::Invalid);
-    }
-    if cap < CALL_BUFFER_MIN {
-        *len = CALL_BUFFER_MIN;
-        return Err(FfiError::Status(STATUS_BUFFER_TOO_SMALL));
-    }
-    Ok(())
-}
-
-unsafe fn require_error_buffer(out: *mut u8, cap: usize, len: *mut usize) -> Result<(), FfiError> {
-    if len.is_null() || out.is_null() {
-        return Err(FfiError::Invalid);
-    }
-    if cap < ERROR_BUFFER_MIN {
-        *len = ERROR_BUFFER_MIN;
-        return Err(FfiError::Status(STATUS_BUFFER_TOO_SMALL));
-    }
-    Ok(())
-}
-
-unsafe fn copy_out(bytes: &[u8], out: *mut u8, cap: usize, len: *mut usize) {
-    *len = bytes.len();
-    if !bytes.is_empty() {
-        debug_assert!(!out.is_null());
-        debug_assert!(cap >= bytes.len());
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
-    }
-}
-
-fn status_for(error: &BridgeError) -> i32 {
-    match error.code {
-        "InvalidInput" | "Protocol" => STATUS_INVALID,
-        "Closed" => STATUS_CLOSED,
-        "Overflow" => STATUS_OVERFLOW,
-        _ => STATUS_NATIVE,
-    }
 }
 
 #[cfg(test)]
@@ -1615,7 +1735,8 @@ mod tests {
     use reactor_webrtc::{
         AudioFrame, AudioTrackOptions, AudioTrackSource, IceCandidate, VideoFrame,
     };
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicU32;
+    use std::time::{Duration, Instant};
 
     #[derive(Default)]
     struct AnswererSignals {
@@ -1660,18 +1781,25 @@ mod tests {
         (header, &packet[4 + header_len..])
     }
 
+    fn take_any<T>(queue: &Queue<T>) -> Option<T> {
+        match queue.take(|_| true) {
+            Taken::Item(item) => Some(item),
+            Taken::TooSmall => unreachable!("take_any accepts every size"),
+            Taken::Empty | Taken::Closed => None,
+        }
+    }
+
+    fn observed<T>(queue: &Queue<T>) -> u64 {
+        queue.observed.load(Ordering::Relaxed)
+    }
+
     fn drain_bridge_events(
         shared: &Shared,
         answerer: &PeerConnection,
         bridge_connected: &mut bool,
         bridge_messages: &mut Vec<(String, Vec<u8>)>,
     ) {
-        loop {
-            let packet = match shared.events.poll(Duration::ZERO, 2 * 1024 * 1024) {
-                PollResult::Packet(packet) => packet,
-                PollResult::Again | PollResult::Closed => break,
-                PollResult::Need(size) => panic!("unexpected oversized bridge event: {size}"),
-            };
+        while let Some(packet) = take_any(&shared.events) {
             let (header, payload) = packet_parts(&packet);
             match header.get("type").and_then(Value::as_str) {
                 Some("state")
@@ -1723,14 +1851,57 @@ mod tests {
         }
     }
 
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn failure() -> ReactorEffectFailure {
+        ReactorEffectFailure {
+            message_len: 0,
+            message: [0; FAILURE_MESSAGE_BYTES],
+        }
+    }
+
+    fn failure_text(failure: &ReactorEffectFailure) -> &str {
+        std::str::from_utf8(&failure.message[..failure.message_len as usize])
+            .expect("failure text is UTF-8")
+    }
+
+    fn video_item(track: u32, fill: u8, metadata: &[u8]) -> VideoItem {
+        VideoItem {
+            track,
+            width: 2,
+            height: 1,
+            frame_id: u64::MAX,
+            timestamp_us: 9_007_199_254_740_993,
+            bgra: vec![fill; 8],
+            metadata: metadata.to_vec(),
+        }
+    }
+
+    #[test]
+    fn c_structs_match_the_header_layout() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<ReactorEffectVideoHeader>(), 40);
+        assert_eq!(offset_of!(ReactorEffectVideoHeader, frame_id), 16);
+        assert_eq!(offset_of!(ReactorEffectVideoHeader, timestamp_us), 24);
+        assert_eq!(offset_of!(ReactorEffectVideoHeader, track), 32);
+        assert_eq!(size_of::<ReactorEffectAudioHeader>(), 16);
+        assert_eq!(offset_of!(ReactorEffectAudioHeader, track), 12);
+        assert_eq!(size_of::<ReactorEffectFailure>(), 1024);
+    }
+
     #[test]
     fn packet_framing_is_length_prefixed_and_lossless() {
         let payload = [0, 1, 2, 255];
         let packet = packet(json!({ "type": "message", "channel": "data" }), &payload);
-        let header_len = u32::from_le_bytes(packet[0..4].try_into().unwrap()) as usize;
-        let header: Value = serde_json::from_slice(&packet[4..4 + header_len]).unwrap();
+        let (header, body) = packet_parts(&packet);
         assert_eq!(header["type"], "message");
-        assert_eq!(&packet[4 + header_len..], payload);
+        assert_eq!(body, payload);
     }
 
     #[test]
@@ -1753,152 +1924,131 @@ mod tests {
     }
 
     #[test]
-    fn media_queue_drops_oldest_under_pressure() {
-        let queue = MediaQueue::new(2, 32);
-        queue.push_drop_oldest(vec![1; 8]);
-        queue.push_drop_oldest(vec![2; 8]);
-        queue.push_drop_oldest(vec![3; 8]);
-        assert_eq!(queue.counters.observed.load(Ordering::Relaxed), 3);
-        assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 1);
-        match queue.queue.poll(Duration::ZERO, 32) {
-            PollResult::Packet(packet) => assert_eq!(packet, vec![2; 8]),
-            _ => panic!("expected retained packet"),
+    fn media_queue_evicts_the_oldest_and_accounts_for_every_item() {
+        let queue = Queue::new(2, 32);
+        for fill in 1..=3u8 {
+            assert!(queue.push_drop_oldest(vec![fill; 8], 8));
         }
+        assert_eq!(take_any(&queue), Some(vec![2; 8]));
+        assert_eq!(take_any(&queue), Some(vec![3; 8]));
+        assert_eq!(take_any(&queue), None);
+
+        // The byte bound evicts too, and an item above it is dropped unqueued.
+        assert!(queue.push_drop_oldest(vec![4; 20], 20));
+        assert!(queue.push_drop_oldest(vec![5; 20], 20));
+        assert!(!queue.push_drop_oldest(vec![6; 33], 33));
+        let counts = queue.counts();
+        assert_eq!(counts.queued, 1);
+        assert_eq!(counts.bytes, 20);
+        assert_eq!(counts.dropped, 3);
+        assert_eq!(counts.taken, 2);
+        assert_eq!(
+            observed(&queue),
+            counts.dropped + counts.taken + counts.queued as u64
+        );
     }
 
     #[test]
-    fn media_probe_owns_packet_across_differently_sized_eviction() {
-        // Both directions matter: a larger successor formerly failed the copy,
-        // while a smaller successor changed the size after JS allocated output.
-        for (first_size, replacement_size) in [(8, 13), (13, 8)] {
-            let queue = MediaQueue::new(2, 32);
-            queue.push_drop_oldest(vec![1; first_size]);
-            queue.push_drop_oldest(vec![2; 7]);
-            assert!(matches!(
-                queue.queue.poll(Duration::ZERO, 0),
-                PollResult::Need(size) if size == first_size
-            ));
-
-            // The producer runs between the size probe and the copying call.
-            queue.push_drop_oldest(vec![3; replacement_size]);
-            assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 1);
-            let snapshot = queue.queue.snapshot();
-            assert_eq!(snapshot.queued, 2);
-            assert_eq!(snapshot.bytes, first_size + replacement_size);
-            match queue.queue.poll(Duration::ZERO, first_size) {
-                PollResult::Packet(bytes) => assert_eq!(bytes, vec![1; first_size]),
-                _ => panic!("producer evicted a packet already retained by a reader"),
-            }
-            match queue.queue.poll(Duration::ZERO, replacement_size) {
-                PollResult::Packet(bytes) => assert_eq!(bytes, vec![3; replacement_size]),
-                _ => panic!("replacement packet was lost or reordered"),
-            }
-        }
-    }
-
-    #[test]
-    fn retained_media_stays_within_capacity_and_close_discards_it() {
-        let queue = MediaQueue::new(1, 8);
-        queue.push_drop_oldest(vec![1; 8]);
+    fn take_keeps_an_item_the_reader_cannot_hold() {
+        let queue = Queue::new(4, 64);
+        assert!(queue.push_drop_oldest(vec![7; 12], 12));
+        let mut seen = 0;
         assert!(matches!(
-            queue.queue.poll(Duration::ZERO, 0),
-            PollResult::Need(8)
+            queue.take(|item: &Vec<u8>| {
+                seen = item.len();
+                false
+            }),
+            Taken::TooSmall
         ));
-        queue.push_drop_oldest(vec![2; 7]);
-        assert_eq!(queue.queue.snapshot().bytes, 8);
-        assert_eq!(queue.queue.snapshot().queued, 1);
-        assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(seen, 12);
+        assert_eq!(queue.counts().queued, 1);
+        assert_eq!(take_any(&queue), Some(vec![7; 12]));
+        assert_eq!(queue.counts().taken, 1);
+    }
+
+    #[test]
+    fn close_counts_untaken_media_as_dropped_and_refuses_later_items() {
+        let queue = Queue::new(4, 64);
+        assert!(queue.push_drop_oldest(vec![1; 4], 4));
+        assert!(queue.push_drop_oldest(vec![2; 4], 4));
         queue.close();
-        assert_eq!(queue.queue.snapshot().bytes, 0);
-        assert_eq!(queue.counters.dropped.load(Ordering::Relaxed), 2);
-        assert!(matches!(
-            queue.queue.poll(Duration::ZERO, 8),
-            PollResult::Closed
-        ));
+        assert!(matches!(queue.take(|_| true), Taken::Closed));
+        assert!(!queue.push_drop_oldest(vec![3; 4], 4));
+        let counts = queue.counts();
+        assert_eq!((counts.dropped, counts.queued, counts.bytes), (2, 0, 0));
+        assert_eq!(observed(&queue), 2, "a closed queue observes nothing");
     }
 
     #[test]
-    fn critical_overflow_preserves_a_probed_packet_before_the_diagnostic() {
-        let queue = PacketQueue::new(2, 128);
-        assert!(matches!(queue.push(vec![1; 7]), PushResult::Accepted));
-        assert!(matches!(queue.poll(Duration::ZERO, 0), PollResult::Need(7)));
-        queue.replace_with(vec![2; 13]);
-        match queue.poll(Duration::ZERO, 7) {
-            PollResult::Packet(bytes) => assert_eq!(bytes, vec![1; 7]),
-            _ => panic!("critical overflow invalidated a reader's retained packet"),
-        }
-        match queue.poll(Duration::ZERO, 13) {
-            PollResult::Packet(bytes) => assert_eq!(bytes, vec![2; 13]),
-            _ => panic!("critical overflow lost its diagnostic"),
-        }
-    }
-
-    #[test]
-    fn packet_queue_size_probe_retains_packet_and_fifo_order() {
-        let queue = PacketQueue::new(4, 128);
-        assert!(matches!(queue.push(vec![1, 2, 3]), PushResult::Accepted));
-        assert!(matches!(queue.push(vec![4, 5]), PushResult::Accepted));
-
-        assert!(matches!(queue.poll(Duration::ZERO, 0), PollResult::Need(3)));
-        match queue.poll(Duration::ZERO, 3) {
-            PollResult::Packet(packet) => assert_eq!(packet, vec![1, 2, 3]),
-            _ => panic!("size probe consumed or reordered the first packet"),
-        }
-        match queue.poll(Duration::ZERO, 2) {
-            PollResult::Packet(packet) => assert_eq!(packet, vec![4, 5]),
-            _ => panic!("second packet did not remain FIFO"),
-        }
-    }
-
-    #[test]
-    fn critical_event_overflow_fences_connection_and_retains_one_error() {
-        let gate = Arc::new(CallbackGate::new());
-        let shared = Shared::new(Arc::clone(&gate));
+    fn event_overflow_retires_the_connection_with_one_typed_diagnostic() {
+        let shared = Shared::new();
         for index in 0..1024 {
             shared.emit(json!({ "type": "probe", "index": index }), &[]);
         }
-        assert!(gate.accepting.load(Ordering::Acquire));
+        assert!(shared.gate.accepting());
 
         shared.emit(json!({ "type": "overflow-trigger" }), &[]);
-        assert!(!gate.accepting.load(Ordering::Acquire));
-        let snapshot = shared.events.snapshot();
+        assert!(!shared.gate.accepting());
         assert_eq!(
-            snapshot.queued, 1,
-            "overflow must collapse critical backlog"
+            shared.events.counts().queued,
+            1,
+            "overflow must collapse the event backlog"
         );
-        match shared.events.poll(Duration::ZERO, 4096) {
-            PollResult::Packet(packet) => {
-                let (header, payload) = packet_parts(&packet);
-                assert!(payload.is_empty());
-                assert_eq!(header["type"], "error");
-                assert_eq!(header["code"], "Overflow");
-            }
-            _ => panic!("overflow diagnostic was not retained"),
-        }
+        let packet = take_any(&shared.events).expect("overflow diagnostic");
+        let (header, payload) = packet_parts(&packet);
+        assert!(payload.is_empty());
+        assert_eq!(header["type"], "error");
+        assert_eq!(header["status"], STATUS_OVERFLOW);
     }
 
     #[test]
-    fn c_abi_size_probe_retains_packet_until_copy() {
+    fn notifier_coalesces_readiness_until_the_host_runs() {
+        static CALLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        extern "C" fn record(ready: u32) {
+            lock(&CALLS).push(ready);
+        }
+        let notifier = Arc::new(Notifier::default());
+        notifier.signal(READY_VIDEO);
+        notifier.signal(READY_VIDEO);
+        notifier.signal(READY_AUDIO);
+        let runner = {
+            let notifier = Arc::clone(&notifier);
+            thread::spawn(move || notifier.run(record))
+        };
+        until("coalesced readiness", || !lock(&CALLS).is_empty());
+        notifier.signal(READY_EVENTS);
+        until("second readiness", || lock(&CALLS).len() == 2);
+        notifier.close();
+        runner.join().unwrap();
+        notifier.signal(READY_EVENTS);
+        assert_eq!(
+            *lock(&CALLS),
+            [READY_VIDEO | READY_AUDIO, READY_EVENTS],
+            "signals after close must not reach the host"
+        );
+    }
+
+    #[test]
+    fn c_abi_take_event_reports_its_size_then_copies_once() {
         unsafe {
-            let peer = reactor_effect_peer_create();
+            let peer = reactor_effect_peer_create(None);
             assert!(!peer.is_null());
+            let shared = &(*peer).shared;
             let packet = packet(json!({ "type": "message", "channel": "control" }), b"abc");
-            let peer_ref = &*peer;
-            assert!(matches!(
-                peer_ref.shared.events.push(packet.clone()),
-                PushResult::Accepted
-            ));
+            assert_eq!(
+                shared.events.push(packet.clone(), packet.len()),
+                Push::Accepted
+            );
 
             let mut required = 0usize;
-            let status = reactor_effect_peer_poll_event(peer, 0, ptr::null_mut(), 0, &mut required);
+            let status = reactor_effect_peer_take_event(peer, ptr::null_mut(), 0, &mut required);
             assert_eq!(status, STATUS_BUFFER_TOO_SMALL);
             assert_eq!(required, packet.len());
 
             let mut output = vec![0u8; required];
             let mut copied = 0usize;
-            let status = reactor_effect_peer_poll_event(
+            let status = reactor_effect_peer_take_event(
                 peer,
-                0,
                 output.as_mut_ptr(),
                 output.len(),
                 &mut copied,
@@ -1906,71 +2056,265 @@ mod tests {
             assert_eq!(status, STATUS_OK);
             assert_eq!(copied, packet.len());
             assert_eq!(output, packet);
+            assert_eq!(
+                reactor_effect_peer_take_event(
+                    peer,
+                    output.as_mut_ptr(),
+                    output.len(),
+                    &mut copied
+                ),
+                STATUS_AGAIN
+            );
+            assert_eq!(copied, 0);
             reactor_effect_peer_destroy(peer);
         }
     }
 
     #[test]
-    fn c_abi_video_probe_survives_producer_eviction_between_calls() {
-        for (first_size, replacement_size) in [(8, 13), (13, 8)] {
-            unsafe {
-                let peer = reactor_effect_peer_create();
-                assert!(!peer.is_null());
-                let inner = &*peer;
-                let media = &inner.shared.video;
-                let first = packet(json!({ "type": "fixture" }), &vec![1; first_size]);
-                let replacement = packet(json!({ "type": "fixture" }), &vec![3; replacement_size]);
-                media.push_drop_oldest(first.clone());
-                // Fill the production queue to capacity before retaining its
-                // first packet through the exported C ABI.
-                for _ in 1..8 {
-                    media.push_drop_oldest(packet(json!({ "type": "fixture" }), &[2; 7]));
+    fn c_abi_takes_typed_media_into_caller_buffers() {
+        unsafe {
+            let peer = reactor_effect_peer_create(None);
+            assert!(!peer.is_null());
+            let shared = &(*peer).shared;
+            assert!(shared
+                .video
+                .push_drop_oldest(video_item(3, 0x21, b"meta"), 12));
+            let pcm = vec![1i16, -2, 300, -400];
+            assert!(shared.audio.push_drop_oldest(
+                AudioItem {
+                    track: 1,
+                    sample_rate: 48_000,
+                    channels: 2,
+                    pcm: pcm.clone(),
+                },
+                8
+            ));
+
+            let mut header = ReactorEffectVideoHeader::default();
+            let mut bgra = vec![0u8; 8];
+            let mut metadata = vec![0u8; 3];
+            assert_eq!(
+                reactor_effect_peer_take_video(
+                    peer,
+                    &mut header,
+                    bgra.as_mut_ptr(),
+                    bgra.len(),
+                    metadata.as_mut_ptr(),
+                    metadata.len()
+                ),
+                STATUS_BUFFER_TOO_SMALL
+            );
+            assert_eq!((header.data_len, header.metadata_len), (8, 4));
+            assert_eq!(
+                shared.video.counts().queued,
+                1,
+                "a short take keeps the frame"
+            );
+
+            metadata.resize(4, 0);
+            assert_eq!(
+                reactor_effect_peer_take_video(
+                    peer,
+                    &mut header,
+                    bgra.as_mut_ptr(),
+                    bgra.len(),
+                    metadata.as_mut_ptr(),
+                    metadata.len()
+                ),
+                STATUS_OK
+            );
+            assert_eq!(
+                header,
+                ReactorEffectVideoHeader {
+                    width: 2,
+                    height: 1,
+                    data_len: 8,
+                    metadata_len: 4,
+                    frame_id: u64::MAX,
+                    timestamp_us: 9_007_199_254_740_993,
+                    track: 3,
+                    reserved: 0,
                 }
-                let mut required = 0;
-                assert_eq!(
-                    reactor_effect_peer_poll_video(peer, 0, ptr::null_mut(), 0, &mut required),
-                    STATUS_BUFFER_TOO_SMALL
-                );
-                assert_eq!(required, first.len());
-                media.push_drop_oldest(replacement);
-                assert_eq!(media.counters.dropped.load(Ordering::Relaxed), 1);
-                let mut copied = 0;
-                let mut output = vec![0; required];
-                assert_eq!(
-                    reactor_effect_peer_poll_video(
-                        peer,
-                        0,
-                        output.as_mut_ptr(),
-                        output.len(),
-                        &mut copied
-                    ),
-                    STATUS_OK
-                );
-                assert_eq!(copied, first.len());
-                assert_eq!(output, first);
-                reactor_effect_peer_destroy(peer);
-            }
+            );
+            assert_eq!(bgra, [0x21; 8]);
+            assert_eq!(metadata, b"meta");
+
+            let mut audio = ReactorEffectAudioHeader::default();
+            let mut samples = vec![0i16; 4];
+            assert_eq!(
+                reactor_effect_peer_take_audio(peer, &mut audio, samples.as_mut_ptr(), 4),
+                STATUS_OK
+            );
+            assert_eq!(
+                audio,
+                ReactorEffectAudioHeader {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    samples: 4,
+                    track: 1,
+                }
+            );
+            assert_eq!(samples, pcm);
+            assert_eq!(
+                reactor_effect_peer_take_audio(peer, &mut audio, samples.as_mut_ptr(), 4),
+                STATUS_AGAIN
+            );
+
+            reactor_effect_peer_close(peer);
+            assert_eq!(
+                reactor_effect_peer_take_video(
+                    peer,
+                    &mut header,
+                    bgra.as_mut_ptr(),
+                    8,
+                    ptr::null_mut(),
+                    0
+                ),
+                STATUS_CLOSED
+            );
+            assert_eq!(
+                reactor_effect_peer_take_audio(peer, &mut audio, samples.as_mut_ptr(), 4),
+                STATUS_CLOSED
+            );
+            assert_eq!(
+                reactor_effect_peer_take_video(
+                    peer,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    0
+                ),
+                STATUS_INVALID_INPUT
+            );
+            reactor_effect_peer_destroy(peer);
         }
     }
 
     #[test]
-    fn close_wakes_inflight_poll_and_post_close_operations_stay_closed() {
+    fn c_abi_notifies_readiness_from_its_own_thread() {
+        static READY: AtomicU32 = AtomicU32::new(0);
+        extern "C" fn record(ready: u32) {
+            READY.fetch_or(ready, Ordering::AcqRel);
+        }
         unsafe {
-            let peer = reactor_effect_peer_create();
+            let peer = reactor_effect_peer_create(Some(record));
             assert!(!peer.is_null());
-            let address = peer as usize;
-            let waiter = thread::spawn(move || {
-                let peer = address as *mut ReactorEffectPeer;
-                let mut length = 0usize;
-                reactor_effect_peer_poll_event(peer, 10_000, ptr::null_mut(), 0, &mut length)
+            let shared = &(*peer).shared;
+            shared.emit(json!({ "type": "ice" }), &[]);
+            until("event readiness", || {
+                READY.load(Ordering::Acquire) & READY_EVENTS != 0
             });
+            if shared.video.push_drop_oldest(video_item(0, 1, &[]), 8) {
+                shared.notifier.signal(READY_VIDEO);
+            }
+            until("video readiness", || {
+                READY.load(Ordering::Acquire) & READY_VIDEO != 0
+            });
+            let mut failure = failure();
+            assert_eq!(reactor_effect_peer_shutdown(peer, &mut failure), STATUS_OK);
+            assert_eq!(
+                reactor_effect_peer_shutdown(peer, &mut failure),
+                STATUS_OK,
+                "shutdown is idempotent"
+            );
+            reactor_effect_peer_destroy(peer);
+        }
+    }
 
-            thread::sleep(Duration::from_millis(20));
-            reactor_effect_peer_close(peer);
-            assert_eq!(waiter.join().expect("poll thread"), STATUS_CLOSED);
+    #[test]
+    fn shutdown_joins_a_notifier_that_is_still_inside_the_host_callback() {
+        static ENTERED: AtomicBool = AtomicBool::new(false);
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        extern "C" fn blocking(_: u32) {
+            ENTERED.store(true, Ordering::Release);
+            while !RELEASE.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        unsafe {
+            let peer = reactor_effect_peer_create(Some(blocking));
+            assert!(!peer.is_null());
+            let shared = &(*peer).shared;
+            shared.emit(json!({ "type": "ice" }), &[]);
+            until("the host callback", || ENTERED.load(Ordering::Acquire));
+
+            let address = peer as usize;
+            let joiner = thread::spawn(move || {
+                let mut failure = failure();
+                reactor_effect_peer_shutdown(address as *mut ReactorEffectPeer, &mut failure)
+            });
+            thread::sleep(Duration::from_millis(30));
+            assert!(
+                !joiner.is_finished(),
+                "shutdown returned while the host callback could still run"
+            );
+            RELEASE.store(true, Ordering::Release);
+            assert_eq!(joiner.join().unwrap(), STATUS_OK);
+            reactor_effect_peer_destroy(peer);
+        }
+    }
+
+    #[test]
+    fn c_abi_reports_failure_classes_and_closes_every_entry_point() {
+        unsafe {
+            let peer = reactor_effect_peer_create(None);
+            assert!(!peer.is_null());
+            let mut failure = failure();
+
+            let status =
+                reactor_effect_peer_send(peer, CHANNEL_DATA, b"early".as_ptr(), 5, &mut failure);
+            assert_eq!(status, STATUS_CHANNEL_CLOSED);
+            assert_eq!(failure_text(&failure), "data channel is not open");
+            assert_eq!(
+                reactor_effect_peer_send(peer, 7, ptr::null(), 0, ptr::null_mut()),
+                STATUS_INVALID_INPUT,
+                "a null failure pointer is allowed"
+            );
 
             let mut response = vec![0u8; CALL_BUFFER_MIN];
-            let mut response_len = 0usize;
+            let mut response_len = usize::MAX;
+            let status = reactor_effect_peer_call(
+                peer,
+                99,
+                ptr::null(),
+                0,
+                response.as_mut_ptr(),
+                response.len(),
+                &mut response_len,
+                &mut failure,
+            );
+            assert_eq!(status, STATUS_INVALID_INPUT);
+            assert_eq!(response_len, 0);
+            assert_eq!(failure_text(&failure), "unknown native call operation");
+
+            let oversized = vec![b' '; MAX_REQUEST_BYTES + 1];
+            let status = reactor_effect_peer_call(
+                peer,
+                CALL_PREPARE,
+                oversized.as_ptr(),
+                oversized.len(),
+                response.as_mut_ptr(),
+                response.len(),
+                &mut response_len,
+                &mut failure,
+            );
+            assert_eq!(status, STATUS_OVERFLOW);
+
+            let mut short = [0u8; 16];
+            let status = reactor_effect_peer_call(
+                peer,
+                CALL_MEDIA_SNAPSHOT,
+                ptr::null(),
+                0,
+                short.as_mut_ptr(),
+                short.len(),
+                &mut response_len,
+                &mut failure,
+            );
+            assert_eq!(status, STATUS_BUFFER_TOO_SMALL);
+            assert_eq!(response_len, CALL_BUFFER_MIN);
+
             let status = reactor_effect_peer_call(
                 peer,
                 CALL_MEDIA_SNAPSHOT,
@@ -1979,42 +2323,78 @@ mod tests {
                 response.as_mut_ptr(),
                 response.len(),
                 &mut response_len,
+                &mut failure,
             );
-            assert_eq!(status, STATUS_CLOSED);
-            let error: Value =
-                serde_json::from_slice(&response[..response_len]).expect("closed JSON");
-            assert_eq!(error["code"], "Closed");
+            assert_eq!(status, STATUS_OK);
+            let snapshot: Value =
+                serde_json::from_slice(&response[..response_len]).expect("snapshot JSON");
+            assert_eq!(snapshot["closed"], false);
+            assert_eq!(snapshot["droppedVideo"], "0");
 
-            let mut send_error = vec![0u8; ERROR_BUFFER_MIN];
-            let mut send_error_len = 0usize;
-            let status = reactor_effect_peer_send(
+            reactor_effect_peer_close(peer);
+            let status = reactor_effect_peer_call(
                 peer,
-                CHANNEL_DATA,
-                b"late".as_ptr(),
-                4,
-                send_error.as_mut_ptr(),
-                send_error.len(),
-                &mut send_error_len,
+                CALL_MEDIA_SNAPSHOT,
+                ptr::null(),
+                0,
+                response.as_mut_ptr(),
+                response.len(),
+                &mut response_len,
+                &mut failure,
             );
             assert_eq!(status, STATUS_CLOSED);
-            let error: Value =
-                serde_json::from_slice(&send_error[..send_error_len]).expect("closed send JSON");
-            assert_eq!(error["code"], "Closed");
-
-            let mut poll_len = usize::MAX;
+            assert_eq!(failure_text(&failure), "native peer is closed");
             assert_eq!(
-                reactor_effect_peer_poll_event(peer, 0, ptr::null_mut(), 0, &mut poll_len),
+                reactor_effect_peer_send(peer, CHANNEL_DATA, b"late".as_ptr(), 4, &mut failure),
                 STATUS_CLOSED
             );
-            assert_eq!(poll_len, 0);
+            let mut length = usize::MAX;
+            assert_eq!(
+                reactor_effect_peer_take_event(peer, ptr::null_mut(), 0, &mut length),
+                STATUS_CLOSED
+            );
+            assert_eq!(length, 0);
+            assert_eq!(
+                reactor_effect_peer_shutdown(peer, ptr::null_mut()),
+                STATUS_OK
+            );
             reactor_effect_peer_destroy(peer);
         }
     }
 
     #[test]
+    fn failure_text_is_truncated_on_a_character_boundary() {
+        let text = "é".repeat(FAILURE_MESSAGE_BYTES);
+        let cut = truncate(&text, FAILURE_MESSAGE_BYTES);
+        assert_eq!(cut.len(), FAILURE_MESSAGE_BYTES);
+        assert!(
+            truncate(&text, 5).len() == 4,
+            "a split character is dropped"
+        );
+    }
+
+    #[test]
+    fn a_rejected_answer_is_classified_as_sdp_rejected() {
+        let shared = Arc::new(Shared::new());
+        let mut bridge = WorkerState::new(Arc::clone(&shared));
+        let prepare = serde_json::to_vec(&json!({
+            "servers": [],
+            "tracks": [{ "name": "video", "kind": "video", "direction": "recvonly" }]
+        }))
+        .unwrap();
+        bridge.prepare(&prepare).expect("bridge prepare");
+        let error = bridge
+            .answer(b"v=0\r\nthis is not an answer\r\n")
+            .expect_err("libwebrtc must reject a malformed answer");
+        assert_eq!(error.class, Class::SdpRejected);
+        assert!(error.message.starts_with("set_remote_description: "));
+        bridge.shutdown();
+    }
+
+    #[test]
     fn transport_loopback_exchanges_ordered_binary_and_real_decoded_media() {
-        let gate = Arc::new(CallbackGate::new());
-        let shared = Arc::new(Shared::new(Arc::clone(&gate)));
+        let shared = Arc::new(Shared::new());
+        let gate = Arc::clone(&shared.gate);
         let mut bridge = WorkerState::new(Arc::clone(&shared));
 
         let prepare = serde_json::to_vec(&json!({
@@ -2053,10 +2433,9 @@ mod tests {
             .max_bitrate(br#"{"name":"outgoing-video","bitsPerSecond":2000000}"#)
             .expect("set outgoing bitrate");
 
-        let factory = PeerConnectionFactory::builder()
-            .with_synthetic_adm()
-            .build()
-            .expect("answerer factory");
+        // The answerer shares the bridge's process-wide factory, as reactor-webrtc
+        // requires of every peer in one process.
+        let factory = factory().expect("process factory");
         let signals = Arc::new(AnswererSignals::default());
         let answerer = factory
             .create_peer_connection(
@@ -2215,8 +2594,14 @@ mod tests {
         let pcm: Vec<i16> = (0..480)
             .map(|sample| (((sample % 128) as i16) - 64) * 128)
             .collect();
+        let index = |name: &str| {
+            mappings
+                .iter()
+                .position(|mapping| mapping.name == name)
+                .expect("mapped track") as u32
+        };
         let media_deadline = Instant::now() + Duration::from_secs(20);
-        let mut got_video: HashMap<String, (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut got_video: HashMap<u32, (Vec<u8>, Vec<u8>)> = HashMap::new();
         let mut got_audio = false;
         while got_video.len() < 2 || !got_audio {
             video_a
@@ -2234,30 +2619,17 @@ mod tests {
                 })
                 .expect("push audio");
 
-            while let PollResult::Packet(packet) =
-                shared.video.queue.poll(Duration::ZERO, 1024 * 1024)
-            {
-                let (header, payload) = packet_parts(&packet);
-                let name = header["track"].as_str().expect("video track").to_owned();
-                let data_len = header["dataLength"].as_u64().expect("data length") as usize;
-                assert_eq!(header["format"], "BGRA");
-                assert_eq!(header["width"], width);
-                assert_eq!(header["height"], height);
-                assert_eq!(data_len, bgra_a.len());
-                got_video.insert(
-                    name,
-                    (payload[..data_len].to_vec(), payload[data_len..].to_vec()),
-                );
+            while let Some(frame) = take_any(&shared.video) {
+                let header = frame.header();
+                assert_eq!((header.width, header.height), (width, height));
+                assert_eq!(header.data_len as usize, bgra_a.len());
+                got_video.insert(frame.track, (frame.bgra, frame.metadata));
             }
-            while let PollResult::Packet(packet) =
-                shared.audio.queue.poll(Duration::ZERO, 1024 * 1024)
-            {
-                let (header, payload) = packet_parts(&packet);
-                assert_eq!(header["track"], "audio-a");
-                assert_eq!(header["format"], "s16le");
-                assert_eq!(header["sampleRate"], 48_000);
-                assert_eq!(header["channels"], 1);
-                assert!(!payload.is_empty());
+            while let Some(block) = take_any(&shared.audio) {
+                assert_eq!(block.track, index("audio-a"));
+                assert_eq!(block.sample_rate, 48_000);
+                assert_eq!(block.channels, 1);
+                assert!(!block.pcm.is_empty());
                 got_audio = true;
             }
             assert!(
@@ -2267,8 +2639,8 @@ mod tests {
             thread::sleep(Duration::from_millis(30));
         }
 
-        let (decoded_a, metadata_a) = got_video.get("video-a").expect("decoded video-a");
-        let (decoded_b, metadata_b) = got_video.get("video-b").expect("decoded video-b");
+        let (decoded_a, metadata_a) = got_video.get(&index("video-a")).expect("decoded video-a");
+        let (decoded_b, metadata_b) = got_video.get(&index("video-b")).expect("decoded video-b");
         // VP8/H264 are lossy, so exact pixels are not asserted. Distinct luma
         // inputs should remain observably distinct after the real codec path.
         assert_ne!(
@@ -2283,11 +2655,7 @@ mod tests {
             metadata_b, b"meta-b",
             "same-kind lane B metadata was misattributed"
         );
-        assert_ne!(
-            bigint_from_header(&shared.video),
-            0,
-            "metadata path never observed frames"
-        );
+        assert_ne!(observed(&shared.video), 0, "no frame reached the queue");
 
         let stats_deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -2323,21 +2691,8 @@ mod tests {
             .push_frame_with_metadata(VideoFrame::new(&bgra_a, width, height), b"late")
             .expect("remote source can still push after local fence");
         bridge.shutdown();
-        assert!(matches!(
-            shared.video.queue.poll(Duration::ZERO, 1024),
-            PollResult::Closed
-        ));
-        assert!(matches!(
-            shared.audio.queue.poll(Duration::ZERO, 1024),
-            PollResult::Closed
-        ));
-        assert!(matches!(
-            shared.events.poll(Duration::ZERO, 1024),
-            PollResult::Closed
-        ));
-    }
-
-    fn bigint_from_header(media: &MediaQueue) -> u64 {
-        media.counters.observed.load(Ordering::Relaxed)
+        assert!(matches!(shared.video.take(|_| true), Taken::Closed));
+        assert!(matches!(shared.audio.take(|_| true), Taken::Closed));
+        assert!(matches!(shared.events.take(|_| true), Taken::Closed));
     }
 }

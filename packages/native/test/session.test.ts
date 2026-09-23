@@ -1,8 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { rmSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -18,8 +14,8 @@ import { ReactorError } from "reactor-effect-client";
 import { FetchHttp } from "reactor-effect-client";
 import * as Native from "../src/index.js";
 import type { UploadReference } from "reactor-effect-client/wire";
+import { compileFixture } from "./support.js";
 
-const fixtureSource = fileURLToPath(new URL("./session-fixture.c", import.meta.url));
 const sessionId = "sess_native_fixture";
 const descriptor = {
   session_id: sessionId,
@@ -71,22 +67,6 @@ const runClient = <A>(
       Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch as typeof fetch),
     ),
   );
-
-const compileFixture = (): { readonly directory: string; readonly path: string } => {
-  const directory = mkdtempSync(join(tmpdir(), "reactor-native-session-"));
-  const extension = process.platform === "darwin" ? "dylib" : "so";
-  const path = join(directory, `libreactor_native_session_fixture.${extension}`);
-  const compiler = process.env.CC ?? "cc";
-  const platformFlags = process.platform === "darwin" ? ["-dynamiclib"] : ["-shared", "-fPIC"];
-  const result = spawnSync(
-    compiler,
-    ["-std=c11", "-D_DEFAULT_SOURCE", ...platformFlags, fixtureSource, "-o", path],
-    { encoding: "utf8" },
-  );
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) throw new Error(`${compiler} failed: ${result.stderr}`);
-  return { directory, path };
-};
 
 describe("native canonical session boundary", () => {
   test("dispatches owned media and preserves bounded submitted requests across caller cancellation", async () => {

@@ -1,10 +1,32 @@
 import { describe, expect, test } from "vitest";
 import { ReactorError } from "reactor-effect-client";
+import type { Track } from "reactor-effect-client";
+import { failureCode, type NativeAudio, type NativeVideo } from "../src/_internal/bridge.js";
 import { nativePeerTesting } from "../src/_internal/peer.js";
 
-const packet = (header: Record<string, unknown>, payload: readonly number[] = []) => ({
-  header,
-  payload: Uint8Array.from(payload),
+const tracks: readonly Track[] = [
+  { name: "main_video", kind: "video", direction: "recvonly" },
+  { name: "main_audio", kind: "audio", direction: "recvonly" },
+  { name: "input_video", kind: "video", direction: "sendonly" },
+];
+
+const video = (fields: Partial<NativeVideo> = {}): NativeVideo => ({
+  track: 0,
+  width: 1,
+  height: 1,
+  frameId: 18446744073709551615n,
+  timestampMicros: 9007199254740993n,
+  data: Uint8Array.of(1, 2, 3, 4),
+  metadata: Uint8Array.of(9, 8, 7),
+  ...fields,
+});
+
+const audio = (fields: Partial<NativeAudio> = {}): NativeAudio => ({
+  track: 1,
+  sampleRate: 48_000,
+  channels: 2,
+  samples: Int16Array.of(1, -2, 300, -400),
+  ...fields,
 });
 
 const protocol = (body: () => unknown): void => {
@@ -18,101 +40,105 @@ const protocol = (body: () => unknown): void => {
   throw new Error("expected Protocol failure");
 };
 
-describe("native packet parser", () => {
-  test("preserves uint64 video identity and owns BGRA/metadata bytes", () => {
-    const source = Uint8Array.from([1, 2, 3, 4, 9, 8, 7]);
-    const frame = nativePeerTesting.parseVideo({
-      header: {
-        type: "video",
-        format: "BGRA",
-        track: "main_video",
-        width: 1,
-        height: 1,
-        dataLength: 4,
-        metadataLength: 3,
-        frameId: "18446744073709551615",
-        timestampMicros: "9007199254740993",
-      },
-      payload: source,
+const packet = (header: Record<string, unknown>) => ({ header, payload: new Uint8Array() });
+
+describe("native media and event decoding", () => {
+  test("names frames by their prepare index and hands over the taken bytes without copying", () => {
+    const taken = video();
+    const frame = nativePeerTesting.videoFrame(tracks, taken);
+    expect(frame).toMatchObject({
+      _tag: "VideoFrame",
+      track: "main_video",
+      width: 1,
+      height: 1,
+      frameId: 18446744073709551615n,
+      timestampMicros: 9007199254740993n,
     });
-    source.fill(0);
-    expect(frame.frameId).toBe(18446744073709551615n);
-    expect(frame.timestampMicros).toBe(9007199254740993n);
-    expect([...frame.data]).toEqual([1, 2, 3, 4]);
-    expect([...frame.metadata]).toEqual([9, 8, 7]);
+    expect(frame.data).toBe(taken.data);
+    expect(frame.metadata).toBe(taken.metadata);
+
+    const block = audio();
+    const samples = nativePeerTesting.audioFrame(tracks, block);
+    expect(samples).toMatchObject({ track: "main_audio", sampleRate: 48_000, channels: 2 });
+    expect(samples.samples).toBe(block.samples);
+    expect([...samples.samples]).toEqual([1, -2, 300, -400]);
   });
 
-  test("rejects malformed video/event fields and invalid PCM counts", () => {
+  test("rejects frames outside their declared receive track or with inconsistent shapes", () => {
+    for (const track of [1, 2, 3])
+      protocol(() => nativePeerTesting.videoFrame(tracks, video({ track })));
+    protocol(() => nativePeerTesting.videoFrame(tracks, video({ width: 2 })));
     protocol(() =>
-      nativePeerTesting.parseVideo(
-        packet(
-          {
-            type: "video",
-            format: "BGRA",
-            track: "main_video",
-            width: 2,
-            height: 1,
-            dataLength: 4,
-            metadataLength: 0,
-            frameId: "1",
-            timestampMicros: "1",
-          },
-          [1, 2, 3, 4],
-        ),
-      ),
+      nativePeerTesting.videoFrame(tracks, video({ width: 0, data: new Uint8Array() })),
     );
+    for (const track of [0, 2])
+      protocol(() => nativePeerTesting.audioFrame(tracks, audio({ track })));
     protocol(() =>
-      nativePeerTesting.parseVideo(
-        packet(
-          {
-            type: "video",
-            format: "BGRA",
-            track: "main_video",
-            width: 1,
-            height: 1,
-            dataLength: 4,
-            metadataLength: 0,
-            frameId: 1,
-            timestampMicros: "1",
-          },
-          [1, 2, 3, 4],
-        ),
-      ),
+      nativePeerTesting.audioFrame(tracks, audio({ samples: Int16Array.of(1, 2, 3) })),
     );
+    protocol(() => nativePeerTesting.audioFrame(tracks, audio({ sampleRate: 0 })));
+  });
+
+  test("maps every native failure class and keeps its diagnostic out of the message", () => {
+    expect([3, -1, -2, -3, -4, -5, -6, -7, 2].map((status) => failureCode(status))).toEqual([
+      "Closed",
+      "InvalidInput",
+      "Native",
+      "Overflow",
+      "Protocol",
+      "SdpRejected",
+      "ChannelClosed",
+      "Native",
+      "Native",
+    ]);
+    const event = nativePeerTesting.parseEvent(
+      packet({ type: "error", status: -3, message: "native transport event queue overflowed" }),
+    );
+    expect(event).toMatchObject({
+      type: "error",
+      error: {
+        code: "Overflow",
+        message: "native peer failed (Overflow)",
+        context: { detail: { status: -3, message: "native transport event queue overflowed" } },
+      },
+    });
+    protocol(() => nativePeerTesting.parseEvent(packet({ type: "error", code: "Overflow" })));
     protocol(() => nativePeerTesting.parseEvent(packet({ type: "channel", channel: "data" })));
-    protocol(() =>
-      nativePeerTesting.parseAudio(
-        packet(
-          {
-            type: "audio",
-            format: "s16le",
-            track: "main_audio",
-            sampleRate: 48_000,
-            channels: 2,
-            samples: 3,
-          },
-          [1, 0, 2, 0, 3, 0],
-        ),
-      ),
-    );
   });
 
-  test("decodes signed little-endian PCM and validates snapshot counters", () => {
-    const audio = nativePeerTesting.parseAudio(
-      packet(
-        {
-          type: "audio",
-          format: "s16le",
-          track: "main_audio",
-          sampleRate: 48_000,
-          channels: 2,
-          samples: 4,
-        },
-        [1, 0, 0xfe, 0xff, 0x2c, 0x01, 0x70, 0xfe],
-      ),
-    );
-    expect([...audio.samples]).toEqual([1, -2, 300, -400]);
+  test("tells ICE failure from transport failure by the failed connection's candidate pairs", () => {
+    const local = { type: "local-candidate", candidateType: "host" };
+    const relay = { type: "local-candidate", candidateType: "relay" };
+    expect(
+      nativePeerTesting.connectionFailure([
+        local,
+        { type: "candidate-pair", state: "succeeded", nominated: false },
+      ]),
+    ).toMatchObject({ code: "TransportFailed" });
+    expect(
+      nativePeerTesting.connectionFailure([
+        { type: "candidate-pair", state: "failed", nominated: true },
+      ]),
+    ).toMatchObject({ code: "TransportFailed" });
+    expect(
+      nativePeerTesting.connectionFailure([
+        local,
+        relay,
+        local,
+        { type: "candidate-pair", state: "failed", nominated: false },
+        { type: "candidate-pair", state: "in-progress", nominated: false },
+      ]),
+    ).toMatchObject({
+      code: "IceFailed",
+      context: { detail: { pairs: 2, candidateTypes: ["host", "relay"] } },
+    });
+    expect(nativePeerTesting.connectionFailure([])).toMatchObject({
+      code: "IceFailed",
+      context: { detail: { pairs: 0, candidateTypes: [] } },
+    });
+  });
 
+  test("validates snapshot counters and converts 64-bit stat counters without precision loss", () => {
     expect(
       nativePeerTesting.parseSnapshot({
         closed: false,
@@ -146,9 +172,6 @@ describe("native packet parser", () => {
         deliveredAudio: "0",
       }),
     );
-  });
-
-  test("converts native 64-bit stat counters without precision loss", () => {
     const converted = nativePeerTesting.statsValue([
       {
         type: "candidate-pair",

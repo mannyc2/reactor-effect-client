@@ -247,7 +247,13 @@ export class Session {
         break;
       case "channel":
         if (!event.open) {
-          this.fail(c, new ReactorError("Disconnected", `${event.channel} channel closed`));
+          this.fail(
+            c,
+            new ReactorError("ChannelClosed", `${event.channel} channel closed`, {
+              generation: c.generation,
+              detail: { channel: event.channel },
+            }),
+          );
           break;
         }
         if (event.channel === "control") c.controlOpen = true;

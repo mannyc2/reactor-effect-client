@@ -1,54 +1,26 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import * as Effect from "effect/Effect";
 import {
   checkNativeBridge,
   encodeNativeJson,
+  encodeNativeText,
   NativeBridge,
   NativeCall,
   resolveNativeBridge,
   verifyStagedNativeBridge,
 } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";
-
-const libraryName =
-  process.platform === "darwin"
-    ? "libreactor_effect_native.dylib"
-    : process.platform === "win32"
-      ? "reactor_effect_native.dll"
-      : "libreactor_effect_native.so";
-const libraryPath = fileURLToPath(
-  new URL(`../lib/${process.platform}-${process.arch}/${libraryName}`, import.meta.url),
-);
-
-const compileFixture = (
-  body: string,
-  name: string,
-): { readonly directory: string; readonly path: string } => {
-  const directory = mkdtempSync(join(tmpdir(), "reactor-native-abi-"));
-  const source = join(directory, `${name}.c`);
-  const extension = process.platform === "darwin" ? "dylib" : "so";
-  const path = join(directory, `lib${name}.${extension}`);
-  writeFileSync(source, body);
-  const compiler = process.env.CC ?? "cc";
-  const flags = process.platform === "darwin" ? ["-dynamiclib"] : ["-shared", "-fPIC"];
-  const result = spawnSync(compiler, [...flags, source, "-o", path], { encoding: "utf8" });
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) throw new Error(`${compiler} failed: ${result.stderr}`);
-  return { directory, path };
-};
+import { compileFixture, compileLibrary, libraryName, libraryPath } from "./support.js";
 
 describe("native C ABI", () => {
   test("uses the same source-identified staged artifact as installed-package preflight", async () => {
     const manifest = await verifyStagedNativeBridge(libraryPath);
     expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(manifest.build).toMatchObject({
-      abiVersion: 2,
+      abiVersion: 3,
       profile: "release",
       sourceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
@@ -62,15 +34,13 @@ describe("native C ABI", () => {
     // the actual codec artifact is independently exercised by the other tests.
     const build = {
       schemaVersion: 1,
-      abiVersion: 2,
+      abiVersion: 3,
       profile: "release",
       sourceSha256: "0".repeat(64),
     };
     const identity = `reactor-effect-native:build-identity:${JSON.stringify(build)}:end`;
-    const source = readFileSync(new URL("./session-fixture.c", import.meta.url), "utf8");
     const fixture = compileFixture(
-      `#define REACTOR_EFFECT_FIXTURE_BUILD_IDENTITY ${JSON.stringify(identity)}\n${source}`,
-      "identity",
+      `#define REACTOR_EFFECT_FIXTURE_BUILD_IDENTITY ${JSON.stringify(identity)}\n`,
     );
     const directory = fixture.directory;
     const path = join(directory, libraryName),
@@ -131,22 +101,23 @@ describe("native C ABI", () => {
     }
   });
 
-  test("rejects ABI mismatch and missing required symbols before peer allocation", async () => {
+  test("rejects an ABI 2 library and missing required symbols before peer allocation", async () => {
     if (process.platform === "win32") return;
     const fixtures: string[] = [];
     try {
-      const wrong = compileFixture(
-        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 99; }\n",
-        "wrong_abi",
+      const previous = compileLibrary(
+        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 2; }\n",
+        "abi_two",
       );
-      fixtures.push(wrong.directory);
-      await expect(checkNativeBridge(wrong.path)).rejects.toMatchObject({
+      fixtures.push(previous.directory);
+      await expect(checkNativeBridge(previous.path)).rejects.toMatchObject({
         code: "Native",
+        message: "native WebRTC ABI mismatch: expected 3, received 2",
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
 
-      const missing = compileFixture(
-        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 2; }\n",
+      const missing = compileLibrary(
+        "#include <stdint.h>\nuint32_t reactor_effect_abi_version(void) { return 3; }\n",
         "missing_symbols",
       );
       fixtures.push(missing.directory);
@@ -159,15 +130,18 @@ describe("native C ABI", () => {
     }
   });
 
-  test("preflights, negotiates an offer, fences polls, and joins idempotently", async () => {
+  test("negotiates an offer, reports typed failure classes, fences takes, and joins idempotently", async () => {
     await checkNativeBridge(libraryPath);
-    const bridge = new NativeBridge(libraryPath);
+    const bridge = new NativeBridge(libraryPath, () => undefined);
     try {
-      // This error came back after entering the ABI. A native error code alone
-      // cannot establish execution history, unlike the local closed fence below.
+      // These errors came back after entering the ABI. A native failure class
+      // alone cannot establish execution history, unlike the local fence below.
       await expect(bridge.send("data", Uint8Array.of(1))).rejects.toMatchObject({
-        code: "Closed",
-        context: expect.objectContaining({ outcome: "unknown" }),
+        code: "ChannelClosed",
+        context: expect.objectContaining({
+          outcome: "unknown",
+          detail: expect.objectContaining({ channel: "data" }),
+        }),
       });
       const prepared = (await bridge.call(
         NativeCall.Prepare,
@@ -181,11 +155,24 @@ describe("native C ABI", () => {
       expect(prepared.mapping).toEqual([
         expect.objectContaining({ name: "video", kind: "video", direction: "recvonly" }),
       ]);
+      await expect(
+        bridge.call(NativeCall.Answer, encodeNativeText("v=0\r\nnot an answer\r\n")),
+      ).rejects.toMatchObject({
+        code: "SdpRejected",
+        context: expect.objectContaining({
+          outcome: "unknown",
+          detail: expect.objectContaining({ status: -5 }),
+        }),
+      });
+      await expect(bridge.call(NativeCall.Prepare, encodeNativeJson({}))).rejects.toMatchObject({
+        code: "InvalidInput",
+      });
 
       const snapshot = (await bridge.call(NativeCall.MediaSnapshot)) as {
         readonly closed?: unknown;
       };
       expect(snapshot.closed).toBe(false);
+      expect(bridge.takeEvent()).not.toBeNull();
 
       bridge.close();
       await expect(bridge.call(NativeCall.MediaSnapshot)).rejects.toMatchObject({
@@ -196,9 +183,9 @@ describe("native C ABI", () => {
         code: "Closed",
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
-      expect((await bridge.pollEvent(0))._tag).toBe("Closed");
-      expect((await bridge.pollVideo(0))._tag).toBe("Closed");
-      expect((await bridge.pollAudio(0))._tag).toBe("Closed");
+      expect(bridge.takeEvent()).toBeNull();
+      expect(bridge.takeVideo()).toBeNull();
+      expect(bridge.takeAudio()).toBeNull();
       await bridge.shutdown();
       await bridge.shutdown();
     } finally {
