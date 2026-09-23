@@ -291,7 +291,7 @@ const checked = (path: string): NativeApi => {
   if (api === undefined)
     throw ReactorError.fromCode(
       "InvalidState",
-      "native WebRTC bridge was not preflighted; run PeerFactory.check before make",
+      "native WebRTC bridge was not loaded; build Native.layer before making a peer",
       { outcome: "not-submitted" },
     );
   return api;

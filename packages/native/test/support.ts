@@ -3,6 +3,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { make as makeClient } from "reactor-effect-client";
+import type { Configuration } from "reactor-effect-client";
+import * as Native from "../src/index.js";
 
 export const libraryName =
   process.platform === "darwin"
@@ -54,3 +59,16 @@ export const until = async (
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+/**
+ * The canonical factory over the native peer, with its host layer built in the
+ * caller's scope, as `Reactor.layer(configuration).pipe(Layer.provide(Native.layer(options)))`
+ * does for an application.
+ */
+export const nativeClient = (
+  configuration: Configuration = {},
+  options: Native.NativeOptions = {},
+) =>
+  Layer.build(Native.layer(options)).pipe(
+    Effect.flatMap((peers) => makeClient(configuration).pipe(Effect.provide(peers))),
+  );

@@ -67,7 +67,7 @@ const clientLayer = Reactor.layer().pipe(
 const main = Effect.scoped(useSession).pipe(Effect.provide(clientLayer));
 ```
 
-`Native.make(configuration, nativeOptions)` and `Browser.make(configuration)` also construct the canonical factory with their host peer already selected. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement.
+Building a host layer is its preflight: `Native.layer()` loads and verifies the native library, and `Browser.layer` detects WebRTC, so an unsupported host fails while the layer is built, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement. A custom host provides `PeerFactory` itself: `make` returns a fresh `Peer` for each connection generation, and an optional `check` fails when the host cannot create one right now; the factory runs it before every remote allocation.
 
 Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams.
 

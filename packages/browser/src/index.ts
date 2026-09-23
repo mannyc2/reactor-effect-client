@@ -1,24 +1,22 @@
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
 import * as Layer from "effect/Layer";
-import * as Http from "effect/unstable/http/HttpClient";
 import type * as Scope from "effect/Scope";
-import { PeerFactory, make as makeClient } from "reactor-effect-client";
-import type { Configuration, Factory, ReactorError, Session } from "reactor-effect-client";
+import { PeerFactory } from "reactor-effect-client";
+import type { ReactorError, Session } from "reactor-effect-client";
 import { parsed, trackGeneration } from "reactor-effect-client/host";
 import type { TrackGeneration } from "reactor-effect-client/host";
 import { BrowserPeer, requireBrowserPeer } from "./_internal/peer.js";
 
-export const layer = Layer.succeed(PeerFactory, {
-  check: parsed(requireBrowserPeer),
-  make: () => new BrowserPeer(),
-});
-
-/** Browser peer selection; acquisition and cleanup remain owned by the client. */
-export const make = (
-  configuration: Configuration = {},
-): Effect.Effect<Factory, never, Http.HttpClient | Crypto.Crypto> =>
-  makeClient(configuration).pipe(Effect.provide(layer));
+/**
+ * Browser transport capability for the portable Client. Building the layer
+ * detects WebRTC support, so a host without it fails there, before any Client
+ * exists to allocate a remote session. Provide it to the client layer:
+ * `Reactor.layer(configuration).pipe(Layer.provide(Browser.layer))`.
+ */
+export const layer: Layer.Layer<PeerFactory, ReactorError> = Layer.effect(
+  PeerFactory,
+  parsed(requireBrowserPeer).pipe(Effect.as(PeerFactory.of({ make: () => new BrowserPeer() }))),
+);
 
 export interface MediaGeneration extends Omit<TrackGeneration, "track" | "publish"> {
   readonly track: (name: string) => Effect.Effect<MediaStreamTrack, ReactorError, Scope.Scope>;

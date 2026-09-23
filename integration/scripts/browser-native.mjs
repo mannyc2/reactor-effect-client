@@ -9,7 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Native from "reactor-effect-native";
-import { FetchHttp, ReactorError } from "reactor-effect-client";
+import { FetchHttp, ReactorError, make as makeClient } from "reactor-effect-client";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = resolve(process.argv[2] ?? join(root, "../.check/browser-native/browser.js"));
@@ -384,11 +384,12 @@ try {
   const result = await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const factory = yield* Native.make({
+        const peers = yield* Layer.build(Native.layer());
+        const factory = yield* makeClient({
           apiUrl: url,
           sdpPoll: { attempts: 200, initialMs: 50, maxMs: 200 },
           session: { connectTimeoutMs: 45_000, readyTimeoutMs: 45_000, commandTimeoutMs: 5000 },
-        });
+        }).pipe(Effect.provide(peers));
         const session = yield* factory.createConnected({ model: "fixture/native-browser" });
         const ready = yield* session.ready;
         assert(ready.remote.ownership === "owned", "native public session lost ownership");

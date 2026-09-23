@@ -47,8 +47,8 @@ const fixture = (
   const dependencies = Layer.mergeAll(
     Layer.succeed(Http.HttpClient, platform),
     NodeCrypto.layer,
+    // No check: a host whose layer build already validated it needs none.
     Layer.succeed(PeerFactory, {
-      check: Effect.void,
       make: () => {
         peers++;
         throw ReactorError.fromCode("InvalidState", "unexpected connection in allocation test");
@@ -183,7 +183,7 @@ test("closing an attached session does not clear or terminate the remote owner",
   expect(fake.calls).toEqual([]);
 });
 
-test("preflight refuses an unsupported peer before remote allocation", async () => {
+test("a host check that fails refuses before remote allocation", async () => {
   const fake = fixture();
   const result = await Effect.runPromise(
     Effect.result(

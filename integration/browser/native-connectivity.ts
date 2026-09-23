@@ -1,13 +1,20 @@
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Crypto from "effect/Crypto";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import type * as PlatformHttp from "effect/unstable/http/HttpClient";
-import { FetchHttp } from "reactor-effect-client";
-import type { ReactorFailure } from "reactor-effect-client";
+import { FetchHttp, make as makeClient } from "reactor-effect-client";
+import type { Configuration, ReactorFailure } from "reactor-effect-client";
 import * as Browser from "reactor-effect-browser";
 import * as W from "reactor-effect-client/wire";
 import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
+
+/** The canonical factory over the browser peer, its host layer built in the caller's scope. */
+const browserClient = (configuration: Configuration) =>
+  Layer.build(Browser.layer).pipe(
+    Effect.flatMap((peers) => makeClient(configuration).pipe(Effect.provide(peers))),
+  );
 
 type Mapping = {
   readonly name: string;
@@ -362,7 +369,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
     const result = await runBrowser(
       Effect.scoped(
         Effect.gen(function* () {
-          const factory = yield* Browser.make({
+          const factory = yield* browserClient({
             apiUrl: "http://browser.fixture",
             session: { commandTimeoutMs: 5000 },
           });
@@ -470,7 +477,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
     await runBrowser(
       Effect.scoped(
         Effect.gen(function* () {
-          const factory = yield* Browser.make({ apiUrl: "http://browser.fixture/failure" });
+          const factory = yield* browserClient({ apiUrl: "http://browser.fixture/failure" });
           const failed = yield* Effect.result(
             factory.createConnected({ model: "fixture/browser-failure" }),
           );
@@ -714,17 +721,13 @@ const post = async (path: string, body: unknown): Promise<void> => {
 const main = async (): Promise<void> => {
   let native: Awaited<ReturnType<typeof browserNativeCheck>> | undefined;
   try {
-    if (
-      typeof Browser.make !== "function" ||
-      typeof Browser.media !== "function" ||
-      Browser.layer === undefined
-    )
+    if (typeof Browser.media !== "function" || Browser.layer === undefined)
       throw new Error("bundled browser public entry did not load its host surface");
     const localPeer = await localBrowserPeerCheck();
     native = await browserNativeCheck();
     await post("/browser-report", {
       ok: true,
-      browserEntry: { make: "function", media: "function", layer: "present" },
+      browserEntry: { media: "function", layer: "present" },
       localPeer,
       native: native.report,
     });

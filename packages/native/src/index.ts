@@ -2,11 +2,9 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Crypto from "effect/Crypto";
-import type * as Http from "effect/unstable/http/HttpClient";
-import { PeerFactory, ReactorError, make as makeClient } from "reactor-effect-client";
-import type { Configuration, Factory, PeerFactoryShape, Session } from "reactor-effect-client";
-import { mediaGeneration } from "reactor-effect-client/host";
+import { PeerFactory, ReactorError } from "reactor-effect-client";
+import type { PeerFactoryShape, Session } from "reactor-effect-client";
+import { mediaGeneration, parsed } from "reactor-effect-client/host";
 import type { MediaGeneration } from "reactor-effect-client/host";
 import { NativeBridge, resolveNativeBridge } from "./_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "./_internal/peer.js";
@@ -24,58 +22,54 @@ export interface NativeOptions {
   readonly shutdownTimeout?: Duration.Input;
 }
 
-const factory = (options: NativeOptions): PeerFactoryShape => {
-  let resolved = options.libraryPath;
-  const shutdownTimeout = options.shutdownTimeout ?? defaultShutdownTimeout;
-  return {
-    check: Effect.tryPromise({
-      try: async () => {
-        // NaN decodes to zero, so it fails here with every other non-positive input.
-        if (
-          !Duration.fromInput(shutdownTimeout).pipe(
-            Option.exists(Duration.isGreaterThan(Duration.zero)),
-          )
-        )
-          throw ReactorError.fromCode(
-            "InvalidInput",
-            "native shutdownTimeout must be a positive duration",
-            { outcome: "not-submitted" },
-          );
-        resolved = await resolveNativeBridge(options.libraryPath);
-        NativeBridge.requireUsable(resolved);
-      },
-      catch: (cause) =>
-        ReactorError.is(cause)
-          ? cause
-          : ReactorError.fromCode("Native", "native WebRTC preflight failed", {
-              detail: cause,
-              outcome: "not-submitted",
-            }),
-    }),
-    make: () => {
-      if (resolved === undefined)
-        throw ReactorError.fromCode("InvalidState", "native WebRTC factory was not preflighted", {
-          outcome: "not-submitted",
-        });
-      return new NativePeer(resolved, shutdownTimeout);
-    },
-  };
-};
+const preflightError = (cause: unknown): ReactorError =>
+  ReactorError.is(cause)
+    ? cause
+    : ReactorError.fromCode("Native", "native WebRTC preflight failed", {
+        detail: cause,
+        outcome: "not-submitted",
+      });
 
 /**
- * Native transport capability for the portable Client. Koffi and the shared
- * library are loaded only when PeerFactory.check runs, so merely importing
- * this module remains safe when the optional native dependency is absent.
+ * Resolve, load and verify the native library once, as the layer is built;
+ * every peer the factory makes then uses that library.
  */
-export const layer = (options: NativeOptions = {}): Layer.Layer<PeerFactory> =>
-  Layer.succeed(PeerFactory, factory(options));
+const acquire = (options: NativeOptions): Effect.Effect<PeerFactoryShape, ReactorError> =>
+  Effect.gen(function* () {
+    const shutdownTimeout = options.shutdownTimeout ?? defaultShutdownTimeout;
+    // NaN decodes to zero, so it fails here with every other non-positive input.
+    if (
+      !Duration.fromInput(shutdownTimeout).pipe(
+        Option.exists(Duration.isGreaterThan(Duration.zero)),
+      )
+    )
+      return yield* ReactorError.fromCode(
+        "InvalidInput",
+        "native shutdownTimeout must be a positive duration",
+        { outcome: "not-submitted" },
+      );
+    const resolved = yield* Effect.tryPromise({
+      try: () => resolveNativeBridge(options.libraryPath),
+      catch: preflightError,
+    });
+    return PeerFactory.of({
+      // The library stays loaded, but an owner join that outlived its deadline
+      // may have wedged its shared libwebrtc factory: refuse before allocation.
+      check: parsed(() => NativeBridge.requireUsable(resolved)),
+      make: () => new NativePeer(resolved, shutdownTimeout),
+    });
+  });
 
-/** Select the native peer while retaining the same scoped session contract. */
-export const make = (
-  configuration: Configuration = {},
-  options: NativeOptions = {},
-): Effect.Effect<Factory, never, Http.HttpClient | Crypto.Crypto> =>
-  makeClient(configuration).pipe(Effect.provide(layer(options)));
+/**
+ * Native transport capability for the portable Client. Building the layer
+ * loads Koffi and the shared library and verifies the staged artifact, so an
+ * unsupported host fails there, before any Client exists to allocate a remote
+ * session. Merely importing this module stays safe when the optional native
+ * dependency is absent. Provide it to the client layer:
+ * `Reactor.layer(configuration).pipe(Layer.provide(Native.layer(options)))`.
+ */
+export const layer = (options: NativeOptions = {}): Layer.Layer<PeerFactory, ReactorError> =>
+  Layer.effect(PeerFactory, acquire(options));
 
 /** Acquire the current decoded-media generation after session.connect succeeds. */
 export const media = (session: Session): Effect.Effect<MediaGeneration, ReactorError> =>

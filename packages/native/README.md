@@ -10,7 +10,7 @@ This is not an official Reactor SDK. Native WebRTC dependencies are attributed i
 npm install reactor-effect-client reactor-effect-native effect@4.0.0-rc.115 @effect/platform-node@4.0.0-rc.115
 ```
 
-`reactor-effect-client` and Effect `4.0.0-rc.115` are exact peer dependencies. Koffi is an optional dependency; it and the shared library are loaded only when native preflight runs, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation; a consumer using that prerelease should retain the root override `"@effect/platform-node-shared": "4.0.0-rc.115"`, because the platform's caret range otherwise permits a later prerelease with a different Effect peer.
+`reactor-effect-client` and Effect `4.0.0-rc.115` are exact peer dependencies. Koffi is an optional dependency; it and the shared library are loaded only when `Native.layer()` is built, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation; a consumer using that prerelease should retain the root override `"@effect/platform-node-shared": "4.0.0-rc.115"`, because the platform's caret range otherwise permits a later prerelease with a different Effect peer.
 
 ## Usage
 
@@ -25,7 +25,7 @@ const clientLayer = Reactor.layer().pipe(
 );
 ```
 
-`Native.make(configuration, nativeOptions)` constructs the canonical factory with the native peer already selected, and `Native.layer(nativeOptions)` supplies the `PeerFactory` for `Reactor.layer()`. Constructing a factory makes no allocation. `nativeOptions.libraryPath` can select a staged native artifact; its caller owns artifact provenance. `nativeOptions.shutdownTimeout`, a `Duration.Input` of 10 seconds by default, bounds how long closing a connection waits for the native owner join (see [Media path](#media-path-abi-3)). The separate `Native.uploadFile` helper requires the host file services when used.
+`Native.layer(nativeOptions)` supplies the `PeerFactory` for `Reactor.layer()`. Building it loads Koffi and the library and verifies the staged artifact once, so a missing or invalid library fails the layer with a `Native` error, and an invalid option with `InvalidInput`, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. `nativeOptions.libraryPath` can select a staged native artifact; its caller owns artifact provenance. `nativeOptions.shutdownTimeout`, a `Duration.Input` of 10 seconds by default, bounds how long closing a connection waits for the native owner join (see [Media path](#media-path-abi-3)). The separate `Native.uploadFile` helper requires the host file services when used.
 
 `Native.media(session)` obtains a decoded-media generation after the session connects. `media.video(name)` emits owned BGRA frames and `media.audio(name)` emits owned interleaved signed 16-bit PCM. Frame IDs and microsecond timestamps use `bigint`. Retaining a frame retains JavaScript-owned bytes, and native media has no browser track handles. Media values stay bound to their negotiated generation: a reconnect creates a new generation and existing readers end or fail with their source.
 

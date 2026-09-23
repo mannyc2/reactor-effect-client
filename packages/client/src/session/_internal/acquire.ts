@@ -124,7 +124,7 @@ export const makeFactory = (
             }),
           ),
         );
-        yield* restore(peers.check);
+        if (peers.check !== undefined) yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
           Effect.mapError((cause) =>
             ReactorError.fromCode("InvalidState", "could not allocate a request identity", {

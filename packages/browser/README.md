@@ -14,15 +14,20 @@ npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.115
 
 ## Usage
 
-`Browser.make(configuration)` constructs the canonical factory with the browser peer selected; `Browser.layer` supplies the `PeerFactory` for `Reactor.layer()`. Constructing a factory makes no allocation. Effect HTTP and crypto services remain explicit.
+`Browser.layer` supplies the `PeerFactory` for `Reactor.layer()`. Constructing a factory makes no allocation. Effect HTTP and crypto services remain explicit.
 
 ```ts
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
+import * as Reactor from "reactor-effect-client";
 import * as Browser from "reactor-effect-browser";
+
+const clientLayer = Reactor.layer({ apiUrl: "https://api.reactor.inc" }).pipe(
+  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, Browser.layer)),
+);
 
 const useTrack = Effect.scoped(
   Effect.gen(function* () {
-    const client = yield* Browser.make({ apiUrl: "https://api.reactor.inc" });
+    const client = yield* Reactor.Client;
     const session = yield* client.createConnected({ model: "your-model" });
     const media = yield* Browser.media(session);
     return yield* media.track("main_video");
@@ -30,11 +35,13 @@ const useTrack = Effect.scoped(
 );
 ```
 
+The application also provides Effect's `Crypto` service, backed by Web Crypto.
+
 `Browser.media(session)` obtains the negotiated generation; `media.track(name)` acquires a scoped `MediaStreamTrack`, and `media.publish(name, track)` publishes through that generation. Media values stay bound to the generation that negotiated them. A reconnect creates a new generation; existing readers end or fail with their source, and applications obtain the new generation explicitly.
 
 The entry point also exports `videoFrames`, `audioSamples`, `webAudioSamples`, `audioContext`, `play`, `nextPresentation` and the `Recording` namespace, whose `downloadClip` transfers a prepared recording within a caller wall deadline.
 
-If the host lacks `RTCPeerConnection`, `Browser.make` fails with `UnsupportedHost` before any coordinator request is made.
+If the host lacks `RTCPeerConnection` or `MediaStream`, building `Browser.layer` fails with `UnsupportedHost`, before any coordinator request can be made.
 
 ## Development
 

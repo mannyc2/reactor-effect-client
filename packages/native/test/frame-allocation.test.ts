@@ -19,7 +19,7 @@ import { checkNativeBridge, NativeBridge } from "../src/_internal/bridge.js";
 import type { NativeVideo } from "../src/_internal/bridge.js";
 import * as Native from "../src/index.js";
 import { compileFrameFixture, expectedPixel } from "./frame-fixture.js";
-import { compileFixture } from "./support.js";
+import { compileFixture, nativeClient } from "./support.js";
 
 /*
  * The allocation budget for decoded video on the JavaScript side. The native
@@ -198,7 +198,7 @@ describe("decoded video allocation budget", () => {
       const video = await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make(
+            const factory = yield* nativeClient(
               { apiUrl: "https://coordinator.fixture" },
               { libraryPath: compiled.path },
             );

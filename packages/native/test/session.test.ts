@@ -17,7 +17,7 @@ import { FetchHttp } from "reactor-effect-client";
 import type { ReactorFailure } from "reactor-effect-client";
 import * as Native from "../src/index.js";
 import type { UploadReference } from "reactor-effect-client/wire";
-import { compileFixture, until } from "./support.js";
+import { compileFixture, nativeClient, until } from "./support.js";
 
 const sessionId = "sess_native_fixture";
 const descriptor = (id: string) => ({
@@ -88,7 +88,7 @@ describe("native canonical session boundary", () => {
       const result = await runClient(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make(
+            const factory = yield* nativeClient(
               {
                 apiUrl: "https://coordinator.fixture",
                 session: { maxPending: 32 },
@@ -210,7 +210,7 @@ describe("native canonical session boundary", () => {
       const result = await runClient(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* Native.make({ apiUrl: "https://coordinator.fixture" }, options);
+            const factory = yield* nativeClient({ apiUrl: "https://coordinator.fixture" }, options);
             const client = yield* factory.create(create);
             yield* client.connect;
             hold(1);
@@ -280,26 +280,21 @@ describe("native canonical session boundary", () => {
     }
   }, 15_000);
 
-  test("rejects a shutdown deadline that is not a positive duration before allocating", async () => {
+  test("rejects a shutdown deadline that is not a positive duration when the layer is built", async () => {
     if (process.platform === "win32") return;
     const compiled = compileFixture();
     const remote = coordinator();
     try {
       for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
+        // No Client can exist, so nothing can allocate a remote session.
         const result = await runClient(
           Effect.scoped(
-            Effect.gen(function* () {
-              const factory = yield* Native.make(
+            Effect.result(
+              nativeClient(
                 { apiUrl: "https://coordinator.fixture" },
                 { libraryPath: compiled.path, shutdownTimeout: shutdownTimeout as Duration.Input },
-              );
-              return yield* Effect.result(
-                factory.create({
-                  model: "fixture/native-session",
-                  jwt: Redacted.make("fixture-token"),
-                }),
-              );
-            }),
+              ),
+            ),
           ),
           remote.fetch,
         );
@@ -314,5 +309,27 @@ describe("native canonical session boundary", () => {
     } finally {
       rmSync(compiled.directory, { recursive: true, force: true });
     }
+  });
+
+  test("fails to build the layer, before any allocation, when the library cannot load", async () => {
+    const remote = coordinator();
+    const result = await runClient(
+      Effect.scoped(
+        Effect.result(
+          nativeClient(
+            { apiUrl: "https://coordinator.fixture" },
+            { libraryPath: "/nonexistent/libreactor_effect_native.so" },
+          ),
+        ),
+      ),
+      remote.fetch,
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure")
+      expect(result.failure).toMatchObject({
+        reason: expect.objectContaining({ _tag: "Native" }),
+        context: expect.objectContaining({ outcome: "not-submitted" }),
+      });
+    expect(remote.allocated).toEqual([]);
   });
 });
