@@ -2,6 +2,11 @@
 //!
 //! Every entry point catches panics, since unwinding into C is undefined: a
 //! caught panic reports a native failure.
+//!
+//! A misaligned pointer argument is invalid input, and a length over its bound
+//! is an overflow. Both are refused before any caller memory is touched, so
+//! the `# Safety` sections below constrain only aligned pointers and lengths
+//! within their bounds.
 
 mod memory;
 #[cfg(test)]
@@ -9,7 +14,10 @@ mod tests;
 
 pub use crate::peer::ReactorEffectPeer;
 
-use crate::abi::{ABI_VERSION, CALL_BUFFER_MIN, FAILURE_MESSAGE_BYTES, MAX_REQUEST_BYTES, Status};
+use crate::abi::{
+    ABI_VERSION, CALL_BUFFER_MIN, FAILURE_MESSAGE_BYTES, MAX_MESSAGE_BYTES, MAX_REQUEST_BYTES,
+    Status,
+};
 use crate::error::{BridgeError, FailureClass};
 use crate::sync::Taken;
 use memory::{Out, OutSlice, input, peer_ref};
@@ -126,10 +134,11 @@ pub extern "C" fn reactor_effect_build_identity() -> *const c_char {
     BUILD_IDENTITY.as_ptr()
 }
 
-/// Allocate a peer, or return null when its threads cannot start. When
-/// `notify` is non-null, a notifier thread calls it with the readiness bits of
-/// the queues that received items since its previous call, until shutdown
-/// joins that thread.
+/// Allocate a peer, or return null when its threads cannot start.
+///
+/// When `notify` is non-null, a notifier thread calls it with the readiness
+/// bits of the queues that received items since its previous call, until
+/// shutdown joins that thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn reactor_effect_peer_create(
     notify: Option<ReactorEffectNotify>,
@@ -146,10 +155,10 @@ pub extern "C" fn reactor_effect_peer_create(
 ///
 /// # Safety
 /// `peer` must be null or a live handle from [`reactor_effect_peer_create`].
-/// A nonzero `request_len` needs `request` valid for reads of that many
-/// bytes. A non-null `response` must be valid for writes of `response_cap`
-/// bytes, a non-null `response_len` for one `usize`, and a non-null `failure`
-/// for one [`ReactorEffectFailure`].
+/// A nonzero `request_len` of at most 1 MiB needs `request` valid for reads of
+/// that many bytes. A non-null `response` must be valid for writes of
+/// `response_cap` bytes, a non-null `response_len` for one `usize`, and a
+/// non-null `failure` for one [`ReactorEffectFailure`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reactor_effect_peer_call(
     peer: *mut ReactorEffectPeer,
@@ -166,11 +175,12 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
     // SAFETY: a non-null `response_len` is writable for the call.
     let response_len = unsafe { Out::new(response_len) };
     // SAFETY: a non-null `response` is writable for `response_cap` bytes.
-    let mut response = unsafe { OutSlice::new(response, response_cap) };
+    let response = unsafe { OutSlice::new(response, response_cap) };
     status_of(failure, || {
         // SAFETY: `peer` is null or live for the call.
         let peer = unsafe { peer_ref(peer) }?;
-        let Some(mut response_len) = response_len.filter(|_| !response.is_null()) else {
+        let mut response = response?;
+        let Some(mut response_len) = response_len?.filter(|_| !response.is_null()) else {
             return Err(BridgeError::invalid("call requires a response buffer"));
         };
         response_len.write(0);
@@ -178,11 +188,9 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
             response_len.write(CALL_BUFFER_MIN);
             return Ok(Status::BufferTooSmall);
         }
-        // SAFETY: a nonzero `request_len` makes `request` readable for it.
-        let request = unsafe { input(request, request_len) }?;
-        if request.len() > MAX_REQUEST_BYTES {
-            return Err(BridgeError::overflow("native request exceeds 1 MiB"));
-        }
+        // SAFETY: a nonzero `request_len` within its bound makes `request`
+        // readable for it.
+        let request = unsafe { input(request, request_len, MAX_REQUEST_BYTES) }?;
         let bytes = peer.call(operation, request)?;
         if !response.holds(bytes.len()) {
             return Err(BridgeError::overflow(
@@ -199,8 +207,9 @@ pub unsafe extern "C" fn reactor_effect_peer_call(
 ///
 /// # Safety
 /// `peer` must be null or a live handle from [`reactor_effect_peer_create`].
-/// A nonzero `data_len` needs `data` valid for reads of that many bytes, and a
-/// non-null `failure` must be writable for one [`ReactorEffectFailure`].
+/// A nonzero `data_len` of at most 256 KiB needs `data` valid for reads of
+/// that many bytes, and a non-null `failure` must be writable for one
+/// [`ReactorEffectFailure`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reactor_effect_peer_send(
     peer: *mut ReactorEffectPeer,
@@ -214,8 +223,9 @@ pub unsafe extern "C" fn reactor_effect_peer_send(
     status_of(failure, || {
         // SAFETY: `peer` is null or live for the call.
         let peer = unsafe { peer_ref(peer) }?;
-        // SAFETY: a nonzero `data_len` makes `data` readable for it.
-        let bytes = unsafe { input(data, data_len) }?;
+        // SAFETY: a nonzero `data_len` within its bound makes `data` readable
+        // for it.
+        let bytes = unsafe { input(data, data_len, MAX_MESSAGE_BYTES) }?;
         peer.send(channel, bytes)?;
         Ok(Status::Ok)
     })
@@ -240,11 +250,12 @@ pub unsafe extern "C" fn reactor_effect_peer_take_event(
     let out_len = unsafe { Out::new(out_len) };
     // SAFETY: a nonzero `out_cap` makes `out` writable for it; `holds` never
     // accepts bytes for a null `out`.
-    let mut out = unsafe { OutSlice::new(out, out_cap) };
-    status_of(None, || {
+    let out = unsafe { OutSlice::new(out, out_cap) };
+    status_of(Ok(None), || {
         // SAFETY: `peer` is null or live for the call.
         let peer = unsafe { peer_ref(peer) }?;
-        let Some(mut out_len) = out_len else {
+        let mut out = out?;
+        let Some(mut out_len) = out_len? else {
             return Err(BridgeError::invalid("take_event requires out_len"));
         };
         if out_cap != 0 && out.is_null() {
@@ -272,9 +283,10 @@ pub unsafe extern "C" fn reactor_effect_peer_take_event(
     })
 }
 
-/// Nonblocking: copy the oldest decoded frame into caller memory and remove
-/// it. The header is written for `OK` and for `BUFFER_TOO_SMALL`, which keeps
-/// the frame queued; a null `bgra` asks for the header alone.
+/// Nonblocking: copy the oldest decoded frame into caller memory and remove it.
+///
+/// The header is written for `OK` and for `BUFFER_TOO_SMALL`, which keeps the
+/// frame queued; a null `bgra` asks for the header alone.
 ///
 /// # Safety
 /// `peer` must be null or a live handle from [`reactor_effect_peer_create`].
@@ -293,13 +305,14 @@ pub unsafe extern "C" fn reactor_effect_peer_take_video(
     // SAFETY: a non-null `header` is writable for the call.
     let header = unsafe { Out::new(header) };
     // SAFETY: a non-null `bgra` is writable for `bgra_cap` bytes.
-    let mut bgra = unsafe { OutSlice::new(bgra, bgra_cap) };
+    let bgra = unsafe { OutSlice::new(bgra, bgra_cap) };
     // SAFETY: a non-null `metadata` is writable for `metadata_cap` bytes.
-    let mut metadata = unsafe { OutSlice::new(metadata, metadata_cap) };
-    status_of(None, || {
+    let metadata = unsafe { OutSlice::new(metadata, metadata_cap) };
+    status_of(Ok(None), || {
         // SAFETY: `peer` is null or live for the call.
         let peer = unsafe { peer_ref(peer) }?;
-        let Some(mut header) = header else {
+        let (mut bgra, mut metadata) = (bgra?, metadata?);
+        let Some(mut header) = header? else {
             return Err(BridgeError::invalid("take_video requires a header"));
         };
         let taken = peer.shared().video.take(|frame| {
@@ -319,9 +332,10 @@ pub unsafe extern "C" fn reactor_effect_peer_take_video(
     })
 }
 
-/// Nonblocking: copy the oldest PCM block (native-endian interleaved
-/// `int16_t`) into caller memory and remove it. The header is written for
-/// `OK` and for `BUFFER_TOO_SMALL`; a null `pcm` asks for the header alone.
+/// Nonblocking: copy the oldest PCM block into caller memory and remove it.
+///
+/// The block is native-endian interleaved `int16_t`. The header is written
+/// for `OK` and for `BUFFER_TOO_SMALL`; a null `pcm` asks for the header alone.
 ///
 /// # Safety
 /// `peer` must be null or a live handle from [`reactor_effect_peer_create`].
@@ -337,11 +351,12 @@ pub unsafe extern "C" fn reactor_effect_peer_take_audio(
     // SAFETY: a non-null `header` is writable for the call.
     let header = unsafe { Out::new(header) };
     // SAFETY: a non-null `pcm` is writable for `pcm_cap` samples.
-    let mut pcm = unsafe { OutSlice::new(pcm, pcm_cap) };
-    status_of(None, || {
+    let pcm = unsafe { OutSlice::new(pcm, pcm_cap) };
+    status_of(Ok(None), || {
         // SAFETY: `peer` is null or live for the call.
         let peer = unsafe { peer_ref(peer) }?;
-        let Some(mut header) = header else {
+        let mut pcm = pcm?;
+        let Some(mut header) = header? else {
             return Err(BridgeError::invalid("take_audio requires a header"));
         };
         let taken = peer.shared().audio.take(|block| {
@@ -407,7 +422,9 @@ pub unsafe extern "C" fn reactor_effect_peer_shutdown(
 /// native owner alone does not establish that.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reactor_effect_peer_destroy(peer: *mut ReactorEffectPeer) {
-    if peer.is_null() {
+    // A misaligned pointer never came from `reactor_effect_peer_create`, and
+    // this call has no status to refuse it with.
+    if peer.is_null() || !peer.is_aligned() {
         return;
     }
     // SAFETY: `peer` came from `Box::into_raw` in `reactor_effect_peer_create`,
@@ -429,11 +446,16 @@ fn discard_panic(body: impl FnOnce()) {
 
 /// The status of an entry point's body. A failure's diagnostic goes to
 /// `failure` when the caller passed one, and a caught panic is a native
-/// failure.
+/// failure. A misaligned `failure` fails the call before the body runs, since
+/// it cannot hold its own diagnostic.
 fn status_of(
-    failure: Option<Out<ReactorEffectFailure>>,
+    failure: Result<Option<Out<ReactorEffectFailure>>, BridgeError>,
     body: impl FnOnce() -> Result<Status, BridgeError>,
 ) -> i32 {
+    let failure = match failure {
+        Ok(failure) => failure,
+        Err(misaligned) => return misaligned.class.status().code(),
+    };
     let error = match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(status)) => return status.code(),
         Ok(Err(error)) => error,

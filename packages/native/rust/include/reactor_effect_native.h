@@ -16,6 +16,10 @@ typedef struct ReactorEffectPeer ReactorEffectPeer;
  * Non-negative statuses are outcomes. Negative statuses are failure classes;
  * the set is closed for this ABI, and a host maps each class to its own error
  * type. Diagnostic text travels beside a class in ReactorEffectFailure.
+ *
+ * A misaligned pointer argument fails with INVALID_INPUT without being used.
+ * A request over 1 MiB or a message over 256 KiB fails with OVERFLOW without
+ * being read.
  */
 enum ReactorEffectStatus {
   REACTOR_EFFECT_OK = 0,

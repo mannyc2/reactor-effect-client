@@ -10,7 +10,7 @@ mod shared;
 pub(crate) use media::{AudioItem, VideoItem};
 pub(crate) use shared::Shared;
 
-use crate::abi::{Channel, MAX_MESSAGE_BYTES, Operation};
+use crate::abi::{Channel, Operation};
 use crate::error::{BridgeError, FailureClass};
 use crate::ffi::ReactorEffectNotify;
 use crate::protocol;
@@ -106,14 +106,10 @@ impl ReactorEffectPeer {
         }
     }
 
-    /// Send one binary message on a bridge data channel.
+    /// Send one binary message on a bridge data channel. The C ABI has already
+    /// held it to `MAX_MESSAGE_BYTES`.
     pub(crate) fn send(&self, channel: u32, bytes: &[u8]) -> Result<(), BridgeError> {
         self.ensure_open()?;
-        if bytes.len() > MAX_MESSAGE_BYTES {
-            return Err(BridgeError::overflow(format!(
-                "data channel message exceeds {MAX_MESSAGE_BYTES} bytes"
-            )));
-        }
         let channel = Channel::try_from(channel)?;
         self.on_owner(|reply| Command::Send {
             channel,

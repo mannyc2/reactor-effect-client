@@ -25,6 +25,10 @@
 
 mod abi;
 mod error;
+#[expect(
+    unsafe_code,
+    reason = "the C ABI exports symbols and turns caller pointers into checked views"
+)]
 pub mod ffi;
 mod peer;
 mod protocol;

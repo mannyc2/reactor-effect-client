@@ -38,13 +38,8 @@ fn a_closed_peer_refuses_calls_and_sends_before_parsing_them() {
 }
 
 #[test]
-fn a_send_is_checked_for_size_then_channel_then_open_state() {
+fn a_send_is_checked_for_channel_then_open_state() {
     let peer = ReactorEffectPeer::create(None).expect("a peer");
-    let oversized = vec![0; MAX_MESSAGE_BYTES + 1];
-    assert_eq!(
-        peer.send(99, &oversized).unwrap_err().class,
-        FailureClass::Overflow
-    );
     assert_eq!(
         peer.send(99, b"").unwrap_err(),
         BridgeError::invalid("unknown data channel")

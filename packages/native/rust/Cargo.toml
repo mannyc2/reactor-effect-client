@@ -26,6 +26,9 @@ trivial_numeric_casts = "warn"
 unused_lifetimes = "warn"
 # A foreign function that may unwind must not be called as if it cannot.
 ffi_unwind_calls = "warn"
+# unsafe code lives only behind the C ABI: `ffi` is the one module that
+# expects this lint.
+unsafe_code = "warn"
 
 # pedantic, plus restriction and nursery lints chosen one at a time. Lints
 # that never fire still guard against the pattern arriving later.
@@ -94,10 +97,27 @@ print_stderr = "warn"
 # A module with children is `name.rs` beside `name/`, never `name/mod.rs`.
 mod_module_files = "warn"
 
+# Keep one way of writing each of these, as the code already does.
+clone_on_ref_ptr = "warn"
+empty_structs_with_brackets = "warn"
+equatable_if_let = "warn"
+if_then_some_else_none = "warn"
+needless_pass_by_ref_mut = "warn"
+redundant_clone = "warn"
+redundant_type_annotations = "warn"
+str_to_string = "warn"
+tests_outside_test_module = "warn"
+too_long_first_doc_paragraph = "warn"
+use_self = "warn"
+
 # Don't allow your way around these lints: a suppression is an
 # #[expect(lint, reason = "...")], which fails once nothing needs it.
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+
+[lints.rustdoc]
+missing_crate_level_docs = "warn"
+unescaped_backticks = "warn"
 
 [profile.release]
 lto = "thin"

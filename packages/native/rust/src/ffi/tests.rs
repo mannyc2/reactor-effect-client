@@ -159,6 +159,7 @@ const AGAIN: i32 = Status::Again.code();
 const BUFFER_TOO_SMALL: i32 = Status::BufferTooSmall.code();
 const CLOSED: i32 = Status::Closed.code();
 const INVALID_INPUT: i32 = Status::InvalidInput.code();
+const OVERFLOW: i32 = Status::Overflow.code();
 
 #[test]
 fn c_structs_match_the_header_layout() {
@@ -559,6 +560,133 @@ fn a_null_handle_or_required_pointer_is_invalid_input() {
         ],
         [INVALID_INPUT; 5]
     );
+}
+
+#[test]
+fn a_length_over_its_bound_is_refused_before_caller_memory_is_read() {
+    let peer = TestPeer::new();
+    // Nothing is readable at a dangling address, so only the bound checks
+    // keep these calls from reading it.
+    let nowhere = NonNull::<u8>::dangling().as_ptr();
+    let mut response = vec![0u8; CALL_BUFFER_MIN];
+    let mut len = 0usize;
+    let mut failure = ReactorEffectFailure::new("");
+
+    // SAFETY: the handle is live and the buffers are writable; a request
+    // length over its bound is refused before `request` is read.
+    let call = unsafe {
+        reactor_effect_peer_call(
+            peer.handle(),
+            Operation::Prepare as u32,
+            nowhere,
+            MAX_REQUEST_BYTES + 1,
+            response.as_mut_ptr(),
+            response.len(),
+            &raw mut len,
+            &raw mut failure,
+        )
+    };
+    assert_eq!(call, OVERFLOW);
+    // SAFETY: the handle is live; a message length over its bound is refused
+    // before `data` is read.
+    let send = unsafe {
+        reactor_effect_peer_send(
+            peer.handle(),
+            Channel::Data as u32,
+            nowhere,
+            MAX_MESSAGE_BYTES + 1,
+            &raw mut failure,
+        )
+    };
+    assert_eq!(
+        (send, text(&failure)),
+        (
+            OVERFLOW,
+            "input of 262145 bytes exceeds its 262144-byte bound"
+        )
+    );
+}
+
+/// A pointer one byte into `words`, misaligned for any type wider than a byte.
+fn misaligned<T>(words: &mut [u64]) -> *mut T {
+    words.as_mut_ptr().cast::<u8>().wrapping_add(1).cast()
+}
+
+#[test]
+fn a_misaligned_pointer_is_invalid_input_and_nothing_is_written() {
+    let peer = TestPeer::new();
+    let mut words = [0u64; 8];
+    let mut response = vec![0u8; CALL_BUFFER_MIN];
+    let mut len = usize::MAX;
+    let mut audio_header = ReactorEffectAudioHeader::default();
+
+    // SAFETY: the handle is live and the buffers are writable; the misaligned
+    // failure pointer fails the call before its body runs.
+    let call = unsafe {
+        reactor_effect_peer_call(
+            peer.handle(),
+            Operation::MediaSnapshot as u32,
+            ptr::null(),
+            0,
+            response.as_mut_ptr(),
+            response.len(),
+            &raw mut len,
+            misaligned(&mut words),
+        )
+    };
+    assert_eq!((call, len), (INVALID_INPUT, usize::MAX), "the call ran");
+    // SAFETY: the handle is live; the misaligned response length is refused.
+    let response_len = unsafe {
+        reactor_effect_peer_call(
+            peer.handle(),
+            Operation::MediaSnapshot as u32,
+            ptr::null(),
+            0,
+            response.as_mut_ptr(),
+            response.len(),
+            misaligned(&mut words),
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: the handle is live; the misaligned length pointer is refused.
+    let event = unsafe {
+        reactor_effect_peer_take_event(peer.handle(), ptr::null_mut(), 0, misaligned(&mut words))
+    };
+    // SAFETY: the handle is live; the misaligned header is refused.
+    let video = unsafe {
+        reactor_effect_peer_take_video(
+            peer.handle(),
+            misaligned(&mut words),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    // SAFETY: the handle is live; the misaligned sample buffer is refused.
+    let audio = unsafe {
+        reactor_effect_peer_take_audio(
+            peer.handle(),
+            &raw mut audio_header,
+            misaligned(&mut words),
+            4,
+        )
+    };
+    // SAFETY: a misaligned handle is refused before it is dereferenced.
+    let send = unsafe {
+        reactor_effect_peer_send(misaligned(&mut words), 0, ptr::null(), 0, ptr::null_mut())
+    };
+    // SAFETY: as above.
+    let shutdown = unsafe { reactor_effect_peer_shutdown(misaligned(&mut words), ptr::null_mut()) };
+    assert_eq!(
+        [response_len, event, video, audio, send, shutdown],
+        [INVALID_INPUT; 6]
+    );
+    // SAFETY: closing or destroying a misaligned handle does nothing.
+    unsafe { reactor_effect_peer_close(misaligned(&mut words)) };
+    // SAFETY: as above.
+    unsafe { reactor_effect_peer_destroy(misaligned(&mut words)) };
+    assert_eq!(words, [0; 8], "a misaligned pointer was written");
 }
 
 #[test]
