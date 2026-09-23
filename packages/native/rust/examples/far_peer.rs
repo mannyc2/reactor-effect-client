@@ -14,6 +14,11 @@
 //! --fps, every frame carrying a 16-byte metadata user_data of [wall-clock
 //! microseconds u64 LE][sequence u64 LE], plus 10 ms blocks of 48 kHz mono PCM.
 //! Both data channels echo every binary message. Closing stdin ends the process.
+//!
+//! Each connection holds its congestion controller at LOAD_BPS. On loopback its
+//! estimate follows only how promptly the host schedules both processes, and on
+//! a busy runner it backs off until the encoder drops most frames; the load
+//! tests need the load they name.
 
 use reactor_webrtc::{
     AudioFrame, AudioTrack, AudioTrackOptions, AudioTrackSource, DataChannel, IceCandidate,
@@ -28,6 +33,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const LOAD_BPS: i32 = 8_000_000;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
@@ -157,6 +164,8 @@ impl Session {
         let peer = factory
             .create_peer_connection(&RtcConfiguration::default(), observer)
             .expect("far peer connection");
+        peer.set_bitrate(Some(LOAD_BPS), Some(LOAD_BPS), Some(LOAD_BPS))
+            .expect("far peer bitrate");
         peer.set_remote_description(&SessionDescription {
             kind: SdpType::Offer,
             sdp: offer,
@@ -183,7 +192,7 @@ impl Session {
                 .expect("send direction");
             if transceiver.kind() == MediaKind::Video {
                 transceiver
-                    .set_send_bitrate(Some(300_000), Some(8_000_000))
+                    .set_send_bitrate(Some(300_000), Some(LOAD_BPS))
                     .expect("video bitrate");
             }
         }

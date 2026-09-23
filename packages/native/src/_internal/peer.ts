@@ -49,6 +49,9 @@ const statsBigInts = new Set([
 ]);
 // Bound on reading statistics to classify a failed connection.
 const CLASSIFY_TIMEOUT_MS = 2000;
+// Every raw media subscriber is bounded to these; the pumps' batches follow them.
+const VIDEO_CAPACITY = 4;
+const AUDIO_CAPACITY = 128;
 
 const validateNativeTracks = (tracks: readonly Track[]): void => {
   const incomingVideo = tracks.filter(
@@ -357,7 +360,10 @@ export class NativePeer implements Peer {
           Effect.try({
             try: () => {
               this.requireIncoming(name, "video");
-              return this.videoFeed(name).stream({ capacity: 4, maxBytes: 64 * 1024 * 1024 });
+              return this.videoFeed(name).stream({
+                capacity: VIDEO_CAPACITY,
+                maxBytes: 64 * 1024 * 1024,
+              });
             },
             catch: (cause) => nativeError(cause, "native video track"),
           }),
@@ -367,7 +373,10 @@ export class NativePeer implements Peer {
           Effect.try({
             try: () => {
               this.requireIncoming(name, "audio");
-              return this.audioFeed(name).stream({ capacity: 128, maxBytes: 4 * 1024 * 1024 });
+              return this.audioFeed(name).stream({
+                capacity: AUDIO_CAPACITY,
+                maxBytes: 4 * 1024 * 1024,
+              });
             },
             catch: (cause) => nativeError(cause, "native audio track"),
           }),
@@ -431,17 +440,21 @@ export class NativePeer implements Peer {
 
   /**
    * Drain one native queue with synchronous takes whenever readiness wakes
-   * it. Yielding after every item lets observers run between emits, so a
-   * backlog released by a stalled event loop reaches bounded observation
-   * queues at their readers' pace rather than all at once.
+   * it, yielding after each batch so observers run between batches: a backlog
+   * released by a stalled event loop reaches bounded observation queues at
+   * their readers' pace rather than all at once. A reader takes everything
+   * queued when it runs, so a batch of half its capacity cannot overflow it,
+   * and a busy host does not pay an event-loop turn for every item while the
+   * pump catches up.
    */
-  private pump(wake: Queue.Queue<void>, step: () => boolean): Effect.Effect<void> {
+  private pump(wake: Queue.Queue<void>, batch: number, step: () => boolean): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
       while (!self.closed) {
         yield* Queue.take(wake);
+        let taken = 0;
         while (!self.closed && (yield* Effect.try({ try: step, catch: (cause) => cause }))) {
-          yield* Effect.yieldNow;
+          if (++taken % batch === 0) yield* Effect.yieldNow;
         }
       }
     }).pipe(
@@ -533,9 +546,13 @@ export class NativePeer implements Peer {
           }),
         ),
       );
-      yield* Effect.forkScoped(self.pump(self.wakeEvents, () => self.stepEvent()));
-      yield* Effect.forkScoped(self.pump(self.wakeVideo, () => self.stepVideo()));
-      yield* Effect.forkScoped(self.pump(self.wakeAudio, () => self.stepAudio()));
+      yield* Effect.forkScoped(self.pump(self.wakeEvents, 1, () => self.stepEvent()));
+      yield* Effect.forkScoped(
+        self.pump(self.wakeVideo, VIDEO_CAPACITY / 2, () => self.stepVideo()),
+      );
+      yield* Effect.forkScoped(
+        self.pump(self.wakeAudio, AUDIO_CAPACITY / 2, () => self.stepAudio()),
+      );
       return prepared;
     });
   }

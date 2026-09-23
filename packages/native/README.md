@@ -116,12 +116,14 @@ bun run native:test # sh packages/native/scripts/test.sh
 
 The script checks Rust formatting, runs the Rust tests and clippy with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged artifact twice, on Node and on Bun; it never restages a second release library. The Rust loopback test negotiates two local peers on the shared factory and exercises real libwebrtc ICE/DTLS/SCTP, both binary channels, video encode/decode, PCM audio, per-frame metadata, stream stats, direction changes, bitrate controls, and callback quiescence. Other Rust tests cover queue accounting, typed takes, readiness coalescing, failure classes, and a shutdown that must wait for a notifier still inside the host callback. None of it contacts Reactor or generates paid media.
 
-The media load tests receive from `rust/examples/far_peer.rs`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. Through Koffi and the staged library, on each runtime:
+The media load tests receive from `rust/examples/far_peer.rs`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. It holds its congestion controller at 8 Mbps: on loopback the estimate follows only how promptly the host schedules both processes, and on a busy runner it backs off until the encoder drops most frames.
 
-- one session must deliver at least 95% of the frames the far peer encoded, with p95 latency of at most 150 ms, while control-channel round trips stay under 100 ms at p95;
-- two concurrent sessions must meet the same bounds for 10 s without dropping audio;
-- a 250 ms event-loop stall may drop at most 1% of frames; a 2 s stall must count its video evictions, lose no audio, and recover;
-- a session is renewed three times while its predecessor streams, and each replacement must receive what its sender encodes, without a freeze, while the predecessor shuts down.
+The tests assert what the bridge owns: how many frames reach it, how many it drops, and how many it holds, queued natively or taken but not yet seen by the subscriber. End-to-end latency also carries the far peer's encoder and pacer and the receiver's jitter buffer, so each test prints it, with both processes' CPU use and the codec and pacing counters, without asserting it. Through Koffi and the staged library, on each runtime:
+
+- one session must receive at least 20 frames per second for 10 s, drop at most 1% of them and hold at most two at p95, with no audio dropped and control-channel round trips under 100 ms at p95;
+- two concurrent sessions must each meet the same bounds for 10 s;
+- a 250 ms event-loop stall may drop at most one frame; across a 2 s stall the native queue must evict what overflows its 8 frames, within two, lose no audio, and drain;
+- a session is renewed three times while its predecessor streams; each replacement must keep receiving at least 15 frames per second while its predecessor shuts down in under 2 s, dropping at most one frame, with no 500 ms gap and no audio lost.
 
 The C fixture in `test/session-fixture.c` implements the same header without libwebrtc, including a notifier thread. It drives the canonical session, blocks foreign calls while interrupting their Effect waiters, and checks that the Koffi callback is unregistered only after shutdown joined the notifier. The lifetime fixture drains queued calls while one active call remains held, verifies that shutdown/destruction have not run, then releases the final call and verifies one destruction. Its tombstone reports unsafe ordering without intentionally dereferencing freed memory. These checks establish ownership and ordering; they do not claim an observed heap-corruption incident.
 
