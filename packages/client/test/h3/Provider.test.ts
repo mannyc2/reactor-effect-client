@@ -898,22 +898,25 @@ describe("H3 full-snapshot freshness and lifecycle", () => {
         expect(snapshot.queue.playout).toEqual([]);
         expect(snapshot.state.playing).toBe(false);
         expect(snapshot.clips[0]!.lifecycle).toBe("clip_finished");
-        expect(
+        // The captured event stream is appended by its own consumer; wait for both
+        // late duplicates to be observed before asserting on the array.
+        const duplicateQueued = () =>
           events.some(
             (event) =>
               event._tag === "Message" &&
               event.message.type === "clip_queued" &&
               event.disposition === "duplicate",
-          ),
-        ).toBe(true);
-        expect(
+          );
+        const duplicateGenerated = () =>
           events.some(
             (event) =>
               event._tag === "Message" &&
               event.source === source &&
               event.disposition === "duplicate",
-          ),
-        ).toBe(true);
+          );
+        yield* waitFor(() => Effect.succeed(duplicateQueued() && duplicateGenerated()));
+        expect(duplicateQueued()).toBe(true);
+        expect(duplicateGenerated()).toBe(true);
         expect(events.some((event) => (event as { _tag: string })._tag === "Building")).toBe(false);
       }),
     ));
