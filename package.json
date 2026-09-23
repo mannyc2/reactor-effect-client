@@ -44,7 +44,7 @@
   "scripts": {
     "prepare": "effect-tsgo patch --typescript",
     "build": "bun run --filter './packages/*' build",
-    "typecheck": "node scripts/effect-tsc.mjs && bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
+    "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
     "lint": "oxlint -c .oxlintrc.json --deny-warnings .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
