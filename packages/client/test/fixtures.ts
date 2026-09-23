@@ -7,12 +7,25 @@ import {
   type HttpOptions,
 } from "../src/coordinator/_internal/client.js";
 
+/** The fixture `withFixture` installed, which `testFetch` serves. */
+let installed: HttpFixture | undefined;
+/**
+ * The `FetchHttpClient.Fetch` tests provide: the installed fixture's fetch, or
+ * the platform's outside a fixture. `globalThis.fetch` is never replaced, so
+ * library code that bypassed the provided client would reach the network and
+ * fail rather than pass against the fixture.
+ */
+export const testFetch: typeof fetch = Object.assign(
+  (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+    (installed?.fetch ?? globalThis.fetch)(input, init),
+  { preconnect: globalThis.fetch.preconnect },
+);
 /** Concrete HTTP selection belongs to the test composition, not the SDK. */
 export const httpForTests = (): PlatformHttp.HttpClient =>
   Effect.runSync(
     PlatformHttp.HttpClient.pipe(
       Effect.provide(FetchHttp.layer),
-      Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
+      Effect.provideService(FetchHttpClient.Fetch, testFetch),
     ),
   );
 export class TestHttpClient extends ProtocolHttpClient {
@@ -269,12 +282,12 @@ export class MockPeer implements Peer {
 }
 export const withFixture = async (body: (fixture: HttpFixture) => Promise<void>): Promise<void> => {
   const fixture = new HttpFixture(),
-    original = globalThis.fetch;
-  globalThis.fetch = fixture.fetch;
+    previous = installed;
+  installed = fixture;
   try {
     await body(fixture);
   } finally {
-    globalThis.fetch = original;
+    installed = previous;
   }
 };
 export const makeSession = (
