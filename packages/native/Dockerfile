@@ -15,7 +15,8 @@ RUN apt-get update \
 
 RUN rustup component add clippy rustfmt
 
-COPY rust/Cargo.toml rust/Cargo.lock rust/build.rs ./rust/
+COPY rust-toolchain.toml ./
+COPY rust/Cargo.toml rust/Cargo.lock rust/build.rs rust/clippy.toml ./rust/
 COPY rust/.cargo/config.toml ./rust/.cargo/config.toml
 COPY rust/src ./rust/src
 COPY rust/include ./rust/include
@@ -27,8 +28,9 @@ ENV CARGO_TARGET_DIR=/target \
 # reactor-webrtc-sys downloads the pinned Linux x64 libwebrtc prebuilt,
 # verifies its published SHA-256, and compiles its C++ glue with pinned LLVM 21.
 RUN cargo fmt --manifest-path rust/Cargo.toml -- --check
-RUN cargo test --locked --manifest-path rust/Cargo.toml -- --nocapture
+RUN cargo test --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 RUN cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+RUN RUSTDOCFLAGS="-D warnings" cargo doc --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items
 RUN cargo build --locked --manifest-path rust/Cargo.toml --release
 RUN test "$(uname -m)" = "x86_64" \
     && file /target/release/libreactor_effect_native.so \

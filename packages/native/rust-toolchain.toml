@@ -1,0 +1,7 @@
+# The toolchain the native scripts and CI use, so local lints match CI's.
+# Keep it in step with RUST_VERSION in .github/workflows/ci.yml, the
+# Dockerfile's base image and rust-version in rust/Cargo.toml.
+[toolchain]
+channel = "1.90.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

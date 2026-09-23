@@ -21,9 +21,11 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 
 # Apply the native deployment target even when invoked from the SDK root.
+# Lint levels live in rust/Cargo.toml's [lints] table; warnings fail here.
 cargo fmt --manifest-path rust/Cargo.toml -- --check
-cargo test --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml -- --nocapture
+cargo test --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 cargo clippy --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items
 # The media load tests receive from a libwebrtc far peer on the same pinned
 # reactor-webrtc. It is a Cargo example, so it never enters the staged library.
 cargo build --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --release --example far_peer

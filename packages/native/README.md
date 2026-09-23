@@ -44,15 +44,18 @@ The current public native peer accepts at most one incoming video track and one 
 
 ## Package layout
 
-| Path                                 | Contents                                                                                 |
-| ------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `dist/`                              | The compiled TypeScript entry point and its declarations                                 |
-| `lib/<platform>-<arch>/`             | The staged shared library and its `native-identity.json` sidecar for each shipped host   |
-| `rust/`                              | The `reactor-effect-native` crate: Cargo manifest and lock, build script, header, source |
-| `rust/examples/far_peer.rs`          | Test-only libwebrtc sender for the media load tests; not packaged or staged              |
-| `scripts/build.sh`                   | Builds the crate for the current host and stages it                                      |
-| `scripts/stage.sh`, `stage.mjs`      | Stage an already built library; `stage.mjs` is the single staging owner                  |
-| `scripts/install-linux-toolchain.sh` | Explicit root-only LLVM 21 installer for opted-in Debian/Ubuntu build environments       |
+| Path                                 | Contents                                                                                                     |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `dist/`                              | The compiled TypeScript entry point and its declarations                                                     |
+| `lib/<platform>-<arch>/`             | The staged shared library and its `native-identity.json` sidecar for each shipped host                       |
+| `rust/`                              | The `reactor-effect-native` crate: Cargo manifest and lock, lint configuration, build script, header, source |
+| `rust/examples/far_peer/`            | Test-only libwebrtc sender for the media load tests; not packaged or staged                                  |
+| `rust-toolchain.toml`                | The Rust toolchain the native scripts use, the one CI pins                                                   |
+| `scripts/build.sh`                   | Builds the crate for the current host and stages it                                                          |
+| `scripts/stage.sh`, `stage.mjs`      | Stage an already built library; `stage.mjs` is the single staging owner                                      |
+| `scripts/install-linux-toolchain.sh` | Explicit root-only LLVM 21 installer for opted-in Debian/Ubuntu build environments                           |
+
+The crate's `src/` follows the peer's threads. `ffi.rs` exports the C ABI and `abi.rs` mirrors the header's constants, which a test checks against the header. `peer/` holds the peer handle, its owner thread (`owner.rs`), which owns every libwebrtc object, and the libwebrtc callbacks (`callbacks.rs`, `media.rs`) that copy into the state the threads share (`shared.rs`). `protocol/` is the JSON of requests, responses and event headers, and `sync/` holds the bounded queues, the callback gate and the notifier. Unit tests sit beside the code they test; a module with a larger suite keeps it in a `tests.rs` of its own.
 
 ## Media path (ABI 3)
 
@@ -114,9 +117,9 @@ Local qualification is credential-free:
 bun run native:test # sh packages/native/scripts/test.sh
 ```
 
-The script checks Rust formatting, runs the Rust tests and clippy with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged artifact twice, on Node and on Bun; it never restages a second release library. The Rust loopback test negotiates two local peers on the shared factory and exercises real libwebrtc ICE/DTLS/SCTP, both binary channels, video encode/decode, PCM audio, per-frame metadata, stream stats, direction changes, bitrate controls, and callback quiescence. Other Rust tests cover queue accounting, typed takes, readiness coalescing, failure classes, and a shutdown that must wait for a notifier still inside the host callback. None of it contacts Reactor or generates paid media.
+The script checks Rust formatting, then runs the Rust tests, clippy with the crate's lint set, and rustdoc, all with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged artifact twice, on Node and on Bun; it never restages a second release library. The Rust tests check the ABI's constants against the C header and each JSON shape against what the host parses, and drive every entry point through the C ABI, including null and undersized arguments, a caught panic and a closed peer. Loopback tests negotiate with a second local peer on the shared factory through the bridge's owner thread, and exercise real libwebrtc ICE/DTLS/SCTP, ordered binary messages on both channels, video encode/decode on two lanes with their per-frame metadata, PCM audio, stream stats, and the close fence. Other tests cover queue accounting under seeded random operations, direction and bitrate controls, readiness coalescing, callback quiescence, and a shutdown that must wait for a notifier still inside the host callback. None of it contacts Reactor or generates paid media.
 
-The media load tests receive from `rust/examples/far_peer.rs`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. It holds its congestion controller at 8 Mbps: on loopback the estimate follows only how promptly the host schedules both processes, and on a busy runner it backs off until the encoder drops most frames.
+The media load tests receive from `rust/examples/far_peer/`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. It holds its congestion controller at 8 Mbps: on loopback the estimate follows only how promptly the host schedules both processes, and on a busy runner it backs off until the encoder drops most frames.
 
 The tests assert what the bridge owns: how many frames reach it, how many it drops, and how many it holds, queued natively or taken but not yet seen by the subscriber. End-to-end latency also carries the far peer's encoder and pacer and the receiver's jitter buffer, and received audio arrives at the pace of libwebrtc's playout clock; both follow how the host schedules the two processes, so each test prints them, with both processes' CPU use and the codec and pacing counters, without asserting them. Through Koffi and the staged library, on each runtime:
 
@@ -133,7 +136,7 @@ The C fixture in `test/session-fixture.c` implements the same header without lib
 ./packages/native/scripts/stage.sh packages/native/rust/target/release/libreactor_effect_native.dylib darwin-arm64
 ```
 
-Linux x64 has a reproducible container build that starts from the package source, installs Rust 1.90 plus the package-owned LLVM 21 recipe and auxiliary archive tools, runs the native Rust tests and clippy, and exports only the resulting shared library. It requires an explicit Docker context so the script never changes the caller's active context:
+Linux x64 has a reproducible container build that starts from the package source, installs Rust 1.90 plus the package-owned LLVM 21 recipe and auxiliary archive tools, runs the native Rust tests, clippy and rustdoc, and exports only the resulting shared library. It requires an explicit Docker context so the script never changes the caller's active context:
 
 ```sh
 DOCKER_CONTEXT=default bun run native:linux-x64

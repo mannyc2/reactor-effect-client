@@ -13,7 +13,7 @@ Required for the TypeScript workspace:
 - CPython 3.13 for the wire generator;
 - the checked-in `bun.lock`.
 
-Native development additionally requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [packages/native/README.md](./packages/native/README.md); ordinary build commands never install system packages.
+Native development additionally requires Rust 1.90 (under rustup, `packages/native/rust-toolchain.toml` selects it), Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [packages/native/README.md](./packages/native/README.md); ordinary build commands never install system packages.
 
 ```sh
 bun install --frozen-lockfile
@@ -85,7 +85,7 @@ bun run native:build
 bun run native:test
 ```
 
-The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, builds the test far peer, then runs the JavaScript native suite, including the media load tests, against the staged artifact on Node and on Bun. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
+The build script owns release staging. The test script checks Rust formatting, runs the Rust tests, clippy and rustdoc with warnings denied, builds the test far peer, then runs the JavaScript native suite, including the media load tests, against the staged artifact on Node and on Bun. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
 
 ```sh
 DOCKER_CONTEXT=my-context bun run native:linux-x64
@@ -107,6 +107,8 @@ Callbacks from libwebrtc must never enter or wait for JavaScript. Copy into boun
 
 The public native peer currently accepts at most one incoming video and one incoming audio track because pinned `reactor-webrtc` does not expose the remote callback's MID/identity. Do not widen this contract by assuming same-kind callback order; expose a formal upstream identity join first.
 
+Rust code follows the lint set in `packages/native/rust/Cargo.toml`, which `bun run native:test` enforces with warnings denied. On top of clippy's pedantic group it enables individual restriction lints, grouped by what they prevent. Outside tests there is no `unwrap`, `expect`, `panic!`, `unreachable!`, indexing or string slicing: reactor-webrtc runs callbacks behind `extern "C"` trampolines, where a panic aborts the host process, so library code returns errors instead. No error is silently discarded by `let _ =`, `.ok()` or `map_err(|_| ...)`, and no `match` absorbs new enum variants in a wildcard arm. `unsafe` is confined to `ffi`, which the `unsafe_code` lint enforces. There, every `unsafe` block has a `// SAFETY:` comment and does one unsafe operation, and a pointer's alignment and a length's bound are checked before any caller memory is touched. Nothing prints, since the host owns stdio. A few style lints hold conventions the code already follows, such as `Arc::clone(&x)` over `x.clone()`. A module with children is `name.rs` beside `name/`, never `name/mod.rs`. `clippy.toml` exempts tests from the panic lints. Suppress a lint only with `#[expect(lint, reason = "...")]` on the narrowest item; an `#[allow]` fails the lint check. Parse C arguments and JSON into typed values at the boundary (`abi.rs`, `ffi/memory.rs`, `protocol/`), state each exported function's pointer contract in its `# Safety` section, and keep a module's unit tests beside it. Tests check the Rust constants against the C header and each JSON shape against what the host parses, so a change to either fails until both sides agree.
+
 ## Dependencies and notices
 
 Avoid adding a dependency when a platform or standard-library primitive already owns the behavior. When a runtime dependency or copied/derived source is added:
@@ -116,6 +118,8 @@ Avoid adding a dependency when a platform or standard-library primitive already 
 3. update the affected package's `NOTICE` and `notices/` where attribution is required, and the root `NOTICE` index;
 4. declare the dependency in the package that imports it, through the catalog when another workspace shares the version, never through a workspace parent;
 5. extend the pack/import-closure validation so a clean consumer cannot accidentally resolve a development dependency.
+
+For the native crate, CI also checks every locked crate against `packages/native/rust/deny.toml` with cargo-deny 0.20.2: its license must be on the allow-list, its source must be crates.io or the pinned reactor-webrtc repository, and no RustSec advisory may apply to it. Run `cargo deny --manifest-path packages/native/rust/Cargo.toml --locked check` before changing `Cargo.lock`. Allowing a license there does not replace the notice steps above.
 
 ## Pull requests
 

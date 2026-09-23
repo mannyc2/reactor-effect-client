@@ -1,0 +1,32 @@
+# The native crate's dependency policy, which CI checks with
+# `cargo deny --manifest-path packages/native/rust/Cargo.toml --locked check`.
+#
+# Every crate the library links ships in the npm package, so its license must
+# allow Apache-2.0 redistribution and be credited in notices/native-rust/.
+
+[graph]
+# The hosts scripts/build.sh builds for.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+# A RustSec advisory against any locked crate fails the check. To accept one,
+# list its ID here with the reason.
+ignore = []
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/reactor-team/reactor-webrtc"]
