@@ -169,7 +169,7 @@ test("reference preparation succeeds without writable staging and preserves sour
       const image = pngBytes(32, 24);
       yield* h.fs.writeFile(source, image);
       yield* (yield* h.prepare(source)).submit;
-      expect(yield* h.fs.readFile(source)).toEqual(image);
+      expect(new Uint8Array(yield* h.fs.readFile(source))).toEqual(image);
       expect(h.stagingAttempts()).toBe(0);
       expect(h.releases).toEqual([source]);
       expect(yield* h.entries()).toEqual(["original.png"]);

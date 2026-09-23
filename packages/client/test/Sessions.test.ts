@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, test } from "bun:test";
 import {
   Cause,
@@ -932,32 +934,21 @@ describe("Reactor HTTP session contract (offline)", () => {
 
   for (const phase of ["headers", "body"] as const) {
     test(`inspection's one-second fetch bound includes stalled response ${phase}`, async () => {
-      let release: (() => void) | undefined;
       let headersReceived = false;
       let signal: AbortSignal | undefined;
       const methods: Array<string> = [];
       // Real Fetch associates its body with the request signal; a hand-built
       // Response in an injected request would not exercise that cancellation.
-      const server = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch(request) {
-          methods.push(request.method);
-          if (phase === "headers")
-            return new Promise<Response>((resolve) => {
-              release = () => resolve(new Response(null, { status: 503 }));
-            });
-          return new Response(
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode('{"session_id":"session",'));
-                release = () => controller.error(new Error("fixture teardown"));
-              },
-            }),
-            { headers: { "Content-Type": "application/json" } },
-          );
-        },
+      // The server stalls before its headers, or after the first body chunk.
+      const server = createServer((request, response) => {
+        methods.push(request.method ?? "");
+        if (phase === "body") {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.write('{"session_id":"session",');
+        }
       });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
       try {
         const started = performance.now();
         const error = await Effect.runPromise(
@@ -966,7 +957,7 @@ describe("Reactor HTTP session contract (offline)", () => {
               Effect.provide(
                 fetchLayer(async (_url, init) => {
                   signal = init.signal ?? undefined;
-                  const response = await fetch(`http://127.0.0.1:${server.port}/session`, init);
+                  const response = await fetch(`http://127.0.0.1:${port}/session`, init);
                   headersReceived = true;
                   return response;
                 }),
@@ -983,8 +974,8 @@ describe("Reactor HTTP session contract (offline)", () => {
         expect(methods).toEqual(["GET"]);
         expect(JSON.stringify(error)).not.toContain("secret_token_fixture");
       } finally {
-        release?.();
-        await server.stop(true);
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     });
   }
