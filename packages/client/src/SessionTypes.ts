@@ -1,10 +1,13 @@
 import type * as Duration from "effect/Duration";
+import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { Capabilities, Descriptor } from "./contract.js";
-import type { HttpOptions, Termination } from "./coordinator/_internal/client.js";
+import { Termination } from "./coordinator/_internal/client.js";
+import type { HttpOptions } from "./coordinator/_internal/client.js";
 import type { Correlation } from "./correlation.js";
+import { ReactorErrorFromJson } from "./errors.js";
 import type { ReactorError } from "./errors.js";
 import type { Json, JsonObject } from "./json.js";
 import type * as W from "./wire.generated.js";
@@ -99,17 +102,22 @@ export interface SessionOptions extends HttpOptions, SessionTimeouts {
   readonly onClose?: (report: CloseReport) => void;
 }
 
-export interface CloseReport {
-  readonly localClosed: boolean;
-  readonly allocation: "none" | "known" | "unknown";
-  readonly ownership?: "owned" | "attached";
-  readonly sessionId?: string;
-  readonly remote: Termination;
-  readonly unpublishSubmitted: readonly string[];
+/**
+ * A session's cleanup evidence. As a Schema it encodes for persistence; its
+ * failures encode as diagnostic JSON, without provider text.
+ */
+export const CloseReport = Schema.Struct({
+  localClosed: Schema.Boolean,
+  allocation: Schema.Literals(["none", "known", "unknown"]),
+  ownership: Schema.optionalKey(Schema.Literals(["owned", "attached"])),
+  sessionId: Schema.optionalKey(Schema.String),
+  remote: Termination,
+  unpublishSubmitted: Schema.Array(Schema.String),
   /** Claims possibly accepted remotely without an attributable response. */
-  readonly unresolvedPublications: readonly string[];
-  readonly localErrors: readonly ReactorError[];
-}
+  unresolvedPublications: Schema.Array(Schema.String),
+  localErrors: Schema.Array(ReactorErrorFromJson),
+});
+export interface CloseReport extends Schema.Schema.Type<typeof CloseReport> {}
 
 export interface ReadyDescriptor extends Descriptor {
   readonly capabilities: Capabilities;

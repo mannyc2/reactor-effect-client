@@ -1,3 +1,18 @@
+/**
+ * Request/reply correlation for the Reactor wire.
+ *
+ * Why not Effect's `RpcClient`: its semantics conflict with this wire. It
+ * speaks `RpcMessage` envelopes, which Reactor does not; it drops a late or
+ * second reply and deletes a request's entry when its caller is interrupted;
+ * its pending map is unbounded; and its error union is closed. Model commands
+ * are paid and have no cancel message, so a reply must stay attributable after
+ * the caller stops waiting. This correlator therefore keeps a bounded pending
+ * set registered before send, tells an acknowledgement from its body, labels
+ * late, duplicate, unsolicited and stale-generation replies instead of
+ * dropping them, and retires a generation's requests with their outcome
+ * preserved. Effect RPC fits only a boundary where both ends are ours, such
+ * as an isolated native host process.
+ */
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import { positiveLimit, ReactorError } from "./errors.js";

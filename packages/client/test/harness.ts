@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert } from "reactor-effect-test-kit";
 import * as FetchHttp from "../src/FetchHttp.js";
 import type { ReactorFailure } from "../src/errors.js";
+import { testFetch } from "./fixtures.js";
 
 export { test } from "vitest";
 export {
@@ -24,7 +25,7 @@ type Services = PlatformHttp.HttpClient | NodeServices.NodeServices;
 const provided = <A, E>(effect: Effect.Effect<A, E, Services>) =>
   effect.pipe(
     Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
-    Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
+    Effect.provideService(FetchHttpClient.Fetch, testFetch),
   );
 /**
  * Pass the test context's `signal` so a test that times out interrupts its

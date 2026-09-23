@@ -297,6 +297,24 @@ const invalidIdentities = [
     nativeIdentity,
   ],
   [
+    "native platforms linking different WebRTC prebuilts",
+    (identity) => {
+      const platform = identity.native["linux-x64"];
+      assert.ok(platform);
+      platform.build.webrtcPrebuilt = "webrtc-7907-a5ddff60-p8";
+    },
+    nativeIdentity,
+  ],
+  [
+    "a native platform naming no WebRTC prebuilt",
+    (identity) => {
+      const platform = identity.native["darwin-arm64"];
+      assert.ok(platform);
+      Reflect.deleteProperty(platform.build, "webrtcPrebuilt");
+    },
+    schema,
+  ],
+  [
     "a mislabelled native platform",
     (identity) => {
       const platform = identity.native["linux-x64"];

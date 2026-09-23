@@ -1,11 +1,11 @@
 import * as Predicate from "effect/Predicate";
+import type * as Schema from "effect/Schema";
 import { ReactorError } from "./errors.js";
 import { checkedString } from "./protobuf.js";
 import type { Google_Struct, Google_Value } from "./wire.generated.js";
-export type Json = null | boolean | number | string | JsonObject | readonly Json[];
-export interface JsonObject {
-  readonly [key: string]: Json;
-}
+/** Immutable JSON, as Effect's `Schema.Json` defines it. */
+export type Json = Schema.Json;
+export type JsonObject = Schema.JsonObject;
 const bad = (message: string): never => {
   throw ReactorError.fromCode("Protocol", message);
 };

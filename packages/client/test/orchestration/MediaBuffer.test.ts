@@ -8,7 +8,7 @@ import { audioFrame, gate, runClock, videoFrame } from "./SourceFixture.js";
 test("cancelling a video reader retains unconsumed frames and their byte accounting", () =>
   runClock(
     Effect.gen(function* () {
-      const buffer = yield* MediaBuffer.make;
+      const buffer = yield* MediaBuffer.make();
       const received = yield* gate;
       yield* buffer.offerVideo(videoFrame(1));
       yield* buffer.offerVideo({ ...videoFrame(2), metadata: new Uint8Array([3, 4]) });
@@ -50,7 +50,7 @@ const exclusive = <A>(
 test("a second concurrent reader fails with AlreadyReading instead of splitting the output", () =>
   runClock(
     Effect.gen(function* () {
-      const buffer = yield* MediaBuffer.make;
+      const buffer = yield* MediaBuffer.make();
       const video = yield* exclusive(
         buffer.video,
         Effect.andThen(buffer.offerVideo(videoFrame(1)), buffer.offerVideo(videoFrame(2))),
@@ -69,7 +69,7 @@ test("a second concurrent reader fails with AlreadyReading instead of splitting 
 test("cancelling an audio reader preserves the next packet and exact sample counts", () =>
   runClock(
     Effect.gen(function* () {
-      const buffer = yield* MediaBuffer.make;
+      const buffer = yield* MediaBuffer.make();
       const received = yield* gate;
       yield* buffer.offerAudio(audioFrame(7, 1));
       yield* buffer.offerAudio(audioFrame(11, 2));
@@ -91,7 +91,7 @@ test("cancelling an audio reader preserves the next packet and exact sample coun
 test("queue admission refuses overflow without changing accounting or accepting late output", () =>
   runClock(
     Effect.gen(function* () {
-      const buffer = yield* MediaBuffer.make;
+      const buffer = yield* MediaBuffer.make();
       for (let index = 0; index < 96; index++) yield* buffer.offerVideo(videoFrame());
       yield* buffer.offerAudio(audioFrame(192_000));
       const before = buffer.pressure();

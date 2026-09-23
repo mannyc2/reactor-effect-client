@@ -1,4 +1,4 @@
-import { Effect, Ref, Schema, Semaphore } from "effect";
+import { Effect, Ref, Schema } from "effect";
 
 export type SequenceStatus = "open" | "sealed" | "indeterminate" | "retired";
 
@@ -110,13 +110,18 @@ interface Entry<Owner> {
   readonly id: string;
   readonly owner: Owner;
   readonly status: SequenceStatus;
-  readonly acceptedCount: number;
-  readonly rejectedCount: number;
-  readonly indeterminateCount: number;
   readonly pending: ReadonlySet<string>;
   readonly sealRequested: boolean;
   readonly members: ReadonlyArray<MemberOutcome>;
 }
+
+type Entries<Owner> = ReadonlyMap<string, Entry<Owner>>;
+
+/** A transition's result and the next state, or why it was refused (state unchanged). */
+type Step<Owner, A> = readonly [A, Entries<Owner>] | SequenceError;
+
+const count = (members: ReadonlyArray<MemberOutcome>, tag: MemberOutcome["_tag"]): number =>
+  members.reduce((total, member) => (member._tag === tag ? total + 1 : total), 0);
 
 const immutableMembers = (members: ReadonlyArray<MemberOutcome>): ReadonlyArray<MemberOutcome> =>
   Object.freeze(members.map((member) => Object.freeze({ ...member })));
@@ -126,9 +131,9 @@ const snapshot = <Owner>(entry: Entry<Owner>): SequenceSnapshot<Owner> =>
     id: entry.id,
     owner: entry.owner,
     status: entry.status,
-    acceptedCount: entry.acceptedCount,
-    rejectedCount: entry.rejectedCount,
-    indeterminateCount: entry.indeterminateCount,
+    acceptedCount: count(entry.members, "Accepted"),
+    rejectedCount: count(entry.members, "Rejected"),
+    indeterminateCount: count(entry.members, "Indeterminate"),
     pendingCount: entry.pending.size,
     sealRequested: entry.sealRequested,
     members: immutableMembers(entry.members),
@@ -144,9 +149,27 @@ const positiveInteger = (
         new InvalidSequenceOptions({ message: `${name} must be a positive safe integer` }),
       );
 
+const refuse = (sequenceId: string, code: SequenceCode) => new SequenceError({ sequenceId, code });
+
+const unavailable = <Owner>(id: string, entry: Entry<Owner>): SequenceError | undefined =>
+  entry.status === "sealed"
+    ? refuse(id, "sealed")
+    : entry.status === "indeterminate"
+      ? refuse(id, "indeterminate")
+      : entry.status === "retired"
+        ? refuse(id, "retired")
+        : entry.sealRequested
+          ? refuse(id, "sealing")
+          : undefined;
+
+const put = <Owner>(all: Entries<Owner>, entry: Entry<Owner>): Entries<Owner> =>
+  new Map(all).set(entry.id, entry);
+
 /**
  * Bounded sequence-affinity state. Unresolved work is never evicted to admit
  * another sequence or member; callers explicitly account and release history.
+ * Every operation is one pure transition of the whole state, applied with
+ * `Ref.modify`, so none observes another half done.
  */
 export const makeAffinity = <Owner>(
   options: Options<Owner> = {},
@@ -155,8 +178,23 @@ export const makeAffinity = <Owner>(
     const maxEntries = yield* positiveInteger(options.maxEntries ?? 256, "maxEntries");
     const maxMembers = yield* positiveInteger(options.maxMembers ?? 256, "maxMembers");
     const sameOwner = options.sameOwner ?? Object.is;
-    const entries = yield* Ref.make(new Map<string, Entry<Owner>>());
-    const lock = yield* Semaphore.make(1);
+    const entries = yield* Ref.make<Entries<Owner>>(new Map());
+
+    const apply = <A>(transition: (all: Entries<Owner>) => Step<Owner, A>) =>
+      Ref.modify(entries, (all): readonly [Effect.Effect<A, SequenceError>, Entries<Owner>] => {
+        const step = transition(all);
+        return step instanceof SequenceError
+          ? [Effect.fail(step), all]
+          : [Effect.succeed(step[0]), step[1]];
+      }).pipe(Effect.flatten);
+
+    /** A transition of one existing sequence. */
+    const onEntry =
+      <A>(id: string, transition: (entry: Entry<Owner>, all: Entries<Owner>) => Step<Owner, A>) =>
+      (all: Entries<Owner>): Step<Owner, A> => {
+        const entry = all.get(id);
+        return entry === undefined ? refuse(id, "missing") : transition(entry, all);
+      };
 
     const get = (id: string) =>
       Ref.get(entries).pipe(
@@ -166,69 +204,40 @@ export const makeAffinity = <Owner>(
         }),
       );
 
-    const unavailable = (id: string, entry: Entry<Owner>): SequenceError | undefined =>
-      entry.status === "sealed"
-        ? new SequenceError({ sequenceId: id, code: "sealed" })
-        : entry.status === "indeterminate"
-          ? new SequenceError({ sequenceId: id, code: "indeterminate" })
-          : entry.status === "retired"
-            ? new SequenceError({ sequenceId: id, code: "retired" })
-            : entry.sealRequested
-              ? new SequenceError({ sequenceId: id, code: "sealing" })
-              : undefined;
-
-    const set = (all: ReadonlyMap<string, Entry<Owner>>, entry: Entry<Owner>) =>
-      Ref.set(entries, new Map(all).set(entry.id, entry));
-
     const bind = (id: string, owner: Owner) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const existing = all.get(id);
-          if (existing !== undefined) {
-            if (!sameOwner(existing.owner, owner))
-              return yield* new SequenceError({ sequenceId: id, code: "owner-mismatch" });
-            const failure = unavailable(id, existing);
-            if (failure !== undefined) return yield* failure;
-            return existing.owner;
-          }
-          if (all.size >= maxEntries)
-            return yield* new SequenceError({ sequenceId: id, code: "capacity" });
-          const entry: Entry<Owner> = {
+      apply((all): Step<Owner, Owner> => {
+        const existing = all.get(id);
+        if (existing !== undefined) {
+          if (!sameOwner(existing.owner, owner)) return refuse(id, "owner-mismatch");
+          return unavailable(id, existing) ?? [existing.owner, all];
+        }
+        if (all.size >= maxEntries) return refuse(id, "capacity");
+        return [
+          owner,
+          put(all, {
             id,
             owner,
             status: "open",
-            acceptedCount: 0,
-            rejectedCount: 0,
-            indeterminateCount: 0,
             pending: new Set(),
             sealRequested: false,
             members: [],
-          };
-          yield* set(all, entry);
-          return owner;
-        }),
-      );
+          }),
+        ];
+      });
 
     const begin = (id: string, memberId: string) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const entry = all.get(id);
-          if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, code: "missing" });
+      apply(
+        onEntry(id, (entry, all): Step<Owner, void> => {
           const failure = unavailable(id, entry);
-          if (failure !== undefined) return yield* failure;
+          if (failure !== undefined) return failure;
           if (
             entry.pending.has(memberId) ||
             entry.members.some((member) => member.memberId === memberId)
-          ) {
-            return yield* new SequenceError({ sequenceId: id, code: "member-duplicate" });
-          }
-          if (entry.pending.size + entry.members.length >= maxMembers) {
-            return yield* new SequenceError({ sequenceId: id, code: "member-capacity" });
-          }
-          yield* set(all, { ...entry, pending: new Set(entry.pending).add(memberId) });
+          )
+            return refuse(id, "member-duplicate");
+          if (entry.pending.size + entry.members.length >= maxMembers)
+            return refuse(id, "member-capacity");
+          return [undefined, put(all, { ...entry, pending: new Set(entry.pending).add(memberId) })];
         }),
       );
 
@@ -236,27 +245,17 @@ export const makeAffinity = <Owner>(
       id: string,
       memberId: string,
       outcome: (entry: Entry<Owner>) => MemberOutcome,
-      update: (
-        entry: Entry<Owner>,
-      ) => Pick<Entry<Owner>, "acceptedCount" | "rejectedCount" | "indeterminateCount">,
       terminal: "known" | "unknown",
       requestSeal = false,
     ) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const entry = all.get(id);
-          if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, code: "missing" });
-          if (!entry.pending.has(memberId)) {
-            if (entry.members.some((member) => member.memberId === memberId)) {
-              return yield* new SequenceError({ sequenceId: id, code: "member-duplicate" });
-            }
-            return yield* new SequenceError({ sequenceId: id, code: "member-missing" });
-          }
+      apply(
+        onEntry(id, (entry, all): Step<Owner, void> => {
+          if (!entry.pending.has(memberId))
+            return entry.members.some((member) => member.memberId === memberId)
+              ? refuse(id, "member-duplicate")
+              : refuse(id, "member-missing");
           const pending = new Set(entry.pending);
           pending.delete(memberId);
-          const counts = update(entry);
           const sealRequested = entry.sealRequested || requestSeal;
           const status: SequenceStatus =
             entry.status === "indeterminate" || entry.status === "retired"
@@ -266,14 +265,16 @@ export const makeAffinity = <Owner>(
                 : sealRequested && pending.size === 0
                   ? "sealed"
                   : entry.status;
-          yield* set(all, {
-            ...entry,
-            ...counts,
-            status,
-            sealRequested,
-            pending,
-            members: [...entry.members, outcome(entry)],
-          });
+          return [
+            undefined,
+            put(all, {
+              ...entry,
+              status,
+              sealRequested,
+              pending,
+              members: [...entry.members, outcome(entry)],
+            }),
+          ];
         }),
       );
 
@@ -281,122 +282,83 @@ export const makeAffinity = <Owner>(
       settle(
         id,
         memberId,
-        (entry) => ({ _tag: "Accepted", memberId, clipId, index: entry.acceptedCount, final }),
         (entry) => ({
-          acceptedCount: entry.acceptedCount + 1,
-          rejectedCount: entry.rejectedCount,
-          indeterminateCount: entry.indeterminateCount,
+          _tag: "Accepted",
+          memberId,
+          clipId,
+          index: count(entry.members, "Accepted"),
+          final,
         }),
         "known",
         final,
       );
 
     const rejected = (id: string, memberId: string, reason?: string, final = false) =>
-      settle(
-        id,
-        memberId,
-        () => ({ _tag: "Rejected", memberId, reason }),
-        (entry) => ({
-          acceptedCount: entry.acceptedCount,
-          rejectedCount: entry.rejectedCount + 1,
-          indeterminateCount: entry.indeterminateCount,
-        }),
-        "known",
-        final,
-      );
+      settle(id, memberId, () => ({ _tag: "Rejected", memberId, reason }), "known", final);
 
     const uncertain = (id: string, memberId: string, reason?: string) =>
-      settle(
-        id,
-        memberId,
-        () => ({ _tag: "Indeterminate", memberId, reason }),
-        (entry) => ({
-          acceptedCount: entry.acceptedCount,
-          rejectedCount: entry.rejectedCount,
-          indeterminateCount: entry.indeterminateCount + 1,
-        }),
-        "unknown",
-      );
+      settle(id, memberId, () => ({ _tag: "Indeterminate", memberId, reason }), "unknown");
 
     const seal = (id: string) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const entry = all.get(id);
-          if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, code: "missing" });
-          if (entry.status === "indeterminate")
-            return yield* new SequenceError({ sequenceId: id, code: "indeterminate" });
-          if (entry.status === "retired")
-            return yield* new SequenceError({ sequenceId: id, code: "retired" });
-          if (entry.status === "sealed") return;
-          yield* set(all, {
-            ...entry,
-            sealRequested: true,
-            status: entry.pending.size === 0 ? "sealed" : "open",
-          });
+      apply(
+        onEntry(id, (entry, all): Step<Owner, void> => {
+          if (entry.status === "indeterminate") return refuse(id, "indeterminate");
+          if (entry.status === "retired") return refuse(id, "retired");
+          if (entry.status === "sealed") return [undefined, all];
+          return [
+            undefined,
+            put(all, {
+              ...entry,
+              sealRequested: true,
+              status: entry.pending.size === 0 ? "sealed" : "open",
+            }),
+          ];
         }),
       );
 
     const retire = (owner: Owner) =>
-      lock.withPermit(
-        Ref.update(entries, (all) => {
-          const next = new Map(all);
-          for (const [id, entry] of all) {
-            if (!sameOwner(entry.owner, owner)) continue;
-            if (entry.pending.size === 0) {
-              if (entry.status !== "indeterminate") next.set(id, { ...entry, status: "retired" });
-              continue;
-            }
-            const pendingOutcomes = [...entry.pending].map((memberId): MemberOutcome =>
-              Object.freeze({
-                _tag: "Indeterminate",
-                memberId,
-                reason: "owning session retired before outcome was known",
-              }),
-            );
-            next.set(id, {
-              ...entry,
-              status: "indeterminate",
-              indeterminateCount: entry.indeterminateCount + entry.pending.size,
-              pending: new Set(),
-              members: [...entry.members, ...pendingOutcomes],
-            });
+      Ref.update(entries, (all) => {
+        const next = new Map(all);
+        for (const [id, entry] of all) {
+          if (!sameOwner(entry.owner, owner)) continue;
+          if (entry.pending.size === 0) {
+            if (entry.status !== "indeterminate") next.set(id, { ...entry, status: "retired" });
+            continue;
           }
-          return next;
-        }),
-      );
+          const pendingOutcomes = [...entry.pending].map((memberId): MemberOutcome =>
+            Object.freeze({
+              _tag: "Indeterminate",
+              memberId,
+              reason: "owning session retired before outcome was known",
+            }),
+          );
+          next.set(id, {
+            ...entry,
+            status: "indeterminate",
+            pending: new Set(),
+            members: [...entry.members, ...pendingOutcomes],
+          });
+        }
+        return next;
+      });
 
     const acknowledgeIndeterminate = (id: string) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const entry = all.get(id);
-          if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, code: "missing" });
-          if (entry.status !== "indeterminate" || entry.pending.size !== 0) {
-            return yield* new SequenceError({ sequenceId: id, code: "not-releasable" });
-          }
-          yield* set(all, { ...entry, status: "retired" });
-        }),
+      apply(
+        onEntry(id, (entry, all): Step<Owner, void> =>
+          entry.status !== "indeterminate" || entry.pending.size !== 0
+            ? refuse(id, "not-releasable")
+            : [undefined, put(all, { ...entry, status: "retired" })],
+        ),
       );
 
     const release = (id: string) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const all = yield* Ref.get(entries);
-          const entry = all.get(id);
-          if (entry === undefined)
-            return yield* new SequenceError({ sequenceId: id, code: "missing" });
-          if (
-            entry.pending.size !== 0 ||
-            (entry.status !== "sealed" && entry.status !== "retired")
-          ) {
-            return yield* new SequenceError({ sequenceId: id, code: "not-releasable" });
-          }
+      apply(
+        onEntry(id, (entry, all): Step<Owner, void> => {
+          if (entry.pending.size !== 0 || (entry.status !== "sealed" && entry.status !== "retired"))
+            return refuse(id, "not-releasable");
           const next = new Map(all);
           next.delete(id);
-          yield* Ref.set(entries, next);
+          return [undefined, next];
         }),
       );
 

@@ -61,6 +61,13 @@ test("the owner is registered after allocation, with the grant, before connect",
       expect(registered[0]!.connects).toBe(0);
       expect(registered[0]!.allocated.session).toBe(fake.session);
       expect(Redacted.isRedacted(registered[0]!.allocated.grant.jwt)).toBe(true);
+      // The owner record to persist names the session and never carries the token.
+      expect(registered[0]!.allocated.allocation).toEqual({
+        sessionId: fake.session.id,
+        ownership: fake.session.ownership,
+        model: H3.modelName,
+        expiresAt: grant.expiresAt,
+      });
       expect(fake.lifecycleCalls.connect).toBe(1);
       expect(opened.source.provider.sessionId).toBe(fake.session.id);
       // The granted seconds become a lifetime with a unit, never bare milliseconds.

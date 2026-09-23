@@ -4,13 +4,7 @@ import { ReactorError } from "../errors.js";
 import { jsonObject } from "../json.js";
 import type { JsonObject } from "../json.js";
 
-const NumberValue = Schema.Number.check(Schema.isFinite());
-const Integer = NumberValue.check(
-  Schema.isInt(),
-  Schema.isGreaterThanOrEqualTo(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-);
-const Positive = Integer.check(Schema.isGreaterThan(0));
+const Positive = Schema.Int.check(Schema.isGreaterThan(0));
 const Id = Schema.String.check(Schema.isUUID());
 
 /** Required fields follow the H3 Reference Turbo Realtime 0.5.5 documentation. */
@@ -19,13 +13,13 @@ export const Clip = Schema.Struct({
   prompt: Schema.String,
   metadata: Schema.String,
   frames: Positive,
-  seconds: NumberValue.check(Schema.isGreaterThan(0)),
-  seed: Integer,
+  seconds: Schema.Finite.check(Schema.isGreaterThan(0)),
+  seed: Schema.Natural,
   ready: Schema.Boolean,
   has_reference_image: Schema.optionalKey(Schema.Boolean),
-  reference_image_count: Schema.optionalKey(Integer),
+  reference_image_count: Schema.optionalKey(Schema.Natural),
   has_reference_audio: Schema.optionalKey(Schema.Boolean),
-  reference_audio_count: Schema.optionalKey(Integer),
+  reference_audio_count: Schema.optionalKey(Schema.Natural),
 });
 export type Clip = typeof Clip.Type;
 
@@ -65,10 +59,10 @@ export const Queue = Schema.Struct({
 export type Queue = typeof Queue.Type;
 
 export const State = Schema.Struct({
-  clip_seconds: NumberValue,
-  clip_seconds_min: NumberValue,
-  clip_seconds_max: NumberValue,
-  seed: Integer,
+  clip_seconds: Schema.Finite,
+  clip_seconds_min: Schema.Finite,
+  clip_seconds_max: Schema.Finite,
+  seed: Schema.Natural,
   autoplay: Schema.Boolean,
   flush_on_clip_end: Schema.Boolean,
   aspect: Schema.String,
@@ -76,12 +70,12 @@ export const State = Schema.Struct({
   height: Positive,
   playing: Schema.Boolean,
   playing_clip_id: Schema.NullOr(Id),
-  generation_queued: Integer,
+  generation_queued: Schema.Natural,
   generation_capacity: Positive,
-  playout_queued: Integer,
+  playout_queued: Schema.Natural,
   playout_capacity: Positive,
-  clips_played: Integer,
-  seconds_sent: NumberValue.check(Schema.isGreaterThanOrEqualTo(0)),
+  clips_played: Schema.Natural,
+  seconds_sent: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   valid_commands: Schema.Array(Schema.String),
 }).check(
   Schema.makeFilter((state) => {
@@ -103,23 +97,23 @@ export const Payloads = {
   clip_moved: Schema.Struct({
     clip: Clip,
     queue: Schema.Literals(["generation", "playout"]),
-    position: Integer,
+    position: Schema.Natural,
   }),
   clip_popped: Schema.Struct({ clip: Clip }),
   clip_generated: Schema.Struct({ clip: Clip }),
   clip_failed: Schema.Struct({ clip: Clip, reason: Schema.String }),
   clip_started: Schema.Struct({ clip: Clip }),
-  clip_finished: Schema.Struct({ clip: Clip, seconds_sent: NumberValue }),
-  clip_stopped: Schema.Struct({ clip: Clip, seconds_sent: NumberValue }),
+  clip_finished: Schema.Struct({ clip: Clip, seconds_sent: Schema.Finite }),
+  clip_stopped: Schema.Struct({ clip: Clip, seconds_sent: Schema.Finite }),
   queue_update: Queue,
   state_update: State,
   command_error: Schema.Struct({ command: Schema.String, reason: Schema.String }),
-  seed_accepted: Schema.Struct({ seed: Integer }),
-  clip_length_accepted: Schema.Struct({ clip_seconds: NumberValue, frames: Positive }),
+  seed_accepted: Schema.Struct({ seed: Schema.Natural }),
+  clip_length_accepted: Schema.Struct({ clip_seconds: Schema.Finite, frames: Positive }),
   canvas_accepted: Schema.Struct({ aspect: Schema.String, width: Positive, height: Positive }),
   autoplay_accepted: Schema.Struct({ enabled: Schema.Boolean }),
   flush_accepted: Schema.Struct({ enabled: Schema.Boolean }),
-  session_reset: Schema.Struct({ cleared_clips: Integer, was_playing: Schema.Boolean }),
+  session_reset: Schema.Struct({ cleared_clips: Schema.Natural, was_playing: Schema.Boolean }),
 } as const;
 export type MessageType = keyof typeof Payloads;
 export type Payload<K extends MessageType> = (typeof Payloads)[K]["Type"];

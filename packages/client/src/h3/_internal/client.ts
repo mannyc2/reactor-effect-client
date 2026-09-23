@@ -47,6 +47,7 @@ import type { AcceptanceIdentity } from "./evidence.js";
 import { checkedUpload, referenceMaterial } from "./references.js";
 import { captureRequest, clipId, enqueueArguments, nonnegative, seconds } from "./request.js";
 import type { CapturedRequest } from "./request.js";
+import { sizeOf } from "./retained.js";
 import { ProviderState } from "./state.js";
 
 const pure = <A>(evaluate: () => A): Effect.Effect<A, ReactorError> => parsed(evaluate);
@@ -84,39 +85,6 @@ const rejected = (operation: string, source: CommandReply, reason: string): Comm
   });
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
-/** Conservative retained-size accounting includes shared objects only once. */
-const sizeOf = (input: unknown): number => {
-  const pending: unknown[] = [input],
-    seen = new Set<object>();
-  let bytes = 0,
-    nodes = 0;
-  while (pending.length > 0) {
-    if (++nodes > 1_000_000) return Number.MAX_SAFE_INTEGER;
-    const value = pending.pop();
-    if (typeof value === "string") bytes += value.length * 3;
-    else if (value !== null && typeof value === "object") {
-      if (seen.has(value)) continue;
-      seen.add(value);
-      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
-      else if (value instanceof ArrayBuffer) bytes += value.byteLength;
-      else if (value instanceof Map) {
-        bytes += value.size * 32;
-        for (const [key, child] of value) {
-          pending.push(key);
-          pending.push(child);
-        }
-      } else if (value instanceof Set) {
-        bytes += value.size * 16;
-        for (const child of value) pending.push(child);
-      } else {
-        bytes += 32;
-        for (const child of Object.values(value)) pending.push(child);
-      }
-    } else bytes += 8;
-  }
-  return bytes;
-};
 
 interface PendingAcceptance extends AcceptanceIdentity {
   readonly deferred: Deferred.Deferred<Acceptance, ReactorError>;
@@ -205,6 +173,17 @@ const build = (
     const events = new Observations<ProviderEvent>();
     const pending = new Map<string, PendingAcceptance>();
     const acceptances = new Map<string, Acceptance>();
+    /** Acceptances count toward the reducer's retained bytes while the map holds them. */
+    const retain = (acceptance: Acceptance, direction: 1 | -1): void => {
+      state.retained.add(direction * (64 + acceptance.submissionId.length * 3));
+      if (direction === 1) {
+        state.retained.hold(acceptance.clip);
+        state.retained.hold(acceptance.evidence.source);
+      } else {
+        state.retained.drop(acceptance.clip);
+        state.retained.drop(acceptance.evidence.source);
+      }
+    };
     const operations = new Operations(limits.operations);
     const decoded = new WeakMap<CommandReply, Result.Result<ObservationResult, ReactorError>>();
     const observedWaiters = new Map<
@@ -263,10 +242,14 @@ const build = (
         return;
       }
       if (acceptances.size >= limits.acceptances) {
-        const first = acceptances.keys().next();
-        if (!first.done) acceptances.delete(first.value);
+        const first = acceptances.entries().next();
+        if (!first.done) {
+          acceptances.delete(first.value[0]);
+          retain(first.value[1], -1);
+        }
       }
       acceptances.set(entry.id, acceptance);
+      retain(acceptance, 1);
       operations.accept(acceptance);
       Deferred.doneUnsafe(entry.deferred, Effect.succeed(acceptance));
       emit({ _tag: "Acceptance", acceptance });
@@ -275,9 +258,9 @@ const build = (
     const reduce = (source: SessionEvent): void => {
       if (closed || fatalError !== undefined) return;
       try {
-        const before = state.snapshot().transportGeneration;
+        const before = state.transportGeneration;
         let disposition = state.admit(source);
-        if (state.snapshot().transportGeneration !== before) {
+        if (state.transportGeneration !== before) {
           uploads.clear();
           for (const entry of pending.values())
             if (entry.generation !== source.generation)
@@ -337,10 +320,7 @@ const build = (
             waiter,
             Result.isSuccess(result) ? Effect.succeed(result.success) : Effect.fail(result.failure),
           );
-        if (
-          sizeOf({ snapshot: state.snapshot(), acceptances: [...acceptances.values()] }) >
-          limits.retained
-        )
+        if (state.retained.bytes > limits.retained)
           fail(
             ReactorError.fromCode("Overflow", "H3 retained observation byte bound exceeded", {
               operation: "H3 observation",

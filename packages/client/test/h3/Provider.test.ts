@@ -1487,6 +1487,25 @@ describe("H3 preparation, cancellation and bounds", () => {
       }),
     ));
 
+  test("retained bytes are checked on every event, not only while acquiring", () =>
+    run(
+      Effect.gen(function* () {
+        const { fake, provider } = yield* setup({}, { maxRetainedBytes: 64 * 1024 });
+        const source = yield* fake.emit("clip_failed", {
+          clip: { ...fixtureClip() },
+          reason: "fixture",
+        });
+        yield* observed(provider, source.sequence);
+        yield* fake.emit("clip_failed", {
+          clip: { ...fixtureClip({ prompt: "x".repeat(32 * 1024) }) },
+          reason: "fixture",
+        });
+        const error = yield* provider.failure;
+        expect(error.reason._tag).toBe("Overflow");
+        expect(error.message).toContain("byte bound");
+      }),
+    ));
+
   test("one slow observer fails with Overflow without blocking provider commands or new observers", () =>
     run(
       Effect.gen(function* () {

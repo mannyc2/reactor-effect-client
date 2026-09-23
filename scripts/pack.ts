@@ -60,7 +60,12 @@ interface NativeIdentity {
   readonly platform: string;
   readonly library: string;
   readonly sha256: string;
-  readonly build: Readonly<{ abiVersion: number; sourceSha256: string; profile: string }>;
+  readonly build: Readonly<{
+    abiVersion: number;
+    sourceSha256: string;
+    profile: string;
+    webrtcPrebuilt: string;
+  }>;
 }
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -313,7 +318,8 @@ const checkNativeArchive = (archive: Archive, packaged: (path: string) => Buffer
     if (
       identity.schemaVersion !== 1 ||
       identity.build.abiVersion !== 4 ||
-      identity.build.profile !== "release"
+      identity.build.profile !== "release" ||
+      !/^webrtc-\d+-[0-9a-f]{8}-p\d+$/.test(identity.build.webrtcPrebuilt)
     )
       fail(`invalid native identity: ${path}`);
     if (

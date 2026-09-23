@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import type * as Http from "effect/unstable/http/HttpClient";
 import type { TokenGrant } from "../coordinator/_internal/schemas.js";
@@ -16,11 +17,27 @@ import { fromH3Session } from "./h3-source.js";
 import type { H3Source, SessionSourceOptions } from "./h3-source.js";
 import type { Opened } from "./renewal.js";
 
+/**
+ * A durable owner record of an allocated session, without its token: enough to
+ * find the session again and terminate it with the grant's token, which the
+ * application stores as it decides.
+ */
+export const Allocation = Schema.Struct({
+  sessionId: Schema.String,
+  ownership: Schema.Literals(["owned", "attached"]),
+  model: Schema.String,
+  /** When the grant's token expires, in seconds since the epoch. */
+  expiresAt: Schema.Finite,
+});
+export interface Allocation extends Schema.Schema.Type<typeof Allocation> {}
+
 /** A paid session just allocated, before it connects, and the grant it runs under. */
 export interface Allocated {
   readonly session: Session;
   /** `grant.jwt` stays `Redacted`: how to store it is the application's decision. */
   readonly grant: TokenGrant;
+  /** The session's owner record, ready to persist with `Allocation`. */
+  readonly allocation: Allocation;
 }
 
 export interface OpenH3Options<E = never, R = never> {
@@ -73,7 +90,17 @@ export const openH3With =
         .create({ ...options.create, model: modelName, jwt: grant.jwt })
         .pipe(Scope.provide(scope));
       const open = Effect.gen(function* () {
-        if (options.onAllocated !== undefined) yield* options.onAllocated({ session, grant });
+        if (options.onAllocated !== undefined)
+          yield* options.onAllocated({
+            session,
+            grant,
+            allocation: {
+              sessionId: session.id,
+              ownership: session.ownership,
+              model: modelName,
+              expiresAt: grant.expiresAt,
+            },
+          });
         yield* session.connect;
         const source = yield* bind(session, options.source);
         const opened: OpenedH3 = {

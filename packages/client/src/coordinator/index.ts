@@ -11,7 +11,8 @@ import type { ClipReady } from "../wire.generated.js";
 
 export { Inspection, modelRate } from "./_internal/schemas.js";
 export type { TokenGrant, TokenOptions } from "./_internal/schemas.js";
-export type { Termination, Poll } from "./_internal/client.js";
+export { Termination } from "./_internal/client.js";
+export type { Poll } from "./_internal/client.js";
 export { parsePlaylist } from "./_internal/recording.js";
 export type { DownloadedClip, DownloadOptions, Segment } from "./_internal/recording.js";
 export type {

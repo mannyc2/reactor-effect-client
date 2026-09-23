@@ -35,9 +35,13 @@ export interface VideoFrame {
   readonly sequence: bigint;
   /** The pixel layout of `data`; the native host produces `"BGRA"`. */
   readonly format: VideoFormat;
-  /** Owned pixel bytes in `format`, `width * height * 4` of them. Retaining a frame never retains native memory. */
-  readonly data: Uint8Array;
-  readonly metadata: Uint8Array;
+  /**
+   * Owned pixel bytes in `format`, `width * height * 4` of them: the whole of
+   * an `ArrayBuffer` of their own, so the buffer can be transferred. Retaining
+   * a frame never retains native memory.
+   */
+  readonly data: Uint8Array<ArrayBuffer>;
+  readonly metadata: Uint8Array<ArrayBuffer>;
 }
 
 /**
@@ -51,8 +55,8 @@ export interface AudioFrame {
   readonly channels: number;
   /** The block's admission sequence on its track in this generation, as a `VideoFrame`'s. */
   readonly sequence: bigint;
-  /** Owned, interleaved signed 16-bit PCM samples. */
-  readonly samples: Int16Array;
+  /** Owned, interleaved signed 16-bit PCM samples, in an `ArrayBuffer` of their own. */
+  readonly samples: Int16Array<ArrayBuffer>;
 }
 
 /** Observed transport pressure, scoped to one connection generation. */

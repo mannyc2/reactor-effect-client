@@ -8,8 +8,9 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Duration from "effect/Duration";
+import * as Schema from "effect/Schema";
 import { duration } from "../../duration.js";
-import { Http, parsed, positiveLimit, ReactorError } from "../../errors.js";
+import { Http, parsed, positiveLimit, ReactorError, ReactorErrorFromJson } from "../../errors.js";
 import { array, json, nonempty, record, uint32 } from "../../json.js";
 import type { Json } from "../../json.js";
 import {
@@ -113,17 +114,22 @@ export interface UploadAllocation {
   readonly presigned_url: string;
   readonly path: string;
 }
-export interface Termination {
-  readonly attempted: boolean;
-  readonly responseReceived: boolean;
-  readonly confirmed: boolean;
-  readonly evidence: "absent" | "terminal" | null;
+/**
+ * A remote termination verdict. As a Schema it encodes for persistence; its
+ * `error` encodes as diagnostic JSON, without provider text.
+ */
+export const Termination = Schema.Struct({
+  attempted: Schema.Boolean,
+  responseReceived: Schema.Boolean,
+  confirmed: Schema.Boolean,
+  evidence: Schema.NullOr(Schema.Literals(["absent", "terminal"])),
   /** DELETE/stop status; null means no response headers were received. */
-  readonly deleteStatus: number | null;
+  deleteStatus: Schema.NullOr(Schema.Int),
   /** State from the independent confirmation, when it was valid. */
-  readonly state: string | null;
-  readonly error?: ReactorError;
-}
+  state: Schema.NullOr(Schema.String),
+  error: Schema.optionalKey(ReactorErrorFromJson),
+});
+export interface Termination extends Schema.Schema.Type<typeof Termination> {}
 const pure = <A>(f: () => A): Effect.Effect<A, ReactorError> => parsed(f);
 /**
  * A termination verdict as span attributes. Terminate returns its verdict

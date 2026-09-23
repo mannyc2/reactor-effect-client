@@ -19,7 +19,7 @@
     "packages/native/lib/**",
     "packages/native/rust/**",
     "bun.lock",
-    "work/refactor-evidence/**",
+    "packages/client/test/h3/upstream/**",
     "release-tools/node_modules/**",
     "release-tools/bun.lock",
     ".release/**"
