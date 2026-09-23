@@ -20,7 +20,9 @@ const controlSent = (peer: MockPeer): W.ControlClientMessage[] =>
     .filter((s) => s.channel === "control")
     .map((s) => W.ControlClientMessage.decode(s.bytes));
 
-test("session cleanup: a stalled publication release cannot prevent remote termination", () =>
+test("session cleanup: a stalled publication release cannot prevent remote termination", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const { session, peers } = makeSession(fixture, { commandTimeoutMs: 20 });
     const release = Deferred.makeUnsafe<void>();
@@ -28,8 +30,8 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
     let finished = false;
     let interrupted = false;
     try {
-      await run(session.start());
-      await run(session.publish("input_audio", new FakeTrack("audio")));
+      await run(session.start(), { signal });
+      await run(session.publish("input_audio", new FakeTrack("audio")), { signal });
       const peer = peerAt(peers);
       const send = peer.send.bind(peer);
       peer.send = (channel, bytes) =>
@@ -43,7 +45,7 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
               ),
             )
           : send(channel, bytes);
-      const closing = run(session.close());
+      const closing = run(session.close(), { signal });
       cleanup = closing;
       void closing.then(() => {
         finished = true;
@@ -54,7 +56,7 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
       assert(interrupted, "publication wait was not interrupted");
       assert(report.localErrors.some((error) => error.code === "Timeout"));
       assert(report.remote.confirmed, "remote cleanup was skipped after publication failure");
-      equal(await run(session.close()), report);
+      equal(await run(session.close(), { signal }), report);
     } finally {
       Deferred.doneUnsafe(release, Effect.void);
       if (cleanup !== undefined) await cleanup;
@@ -62,11 +64,13 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
     }
   }));
 
-test("session cleanup: a publication release defect is reported and remote cleanup still runs", () =>
+test("session cleanup: a publication release defect is reported and remote cleanup still runs", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const { session, peers } = makeSession(fixture);
-    await run(session.start());
-    await run(session.publish("input_audio", new FakeTrack("audio")));
+    await run(session.start(), { signal });
+    await run(session.publish("input_audio", new FakeTrack("audio")), { signal });
     const peer = peerAt(peers);
     const send = peer.send.bind(peer);
     peer.send = (channel, bytes) =>
@@ -74,34 +78,38 @@ test("session cleanup: a publication release defect is reported and remote clean
       W.ControlClientMessage.decode(bytes).payload?.case === "unpublish_track"
         ? Effect.die("fixture publication cleanup defect")
         : send(channel, bytes);
-    const report = await run(session.close());
+    const report = await run(session.close(), { signal });
     equal(report.localClosed, false);
     assert(report.localErrors.some((error) => error.code === "Shutdown"));
     assert(report.remote.confirmed);
     equal(session.snapshot.status, "closed");
   }));
 
-test("session cleanup: a coordinator defect preserves an unconfirmed report and resolves repeated close", () =>
+test("session cleanup: a coordinator defect preserves an unconfirmed report and resolves repeated close", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const { session } = makeSession(fixture);
-    await run(session.start());
+    await run(session.start(), { signal });
     session.http.terminate = () => Effect.die("fixture coordinator cleanup defect");
-    const report = await run(session.close());
+    const report = await run(session.close(), { signal });
     equal(report.localClosed, true);
     equal(report.remote.confirmed, false);
     equal(report.remote.error?.code, "Shutdown");
     equal(report.remote.error?.context.outcome, "unknown");
-    equal(await run(session.close()), report);
+    equal(await run(session.close(), { signal }), report);
     equal(session.snapshot.status, "closed");
   }));
 
-test("session policy: source registration/ICE/SDP order, readiness and immediate correlated bodyless ACK", () =>
+test("session policy: source registration/ICE/SDP order, readiness and immediate correlated bodyless ACK", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       equal(s.snapshot.status, "ready");
-      const reply = await run(s.command("echo", {}));
+      const reply = await run(s.command("echo", {}), { signal });
       equal(reply.kind, "ack");
       equal(reply.raw, { request_id: "data_1", kind: 2 });
       equal(reply.requestId, "data_1");
@@ -130,11 +138,13 @@ test("session policy: source registration/ICE/SDP order, readiness and immediate
       await run(s.close());
     }
   }));
-test("session policy: 32 concurrent replies resolve by ID in reverse order, independent of observers", () =>
+test("session policy: 32 concurrent replies resolve by ID in reverse order, independent of observers", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       const tasks = Array.from({ length: 32 }, (_, i) =>
@@ -164,11 +174,13 @@ test("session policy: 32 concurrent replies resolve by ID in reverse order, inde
       await run(s.close());
     }
   }));
-test("session policy: absent model data, empty Struct, null fields and correlated remote errors stay distinct", () =>
+test("session policy: absent model data, empty Struct, null fields and correlated remote errors stay distinct", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       p.sendHook = (channel, bytes) => {
@@ -193,16 +205,16 @@ test("session policy: absent model data, empty Struct, null fields and correlate
                 },
         });
       };
-      const absent = await run(s.command("absent", {}));
+      const absent = await run(s.command("absent", {}), { signal });
       assert(absent.kind === "message");
       assert(!("data" in absent));
-      const empty = await run(s.command("empty", {}));
+      const empty = await run(s.command("empty", {}), { signal });
       assert(empty.kind === "message");
       equal(empty.data, {});
-      const nullable = await run(s.command("null", {}));
+      const nullable = await run(s.command("null", {}), { signal });
       assert(nullable.kind === "message");
       equal(nullable.data, { field: null });
-      const e = await failure(s.command("error", {}));
+      const e = await failure(s.command("error", {}), { signal });
       equal(e.code, "Remote");
       equal(e.context.remoteCode, "MODEL_ERROR");
       equal(e.context.outcome, "replied");
@@ -210,17 +222,19 @@ test("session policy: absent model data, empty Struct, null fields and correlate
       equal(e.message, "remote command error MODEL_ERROR");
       equal(e.context.body, "reason");
       const count = dataSent(p).length;
-      equal((await failure(s.command("invalid", []))).code, "Protocol");
+      equal((await failure(s.command("invalid", []), { signal })).code, "Protocol");
       equal(dataSent(p).length, count);
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: bodyless control does not ACK; schema validates its correlated payload", () =>
+test("session policy: bodyless control does not ACK; schema validates its correlated payload", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 10 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       p.sendHook = (channel, bytes) => {
@@ -229,11 +243,11 @@ test("session policy: bodyless control does not ACK; schema validates its correl
           p.replyControl({ request_id: m.request_id, kind: 2 });
         }
       };
-      equal((await failure(s.schema())).code, "Timeout");
+      equal((await failure(s.schema(), { signal })).code, "Timeout");
       equal(s.snapshot.pending.control, 1);
       p.autoReply = true;
       p.sendHook = undefined;
-      equal((await run(s.schema())).openapi, { openapi: "3.1.0", paths: {} });
+      equal((await run(s.schema(), { signal })).openapi, { openapi: "3.1.0", paths: {} });
     } finally {
       await run(s.close());
     }
@@ -259,7 +273,9 @@ test("session policy: readiness waits for connected peer AND BOTH channels, afte
       await run(s.close());
     }
   }));
-test("session policy: failure during SDP HTTP exchange wins over answer/application errors", () =>
+test("session policy: failure during SDP HTTP exchange wins over answer/application errors", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     f.hook = (call) => {
@@ -270,7 +286,7 @@ test("session policy: failure during SDP HTTP exchange wins over answer/applicat
       return undefined;
     };
     try {
-      const e = await failure(s.start());
+      const e = await failure(s.start(), { signal });
       equal(e.code, "Disconnected");
       assert(e.message.includes("failed"));
       equal(peerAt(peers).answers, 0);
@@ -279,7 +295,9 @@ test("session policy: failure during SDP HTTP exchange wins over answer/applicat
       await run(s.close());
     }
   }));
-test("session policy: failure DURING setRemoteDescription preserves the actual peer teardown cause", () =>
+test("session policy: failure DURING setRemoteDescription preserves the actual peer teardown cause", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s } = makeSession(f, {}, (p) => {
       p.answerHook = () =>
@@ -290,18 +308,20 @@ test("session policy: failure DURING setRemoteDescription preserves the actual p
         );
     });
     try {
-      const e = await failure(s.start());
+      const e = await failure(s.start(), { signal });
       equal(e.code, "Disconnected");
       assert(e.message.includes("failed"));
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: a closed data channel fails the connection as ChannelClosed naming it", () =>
+test("session policy: a closed data channel fails the connection as ChannelClosed naming it", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const generation = s.snapshot.generation;
       peerAt(peers).emit({ type: "channel", channel: "control", open: false });
       await eventually(() => s.snapshot.status === "disconnected");
@@ -314,30 +334,32 @@ test("session policy: a closed data channel fails the connection as ChannelClose
       await run(s.close());
     }
   }));
-test("session policy: missing readiness times out and releases the generation", () =>
+test("session policy: missing readiness times out and releases the generation", ({ signal }) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { readyTimeoutMs: 10 }, (p) => {
       p.answerHook = () =>
         Effect.sync(() => p.emit({ type: "channel", channel: "data", open: true }));
     });
     try {
-      equal((await failure(s.start())).code, "Timeout");
+      equal((await failure(s.start(), { signal })).code, "Timeout");
       assert(peerAt(peers).closes > 0);
       equal(s.snapshot.status, "disconnected");
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: reconnect reuses connection with PUT, fails uncertain commands and fences retired callbacks", () =>
+test("session policy: reconnect reuses connection with PUT, fails uncertain commands and fences retired callbacks", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const old = peerAt(peers);
       old.autoReply = false;
       const pending = Effect.runPromise(Effect.result(s.command("side-effect", {})));
       await eventually(() => s.snapshot.pending.data === 1);
-      await run(s.reconnect());
+      await run(s.reconnect(), { signal });
       const lost = await pending;
       assert(lost._tag === "Failure");
       equal(lost.failure.context.outcome, "unknown");
@@ -365,18 +387,20 @@ test("session policy: reconnect reuses connection with PUT, fails uncertain comm
       await run(s.close());
     }
   }));
-test("session policy: late/duplicate model replies are observable, never settle a second command", () =>
+test("session policy: late/duplicate model replies are observable, never settle a second command", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 10 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       const events = Effect.runPromise(
         Effect.result(Stream.runCollect(s.events().pipe(Stream.take(4)))),
       );
       await eventually(() => s.snapshot.subscribers === 1);
-      equal((await failure(s.command("late", {}))).code, "Timeout");
+      equal((await failure(s.command("late", {}), { signal })).code, "Timeout");
       const old = dataSent(p)[0];
       assert(old !== undefined);
       p.replyData({
@@ -385,7 +409,7 @@ test("session policy: late/duplicate model replies are observable, never settle 
         payload: { case: "message", value: { type: "late-result" } },
       });
       p.autoReply = true;
-      await run(s.command("matched", {}));
+      await run(s.command("matched", {}), { signal });
       const matched = dataSent(p)[1];
       assert(matched !== undefined);
       const reply = {
@@ -406,11 +430,13 @@ test("session policy: late/duplicate model replies are observable, never settle 
       await run(s.close());
     }
   }));
-test("session policy: observation overflow fails only the slow subscriber, not correlated replies", () =>
+test("session policy: observation overflow fails only the slow subscriber, not correlated replies", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       p.sendHook = (channel, bytes) => {
@@ -430,7 +456,7 @@ test("session policy: observation overflow fails only the slow subscriber, not c
         Effect.result(Stream.runDrain(s.events({ maxBytes: 1, capacity: 1 }))),
       );
       await eventually(() => s.snapshot.subscribers === 1);
-      const reply = await run(s.command("echo", {}));
+      const reply = await run(s.command("echo", {}), { signal });
       assert(reply.kind === "message");
       const result = await events;
       assert(result._tag === "Failure");
@@ -441,11 +467,13 @@ test("session policy: observation overflow fails only the slow subscriber, not c
       await run(s.close());
     }
   }));
-test("session policy: interrupted observer releases its registration while submitted command remains session-owned", () =>
+test("session policy: interrupted observer releases its registration while submitted command remains session-owned", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 1000 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       peerAt(peers).autoReply = false;
       await Effect.runPromise(
         Effect.scoped(
@@ -467,16 +495,16 @@ test("session policy: interrupted observer releases its registration while submi
       await run(s.close());
     }
   }));
-test("session policy: pending count overflow does not send an extra side effect", () =>
+test("session policy: pending count overflow does not send an extra side effect", ({ signal }) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { maxPending: 1, commandTimeoutMs: 1000 });
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       const first = Effect.runPromise(Effect.result(s.command("one", {})));
       await eventually(() => s.snapshot.pending.data === 1);
-      const error = await failure(s.command("two", {}));
+      const error = await failure(s.command("two", {}), { signal });
       equal(error.code, "Overflow");
       equal(error.context.outcome, "not-submitted");
       equal(dataSent(p).length, 1);
@@ -488,21 +516,25 @@ test("session policy: pending count overflow does not send an extra side effect"
       await run(s.close());
     }
   }));
-test("session policy: allocation cancelled by close records unknown remote outcome, without retry", () =>
+test("session policy: allocation cancelled by close records unknown remote outcome, without retry", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     f.hook = (c) =>
       c.url.pathname === "/sessions" && c.method === "POST" ? stall(c.signal) : undefined;
     const { session: s } = makeSession(f, { requestTimeoutMs: 1000 });
     const task = Effect.runPromise(Effect.result(s.start()));
     await eventually(() => f.calls.some((c) => c.url.pathname === "/sessions"));
-    const close = await run(s.close());
+    const close = await run(s.close(), { signal });
     equal(close.allocation, "unknown");
     equal(close.remote.attempted, false);
     assert((await task)._tag === "Failure");
     equal(f.calls.filter((c) => c.method === "POST").length, 1);
     equal(s.snapshot.status, "closed");
   }));
-test("session policy: concurrent connect/reconnect calls reject illegal state transitions", () =>
+test("session policy: concurrent connect/reconnect calls reject illegal state transitions", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, {}, (p) => {
       p.answerHook = () => Effect.void;
@@ -510,20 +542,22 @@ test("session policy: concurrent connect/reconnect calls reject illegal state tr
     try {
       const first = Effect.runPromise(Effect.result(s.start()));
       await eventually(() => peers[0]?.answers === 1);
-      equal((await failure(s.start())).code, "InvalidState");
-      equal((await failure(s.reconnect())).code, "InvalidState");
+      equal((await failure(s.start(), { signal })).code, "InvalidState");
+      equal((await failure(s.reconnect(), { signal })).code, "InvalidState");
       peerAt(peers).emit({ type: "state", state: "failed" });
       assert((await first)._tag === "Failure");
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: owned close is idempotent; accepted deletion alone is not confirmed termination", () =>
+test("session policy: owned close is idempotent; accepted deletion alone is not confirmed termination", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     f.terminateConfirms = false;
     const { session: s } = makeSession(f);
-    await run(s.start());
-    const [a, b] = await Promise.all([run(s.close()), run(s.close())]);
+    await run(s.start(), { signal });
+    const [a, b] = await Promise.all([run(s.close(), { signal }), run(s.close(), { signal })]);
     equal(a, b);
     equal(a.localClosed, true);
     equal(a.remote.attempted, true);
@@ -534,13 +568,15 @@ test("session policy: owned close is idempotent; accepted deletion alone is not 
     equal(a.remote.state, "ACTIVE");
     equal(f.calls.filter((c) => c.method === "DELETE").length, 1);
   }));
-test("session policy: attached/pre-registered connection is never deleted and initially uses SDP POST", () =>
+test("session policy: attached/pre-registered connection is never deleted and initially uses SDP POST", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s } = makeSession(f, {
       intent: { _tag: "Attach", sessionId: f.sessionId, connectionId: 2345 },
     });
-    await run(s.start());
-    const report = await run(s.close());
+    await run(s.start(), { signal });
+    const report = await run(s.close(), { signal });
     equal(report.ownership, "attached");
     equal(report.remote.attempted, false);
     equal(
@@ -554,36 +590,43 @@ test("session policy: attached/pre-registered connection is never deleted and in
     );
     assert(f.calls.some((c) => c.method === "POST" && c.url.pathname.endsWith("/2345/sdp_params")));
   }));
-test("session policy: close has a bounded termination request even inside an uninterruptible finalizer", () =>
+test("session policy: close has a bounded termination request even inside an uninterruptible finalizer", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s } = makeSession(f, { requestTimeoutMs: 10 });
-    await run(s.start());
+    await run(s.start(), { signal });
     f.hook = (c) => (c.method === "DELETE" ? stall(c.signal) : undefined);
-    const report = await run(s.close());
+    const report = await run(s.close(), { signal });
     equal(report.localClosed, true);
     equal(report.remote.confirmed, false);
     equal(report.remote.error?.code, "Timeout");
     equal(s.snapshot.status, "closed");
   }));
-test("session policy: heartbeat is immediate, generation-scoped, and stops after local close", () =>
+test("session policy: heartbeat is immediate, generation-scoped, and stops after local close", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { heartbeatMs: 5 });
-    await run(s.start());
+    await run(s.start(), { signal });
     const p = peerAt(peers);
     const pings = (): number => controlSent(p).filter((m) => m.payload?.case === "ping").length;
     await eventually(() => pings() >= 2);
-    await run(s.close());
+    await run(s.close(), { signal });
     const count = pings();
     await new Promise<void>((r) => setTimeout(r, 20));
     equal(pings(), count);
   }));
-test("session policy: upload sequence allocates once, omits credentials on PUT, and reports notification submission only", () =>
+test("session policy: upload sequence allocates once, omits credentials on PUT, and reports notification submission only", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const uploaded = await run(
         s.upload("fixture.bin", "application/octet-stream", new Uint8Array([0, 128, 255])),
+        { signal },
       );
       equal(uploaded.file.size, 3n);
       equal(uploaded.notification, "submitted");
@@ -595,17 +638,19 @@ test("session policy: upload sequence allocates once, omits credentials on PUT, 
       );
       assert(uploadedMessage !== undefined);
       equal(uploadedMessage.kind, 3);
-      equal((await failure(s.upload("empty", "x", new Uint8Array()))).code, "Upload");
+      equal((await failure(s.upload("empty", "x", new Uint8Array()), { signal })).code, "Upload");
       equal(f.calls.filter((c) => c.url.pathname.endsWith("/uploads")).length, 1);
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: disconnect during upload aborts transfer and retains allocation/unknown-transfer recovery facts", () =>
+test("session policy: disconnect during upload aborts transfer and retains allocation/unknown-transfer recovery facts", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       f.hook = (c) => (c.url.hostname === "upload.fixture" ? stall(c.signal) : undefined);
       const task = Effect.runPromise(Effect.result(s.upload("file", "x", new Uint8Array([1]))));
       await eventually(() => f.calls.some((c) => c.url.hostname === "upload.fixture"));
@@ -625,13 +670,15 @@ test("session policy: disconnect during upload aborts transfer and retains alloc
       await run(s.close());
     }
   }));
-test("session policy: publisher slot, cloned outgoing/leased incoming track ownership, and cleanup", () =>
+test("session policy: publisher slot, cloned outgoing/leased incoming track ownership, and cleanup", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     const source = new FakeTrack("audio");
-    await run(s.start());
+    await run(s.start(), { signal });
     const p = peerAt(peers);
-    await run(s.publish("input_audio", source));
+    await run(s.publish("input_audio", source), { signal });
     equal(s.snapshot.claimedTracks, ["input_audio"]);
     assert(source.clones.length === 1);
     await Effect.runPromise(
@@ -644,16 +691,18 @@ test("session policy: publisher slot, cloned outgoing/leased incoming track owne
       ),
     );
     equal(p.leases.size, 0);
-    const report = await run(s.close());
+    const report = await run(s.close(), { signal });
     equal(source.readyState, "live");
     equal(source.clones[0]?.readyState, "ended");
     equal(report.unpublishSubmitted, ["input_audio"]);
   }));
-test("session policy: pause tracks changes local direction before notification; failed send does not falsify local state", () =>
+test("session policy: pause tracks changes local direction before notification; failed send does not falsify local state", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.sendHook = () => {
         throw new ReactorError({
@@ -662,20 +711,25 @@ test("session policy: pause tracks changes local direction before notification; 
           context: { outcome: "not-submitted" },
         });
       };
-      equal((await failure(s.setTrackActive("main_video", false))).code, "Overflow");
+      equal((await failure(s.setTrackActive("main_video", false), { signal })).code, "Overflow");
       assert(s.snapshot.pausedLocally.includes("main_video"));
     } finally {
       await run(s.close());
     }
   }));
-test("session policy: recording/clip correlations and recorder-disabled error mapping", () =>
+test("session policy: recording/clip correlations and recorder-disabled error mapping", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f);
     try {
-      await run(s.start());
-      equal((await run(s.requestClip(1))).playlist_url, "https://coordinator.fixture/clip.m3u8");
-      equal((await run(s.recording())).predicted_ready_at_ms, 1n);
-      equal((await failure(s.requestClip(NaN))).code, "Protocol");
+      await run(s.start(), { signal });
+      equal(
+        (await run(s.requestClip(1), { signal })).playlist_url,
+        "https://coordinator.fixture/clip.m3u8",
+      );
+      equal((await run(s.recording(), { signal })).predicted_ready_at_ms, 1n);
+      equal((await failure(s.requestClip(NaN), { signal })).code, "Protocol");
       const p = peerAt(peers);
       p.autoReply = false;
       p.sendHook = (channel, bytes) => {
@@ -688,7 +742,7 @@ test("session policy: recording/clip correlations and recorder-disabled error ma
           });
         }
       };
-      const disabled = await failure(s.recording());
+      const disabled = await failure(s.recording(), { signal });
       equal(disabled.code, "RecorderDisabled");
       equal(disabled.message, "clip failed");
       equal(disabled.context.body, "ENCODER CRASHED");
@@ -698,29 +752,31 @@ test("session policy: recording/clip correlations and recorder-disabled error ma
   }));
 // Publication ownership policies. Native peers/media are exercised separately by
 // the emitted-package browser fixture, not established by these modeled senders.
-test("publication session: replacement reuses a confirmed claim, owns clones, and unpublish is a notification", () =>
+test("publication session: replacement reuses a confirmed claim, owns clones, and unpublish is a notification", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f),
       first = new FakeTrack("audio"),
       second = new FakeTrack("audio");
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
-      await run(s.publish("input_audio", first));
-      await run(s.publish("input_audio", second));
+      await run(s.publish("input_audio", first), { signal });
+      await run(s.publish("input_audio", second), { signal });
       equal(first.readyState, "live");
       equal(second.readyState, "live");
       equal(first.clones[0]?.readyState, "ended");
       equal(second.clones[0]?.readyState, "live");
       equal(controlSent(p).filter((m) => m.payload?.case === "publish_track").length, 1);
-      await run(s.unpublish("input_audio"));
+      await run(s.unpublish("input_audio"), { signal });
       equal(second.clones[0]?.readyState, "ended");
       equal(s.snapshot.claimedTracks, []);
       const notice = controlSent(p).find((m) => m.payload?.case === "unpublish_track");
       assert(notice !== undefined);
       equal(notice.kind, 3);
       equal(notice.request_id, "");
-      await run(s.publish("input_audio", first));
+      await run(s.publish("input_audio", first), { signal });
       equal(controlSent(p).filter((m) => m.payload?.case === "publish_track").length, 2);
       equal(first.clones[1]?.readyState, "live");
     } finally {
@@ -730,44 +786,48 @@ test("publication session: replacement reuses a confirmed claim, owns clones, an
     equal(first.readyState, "live");
     equal(second.readyState, "live");
   }));
-test("publication session: rejected native replacement disposes candidate, preserves previous sender and confirmed remote claim", () =>
+test("publication session: rejected native replacement disposes candidate, preserves previous sender and confirmed remote claim", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f),
       first = new FakeTrack("audio"),
       next = new FakeTrack("audio");
     try {
-      await run(s.start());
-      await run(s.publish("input_audio", first));
+      await run(s.start(), { signal });
+      await run(s.publish("input_audio", first), { signal });
       const p = peerAt(peers);
       p.replaceHook = () =>
         Effect.fail(
           new ReactorError({ code: "InvalidState", message: "modeled native rejection" }),
         );
-      equal((await failure(s.publish("input_audio", next))).code, "InvalidState");
+      equal((await failure(s.publish("input_audio", next), { signal })).code, "InvalidState");
       equal(next.clones[0]?.readyState, "ended");
       equal(first.clones[0]?.readyState, "live");
       equal(s.snapshot.status, "ready");
       equal(s.snapshot.claimedTracks, ["input_audio"]);
       equal(next.readyState, "live");
       p.replaceHook = undefined;
-      await run(s.unpublish("input_audio"));
+      await run(s.unpublish("input_audio"), { signal });
     } finally {
       await run(s.close());
     }
   }));
-test("publication session: rejected unpublish detach retains sender and sends no false retirement notification", () =>
+test("publication session: rejected unpublish detach retains sender and sends no false retirement notification", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f),
       source = new FakeTrack("audio");
     try {
-      await run(s.start());
-      await run(s.publish("input_audio", source));
+      await run(s.start(), { signal });
+      await run(s.publish("input_audio", source), { signal });
       const p = peerAt(peers);
       p.replaceHook = () =>
         Effect.fail(
           new ReactorError({ code: "InvalidState", message: "modeled detach rejection" }),
         );
-      equal((await failure(s.unpublish("input_audio"))).code, "InvalidState");
+      equal((await failure(s.unpublish("input_audio"), { signal })).code, "InvalidState");
       equal(source.clones[0]?.readyState, "live");
       equal(s.snapshot.claimedTracks, ["input_audio"]);
       equal(controlSent(p).filter((m) => m.payload?.case === "unpublish_track").length, 0);
@@ -776,13 +836,15 @@ test("publication session: rejected unpublish detach retains sender and sends no
       await run(s.close());
     }
   }));
-test("publication session: notification failure follows local sender retirement but does not confirm remote release", () =>
+test("publication session: notification failure follows local sender retirement but does not confirm remote release", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f),
       source = new FakeTrack("audio");
     try {
-      await run(s.start());
-      await run(s.publish("input_audio", source));
+      await run(s.start(), { signal });
+      await run(s.publish("input_audio", source), { signal });
       const p = peerAt(peers);
       p.sendHook = (channel, bytes) => {
         if (
@@ -795,7 +857,7 @@ test("publication session: notification failure follows local sender retirement 
             context: { outcome: "unknown" },
           });
       };
-      const error = await failure(s.unpublish("input_audio"));
+      const error = await failure(s.unpublish("input_audio"), { signal });
       equal(error.context.outcome, "unknown");
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
@@ -805,15 +867,17 @@ test("publication session: notification failure follows local sender retirement 
       await run(s.close());
     }
   }));
-test("publication session: interrupted in-flight native replacement retires the generation and stops both owned clones", () =>
+test("publication session: interrupted in-flight native replacement retires the generation and stops both owned clones", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
       first = new FakeTrack("audio"),
       next = new FakeTrack("audio");
     let finish: (() => void) | undefined;
     try {
-      await run(s.start());
-      await run(s.publish("input_audio", first));
+      await run(s.start(), { signal });
+      await run(s.publish("input_audio", first), { signal });
       const p = peerAt(peers);
       p.replaceHook = () =>
         Effect.tryPromise({
@@ -831,7 +895,7 @@ test("publication session: interrupted in-flight native replacement retires the 
       equal(first.clones[0]?.readyState, "ended");
       equal(next.clones[0]?.readyState, "ended");
       assert(p.closes > 0);
-      await run(s.reconnect());
+      await run(s.reconnect(), { signal });
       finish?.();
       await new Promise((resolve) => setTimeout(resolve, 10));
       equal(s.snapshot.status, "ready");
@@ -844,12 +908,14 @@ test("publication session: interrupted in-flight native replacement retires the 
       await run(s.close());
     }
   }));
-test("publication session: stalled native replacement has a deadline and cannot leave a live candidate outside ownership", () =>
+test("publication session: stalled native replacement has a deadline and cannot leave a live candidate outside ownership", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 35 }),
       source = new FakeTrack("audio");
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       peerAt(peers).replaceHook = () => Effect.never;
       const error = await failure(
         s.publish("input_audio", source).pipe(
@@ -861,6 +927,7 @@ test("publication session: stalled native replacement has a deadline and cannot 
               ),
           }),
         ),
+        { signal },
       );
       equal(error.code, "Timeout");
       equal(s.snapshot.status, "disconnected");
@@ -870,12 +937,14 @@ test("publication session: stalled native replacement has a deadline and cannot 
       await run(s.close());
     }
   }));
-test("publication session: interruption while claiming sends no media and cannot replay a late accepted claim", () =>
+test("publication session: interruption while claiming sends no media and cannot replay a late accepted claim", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
       source = new FakeTrack("audio");
     try {
-      await run(s.start());
+      await run(s.start(), { signal });
       const p = peerAt(peers);
       p.autoReply = false;
       const task = Effect.runFork(s.publish("input_audio", source));
@@ -900,18 +969,20 @@ test("publication session: interruption while claiming sends no media and cannot
       await run(s.close());
     }
   }));
-test("publication session: concurrent sender mutations are excluded; close releases an in-flight candidate", () =>
+test("publication session: concurrent sender mutations are excluded; close releases an in-flight candidate", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
       source = new FakeTrack("audio");
-    await run(s.start());
+    await run(s.start(), { signal });
     const p = peerAt(peers);
     p.replaceHook = () => Effect.never;
     const task = Effect.runFork(Effect.result(s.publish("input_audio", source)));
     try {
       await eventually(() => p.replacements.length === 1);
-      equal((await failure(s.unpublish("input_audio"))).code, "InvalidState");
-      await run(s.close());
+      equal((await failure(s.unpublish("input_audio"), { signal })).code, "InvalidState");
+      await run(s.close(), { signal });
       await Effect.runPromise(Fiber.join(task));
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
@@ -922,14 +993,16 @@ test("publication session: concurrent sender mutations are excluded; close relea
     }
   }));
 
-test("publication session: interrupted native unpublish retires local generation without reporting remote release", () =>
+test("publication session: interrupted native unpublish retires local generation without reporting remote release", ({
+  signal,
+}) =>
   withFixture(async (f) => {
     const { session: s, peers } = makeSession(f, { commandTimeoutMs: 500 }),
       source = new FakeTrack("audio");
     let finish: (() => void) | undefined;
     try {
-      await run(s.start());
-      await run(s.publish("input_audio", source));
+      await run(s.start(), { signal });
+      await run(s.publish("input_audio", source), { signal });
       const p = peerAt(peers);
       p.replaceHook = () =>
         Effect.tryPromise({
@@ -947,7 +1020,7 @@ test("publication session: interrupted native unpublish retires local generation
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
       equal(controlSent(p).filter((m) => m.payload?.case === "unpublish_track").length, 0);
-      await run(s.reconnect());
+      await run(s.reconnect(), { signal });
       finish?.();
       await new Promise((resolve) => setTimeout(resolve, 10));
       equal(s.snapshot.status, "ready");

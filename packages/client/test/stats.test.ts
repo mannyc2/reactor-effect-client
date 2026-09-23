@@ -71,11 +71,13 @@ test("stats policy: missing nominated succeeded pair is explicit and bounded inp
   throws(() => sampler.sample([], 1n, NaN), "Protocol");
 });
 
-test("session stats use the injected monotonic clock across wall jumps and reconnect reset", () =>
+test("session stats use the injected monotonic clock across wall jumps and reconnect reset", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const { session, peers } = makeSession(fixture);
     try {
-      await run(session.start());
+      await run(session.start(), { signal });
       const firstPeer = peers[0];
       assert(firstPeer !== undefined, "first peer missing");
       firstPeer.statsEntries = [pair(0, 0)];

@@ -87,13 +87,14 @@ const traced = async <A, E>(
 };
 
 const withSession = (
+  signal: AbortSignal,
   body: (session: Session, peer: MockPeer) => Promise<void>,
   options: Partial<SessionOptions> = {},
 ) =>
   withFixture(async (fixture) => {
     const { session, peers } = makeSession(fixture, options);
     try {
-      await run(session.start());
+      await run(session.start(), { signal });
       const peer = peers[0];
       if (peer === undefined) throw new Error("missing fixture peer");
       peer.autoReply = false;
@@ -123,8 +124,10 @@ const replyControl = (peer: MockPeer, payload: NonNullable<W.ControlServerMessag
   };
 };
 
-test("command span: a reply exports identity and outcome, never the input or the reply", () =>
-  withSession(async (session, peer) => {
+test("command span: a reply exports identity and outcome, never the input or the reply", ({
+  signal,
+}) =>
+  withSession(signal, async (session, peer) => {
     replyData(peer, {
       case: "message",
       value: { type: "result", data: structFromObject({ text: REPLY }) },
@@ -147,8 +150,10 @@ test("command span: a reply exports identity and outcome, never the input or the
     expect(exported).not.toContain(REPLY);
   }));
 
-test("command span: a remote error exports its code and outcome; only the caller reads provider text", () =>
-  withSession(async (session, peer) => {
+test("command span: a remote error exports its code and outcome; only the caller reads provider text", ({
+  signal,
+}) =>
+  withSession(signal, async (session, peer) => {
     replyData(peer, {
       case: "error",
       value: { code: "MODEL_ERROR", message: `refused: ${ERROR}` },
@@ -183,8 +188,10 @@ test("command span: a remote error exports its code and outcome; only the caller
     });
   }));
 
-test("control span: a remote control error is exported by code; the caller reads its text", () =>
-  withSession(async (session, peer) => {
+test("control span: a remote control error is exported by code; the caller reads its text", ({
+  signal,
+}) =>
+  withSession(signal, async (session, peer) => {
     replyControl(peer, {
       case: "error",
       value: { code: "SCHEMA_UNAVAILABLE", message: `unavailable: ${ERROR}` },
@@ -211,8 +218,10 @@ test("control span: a remote control error is exported by code; the caller reads
     });
   }));
 
-test("control span: a failed clip is a replied request; its reason reaches only the caller", () =>
-  withSession(async (session, peer) => {
+test("control span: a failed clip is a replied request; its reason reaches only the caller", ({
+  signal,
+}) =>
+  withSession(signal, async (session, peer) => {
     replyControl(peer, { case: "clip_failed", value: { reason: `recorder disabled: ${ERROR}` } });
     const { exit, spans, exported } = await traced(session.recording());
     const control = only(spans, "reactor.session.control");
@@ -234,8 +243,11 @@ test("control span: a failed clip is a replied request; its reason reaches only 
     ]);
   }));
 
-test("command span: after the caller stops waiting, the child span ends Timeout/unknown at the command's own deadline", () =>
+test("command span: after the caller stops waiting, the child span ends Timeout/unknown at the command's own deadline", ({
+  signal,
+}) =>
   withSession(
+    signal,
     async (session, peer) => {
       const { exit, spans, exported } = await traced(
         session.command("generate_clip", { prompt: INPUT }).pipe(Effect.timeout(5)),
@@ -264,8 +276,9 @@ test("command span: after the caller stops waiting, the child span ends Timeout/
     { commandTimeoutMs: 50 },
   ));
 
-test("command span: pre-dispatch rejections and notifications open no span", () =>
+test("command span: pre-dispatch rejections and notifications open no span", ({ signal }) =>
   withSession(
+    signal,
     async (session) => {
       const invalid = await traced(
         session.command("generate_clip", { prompt: INPUT }, undefined, 0),
@@ -276,7 +289,7 @@ test("command span: pre-dispatch rejections and notifications open no span", () 
       });
       expect(invalid.spans.map((span) => span.name)).toEqual(["app.submit"]);
       // Hold the only pending slot, outside the exporter, so the next command overflows.
-      const held = run(Effect.result(session.command("hold", {})));
+      const held = run(Effect.result(session.command("hold", {})), { signal });
       await eventually(() => session.snapshot.pending.data === 1);
       const overflow = await traced(session.command("generate_clip", { prompt: INPUT }));
       expect(failed(overflow.exit)).toMatchObject({

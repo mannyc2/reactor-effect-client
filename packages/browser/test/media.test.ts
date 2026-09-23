@@ -35,7 +35,9 @@ const packet = (overrides: Readonly<Record<string, unknown>> = {}): Record<strin
   planes: [new Float32Array([0.1, -0.2, 0.3, -0.4]).buffer],
   ...overrides,
 });
-test("media policy: acquisition exceptions are typed failures, not stream defects", async () => {
+test("media policy: acquisition exceptions are typed failures, not stream defects", async ({
+  signal,
+}) => {
   const error = await failure(
     fromOwnedReadableStream({
       evaluate: () => {
@@ -46,10 +48,13 @@ test("media policy: acquisition exceptions are typed failures, not stream defect
       },
       onError: errorOf,
     }).pipe(Stream.runDrain),
+    { signal },
   );
   equal(error.code, "UnsupportedCapability");
 });
-test("media policy: early stream completion cancels AND releases the underlying lock", async () => {
+test("media policy: early stream completion cancels AND releases the underlying lock", async ({
+  signal,
+}) => {
   let cancels = 0;
   const readable = new ReadableStream<number>({
     start(c) {
@@ -65,6 +70,7 @@ test("media policy: early stream completion cancels AND releases the underlying 
         Stream.take(1),
         Stream.runCollect,
       ),
+      { signal },
     ),
     [7],
   );
@@ -113,7 +119,9 @@ test("media packet: malformed, nonfinite, over-bound and invalid timebase values
     throws(() => decodeAudioPacket(invalid, 1024), "Protocol");
   throws(() => decodeAudioPacket(packet(), 8), "Overflow");
 });
-test("media policy: processor constructor presence does not prove audio-track support", () =>
+test("media policy: processor constructor presence does not prove audio-track support", ({
+  signal,
+}) =>
   globals(
     {
       MediaStreamTrackProcessor: class {
@@ -124,7 +132,9 @@ test("media policy: processor constructor presence does not prove audio-track su
     },
     async () => {
       const track = new FakeTrack("audio");
-      const error = await failure(audioSamples(track).pipe(Stream.take(1), Stream.runCollect));
+      const error = await failure(audioSamples(track).pipe(Stream.take(1), Stream.runCollect), {
+        signal,
+      });
       equal(error.code, "UnsupportedCapability");
       equal(track.clones.length, 1);
       equal(track.clones[0]?.readyState, "ended");
@@ -173,11 +183,15 @@ const frameHost = async (
     () => body(readable),
   );
 };
-test("media policy: copied video closes native samples and releases cloned track and reader", async () => {
+test("media policy: copied video closes native samples and releases cloned track and reader", async ({
+  signal,
+}) => {
   const frame = new Frame(),
     source = new FakeTrack("video");
   await frameHost(frame, async (readable) => {
-    const samples = await run(videoFrames(source).pipe(Stream.take(1), Stream.runCollect));
+    const samples = await run(videoFrames(source).pipe(Stream.take(1), Stream.runCollect), {
+      signal,
+    });
     equal(samples[0]?.clock, "video-track-processor");
     equal(samples[0]?.timestampUs, 12345);
     equal(samples[0]?.data.length, 16);
@@ -187,12 +201,15 @@ test("media policy: copied video closes native samples and releases cloned track
     equal(readable.locked, false);
   });
 });
-test("media policy: video overflow closes the rejected native sample and reader", async () => {
+test("media policy: video overflow closes the rejected native sample and reader", async ({
+  signal,
+}) => {
   const frame = new Frame(),
     source = new FakeTrack("video");
   await frameHost(frame, async (readable) => {
     equal(
-      (await failure(videoFrames(source, { maxSampleBytes: 8 }).pipe(Stream.runDrain))).code,
+      (await failure(videoFrames(source, { maxSampleBytes: 8 }).pipe(Stream.runDrain), { signal }))
+        .code,
       "Overflow",
     );
     await eventually(() => frame.closes === 1);
@@ -270,6 +287,7 @@ class ModelAudioElement {
   }
 }
 const withAudioHost = async (
+  signal: AbortSignal,
   options: HostOptions,
   body: (
     context: AudioContext,
@@ -336,6 +354,7 @@ const withAudioHost = async (
               });
             }),
           ),
+          { signal },
         );
       } finally {
         for (const node of nodes) node.shutdown();
@@ -432,11 +451,14 @@ const pcmOptions = (context: AudioContext) => ({
   workletUrl: "https://local.test/pcm-worklet.js",
   readTimeoutMs: 100,
 });
-test("Web Audio policy: explicit PCM path copies samples and owns graph, clones, port and listeners", () =>
-  withAudioHost({}, async (context, model, nodes) => {
+test("Web Audio policy: explicit PCM path copies samples and owns graph, clones, port and listeners", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
     const samples = await run(
       webAudioSamples(source, pcmOptions(context)).pipe(Stream.take(3), Stream.runCollect),
+      { signal },
     );
     equal(samples.length, 3);
     equal(samples[0]?.clock, "audio-context-render");
@@ -454,8 +476,8 @@ test("Web Audio policy: explicit PCM path copies samples and owns graph, clones,
     );
     equal(model.state, "running"); // borrowed context is not closed by the PCM stream.
   }));
-test("Web Audio policy: sample overflow is a typed failure and closes the graph", () =>
-  withAudioHost({}, async (context, model, nodes) => {
+test("Web Audio policy: sample overflow is a typed failure and closes the graph", ({ signal }) =>
+  withAudioHost(signal, {}, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
     equal(
       (
@@ -463,6 +485,7 @@ test("Web Audio policy: sample overflow is a typed failure and closes the graph"
           webAudioSamples(source, { ...pcmOptions(context), maxSampleBytes: 8 }).pipe(
             Stream.runDrain,
           ),
+          { signal },
         )
       ).code,
       "Overflow",
@@ -471,8 +494,8 @@ test("Web Audio policy: sample overflow is a typed failure and closes the graph"
     equal(model.listeners, 0);
     assert(nodes.every((n) => n.disconnected));
   }));
-test("Web Audio policy: missing render blocks time out and remove all callbacks", () =>
-  withAudioHost({ reply: false }, async (context, model, nodes) => {
+test("Web Audio policy: missing render blocks time out and remove all callbacks", ({ signal }) =>
+  withAudioHost(signal, { reply: false }, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
     equal(
       (
@@ -480,6 +503,7 @@ test("Web Audio policy: missing render blocks time out and remove all callbacks"
           webAudioSamples(source, { ...pcmOptions(context), readTimeoutMs: 20 }).pipe(
             Stream.runDrain,
           ),
+          { signal },
         )
       ).code,
       "Timeout",
@@ -488,9 +512,12 @@ test("Web Audio policy: missing render blocks time out and remove all callbacks"
     equal(model.listeners, 0);
     assert(nodes.every((n) => n.port.onmessage === null));
   }));
-test("Web Audio policy: interruption during module load prevents a late graph", async () => {
+test("Web Audio policy: interruption during module load prevents a late graph", async ({
+  signal,
+}) => {
   let finish: (() => void) | undefined;
   await withAudioHost(
+    signal,
     {
       module: () =>
         new Promise((resolve) => {
@@ -512,8 +539,10 @@ test("Web Audio policy: interruption during module load prevents a late graph", 
     },
   );
 });
-test("Web Audio policy: stream interruption removes a pending PCM read and releases its clone", () =>
-  withAudioHost({ reply: false }, async (context, model, nodes) => {
+test("Web Audio policy: stream interruption removes a pending PCM read and releases its clone", ({
+  signal,
+}) =>
+  withAudioHost(signal, { reply: false }, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
     const task = Effect.runFork(
       webAudioSamples(source, { ...pcmOptions(context), readTimeoutMs: 5000 }).pipe(
@@ -526,10 +555,14 @@ test("Web Audio policy: stream interruption removes a pending PCM read and relea
     equal(model.listeners, 0);
     assert(nodes.every((n) => n.disconnected && n.port.onmessage === null));
   }));
-test("Web Audio policy: context suspension fails PCM instead of manufacturing timestamps", () =>
-  withAudioHost({ reply: false }, async (context, model, nodes) => {
+test("Web Audio policy: context suspension fails PCM instead of manufacturing timestamps", ({
+  signal,
+}) =>
+  withAudioHost(signal, { reply: false }, async (context, model, nodes) => {
     const source = new FakeTrack("audio");
-    const result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain));
+    const result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+      signal,
+    });
     await eventually(() => (nodes[0]?.pulls ?? 0) > 0);
     model.state = "suspended";
     model.dispatchEvent(new Event("statechange"));
@@ -537,20 +570,25 @@ test("Web Audio policy: context suspension fails PCM instead of manufacturing ti
     equal(source.clones[0]?.readyState, "ended");
     equal(model.listeners, 0);
   }));
-test("Web Audio policy: worklet registration is cached per borrowed context and module", () =>
-  withAudioHost({}, async (context, model) => {
+test("Web Audio policy: worklet registration is cached per borrowed context and module", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model) => {
     for (let i = 0; i < 2; i++)
       await run(
         webAudioSamples(new FakeTrack("audio"), pcmOptions(context)).pipe(
           Stream.take(1),
           Stream.runDrain,
         ),
+        { signal },
       );
     equal(model.loads, 1);
     equal(model.listeners, 0);
   }));
-test("Web Audio policy: no data/blob worklet or stopped source silently creates a graph", () =>
-  withAudioHost({}, async (context, model) => {
+test("Web Audio policy: no data/blob worklet or stopped source silently creates a graph", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model) => {
     const source = new FakeTrack("audio");
     equal(
       (
@@ -559,13 +597,18 @@ test("Web Audio policy: no data/blob worklet or stopped source silently creates 
             ...pcmOptions(context),
             workletUrl: "data:text/javascript,0",
           }).pipe(Stream.runDrain),
+          { signal },
         )
       ).code,
       "Protocol",
     );
     source.stop();
     equal(
-      (await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain))).code,
+      (
+        await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+          signal,
+        })
+      ).code,
       "InvalidState",
     );
     equal(model.inputs.length, 0);
@@ -636,8 +679,10 @@ test("worklet algorithm: one credit, explicit skipped frames, silent output and 
   );
 });
 
-test("Web Audio policy: a slow consumer does not accumulate an unbounded PCM message history", () =>
-  withAudioHost({}, async (context, _model, nodes) => {
+test("Web Audio policy: a slow consumer does not accumulate an unbounded PCM message history", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, _model, nodes) => {
     const task = Effect.runFork(
       webAudioSamples(new FakeTrack("audio"), pcmOptions(context)).pipe(
         Stream.runForEach(() => Effect.never),
@@ -648,14 +693,18 @@ test("Web Audio policy: a slow consumer does not accumulate an unbounded PCM mes
     assert((nodes[0]?.pulls ?? 0) <= 2, "PCM exceeded one consumer block plus one queued block");
     await Effect.runPromise(Fiber.interrupt(task));
   }));
-test("Web Audio policy: malformed transferred packets close the graph instead of returning PCM", () =>
+test("Web Audio policy: malformed transferred packets close the graph instead of returning PCM", ({
+  signal,
+}) =>
   withAudioHost(
+    signal,
     { message: () => packet({ planes: [new ArrayBuffer(2)] }) },
     async (context, model, nodes) => {
       equal(
         (
           await failure(
             webAudioSamples(new FakeTrack("audio"), pcmOptions(context)).pipe(Stream.runDrain),
+            { signal },
           )
         ).code,
         "Protocol",
@@ -664,7 +713,9 @@ test("Web Audio policy: malformed transferred packets close the graph instead of
       assert(nodes.every((node) => node.disconnected));
     },
   ));
-test("Web Audio policy: blocked resume remains a failure and closes the newly-owned context", async () => {
+test("Web Audio policy: blocked resume remains a failure and closes the newly-owned context", async ({
+  signal,
+}) => {
   const contexts: ModelContext[] = [];
   class Context extends ModelContext {
     constructor() {
@@ -677,7 +728,7 @@ test("Web Audio policy: blocked resume remains a failure and closes the newly-ow
     }
   }
   await globals({ AudioContext: Context, AudioWorkletNode: class {} }, async () => {
-    const error = await failure(Effect.scoped(audioContext({ timeoutMs: 100 })));
+    const error = await failure(Effect.scoped(audioContext({ timeoutMs: 100 })), { signal });
     assert(error.message.includes("user activation"));
     equal(contexts[0]?.state, "closed");
     equal(contexts[0]?.closed, 1);
@@ -703,7 +754,9 @@ class Element {
     this.cancelled.push(id);
   }
 }
-test("playback policy: a never-resolving play request has a deadline and detaches owned media", async () => {
+test("playback policy: a never-resolving play request has a deadline and detaches owned media", async ({
+  signal,
+}) => {
   const elements: Element[] = [];
   class HtmlElement extends Element {
     constructor() {
@@ -713,14 +766,17 @@ test("playback policy: a never-resolving play request has a deadline and detache
   }
   await globals({ HTMLMediaElement: HtmlElement, MediaStream: class {} }, async () => {
     const source = new FakeTrack("video");
-    equal((await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)))).code, "Timeout");
+    equal(
+      (await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal })).code,
+      "Timeout",
+    );
     equal(source.clones[0]?.readyState, "ended");
     equal(source.readyState, "live");
     equal(elements[0]?.srcObject, null);
     equal(elements[0]?.pauses, 1);
   });
 });
-test("playback policy: failed MediaStream acquisition does not leak its clone", () =>
+test("playback policy: failed MediaStream acquisition does not leak its clone", ({ signal }) =>
   globals(
     {
       HTMLMediaElement: Element,
@@ -732,12 +788,14 @@ test("playback policy: failed MediaStream acquisition does not leak its clone", 
     },
     async () => {
       const source = new FakeTrack("video");
-      await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)));
+      await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal });
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
     },
   ));
-test("presentation policy: deadline removes the browser frame callback rather than claiming a display", async () => {
+test("presentation policy: deadline removes the browser frame callback rather than claiming a display", async ({
+  signal,
+}) => {
   const elements: Element[] = [];
   class VideoElement extends Element {
     constructor() {
@@ -746,18 +804,24 @@ test("presentation policy: deadline removes the browser frame callback rather th
     }
   }
   await globals({ HTMLVideoElement: VideoElement }, async () => {
-    equal((await failure(nextPresentation(new HTMLVideoElement(), 20))).code, "Timeout");
+    equal(
+      (await failure(nextPresentation(new HTMLVideoElement(), 20), { signal })).code,
+      "Timeout",
+    );
     equal(elements[0]?.cancelled, [42]);
   });
 });
 
 // These models exercise activation/ownership policy. Only the separate real browser
 // integration establishes that a native decoder produced changing video/non-silent audio.
-test("PCM activation: the public stream owns muted playback on the SAME cloned stream as Web Audio", () =>
-  withAudioHost({}, async (context, model, nodes, sinks) => {
+test("PCM activation: the public stream owns muted playback on the SAME cloned stream as Web Audio", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model, nodes, sinks) => {
     const source = new FakeTrack("audio");
     const pcm = await run(
       webAudioSamples(source, pcmOptions(context)).pipe(Stream.take(1), Stream.runCollect),
+      { signal },
     );
     equal(pcm.length, 1);
     equal(sinks.length, 1);
@@ -771,8 +835,11 @@ test("PCM activation: the public stream owns muted playback on the SAME cloned s
     equal(model.listeners, 0);
     assert(nodes.every((node) => node.disconnected && node.port.onmessage === null));
   }));
-test("PCM activation: a rejected play promise is typed, detaches its sink, and never opens the worklet", () =>
+test("PCM activation: a rejected play promise is typed, detaches its sink, and never opens the worklet", ({
+  signal,
+}) =>
   withAudioHost(
+    signal,
     {
       play: () => Promise.reject(new DOMException("ordinary activation denied", "NotAllowedError")),
     },
@@ -780,6 +847,7 @@ test("PCM activation: a rejected play promise is typed, detaches its sink, and n
       const source = new FakeTrack("audio");
       const error = await failure(
         webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain),
+        { signal },
       );
       equal(error.code, "UnsupportedCapability");
       assert(error.message.includes("activation"));
@@ -791,8 +859,11 @@ test("PCM activation: a rejected play promise is typed, detaches its sink, and n
       equal(source.clones[0]?.readyState, "ended");
     },
   ));
-test("PCM activation: a synchronous play exception cannot leak a clone or playback attachment", () =>
+test("PCM activation: a synchronous play exception cannot leak a clone or playback attachment", ({
+  signal,
+}) =>
   withAudioHost(
+    signal,
     {
       play: () => {
         throw new Error("synchronous play failure");
@@ -801,7 +872,11 @@ test("PCM activation: a synchronous play exception cannot leak a clone or playba
     async (context, model, _nodes, sinks) => {
       const source = new FakeTrack("audio");
       equal(
-        (await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain))).code,
+        (
+          await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+            signal,
+          })
+        ).code,
         "UnsupportedCapability",
       );
       equal(sinks[0]?.pauses, 1);
@@ -810,9 +885,12 @@ test("PCM activation: a synchronous play exception cannot leak a clone or playba
       equal(model.listeners, 0);
     },
   ));
-test("PCM activation: play deadline is independent of the read deadline and late fulfillment cannot open a graph", async () => {
+test("PCM activation: play deadline is independent of the read deadline and late fulfillment cannot open a graph", async ({
+  signal,
+}) => {
   let finish: (() => void) | undefined;
   await withAudioHost(
+    signal,
     {
       play: () =>
         new Promise((resolve) => {
@@ -827,6 +905,7 @@ test("PCM activation: play deadline is independent of the read deadline and late
           activationTimeoutMs: 20,
           readTimeoutMs: 5000,
         }).pipe(Stream.runDrain),
+        { signal },
       );
       equal(error.code, "Timeout");
       assert(error.message.includes("activation"));
@@ -841,9 +920,12 @@ test("PCM activation: play deadline is independent of the read deadline and late
     },
   );
 });
-test("PCM activation: interrupting pending play detaches immediately; a late success cannot revive the stream", async () => {
+test("PCM activation: interrupting pending play detaches immediately; a late success cannot revive the stream", async ({
+  signal,
+}) => {
   let finish: (() => void) | undefined;
   await withAudioHost(
+    signal,
     {
       play: () =>
         new Promise((resolve) => {
@@ -875,12 +957,18 @@ test("PCM activation: interrupting pending play detaches immediately; a late suc
     },
   );
 });
-test("PCM activation: missing Window document fails before allocating a clone or worklet", () =>
-  withAudioHost({}, async (context, model) => {
+test("PCM activation: missing Window document fails before allocating a clone or worklet", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model) => {
     await globals({ document: undefined }, async () => {
       const source = new FakeTrack("audio");
       equal(
-        (await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain))).code,
+        (
+          await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+            signal,
+          })
+        ).code,
         "UnsupportedCapability",
       );
       equal(source.clones.length, 0);
@@ -888,8 +976,8 @@ test("PCM activation: missing Window document fails before allocating a clone or
       equal(model.listeners, 0);
     });
   }));
-test("PCM activation: invalid timeout is rejected without creating a sink", () =>
-  withAudioHost({}, async (context, model, _nodes, sinks) => {
+test("PCM activation: invalid timeout is rejected without creating a sink", ({ signal }) =>
+  withAudioHost(signal, {}, async (context, model, _nodes, sinks) => {
     const source = new FakeTrack("audio");
     for (const activationTimeoutMs of [0, -1, 0.5, 60001, NaN])
       equal(
@@ -898,6 +986,7 @@ test("PCM activation: invalid timeout is rejected without creating a sink", () =
             webAudioSamples(source, { ...pcmOptions(context), activationTimeoutMs }).pipe(
               Stream.runDrain,
             ),
+            { signal },
           )
         ).code,
         "InvalidInput",
@@ -906,8 +995,11 @@ test("PCM activation: invalid timeout is rejected without creating a sink", () =
     equal(source.clones.length, 0);
     equal(model.loads, 0);
   }));
-test("PCM activation: failed element acquisition still stops the clone and removes liveness resources", () =>
+test("PCM activation: failed element acquisition still stops the clone and removes liveness resources", ({
+  signal,
+}) =>
   withAudioHost(
+    signal,
     {
       createSink: () => {
         throw new Error("element acquisition failed");
@@ -915,14 +1007,15 @@ test("PCM activation: failed element acquisition still stops the clone and remov
     },
     async (context, model) => {
       const source = new FakeTrack("audio");
-      await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain));
+      await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), { signal });
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
       equal(model.listeners, 0);
     },
   ));
-test("PCM activation: a graph acquisition failure unwinds successful playback", () =>
+test("PCM activation: a graph acquisition failure unwinds successful playback", ({ signal }) =>
   withAudioHost(
+    signal,
     {
       input: () => {
         throw new Error("media source refused");
@@ -930,7 +1023,7 @@ test("PCM activation: a graph acquisition failure unwinds successful playback", 
     },
     async (context, model, nodes, sinks) => {
       const source = new FakeTrack("audio");
-      await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain));
+      await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), { signal });
       equal(sinks[0]?.plays, 1);
       equal(sinks[0]?.srcObject, null);
       equal(nodes.length, 0);
@@ -938,9 +1031,12 @@ test("PCM activation: a graph acquisition failure unwinds successful playback", 
       equal(source.clones[0]?.readyState, "ended");
     },
   ));
-test("PCM activation: ending the borrowed lease during pending play cancels without relying on ended dispatch", async () => {
+test("PCM activation: ending the borrowed lease during pending play cancels without relying on ended dispatch", async ({
+  signal,
+}) => {
   let finish: (() => void) | undefined;
   await withAudioHost(
+    signal,
     {
       play: () =>
         new Promise((resolve) => {
@@ -949,7 +1045,9 @@ test("PCM activation: ending the borrowed lease during pending play cancels with
     },
     async (context, model, nodes, sinks) => {
       const source = new FakeTrack("audio"),
-        result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain));
+        result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+          signal,
+        });
       await eventually(() => sinks[0]?.plays === 1);
       source.stop(); // Native stop() also omits ended.
       equal((await result).code, "Disconnected");
@@ -963,10 +1061,14 @@ test("PCM activation: ending the borrowed lease during pending play cancels with
     },
   );
 });
-test("PCM activation: source ended event fails an active read and releases playback", () =>
-  withAudioHost({ reply: false }, async (context, model, nodes, sinks) => {
+test("PCM activation: source ended event fails an active read and releases playback", ({
+  signal,
+}) =>
+  withAudioHost(signal, { reply: false }, async (context, model, nodes, sinks) => {
     const source = new FakeTrack("audio");
-    const result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain));
+    const result = failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
+      signal,
+    });
     await eventually(() => (nodes[0]?.pulls ?? 0) > 0);
     source.stop();
     source.dispatchEvent(new Event("ended"));
@@ -974,9 +1076,12 @@ test("PCM activation: source ended event fails an active read and releases playb
     equal(sinks[0]?.srcObject, null);
     equal(model.listeners, 0);
   }));
-test("PCM activation: context suspension during pending play cleans the sink and fences late completion", async () => {
+test("PCM activation: context suspension during pending play cleans the sink and fences late completion", async ({
+  signal,
+}) => {
   let finish: (() => void) | undefined;
   await withAudioHost(
+    signal,
     {
       play: () =>
         new Promise((resolve) => {
@@ -986,6 +1091,7 @@ test("PCM activation: context suspension during pending play cleans the sink and
     async (context, model, nodes, sinks) => {
       const result = failure(
         webAudioSamples(new FakeTrack("audio"), pcmOptions(context)).pipe(Stream.runDrain),
+        { signal },
       );
       await eventually(() => sinks[0]?.plays === 1);
       model.state = "suspended";
@@ -999,8 +1105,10 @@ test("PCM activation: context suspension during pending play cleans the sink and
     },
   );
 });
-test("PCM reconnect policy: stopping an old lease retires its reader and sink; a new lease opens fresh on the same context", () =>
-  withAudioHost({}, async (context, model, nodes, sinks) => {
+test("PCM reconnect policy: stopping an old lease retires its reader and sink; a new lease opens fresh on the same context", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model, nodes, sinks) => {
     const old = new FakeTrack("audio");
     let oldBlocks = 0;
     const result = failure(
@@ -1011,6 +1119,7 @@ test("PCM reconnect policy: stopping an old lease retires its reader and sink; a
           }),
         ),
       ),
+      { signal },
     );
     await eventually(() => oldBlocks > 0);
     old.stop();
@@ -1023,6 +1132,7 @@ test("PCM reconnect policy: stopping an old lease retires its reader and sink; a
       (
         await run(
           webAudioSamples(next, pcmOptions(context)).pipe(Stream.take(2), Stream.runCollect),
+          { signal },
         )
       ).length,
       2,
@@ -1036,8 +1146,10 @@ test("PCM reconnect policy: stopping an old lease retires its reader and sink; a
     equal(next.readyState, "live");
     assert(nodes.every((node) => node.disconnected && node.port.onmessage === null));
   }));
-test("PCM reconnect policy: lease stop releases activation even when a downstream consumer never asks for another block", () =>
-  withAudioHost({}, async (context, model, nodes, sinks) => {
+test("PCM reconnect policy: lease stop releases activation even when a downstream consumer never asks for another block", ({
+  signal,
+}) =>
+  withAudioHost(signal, {}, async (context, model, nodes, sinks) => {
     const source = new FakeTrack("audio");
     let downstream = false;
     const fiber = Effect.runFork(

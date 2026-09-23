@@ -107,7 +107,9 @@ const dependencies = (fixture: HttpFixture, peers: MediaPeer[]) => ({
   },
 });
 
-test("media generations: retirement preserves pressure evidence and fences queued old samples", () =>
+test("media generations: retirement preserves pressure evidence and fences queued old samples", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const peers: MediaPeer[] = [];
     await run(
@@ -163,10 +165,11 @@ test("media generations: retirement preserves pressure evidence and fences queue
           );
         }),
       ).pipe(Effect.provideService(PeerFactory, dependencies(fixture, peers))),
+      { signal },
     );
   }));
 
-test("media generations: a failed frame source reaches a frame-only consumer", () =>
+test("media generations: a failed frame source reaches a frame-only consumer", ({ signal }) =>
   withFixture(async (fixture) => {
     const peers: MediaPeer[] = [];
     await run(
@@ -195,10 +198,13 @@ test("media generations: a failed frame source reaches a frame-only consumer", (
           equal(result.failure, sourceFailure);
         }),
       ).pipe(Effect.provideService(PeerFactory, dependencies(fixture, peers))),
+      { signal },
     );
   }));
 
-test("media generations: reconnect retires a parked read without requiring a peer EOF", () =>
+test("media generations: reconnect retires a parked read without requiring a peer EOF", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const peers: MediaPeer[] = [];
     await run(
@@ -221,10 +227,13 @@ test("media generations: reconnect retires a parked read without requiring a pee
           equal((yield* session.ready).generation, media.generation + 1n);
         }),
       ).pipe(Effect.provideService(PeerFactory, dependencies(fixture, peers))),
+      { signal },
     );
   }));
 
-test("browser generation projection: retired capabilities cannot publish into a replacement", () =>
+test("browser generation projection: retired capabilities cannot publish into a replacement", ({
+  signal,
+}) =>
   withFixture(async (fixture) => {
     const peers: MediaPeer[] = [];
     await run(
@@ -248,5 +257,6 @@ test("browser generation projection: retired capabilities cannot publish into a 
           equal(peers[1]?.replacements.length, 1);
         }),
       ).pipe(Effect.provideService(PeerFactory, dependencies(fixture, peers))),
+      { signal },
     );
   }));
