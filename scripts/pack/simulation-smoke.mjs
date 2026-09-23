@@ -36,6 +36,7 @@ await Effect.runPromise(
             rendered = record;
             yield* sink.video({
               _tag: "VideoFrame",
+              format: "BGRA",
               track: "main_video",
               width: 64,
               height: 64,
