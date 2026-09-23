@@ -668,6 +668,16 @@ describe("H3 command and observation authority", () => {
         });
         const rejected = yield* Effect.result(direct.provider.enqueue(request()));
         expect(Result.isFailure(rejected) && rejected.failure.context.outcome).toBe("replied");
+        // The provider's reason is kept for inspection, never in the message.
+        expect(Result.isFailure(rejected) && rejected.failure.message).toBe(
+          "H3 enqueue was refused",
+        );
+        expect(Result.isFailure(rejected) && rejected.failure.context.body).toBe("full");
+        const refused = yield* Effect.result(direct.provider.stop);
+        expect(Result.isFailure(refused) && refused.failure.message).toBe("H3 stop was refused");
+        expect(Result.isFailure(refused) && refused.failure.context.body).toBe(
+          "Fixture refused the requested operation",
+        );
         const unrelated = yield* setup({
           command: {
             enqueue: ({ fake }) =>

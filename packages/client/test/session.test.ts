@@ -206,6 +206,9 @@ test("session policy: absent model data, empty Struct, null fields and correlate
       equal(e.code, "Remote");
       equal(e.context.remoteCode, "MODEL_ERROR");
       equal(e.context.outcome, "replied");
+      // Provider text is kept for inspection, never in the message.
+      equal(e.message, "remote command error MODEL_ERROR");
+      equal(e.context.body, "reason");
       const count = dataSent(p).length;
       equal((await failure(s.command("invalid", []))).code, "Protocol");
       equal(dataSent(p).length, count);
@@ -685,7 +688,10 @@ test("session policy: recording/clip correlations and recorder-disabled error ma
           });
         }
       };
-      equal((await failure(s.recording())).code, "RecorderDisabled");
+      const disabled = await failure(s.recording());
+      equal(disabled.code, "RecorderDisabled");
+      equal(disabled.message, "clip failed");
+      equal(disabled.context.body, "ENCODER CRASHED");
     } finally {
       await run(s.close());
     }

@@ -306,9 +306,10 @@ export class Session {
         if (payload?.case === "error") {
           const error = new ReactorError({
             code: "Remote",
-            message: payload.value.message,
+            message: `remote command error ${payload.value.code}`,
             context: {
               remoteCode: payload.value.code,
+              body: payload.value.message,
               requestId: message.request_id,
               generation: c.generation,
               outcome: "replied",
@@ -378,9 +379,10 @@ export class Session {
             ? Effect.fail(
                 new ReactorError({
                   code: "Remote",
-                  message: payload.value.message,
+                  message: `remote command error ${payload.value.code}`,
                   context: {
                     remoteCode: payload.value.code,
+                    body: payload.value.message,
                     requestId: message.request_id,
                     outcome: "replied",
                     detail: message,
@@ -928,11 +930,15 @@ export class Session {
         pure(() => {
           if (reply.case === "clip_failed")
             throw new ReactorError({
+              // The one regex classification of provider free text, a deliberate exception:
+              // ClipFailed carries only a reason string, and a caller must tell a disabled
+              // recorder from other clip failures. Add no others; drop this once the wire
+              // carries a code.
               code: /recorder disabled|encoder crashed/i.test(reply.value.reason)
                 ? "RecorderDisabled"
                 : "Remote",
-              message: reply.value.reason,
-              context: { outcome: "replied" },
+              message: "clip failed",
+              context: { outcome: "replied", body: reply.value.reason },
             });
           if (reply.case !== "clip_ready")
             throw new ReactorError({

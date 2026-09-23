@@ -57,7 +57,8 @@ const uncertain = (
     requestId: source.requestId,
     generation: source.generation,
   });
-const rejected = (operation: string, source: CommandReply): CommandFailure =>
+/** The refusal reason is provider free text with no stable codes: kept for diagnosis only. */
+const rejected = (operation: string, source: CommandReply, reason: string): CommandFailure =>
   CommandFailure.from(
     new ReactorError({ code: "Remote", message: `H3 ${operation} was refused` }),
     {
@@ -65,6 +66,7 @@ const rejected = (operation: string, source: CommandReply): CommandFailure =>
       outcome: "replied",
       requestId: source.requestId,
       generation: source.generation,
+      body: reason,
     },
   );
 const hex = (bytes: Uint8Array) =>
@@ -390,7 +392,7 @@ const build = (
           ),
         );
         if (message?.type === "command_error" && message.data.command === operation)
-          return yield* rejected(operation, source);
+          return yield* rejected(operation, source, message.data.reason);
         return { source, message };
       });
     const named = <K extends ReplyCommand>(
@@ -616,7 +618,7 @@ const build = (
                 observed.success?.type === "command_error" &&
                 observed.success.data.command === "enqueue"
               )
-                return yield* rejected("enqueue", source);
+                return yield* rejected("enqueue", source, observed.success.data.reason);
               original = uncertain(
                 "enqueue",
                 source,
