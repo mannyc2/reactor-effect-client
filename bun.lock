@@ -83,6 +83,7 @@
         "@types/node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
+        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
       "optionalDependencies": {

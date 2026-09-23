@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { FetchHttp } from "reactor-effect-client";
 import type { ReactorError } from "reactor-effect-client";
 import type { IceCandidate, MediaPressure, PeerEvent } from "reactor-effect-client/host";
+import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
 import * as Native from "../src/index.js";
@@ -654,7 +655,7 @@ describe("native media under load", () => {
     }
   }, 120_000);
 
-  test("closes a canonical session over real libwebrtc cleanly, well inside the shutdown deadline", async () => {
+  test("delivers exact frames through a canonical session over real libwebrtc and closes it cleanly", async () => {
     const id = "canonical";
     const descriptor = {
       session_id: id,
@@ -714,7 +715,7 @@ describe("native media under load", () => {
             });
             yield* client.connect;
             const media = yield* Native.media(client);
-            const frames = yield* media.video("main_video").pipe(Stream.take(24), Stream.runCount);
+            const frames = yield* media.video("main_video").pipe(Stream.take(8), Stream.runCollect);
             const started = performance.now();
             const report = yield* client.close;
             return { frames, report, closeMs: performance.now() - started };
@@ -725,7 +726,11 @@ describe("native media under load", () => {
         ),
       );
       console.log(`native-close ${JSON.stringify({ runtime, closeMs: round(result.closeMs) })}`);
-      expect(result.frames).toBe(24);
+      expect(result.frames).toHaveLength(8);
+      // Each frame is its own exact BGRA allocation, as the bridge took it.
+      assertExactFrames(result.frames, (frame) => frame.data);
+      for (const frame of result.frames)
+        expect(frame.data.byteLength).toBe(frame.width * frame.height * 4);
       expect(result.report.localClosed).toBe(true);
       expect(result.report.localErrors).toEqual([]);
       expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
