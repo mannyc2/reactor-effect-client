@@ -60,7 +60,7 @@ const CLASSIFY_TIMEOUT_MS = 2000;
  */
 export const defaultShutdownTimeout: Duration.Duration = Duration.seconds(10);
 
-const validateNativeTracks = (tracks: readonly Track[]): void => {
+export const validateNativeTracks = (tracks: readonly Track[]): void => {
   const incomingVideo = tracks.filter(
     (track) => track.direction === "recvonly" && track.kind === "video",
   ).length;
@@ -122,7 +122,7 @@ const parsePrepared = (value: unknown): Prepared => {
   return Object.freeze({ sdp, mapping });
 };
 
-const iceServers = (
+export const iceServers = (
   servers: readonly IceServer[],
 ): readonly {
   readonly urls: readonly string[];
