@@ -154,3 +154,13 @@ test("removed unit-suffixed keys no longer compile, held or spread", () => {
   const bare: CommandOptions = uploads;
   void [renewal, spread, session, heartbeat, provider, token, command, bare];
 });
+
+test("renewal: a lead as long as the source lifetime is refused when the source opens", () =>
+  runSource(
+    Effect.gen(function* () {
+      const made = yield* Effect.exit(renewalFixture(undefined, { lead: "1 second" }));
+      expect(Exit.isFailure(made)).toBe(true);
+      if (Exit.isFailure(made))
+        expect(JSON.stringify(made.cause)).toContain("renewal lead must be shorter");
+    }),
+  ));

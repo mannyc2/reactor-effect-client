@@ -444,6 +444,14 @@ export const make = <R>(
             const lifetime = yield* parsed(() =>
               duration(value.lifetime, "source lifetime", { allowInfinite: true }),
             );
+            // A lead as long as the lifetime would prepare a replacement at once,
+            // after every open, bounded only by maxSessions.
+            if (Duration.isFinite(lifetime) && leadSeconds >= Duration.toSeconds(lifetime))
+              return yield* ReactorError.fromCode(
+                "InvalidInput",
+                "renewal lead must be shorter than the source lifetime",
+                { operation: "renewal", outcome: "not-submitted" },
+              );
             if (slots.has(value.source.id))
               return yield* ReactorError.fromCode(
                 "InvalidInput",
