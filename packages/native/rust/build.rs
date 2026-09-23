@@ -4,7 +4,9 @@
 //! The identity is a JSON object that `scripts/stage.mjs` finds in the built
 //! library and checks against the checked-out sources before staging it. Its
 //! `sourceSha256` covers the same files, hashed the same way, as
-//! `stage.mjs --source-hash` and the pack check in `scripts/pack.ts`.
+//! `stage.mjs --source-hash` and the pack check in `scripts/pack.ts`. Its
+//! `webrtcPrebuilt` names the Reactor libwebrtc prebuilt that
+//! `reactor-webrtc-sys` links, which staging checks against the shipped SBOM.
 
 use std::env;
 use std::error::Error;
@@ -28,6 +30,10 @@ const SOURCE_FILES: [&str; 5] = [
     ".cargo/config.toml",
     "include/reactor_effect_native.h",
 ];
+
+/// Overrides that make `reactor-webrtc-sys` link something other than its
+/// tagged prebuilt; with either set, the identity names no prebuilt.
+const WEBRTC_OVERRIDES: [&str; 2] = ["REACTOR_WEBRTC_LIB_DIR", "REACTOR_WEBRTC_PREBUILT_URL"];
 
 /// Environment that changes the compiled library, recorded when set.
 const BUILD_ENVIRONMENT: [&str; 6] = [
@@ -67,6 +73,10 @@ fn build_identity(root: &Path) -> BuildResult<String> {
         ("rustc", json_string(&tool_version(&rustc)?)),
         ("cc", json_string(&tool_version(&cc)?)),
         ("cxx", json_string(&tool_version(&cxx)?)),
+        (
+            "webrtcPrebuilt",
+            webrtc_prebuilt(root)?.map_or_else(|| "null".to_owned(), |tag| json_string(&tag)),
+        ),
     ];
     for key in BUILD_ENVIRONMENT {
         println!("cargo::rerun-if-env-changed={key}");
@@ -79,6 +89,67 @@ fn build_identity(root: &Path) -> BuildResult<String> {
         .map(|(key, value)| format!("{}:{value}", json_string(key)))
         .collect();
     Ok(format!("{{{}}}", fields.join(",")))
+}
+
+/// The prebuilt tag `reactor-webrtc-sys` downloads, derived as it derives it:
+/// from `WEBRTC_VERSION` at the root of the pinned `reactor-webrtc` checkout.
+/// `None` when an override links a local or custom archive instead.
+fn webrtc_prebuilt(root: &Path) -> BuildResult<Option<String>> {
+    for key in WEBRTC_OVERRIDES {
+        println!("cargo::rerun-if-env-changed={key}");
+        if env::var_os(key).is_some() {
+            return Ok(None);
+        }
+    }
+    let output = Command::new(cargo_env("CARGO")?)
+        .args(["metadata", "--format-version", "1", "--offline", "--locked"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .map_err(|error| format!("cargo metadata could not run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("cargo metadata failed: {}", output.status).into());
+    }
+    let metadata = String::from_utf8(output.stdout)?;
+    let manifest = metadata
+        .split("\"manifest_path\":\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .find(|path| path.ends_with("/reactor-webrtc-sys/Cargo.toml"))
+        .ok_or("cargo metadata names no reactor-webrtc-sys manifest")?;
+    // `<checkout>/crates/reactor-webrtc-sys/Cargo.toml`, as its build script reads it.
+    let version = Path::new(manifest)
+        .ancestors()
+        .nth(3)
+        .ok_or("reactor-webrtc-sys is not inside a reactor-webrtc checkout")?
+        .join("WEBRTC_VERSION");
+    println!("cargo::rerun-if-changed={}", version.display());
+    let source = fs::read_to_string(&version)
+        .map_err(|error| format!("read {}: {error}", version.display()))?;
+    prebuilt_tag(&source).map(Some)
+}
+
+/// `webrtc-<milestone>-<commit8>-p<patch>` from `WEBRTC_VERSION`'s variables.
+fn prebuilt_tag(source: &str) -> BuildResult<String> {
+    let (mut branch, mut commit, mut patch) = (None, None, "0");
+    for line in source.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("WEBRTC_BRANCH=") {
+            branch = Some(value);
+        } else if let Some(value) = line.strip_prefix("WEBRTC_COMMIT=") {
+            commit = Some(value);
+        } else if let Some(value) = line.strip_prefix("REACTOR_PATCH_LEVEL=") {
+            patch = value;
+        }
+    }
+    let branch = branch.ok_or("WEBRTC_VERSION names no WEBRTC_BRANCH")?;
+    let commit = commit
+        .and_then(|commit| commit.get(..8))
+        .ok_or("WEBRTC_VERSION pins no WEBRTC_COMMIT")?;
+    let milestone = branch.strip_prefix("branch-heads/").unwrap_or(branch);
+    Ok(format!("webrtc-{milestone}-{commit}-p{patch}"))
 }
 
 /// A variable Cargo sets for every build script.

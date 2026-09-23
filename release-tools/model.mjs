@@ -78,6 +78,8 @@ const NativeIdentity = Schema.Struct({
     abiVersion: Schema.Literal(4),
     sourceSha256: digest,
     profile: Schema.Literal("release"),
+    /** The Reactor libwebrtc prebuilt linked in, which staging checked against its SBOM. */
+    webrtcPrebuilt: Schema.String.check(Schema.isPattern(/^webrtc-\d+-[0-9a-f]{8}-p\d+$/)),
   }),
 });
 const PackageEntry = Schema.Struct({
@@ -177,12 +179,16 @@ export const validatePackageIdentity = (raw) => {
       reject("A portable package carries native libraries");
   }
   const native = value.packages[nativePackage];
+  const prebuilts = new Set(
+    Object.values(value.native).map((identity) => identity.build.webrtcPrebuilt),
+  );
   for (const [platform, library] of Object.entries(nativePlatforms)) {
     const identity = value.native[/** @type {"darwin-arm64" | "linux-x64"} */ (platform)];
     if (
       identity.platform !== platform ||
       identity.library !== library ||
       identity.build.sourceSha256 !== value.nativeSourceSha256 ||
+      prebuilts.size !== 1 ||
       native.fileSha256[`lib/${platform}/${library}`] !== identity.sha256 ||
       native.fileSha256[`lib/${platform}/native-identity.json`] === undefined
     )

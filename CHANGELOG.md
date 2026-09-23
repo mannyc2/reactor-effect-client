@@ -86,6 +86,7 @@ Qualification: on September 23, 2026 the ABI 3 media path passed `native:test` i
 - `reactor-effect-native`: while a timed-out owner join is still retained, preflight (`PeerFactory.check`) and peer creation for that library fail with a `Native` error that was not submitted, before any allocation, instead of starting another owner on a libwebrtc factory that may be wedged. The library admits peers again once the join completes.
 - `VideoFrame` and `AudioFrame` document that every subscriber to a track receives the same frame object and buffers, so readers treat them as read-only and copy before writing. This was already the behavior.
 - `reactor-effect-native`: the Rust library no longer panics outside tests, where a panic in a libwebrtc callback would abort the host process, and checks every pointer's alignment and length bound before touching caller memory ([efd9e51]).
+- `reactor-effect-native`: the embedded build identity names the Reactor libwebrtc prebuilt the library links (`webrtcPrebuilt`), derived from the pinned `reactor-webrtc` checkout as its build script derives it, or `null` when `REACTOR_WEBRTC_LIB_DIR` or `REACTOR_WEBRTC_PREBUILT_URL` overrides it. Staging refuses a library whose prebuilt is not the tag the NOTICE declares or not the WebRTC milestone and commit of the platform's shipped SBOM, and release tooling requires every platform to link the same prebuilt.
 
 ### Fixed
 

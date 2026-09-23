@@ -100,7 +100,7 @@ const workspace = {
  */
 /** @typedef {{ name: PackageName, tarball: string, tarballPath: string, bytes: Buffer, files: string[] }} FixtureArchive */
 /** @typedef {{ version: string, tarball: string, sha256: string, exports: string[], files: string[], fileSha256: Record<string, string> }} IdentityEntry */
-/** @typedef {{ schemaVersion: number, platform: string, library: string, sha256: string, build: { abiVersion: number, sourceSha256: string, profile: string } }} NativeIdentity */
+/** @typedef {{ schemaVersion: number, platform: string, library: string, sha256: string, build: { abiVersion: number, sourceSha256: string, profile: string, webrtcPrebuilt: string } }} NativeIdentity */
 
 /** Three real, tiny npm archives sharing one version. Only the native archive carries
  * independently hashed dummy native libraries; the portable archives have no lib/ files.
@@ -159,7 +159,12 @@ const fixture = (options = {}) => {
             platform,
             library,
             sha256: digest(bytes),
-            build: { abiVersion: 4, sourceSha256: nativeSourceSha256, profile: "release" },
+            build: {
+              abiVersion: 4,
+              sourceSha256: nativeSourceSha256,
+              profile: "release",
+              webrtcPrebuilt: "webrtc-7907-a5ddff60-p9",
+            },
           };
           contents[`lib/${platform}/${library}`] = bytes;
           contents[`lib/${platform}/native-identity.json`] = JSON.stringify(identity) + "\n";

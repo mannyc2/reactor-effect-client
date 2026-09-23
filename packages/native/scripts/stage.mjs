@@ -49,6 +49,45 @@ const targets = /** @type {const} */ ({
   "win32-arm64": ["aarch64-pc-windows-msvc", "reactor_effect_native.dll"],
 });
 
+/** The shipped SBOM of each platform's Reactor libwebrtc prebuilt. */
+const sboms = /** @type {Record<string, string>} */ ({
+  "darwin-arm64": "reactor-webrtc-mac-arm64-release.sbom.json",
+  "linux-x64": "reactor-webrtc-linux-x64-release.sbom.json",
+});
+
+/**
+ * The prebuilt the library links must be the one its notices describe: the
+ * NOTICE's tag exactly, and the platform SBOM's WebRTC milestone and commit.
+ * @param {unknown} linked @param {string} platform
+ */
+const checkPrebuilt = (linked, platform) => {
+  const notices = join(root, "notices");
+  const notice = readFileSync(join(notices, "reactor-webrtc-NOTICE.md"), "utf8");
+  const declared = /Reactor prebuilt tag: `([^`]+)`/.exec(notice)?.[1];
+  const pinned = /Pinned WebRTC commit: `([0-9a-f]{40})`/.exec(notice)?.[1];
+  const tag = typeof linked === "string" ? /^webrtc-(\d+)-([0-9a-f]{8})-p\d+$/.exec(linked) : null;
+  if (tag === null || linked !== declared)
+    throw new Error(
+      `native library links WebRTC prebuilt ${JSON.stringify(linked)}, but its NOTICE declares ${JSON.stringify(declared)}; rebuild without a libwebrtc override or update the notices`,
+    );
+  const sbom = sboms[platform];
+  if (sbom === undefined) throw new Error(`no WebRTC SBOM ships for ${platform}`);
+  const component = JSON.parse(readFileSync(join(notices, "reactor-webrtc", sbom), "utf8"))
+    ?.metadata?.component;
+  const version = /^branch-heads\/(\d+)\+([0-9a-f]{8,40})$/.exec(String(component?.version));
+  const [, milestone, commit] = tag;
+  if (
+    version === null ||
+    version[1] !== milestone ||
+    !version[2].startsWith(commit) ||
+    pinned === undefined ||
+    !pinned.startsWith(version[2])
+  )
+    throw new Error(
+      `${sbom} describes WebRTC ${JSON.stringify(component?.version)}, not the linked ${tag[0]} at ${String(pinned)}`,
+    );
+};
+
 const [input, platform] = process.argv.slice(2);
 if (input === "--source-hash" && platform === undefined) {
   // CI keys its staged-artifact cache on this identity; a cached library whose
@@ -86,6 +125,7 @@ if (build.sourceSha256 !== expected) {
     `native source identity mismatch: artifact ${build.sourceSha256}; current sources ${expected}; rebuild before staging`,
   );
 }
+checkPrebuilt(build.webrtcPrebuilt, platform);
 const manifest = { schemaVersion: 1, platform, library, sha256: sha256(bytes), build };
 const destination = join(root, "lib", platform, library);
 mkdirSync(dirname(destination), { recursive: true });
