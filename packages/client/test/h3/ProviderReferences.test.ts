@@ -241,8 +241,7 @@ test("upload failure leaves a closed source reader and no staging files or gener
   run(
     Effect.gen(function* () {
       const h = yield* setup({
-        upload: () =>
-          Effect.fail(new ReactorError({ code: "Upload", message: "fixture upload failed" })),
+        upload: () => Effect.fail(ReactorError.fromCode("Upload", "fixture upload failed")),
       });
       const source = h.path.join(h.directory, "upload-fails.png");
       yield* h.fs.writeFile(source, pngBytes(32, 24));
@@ -284,7 +283,7 @@ test("the standalone URI loader retains typed malformed-URL and encoded-byte bou
       expect(Result.isFailure(malformed) && malformed.failure.context.outcome).toBe(
         "not-submitted",
       );
-      expect(Result.isFailure(malformed) && malformed.failure.code).toBe("Upload");
+      expect(Result.isFailure(malformed) && malformed.failure.reason._tag).toBe("Upload");
       const oversized = yield* Effect.result(
         h.load(`data:image/png;base64,${"A".repeat(10000)}`, 8),
       );

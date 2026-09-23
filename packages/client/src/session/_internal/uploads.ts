@@ -30,10 +30,9 @@ export const captureUploads = (
     }
     return result;
   } catch (cause) {
-    throw new ReactorError({
-      code: "InvalidInput",
-      message: "invalid command upload reference",
-      context: { outcome: "not-submitted", detail: cause },
+    throw ReactorError.fromCode("InvalidInput", "invalid command upload reference", {
+      outcome: "not-submitted",
+      detail: cause,
     });
   }
 };

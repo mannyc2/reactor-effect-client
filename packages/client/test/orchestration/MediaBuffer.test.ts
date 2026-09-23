@@ -56,10 +56,10 @@ test("queue admission refuses overflow without changing accounting or accepting 
       const before = buffer.pressure();
       for (const excess of [buffer.offerVideo(videoFrame()), buffer.offerAudio(audioFrame(1))]) {
         const result = yield* Effect.result(excess);
-        expect(Result.isFailure(result) && result.failure.code).toBe("Overflow");
+        expect(Result.isFailure(result) && result.failure.reason._tag).toBe("Overflow");
         expect(buffer.pressure()).toEqual(before);
       }
-      const failure = new ReactorError({ code: "Overflow", message: "fixture queue is full" });
+      const failure = ReactorError.fromCode("Overflow", "fixture queue is full");
       buffer.fail(failure);
       buffer.end();
       yield* buffer.offerVideo(videoFrame());

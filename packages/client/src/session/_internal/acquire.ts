@@ -46,10 +46,7 @@ export const implementationOf = (
     try: () => {
       const implementation = implementations.get(session);
       if (implementation === undefined)
-        throw new ReactorError({
-          code: "InvalidInput",
-          message: "session was not acquired by this client",
-        });
+        throw ReactorError.fromCode("InvalidInput", "session was not acquired by this client");
       return implementation;
     },
     catch: errorOf,
@@ -68,17 +65,13 @@ const validate = (
 ): { readonly intent: AcquisitionIntent; readonly jwt?: Redacted.Redacted<string> } => {
   const options = input.options;
   if (options === null || typeof options !== "object") {
-    throw new ReactorError({
-      code: "InvalidInput",
-      message: "session options must be an object",
-      context: { outcome: "not-submitted" },
+    throw ReactorError.fromCode("InvalidInput", "session options must be an object", {
+      outcome: "not-submitted",
     });
   }
   if (options.jwt !== undefined && !Redacted.isRedacted(options.jwt)) {
-    throw new ReactorError({
-      code: "InvalidInput",
-      message: "jwt must be Redacted",
-      context: { outcome: "not-submitted" },
+    throw ReactorError.fromCode("InvalidInput", "jwt must be Redacted", {
+      outcome: "not-submitted",
     });
   }
   const credential = options.jwt === undefined ? {} : { jwt: options.jwt };
@@ -128,21 +121,18 @@ export const makeFactory = (
         const validated = yield* Effect.try({
           try: () => validate(input),
           catch: (cause) =>
-            new ReactorError({
-              code: "InvalidInput",
-              message: "invalid session acquisition input",
-              context: { detail: cause, outcome: "not-submitted" },
+            ReactorError.fromCode("InvalidInput", "invalid session acquisition input", {
+              detail: cause,
+              outcome: "not-submitted",
             }),
         });
         yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ReactorError({
-                code: "InvalidState",
-                message: "could not allocate a request identity",
-                context: { outcome: "not-submitted", detail: cause },
-              }),
+          Effect.mapError((cause) =>
+            ReactorError.fromCode("InvalidState", "could not allocate a request identity", {
+              outcome: "not-submitted",
+              detail: cause,
+            }),
           ),
         );
         const credential =

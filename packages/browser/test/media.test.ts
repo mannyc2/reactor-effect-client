@@ -41,16 +41,13 @@ test("media policy: acquisition exceptions are typed failures, not stream defect
   const error = await failure(
     fromOwnedReadableStream({
       evaluate: () => {
-        throw new ReactorError({
-          code: "UnsupportedCapability",
-          message: "not exposed in this realm",
-        });
+        throw ReactorError.fromCode("UnsupportedCapability", "not exposed in this realm");
       },
       onError: errorOf,
     }).pipe(Stream.runDrain),
     { signal },
   );
-  equal(error.code, "UnsupportedCapability");
+  equal(error.reason._tag, "UnsupportedCapability");
 });
 test("media policy: early stream completion cancels AND releases the underlying lock", async ({
   signal,
@@ -135,7 +132,7 @@ test("media policy: processor constructor presence does not prove audio-track su
       const error = await failure(audioSamples(track).pipe(Stream.take(1), Stream.runCollect), {
         signal,
       });
-      equal(error.code, "UnsupportedCapability");
+      equal(error.reason._tag, "UnsupportedCapability");
       equal(track.clones.length, 1);
       equal(track.clones[0]?.readyState, "ended");
       equal(track.readyState, "live");
@@ -209,7 +206,7 @@ test("media policy: video overflow closes the rejected native sample and reader"
   await frameHost(frame, async (readable) => {
     equal(
       (await failure(videoFrames(source, { maxSampleBytes: 8 }).pipe(Stream.runDrain), { signal }))
-        .code,
+        .reason._tag,
       "Overflow",
     );
     await eventually(() => frame.closes === 1);
@@ -487,7 +484,7 @@ test("Web Audio policy: sample overflow is a typed failure and closes the graph"
           ),
           { signal },
         )
-      ).code,
+      ).reason._tag,
       "Overflow",
     );
     equal(source.clones[0]?.readyState, "ended");
@@ -505,7 +502,7 @@ test("Web Audio policy: missing render blocks time out and remove all callbacks"
           ),
           { signal },
         )
-      ).code,
+      ).reason._tag,
       "Timeout",
     );
     equal(source.clones[0]?.readyState, "ended");
@@ -566,7 +563,7 @@ test("Web Audio policy: context suspension fails PCM instead of manufacturing ti
     await eventually(() => (nodes[0]?.pulls ?? 0) > 0);
     model.state = "suspended";
     model.dispatchEvent(new Event("statechange"));
-    equal((await result).code, "Disconnected");
+    equal((await result).reason._tag, "Disconnected");
     equal(source.clones[0]?.readyState, "ended");
     equal(model.listeners, 0);
   }));
@@ -599,7 +596,7 @@ test("Web Audio policy: no data/blob worklet or stopped source silently creates 
           }).pipe(Stream.runDrain),
           { signal },
         )
-      ).code,
+      ).reason._tag,
       "Protocol",
     );
     source.stop();
@@ -608,7 +605,7 @@ test("Web Audio policy: no data/blob worklet or stopped source silently creates 
         await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
           signal,
         })
-      ).code,
+      ).reason._tag,
       "InvalidState",
     );
     equal(model.inputs.length, 0);
@@ -706,7 +703,7 @@ test("Web Audio policy: malformed transferred packets close the graph instead of
             webAudioSamples(new FakeTrack("audio"), pcmOptions(context)).pipe(Stream.runDrain),
             { signal },
           )
-        ).code,
+        ).reason._tag,
         "Protocol",
       );
       equal(model.listeners, 0);
@@ -767,7 +764,8 @@ test("playback policy: a never-resolving play request has a deadline and detache
   await globals({ HTMLMediaElement: HtmlElement, MediaStream: class {} }, async () => {
     const source = new FakeTrack("video");
     equal(
-      (await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal })).code,
+      (await failure(Effect.scoped(play(source, new HTMLMediaElement(), 20)), { signal })).reason
+        ._tag,
       "Timeout",
     );
     equal(source.clones[0]?.readyState, "ended");
@@ -805,7 +803,7 @@ test("presentation policy: deadline removes the browser frame callback rather th
   }
   await globals({ HTMLVideoElement: VideoElement }, async () => {
     equal(
-      (await failure(nextPresentation(new HTMLVideoElement(), 20), { signal })).code,
+      (await failure(nextPresentation(new HTMLVideoElement(), 20), { signal })).reason._tag,
       "Timeout",
     );
     equal(elements[0]?.cancelled, [42]);
@@ -849,7 +847,7 @@ test("PCM activation: a rejected play promise is typed, detaches its sink, and n
         webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain),
         { signal },
       );
-      equal(error.code, "UnsupportedCapability");
+      equal(error.reason._tag, "UnsupportedCapability");
       assert(error.message.includes("activation"));
       equal(sinks[0]?.srcObject, null);
       equal(model.loads, 0);
@@ -876,7 +874,7 @@ test("PCM activation: a synchronous play exception cannot leak a clone or playba
           await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
             signal,
           })
-        ).code,
+        ).reason._tag,
         "UnsupportedCapability",
       );
       equal(sinks[0]?.pauses, 1);
@@ -907,7 +905,7 @@ test("PCM activation: play deadline is independent of the read deadline and late
         }).pipe(Stream.runDrain),
         { signal },
       );
-      equal(error.code, "Timeout");
+      equal(error.reason._tag, "Timeout");
       assert(error.message.includes("activation"));
       equal(sinks[0]?.srcObject, null);
       equal(source.clones[0]?.readyState, "ended");
@@ -968,7 +966,7 @@ test("PCM activation: missing Window document fails before allocating a clone or
           await failure(webAudioSamples(source, pcmOptions(context)).pipe(Stream.runDrain), {
             signal,
           })
-        ).code,
+        ).reason._tag,
         "UnsupportedCapability",
       );
       equal(source.clones.length, 0);
@@ -988,7 +986,7 @@ test("PCM activation: invalid timeout is rejected without creating a sink", ({ s
             ),
             { signal },
           )
-        ).code,
+        ).reason._tag,
         "InvalidInput",
       );
     equal(sinks.length, 0);
@@ -1050,7 +1048,7 @@ test("PCM activation: ending the borrowed lease during pending play cancels with
         });
       await eventually(() => sinks[0]?.plays === 1);
       source.stop(); // Native stop() also omits ended.
-      equal((await result).code, "Disconnected");
+      equal((await result).reason._tag, "Disconnected");
       equal(source.clones[0]?.readyState, "ended");
       equal(sinks[0]?.srcObject, null);
       finish?.();
@@ -1072,7 +1070,7 @@ test("PCM activation: source ended event fails an active read and releases playb
     await eventually(() => (nodes[0]?.pulls ?? 0) > 0);
     source.stop();
     source.dispatchEvent(new Event("ended"));
-    equal((await result).code, "Disconnected");
+    equal((await result).reason._tag, "Disconnected");
     equal(sinks[0]?.srcObject, null);
     equal(model.listeners, 0);
   }));
@@ -1096,7 +1094,7 @@ test("PCM activation: context suspension during pending play cleans the sink and
       await eventually(() => sinks[0]?.plays === 1);
       model.state = "suspended";
       model.dispatchEvent(new Event("statechange"));
-      equal((await result).code, "Disconnected");
+      equal((await result).reason._tag, "Disconnected");
       equal(sinks[0]?.srcObject, null);
       equal(model.listeners, 0);
       finish?.();
@@ -1123,7 +1121,7 @@ test("PCM reconnect policy: stopping an old lease retires its reader and sink; a
     );
     await eventually(() => oldBlocks > 0);
     old.stop();
-    equal((await result).code, "Disconnected");
+    equal((await result).reason._tag, "Disconnected");
     const atClose = oldBlocks;
     equal(sinks[0]?.srcObject, null);
     equal(old.clones[0]?.readyState, "ended");

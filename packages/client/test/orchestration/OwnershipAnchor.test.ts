@@ -4,7 +4,7 @@ import { ClipId, captureRequest } from "../../src/orchestration/request.js";
 import { resolve } from "../../src/orchestration/routing.js";
 import type { Candidate } from "../../src/orchestration/routing.js";
 import { renewalFixture } from "./RenewalFixture.js";
-import { gate, member, readyState, record, request, runClock } from "./SourceFixture.js";
+import { gate, member, readyState, record, request, runClock, refusal } from "./SourceFixture.js";
 
 const oldClip = record("foreign-old-ready"),
   warmClip = record("foreign-warm-ready");
@@ -57,37 +57,37 @@ for (const [name, fields, candidates, reason] of [
     "missing identity",
     { sameSessionAs: ClipId.make("missing") },
     [old, warm],
-    "session_anchor_missing",
+    "Missing:session_anchor",
   ],
   [
     "ambiguous identity",
     { sameSessionAs: oldClip.clipId },
     [old, { ...warm, accepted: new Set([oldClip.clipId]) }],
-    "owner_conflict",
+    "OwnerConflict",
   ],
   [
     "retired source",
     { sameSessionAs: oldClip.clipId },
     [{ ...old, closed: true }, warm],
-    "session_retired",
+    "SessionRetired",
   ],
   [
     "recovering source",
     { sameSessionAs: oldClip.clipId },
     [{ ...old, recovering: true }, warm],
-    "session_recovering",
+    "SessionRecovering",
   ],
   [
     "conflicting continuation",
     { sameSessionAs: oldClip.clipId, continueFrom: warmClip.clipId },
     [old, warm],
-    "owner_conflict",
+    "OwnerConflict",
   ],
   [
     "conflicting insertion",
     { sameSessionAs: oldClip.clipId, before: ClipId.make("warm-building") },
     [old, warm],
-    "owner_conflict",
+    "OwnerConflict",
   ],
 ] as const)
   test(`sameSessionAs refuses ${name} before dispatch`, async () => {
@@ -96,7 +96,7 @@ for (const [name, fields, candidates, reason] of [
     );
     expect(Result.isFailure(outcome)).toBe(true);
     if (Result.isFailure(outcome)) {
-      expect(outcome.failure.reason).toBe(reason);
+      expect(refusal(outcome.failure)).toBe(reason);
       expect(outcome.failure.context.outcome).toBe("not-submitted");
     }
   });

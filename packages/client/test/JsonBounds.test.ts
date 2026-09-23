@@ -6,6 +6,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Http from "effect/unstable/http/HttpClient";
 import * as Coordinator from "../src/coordinator/index.js";
 import { json, structFromObject } from "../src/json.js";
+import type { ReactorFailure } from "../src/errors.js";
 import type { JsonObject } from "../src/json.js";
 import type { CommandReply } from "../src/SessionTypes.js";
 import * as H3 from "../src/h3/index.js";
@@ -106,16 +107,15 @@ describe("json() structural bounds", () => {
 });
 
 const dataSent = (peer: MockPeer) => peer.sent.filter((s) => s.channel === "data").length;
-const expectTypedNotSubmitted = (exit: Exit.Exit<unknown, { readonly code: string }>) => {
+const expectTypedNotSubmitted = (exit: Exit.Exit<unknown, ReactorFailure>) => {
   expect(Exit.isFailure(exit)).toBe(true);
   if (Exit.isFailure(exit)) {
     expect(Cause.hasDies(exit.cause)).toBe(false);
     const error = Cause.findErrorOption(exit.cause);
     expect(Option.isSome(error)).toBe(true);
     if (Option.isSome(error)) {
-      const failure = error.value as { readonly code: string; readonly context: object };
-      expect(failure.context).toMatchObject({ outcome: "not-submitted" });
-      return failure;
+      expect(error.value.context).toMatchObject({ outcome: "not-submitted" });
+      return error.value;
     }
   }
   throw new Error("expected a typed failure");
@@ -129,13 +129,13 @@ describe("public call sites: json() throws are typed failures, not defects", () 
         Effect.provideService(Http.HttpClient, platform),
       ),
     );
-    expect(expectTypedNotSubmitted(exit).code).toBe("InvalidInput");
+    expect(expectTypedNotSubmitted(exit).reason._tag).toBe("InvalidInput");
   });
 
   const commandCase = (
     name: string,
     data: () => unknown,
-    check?: (failure: { readonly code: string }) => void,
+    check?: (failure: ReactorFailure) => void,
   ) =>
     test(`session.command input: ${name} is typed, not submitted, and sends nothing`, () =>
       withFixture(async (fixture) => {
@@ -159,7 +159,7 @@ describe("public call sites: json() throws are typed failures, not defects", () 
   commandCase("sparse array", () => ({ list: sparse() }));
   commandCase("million-slot sparse array", () => ({ list: new Array<unknown>(1_000_000) }));
   commandCase("cumulative key text over 4 MiB", bigKeys, (failure) =>
-    expect(failure.code).toBe("Protocol"),
+    expect(failure.reason._tag).toBe("Protocol"),
   );
 
   test("session.command input: an array index getter is never executed", () =>
@@ -212,7 +212,7 @@ describe("public call sites: json() throws are typed failures, not defects", () 
           yield* fake.replay(unknownMessage(data() as JsonObject, 10_000n));
           const failure = yield* provider.failure.pipe(Effect.timeoutOption(500));
           expect(Option.isSome(failure)).toBe(true);
-          if (Option.isSome(failure)) expect(failure.value.code).toBe("Protocol");
+          if (Option.isSome(failure)) expect(failure.value.reason._tag).toBe("Protocol");
           expect((yield* provider.current)._tag).toBe("Unavailable");
         }),
       ));

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "vitest";
+import * as Cause from "effect/Cause";
+import * as Redacted from "effect/Redacted";
 import { ReactorError } from "reactor-effect-client";
 import type { Track } from "reactor-effect-client";
 import { failureCode, type NativeAudio, type NativeVideo } from "../src/_internal/bridge.js";
@@ -34,7 +36,7 @@ const protocol = (body: () => unknown): void => {
     body();
   } catch (error) {
     expect(error).toBeInstanceOf(ReactorError);
-    expect((error as ReactorError).code).toBe("Protocol");
+    expect((error as ReactorError).reason._tag).toBe("Protocol");
     return;
   }
   throw new Error("expected Protocol failure");
@@ -97,13 +99,45 @@ describe("native media and event decoding", () => {
     expect(event).toMatchObject({
       type: "error",
       error: {
-        code: "Overflow",
+        reason: { _tag: "Overflow" },
         message: "native peer failed (Overflow)",
-        context: { detail: { status: -3, message: "native transport event queue overflowed" } },
+        context: { detail: { status: -3 } },
       },
     });
+    const classified = event.type === "error" ? event.error : undefined;
+    const detail = classified?.context.detail as { readonly backendMessage: unknown } | undefined;
+    expect(
+      Redacted.isRedacted(detail?.backendMessage) && Redacted.value(detail.backendMessage),
+    ).toBe("native transport event queue overflowed");
     protocol(() => nativePeerTesting.parseEvent(packet({ type: "error", code: "Overflow" })));
     protocol(() => nativePeerTesting.parseEvent(packet({ type: "channel", channel: "data" })));
+  });
+
+  test("keeps libwebrtc text Redacted, out of the message, diagnostic JSON and the rendered cause", () => {
+    const backend = "setRemoteDescription failed: a=ice-pwd:S3CR3TPWD a=fingerprint:sha-256 AB:CD";
+    for (const status of [-2, -5]) {
+      const event = nativePeerTesting.parseEvent(
+        packet({ type: "error", status, message: backend }),
+      );
+      if (event.type !== "error") throw new Error("expected an error event");
+      const error = event.error;
+      expect(error.reason._tag).toBe(status === -2 ? "Native" : "SdpRejected");
+      if (error.reason._tag === "Native") {
+        expect(error.reason.status).toBe(-2);
+        expect(error.reason.backendMessage && Redacted.value(error.reason.backendMessage)).toBe(
+          backend,
+        );
+      }
+      const rendered = [
+        error.message,
+        JSON.stringify(error),
+        Cause.pretty(Cause.fail(error)),
+        Cause.prettyErrors(Cause.fail(error), { includeCauseInStack: true })
+          .map((pretty) => `${pretty.message}\n${pretty.stack ?? ""}`)
+          .join("\n"),
+      ].join("\n");
+      expect(rendered).not.toContain("S3CR3TPWD");
+    }
   });
 
   test("tells ICE failure from transport failure by the failed connection's candidate pairs", () => {
@@ -114,12 +148,12 @@ describe("native media and event decoding", () => {
         local,
         { type: "candidate-pair", state: "succeeded", nominated: false },
       ]),
-    ).toMatchObject({ code: "TransportFailed" });
+    ).toMatchObject({ reason: { _tag: "TransportFailed" } });
     expect(
       nativePeerTesting.connectionFailure([
         { type: "candidate-pair", state: "failed", nominated: true },
       ]),
-    ).toMatchObject({ code: "TransportFailed" });
+    ).toMatchObject({ reason: { _tag: "TransportFailed" } });
     expect(
       nativePeerTesting.connectionFailure([
         local,
@@ -129,12 +163,10 @@ describe("native media and event decoding", () => {
         { type: "candidate-pair", state: "in-progress", nominated: false },
       ]),
     ).toMatchObject({
-      code: "IceFailed",
-      context: { detail: { pairs: 2, candidateTypes: ["host", "relay"] } },
+      reason: { _tag: "IceFailed", pairs: 2, candidateTypes: ["host", "relay"] },
     });
     expect(nativePeerTesting.connectionFailure([])).toMatchObject({
-      code: "IceFailed",
-      context: { detail: { pairs: 0, candidateTypes: [] } },
+      reason: { _tag: "IceFailed", pairs: 0, candidateTypes: [] },
     });
   });
 

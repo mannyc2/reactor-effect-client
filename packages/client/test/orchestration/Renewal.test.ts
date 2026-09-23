@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { Effect, Fiber, Option, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
-import { ClipId, PolicyFailure } from "../../src/orchestration/request.js";
+import { ClipId } from "../../src/orchestration/request.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import { AcquisitionFailure } from "../../src/session/index.js";
 import {
@@ -17,6 +17,7 @@ import {
   sourceFixture,
   until,
   untilEffect,
+  refusal,
 } from "./SourceFixture.js";
 import { renewalFixture } from "./RenewalFixture.js";
 
@@ -66,7 +67,7 @@ test("failed and interrupted acquisition immediately join their owned source sco
 
 const refusedAcquisition = (sessionId: string) =>
   AcquisitionFailure.from(
-    new ReactorError({ code: "Http", message: "session allocation refused" }),
+    ReactorError.fromCode("Http", "session allocation refused"),
     Object.freeze({
       localClosed: true,
       allocation: "known",
@@ -195,11 +196,7 @@ test("a sequence conflicting with a warm-source anchor or continuation sends not
         const result = yield* Effect.result(
           handle.engine.enqueue(member("old", true, "last", { [field]: foreign.clipId })),
         );
-        expect(
-          Result.isFailure(result) &&
-            result.failure instanceof PolicyFailure &&
-            result.failure.reason,
-        ).toBe("owner_conflict");
+        expect(Result.isFailure(result) && refusal(result.failure)).toBe("OwnerConflict");
         expect(Result.isFailure(result) && result.failure.context.outcome).toBe("not-submitted");
       }
       expect(sources[0]!.sends).toHaveLength(1);
@@ -232,11 +229,7 @@ test("before position is revalidated after prework and a changed route never com
       );
       yield* held.release;
       const outcome = yield* Fiber.join(pending);
-      expect(
-        Result.isFailure(outcome) &&
-          outcome.failure instanceof PolicyFailure &&
-          outcome.failure.reason,
-      ).toBe("route_changed");
+      expect(Result.isFailure(outcome) && refusal(outcome.failure)).toBe("RouteChanged");
       expect(sources[0]!.sends).toEqual([]);
       expect(yield* handle.sequences.get("moving-anchor")).toBeUndefined();
       expect((yield* prepared.state)._tag).toBe("Prepared");
@@ -302,9 +295,7 @@ test("caller cancellation after commit keeps one dispatch and records final acce
       expect((yield* handle.sequences.get("committed"))?.status).toBe("sealed");
       expect((yield* handle.sequences.get("committed"))?.acceptedCount).toBe(1);
       const late = yield* Effect.result(handle.engine.enqueue(member("committed", false, "late")));
-      expect(
-        Result.isFailure(late) && late.failure instanceof PolicyFailure && late.failure.reason,
-      ).toBe("sequence_sealed");
+      expect(Result.isFailure(late) && refusal(late.failure)).toBe("Sequence:sealed");
     }),
   ));
 
@@ -448,16 +439,10 @@ test("pauseAndStop applies explicit policy in order and mutation routing uses th
       });
       expect(yield* handle.engine.remove(b.clipId)).toBe("generation");
       const missing = yield* Effect.result(handle.engine.remove(ClipId.make("missing")));
-      expect(
-        Result.isFailure(missing) &&
-          missing.failure instanceof PolicyFailure &&
-          missing.failure.reason,
-      ).toBe("not_found");
+      expect(Result.isFailure(missing) && refusal(missing.failure)).toBe("NotFound");
       const before = sources.flatMap((source) => source.controls).length;
       const busy = yield* Effect.result(handle.engine.setCanvas("9:16"));
-      expect(
-        Result.isFailure(busy) && busy.failure instanceof PolicyFailure && busy.failure.reason,
-      ).toBe("busy");
+      expect(Result.isFailure(busy) && refusal(busy.failure)).toBe("Busy");
       expect(sources.flatMap((source) => source.controls)).toHaveLength(before);
     }),
   ));
@@ -495,9 +480,7 @@ test("frame failure exposes recovery without an application control reader and r
       const held = yield* gate;
       const { handle, sources, renewals } = yield* renewalFixture(() => ({ reconnect: held.wait }));
       const accepted = yield* handle.engine.enqueue(member("retained", false));
-      yield* sources[0]!.failVideo(
-        new ReactorError({ code: "Disconnected", message: "frame receiver ended" }),
-      );
+      yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "frame receiver ended"));
       yield* untilEffect(
         handle.mediaState.pipe(Effect.map((state) => state._tag === "Recovering")),
       );
@@ -534,10 +517,7 @@ test("queued removal and committed work cannot deadlock recovery", () =>
       yield* entered.wait;
       const removal = yield* handle.engine.remove(first).pipe(Effect.result, Effect.forkScoped);
       yield* sources[0]!.failVideo(
-        new ReactorError({
-          code: "Disconnected",
-          message: "reconnect during an outstanding mutation",
-        }),
+        ReactorError.fromCode("Disconnected", "reconnect during an outstanding mutation"),
       );
       yield* held.release;
       yield* Fiber.join(pending).pipe(Effect.timeout(1000));
@@ -547,9 +527,7 @@ test("queued removal and committed work cannot deadlock recovery", () =>
         // Either ordering is legal: admission before recovery succeeds; admission
         // during recovery is explicitly not submitted and requires a caller retry.
         expect(outcome.failure.context.outcome).toBe("not-submitted");
-        expect(outcome.failure instanceof PolicyFailure && outcome.failure.reason).toBe(
-          "session_recovering",
-        );
+        expect(refusal(outcome.failure)).toBe("SessionRecovering");
         expect(yield* handle.engine.remove(first).pipe(Effect.timeout(1000))).toBe("generation");
       } else expect(outcome.success).toBe("generation");
       yield* handle.engine.setAutoplay(true).pipe(Effect.timeout(1000));
@@ -570,11 +548,7 @@ test("generation capacity is enforced before physical preparation and includes a
         }),
       }));
       const result = yield* Effect.result(handle.engine.enqueue(request()));
-      expect(
-        Result.isFailure(result) &&
-          result.failure instanceof PolicyFailure &&
-          result.failure.reason,
-      ).toBe("queue_full");
+      expect(Result.isFailure(result) && refusal(result.failure)).toBe("QueueFull");
       expect(Result.isFailure(result) && result.failure.context.outcome).toBe("not-submitted");
       expect(sources[0]!.plans).toEqual([]);
       expect(sources[0]!.sends).toEqual([]);

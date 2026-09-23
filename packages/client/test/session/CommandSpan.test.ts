@@ -2,7 +2,7 @@
  * The span on a request's session-owned execution, exported through Effect's own
  * OtlpTracer with a captured HTTP exporter. The export carries identity, dispatch
  * evidence and the failure category, never the input, the reply or provider text,
- * while the caller still reads provider text from `context.body`.
+ * while the caller still reads provider text from its reason's `body`.
  */
 import { expect, test } from "vitest";
 import * as Cause from "effect/Cause";
@@ -181,11 +181,12 @@ test("command span: a remote error exports its code and outcome; only the caller
     expect(exported).not.toContain(ERROR);
     expect(exported).not.toContain(INPUT);
     expect(error.message).toBe("remote command error MODEL_ERROR");
-    expect(error.context).toMatchObject({
+    expect(error.reason).toMatchObject({
+      _tag: "Remote",
       remoteCode: "MODEL_ERROR",
       body: `refused: ${ERROR}`,
-      outcome: "replied",
     });
+    expect(error.context.outcome).toBe("replied");
   }));
 
 test("control span: a remote control error is exported by code; the caller reads its text", ({
@@ -212,7 +213,8 @@ test("control span: a remote control error is exported by code; the caller reads
       "error.type": "Remote",
     });
     expect(exported).not.toContain(ERROR);
-    expect(error.context).toMatchObject({
+    expect(error.reason).toMatchObject({
+      _tag: "Remote",
       remoteCode: "SCHEMA_UNAVAILABLE",
       body: `unavailable: ${ERROR}`,
     });
@@ -236,11 +238,11 @@ test("control span: a failed clip is a replied request; its reason reaches only 
     });
     expect(exported).not.toContain(ERROR);
     const error = failed(exit);
-    expect([error.code, error.message, error.context.body]).toEqual([
-      "RecorderDisabled",
-      "clip failed",
-      `recorder disabled: ${ERROR}`,
-    ]);
+    expect([
+      error.reason._tag,
+      error.message,
+      error.reason._tag === "RecorderDisabled" && error.reason.body,
+    ]).toEqual(["RecorderDisabled", "clip failed", `recorder disabled: ${ERROR}`]);
   }));
 
 test("command span: after the caller stops waiting, the child span ends Timeout/unknown at the command's own deadline", ({
@@ -284,7 +286,7 @@ test("command span: pre-dispatch rejections and notifications open no span", ({ 
         session.command("generate_clip", { prompt: INPUT }, undefined, 0),
       );
       expect(failed(invalid.exit)).toMatchObject({
-        code: "InvalidInput",
+        reason: { _tag: "InvalidInput" },
         context: { outcome: "not-submitted" },
       });
       expect(invalid.spans.map((span) => span.name)).toEqual(["app.submit"]);
@@ -293,7 +295,7 @@ test("command span: pre-dispatch rejections and notifications open no span", ({ 
       await eventually(() => session.snapshot.pending.data === 1);
       const overflow = await traced(session.command("generate_clip", { prompt: INPUT }));
       expect(failed(overflow.exit)).toMatchObject({
-        code: "Overflow",
+        reason: { _tag: "Overflow" },
         context: { outcome: "not-submitted" },
       });
       expect(overflow.spans.map((span) => span.name)).toEqual(["app.submit"]);

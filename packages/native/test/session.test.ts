@@ -118,7 +118,7 @@ describe("native canonical session boundary", () => {
               expect(invalid._tag).toBe("Failure");
               if (invalid._tag === "Failure")
                 expect(invalid.failure).toMatchObject({
-                  code: "InvalidInput",
+                  reason: { _tag: "InvalidInput" },
                   context: expect.objectContaining({ outcome: "not-submitted" }),
                 });
             }
@@ -177,14 +177,14 @@ describe("native canonical session boundary", () => {
       expect(result.overflow._tag).toBe("Failure");
       if (result.overflow._tag === "Failure") {
         expect(result.overflow.failure).toMatchObject({
-          code: "Overflow",
+          reason: { _tag: "Overflow" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       }
       expect(result.afterClose._tag).toBe("Failure");
       if (result.afterClose._tag === "Failure") {
         expect(result.afterClose.failure).toMatchObject({
-          code: "Closed",
+          reason: { _tag: "Closed" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       }
@@ -244,11 +244,11 @@ describe("native canonical session boundary", () => {
       expect(result.report.localClosed).toBe(false);
       expect(result.report.localErrors).toHaveLength(1);
       const [shutdown] = result.report.localErrors;
-      expect(shutdown?.code).toBe("Shutdown");
+      expect(shutdown?.reason._tag).toBe("Shutdown");
       // The connection finalizer dies with the typed deadline failure, which
       // cleanup records before it goes on to terminate the owned session.
       expect(Cause.squash(shutdown?.context.detail as Cause.Cause<unknown>)).toMatchObject({
-        code: "Shutdown",
+        reason: { _tag: "Shutdown" },
         message: "native owner join exceeded its deadline; handle retained",
       });
       expect(result.report.remote).toMatchObject({
@@ -262,7 +262,7 @@ describe("native canonical session boundary", () => {
       expect(result.degraded._tag).toBe("Failure");
       if (result.degraded._tag === "Failure")
         expect(result.degraded.failure).toMatchObject({
-          code: "Native",
+          reason: { _tag: "Native" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       expect(result.allocatedWhileDegraded).toBe(1);
@@ -306,7 +306,7 @@ describe("native canonical session boundary", () => {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure")
           expect(result.failure).toMatchObject({
-            code: "InvalidInput",
+            reason: { _tag: "InvalidInput" },
             context: expect.objectContaining({ outcome: "not-submitted" }),
           });
       }

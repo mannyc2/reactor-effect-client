@@ -51,10 +51,7 @@ const fixture = (
       check: Effect.void,
       make: () => {
         peers++;
-        throw new ReactorError({
-          code: "InvalidState",
-          message: "unexpected connection in allocation test",
-        });
+        throw ReactorError.fromCode("InvalidState", "unexpected connection in allocation test");
       },
     }),
   );
@@ -139,7 +136,7 @@ for (const [name, createFields] of invalidDescriptions)
           expect(result._tag).toBe("Failure");
           if (result._tag === "Failure") {
             expect(result.failure).toBeInstanceOf(Client.AcquisitionFailure);
-            expect(result.failure.code).toBe("Protocol");
+            expect(result.failure.reason._tag).toBe("Protocol");
             expect(result.failure.context).toMatchObject({
               operation: "create session",
               sessionId: "session-1",
@@ -198,10 +195,8 @@ test("preflight refuses an unsupported peer before remote allocation", async () 
       ).pipe(
         Effect.provideService(PeerFactory, {
           check: Effect.fail(
-            new ReactorError({
-              code: "UnsupportedHost",
-              message: "fixture platform",
-              context: { outcome: "not-submitted" },
+            ReactorError.fromCode("UnsupportedHost", "fixture platform", {
+              outcome: "not-submitted",
             }),
           ),
           make: () => {
@@ -213,7 +208,7 @@ test("preflight refuses an unsupported peer before remote allocation", async () 
     ),
   );
   expect(result._tag).toBe("Failure");
-  if (result._tag === "Failure") expect(result.failure.code).toBe("UnsupportedHost");
+  if (result._tag === "Failure") expect(result.failure.reason._tag).toBe("UnsupportedHost");
   expect(fake.calls).toEqual([]);
 });
 
@@ -230,7 +225,7 @@ test("invalid JS input fails through the typed channel before allocation", async
     ),
   );
   expect(result._tag).toBe("Failure");
-  if (result._tag === "Failure") expect(result.failure.code).toBe("InvalidInput");
+  if (result._tag === "Failure") expect(result.failure.reason._tag).toBe("InvalidInput");
   expect(fake.calls).toEqual([]);
 });
 
@@ -333,7 +328,7 @@ test("a failed connected acquisition exposes unconfirmed cleanup without retaini
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") {
           expect(result.failure).toBeInstanceOf(Client.AcquisitionFailure);
-          expect(result.failure.code).toBe("InvalidState");
+          expect(result.failure.reason._tag).toBe("InvalidState");
           expect(result.failure.cleanup.localClosed).toBe(true);
           expect(result.failure.cleanup.allocation).toBe("known");
           expect(result.failure.cleanup.sessionId).toBe("session-1");

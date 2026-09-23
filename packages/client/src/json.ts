@@ -8,7 +8,7 @@ export interface JsonObject {
 export const isRecord = (u: unknown): u is Record<string, unknown> =>
   typeof u === "object" && u !== null && !Array.isArray(u);
 const bad = (message: string): never => {
-  throw new ReactorError({ code: "Protocol", message });
+  throw ReactorError.fromCode("Protocol", message);
 };
 export const record = (u: unknown, context = "object"): Record<string, unknown> =>
   isRecord(u) ? u : bad(`expected ${context}`);

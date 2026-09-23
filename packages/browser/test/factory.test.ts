@@ -37,6 +37,6 @@ test("absent built-in peer fails before allocating any remote session", async ()
     ),
   );
   assert(result._tag === "Failure", "expected the host check to fail");
-  equal(result.failure.code, "UnsupportedHost");
+  equal(result.failure.reason._tag, "UnsupportedHost");
   equal(calls, 0);
 });

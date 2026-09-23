@@ -162,7 +162,7 @@ export const make = (options: Options) =>
           }
           if (submissions.size >= 4096)
             return yield* PolicyFailure.refuse(
-              "submission_capacity",
+              "SubmissionCapacity",
               "Committed source submissions reached their bound",
             );
           yield* admit;
@@ -210,9 +210,7 @@ export const make = (options: Options) =>
             Stream.runForEach((frame) =>
               closed() || media.generation !== generation ? Effect.void : readers.video(frame),
             ),
-            Effect.andThen(
-              lost(new ReactorError({ code: "Disconnected", message: "Video generation ended" })),
-            ),
+            Effect.andThen(lost(ReactorError.fromCode("Disconnected", "Video generation ended"))),
             Effect.catch(lost),
             Effect.forkIn(owned),
           );
@@ -220,9 +218,7 @@ export const make = (options: Options) =>
             Stream.runForEach((frame) =>
               closed() || media.generation !== generation ? Effect.void : readers.audio(frame),
             ),
-            Effect.andThen(
-              lost(new ReactorError({ code: "Disconnected", message: "Audio generation ended" })),
-            ),
+            Effect.andThen(lost(ReactorError.fromCode("Disconnected", "Audio generation ended"))),
             Effect.catch(lost),
             Effect.forkIn(owned),
           );
@@ -234,17 +230,11 @@ export const make = (options: Options) =>
         Effect.suspend(() => {
           if (closed())
             return Effect.fail(
-              new ReactorError({
-                code: "Closed",
-                message: "Retired source cannot acquire a media generation",
-              }),
+              ReactorError.fromCode("Closed", "Retired source cannot acquire a media generation"),
             );
           if (next.generation <= media.generation)
             return Effect.fail(
-              new ReactorError({
-                code: "Protocol",
-                message: "Reconnect did not acquire a new media generation",
-              }),
+              ReactorError.fromCode("Protocol", "Reconnect did not acquire a new media generation"),
             );
           retiredDrops = {
             video: sumDrops(
@@ -272,10 +262,10 @@ export const make = (options: Options) =>
             const droppedAudio = sumDrops(retiredDrops.audio, pressure.droppedAudio);
             return droppedVideo === null || droppedAudio === null
               ? Effect.fail(
-                  new ReactorError({
-                    code: "InvalidState",
-                    message: "Retired media generation drop totals are unknown",
-                  }),
+                  ReactorError.fromCode(
+                    "InvalidState",
+                    "Retired media generation drop totals are unknown",
+                  ),
                 )
               : Effect.succeed({ ...pressure, droppedVideo, droppedAudio });
           }),

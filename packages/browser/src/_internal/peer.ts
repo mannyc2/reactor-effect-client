@@ -8,12 +8,11 @@ const attempt = <A>(body: () => A): Effect.Effect<A, ReactorError> =>
   Effect.try({ try: body, catch: (e) => errorOf(e, "InvalidState") });
 export const requireBrowserPeer = (): void => {
   if (typeof RTCPeerConnection !== "function" || typeof MediaStream !== "function")
-    throw new ReactorError({
-      code: "UnsupportedHost",
-      message:
-        "Browser transport requires RTCPeerConnection and MediaStream; choose the native peer layer explicitly on a supported server runtime.",
-      context: { outcome: "not-submitted" },
-    });
+    throw ReactorError.fromCode(
+      "UnsupportedHost",
+      "Browser transport requires RTCPeerConnection and MediaStream; choose the native peer layer explicitly on a supported server runtime.",
+      { outcome: "not-submitted" },
+    );
 };
 export class BrowserPeer implements Peer {
   readonly nativeTracks = true;
@@ -56,7 +55,7 @@ export class BrowserPeer implements Peer {
             if (live())
               emit({
                 type: "error",
-                error: new ReactorError({ code: "Disconnected", message: `${kind} channel error` }),
+                error: ReactorError.fromCode("Disconnected", `${kind} channel error`),
               });
           };
           channel.onmessage = (event: MessageEvent<unknown>) => {
@@ -64,17 +63,17 @@ export class BrowserPeer implements Peer {
             if (!(event.data instanceof ArrayBuffer)) {
               emit({
                 type: "error",
-                error: new ReactorError({ code: "Protocol", message: "nonbinary channel message" }),
+                error: ReactorError.fromCode("Protocol", "nonbinary channel message"),
               });
               return;
             }
             if (event.data.byteLength > self.messageLimit) {
               emit({
                 type: "error",
-                error: new ReactorError({
-                  code: "Overflow",
-                  message: "received message exceeds negotiated/local bound",
-                }),
+                error: ReactorError.fromCode(
+                  "Overflow",
+                  "received message exceeds negotiated/local bound",
+                ),
               });
               return;
             }
@@ -119,10 +118,7 @@ export class BrowserPeer implements Peer {
             event.track.stop();
             emit({
               type: "error",
-              error: new ReactorError({
-                code: "Protocol",
-                message: "received track has no declared mapping",
-              }),
+              error: ReactorError.fromCode("Protocol", "received track has no declared mapping"),
             });
             return;
           }
@@ -142,19 +138,19 @@ export class BrowserPeer implements Peer {
           try {
             const offer = await pc.createOffer();
             if (signal.aborted || self.pc !== pc)
-              throw new ReactorError({ code: "Aborted", message: "peer preparation interrupted" });
+              throw ReactorError.fromCode("Aborted", "peer preparation interrupted");
             if (offer.sdp === undefined || offer.sdp.length === 0)
-              throw new ReactorError({ code: "Protocol", message: "createOffer returned no SDP" });
+              throw ReactorError.fromCode("Protocol", "createOffer returned no SDP");
             await pc.setLocalDescription(offer);
             if (signal.aborted || self.pc !== pc)
-              throw new ReactorError({ code: "Aborted", message: "peer preparation interrupted" });
+              throw ReactorError.fromCode("Aborted", "peer preparation interrupted");
             const mapping = tracks.map((track) => {
               const mid = self.transceivers.get(track.name)?.transceiver.mid;
               if (mid == null)
-                throw new ReactorError({
-                  code: "Protocol",
-                  message: `missing mid after setLocalDescription: ${track.name}`,
-                });
+                throw ReactorError.fromCode(
+                  "Protocol",
+                  `missing mid after setLocalDescription: ${track.name}`,
+                );
               return Object.freeze({ ...track, mid });
             });
             return { sdp: offer.sdp, mapping: Object.freeze(mapping) };
@@ -172,10 +168,7 @@ export class BrowserPeer implements Peer {
         const pc = this.require();
         await pc.setRemoteDescription({ type: "answer", sdp });
         if (this.pc !== pc)
-          throw new ReactorError({
-            code: "Disconnected",
-            message: "peer closed while applying SDP answer",
-          });
+          throw ReactorError.fromCode("Disconnected", "peer closed while applying SDP answer");
         const negotiated = pc.sctp?.maxMessageSize;
         this.messageLimit =
           typeof negotiated === "number" && Number.isFinite(negotiated) && negotiated >= 1
@@ -186,34 +179,28 @@ export class BrowserPeer implements Peer {
     });
   }
   private require(): RTCPeerConnection {
-    if (this.pc === undefined)
-      throw new ReactorError({ code: "InvalidState", message: "peer is closed" });
+    if (this.pc === undefined) throw ReactorError.fromCode("InvalidState", "peer is closed");
     return this.pc;
   }
   private named(name: string): { transceiver: RTCRtpTransceiver; declared: Track } {
     this.require();
     const entry = this.transceivers.get(name);
-    if (entry === undefined)
-      throw new ReactorError({ code: "InvalidState", message: `unknown track: ${name}` });
+    if (entry === undefined) throw ReactorError.fromCode("InvalidState", `unknown track: ${name}`);
     return entry;
   }
   send(kind: Channel, bytes: Uint8Array<ArrayBuffer>): Effect.Effect<void, ReactorError> {
     return attempt(() => {
       const channel = this.channels?.[kind];
       if (channel?.readyState !== "open")
-        throw new ReactorError({
-          code: "Disconnected",
-          message: `${kind} channel is not open`,
-          context: { outcome: "not-submitted" },
+        throw ReactorError.fromCode("Disconnected", `${kind} channel is not open`, {
+          outcome: "not-submitted",
         });
       if (
         bytes.byteLength > this.messageLimit ||
         channel.bufferedAmount + bytes.byteLength > this.bufferedLimit
       )
-        throw new ReactorError({
-          code: "Overflow",
-          message: `${kind} message/send buffer bound exceeded`,
-          context: { outcome: "not-submitted" },
+        throw ReactorError.fromCode("Overflow", `${kind} message/send buffer bound exceeded`, {
+          outcome: "not-submitted",
         });
       try {
         channel.send(bytes);
@@ -226,7 +213,7 @@ export class BrowserPeer implements Peer {
     this.require();
     const track = this.received.get(name);
     if (track?.readyState !== "live")
-      throw new ReactorError({ code: "InvalidState", message: `no live received track: ${name}` });
+      throw ReactorError.fromCode("InvalidState", `no live received track: ${name}`);
     const clone = track.clone();
     this.leases.add(clone);
     return clone;
@@ -247,21 +234,12 @@ export class BrowserPeer implements Peer {
         const entry = this.named(name),
           pc = this.require();
         if (entry.declared.direction !== "sendonly")
-          throw new ReactorError({
-            code: "InvalidState",
-            message: `${name} is not an outgoing track`,
-          });
+          throw ReactorError.fromCode("InvalidState", `${name} is not an outgoing track`);
         if (track !== null && (track.kind !== entry.declared.kind || track.readyState !== "live"))
-          throw new ReactorError({
-            code: "InvalidState",
-            message: "outgoing track kind/liveness mismatch",
-          });
+          throw ReactorError.fromCode("InvalidState", "outgoing track kind/liveness mismatch");
         await entry.transceiver.sender.replaceTrack(track);
         if (this.pc !== pc)
-          throw new ReactorError({
-            code: "Disconnected",
-            message: "peer closed during replaceTrack",
-          });
+          throw ReactorError.fromCode("Disconnected", "peer closed during replaceTrack");
       },
       catch: (e) => errorOf(e, "InvalidState", "replace track"),
     });
@@ -275,17 +253,17 @@ export class BrowserPeer implements Peer {
           !Number.isSafeInteger(bitsPerSecond) ||
           bitsPerSecond < 1
         )
-          throw new ReactorError({
-            code: "InvalidState",
-            message: "maxBitrate requires an outgoing track and positive integral bits/sec",
-          });
+          throw ReactorError.fromCode(
+            "InvalidState",
+            "maxBitrate requires an outgoing track and positive integral bits/sec",
+          );
         const sender = entry.transceiver.sender,
           parameters = sender.getParameters();
         if (parameters.encodings.length === 0)
-          throw new ReactorError({
-            code: "UnsupportedCapability",
-            message: "sender has no mutable encodings yet",
-          });
+          throw ReactorError.fromCode(
+            "UnsupportedCapability",
+            "sender has no mutable encodings yet",
+          );
         for (const encoding of parameters.encodings) encoding.maxBitrate = bitsPerSecond;
         await sender.setParameters(parameters);
       },
@@ -297,8 +275,7 @@ export class BrowserPeer implements Peer {
       try: async () => {
         const pc = this.require(),
           report = await pc.getStats();
-        if (this.pc !== pc)
-          throw new ReactorError({ code: "Disconnected", message: "stale stats generation" });
+        if (this.pc !== pc) throw ReactorError.fromCode("Disconnected", "stale stats generation");
         const entries: unknown[] = [];
         report.forEach((entry: unknown) => {
           entries.push(entry);

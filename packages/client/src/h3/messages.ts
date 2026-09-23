@@ -131,10 +131,8 @@ export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
     }
     return freeze(message);
   } catch {
-    throw new ReactorError({
-      code: "Protocol",
-      message: `H3 ${type} payload is malformed`,
-      context: { operation: "h3 observation" },
+    throw ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
+      operation: "h3 observation",
     });
   }
 };

@@ -13,11 +13,17 @@ export * as FetchHttp from "./FetchHttp.js";
 export {
   ReactorError,
   ErrorCode,
-  ErrorContext,
-  ProviderFailure,
+  FailureCode,
+  Failure,
+  Http,
+  Remote,
+  Native,
+  IceFailed,
+  TransportFailed,
+  ReactorErrorReason,
   isReactorFailure,
 } from "./errors.js";
-export type { ReactorFailure, RemoteOutcome } from "./errors.js";
+export type { ErrorContext, MessageCode, ReactorFailure, RemoteOutcome } from "./errors.js";
 export { PeerFactory } from "./PeerFactory.js";
 export type { PeerFactoryShape } from "./PeerFactory.js";
 export type {

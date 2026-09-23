@@ -1,60 +1,152 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Root from "../src/index.js";
 import {
   AcquisitionFailure,
   CommandFailure,
+  Http,
   isReactorFailure,
+  Native,
   ReactorError,
+  Remote,
 } from "../src/index.js";
+// @ts-expect-error ProviderFailure is no longer exported from the root.
+import type { ProviderFailure } from "../src/index.js";
+import type { ErrorContext } from "../src/index.js";
 import { PolicyFailure } from "../src/orchestration/index.js";
 import type { EngineError } from "../src/orchestration/index.js";
 import { preworkFailure } from "../src/orchestration/request.js";
 import type { CloseReport } from "../src/SessionTypes.js";
 
-const provider = { code: "rate_limited", message: "slow down", recoverable: true, status: 429 };
+type Equals<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+const report: CloseReport = Object.freeze({
+  localClosed: true,
+  allocation: "known",
+  sessionId: "session-1",
+  remote: {
+    attempted: true,
+    responseReceived: false,
+    confirmed: false,
+    evidence: null,
+    deleteStatus: null,
+    state: null,
+  },
+  unpublishSubmitted: [],
+  unresolvedPublications: [],
+  localErrors: [],
+});
+const late = ReactorError.fromCode("Timeout", "late");
+const command = CommandFailure.from(late, { operation: "enqueue", outcome: "not-submitted" });
+const acquisition = AcquisitionFailure.from(late, report);
+const policy = PolicyFailure.refuse("QueueFull", "The generation queue is full");
 const encoded = (context: object, _tag = "ReactorError"): unknown => ({
   _tag,
-  code: "Timeout",
-  message: "late",
+  reason: { _tag: "Timeout", message: "late" },
   context,
 });
 
 describe("ReactorError", () => {
-  test("an error built without context has an empty one", () => {
-    expect(new ReactorError({ code: "Timeout", message: "late" }).context).toEqual({});
+  test("its reason carries the code and the message", () => {
+    expect([late.reason._tag, late.message, late.context]).toEqual(["Timeout", "late", {}]);
+    expect(late.reason).toBeInstanceOf(Root.Failure);
+    // The reason is library-authored, so it is the native cause.
+    expect(late.cause).toBe(late.reason);
   });
 
-  test("diagnostic JSON leaves out response bodies and causes", () => {
-    const error = new ReactorError({
-      code: "Http",
-      message: "request failed",
-      context: { operation: "create", generation: 7n, body: "secret body", detail: "secret" },
-      nativeError: provider,
+  test("fromCode builds the reason each code names", () => {
+    expect(ReactorError.fromCode("Http", "down").reason).toBeInstanceOf(Http);
+    expect(ReactorError.fromCode("RecorderDisabled", "clip failed").reason).toBeInstanceOf(Remote);
+    expect(ReactorError.fromCode("Native", "native failed").reason).toBeInstanceOf(Native);
+    expect(Root.ErrorCode.literals).toContain("IceFailed");
+  });
+
+  test("diagnostic JSON leaves out response bodies, backend text and details", () => {
+    const http = new ReactorError({
+      reason: new Http({
+        message: "request failed",
+        status: 429,
+        retryAfter: Duration.seconds(2),
+        body: "secret body",
+      }),
+      context: { operation: "create", generation: 7n, detail: "secret detail" },
     });
-    expect(JSON.parse(JSON.stringify(error))).toEqual({
+    expect(JSON.parse(JSON.stringify(http))).toEqual({
       _tag: "ReactorError",
-      code: "Http",
       message: "request failed",
+      reason: { _tag: "Http", message: "request failed", status: 429, retryAfterMillis: 2000 },
       context: { operation: "create", generation: "7" },
-      provider: { code: "rate_limited", status: 429 },
+    });
+    // A reason serialized on its own keeps the body out as well.
+    expect(JSON.stringify(http.reason)).not.toContain("secret");
+    const native = new ReactorError({
+      reason: new Native({
+        message: "native call failed (Native)",
+        status: -2,
+        backendMessage: Redacted.make("a=ice-pwd:secret"),
+      }),
+    });
+    expect(JSON.stringify(native)).not.toContain("secret");
+    expect(JSON.stringify(native.reason)).not.toContain("secret");
+    expect((JSON.parse(JSON.stringify(native)) as { readonly reason: unknown }).reason).toEqual({
+      _tag: "Native",
+      message: "native call failed (Native)",
+      status: -2,
     });
   });
 
   test("decodes through its schema", () => {
     const decoded = Schema.decodeUnknownSync(ReactorError)(encoded({ sessionId: "session-1" }));
     expect(decoded).toBeInstanceOf(ReactorError);
+    expect(decoded.reason).toBeInstanceOf(Root.Failure);
     expect(decoded.context).toEqual({ sessionId: "session-1" });
+  });
+
+  test("catchReason and catchReasons route on the reason's tag", async () => {
+    const failing = (error: ReactorError): Effect.Effect<string, ReactorError> =>
+      Effect.fail(error);
+    const timeout = await Effect.runPromise(
+      failing(late).pipe(
+        Effect.catchReason("ReactorError", "Timeout", (reason) =>
+          Effect.succeed(`timeout: ${reason.message}`),
+        ),
+      ),
+    );
+    expect(timeout).toBe("timeout: late");
+    const http = new ReactorError({ reason: new Http({ message: "busy", status: 503 }) });
+    const routed = await Effect.runPromise(
+      failing(http).pipe(
+        Effect.catchReasons("ReactorError", {
+          Timeout: () => Effect.succeed("timeout"),
+          Http: (reason) => Effect.succeed(`http ${reason.status}`),
+        }),
+      ),
+    );
+    expect(routed).toBe("http 503");
+    const other = await Effect.runPromiseExit(
+      failing(http).pipe(Effect.catchReason("ReactorError", "Timeout", () => Effect.succeed(""))),
+    );
+    expect(Exit.isFailure(other)).toBe(true);
+    const unwrapped = await Effect.runPromise(
+      failing(http).pipe(
+        Effect.unwrapReason("ReactorError"),
+        Effect.catchTag("Http", (reason) => Effect.succeed(reason.status)),
+        Effect.orElseSucceed(() => 0),
+      ),
+    );
+    expect(unwrapped).toBe(503);
   });
 });
 
 describe("CommandFailure", () => {
-  test("keeps the failure and replaces its context with the dispatch evidence", () => {
+  test("keeps the reason and replaces the context with the dispatch evidence", () => {
     const error = new ReactorError({
-      code: "Http",
-      message: "request failed",
-      context: { status: 500 },
-      nativeError: provider,
+      reason: new Http({ message: "request failed", status: 500 }),
+      context: { sessionId: "session-1" },
     });
     const evidence = {
       operation: "enqueue",
@@ -65,60 +157,35 @@ describe("CommandFailure", () => {
     const failure = CommandFailure.from(error, evidence);
     expect(failure).not.toBeInstanceOf(ReactorError);
     expect(failure._tag).toBe("CommandFailure");
-    expect([failure.code, failure.message, failure.nativeError]).toEqual([
-      "Http",
-      "request failed",
-      provider,
-    ]);
+    expect([failure.reason, failure.message]).toEqual([error.reason, "request failed"]);
     expect(failure.context).toEqual(evidence);
   });
 
   test("its schema requires the evidence that each outcome implies", () => {
     const decode = Schema.decodeUnknownSync(CommandFailure);
-    const command = (context: object) => encoded(context, "CommandFailure");
-    expect(decode(command({ operation: "enqueue", outcome: "not-submitted" }))).toBeInstanceOf(
+    const failure = (context: object) => encoded(context, "CommandFailure");
+    expect(decode(failure({ operation: "enqueue", outcome: "not-submitted" }))).toBeInstanceOf(
       CommandFailure,
     );
-    expect(() => decode(command({ operation: "enqueue", outcome: "unknown" }))).toThrow(
+    expect(() => decode(failure({ operation: "enqueue", outcome: "unknown" }))).toThrow(
       /requestId/,
     );
-    expect(() => decode(command({ outcome: "not-submitted" }))).toThrow(/operation/);
+    expect(() => decode(failure({ outcome: "not-submitted" }))).toThrow(/operation/);
   });
 
   test("its schema tells a command failure from any other ReactorError", () => {
-    const error = new ReactorError({ code: "Timeout", message: "late" });
-    const failure = CommandFailure.from(error, { operation: "enqueue", outcome: "not-submitted" });
-    expect(Schema.is(CommandFailure)(failure)).toBe(true);
-    expect(Schema.is(CommandFailure)(error)).toBe(false);
-    expect(Schema.is(ReactorError)(failure)).toBe(false);
+    expect(Schema.is(CommandFailure)(command)).toBe(true);
+    expect(Schema.is(CommandFailure)(late)).toBe(false);
+    expect(Schema.is(ReactorError)(command)).toBe(false);
   });
 });
 
 describe("AcquisitionFailure", () => {
-  test("keeps the failure and the very report its partial lease produced", () => {
-    const report: CloseReport = Object.freeze({
-      localClosed: true,
-      allocation: "known",
-      sessionId: "session-1",
-      remote: {
-        attempted: true,
-        responseReceived: false,
-        confirmed: false,
-        evidence: null,
-        deleteStatus: null,
-        state: null,
-      },
-      unpublishSubmitted: [],
-      unresolvedPublications: [],
-      localErrors: [],
-    });
-    const error = new ReactorError({
-      code: "Timeout",
-      message: "late",
-      context: { sessionId: "session-1" },
-    });
+  test("keeps the reason, the context and the very report its partial lease produced", () => {
+    const error = ReactorError.fromCode("Timeout", "late", { sessionId: "session-1" });
     const failure = AcquisitionFailure.from(error, report);
     expect(failure._tag).toBe("AcquisitionFailure");
+    expect(failure.reason).toBe(error.reason);
     expect(failure.cleanup).toBe(report);
     expect(failure.context).toEqual({ sessionId: "session-1" });
   });
@@ -126,66 +193,82 @@ describe("AcquisitionFailure", () => {
 
 describe("PolicyFailure", () => {
   test("a refusal names its reason and was never dispatched", () => {
-    const refusal = PolicyFailure.refuse("busy", "Canvas can only change while idle", "canvas");
+    const refusal = PolicyFailure.refuse("Busy", "Canvas can only change while idle", "canvas");
     expect(refusal._tag).toBe("PolicyFailure");
-    expect(refusal).not.toBeInstanceOf(CommandFailure);
-    expect([refusal.code, refusal.reason]).toEqual(["InvalidState", "busy"]);
+    expect([refusal.reason._tag, refusal.message]).toEqual([
+      "Busy",
+      "Canvas can only change while idle",
+    ]);
     expect(refusal.context).toEqual({ operation: "canvas", outcome: "not-submitted" });
   });
 
-  test("an invalid request is invalid input and keeps its cause", () => {
+  test("an invalid request keeps its cause for inspection", () => {
     const cause = new Error("unsupported field");
     const refusal = PolicyFailure.refuse(
-      "invalid_request",
+      "InvalidRequest",
       "Clip request is malformed",
       undefined,
       cause,
     );
-    expect(refusal.code).toBe("InvalidInput");
+    expect(refusal.reason._tag).toBe("InvalidRequest");
     expect(refusal.context).toEqual({
       operation: "enqueue",
       outcome: "not-submitted",
       detail: cause,
     });
   });
-});
 
-describe("the four failure classes", () => {
-  const report: CloseReport = Object.freeze({
-    localClosed: true,
-    allocation: "none",
-    remote: {
-      attempted: false,
-      responseReceived: false,
-      confirmed: false,
-      evidence: null,
-      deleteStatus: null,
-      state: null,
-    },
-    unpublishSubmitted: [],
-    unresolvedPublications: [],
-    localErrors: [],
+  test("an unowned clip names its request field; a sequence refusal carries its code", () => {
+    const missing = PolicyFailure.missing("session_anchor");
+    expect([missing.reason, missing.message]).toEqual([
+      expect.objectContaining({ _tag: "Missing", purpose: "session_anchor" }),
+      "The session_anchor clip has no known owning session",
+    ]);
+    const sequence = PolicyFailure.sequence("run", "sealed", "enqueue");
+    expect([sequence.reason, sequence.message]).toEqual([
+      expect.objectContaining({ _tag: "Sequence", sequenceId: "run", code: "sealed" }),
+      "Sequence run: sealed",
+    ]);
+    expect(JSON.parse(JSON.stringify(sequence))).toEqual({
+      _tag: "PolicyFailure",
+      message: "Sequence run: sealed",
+      reason: {
+        _tag: "Sequence",
+        message: "Sequence run: sealed",
+        sequenceId: "run",
+        code: "sealed",
+      },
+      context: { operation: "enqueue", outcome: "not-submitted" },
+    });
   });
-  const error = new ReactorError({ code: "Timeout", message: "late" });
-  const command = CommandFailure.from(error, { operation: "enqueue", outcome: "not-submitted" });
-  const acquisition = AcquisitionFailure.from(error, report);
-  const policy = PolicyFailure.refuse("queue_full", "The generation queue is full");
 
-  test("each has its own tag, so catchTag separates a policy refusal from a command failure", async () => {
+  test("catchTag and catchReasons route a refusal by class and by reason", async () => {
     const route = (failure: EngineError) =>
       Effect.runPromise(
         Effect.fail(failure).pipe(
-          Effect.catchTag("PolicyFailure", (refusal) => Effect.succeed(`policy ${refusal.reason}`)),
+          Effect.catchReasons("PolicyFailure", {
+            QueueFull: () => Effect.succeed("defer: queue full"),
+            SessionRecovering: () => Effect.succeed("defer: recovering"),
+          }),
+          Effect.catchTag("PolicyFailure", (refusal) =>
+            Effect.succeed(`refused: ${refusal.reason._tag}`),
+          ),
           Effect.orElseSucceed(() => "not a refusal"),
         ),
       );
-    expect(await route(policy)).toBe("policy queue_full");
+    expect(await route(policy)).toBe("defer: queue full");
+    expect(
+      await route(PolicyFailure.refuse("SessionRecovering", "Waiting for a coherent snapshot")),
+    ).toBe("defer: recovering");
+    expect(await route(PolicyFailure.refuse("Busy", "busy", "set_canvas"))).toBe("refused: Busy");
     expect(await route(command)).toBe("not a refusal");
   });
+});
 
+describe("the four failure classes", () => {
   test("one guard recognizes every class and each class guard only its own", () => {
-    const all = [error, command, acquisition, policy];
-    expect(all.map(isReactorFailure)).toEqual([true, true, true, true]);
+    const all = [late, command, acquisition, policy];
+    expect(all.map((value) => isReactorFailure(value))).toEqual([true, true, true, true]);
     expect(all.map((value) => ReactorError.is(value))).toEqual([true, false, false, false]);
     expect(all.map((value) => CommandFailure.is(value))).toEqual([false, true, false, false]);
     expect(all.map((value) => AcquisitionFailure.is(value))).toEqual([false, false, true, false]);
@@ -196,17 +279,26 @@ describe("the four failure classes", () => {
     ]).toEqual([false, false]);
   });
 
-  test("a Schema union round-trip keeps each class", () => {
+  test("a Schema union round-trip keeps each class and its reason", () => {
     const Failure = Schema.Union([ReactorError, CommandFailure, AcquisitionFailure, PolicyFailure]);
-    for (const value of [error, command, acquisition, policy]) {
+    const http = new ReactorError({
+      reason: new Http({ message: "busy", status: 503, retryAfter: Duration.seconds(1) }),
+      context: { generation: 2n },
+    });
+    const refused = new ReactorError({
+      reason: new Remote({ _tag: "RecorderDisabled", message: "clip failed", body: "disabled" }),
+    });
+    for (const value of [late, http, refused, command, acquisition, policy]) {
       const decoded = Schema.decodeSync(Failure)(Schema.encodeSync(Failure)(value));
       expect(decoded).toBeInstanceOf(value.constructor);
-      expect(decoded._tag).toBe(value._tag);
+      expect(decoded.reason).toBeInstanceOf(value.reason.constructor);
+      expect(decoded.reason).toEqual(value.reason);
+      expect(decoded.context).toEqual(value.context);
     }
   });
 
   test("a policy refusal's outcome is the literal not-submitted", () => {
-    const outcome: "not-submitted" = policy.context.outcome;
+    const literal: Equals<PolicyFailure["context"]["outcome"], "not-submitted"> = true;
     // An unknown-first classifier reads the outcome of either engine failure without narrowing.
     const admission = (failure: EngineError): "unknown" | "defer" | "lost" =>
       failure.context.outcome === "unknown"
@@ -214,19 +306,27 @@ describe("the four failure classes", () => {
         : failure._tag === "PolicyFailure"
           ? "defer"
           : "lost";
-    expect([outcome, admission(policy), admission(command)]).toEqual([
-      "not-submitted",
-      "defer",
-      "lost",
-    ]);
+    expect([literal, admission(policy), admission(command)]).toEqual([true, "defer", "lost"]);
+  });
+
+  test("the root drops ProviderFailure and nativeError, and exports ErrorContext as a type", () => {
+    const context: ErrorContext = { operation: "create" };
+    // @ts-expect-error nativeError is gone; typed reasons carry the provider fields.
+    const nativeError: unknown = late.nativeError;
+    // The failed import above resolves to nothing.
+    expectTypeOf<ProviderFailure>().toBeAny();
+    expect([context.operation, nativeError]).toEqual(["create", undefined]);
+    expect(["ProviderFailure", "ErrorContext"].filter((name) => name in Root)).toEqual([]);
+    // @ts-expect-error ErrorContext is exported as a type only.
+    expect(Root.ErrorContext).toBeUndefined();
   });
 
   test("caller-owned prework keeps a refusal and a not-submitted command failure unchanged", () => {
     expect(preworkFailure("enqueue", policy)).toBe(policy);
     expect(preworkFailure("enqueue", command)).toBe(command);
     const wrapped = preworkFailure("enqueue", acquisition);
-    expect(CommandFailure.is(wrapped) && [wrapped.code, wrapped.context]).toEqual([
-      "Timeout",
+    expect(CommandFailure.is(wrapped) && [wrapped.reason, wrapped.context]).toEqual([
+      acquisition.reason,
       { operation: "enqueue", outcome: "not-submitted", detail: acquisition },
     ]);
   });

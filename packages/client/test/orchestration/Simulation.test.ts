@@ -270,7 +270,7 @@ test("simulation source rejects invalid options and layerSim provides one shared
         { playoutGapMs: Infinity },
       ] satisfies SimOptions[]) {
         const invalid = yield* Effect.result(Simulation.source(options));
-        expect(Result.isFailure(invalid) && invalid.failure.code).toBe("InvalidInput");
+        expect(Result.isFailure(invalid) && invalid.failure.reason._tag).toBe("InvalidInput");
       }
       yield* Effect.gen(function* () {
         const handle = yield* Handle,

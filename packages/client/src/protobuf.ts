@@ -17,7 +17,7 @@ interface Budget {
   fields: number;
 }
 const fail = (s: string): never => {
-  throw new ReactorError({ code: "Protocol", message: s });
+  throw ReactorError.fromCode("Protocol", s);
 };
 const validate = (l: WireLimits): void => {
   positiveLimit(l.bytes, "wire bytes", 16 * 1024 * 1024);

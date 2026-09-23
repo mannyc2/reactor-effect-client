@@ -768,19 +768,18 @@ describe("native media under load", () => {
         checking.filter((entry) => entry.type === "candidate-pair" && entry.state === "succeeded"),
       ).toEqual([]);
       await until(() => errors.length > 0, "ICE never failed", 45_000);
-      console.log(
-        `ice-failure ${JSON.stringify({ runtime, states, detail: errors[0]?.context.detail })}`,
-      );
+      console.log(`ice-failure ${JSON.stringify({ runtime, states, reason: errors[0]?.reason })}`);
       expect(states).not.toContain("connected");
       // libwebrtc reports failure once it has pruned the last timed-out pair,
       // so the pairs the classification reads may already be gone.
       expect(errors).toEqual([
         expect.objectContaining({
-          code: "IceFailed",
-          message: "native peer found no working ICE candidate pair",
-          context: expect.objectContaining({
-            detail: { pairs: expect.any(Number), candidateTypes: expect.any(Array) },
+          reason: expect.objectContaining({
+            _tag: "IceFailed",
+            pairs: expect.any(Number),
+            candidateTypes: expect.any(Array),
           }),
+          message: "native peer found no working ICE candidate pair",
         }),
       ]);
     } finally {

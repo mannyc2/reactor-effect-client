@@ -318,10 +318,8 @@ const testEffect = (run) =>
   Effect.try({
     try: run,
     catch: (cause) =>
-      new ReactorError({
-        code: "Protocol",
-        message: "public native media fixture assertion failed",
-        context: { detail: cause },
+      ReactorError.fromCode("Protocol", "public native media fixture assertion failed", {
+        detail: cause,
       }),
   });
 /** @template T @param {Stream.Stream<T, ReactorError>} source @param {(frame: T) => void} visit @returns {Effect.Effect<void>} */

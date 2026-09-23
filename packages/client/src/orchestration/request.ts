@@ -62,7 +62,7 @@ const freeze = <A>(value: A): A => {
 /** Capture application input once; routing and a physical source share that value. */
 const invalidRequest = (cause: unknown): PolicyFailure =>
   PolicyFailure.refuse(
-    "invalid_request",
+    "InvalidRequest",
     "Clip request is malformed or contains unsupported fields",
     "enqueue",
     cause,
@@ -141,7 +141,7 @@ export const preworkFailure = (
     : CommandFailure.from(
         ReactorError.is(cause) || CommandFailure.is(cause) || AcquisitionFailure.is(cause)
           ? cause
-          : new ReactorError({ code: "InvalidInput", message: `${operation} preparation failed` }),
+          : ReactorError.fromCode("InvalidInput", `${operation} preparation failed`),
         {
           operation,
           outcome: "not-submitted",

@@ -2,10 +2,10 @@ import { Clock, Effect, Redacted, Schema } from "effect";
 import { positiveLimit, ReactorError } from "../../errors.js";
 
 const failure = (operation: string, message: string, cause?: unknown) =>
-  new ReactorError({
-    code: "Protocol",
-    message,
-    context: { operation, outcome: "replied", ...(cause === undefined ? {} : { detail: cause }) },
+  ReactorError.fromCode("Protocol", message, {
+    operation,
+    outcome: "replied",
+    ...(cause === undefined ? {} : { detail: cause }),
   });
 const PositiveInteger = Schema.Number.check(
   Schema.isFinite(),
@@ -88,12 +88,11 @@ export const validateTokenOptions = (
       return Object.freeze(options);
     },
     catch: () =>
-      new ReactorError({
-        code: "InvalidInput",
-        message:
-          "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
-        context: { operation: "token", outcome: "not-submitted" },
-      }),
+      ReactorError.fromCode(
+        "InvalidInput",
+        "A bounded session needs a model, redacted key, positive duration, and token expiry allowing cleanup",
+        { operation: "token", outcome: "not-submitted" },
+      ),
   });
 
 const Token = Schema.Struct({

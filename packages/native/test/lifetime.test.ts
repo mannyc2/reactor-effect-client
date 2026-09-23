@@ -154,8 +154,14 @@ describe("native foreign-call ownership", () => {
             const future = yield* Effect.result(
               ownedPeer.rawMedia.audio("main_audio").pipe(Stream.runHead),
             );
-            expect(current).toMatchObject({ _tag: "Failure", failure: { code: "Protocol" } });
-            expect(future).toMatchObject({ _tag: "Failure", failure: { code: "Protocol" } });
+            expect(current).toMatchObject({
+              _tag: "Failure",
+              failure: { reason: { _tag: "Protocol" } },
+            });
+            expect(future).toMatchObject({
+              _tag: "Failure",
+              failure: { reason: { _tag: "Protocol" } },
+            });
             expect(errors).toHaveLength(1);
           }),
         ),
@@ -186,7 +192,10 @@ describe("native foreign-call ownership", () => {
               );
               expect(result).toMatchObject({
                 _tag: "Failure",
-                failure: { code: "InvalidInput", context: { outcome: "not-submitted" } },
+                failure: {
+                  reason: { _tag: "InvalidInput" },
+                  context: { outcome: "not-submitted" },
+                },
               });
             }
             const reader = yield* Effect.forkChild(
@@ -245,10 +254,13 @@ describe("native foreign-call ownership", () => {
       expect(waited).toBeLessThan(1_000);
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatchObject({
-        code: "Disconnected",
+        reason: { _tag: "Disconnected" },
         message: "peer state failed",
         context: {
-          detail: { code: "Timeout", message: "native failure classification timed out" },
+          detail: {
+            reason: { _tag: "Timeout" },
+            message: "native failure classification timed out",
+          },
         },
       });
     } finally {

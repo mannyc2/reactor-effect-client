@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { ReactorError } from "reactor-effect-client";
+import { IceFailed, ReactorError, TransportFailed } from "reactor-effect-client";
 import type { Mapping, Track } from "reactor-effect-client";
 import { Observations, errorOf, isRecord } from "reactor-effect-client/host";
 import type {
@@ -23,9 +23,9 @@ import type {
 import {
   encodeNativeJson,
   encodeNativeText,
-  failureCode,
   NativeBridge,
   NativeCall,
+  nativeFailure,
   Ready,
   type NativeAudio,
   type NativePacket,
@@ -65,39 +65,31 @@ const validateNativeTracks = (tracks: readonly Track[]): void => {
     (track) => track.direction === "recvonly" && track.kind === "audio",
   ).length;
   if (incomingVideo > 1 || incomingAudio > 1) {
-    throw new ReactorError({
-      code: "UnsupportedCapability",
-      message:
-        "native WebRTC currently supports at most one incoming video and one incoming audio track because reactor-webrtc does not expose the remote track MID to its observer",
-      context: { outcome: "not-submitted" },
-    });
+    throw ReactorError.fromCode(
+      "UnsupportedCapability",
+      "native WebRTC currently supports at most one incoming video and one incoming audio track because reactor-webrtc does not expose the remote track MID to its observer",
+      { outcome: "not-submitted" },
+    );
   }
 };
 
 const record = (value: unknown, what: string): Record<string, unknown> => {
-  if (!isRecord(value))
-    throw new ReactorError({ code: "Protocol", message: `native ${what} is not an object` });
+  if (!isRecord(value)) throw ReactorError.fromCode("Protocol", `native ${what} is not an object`);
   return value;
 };
 const string = (value: unknown, what: string): string => {
   if (typeof value !== "string")
-    throw new ReactorError({ code: "Protocol", message: `native ${what} is not a string` });
+    throw ReactorError.fromCode("Protocol", `native ${what} is not a string`);
   return value;
 };
 const integer = (value: unknown, what: string): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
-    throw new ReactorError({
-      code: "Protocol",
-      message: `native ${what} is not a nonnegative safe integer`,
-    });
+    throw ReactorError.fromCode("Protocol", `native ${what} is not a nonnegative safe integer`);
   return value;
 };
 const bigint = (value: unknown, what: string): bigint => {
   if (typeof value !== "string" || !/^[0-9]+$/.test(value))
-    throw new ReactorError({
-      code: "Protocol",
-      message: `native ${what} is not an unsigned integer string`,
-    });
+    throw ReactorError.fromCode("Protocol", `native ${what} is not an unsigned integer string`);
   return BigInt(value);
 };
 
@@ -106,10 +98,7 @@ const nativeError = (cause: unknown, operation: string): ReactorError =>
 
 const parseMapping = (value: unknown): readonly Mapping[] => {
   if (!Array.isArray(value) || value.length > 64)
-    throw new ReactorError({
-      code: "Protocol",
-      message: "native prepare returned an invalid mapping list",
-    });
+    throw ReactorError.fromCode("Protocol", "native prepare returned an invalid mapping list");
   return Object.freeze(
     value.map((item): Mapping => {
       const entry = record(item, "mapping");
@@ -118,15 +107,9 @@ const parseMapping = (value: unknown): readonly Mapping[] => {
         direction = string(entry.direction, "mapping.direction"),
         mid = string(entry.mid, "mapping.mid");
       if (kind !== "audio" && kind !== "video")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native mapping has an unknown track kind",
-        });
+        throw ReactorError.fromCode("Protocol", "native mapping has an unknown track kind");
       if (direction !== "recvonly" && direction !== "sendonly")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native mapping has an unknown direction",
-        });
+        throw ReactorError.fromCode("Protocol", "native mapping has an unknown direction");
       return Object.freeze({ name, kind, direction, mid });
     }),
   );
@@ -137,10 +120,7 @@ const parsePrepared = (value: unknown): Prepared => {
     sdp = string(response.sdp, "prepare.sdp"),
     mapping = parseMapping(response.mapping);
   if (sdp.length === 0)
-    throw new ReactorError({
-      code: "Protocol",
-      message: "native prepare returned an empty SDP offer",
-    });
+    throw ReactorError.fromCode("Protocol", "native prepare returned an empty SDP offer");
   return Object.freeze({ sdp, mapping });
 };
 
@@ -154,17 +134,15 @@ const iceServers = (
   servers.map((server) => {
     const urls = typeof server.urls === "string" ? [server.urls] : [...server.urls];
     if (urls.length === 0 || urls.some((url) => typeof url !== "string" || url.length === 0))
-      throw new ReactorError({
-        code: "InvalidInput",
-        message: "native ICE server has no usable URL",
-        context: { outcome: "not-submitted" },
+      throw ReactorError.fromCode("InvalidInput", "native ICE server has no usable URL", {
+        outcome: "not-submitted",
       });
     if (server.credential !== undefined && typeof server.credential !== "string")
-      throw new ReactorError({
-        code: "UnsupportedCapability",
-        message: "native ICE supports password credentials, not OAuth credential objects",
-        context: { outcome: "not-submitted" },
-      });
+      throw ReactorError.fromCode(
+        "UnsupportedCapability",
+        "native ICE supports password credentials, not OAuth credential objects",
+        { outcome: "not-submitted" },
+      );
     return Object.freeze({
       urls: Object.freeze(urls),
       username: server.username ?? "",
@@ -185,33 +163,21 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
     case "state": {
       const state = string(header.state, "state");
       if (!stateValues.has(state as PeerState))
-        throw new ReactorError({
-          code: "Protocol",
-          message: `native peer reported unknown state ${state}`,
-        });
+        throw ReactorError.fromCode("Protocol", `native peer reported unknown state ${state}`);
       return { type: "state", state: state as PeerState };
     }
     case "channel": {
       const channel = string(header.channel, "channel");
       if (channel !== "control" && channel !== "data")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native peer reported an unknown data channel",
-        });
+        throw ReactorError.fromCode("Protocol", "native peer reported an unknown data channel");
       if (typeof header.open !== "boolean")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native channel event omitted its open state",
-        });
+        throw ReactorError.fromCode("Protocol", "native channel event omitted its open state");
       return { type: "channel", channel, open: header.open };
     }
     case "message": {
       const channel = string(header.channel, "message.channel");
       if (channel !== "control" && channel !== "data")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native peer message named an unknown channel",
-        });
+        throw ReactorError.fromCode("Protocol", "native peer message named an unknown channel");
       return { type: "message", channel, bytes: packet.payload };
     }
     case "ice": {
@@ -235,10 +201,7 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
     case "decoded": {
       const kind = string(header.kind, "decoded.kind");
       if (kind !== "video" && kind !== "audio")
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native decoded event has unknown media kind",
-        });
+        throw ReactorError.fromCode("Protocol", "native decoded event has unknown media kind");
       return {
         type: "decoded",
         kind,
@@ -249,26 +212,19 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
     case "error": {
       const status = header.status;
       if (typeof status !== "number" || !Number.isSafeInteger(status))
-        throw new ReactorError({
-          code: "Protocol",
-          message: "native error event omitted its failure class",
-        });
-      const message = string(header.message, "error.message"),
-        code = failureCode(status);
+        throw ReactorError.fromCode("Protocol", "native error event omitted its failure class");
       return {
         type: "error",
-        error: new ReactorError({
-          code,
-          message: `native peer failed (${code})`,
-          context: { detail: { status, message } },
-        }),
+        error: nativeFailure(
+          status,
+          string(header.message, "error.message"),
+          (code) => `native peer failed (${code})`,
+          {},
+        ),
       };
     }
     default:
-      throw new ReactorError({
-        code: "Protocol",
-        message: `native peer emitted unknown event type ${type}`,
-      });
+      throw ReactorError.fromCode("Protocol", `native peer emitted unknown event type ${type}`);
   }
 };
 
@@ -276,10 +232,10 @@ const parseEvent = (packet: NativePacket): PeerEvent => {
 const receiving = (tracks: readonly Track[], index: number, kind: "video" | "audio"): string => {
   const track = tracks[index];
   if (track?.direction !== "recvonly" || track.kind !== kind)
-    throw new ReactorError({
-      code: "Protocol",
-      message: `native ${kind} was delivered without its declared receive mapping`,
-    });
+    throw ReactorError.fromCode(
+      "Protocol",
+      `native ${kind} was delivered without its declared receive mapping`,
+    );
   return track.name;
 };
 
@@ -290,10 +246,10 @@ const videoFrame = (tracks: readonly Track[], taken: NativeVideo): VideoFrame =>
     taken.height === 0 ||
     taken.data.byteLength !== taken.width * taken.height * 4
   )
-    throw new ReactorError({
-      code: "Protocol",
-      message: "native BGRA frame dimensions do not match its payload",
-    });
+    throw ReactorError.fromCode(
+      "Protocol",
+      "native BGRA frame dimensions do not match its payload",
+    );
   return Object.freeze({
     _tag: "VideoFrame",
     track,
@@ -309,10 +265,7 @@ const videoFrame = (tracks: readonly Track[], taken: NativeVideo): VideoFrame =>
 const audioFrame = (tracks: readonly Track[], taken: NativeAudio): AudioFrame => {
   const track = receiving(tracks, taken.track, "audio");
   if (taken.sampleRate === 0 || taken.channels === 0 || taken.samples.length % taken.channels)
-    throw new ReactorError({
-      code: "Protocol",
-      message: "native PCM format does not match its payload",
-    });
+    throw ReactorError.fromCode("Protocol", "native PCM format does not match its payload");
   return Object.freeze({
     _tag: "AudioFrame",
     track,
@@ -325,10 +278,7 @@ const audioFrame = (tracks: readonly Track[], taken: NativeAudio): AudioFrame =>
 const parseSnapshot = (value: unknown): MediaPressure => {
   const s = record(value, "media snapshot");
   if (typeof s.closed !== "boolean")
-    throw new ReactorError({
-      code: "Protocol",
-      message: "native media snapshot omitted closed state",
-    });
+    throw ReactorError.fromCode("Protocol", "native media snapshot omitted closed state");
   return Object.freeze({
     closed: s.closed,
     queuedControl: integer(s.queuedControl, "snapshot.queuedControl"),
@@ -365,9 +315,10 @@ const connectionFailure = (stats: readonly unknown[]): ReactorError => {
   const pairs = entries.filter((entry) => entry.type === "candidate-pair");
   if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
     return new ReactorError({
-      code: "TransportFailed",
-      message: "native peer failed after ICE connectivity succeeded",
-      context: { detail: { pairs: pairs.length } },
+      reason: new TransportFailed({
+        message: "native peer failed after ICE connectivity succeeded",
+        pairs: pairs.length,
+      }),
     });
   const candidateTypes = [
     ...new Set(
@@ -378,9 +329,11 @@ const connectionFailure = (stats: readonly unknown[]): ReactorError => {
     ),
   ];
   return new ReactorError({
-    code: "IceFailed",
-    message: "native peer found no working ICE candidate pair",
-    context: { detail: { pairs: pairs.length, candidateTypes } },
+    reason: new IceFailed({
+      message: "native peer found no working ICE candidate pair",
+      pairs: pairs.length,
+      candidateTypes,
+    }),
   });
 };
 
@@ -437,11 +390,11 @@ export class NativePeer implements Peer {
 
   private requireIncoming(name: string, kind: "video" | "audio"): void {
     if (this.incoming.get(name) !== kind)
-      throw new ReactorError({
-        code: "InvalidInput",
-        message: "native media requires a declared receive track of the requested kind",
-        context: { outcome: "not-submitted" },
-      });
+      throw ReactorError.fromCode(
+        "InvalidInput",
+        "native media requires a declared receive track of the requested kind",
+        { outcome: "not-submitted" },
+      );
   }
 
   private videoFeed(name: string): Observations<VideoFrame> {
@@ -566,25 +519,16 @@ export class NativePeer implements Peer {
       Effect.map((stats) =>
         Array.isArray(stats)
           ? connectionFailure(stats)
-          : new ReactorError({ code: "Disconnected", message: "peer state failed" }),
+          : ReactorError.fromCode("Disconnected", "peer state failed"),
       ),
       Effect.timeoutOrElse({
         duration: CLASSIFY_TIMEOUT_MS,
         orElse: () =>
-          Effect.fail(
-            new ReactorError({
-              code: "Timeout",
-              message: "native failure classification timed out",
-            }),
-          ),
+          Effect.fail(ReactorError.fromCode("Timeout", "native failure classification timed out")),
       }),
       Effect.catch((cause) =>
         Effect.succeed(
-          new ReactorError({
-            code: "Disconnected",
-            message: "peer state failed",
-            context: { detail: cause },
-          }),
+          ReactorError.fromCode("Disconnected", "peer state failed", { detail: cause }),
         ),
       ),
       Effect.flatMap((error) => drain(() => this.fail(error))),
@@ -643,11 +587,11 @@ export class NativePeer implements Peer {
   maxBitrate(name: string, bitsPerSecond: number): Effect.Effect<void, ReactorError> {
     if (!Number.isSafeInteger(bitsPerSecond) || bitsPerSecond < 1 || bitsPerSecond > 0x7fffffff)
       return Effect.fail(
-        new ReactorError({
-          code: "InvalidInput",
-          message: "native max bitrate must be an integer in 1..2147483647",
-          context: { outcome: "not-submitted" },
-        }),
+        ReactorError.fromCode(
+          "InvalidInput",
+          "native max bitrate must be an integer in 1..2147483647",
+          { outcome: "not-submitted" },
+        ),
       );
     return bridgeEffect("set native sender bitrate", () =>
       this.bridge.call(NativeCall.MaxBitrate, encodeNativeJson({ name, bitsPerSecond })),
@@ -659,10 +603,7 @@ export class NativePeer implements Peer {
         Effect.try({
           try: () => {
             if (!Array.isArray(value))
-              throw new ReactorError({
-                code: "Protocol",
-                message: "native stats response is not an array",
-              });
+              throw ReactorError.fromCode("Protocol", "native stats response is not an array");
             return Object.freeze(statsValue(value) as readonly unknown[]);
           },
           catch: (cause) => nativeError(cause, "decode native stats"),
@@ -684,22 +625,22 @@ export class NativePeer implements Peer {
   }
 
   lease(): MediaTrack {
-    throw new ReactorError({
-      code: "UnsupportedCapability",
-      message: "native WebRTC exposes owned decoded samples, not browser MediaStreamTrack leases",
-      context: { outcome: "not-submitted" },
-    });
+    throw ReactorError.fromCode(
+      "UnsupportedCapability",
+      "native WebRTC exposes owned decoded samples, not browser MediaStreamTrack leases",
+      { outcome: "not-submitted" },
+    );
   }
   release(): void {
     /* lease never succeeds on this host. */
   }
   replace(): Effect.Effect<void, ReactorError> {
     return Effect.fail(
-      new ReactorError({
-        code: "UnsupportedCapability",
-        message: "native WebRTC does not accept browser MediaStreamTrack publication",
-        context: { outcome: "not-submitted" },
-      }),
+      ReactorError.fromCode(
+        "UnsupportedCapability",
+        "native WebRTC does not accept browser MediaStreamTrack publication",
+        { outcome: "not-submitted" },
+      ),
     );
   }
 
@@ -732,10 +673,12 @@ export class NativePeer implements Peer {
       this.close();
       return this.bridge.shutdown();
     }).pipe(
+      // A failed shutdown is a Shutdown failure; the native failure it came
+      // from stays in `detail` for inspection.
       Effect.mapError((error) =>
-        error.code === "Shutdown"
+        error.reason._tag === "Shutdown"
           ? error
-          : new ReactorError({ code: "Shutdown", message: error.message, context: error.context }),
+          : ReactorError.fromCode("Shutdown", error.message, { ...error.context, detail: error }),
       ),
       Effect.timeoutOrElse({
         duration: this.shutdownTimeout,
@@ -743,11 +686,11 @@ export class NativePeer implements Peer {
           Effect.suspend(() => {
             this.bridge.retain();
             return Effect.fail(
-              new ReactorError({
-                code: "Shutdown",
-                message: "native owner join exceeded its deadline; handle retained",
-                context: { operation: "shutdown native WebRTC" },
-              }),
+              ReactorError.fromCode(
+                "Shutdown",
+                "native owner join exceeded its deadline; handle retained",
+                { operation: "shutdown native WebRTC" },
+              ),
             );
           }),
       }),

@@ -7,7 +7,8 @@ import * as HttpHeaders from "effect/unstable/http/Headers";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { errorOf, positiveLimit, ReactorError } from "../../errors.js";
+import * as Duration from "effect/Duration";
+import { errorOf, Http, positiveLimit, ReactorError } from "../../errors.js";
 import { array, json, nonempty, record, string, uint32 } from "../../json.js";
 import type { Json } from "../../json.js";
 import {
@@ -60,6 +61,8 @@ interface Request {
   readonly accepted?: readonly number[];
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
+  /** Observes the response status once it arrives, even if reading its body then fails. */
+  readonly onStatus?: (status: number) => void;
 }
 /** A create reply whose session id is valid; nothing else in it has been checked yet. */
 export interface Allocation {
@@ -89,7 +92,7 @@ const validatePoll = (p: Poll): Poll => {
   positiveLimit(p.initialMs, "poll initialMs", 60_000);
   positiveLimit(p.maxMs, "poll maxMs", 60_000);
   if (p.initialMs > p.maxMs)
-    throw new ReactorError({ code: "Protocol", message: "poll initial delay exceeds maximum" });
+    throw ReactorError.fromCode("Protocol", "poll initial delay exceeds maximum");
   return Object.freeze({ ...p });
 };
 const checkedUrl = (url: string): URL => {
@@ -99,10 +102,10 @@ const checkedUrl = (url: string): URL => {
     value.username ||
     value.password
   )
-    throw new ReactorError({
-      code: "Protocol",
-      message: "HTTP URL must use http(s) and contain no embedded credentials",
-    });
+    throw ReactorError.fromCode(
+      "Protocol",
+      "HTTP URL must use http(s) and contain no embedded credentials",
+    );
   return value;
 };
 /** Reactor HTTP protocol over the application-supplied Effect HTTP client. */
@@ -122,10 +125,7 @@ export class CoordinatorClient {
     this.options = Object.freeze({ ...options });
     const base = checkedUrl(options.apiUrl);
     if (base.search || base.hash)
-      throw new ReactorError({
-        code: "Protocol",
-        message: "apiUrl cannot contain a query or fragment",
-      });
+      throw ReactorError.fromCode("Protocol", "apiUrl cannot contain a query or fragment");
     this.apiUrl = base.href.replace(/\/$/, "");
     this.local = options.local ?? false;
     this.timeoutMs = positiveLimit(options.requestTimeoutMs ?? 15_000, "request timeout", 600_000);
@@ -163,12 +163,10 @@ export class CoordinatorClient {
       const networkError = (cause: unknown): ReactorError => {
         if (ReactorError.is(cause))
           return new ReactorError({
-            code: cause.code,
-            message: cause.message,
+            reason: cause.reason,
             context: {
               operation,
               outcome: submitted ? "unknown" : "not-submitted",
-              ...(status === undefined ? {} : { status }),
               ...cause.context,
             },
           });
@@ -178,13 +176,14 @@ export class CoordinatorClient {
             : cause.reason._tag
           : cause;
         return new ReactorError({
-          code: "Http",
-          message: `${operation}: network/read failure`,
+          reason: new Http({
+            message: `${operation}: network/read failure`,
+            ...(status === undefined ? {} : { status }),
+          }),
           context: {
             operation,
             detail,
             outcome: submitted ? "unknown" : "not-submitted",
-            ...(status === undefined ? {} : { status }),
           },
         });
       };
@@ -221,6 +220,7 @@ export class CoordinatorClient {
           .execute(outgoing)
           .pipe(Effect.mapError(networkError));
         status = response.status;
+        request.onStatus?.(response.status);
         const bytes = yield* readBody(response, operation, bound, self.maxChunks).pipe(
           Effect.mapError(networkError),
         );
@@ -234,17 +234,24 @@ export class CoordinatorClient {
           request.accepted?.includes(response.status)
         )
           return reply;
+        const body = new TextDecoder().decode(bytes);
+        const message = `${operation}: HTTP ${response.status}`;
+        const context = { operation, outcome: "replied" } as const;
+        // A version mismatch is not retryable; its status and body stay for inspection.
+        if (response.status === 426 || response.status === 501)
+          return yield* ReactorError.fromCode("VersionMismatch", message, {
+            ...context,
+            detail: { status: response.status, body },
+          });
         const retry = retryAfterMs(reply.headers);
         return yield* new ReactorError({
-          code: response.status === 426 || response.status === 501 ? "VersionMismatch" : "Http",
-          message: `${operation}: HTTP ${response.status}`,
-          context: {
-            operation,
+          reason: new Http({
+            message,
             status: response.status,
-            body: new TextDecoder().decode(bytes),
-            outcome: "replied",
-            ...(retry === undefined ? {} : { retryAfterMs: retry }),
-          },
+            body,
+            ...(retry === undefined ? {} : { retryAfter: Duration.millis(retry) }),
+          }),
+          context,
         });
       });
       return action.pipe(
@@ -264,15 +271,15 @@ export class CoordinatorClient {
           duration: request.timeoutMs ?? self.timeoutMs,
           orElse: () =>
             Effect.fail(
-              new ReactorError({
-                code: "Timeout",
-                message: `${operation}: deadline during request or response read`,
-                context: {
+              ReactorError.fromCode(
+                "Timeout",
+                `${operation}: deadline during request or response read`,
+                {
                   operation,
                   outcome: submitted ? "unknown" : "not-submitted",
-                  ...(status === undefined ? {} : { status }),
+                  ...(status === undefined ? {} : { detail: { status } }),
                 },
-              }),
+              ),
             ),
         }),
       );
@@ -330,18 +337,13 @@ export class CoordinatorClient {
   /** A reply that cannot describe its session still names one its owner must terminate. */
   describe(allocation: Allocation): Effect.Effect<Descriptor, ReactorError> {
     return pure(() => parseDescriptor(allocation.reply)).pipe(
-      Effect.mapError(
-        (error) =>
-          new ReactorError({
-            code: "Protocol",
-            message: error.message,
-            context: {
-              ...error.context,
-              operation: "create session",
-              sessionId: allocation.sessionId,
-              outcome: "replied",
-            },
-          }),
+      Effect.mapError((error) =>
+        ReactorError.fromCode("Protocol", error.message, {
+          ...error.context,
+          operation: "create session",
+          sessionId: allocation.sessionId,
+          outcome: "replied",
+        }),
       ),
     );
   }
@@ -352,10 +354,7 @@ export class CoordinatorClient {
         pure(() => {
           const descriptor = parseDescriptor(raw);
           if (descriptor.session_id !== id)
-            throw new ReactorError({
-              code: "Protocol",
-              message: "session descriptor identity mismatch",
-            });
+            throw ReactorError.fromCode("Protocol", "session descriptor identity mismatch");
           return descriptor;
         }),
       ),
@@ -367,15 +366,10 @@ export class CoordinatorClient {
       for (let attempt = 0; attempt < self.sessionPoll.attempts; attempt++) {
         const descriptor = attempt === 0 && initial !== undefined ? initial : yield* self.read(id);
         if (descriptor.session_id !== id)
-          return yield* new ReactorError({
-            code: "Protocol",
-            message: "ready descriptor id mismatch",
-          });
+          return yield* ReactorError.fromCode("Protocol", "ready descriptor id mismatch");
         if (terminal(descriptor.state))
-          return yield* new ReactorError({
-            code: "TerminalSession",
-            message: descriptor.state,
-            context: { sessionId: id },
+          return yield* ReactorError.fromCode("TerminalSession", descriptor.state, {
+            sessionId: id,
           });
         if (descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined)
           return descriptor;
@@ -384,10 +378,8 @@ export class CoordinatorClient {
             Math.min(self.sessionPoll.initialMs * 2 ** attempt, self.sessionPoll.maxMs),
           );
       }
-      return yield* new ReactorError({
-        code: "Timeout",
-        message: "session capabilities/transport not ready",
-        context: { sessionId: id },
+      return yield* ReactorError.fromCode("Timeout", "session capabilities/transport not ready", {
+        sessionId: id,
       });
     });
   }
@@ -452,11 +444,7 @@ export class CoordinatorClient {
         if (attempt + 1 < self.sdpPoll.attempts)
           yield* Effect.sleep(Math.min(self.sdpPoll.initialMs * 2 ** attempt, self.sdpPoll.maxMs));
       }
-      return yield* new ReactorError({
-        code: "Timeout",
-        message: "SDP answer not ready",
-        context: { sessionId: id },
-      });
+      return yield* ReactorError.fromCode("Timeout", "SDP answer not ready", { sessionId: id });
     });
   }
   ice(
@@ -559,6 +547,8 @@ export class CoordinatorClient {
           error: paths.failure,
         };
       const timeoutMs = self.options.requestTimeoutMs ?? 3_000;
+      // A response that arrived is evidence even when reading its body failed.
+      const received: { status: number | null } = { status: null };
       const response = yield* Effect.result(
         self.request({
           operation: "terminate",
@@ -566,11 +556,12 @@ export class CoordinatorClient {
           url: paths.success.remove,
           accepted: [404],
           timeoutMs,
+          onStatus: (status) => {
+            received.status = status;
+          },
         }),
       );
-      const deleteStatus =
-        (response._tag === "Success" ? response.success.status : response.failure.context.status) ??
-        null;
+      const deleteStatus = received.status;
       const base = {
         attempted:
           response._tag === "Success" || response.failure.context.outcome !== "not-submitted",
@@ -604,9 +595,11 @@ export class CoordinatorClient {
             evidence: null,
             state: null,
             error: new ReactorError({
-              code: "Http",
-              message: "Remote termination could not be confirmed after authority refusal",
-              context: { operation: "terminate", status: deleteStatus, outcome: "replied" },
+              reason: new Http({
+                message: "Remote termination could not be confirmed after authority refusal",
+                status: deleteStatus,
+              }),
+              context: { operation: "terminate", outcome: "replied" },
             }),
           };
         return { ...base, confirmed: true, evidence: "absent" as const, state: null };
@@ -658,12 +651,11 @@ export class CoordinatorClient {
         value.expires_at * 1_000 <
         (yield* Clock.currentTimeMillis) + (options.maxSessionDurationSeconds + 30) * 1_000
       )
-        return yield* new ReactorError({
-          code: "Protocol",
-          message:
-            "Reactor returned a token without enough lifetime for the bounded session and cleanup",
-          context: { operation: "token", outcome: "replied" },
-        });
+        return yield* ReactorError.fromCode(
+          "Protocol",
+          "Reactor returned a token without enough lifetime for the bounded session and cleanup",
+          { operation: "token", outcome: "replied" },
+        );
       const granted = yield* grantedLimits(value.jwt, options);
       return { jwt: Redacted.make(value.jwt), expiresAt: value.expires_at, granted };
     }).pipe(Effect.withSpan("reactor.coordinator.mintToken"));
@@ -683,8 +675,7 @@ export class CoordinatorClient {
       Effect.mapError(
         (error) =>
           new ReactorError({
-            code: error.code,
-            message: error.message,
+            reason: error.reason,
             context: { operation: "inspect", ...error.context },
           }),
       ),
@@ -724,8 +715,7 @@ export const tokenBody = (input: TokenConstraints): string => {
   const c = record(input),
     keys = new Set(["models", "max_sessions", "max_session_duration_seconds", "expires_after"]);
   for (const key of Object.keys(c))
-    if (!keys.has(key))
-      throw new ReactorError({ code: "Protocol", message: `unknown token constraint: ${key}` });
+    if (!keys.has(key)) throw ReactorError.fromCode("Protocol", `unknown token constraint: ${key}`);
   const parts: string[] = [];
   if (c.models !== undefined) {
     const models = array(c.models, "models").map((m) => nonempty(m, "model"));
@@ -753,10 +743,7 @@ export const tokenBody = (input: TokenConstraints): string => {
       c.expires_after < 0n ||
       c.expires_after > 0xffffffffffffffffn
     )
-      throw new ReactorError({
-        code: "Protocol",
-        message: "expires_after must be a uint64 bigint",
-      });
+      throw ReactorError.fromCode("Protocol", "expires_after must be a uint64 bigint");
     parts.push(`"expires_after":${c.expires_after}`);
   }
   return parts.length ? `{${parts.join(",")}}` : "null";

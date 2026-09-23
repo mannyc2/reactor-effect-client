@@ -98,7 +98,7 @@ test("native AudioData: close failure prevents copied output from escaping", asy
       { signal },
     );
     equal(delivered, 0);
-    equal(error.code, "Protocol");
+    equal(error.reason._tag, "Protocol");
     equal(error.context.operation, "audioSamples.close-sample");
     equal(block.closes, 1);
     equal(readable.locked, false);
@@ -116,7 +116,7 @@ test("native AudioData: stopped borrowed lease retires its live clone", async ({
     source.stop();
     const result = await run(Fiber.join(task), { signal });
     assert(result._tag === "Failure");
-    equal(result.failure.code, "Disconnected");
+    equal(result.failure.reason._tag, "Disconnected");
     equal(source.clones[0]?.readyState, "ended");
     equal(readable.locked, false);
   });
@@ -140,7 +140,7 @@ test("native AudioData: a read deadline joins native cancellation and reader rel
     const error = await failure(audioSamples(source, { readTimeoutMs: 60 }).pipe(Stream.runDrain), {
       signal,
     });
-    equal(error.code, "Timeout");
+    equal(error.reason._tag, "Timeout");
     equal(cancelled, true);
     equal(readable.locked, false);
     equal(source.clones[0]?.readyState, "ended");
@@ -162,7 +162,7 @@ test("native AudioData: absent type does not allocate an idle processor", ({ sig
       const error = await failure(audioSamples(new FakeTrack("audio")).pipe(Stream.runDrain), {
         signal,
       });
-      equal(error.code, "UnsupportedCapability");
+      equal(error.reason._tag, "UnsupportedCapability");
       equal(error.context.operation, "audioSamples.sample-type");
       equal(processors, 0);
     },
@@ -178,7 +178,7 @@ test("native AudioData: absent processor releases only its owned clone", ({ sign
     async () => {
       const source = new FakeTrack("audio");
       const error = await failure(audioSamples(source).pipe(Stream.runDrain), { signal });
-      equal(error.code, "UnsupportedCapability");
+      equal(error.reason._tag, "UnsupportedCapability");
       equal(error.context.operation, "audioSamples.processor");
       equal(source.readyState, "live");
       equal(source.clones[0]?.readyState, "ended");
@@ -194,7 +194,7 @@ test("native AudioData: cannot steal a reader already owned by another consumer"
     await host(readable, async () => {
       const source = new FakeTrack("audio");
       const error = await failure(audioSamples(source).pipe(Stream.runDrain), { signal });
-      equal(error.code, "InvalidState");
+      equal(error.reason._tag, "InvalidState");
       equal(error.context.operation, "audioSamples.reader");
       equal(readable.locked, true);
       equal(source.clones[0]?.readyState, "ended");
@@ -235,7 +235,7 @@ test("native AudioData: explicit source end terminates an outstanding read", asy
     source.dispatchEvent(new Event("ended"));
     const result = await run(Fiber.join(task), { signal });
     assert(result._tag === "Failure");
-    equal(result.failure.code, "Disconnected");
+    equal(result.failure.reason._tag, "Disconnected");
     equal(result.failure.context.operation, "audioSamples.track");
     equal(readable.locked, false);
   });
@@ -268,7 +268,7 @@ test("native AudioData: copy failure closes once and emits no output", async ({ 
     const error = await failure(audioSamples(new FakeTrack("audio")).pipe(Stream.runDrain), {
       signal,
     });
-    equal(error.code, "Protocol");
+    equal(error.reason._tag, "Protocol");
     equal(error.context.operation, "audioSamples.copy");
     equal(block.closes, 1);
     equal(readable.locked, false);
@@ -312,7 +312,7 @@ test("native AudioData: output allocation bound is checked before any plane copy
       audioSamples(new FakeTrack("audio"), { maxSampleBytes: 8 }).pipe(Stream.runDrain),
       { signal },
     );
-    equal(error.code, "Overflow");
+    equal(error.reason._tag, "Overflow");
     equal(block.closes, 1);
     equal(block.copies, 0);
     equal(readable.locked, false);

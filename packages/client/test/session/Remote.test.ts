@@ -49,13 +49,19 @@ test("remote lifecycle: interrupted allocation cannot be retried or claimed by a
     await Effect.runPromise(Deferred.await(entered));
     expect(remote.current).toEqual({ ownership: "allocating" });
     const concurrent = await Effect.runPromise(Effect.flip(allocate));
-    expect(concurrent).toMatchObject({ code: "InvalidState", context: { outcome: "unknown" } });
+    expect(concurrent).toMatchObject({
+      reason: { _tag: "InvalidState" },
+      context: { outcome: "unknown" },
+    });
     await Effect.runPromise(Fiber.interrupt(pending));
     expect(finalized).toBe(true);
     expect(remote.current).toEqual({ ownership: "unknown" });
     Deferred.doneUnsafe(response, Effect.succeed(allocation));
     const retried = await Effect.runPromise(Effect.flip(allocate));
-    expect(retried).toMatchObject({ code: "InvalidState", context: { outcome: "unknown" } });
+    expect(retried).toMatchObject({
+      reason: { _tag: "InvalidState" },
+      context: { outcome: "unknown" },
+    });
     expect(remote.id).toBeUndefined();
     expect(remote.isKnown).toBe(false);
     expect(creates).toBe(1);
@@ -85,7 +91,7 @@ test("remote lifecycle: closing an allocation retains unknown ownership without 
   try {
     await Effect.runPromise(Deferred.await(entered));
     lifecycle.transition("closing");
-    const error = new ReactorError({ code: "Closed", message: "session closing" });
+    const error = ReactorError.fromCode("Closed", "session closing");
     Deferred.doneUnsafe(lifecycle.closing, Effect.fail(error));
     const exit = await Effect.runPromiseExit(Fiber.join(pending));
     if (!Exit.isFailure(exit)) throw new Error("allocation survived close");
@@ -95,7 +101,10 @@ test("remote lifecycle: closing an allocation retains unknown ownership without 
     expect(interrupted).toBe(true);
     expect(remote.current).toEqual({ ownership: "unknown" });
     const refused = await Effect.runPromise(Effect.flip(remote.allocate(options, http, lifecycle)));
-    expect(refused).toMatchObject({ code: "Closed", context: { outcome: "not-submitted" } });
+    expect(refused).toMatchObject({
+      reason: { _tag: "Closed" },
+      context: { outcome: "not-submitted" },
+    });
   } finally {
     await Effect.runPromise(Fiber.interrupt(pending));
     await Effect.runPromise(Scope.close(lifecycle.scope, Exit.void));
@@ -155,7 +164,10 @@ test("remote lifecycle: owned evidence survives reconnect facts, attached identi
       const refusal = await Effect.runPromise(
         Effect.flip(remote.allocate(options, http, lifecycle)),
       );
-      expect(refusal).toMatchObject({ code: "Closed", context: { outcome: "not-submitted" } });
+      expect(refusal).toMatchObject({
+        reason: { _tag: "Closed" },
+        context: { outcome: "not-submitted" },
+      });
     }
     expect(creates).toBe(1);
   } finally {
@@ -186,7 +198,7 @@ test("remote lifecycle: a reply that names its session but cannot describe it is
     const remote = new RemoteSession();
     const failure = await Effect.runPromise(Effect.flip(remote.allocate(options, http, lifecycle)));
     expect(failure).toMatchObject({
-      code: "Protocol",
+      reason: { _tag: "Protocol" },
       message: "unknown track kind",
       context: { operation: "create session", sessionId: "owned-fixture", outcome: "replied" },
     });

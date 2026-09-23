@@ -47,7 +47,7 @@ export class StatsSampler {
   }
   sample(raw: readonly unknown[], generation: bigint, atMs: number): Statistics {
     if (!Number.isFinite(atMs) || raw.length > 4096)
-      throw new ReactorError({ code: "Protocol", message: "invalid statistics sample/bound" });
+      throw ReactorError.fromCode("Protocol", "invalid statistics sample/bound");
     const warnings: string[] = [],
       entries = raw.filter(isRecord),
       byId = new Map(

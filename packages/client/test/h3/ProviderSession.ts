@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Deferred, Effect } from "effect";
 import { ReactorError } from "../../src/errors.js";
+import type { MessageCode } from "../../src/errors.js";
 import { jsonObject, structFromObject } from "../../src/json.js";
 import type { JsonObject } from "../../src/json.js";
 import { Observations } from "../../src/observation.js";
@@ -68,7 +69,7 @@ export interface ReplyContext {
   readonly defaults: Effect.Effect<WireMessage | undefined, CommandFailure>;
   readonly fail: (
     outcome: "unknown" | "replied" | "not-submitted",
-    code?: ReactorError["code"],
+    code?: MessageCode,
   ) => CommandFailure;
 }
 export interface Script {
@@ -378,9 +379,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       ready: Effect.suspend(() =>
         status === "ready"
           ? Effect.succeed(ready())
-          : Effect.fail(
-              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
-            ),
+          : Effect.fail(ReactorError.fromCode("InvalidState", "Fixture session is not ready")),
       ),
       current: Effect.sync(current),
       events: (bounds) => observers.stream(bounds),
@@ -397,7 +396,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         Effect.gen(function* () {
           if (status !== "ready")
             return yield* CommandFailure.from(
-              new ReactorError({ code: "InvalidState", message: "Fixture session is not ready" }),
+              ReactorError.fromCode("InvalidState", "Fixture session is not ready"),
               {
                 operation: command,
                 outcome: "not-submitted",
@@ -416,9 +415,9 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             );
           const fail = (
             outcome: "unknown" | "replied" | "not-submitted",
-            code: ReactorError["code"] = "Timeout",
+            code: MessageCode = "Timeout",
           ) =>
-            CommandFailure.from(new ReactorError({ code, message: "Fixture command failure" }), {
+            CommandFailure.from(ReactorError.fromCode(code, "Fixture command failure"), {
               operation: command,
               outcome,
               requestId: call.requestId,
@@ -466,16 +465,10 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
         }),
       requestRecordingClip: () =>
         Effect.fail(
-          new ReactorError({
-            code: "UnsupportedCapability",
-            message: "Not a fixture recording operation",
-          }),
+          ReactorError.fromCode("UnsupportedCapability", "Not a fixture recording operation"),
         ),
       recording: Effect.fail(
-        new ReactorError({
-          code: "UnsupportedCapability",
-          message: "Not a fixture recording operation",
-        }),
+        ReactorError.fromCode("UnsupportedCapability", "Not a fixture recording operation"),
       ),
       stats: Effect.succeed({ sampledAtMs: 0, generation, warnings: [] }),
       close: Effect.sync(() => {

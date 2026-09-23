@@ -13,14 +13,10 @@ export interface LoadLimits {
 }
 
 const failure = (message: string, detail?: unknown): ReactorError =>
-  new ReactorError({
-    code: "Upload",
-    message,
-    context: {
-      operation: "load reference",
-      outcome: "not-submitted",
-      ...(detail === undefined ? {} : { detail }),
-    },
+  ReactorError.fromCode("Upload", message, {
+    operation: "load reference",
+    outcome: "not-submitted",
+    ...(detail === undefined ? {} : { detail }),
   });
 
 /**

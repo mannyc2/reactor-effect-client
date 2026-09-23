@@ -14,10 +14,9 @@ export type Material =
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
 const materials = new WeakMap<ValidatedReference, Material>();
 const invalid = (message: string): never => {
-  throw new ReactorError({
-    code: "InvalidInput",
-    message,
-    context: { operation: "H3 reference", outcome: "not-submitted" },
+  throw ReactorError.fromCode("InvalidInput", message, {
+    operation: "H3 reference",
+    outcome: "not-submitted",
   });
 };
 const uint16 = (b: Uint8Array, o: number) => b[o]! * 256 + b[o + 1]!;
@@ -213,9 +212,7 @@ export const validateReference = (
     catch: (error) =>
       ReactorError.is(error)
         ? error
-        : new ReactorError({
-            code: "InvalidInput",
-            message: "Invalid H3 reference",
-            context: { outcome: "not-submitted" },
+        : ReactorError.fromCode("InvalidInput", "Invalid H3 reference", {
+            outcome: "not-submitted",
           }),
   });

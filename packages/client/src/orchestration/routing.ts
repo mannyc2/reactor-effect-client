@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { SequenceSnapshot } from "../Sequence.js";
+import type { Missing } from "../errors.js";
 import { PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
 import type { ClipRecord, EngineState } from "./types.js";
@@ -53,20 +54,18 @@ export const resolve = <Owner>(
   Effect.try({
     try: () => {
       if (sequence !== undefined && (sequence.status !== "open" || sequence.sealRequested)) {
-        const reason = sequence.status === "open" ? "sealing" : sequence.status;
-        throw PolicyFailure.refuse(`sequence_${reason}`, `Sequence ${sequence.id} is ${reason}`);
+        throw PolicyFailure.sequence(
+          sequence.id,
+          sequence.status === "open" ? "sealing" : sequence.status,
+        );
       }
       const constraints: Owner[] = sequence === undefined ? [] : [sequence.owner];
-      const ownerFor = (id: ClipId, purpose: string): Candidate<Owner> => {
+      const ownerFor = (id: ClipId, purpose: Missing["purpose"]): Candidate<Owner> => {
         const matches = candidates.filter((candidate) => owns(candidate, id));
-        if (matches.length === 0)
-          throw PolicyFailure.refuse(
-            `${purpose}_missing`,
-            `The ${purpose} clip has no known owning session`,
-          );
+        if (matches.length === 0) throw PolicyFailure.missing(purpose);
         if (matches.length !== 1)
           throw PolicyFailure.refuse(
-            "owner_conflict",
+            "OwnerConflict",
             "A clip identity was observed in multiple sessions",
           );
         return matches[0]!;
@@ -86,28 +85,25 @@ export const resolve = <Owner>(
       const owner = constraints[0] ?? defaultOwner;
       if (constraints.some((value) => value !== owner)) {
         throw PolicyFailure.refuse(
-          "owner_conflict",
+          "OwnerConflict",
           "Sequence, source affinity, insertion anchor and continuation require different sessions",
         );
       }
       const candidate = candidates.find((value) => value.owner === owner);
       if (candidate === undefined || candidate.closed)
-        throw PolicyFailure.refuse("session_retired", "The request's owning session has retired");
+        throw PolicyFailure.refuse("SessionRetired", "The request's owning session has retired");
       if (candidate.recovering || candidate.state.availability !== "Ready") {
-        throw PolicyFailure.refuse(
-          "session_recovering",
-          "Waiting for a coherent provider snapshot",
-        );
+        throw PolicyFailure.refuse("SessionRecovering", "Waiting for a coherent provider snapshot");
       }
       const queue = generation(candidate.state);
       if (queue.length >= candidate.state.capacities.generation)
-        throw PolicyFailure.refuse("queue_full", "The generation queue is full");
+        throw PolicyFailure.refuse("QueueFull", "The generation queue is full");
       if (
         request.continueFrom !== undefined &&
         !candidate.state.continuable.includes(request.continueFrom)
       ) {
         throw PolicyFailure.refuse(
-          "continuation_unavailable",
+          "ContinuationUnavailable",
           "Continuation ownership is known, but the retained provider view no longer offers that clip",
         );
       }
@@ -116,12 +112,12 @@ export const resolve = <Owner>(
         const index = queue.findIndex((clip) => clip.clipId === request.before);
         if (index < 0)
           throw PolicyFailure.refuse(
-            "anchor_unavailable",
+            "AnchorUnavailable",
             "Insertion anchor is no longer in the generation queue",
           );
         if (position !== undefined && position !== index) {
           throw PolicyFailure.refuse(
-            "position_conflict",
+            "PositionConflict",
             "Explicit position and insertion anchor disagree",
           );
         }
@@ -135,7 +131,7 @@ export const resolve = <Owner>(
       PolicyFailure.is(cause)
         ? cause
         : PolicyFailure.refuse(
-            "invalid_request",
+            "InvalidRequest",
             "Could not resolve request ownership",
             "enqueue",
             cause,

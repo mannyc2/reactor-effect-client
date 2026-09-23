@@ -168,7 +168,7 @@ test("a frame-only terminal failure fails media readers without requiring an eng
     Effect.gen(function* () {
       const { handle, sources } = yield* renewalFixture(
         () => ({
-          reconnect: Effect.fail(new ReactorError({ code: "Closed", message: "source expired" })),
+          reconnect: Effect.fail(ReactorError.fromCode("Closed", "source expired")),
         }),
         { maxSessions: 1 },
       );
@@ -177,14 +177,12 @@ test("a frame-only terminal failure fails media readers without requiring an eng
         Effect.result,
         Effect.forkScoped,
       );
-      yield* sources[0]!.failVideo(
-        new ReactorError({ code: "Disconnected", message: "video receiver failed" }),
-      );
+      yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "video receiver failed"));
       const result = yield* Fiber.join(reader).pipe(Effect.timeout(1000));
       expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.code).toBe("Overflow");
+      if (Result.isFailure(result)) expect(result.failure.reason._tag).toBe("Overflow");
       expect((yield* handle.mediaState)._tag).toBe("Failed");
-      expect((yield* handle.engine.failure).code).toBe("Overflow");
+      expect((yield* handle.engine.failure).reason._tag).toBe("Overflow");
       const later = yield* Effect.result(handle.engine.enqueue(request()));
       expect(Result.isFailure(later) && later.failure.context.outcome).toBe("not-submitted");
       expect(sources[0]!.status().closes).toBe(1);
@@ -196,7 +194,7 @@ test("unrecoverable media reports each lost clip with its source and replacement
     Effect.gen(function* () {
       const events: EngineEvent[] = [];
       const { handle, sources, renewals } = yield* renewalFixture(() => ({
-        reconnect: Effect.fail(new ReactorError({ code: "Closed", message: "expired" })),
+        reconnect: Effect.fail(ReactorError.fromCode("Closed", "expired")),
       }));
       yield* handle.engine.events.pipe(
         Stream.runForEach((event) =>
@@ -208,9 +206,7 @@ test("unrecoverable media reports each lost clip with its source and replacement
       );
       yield* Effect.yieldNow;
       const lost = yield* handle.engine.enqueue(member("lost"));
-      yield* sources[0]!.failVideo(
-        new ReactorError({ code: "Disconnected", message: "connection lost" }),
-      );
+      yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "connection lost"));
       yield* until(() => renewals.some((event) => event._tag === "Replaced"));
       const fresh = yield* handle.engine.enqueue(member("fresh"));
       expect(fresh).not.toBe(lost);
@@ -245,9 +241,7 @@ test("reconnect reports clips missing from refreshed active state without invent
       );
       const lost = yield* handle.engine.enqueue(request()),
         retained = yield* handle.engine.enqueue(request());
-      yield* sources[0]!.failVideo(
-        new ReactorError({ code: "Disconnected", message: "observation gap" }),
-      );
+      yield* sources[0]!.failVideo(ReactorError.fromCode("Disconnected", "observation gap"));
       yield* untilEffect(
         handle.mediaState.pipe(Effect.map((state) => state._tag === "Recovering")),
       );
@@ -307,7 +301,7 @@ for (const kind of ["video", "audio"] as const)
           for (let frame = 0; frame < 97; frame++) yield* sources[0]!.video(videoFrame());
         else yield* sources[0]!.audio(audioFrame(48000 * 4 + 1));
         const fatal = yield* handle.engine.failure.pipe(Effect.timeout(1000));
-        expect(fatal.code).toBe("Overflow");
+        expect(fatal.reason._tag).toBe("Overflow");
         expect((yield* handle.mediaState)._tag).toBe("Failed");
         const pressure = yield* handle.media.pressure;
         expect(pressure.queuedVideo).toBeLessThanOrEqual(96);
@@ -350,7 +344,7 @@ test("reconnect retains known drop evidence from retired media generations", () 
       }));
       expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 2n, droppedAudio: 3n });
       yield* sources[0]!.failVideo(
-        new ReactorError({ code: "Disconnected", message: "replace receiver generation" }),
+        ReactorError.fromCode("Disconnected", "replace receiver generation"),
       );
       yield* until(() => renewals.some((event) => event._tag === "Reconnected"));
       expect(yield* handle.mediaState).toEqual({
@@ -366,10 +360,7 @@ test("reconnect retains known drop evidence from retired media generations", () 
 test("unavailable source pressure stays unknown in replacement evidence instead of becoming zero", () =>
   runClock(
     Effect.gen(function* () {
-      const unavailable = new ReactorError({
-        code: "Disconnected",
-        message: "pressure sample unavailable",
-      });
+      const unavailable = ReactorError.fromCode("Disconnected", "pressure sample unavailable");
       const { handle, sources, renewals, warm } = yield* renewalFixture((index) =>
         index === 0 ? { pressure: () => Effect.fail(unavailable) } : {},
       );
@@ -415,7 +406,7 @@ test("terminal media failure is published once and later source failures cannot 
       yield* until(() => events.some((event) => event._tag === "SessionFailed"));
       yield* sources[0]!.emit({
         _tag: "SessionFailed",
-        failure: new ReactorError({ code: "Disconnected", message: "later source error" }),
+        failure: ReactorError.fromCode("Disconnected", "later source error"),
       });
       yield* Effect.yieldNow;
       expect(yield* handle.engine.failure).toBe(first);

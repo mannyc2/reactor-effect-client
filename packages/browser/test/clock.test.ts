@@ -48,7 +48,7 @@ test("Web Audio policy: the resume deadline runs on the provided Clock and close
         yield* Deferred.await(stub.resuming);
         yield* TestClock.adjust(60_000);
         const error = yield* Effect.flip(Fiber.join(opening));
-        equal(error.code, "Timeout");
+        equal(error.reason._tag, "Timeout");
         assert(error.message.includes("user activation"));
         equal(stub.calls.close, 1);
       }).pipe(Effect.provide(TestClock.layer()), Effect.timeout(2_000)),
@@ -103,7 +103,7 @@ test("playback policy: the play deadline runs on the provided Clock and detaches
         yield* Deferred.await(playing);
         yield* TestClock.adjust(60_000);
         const error = yield* Effect.flip(Fiber.join(starting));
-        equal(error.code, "Timeout");
+        equal(error.reason._tag, "Timeout");
         equal(source.clones[0]?.readyState, "ended");
         equal(elements[0]?.srcObject, null);
         equal(elements[0]?.pauses, 1);

@@ -36,14 +36,17 @@ export const equal = (actual: unknown, expected: unknown): void => {
   if (a !== e) throw new Error(`Expected ${e}, received ${a}`);
 };
 
-/** A ReactorError is matched by its tag and code, never by class identity. */
+/** A ReactorError is matched by its tag and its reason's tag, never by class identity. */
 export const throws = (body: () => unknown, code?: string): void => {
   try {
     body();
   } catch (error) {
     if (code !== undefined)
       assert(
-        isRecord(error) && error._tag === "ReactorError" && error.code === code,
+        isRecord(error) &&
+          error._tag === "ReactorError" &&
+          isRecord(error.reason) &&
+          error.reason._tag === code,
         `expected ${code}, got ${String(error)}`,
       );
     return;

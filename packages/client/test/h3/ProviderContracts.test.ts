@@ -270,7 +270,7 @@ describe("H3 command consumers use the admitted reply identity", () => {
                 } else {
                   expect(Result.isFailure(result)).toBe(true);
                   if (Result.isFailure(result)) {
-                    expect(result.failure.code).toBe(
+                    expect(result.failure.reason._tag).toBe(
                       mode === "malformed" ? "Protocol" : "UnexpectedReply",
                     );
                     expect(result.failure.context).toMatchObject({
@@ -322,7 +322,7 @@ describe("H3 command consumers use the admitted reply identity", () => {
               expect(Result.isFailure(result)).toBe(true);
               if (Result.isFailure(result)) {
                 expect(result.failure.context.outcome).toBe("unknown");
-                expect(result.failure.code).toBe(
+                expect(result.failure.reason._tag).toBe(
                   mode === "malformed" ? "Protocol" : "UnexpectedReply",
                 );
               }

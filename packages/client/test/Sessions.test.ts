@@ -106,7 +106,10 @@ describe("Reactor HTTP session contract (offline)", () => {
         Effect.flip(Coordinator.modelRate(invalid, options.modelName)),
       );
       expect(failure).toBeInstanceOf(ReactorError);
-      expect(failure).toMatchObject({ code: "Protocol", context: { operation: "pricing" } });
+      expect(failure).toMatchObject({
+        reason: { _tag: "Protocol" },
+        context: { operation: "pricing" },
+      });
     }
   });
 
@@ -647,7 +650,10 @@ describe("Reactor HTTP session contract (offline)", () => {
           ),
         ),
       );
-      expect(error).toMatchObject({ context: { operation: "inspect", status } });
+      expect(error).toMatchObject({
+        reason: { _tag: "Http", status },
+        context: { operation: "inspect" },
+      });
       expect(error.message).toContain(`HTTP ${status}`);
       expect(JSON.stringify(error)).not.toContain("secret_token_fixture");
       expect(calls).toBe(1);
@@ -701,7 +707,10 @@ describe("Reactor HTTP session contract (offline)", () => {
       );
       expect(error).toMatchObject({ context: { operation: "inspect" } });
       expect(error.message).toContain(message);
-      expect(error.context.status).toBe(message === "request or response failed" ? 200 : undefined);
+      // A JSON SyntaxError quotes the body, so it stays in the inspection-only detail.
+      expect(error.context.detail instanceof SyntaxError).toBe(
+        message === "request or response failed",
+      );
       expect(JSON.stringify(error)).not.toContain("secret_token_fixture");
       expect(calls).toBe(1);
     }
@@ -852,7 +861,7 @@ describe("Reactor HTTP session contract (offline)", () => {
                       evidence: null,
                       deleteStatus: null,
                       state: null,
-                      error: { code: "Timeout", context: { operation: "terminate" } },
+                      error: { reason: { _tag: "Timeout" }, context: { operation: "terminate" } },
                     },
                   });
                   completed = true;
@@ -1060,7 +1069,7 @@ describe("Reactor HTTP session contract (offline)", () => {
         state: null,
       });
       expect(report.error).toBeInstanceOf(ReactorError);
-      expect(report.error?.context.status).toBe(status);
+      expect(report.error?.reason._tag === "Http" && report.error.reason.status).toBe(status);
       expect(JSON.stringify(report)).not.toContain("secret_token_fixture");
     }
     // Any other unsuccessful DELETE leaves the GET as the better evidence.
@@ -1101,7 +1110,7 @@ describe("Reactor HTTP session contract (offline)", () => {
       confirmed: false,
       evidence: null,
       state: null,
-      error: { code: "Protocol" },
+      error: { reason: { _tag: "Protocol" } },
     });
     expect(report.error?.message).toContain("different session identity");
     expect(JSON.stringify(report)).not.toContain("secret_token_fixture");
@@ -1120,7 +1129,7 @@ describe("Reactor HTTP session contract (offline)", () => {
       confirmed: false,
       evidence: null,
       state: null,
-      error: { code: "Http", context: { status: 502 } },
+      error: { reason: { _tag: "Http", status: 502 } },
     });
     expect(JSON.stringify(refused)).toContain("502");
   });

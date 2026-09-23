@@ -7,6 +7,7 @@ export {
   Canvas,
   PolicyFailure,
 } from "./request.js";
+export { Missing, PolicyReason, Refusal, RefusalCode, SequenceRefusal } from "../errors.js";
 export { Engine, Media, Handle, EngineEvent, BuildTiming } from "./types.js";
 export type {
   ClipRecord,
