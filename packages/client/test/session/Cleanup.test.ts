@@ -36,7 +36,11 @@ test("cleanup phases: independent publication, retirement, scope and remote fail
     message: "synchronous peer close failed",
   });
   const peer = new MockPeer(new HttpFixture());
-  http.create = () => Effect.succeed({ session_id: "cleanup-fixture", state: "ACTIVE", raw: {} });
+  http.create = () =>
+    Effect.succeed({
+      sessionId: "cleanup-fixture",
+      reply: { session_id: "cleanup-fixture", state: "ACTIVE" },
+    });
   http.terminate = () =>
     Effect.sync(() => {
       order.push("terminate");

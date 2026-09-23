@@ -25,8 +25,30 @@ test("coordinator exchanges use the supplied Effect HttpClient", async () => {
       return yield* client.create({ name: "selected/model" });
     }).pipe(Effect.provideService(PlatformHttp.HttpClient, platform)),
   );
-  expect(session.session_id).toBe("session-one");
+  expect(session.sessionId).toBe("session-one");
   expect(calls).toEqual(["POST /sessions"]);
+});
+
+test("create resolves on the session id alone; describe fails with that id", async () => {
+  let reply: unknown = { session_id: "session-one", state: "WAITING", capabilities: [] };
+  const platform = PlatformHttp.make((request) =>
+    Effect.sync(() => Response.fromWeb(request, globalThis.Response.json(reply))),
+  );
+  const client = new Http.CoordinatorClient({ apiUrl: "https://injected.invalid" }, platform);
+  const allocation = await Effect.runPromise(client.create({ name: "selected/model" }));
+  expect(allocation.sessionId).toBe("session-one");
+  const failure = await Effect.runPromise(Effect.flip(client.describe(allocation)));
+  expect(failure).toMatchObject({
+    code: "Protocol",
+    context: { operation: "create session", sessionId: "session-one", outcome: "replied" },
+  });
+  // Without a usable id the allocation itself fails, and names nothing to own.
+  for (const unnamed of [{ state: "WAITING" }, { session_id: "", state: "WAITING" }, []]) {
+    reply = unnamed;
+    const error = await Effect.runPromise(Effect.flip(client.create({ name: "selected/model" })));
+    expect(error.code).toBe("Protocol");
+    expect(error.context.sessionId).toBeUndefined();
+  }
 });
 
 test("empty session ids and model names are lazy typed failures, never defects", async () => {
@@ -38,7 +60,11 @@ test("empty session ids and model names are lazy typed failures, never defects",
     }),
   );
   const client = new Http.CoordinatorClient({ apiUrl: "https://injected.invalid" }, platform);
-  for (const operation of [client.read(""), client.create({ name: "" })]) {
+  const operations: readonly Effect.Effect<unknown, ReactorError>[] = [
+    client.read(""),
+    client.create({ name: "" }),
+  ];
+  for (const operation of operations) {
     const exit = await Effect.runPromiseExit(operation);
     expect(Exit.isFailure(exit)).toBe(true);
     if (Exit.isFailure(exit)) {

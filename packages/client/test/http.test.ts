@@ -17,11 +17,12 @@ test("HTTP source headers, cloud create shape, readiness 202/backoff and per-req
       credential: Effect.sync(() => `token-${++credentials}`),
       sessionPoll: { attempts: 5, initialMs: 1, maxMs: 2 },
     });
-    const initial = await run(
+    const allocation = await run(
       http.create({ name: "owner/model", version: "v1" }, { temperature: 1 }),
     );
+    const initial = await run(http.describe(allocation));
     equal(initial.state, "CREATED");
-    const ready = await run(http.ready(initial.session_id, initial));
+    const ready = await run(http.ready(allocation.sessionId, initial));
     assert(ready.capabilities !== undefined);
     const first = f.calls[0];
     assert(first !== undefined);
