@@ -2,6 +2,7 @@ import { ReactorError } from "../../errors.js";
 import type { CommandReply, SessionEvent } from "../../session/index.js";
 import type { Clip, DecodedMessage, MessageType, Queue, State } from "../messages.js";
 import type { ClipObservation, Facts, ProviderSnapshot } from "../types.js";
+import { Retained } from "./retained.js";
 
 const rank = (type: MessageType | null): number =>
   type === "clip_generated"
@@ -16,6 +17,9 @@ const rank = (type: MessageType | null): number =>
         : 0;
 const ended = (type: MessageType | null) => rank(type) === 3;
 
+/** A clip table entry or a remembered-facts record, beside the objects it holds. */
+const entryBytes = 64;
+
 /** Only the Session observation reader may supply protocol facts to this reducer. */
 export class ProviderState {
   private state: State | undefined;
@@ -29,6 +33,8 @@ export class ProviderState {
   private queueDirty = true;
   private readonly bodies = new Map<string, bigint>();
   private availability: "Synchronizing" | "Ready" | "Unavailable" = "Synchronizing";
+  /** What the snapshot holds, kept current by every write below. */
+  readonly retained = new Retained();
 
   constructor(
     readonly sessionId: string,
@@ -38,6 +44,22 @@ export class ProviderState {
   ) {
     this.generation = generation;
     this.revision = revision;
+    this.retained.add(entryBytes + sessionId.length * 3);
+  }
+
+  private setState(next: State | undefined): void {
+    this.retained.swap(this.state, next);
+    this.state = next;
+  }
+
+  private setQueue(next: Queue | undefined): void {
+    this.retained.swap(this.queue, next);
+    this.queue = next;
+  }
+
+  private setCause(next: ReactorError | undefined): void {
+    this.retained.swap(this.cause, next);
+    this.cause = next;
   }
 
   snapshot(): ProviderSnapshot {
@@ -62,12 +84,17 @@ export class ProviderState {
   unavailable(cause: ReactorError): void {
     this.rememberFacts();
     this.availability = "Unavailable";
-    this.cause = cause;
+    this.setCause(cause);
   }
 
   private rememberFacts(): void {
-    if (this.state !== undefined && this.queue !== undefined && this.coherent())
-      this.lastFacts = Object.freeze({ state: this.state, queue: this.queue });
+    if (this.state === undefined || this.queue === undefined || !this.coherent()) return;
+    const previous = this.lastFacts;
+    if (previous?.state === this.state && previous.queue === this.queue) return;
+    this.retained.swap(previous?.state, this.state);
+    this.retained.swap(previous?.queue, this.queue);
+    if (previous === null) this.retained.add(entryBytes);
+    this.lastFacts = Object.freeze({ state: this.state, queue: this.queue });
   }
 
   admit(source: SessionEvent): "applied" | "duplicate" | "stale" {
@@ -77,13 +104,13 @@ export class ProviderState {
     if (source.generation > this.generation) {
       this.rememberFacts();
       this.generation = source.generation;
-      this.state = undefined;
-      this.queue = undefined;
+      this.setState(undefined);
+      this.setQueue(undefined);
       this.stateDirty = true;
       this.queueDirty = true;
       this.bodies.clear();
       this.availability = "Synchronizing";
-      this.cause = undefined;
+      this.setCause(undefined);
     }
     if (source._tag === "Model" && source.correlation === "stale-generation") return "stale";
     // The wire correlator may label a body following an ACK as duplicate.
@@ -114,12 +141,12 @@ export class ProviderState {
           ),
         );
       } else if (source.status === "ready" && this.availability === "Unavailable") {
-        this.state = undefined;
-        this.queue = undefined;
+        this.setState(undefined);
+        this.setQueue(undefined);
         this.stateDirty = true;
         this.queueDirty = true;
         this.availability = "Synchronizing";
-        this.cause = undefined;
+        this.setCause(undefined);
       }
     }
     return "applied";
@@ -130,6 +157,10 @@ export class ProviderState {
       throw ReactorError.fromCode("Overflow", "H3 clip observation bound exceeded", {
         operation: "H3 observation",
       });
+    const previous = this.clips.get(clip.clip_id);
+    this.retained.swap(previous?.clip, clip);
+    this.retained.swap(previous?.source, source);
+    if (previous === undefined) this.retained.add(entryBytes + clip.clip_id.length * 3);
     this.clips.set(clip.clip_id, Object.freeze({ clip, source, lifecycle }));
   }
 
@@ -157,7 +188,7 @@ export class ProviderState {
   apply(message: DecodedMessage, source: CommandReply): "applied" | "duplicate" {
     if (message.type === "unknown") return "applied";
     if (message.type === "state_update") {
-      this.state = message.data;
+      this.setState(message.data);
       this.stateDirty = false;
     } else if (message.type === "queue_update") {
       const clips = [...message.data.generation, ...message.data.playout, ...message.data.history];
@@ -166,7 +197,7 @@ export class ProviderState {
         throw ReactorError.fromCode("Overflow", "H3 clip observation bound exceeded", {
           operation: "H3 observation",
         });
-      this.queue = message.data;
+      this.setQueue(message.data);
       this.queueDirty = false;
       for (const clip of clips) {
         const previous = this.clips.get(clip.clip_id);
