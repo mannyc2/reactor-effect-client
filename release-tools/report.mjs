@@ -6,11 +6,12 @@ import { runApplication, runInterruptibleProcess } from "@mannyc1/ts-release/nod
 import { readBytes, reject } from "./model.mjs";
 
 /** Receipt acceptance is not registry visibility. Only the latest actual
- * observation of this Plan can establish visibility; cached receipts cannot.
+ * observation of each publication in this Plan can establish visibility;
+ * cached receipts cannot. Every package must be visible, and one conflict fails the release.
  * @param {string} planId @param {readonly string[]} operationIds
  * @param {readonly {planId: string, body: {_tag: string, evidenceKind?: string, operationId?: string, status?: string}}[]} events */
 export const visibility = (planId, operationIds, events) => {
-  if (operationIds.length !== 1) reject("Expected one npm publication for visibility");
+  if (operationIds.length === 0) reject("Expected at least one npm publication for visibility");
   const observations = new Map();
   for (const event of events)
     if (

@@ -19,7 +19,7 @@ on:
         required: false
         type: string
       confirm:
-        description: For publish only, enter "publish reactor-effect-client@<exact-version>"
+        description: For publish only, enter the exact "publish <name>@<version> ..." line printed by the preparation run (all three workspace packages)
         required: false
         type: string
 
@@ -122,7 +122,9 @@ jobs:
         run: |
           printf '### Prepared candidate (not published)\n\n```json\n' >> "$GITHUB_STEP_SUMMARY"
           cat .release/prepare-report.json >> "$GITHUB_STEP_SUMMARY"
-          printf '\n```\nUse this run ID as candidate_run_id in a separate manual publish run.\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '\n```\nUse this run ID as candidate_run_id in a separate manual publish run with this exact confirmation:\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          node release-tools/confirmation.mjs .release/candidate >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Execute or observe the original candidate

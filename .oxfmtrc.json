@@ -10,17 +10,18 @@
   "sortImports": false,
   "sortPackageJson": false,
   "ignorePatterns": [
-    "node_modules/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    ".check/**",
+    "**/notices/**",
+    "packages/client/src/wire.generated.ts",
+    "packages/client/wire/**",
+    "packages/native/lib/**",
+    "packages/native/rust/**",
+    "bun.lock",
+    "work/refactor-evidence/**",
     "release-tools/node_modules/**",
     "release-tools/bun.lock",
-    ".release/**",
-    "dist/**",
-    ".check/**",
-    "native/**",
-    "fixtures/**",
-    "notices/**",
-    "src/wire.generated.ts",
-    "bun.lock",
-    "work/refactor-evidence/**"
+    ".release/**"
   ]
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { makeInput } from "../input.mjs";
-import { validateRun } from "../model.mjs";
+import { confirmationFor, validateRun } from "../model.mjs";
 import { visibility } from "../report.mjs";
 import {
   applicationCommit,
@@ -44,9 +44,13 @@ for (const [name, changes] of invalidRuns)
   test(`CI selection rejects ${name}`, () =>
     assert.throws(() => validateRun({ ...workflowRun(), ...changes }, ciRunId, "ci")));
 
-test("explicit confirmation selects publication; observe cannot acquire publication authority", () =>
+const confirmation =
+  "publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0";
+
+test("explicit confirmation of every package selects publication; observe cannot acquire publication authority", () =>
   withFixture(async (fixture) => {
     const { identity } = await prepared(fixture);
+    assert.equal(confirmationFor(identity.qualification), confirmation);
     const options = {
       ciRun: workflowRun(),
       ciRunId,
@@ -57,24 +61,30 @@ test("explicit confirmation selects publication; observe cannot acquire publicat
       confirmation: "",
     };
     assert.equal(makeInput(identity, options).authorize, false);
-    assert.equal(
-      makeInput(identity, { ...options, confirmation: "publish reactor-effect-client@0.2.0" })
-        .authorize,
-      false,
-    );
-    for (const confirmation of [
+    assert.equal(makeInput(identity, { ...options, confirmation }).authorize, false);
+    for (const wrong of [
       "",
       "publish",
-      "publish other-package@0.2.0",
-      "publish reactor-effect-client@0.2.1",
-      "publish reactor-effect-client@0.2.0\n",
+      "publish reactor-effect-client@0.2.0",
+      "publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0",
+      "publish reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0",
+      "publish reactor-effect-browser@0.2.0 reactor-effect-client@0.2.0 reactor-effect-native@0.2.0",
+      "publish reactor-effect-client@0.2.0 reactor-effect-native@0.2.0 reactor-effect-browser@0.2.0",
+      "publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.1",
+      "publish reactor-effect-client@0.2.1 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0",
+      "publish other-package@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0",
+      `${confirmation} other-package@0.2.0`,
+      `${confirmation}\n`,
+      ` ${confirmation}`,
+      confirmation.replace(" reactor-effect-browser", "  reactor-effect-browser"),
+      confirmation.toUpperCase(),
     ])
-      assert.throws(() => makeInput(identity, { ...options, mode: "publish", confirmation }));
-    const authorized = makeInput(identity, {
-      ...options,
-      mode: "publish",
-      confirmation: "publish reactor-effect-client@0.2.0",
-    });
+      assert.throws(
+        () => makeInput(identity, { ...options, mode: "publish", confirmation: wrong }),
+        Error,
+        JSON.stringify(wrong),
+      );
+    const authorized = makeInput(identity, { ...options, mode: "publish", confirmation });
     assert.equal(authorized.authorize, true);
     assert.equal(authorized.planId, identity.planId);
     assert.equal(authorized.bundleSha256, identity.bundleSha256);
@@ -97,70 +107,130 @@ test("explicit confirmation selects publication; observe cannot acquire publicat
     assert.throws(() => makeInput({ ...identity, unexpected: "input" }, options));
   }));
 
-/** @param {string} status @param {string} [planId] @param {string} [operationId] */
-const observation = (status, planId = "selected-plan", operationId = "selected-operation") => ({
+test("a prerelease confirmation names every package at the exact prerelease version", () =>
+  withFixture(
+    async (fixture) => {
+      const { identity } = await prepared(fixture);
+      const expected =
+        "publish reactor-effect-client@0.2.0-rc.1 reactor-effect-browser@0.2.0-rc.1 reactor-effect-native@0.2.0-rc.1";
+      assert.equal(confirmationFor(identity.qualification), expected);
+      const options = {
+        ciRun: workflowRun(),
+        ciRunId,
+        candidateRunId: "8101",
+        applicationCommit,
+        candidateDirectory: fixture.candidateDirectory,
+        mode: "publish",
+        confirmation: expected,
+      };
+      assert.equal(makeInput(identity, options).authorize, true);
+      assert.throws(() => makeInput(identity, { ...options, confirmation }));
+    },
+    { version: "0.2.0-rc.1" },
+  ));
+
+const operationIds = ["client-operation", "browser-operation", "native-operation"];
+/** @param {string} status @param {string} [operationId] @param {string} [planId] */
+const observation = (status, operationId = "client-operation", planId = "selected-plan") => ({
   planId,
   body: { _tag: "ObservationRecorded", evidenceKind: "Observation", operationId, status },
 });
+/** @param {string} status @param {string} [planId] */
+const everyPackage = (status, planId = "selected-plan") =>
+  operationIds.map((operationId) => observation(status, operationId, planId));
 
 test("receipts, dispatch errors and other Plan or operation observations cannot prove visibility", () => {
   assert.equal(
-    visibility(
-      "selected-plan",
-      ["selected-operation"],
-      [
-        { planId: "selected-plan", body: { _tag: "ReceiptAccepted", status: "Satisfied" } },
-        {
-          planId: "selected-plan",
-          body: {
-            _tag: "ObservationRecorded",
-            evidenceKind: "DispatchError",
-            operationId: "selected-operation",
-            status: "Satisfied",
-          },
+    visibility("selected-plan", operationIds, [
+      ...operationIds.map((operationId) => ({
+        planId: "selected-plan",
+        body: { _tag: "ReceiptAccepted", operationId, status: "Satisfied" },
+      })),
+      ...operationIds.map((operationId) => ({
+        planId: "selected-plan",
+        body: {
+          _tag: "ObservationRecorded",
+          evidenceKind: "DispatchError",
+          operationId,
+          status: "Satisfied",
         },
-        observation("Satisfied", "another-plan"),
-        observation("Satisfied", "selected-plan", "another-operation"),
-      ],
-    ),
+      })),
+      ...everyPackage("Satisfied", "another-plan"),
+      observation("Satisfied", "another-operation"),
+    ]),
     "Unconfirmed",
   );
 });
 
-test("only the latest registry observation controls visibility and conflict", () => {
-  for (const status of ["Absent", "Pending", "Inconclusive"])
-    assert.equal(
-      visibility(
-        "selected-plan",
-        ["selected-operation"],
-        [observation("Satisfied"), observation(status)],
-      ),
-      "Unconfirmed",
-    );
+test("visibility requires the latest registry observation of every package to be satisfied", () => {
+  assert.equal(visibility("selected-plan", operationIds, everyPackage("Satisfied")), "Satisfied");
   assert.equal(
-    visibility(
-      "selected-plan",
-      ["selected-operation"],
-      [observation("Satisfied"), observation("Conflict")],
-    ),
+    visibility("selected-plan", operationIds, [
+      ...everyPackage("Satisfied"),
+      observation("Conflict", "native-operation", "another-plan"),
+    ]),
+    "Satisfied",
+  );
+  // One package short of visibility, whether unobserved or not yet visible.
+  for (const partial of [
+    everyPackage("Satisfied").slice(0, 2),
+    [observation("Satisfied", "client-operation")],
+    [...everyPackage("Satisfied"), observation("Absent", "native-operation")],
+    [...everyPackage("Satisfied"), observation("Pending", "browser-operation")],
+    [...everyPackage("Satisfied"), observation("Inconclusive", "client-operation")],
+    [...everyPackage("Absent"), observation("Satisfied", "client-operation")],
+    everyPackage("Absent"),
+    [],
+  ])
+    assert.equal(visibility("selected-plan", operationIds, partial), "Unconfirmed");
+  // Earlier observations never outrank the latest one of the same package.
+  assert.equal(
+    visibility("selected-plan", operationIds, [
+      ...everyPackage("Absent"),
+      ...everyPackage("Satisfied"),
+    ]),
+    "Satisfied",
+  );
+  assert.equal(
+    visibility("selected-plan", operationIds, [
+      ...everyPackage("Conflict"),
+      ...everyPackage("Satisfied"),
+    ]),
+    "Satisfied",
+  );
+});
+
+test("one conflicting package fails visibility even while another package is unobserved", () => {
+  assert.equal(
+    visibility("selected-plan", operationIds, [
+      ...everyPackage("Satisfied"),
+      observation("Conflict", "native-operation"),
+    ]),
+    "Conflict",
+  );
+  assert.equal(
+    visibility("selected-plan", operationIds, [observation("Conflict", "browser-operation")]),
+    "Conflict",
+  );
+  assert.equal(
+    visibility("selected-plan", operationIds, [
+      observation("Satisfied", "client-operation"),
+      observation("Conflict", "client-operation"),
+      observation("Satisfied", "browser-operation"),
+    ]),
     "Conflict",
   );
   assert.equal(
     visibility(
       "selected-plan",
-      ["selected-operation"],
-      [observation("Absent"), observation("Satisfied")],
+      ["client-operation"],
+      [observation("Satisfied", "client-operation"), observation("Conflict", "native-operation")],
     ),
     "Satisfied",
   );
-  assert.equal(
-    visibility(
-      "selected-plan",
-      ["selected-operation"],
-      [observation("Satisfied"), observation("Conflict", "another-plan")],
-    ),
-    "Satisfied",
-  );
+});
+
+test("visibility of a Plan without npm publications is a failure, not a success", () => {
   assert.throws(() => visibility("selected-plan", [], []));
-  assert.throws(() => visibility("selected-plan", ["one", "two"], []));
+  assert.throws(() => visibility("selected-plan", [], everyPackage("Satisfied")));
 });

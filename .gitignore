@@ -8,5 +8,6 @@ coverage/
 .env
 .env.*
 !.env.example
-native/target/
+packages/native/rust/target/
+packages/native/lib/
 *.tsbuildinfo

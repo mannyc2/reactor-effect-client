@@ -18,7 +18,20 @@ import * as pathPosix from "node:path/posix";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { rules } from "./architecture.mjs";
 
+/**
+ * Installed-package qualification for the public workspace packages.
+ *
+ * Every package is packed with `bun pm pack`, which rewrites `workspace:` and
+ * `catalog:` protocols to exact versions. Each archive is validated on its own
+ * (public exports, declaration/import closure, declared dependencies, native
+ * identity), then installed into isolated consumers: a portable Node consumer
+ * without optional dependencies, a browser consumer bundled without Node
+ * globals, and a native consumer that verifies the packaged library identity.
+ * `--portable` packs and checks only the client and browser packages, for
+ * hosts without a staged native library; CI and release run the full gate.
+ */
 interface Manifest {
   readonly name: string;
   readonly version: string;
@@ -27,28 +40,44 @@ interface Manifest {
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
   readonly devDependencies?: Readonly<Record<string, string>>;
+}
+interface RootManifest {
+  readonly workspaces: { readonly catalog: Readonly<Record<string, string>> };
   readonly overrides?: Readonly<Record<string, string>>;
 }
-
-interface PackFile {
-  readonly path: string;
+interface Archive {
+  /** Workspace directory name under packages/. */
+  readonly directory: string;
+  readonly manifest: Manifest;
+  readonly tarball: string;
+  readonly installTarball: string;
+  readonly sha256: string;
+  readonly files: ReadonlySet<string>;
+  readonly fileSha256: Readonly<Record<string, string>>;
 }
-interface PackResult {
-  readonly filename: string;
-  readonly files: readonly PackFile[];
+interface NativeIdentity {
+  readonly schemaVersion: number;
+  readonly platform: string;
+  readonly library: string;
+  readonly sha256: string;
+  readonly build: Readonly<{ abiVersion: number; sourceSha256: string; profile: string }>;
 }
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const fixtureRoot = join(root, "test", "fixtures", "pack");
+const fixtureRoot = join(root, "scripts", "pack");
+const examplesRoot = join(root, "examples");
+const portableOnly = process.argv.includes("--portable");
+for (const arg of process.argv.slice(2))
+  if (arg !== "--portable") throw new Error(`unknown pack argument: ${arg}; use --portable`);
 mkdirSync(join(root, ".check"), { recursive: true });
 const packDirectory = mkdtempSync(join(root, ".check", "pack-"));
-const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Manifest;
-const typescriptVersion = manifest.devDependencies?.typescript;
-const nodeTypesVersion = manifest.devDependencies?.["@types/node"];
+const workspace = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as RootManifest;
+const catalog = workspace.workspaces.catalog;
 
 const fail = (message: string): never => {
   throw new Error(`pack smoke: ${message}`);
 };
+const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const execute = (
   command: string,
   args: readonly string[],
@@ -69,8 +98,16 @@ const run = (
   return result.stdout;
 };
 
-if (typescriptVersion === undefined || nodeTypesVersion === undefined)
-  fail("TypeScript/@types/node development versions are required for consumer smoke tests");
+const typescriptVersion = catalog.typescript ?? fail("catalog must pin typescript");
+const nodeTypesVersion = catalog["@types/node"] ?? fail("catalog must pin @types/node");
+const effectVersion = catalog.effect ?? fail("catalog must pin effect");
+const nodePlatformVersion =
+  catalog["@effect/platform-node"] ?? fail("catalog must pin @effect/platform-node");
+const nodeSharedVersion =
+  workspace.overrides?.["@effect/platform-node-shared"] ??
+  fail("workspace must retain the shared Node platform override");
+if (nodeSharedVersion !== effectVersion)
+  fail("the shared-platform override must match the Effect catalog pin");
 
 // TypeScript 7 ships its compiler as an optional platform package. Install that
 // exact tool explicitly so --omit=optional can still prove the SDK works without
@@ -89,8 +126,6 @@ const compilerPackages = [
   `${compilerPlatform}@${compilerPlatformVersion}`,
 ];
 
-// Every run owns a new directory. Preserve previous delivery/evidence archives;
-// the package below can only originate from this run's successful source build.
 // Resolve the selected Node once before entering deliberately stripped fixture
 // environments. An NVM installation must not rely on PATH surviving isolation.
 const node = realpathSync(
@@ -99,114 +134,17 @@ const node = realpathSync(
 const bun = process.env.BUN_BINARY ?? process.execPath;
 const installer = process.env.PACK_INSTALLER ?? "npm";
 if (installer !== "npm" && installer !== "bun") fail("PACK_INSTALLER must be npm or bun");
-console.log(`consumer-installer ${installer}`);
-run(node, ["scripts/build.mjs"], root);
+const keep = process.env.KEEP_PACK_TMP === "1";
+console.log(`consumer-installer ${installer} profile ${portableOnly ? "portable" : "full"}`);
+run(bun, ["--no-env-file", "run", "build"], root);
 
-const packed = JSON.parse(
-  run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], root),
-) as readonly PackResult[];
-if (packed.length !== 1) fail("npm pack did not produce exactly one package");
-const pack = packed[0] ?? fail("npm pack returned no package record");
-const tarball = join(packDirectory, pack.filename);
-console.log(`pack-created ${relative(root, tarball)}`);
-const files = new Set(pack.files.map((entry) => entry.path));
-if (!existsSync(tarball)) fail(`tarball does not exist: ${tarball}`);
-const tarballSha256 = createHash("sha256").update(readFileSync(tarball)).digest("hex");
-let installTarball = tarball;
-if (installer === "bun") {
-  // Stable archive names can retain stale Bun cache entries. A content-addressed
-  // alias preserves the exact bytes without copying or pruning any cache.
-  installTarball = join(packDirectory, `reactor-effect-client-${tarballSha256}.tgz`);
-  linkSync(tarball, installTarball);
-}
-for (const path of files) {
-  if (isAbsolute(path) || path.split("/").some((part) => part === ".." || part.length === 0))
-    fail(`invalid tarball entry ${path}`);
-}
-const unpacked = join(packDirectory, "unpacked");
-mkdirSync(unpacked);
-try {
-  run("tar", ["-xzf", tarball, "-C", unpacked], root);
-} catch (error) {
-  // Preserve the archive and failure, but not a new partial extraction that
-  // would make the next disk-constrained qualification attempt fail sooner.
-  if (process.env.KEEP_PACK_TMP !== "1") rmSync(unpacked, { recursive: true, force: true });
-  throw error;
-}
-const packaged = (path: string): Buffer => readFileSync(join(unpacked, "package", path));
-for (const path of readdirSync(join(root, "examples"), { recursive: true, encoding: "utf8" })) {
-  const entry = `examples/${path.split(sep).join("/")}`;
-  if (path.endsWith(".mts") && !files.has(entry))
-    fail(`tarball omitted documentation source ${entry}`);
-}
-
-for (const required of [
-  "package.json",
-  "README.md",
-  "CONTRIBUTING.md",
-  "SECURITY.md",
-  "LICENSE",
-  "NOTICE",
-]) {
-  if (!files.has(required)) fail(`tarball omitted ${required}`);
-}
-
-const packedManifestText = packaged("package.json").toString("utf8");
-const packedManifest = JSON.parse(packedManifestText) as Manifest;
-const canonicalExports = [
-  ".",
-  "./browser",
-  "./native",
-  "./h3",
-  "./orchestration",
-  "./simulation",
-  "./testing",
-  "./wire",
-].sort();
-if (
-  JSON.stringify(Object.keys(packedManifest.exports).sort()) !== JSON.stringify(canonicalExports)
-) {
-  fail("package must expose exactly the eight canonical public entry points");
-}
-const dependencyGroups = [
-  packedManifest.dependencies,
-  packedManifest.peerDependencies,
-  packedManifest.optionalDependencies,
-];
-for (const group of dependencyGroups)
-  for (const [name, version] of Object.entries(group ?? {})) {
-    if (/^(?:workspace|catalog):/.test(version))
-      fail(`${name} uses unpublished dependency protocol ${version}`);
-  }
-
-const exportTargets = new Set<string>();
-for (const [name, value] of Object.entries(packedManifest.exports ?? {})) {
-  if (name.includes("*")) fail(`package export is not explicit: ${name}`);
-  const conditions =
-    typeof value === "string"
-      ? fail(`export ${name} must provide explicit types/import conditions`)
-      : value;
-  if (!("types" in conditions) || !("import" in conditions))
-    fail(`export ${name} must provide both types and import targets`);
-  const targets = Object.values(conditions);
-  if (targets.length === 0) fail(`export ${name} has no targets`);
-  for (const target of targets) {
-    if (!target.startsWith("./")) fail(`export ${name} has a non-package target: ${target}`);
-    const path = target.slice(2);
-    exportTargets.add(path);
-    if (!files.has(path)) fail(`export ${name} points at missing tarball file ${path}`);
-  }
-  const declaration = conditions.types ?? fail(`export ${name} omitted its types target`);
-  if (!declaration.endsWith(".d.ts"))
-    fail(`export ${name} types target is not a declaration file: ${declaration}`);
-}
-
-const dependencies = new Set([
-  ...Object.keys(packedManifest.dependencies ?? {}),
-  ...Object.keys(packedManifest.peerDependencies ?? {}),
-  ...Object.keys(packedManifest.optionalDependencies ?? {}),
-  packedManifest.name,
-]);
+const platform = `${process.platform}-${process.arch}`;
+const libraryFor = (target: string): string =>
+  target.startsWith("darwin-")
+    ? "libreactor_effect_native.dylib"
+    : target.startsWith("win32-")
+      ? "reactor_effect_native.dll"
+      : "libreactor_effect_native.so";
 const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const packageName = (specifier: string): string =>
   specifier.startsWith("@")
@@ -226,164 +164,256 @@ const specifiers = (source: string): readonly string[] => {
   return [...found];
 };
 
-for (const path of files) {
-  if (!path.startsWith("dist/") || (!path.endsWith(".js") && !path.endsWith(".d.ts"))) continue;
-  const sourcePath = join(root, path);
-  if (!existsSync(sourcePath)) fail(`packed ${path} is absent from build output`);
-  const source = readFileSync(sourcePath, "utf8");
-  const packedSource = packaged(path).toString("utf8");
-  if (source !== packedSource)
-    fail(`packed ${path} differs from the build inspected for import closure`);
-  if (source.includes("/the-show") || source.includes("@the-show/"))
-    fail(`${path} retains a workspace-specific import/path`);
-  for (const specifier of specifiers(source)) {
-    if (specifier.startsWith(".")) {
-      const target = pathPosix.normalize(pathPosix.join(pathPosix.dirname(path), specifier));
-      if (!files.has(target)) fail(`${path} imports missing packaged file ${target}`);
-      continue;
-    }
-    if (specifier.startsWith("/") || specifier.startsWith("file:"))
-      fail(`${path} contains absolute import ${specifier}`);
-    if (builtins.has(specifier)) continue;
-    const external = packageName(specifier);
-    if (!dependencies.has(external))
-      fail(`${path} imports undeclared external dependency ${specifier}`);
+/** Packs one workspace package and validates the archive before any consumer sees it. */
+const packArchive = (directory: string): Archive => {
+  const packageRoot = join(root, "packages", directory);
+  const source = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as Manifest;
+  const filename = `${source.name}-${source.version}.tgz`;
+  run(
+    bun,
+    ["--no-env-file", "pm", "pack", "--ignore-scripts", "--quiet", "--destination", packDirectory],
+    packageRoot,
+  );
+  const tarball = join(packDirectory, filename);
+  if (!existsSync(tarball)) fail(`bun pm pack did not produce ${filename}`);
+  console.log(`pack-created ${relative(root, tarball)}`);
+  const files = new Set(
+    run("tar", ["-tzf", tarball], root)
+      .split("\n")
+      .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
+      .map((entry) => (entry.startsWith("package/") ? entry.slice("package/".length) : entry)),
+  );
+  for (const path of files) {
+    if (isAbsolute(path) || path.split("/").some((part) => part === ".." || part.length === 0))
+      fail(`invalid tarball entry ${path}`);
   }
-}
+  const archiveSha256 = sha256(readFileSync(tarball));
+  let installTarball = tarball;
+  if (installer === "bun") {
+    // Stable archive names can retain stale Bun cache entries. A content-addressed
+    // alias preserves the exact bytes without copying or pruning any cache.
+    installTarball = join(packDirectory, `${source.name}-${archiveSha256}.tgz`);
+    linkSync(tarball, installTarball);
+  }
+  const unpacked = join(packDirectory, "unpacked", directory);
+  mkdirSync(unpacked, { recursive: true });
+  try {
+    run("tar", ["-xzf", tarball, "-C", unpacked], root);
+  } catch (error) {
+    // Preserve the archive and failure, but not a new partial extraction that
+    // would make the next disk-constrained qualification attempt fail sooner.
+    if (!keep) rmSync(unpacked, { recursive: true, force: true });
+    throw error;
+  }
+  const packaged = (path: string): Buffer => readFileSync(join(unpacked, "package", path));
+  const manifest = JSON.parse(packaged("package.json").toString("utf8")) as Manifest;
+  const fileSha256 = Object.fromEntries(
+    [...files].sort().map((path) => [path, sha256(packaged(path))]),
+  );
+  const archive: Archive = {
+    directory,
+    manifest,
+    tarball,
+    installTarball,
+    sha256: archiveSha256,
+    files,
+    fileSha256,
+  };
+  checkArchive(archive, packaged);
+  if (manifest.name === "reactor-effect-native") checkNativeArchive(archive, packaged);
+  if (!keep) rmSync(unpacked, { recursive: true, force: true });
+  return archive;
+};
 
-const platform = `${process.platform}-${process.arch}`;
-const nativeName =
-  process.platform === "darwin"
-    ? "libreactor_effect_native.dylib"
-    : process.platform === "win32"
-      ? "reactor_effect_native.dll"
-      : "libreactor_effect_native.so";
-const nativeArtifact = `dist/native/${platform}/${nativeName}`;
-if (!files.has(nativeArtifact))
-  fail(`tarball has no native artifact for current host (${nativeArtifact})`);
-interface NativeIdentity {
-  readonly schemaVersion: number;
-  readonly platform: string;
-  readonly library: string;
-  readonly sha256: string;
-  readonly build: Readonly<{ abiVersion: number; sourceSha256: string; profile: string }>;
-}
+const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
+  const { files, manifest } = archive;
+  const rule = rules[manifest.name] ?? fail(`no public contract for package ${manifest.name}`);
+  for (const required of ["package.json", "README.md", "LICENSE", "NOTICE"]) {
+    if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
+  }
+  if (![...files].some((path) => path.startsWith("notices/")))
+    fail(`${manifest.name} tarball omitted its third-party notices`);
+  if (
+    JSON.stringify(Object.keys(manifest.exports).sort()) !==
+    JSON.stringify(Object.keys(rule.entries).sort())
+  )
+    fail(`${manifest.name} must expose exactly its canonical public entry points`);
+  for (const group of [
+    manifest.dependencies,
+    manifest.peerDependencies,
+    manifest.optionalDependencies,
+    manifest.devDependencies,
+  ])
+    for (const [name, version] of Object.entries(group ?? {})) {
+      if (/^(?:workspace|catalog):/.test(version))
+        fail(`${manifest.name}: ${name} uses unpublished dependency protocol ${version}`);
+    }
+  if (manifest.peerDependencies?.effect !== effectVersion)
+    fail(`${manifest.name} must declare the exact Effect peer ${effectVersion}`);
+  for (const [name, value] of Object.entries(manifest.exports)) {
+    if (name.includes("*")) fail(`package export is not explicit: ${name}`);
+    const conditions =
+      typeof value === "string"
+        ? fail(`export ${name} must provide explicit types/import conditions`)
+        : value;
+    if (!("types" in conditions) || !("import" in conditions))
+      fail(`export ${name} must provide both types and import targets`);
+    for (const target of Object.values(conditions)) {
+      if (!target.startsWith("./")) fail(`export ${name} has a non-package target: ${target}`);
+      if (!files.has(target.slice(2)))
+        fail(`export ${name} points at missing tarball file ${target}`);
+    }
+    if (!conditions.types?.endsWith(".d.ts"))
+      fail(`export ${name} types target is not a declaration file: ${conditions.types}`);
+  }
+  const dependencies = new Set([
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.peerDependencies ?? {}),
+    ...Object.keys(manifest.optionalDependencies ?? {}),
+  ]);
+  for (const path of files) {
+    if (!path.startsWith("dist/") || (!path.endsWith(".js") && !path.endsWith(".d.ts"))) continue;
+    const sourcePath = join(root, "packages", archive.directory, path);
+    if (!existsSync(sourcePath)) fail(`packed ${path} is absent from build output`);
+    const source = readFileSync(sourcePath, "utf8");
+    if (source !== packaged(path).toString("utf8"))
+      fail(`packed ${path} differs from the build inspected for import closure`);
+    if (source.includes("/the-show") || source.includes("@the-show/"))
+      fail(`${path} retains a workspace-specific import/path`);
+    for (const specifier of specifiers(source)) {
+      if (specifier.startsWith(".")) {
+        const target = pathPosix.normalize(pathPosix.join(pathPosix.dirname(path), specifier));
+        if (!files.has(target)) fail(`${path} imports missing packaged file ${target}`);
+        continue;
+      }
+      if (specifier.startsWith("/") || specifier.startsWith("file:"))
+        fail(`${path} contains absolute import ${specifier}`);
+      if (builtins.has(specifier)) {
+        if (!rule.hostBuiltins) fail(`${path} imports Node builtin ${specifier}`);
+        continue;
+      }
+      const external = packageName(specifier);
+      if (external === "koffi" && !rule.hostBuiltins) fail(`${path} imports Koffi`);
+      if (!dependencies.has(external))
+        fail(`${path} imports undeclared external dependency ${specifier}`);
+    }
+  }
+};
+
 const identities = new Map<string, NativeIdentity>();
 let nativeSource: string | undefined;
-for (const path of files) {
-  if (!/^dist\/native\/[^/]+\/native-identity\.json$/.test(path)) continue;
-  const identity = JSON.parse(packaged(path).toString("utf8")) as NativeIdentity;
+const checkNativeArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
+  const { files } = archive;
+  const nativeArtifact = `lib/${platform}/${libraryFor(platform)}`;
+  if (!files.has(nativeArtifact))
+    fail(`native tarball has no artifact for current host (${nativeArtifact})`);
+  for (const path of files) {
+    if (!/^lib\/[^/]+\/native-identity\.json$/.test(path)) continue;
+    const identity = JSON.parse(packaged(path).toString("utf8")) as NativeIdentity;
+    if (
+      identity.schemaVersion !== 1 ||
+      identity.build.abiVersion !== 2 ||
+      identity.build.profile !== "release"
+    )
+      fail(`invalid native identity: ${path}`);
+    if (
+      !/^[a-f0-9]{64}$/.test(identity.sha256) ||
+      !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
+    )
+      fail(`invalid native hashes: ${path}`);
+    const artifact = `lib/${identity.platform}/${identity.library}`;
+    if (path !== `lib/${identity.platform}/native-identity.json` || !files.has(artifact))
+      fail(`native identity refers to an absent/wrong platform: ${path}`);
+    if (sha256(packaged(artifact)) !== identity.sha256)
+      fail(`native tarball hash differs from qualified stage: ${artifact}`);
+    if (sha256(readFileSync(join(root, "packages", "native", artifact))) !== identity.sha256)
+      fail(`native stage changed during packaging: ${artifact}`);
+    if (nativeSource !== undefined && nativeSource !== identity.build.sourceSha256)
+      fail("native platforms were built from different source identities");
+    nativeSource = identity.build.sourceSha256;
+    identities.set(identity.platform, identity);
+  }
+  if (!identities.has(platform)) fail("current host artifact has no qualified native identity");
+  if (!files.has("scripts/stage.mjs"))
+    fail("source-build package omitted the sole native staging owner");
+  const sourceHash = createHash("sha256");
+  const nativeInputs = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    ".cargo/config.toml",
+    "include/reactor_effect_native.h",
+    ...[...files]
+      .filter((path) => path.startsWith("rust/src/"))
+      .map((path) => path.slice("rust/".length)),
+  ].sort();
+  for (const path of nativeInputs)
+    sourceHash
+      .update(path)
+      .update("\0")
+      .update(packaged(`rust/${path}`))
+      .update("\0");
+  if (sourceHash.digest("hex") !== nativeSource)
+    fail(
+      "packaged native source differs from the source identity embedded in the tested artifacts",
+    );
+  for (const expected of (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    const artifact = `lib/${expected}/${libraryFor(expected)}`;
+    if (!files.has(artifact) || !identities.has(expected))
+      fail(`tarball omitted expected native artifact/identity ${artifact}`);
+  }
+};
+
+const archives = new Map<string, Archive>();
+for (const directory of portableOnly ? ["client", "browser"] : ["client", "browser", "native"])
+  archives.set(directory, packArchive(directory));
+const client = archives.get("client") ?? fail("client archive was not produced");
+for (const archive of archives.values()) {
+  if (archive.manifest.version !== client.manifest.version)
+    fail(`${archive.manifest.name} version differs from ${client.manifest.name}`);
   if (
-    identity.schemaVersion !== 1 ||
-    identity.build.abiVersion !== 2 ||
-    identity.build.profile !== "release"
+    archive !== client &&
+    archive.manifest.peerDependencies?.["reactor-effect-client"] !== client.manifest.version
   )
-    fail(`invalid native identity: ${path}`);
-  if (
-    !/^[a-f0-9]{64}$/.test(identity.sha256) ||
-    !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
-  )
-    fail(`invalid native hashes: ${path}`);
-  const artifact = `dist/native/${identity.platform}/${identity.library}`;
-  if (path !== `dist/native/${identity.platform}/native-identity.json` || !files.has(artifact))
-    fail(`native identity refers to an absent/wrong platform: ${path}`);
-  if (createHash("sha256").update(packaged(artifact)).digest("hex") !== identity.sha256)
-    fail(`native tarball hash differs from qualified stage: ${artifact}`);
-  if (
-    createHash("sha256")
-      .update(readFileSync(join(root, artifact)))
-      .digest("hex") !== identity.sha256
-  )
-    fail(`native stage changed during packaging: ${artifact}`);
-  if (nativeSource !== undefined && nativeSource !== identity.build.sourceSha256)
-    fail("native platforms were built from different source identities");
-  nativeSource = identity.build.sourceSha256;
-  identities.set(identity.platform, identity);
-}
-if (!identities.has(platform)) fail("current host artifact has no qualified native identity");
-if (!files.has("native/stage.mjs"))
-  fail("source-build package omitted the sole native staging owner");
-const sourceHash = createHash("sha256");
-const nativeInputs = [
-  "Cargo.toml",
-  "Cargo.lock",
-  "build.rs",
-  ".cargo/config.toml",
-  "include/reactor_effect_native.h",
-  ...[...files]
-    .filter((path) => path.startsWith("native/src/"))
-    .map((path) => path.slice("native/".length)),
-].sort();
-for (const path of nativeInputs)
-  sourceHash
-    .update(path)
-    .update("\0")
-    .update(packaged(`native/${path}`))
-    .update("\0");
-if (sourceHash.digest("hex") !== nativeSource)
-  fail("packaged native source differs from the source identity embedded in the tested artifacts");
-for (const expected of (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean)) {
-  const name = expected.startsWith("darwin-")
-    ? "libreactor_effect_native.dylib"
-    : expected.startsWith("win32-")
-      ? "reactor_effect_native.dll"
-      : "libreactor_effect_native.so";
-  const artifact = `dist/native/${expected}/${name}`;
-  if (!files.has(artifact) || !identities.has(expected))
-    fail(`tarball omitted expected native artifact/identity ${artifact}`);
+    fail(
+      `${archive.manifest.name} must pin its reactor-effect-client peer to ${client.manifest.version}`,
+    );
 }
 
 const isolated = mkdtempSync(join(tmpdir(), "reactor-effect-pack-"));
-const keep = process.env.KEEP_PACK_TMP === "1";
 const fixture = (name: string): string => join(fixtureRoot, name);
-// The archived source examples are small. Capture them before releasing this
-// run's disposable extraction; retaining full native copies alongside each
-// independent install needlessly raises the package gate's peak disk usage.
-const exampleSources = new Map(
-  [...files]
-    .filter((path) => path.startsWith("examples/") && path.endsWith(".mts"))
-    .map((path) => [path, packaged(path)] as const),
-);
-const fileSha256 = Object.fromEntries(
-  [...files]
-    .sort()
-    .map((path) => [path, createHash("sha256").update(packaged(path)).digest("hex")]),
-);
-if (!keep) rmSync(unpacked, { recursive: true, force: true });
 
-// Compile the archived documentation examples, never a workspace copy. All
-// portable examples participate in every profile; host examples are explicit.
+// Compile the workspace's documentation examples against the installed packages,
+// never against workspace source. All portable examples participate in every
+// profile; host examples are explicit.
 const stageExamples = (directory: string, host?: "node" | "browser"): readonly string[] => {
-  const paths = [...files]
-    .filter(
-      (path) =>
-        path.endsWith(".mts") &&
-        (path.startsWith("examples/portable/") ||
-          (host !== undefined && path.startsWith(`examples/${host}/`))),
+  const profiles = host === undefined ? ["portable"] : ["portable", host];
+  const paths = profiles
+    .flatMap((profile) =>
+      readdirSync(join(examplesRoot, profile))
+        .filter((name) => name.endsWith(".mts"))
+        .map((name) => `examples/${profile}/${name}`),
     )
     .sort();
   if (
     !paths.includes("examples/portable/simulation.mts") ||
     (host !== undefined && !paths.includes(`examples/${host}/session.mts`))
   )
-    fail(`tarball omitted the ${host ?? "portable"} documentation examples`);
+    fail(`workspace lacks the ${host ?? "portable"} documentation examples`);
   for (const path of paths) {
     const destination = join(directory, path);
     mkdirSync(dirname(destination), { recursive: true });
-    writeFileSync(
-      destination,
-      exampleSources.get(path) ?? fail(`missing archived example ${path}`),
-    );
+    copyFileSync(join(root, path), destination);
   }
   return paths;
 };
 
 const releaseConsumer = (directory: string): void => {
-  // The three complete checks remain independent, but need not retain three
-  // installed trees concurrently. Only this run's successful consumer is removed.
+  // The complete checks remain independent, but need not retain their installed
+  // trees concurrently. Only this run's successful consumer is removed.
   if (!keep) rmSync(directory, { recursive: true, force: true });
 };
 
@@ -402,9 +432,12 @@ const initConsumer = (name: string, overrides?: Readonly<Record<string, string>>
   return directory;
 };
 
-const install = (directory: string, packages: readonly string[], omitOptional: boolean): void => {
-  const effectVersion =
-    manifest.peerDependencies?.effect ?? fail("consumer requires the SDK's exact Effect peer");
+const install = (
+  directory: string,
+  installed: readonly Archive[],
+  packages: readonly string[],
+  omitOptional: boolean,
+): void => {
   const command = installer === "bun" ? bun : "npm";
   const args =
     installer === "bun"
@@ -418,31 +451,33 @@ const install = (directory: string, packages: readonly string[], omitOptional: b
         ]
       : ["install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"];
   if (omitOptional) args.push("--omit=optional");
-  const installed = execute(
+  const result = execute(
     command,
     [
       ...args,
       `effect@${effectVersion}`,
-      ...packages.map((path) => (path === tarball ? installTarball : path)),
+      ...installed.map((archive) => archive.installTarball),
+      ...packages,
     ],
     directory,
   );
   writeFileSync(
     join(packDirectory, `install-${relative(isolated, directory)}.log`),
-    `${installed.stdout ?? ""}${installed.stderr ?? ""}`,
+    `${result.stdout ?? ""}${result.stderr ?? ""}`,
   );
-  if (installed.error !== undefined) throw installed.error;
-  if (installed.status !== 0)
-    fail(`${installer} install failed in ${directory}\n${installed.stdout}${installed.stderr}`);
-  for (const [path, expected] of Object.entries(fileSha256)) {
-    const installedPath = join(directory, "node_modules", manifest.name, path);
-    if (
-      !existsSync(installedPath) ||
-      createHash("sha256").update(readFileSync(installedPath)).digest("hex") !== expected
-    )
-      fail(`installed SDK differs from the exact archive: ${path}`);
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0)
+    fail(`${installer} install failed in ${directory}\n${result.stdout}${result.stderr}`);
+  for (const archive of installed) {
+    for (const [path, expected] of Object.entries(archive.fileSha256)) {
+      const installedPath = join(directory, "node_modules", archive.manifest.name, path);
+      if (!existsSync(installedPath) || sha256(readFileSync(installedPath)) !== expected)
+        fail(`installed ${archive.manifest.name} differs from the exact archive: ${path}`);
+    }
+    console.log(
+      `installed-package-identity ${relative(isolated, directory)} ${archive.manifest.name} ${archive.files.size} files`,
+    );
   }
-  console.log(`installed-sdk-identity ${relative(isolated, directory)} ${files.size} files`);
   if (!existsSync(join(directory, "node_modules", compilerPlatform, "package.json")))
     fail(`isolated consumer is missing its compiler platform package ${compilerPlatform}`);
   if (omitOptional && existsSync(join(directory, "node_modules", "koffi")))
@@ -509,7 +544,7 @@ const typecheck = (
     );
     include = [...include, "effect-node-globals.d.mts"];
     writeConfig();
-    console.log("effect-no-dom-exception TextDecoderOptions (effect@4.0.0-rc.115)");
+    console.log(`effect-no-dom-exception TextDecoderOptions (effect@${effectVersion})`);
   }
 
   run(node, ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"], directory);
@@ -583,20 +618,24 @@ const checkRuntimeFixtures = (directory: string, names: readonly string[]): void
   );
 };
 
+const guarded = (directory: string, denyNative: boolean): NodeJS.ProcessEnv => ({
+  ...process.env,
+  PACK_CONSUMER_ROOT: directory,
+  PACK_DENY_NATIVE: denyNative ? "1" : "0",
+  NODE_PATH: "",
+});
+
 try {
+  const browserArchive = archives.get("browser") ?? fail("browser archive was not produced");
+
   const portable = initConsumer("portable-node");
-  install(portable, [tarball, ...compilerPackages, `@types/node@${nodeTypesVersion}`], true);
+  install(portable, [client], [...compilerPackages, `@types/node@${nodeTypesVersion}`], true);
   copyFileSync(fixture("portable-import.mjs"), join(portable, "portable-import.mjs"));
   const portableOutput = run(
     node,
     ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
     portable,
-    {
-      ...process.env,
-      PACK_CONSUMER_ROOT: portable,
-      PACK_DENY_NATIVE: "1",
-      NODE_PATH: "",
-    },
+    guarded(portable, true),
   );
   if (!portableOutput.includes("portable-import-ok"))
     fail("portable import smoke did not complete");
@@ -605,11 +644,7 @@ try {
     node,
     ["--experimental-loader", "./resolution-guard.mjs", "./simulation-smoke.mjs"],
     portable,
-    {
-      PACK_CONSUMER_ROOT: portable,
-      PACK_DENY_NATIVE: "1",
-      NODE_PATH: "",
-    },
+    guarded(portable, true),
   );
   if (!simulationOutput.includes("simulation-smoke-ok"))
     fail("installed production simulation did not complete");
@@ -620,18 +655,21 @@ try {
     "resolution-guard.mjs",
   ]);
   typecheck(portable, "node-consumer.mts", nodeCompilerOptions, true, stageExamples(portable));
-  copyFileSync(fixture("example-smoke.mjs"), join(portable, "example-smoke.mjs"));
+  copyFileSync(
+    join(examplesRoot, "check", "simulation-smoke.mjs"),
+    join(portable, "example-smoke.mjs"),
+  );
   const simulationExample = join(portable, "compiled-examples/examples/portable/simulation.mjs");
   for (const [runtime, command, args] of [
     ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
     ["Bun", bun, ["--no-env-file"]],
   ] as const) {
-    const output = run(command, [...args, "example-smoke.mjs", simulationExample], portable, {
-      ...process.env,
-      PACK_CONSUMER_ROOT: portable,
-      PACK_DENY_NATIVE: "1",
-      NODE_PATH: "",
-    });
+    const output = run(
+      command,
+      [...args, "example-smoke.mjs", simulationExample],
+      portable,
+      guarded(portable, true),
+    );
     if (!output.includes("compiled-example-ok"))
       fail(`${runtime} installed example did not complete`);
     console.log(`${runtime} ${output.trim()}`);
@@ -642,18 +680,13 @@ try {
   releaseConsumer(portable);
 
   const browser = initConsumer("browser");
-  install(browser, [tarball, ...compilerPackages], true);
+  install(browser, [client, browserArchive], compilerPackages, true);
   copyFileSync(fixture("browser-import.mjs"), join(browser, "browser-import.mjs"));
   const browserOutput = run(
     node,
     ["--experimental-loader", "./resolution-guard.mjs", "browser-import.mjs"],
     browser,
-    {
-      ...process.env,
-      PACK_CONSUMER_ROOT: browser,
-      PACK_DENY_NATIVE: "1",
-      NODE_PATH: "",
-    },
+    guarded(browser, true),
   );
   if (!browserOutput.includes("browser-import-ok")) fail("browser import smoke did not complete");
   run(
@@ -698,100 +731,110 @@ try {
   );
   releaseConsumer(browser);
 
-  const nodePlatformVersion =
-    manifest.devDependencies?.["@effect/platform-node"] ??
-    fail("native fixture needs the pinned Node Effect platform");
-  const nodeSharedVersion =
-    manifest.overrides?.["@effect/platform-node-shared"] ??
-    fail("native fixture needs the pinned shared Node Effect platform");
-  if (nodeSharedVersion !== manifest.peerDependencies?.effect)
-    fail("native fixture must retain the workspace's shared-platform Effect pin");
-  // npm applies overrides only at the consumer root. The platform's prerelease
-  // caret range otherwise admits a later shared platform and a second Effect.
-  const native = initConsumer("native", { "@effect/platform-node-shared": nodeSharedVersion });
-  install(
-    native,
-    [
-      tarball,
-      `@effect/platform-node@${nodePlatformVersion}`,
-      ...compilerPackages,
-      `@types/node@${nodeTypesVersion}`,
-    ],
-    false,
-  );
-  const nativeDependencies = run(
-    "npm",
-    ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
-    native,
-  );
-  writeFileSync(join(packDirectory, "native-dependencies.json"), nativeDependencies);
-  interface DependencyTree {
-    readonly version?: string;
-    readonly dependencies?: Readonly<Record<string, DependencyTree>>;
-  }
-  const checkEffectVersions = (tree: DependencyTree): void => {
-    for (const [name, dependency] of Object.entries(tree.dependencies ?? {})) {
-      if (
-        (name === "effect" ||
-          name === "@effect/platform-node" ||
-          name === "@effect/platform-node-shared") &&
-        dependency.version !== nodeSharedVersion
-      )
-        fail(
-          `isolated native fixture resolved ${name}@${dependency.version}, expected ${nodeSharedVersion}`,
-        );
-      checkEffectVersions(dependency);
+  const nativeArchive = archives.get("native");
+  if (nativeArchive !== undefined) {
+    // npm applies overrides only at the consumer root. The platform's prerelease
+    // caret range otherwise admits a later shared platform and a second Effect.
+    const native = initConsumer("native", { "@effect/platform-node-shared": nodeSharedVersion });
+    install(
+      native,
+      [client, nativeArchive],
+      [
+        `@effect/platform-node@${nodePlatformVersion}`,
+        ...compilerPackages,
+        `@types/node@${nodeTypesVersion}`,
+      ],
+      false,
+    );
+    const nativeDependencies = run(
+      "npm",
+      ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
+      native,
+    );
+    writeFileSync(join(packDirectory, "native-dependencies.json"), nativeDependencies);
+    interface DependencyTree {
+      readonly version?: string;
+      readonly dependencies?: Readonly<Record<string, DependencyTree>>;
     }
-  };
-  checkEffectVersions(JSON.parse(nativeDependencies) as DependencyTree);
-  console.log(`installed-native-effect-stack ${nodeSharedVersion}`);
-  copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
-  const nativeOutput = run(
-    node,
-    ["--experimental-loader", "./resolution-guard.mjs", "native-preflight.mjs"],
-    native,
-    {
-      ...process.env,
-      PACK_CONSUMER_ROOT: native,
-      PACK_DENY_NATIVE: "0",
-      PACK_NATIVE_IDENTITY: JSON.stringify(identities.get(platform)),
-      NODE_PATH: "",
-    },
-  );
-  if (!nativeOutput.includes("native-preflight-ok"))
-    fail("installed native preflight did not complete");
-  checkRuntimeFixtures(native, ["native-preflight.mjs", "resolution-guard.mjs"]);
-  console.log(nativeOutput.trim());
-  typecheck(native, "node-consumer.mts", nodeCompilerOptions, true, stageExamples(native, "node"));
-  releaseConsumer(native);
+    const checkEffectVersions = (tree: DependencyTree): void => {
+      for (const [name, dependency] of Object.entries(tree.dependencies ?? {})) {
+        if (
+          (name === "effect" ||
+            name === "@effect/platform-node" ||
+            name === "@effect/platform-node-shared") &&
+          dependency.version !== nodeSharedVersion
+        )
+          fail(
+            `isolated native fixture resolved ${name}@${dependency.version}, expected ${nodeSharedVersion}`,
+          );
+        checkEffectVersions(dependency);
+      }
+    };
+    checkEffectVersions(JSON.parse(nativeDependencies) as DependencyTree);
+    console.log(`installed-native-effect-stack ${nodeSharedVersion}`);
+    copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
+    const nativeOutput = run(
+      node,
+      ["--experimental-loader", "./resolution-guard.mjs", "native-preflight.mjs"],
+      native,
+      {
+        ...guarded(native, false),
+        PACK_NATIVE_IDENTITY: JSON.stringify(identities.get(platform)),
+      },
+    );
+    if (!nativeOutput.includes("native-preflight-ok"))
+      fail("installed native preflight did not complete");
+    checkRuntimeFixtures(native, ["native-preflight.mjs", "resolution-guard.mjs"]);
+    console.log(nativeOutput.trim());
+    typecheck(
+      native,
+      "native-consumer.mts",
+      nodeCompilerOptions,
+      true,
+      stageExamples(native, "node"),
+    );
+    releaseConsumer(native);
+  }
 
-  console.log(`pack-smoke-ok ${packedManifest.name}@${packedManifest.version}`);
-  console.log(`tarball ${relative(root, tarball)}`);
-  console.log(`exports ${Object.keys(packedManifest.exports ?? {}).length}`);
-  console.log(`native-source ${nativeSource}`);
-  console.log(`tarball-sha256 ${tarballSha256}`);
   const identityPath = join(packDirectory, "package-identity.json");
   writeFileSync(
     identityPath,
     JSON.stringify(
       {
-        name: packedManifest.name,
-        version: packedManifest.version,
-        tarball: pack.filename,
-        sha256: tarballSha256,
+        profile: portableOnly ? "portable" : "full",
         installer,
-        exports: canonicalExports,
-        nativeSourceSha256: nativeSource,
+        effect: effectVersion,
+        packages: Object.fromEntries(
+          [...archives.values()].map((archive) => [
+            archive.manifest.name,
+            {
+              version: archive.manifest.version,
+              tarball: relative(packDirectory, archive.tarball),
+              sha256: archive.sha256,
+              exports: Object.keys(archive.manifest.exports).sort(),
+              files: [...archive.files].sort(),
+              fileSha256: archive.fileSha256,
+            },
+          ]),
+        ),
+        nativeSourceSha256: nativeSource ?? null,
         native: Object.fromEntries(identities),
-        files: [...files].sort(),
-        fileSha256,
       },
       null,
       2,
     ) + "\n",
   );
+  for (const archive of archives.values()) {
+    console.log(
+      `pack-smoke-ok ${archive.manifest.name}@${archive.manifest.version} ${relative(root, archive.tarball)} sha256=${archive.sha256}`,
+    );
+  }
+  if (nativeSource !== undefined) console.log(`native-source ${nativeSource}`);
   if (process.env.GITHUB_OUTPUT !== undefined) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `tarball=${tarball}\nidentity=${identityPath}\n`);
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `directory=${packDirectory}\nidentity=${identityPath}\n`,
+    );
   }
   console.log(`isolated ${keep ? isolated : "removed"}`);
 } finally {

@@ -4,8 +4,10 @@ import { execFileSync } from "node:child_process";
 import { Schema } from "effect";
 import {
   Qualification,
+  qualifiedPackages,
   readBytes,
   reject,
+  releaseVersion,
   repository,
   sha256,
   validatePackageIdentity,
@@ -47,21 +49,20 @@ if (command === "select") {
   const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const sourceTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
   execFileSync("git", ["diff", "--exit-code", "HEAD", "--"], { stdio: "pipe" });
-  if (
-    sourceCommit !== env.GITHUB_SHA ||
-    sha256(readBytes(join(dirname(file), identity.tarball))) !== identity.sha256
-  )
-    reject("CI source or qualified tarball changed");
+  if (sourceCommit !== env.GITHUB_SHA) reject("CI source changed");
+  const archives = qualifiedPackages(identity);
+  for (const entry of archives)
+    if (sha256(readBytes(join(dirname(file), entry.tarball))) !== entry.sha256)
+      reject("A qualified tarball changed");
   const qualification = Schema.decodeUnknownSync(Qualification)({
-    format: "reactor-qualified-ci/v1",
+    format: "reactor-qualified-ci/v2",
     repository,
     sourceCommit,
     sourceTree,
     ciRunId: env.GITHUB_RUN_ID,
     ciRunAttempt: env.GITHUB_RUN_ATTEMPT,
-    name: identity.name,
-    version: identity.version,
-    sha256: identity.sha256,
+    version: releaseVersion(identity),
+    packages: archives,
   });
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, JSON.stringify(qualification, null, 2) + "\n", { flag: "wx" });

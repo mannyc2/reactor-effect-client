@@ -1,0 +1,13 @@
+{
+  "name": "reactor-effect-test-kit",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Runner-agnostic assertion helpers and host fakes shared by the workspace test suites",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

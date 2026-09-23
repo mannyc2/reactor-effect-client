@@ -1,163 +1,90 @@
-# reactor-effect-client
+# reactor-effect
 
-Checked-in [compiled examples](./examples/README.md) cover canonical sessions,
-Node and browser host composition, H3 acceptance evidence, explicit renewal and
-offline simulation. `bun run verify --profile portable` checks architecture and
-separate host source closures, compiles those examples, and executes only the
-unpaid simulation. Final package qualification recompiles the archived examples
-inside isolated installed consumers rather than resolving this workspace.
+An independent Effect SDK for scoped Reactor sessions, H3 provider state, host media, and explicit orchestration, published as three packages from one Bun workspace.
 
-An independent Effect SDK for scoped Reactor sessions, H3 provider state, host media, and explicit orchestration.
+| Package                                        | Purpose                                                                                                   | Runs in                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | Canonical `Client`/`Session`, coordinator, H3 provider, orchestration, simulation, test fixtures, wire    | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks, media conversion, recording                  | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media generations, explicit file upload, staged native binaries | Node                   |
 
-One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. Browser and native entry points select host capabilities. H3 consumes that same session and exposes provider state. Applications opt into the separate orchestration and simulation surfaces when they need scheduling, sequence affinity, or renewal.
+One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
+This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. No SDK version has been published yet: `reactor-effect-client` on npm is a `0.0.0-reserved.0` placeholder, and the [release workflow](./.github/workflows/release.yml) is configuration until a maintainer dispatches it.
 
-Release automation uses a pinned ts-release application to promote CI-qualified
-archives. Preparation and publication are separate manual operations; neither
-rebuilds native libraries or modifies the qualified archive. Maintainer setup
-and recovery are documented in `release-tools/README.md` in the repository.
+## Which package do I install?
 
-## Install
-
-The package name is `reactor-effect-client`. It has a peer dependency on Effect `4.0.0-rc.115` and an optional native FFI dependency on Koffi. This repository has not published a release; install the validated local tarball until a release exists.
+- Every application installs `reactor-effect-client` and Effect `4.0.0-rc.115`. Its modules (`/h3`, `/orchestration`, `/simulation`, `/testing`, `/wire`) are subpaths of one package because they share exactly one dependency set and are portable; splitting them would add installs without isolating anything.
+- A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries the optional Koffi dependency, Node-only code and the staged shared libraries. Portable and browser consumers never download native binaries.
+- The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. They reach the internals they need through the published `reactor-effect-client/host` module; applications never need it.
 
 ```sh
-npm install ./reactor-effect-client-0.2.0.tgz effect@4.0.0-rc.115
+npm install reactor-effect-client effect@4.0.0-rc.115
+npm install reactor-effect-browser                                      # browsers
+npm install reactor-effect-native @effect/platform-node@4.0.0-rc.115    # Node
 ```
-
-The root, H3, orchestration, simulation, testing, wire, and browser imports are portable. Native transport is selected explicitly through `reactor-effect-client/native`; its optional Koffi dependency and shared library are loaded when native preflight runs.
-
-## Session ownership
-
-The root exports the `Client` service and its `make` and `layer` constructors. They require Effect HTTP and crypto services plus a `PeerFactory`. `create` allocates a remote session; `attach` identifies an existing session without taking ownership of its remote lifetime. Both return the same scope-owned `Session` contract, and `session.connect` starts WebRTC. `createConnected` and `attachConnected` combine those steps and clean up a partial acquisition before reporting failure.
-
-Releasing an owned session attempts and independently confirms remote termination. Releasing an attached session closes its local resources and publication claims. `session.close` returns a `CloseReport` that retains local cleanup errors and remote termination uncertainty. Supervisors can inspect that evidence without allocating another owner.
-
-```ts
-import { Effect, Redacted } from "effect";
-import * as Reactor from "reactor-effect-client";
-
-const useSession = Effect.gen(function* () {
-  const client = yield* Reactor.Client;
-  const session = yield* client.create({
-    model: "your-model",
-    jwt: Redacted.make("session-token"),
-  });
-
-  yield* session.connect;
-  return yield* session.current;
-});
-```
-
-The surrounding application supplies the `Client` layer and Effect platform services. Credentials, HTTP policy, scopes, and host transport selection stay visible in composition.
-
-For a Node application using the native transport, install `@effect/platform-node@4.0.0-rc.115` and provide those dependencies around the entire scoped operation:
 
 ```ts
 import { Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
-import * as Native from "reactor-effect-client/native";
+import * as Native from "reactor-effect-native";
 
 const clientLayer = Reactor.layer().pipe(
   Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, Native.layer())),
 );
-
-// useSession is the operation above. Acquiring a real session can be billable;
-// the repository's ordinary verification uses controlled local peers instead.
-const main = Effect.scoped(useSession).pipe(Effect.provide(clientLayer));
 ```
 
-`Native.make(configuration, nativeOptions)` and `Browser.make(configuration)` also construct the canonical factory with their host peer already selected. Constructing a factory makes no allocation. HTTP and crypto services remain explicit, and `nativeOptions.libraryPath` can select a staged native artifact. The root session constructor has no filesystem or path requirement; the separate `Native.uploadFile` helper requires the host file services when used.
+The package READMEs document the session contract, coordinator helpers, H3 provider, orchestration, browser media and the native bridge. The [compiled examples](./examples/README.md) cover canonical sessions, both host compositions, H3 acceptance evidence, explicit renewal and offline simulation.
 
-## Runtime choices
+## Workspace layout
 
-### Browser
-
-`reactor-effect-client/browser` uses built-in `RTCPeerConnection` and browser media tracks. `Browser.media(session)` obtains the negotiated generation; `media.track(name)` acquires a scoped `MediaStreamTrack`, and `media.publish(name, track)` publishes through that generation. The entry point also exports track-to-frame/audio and recording helpers.
-
-### Native
-
-`reactor-effect-client/native` uses the package's Rust `reactor-effect-native` cdylib over pinned `reactor-webrtc`. The bridge owns libwebrtc on a Rust thread and copies callbacks into bounded queues before JavaScript observes them.
-
-Native transport provides:
-
-- STUN/TURN ICE configuration and offerer signaling;
-- reliable ordered binary `control` and `data` channels;
-- transceiver direction and sender bitrate controls;
-- WebRTC statistics;
-- owned decoded BGRA video with Reactor frame metadata;
-- owned interleaved signed 16-bit PCM audio;
-- immediate close fencing plus joined callback quiescence during shutdown.
-
-`Native.media(session)` obtains a decoded-media generation after the session connects. `media.video(name)` emits owned BGRA frames and `media.audio(name)` emits owned interleaved signed 16-bit PCM. Frame IDs and microsecond timestamps use `bigint`. Retaining a frame retains JavaScript-owned bytes, and native media has no browser track handles.
-
-Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams.
-
-The current native backend accepts at most one incoming video and one incoming audio track because pinned `reactor-webrtc` does not expose the remote track MID/identity needed to join several same-kind callbacks to SDP mappings without relying on arrival order. Ambiguous declarations fail before negotiation with `UnsupportedCapability`.
-
-See [`native/README.md`](./native/README.md) for native build details.
-
-## Coordinator helpers
-
-`Coordinator` is a namespace on the root export. `Coordinator.make(configuration)` provides pricing, bounded token minting, session inspection, and termination reports through Effect HTTP services. Constructing this client makes no network request and requires no peer implementation.
-
-## H3 provider
-
-`H3.make(session, options)` consumes an already connected canonical `Session`. It checks the deployment contract and exposes provider state, queue and clip messages, observations, command replies, and locally correlated acceptance evidence. Provider facts remain visible even when another client authored the clip. A command ACK establishes receipt; state changes require the corresponding model evidence.
-
-```ts
-import { Effect } from "effect";
-import type { Session } from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
-
-const enqueueClip = (session: Session) =>
-  Effect.gen(function* () {
-    const provider = yield* H3.make(session);
-    return yield* provider.enqueue({
-      prompt: "A slow camera move through a sunlit garden",
-      seconds: 5,
-    });
-  });
+```text
+packages/client      reactor-effect-client   src/, test/ (Bun), wire/ (proto inputs + generator), notices/
+packages/browser     reactor-effect-browser  src/, test/ (Bun)
+packages/native      reactor-effect-native   src/, test/ (Node/Vitest), rust/ (crate), lib/ (staged binaries), scripts/
+packages/test-kit    private                 runner-agnostic assertion helpers and host fakes shared by the suites
+examples             private                 documentation examples compiled against the built packages
+integration          private                 real Chrome/native WebRTC qualification (Node/Vitest) and its browser bundle
+scripts              workspace tooling       verify profiles, test runner, architecture check, installed-package smoke
 ```
 
-Use a session created with `H3.modelName`. The adapter targets the documented `0.5.5` prompt-and-images subset of `reactor/h3-reference-to-video-turbo-realtime`. Prompt-only requests are supported. Image references accept owned bytes or explicit upload references; H3 itself requires no filesystem or path services. Reference-audio input is unsupported, and FastH3 `startingFrame`/`endingFrame` fields are absent from this contract.
+Every workspace declares exactly the dependencies it uses; `bun install` uses the isolated linker, so an undeclared import fails to resolve instead of leaning on a hoisted copy. Versions shared by several workspaces are pinned once in the root [`package.json`](./package.json) catalog, and sibling packages depend on each other with `workspace:*`; `bun pm pack` rewrites both to exact versions in the published manifests.
 
-The adapter exposes autoplay, flush, playback, reset, and other model controls as explicit operations. Creating it does not change those policies or initiate reconnect. Request `metadata` is a provider string; orchestration keeps its richer application annotation separately.
+## Development
 
-## Orchestration and simulation
+Bun 1.4.2 (declared by `packageManager`), Node.js 22 or newer and CPython 3.13 for the wire generator. Native work additionally needs Rust 1.90 and the toolchain described in the [native README](./packages/native/README.md).
 
-`reactor-effect-client/orchestration` owns opt-in scheduling, sequence routing, renewal, and recovering media. `fromH3` adapts a provider into a physical source, and `make({ open, ...options })` returns a handle with `engine`, `media`, `mediaState`, sequence operations, and joined cleanup reports. The `open` effect supplies each source and its lifetime budget. Application scheduling, pricing, persona, and show policy stay outside the session and H3 layers.
+```sh
+bun install --frozen-lockfile
+bun run verify --profile portable   # generation, format, lint, build, typecheck, architecture, examples, portable tests
+```
 
-`ClipRequest.sameSessionAs` targets the physical session that owns a known clip, including one already ready or playing, while leaving queue position unchanged. `before` requests insertion ahead of a clip still in the generation queue. Source affinity, insertion anchors, continuation, and sequence ownership must agree; missing, conflicting, retired, or recovering ownership fails locally with a `not-submitted` outcome. This keeps a dependent request on its required session during renewal without inventing an insertion point.
+| Command                               | What it does                                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                |
+| `bun run typecheck`                   | Checks every workspace's tests and tooling against the built declarations                           |
+| `bun run test`                        | Portable suites under Bun (`packages/client`, `packages/browser`, `integration` helpers, `scripts`) |
+| `bun run test:native`                 | Node/Vitest tests in `packages/native` against the staged library                                   |
+| `bun run test:integration`            | Real local browser/native session through the public packages                                       |
+| `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                |
+| `bun run check:architecture`          | Compiler-backed layering, host-boundary, dependency and cycle check for every package               |
+| `bun run native:build`                | Builds the Rust bridge for the current host and stages it under `packages/native/lib/`              |
+| `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                       |
 
-`Orchestration.Submission` models an inert prepared operation. Preparation may be interrupted before commit; once execution commits, callers joining or abandoning the result do not replay the dispatch. `CommandFailure.context` distinguishes `not-submitted`, `unknown`, and `replied` outcomes independently of the transport error category.
+`bun run verify` runs the same profiles CI uses (`portable`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged native library can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
 
-`Orchestration.Sequences` owns bounded sequence affinity and explicit member outcomes. Partial admission is represented member-by-member as accepted, rejected, or indeterminate, and a sequence remains bound to one owner until it is sealed/retired and explicitly released.
+## Continuous integration
 
-`reactor-effect-client/simulation` provides `make` and `layerSim` over the same orchestration engine and media contracts. Its source and renderer hooks support unpaid local execution and controlled failures. Reusable fault and image fixtures are available through the separate `reactor-effect-client/testing` entry point.
+The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified library, runs only the JavaScript native and integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the library it qualifies. The package job then installs the three archives into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the three archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
 
-## Package exports
+## Releases
 
-| Export                  | Purpose                                                                                        |
-| ----------------------- | ---------------------------------------------------------------------------------------------- |
-| `reactor-effect-client` | Canonical `Client`, `Session`, `make`/`layer`, errors, `Coordinator`, `Peers`, and `FetchHttp` |
-| `/browser`              | Browser factory, generation-scoped tracks, media conversion, and recording                     |
-| `/native`               | Native factory, decoded-media generations, and explicit file upload                            |
-| `/h3`                   | H3 provider contract, state/queue/clip evidence, controls, and image validation                |
-| `/orchestration`        | Scheduling, renewal, source adaptation, references, submissions, and sequences                 |
-| `/simulation`           | Production simulation source, factory, and Effect service layer                                |
-| `/testing`              | Reusable fault and PNG fixtures                                                                |
-| `/wire`                 | Generated protocol messages and wire encoding/decoding                                         |
-
-These eight paths are the complete public export map. The former module-per-file deep imports are removed. The pack smoke test checks the exact export set, every target and declaration, and relative/external import closure from declared dependencies. It installs the preserved tarball into isolated Node and browser consumers, exercises production simulation, and verifies native preflight against the packaged library identity.
-
-Effect `4.0.0-rc.115` itself references the global `TextDecoderOptions` type in its channel declarations. A strict Node project that deliberately omits DOM types may need to declare that standard interface. The pack check first proves this is the sole upstream diagnostic, then applies a test-only declaration; it does not enable `skipLibCheck` or hide SDK declaration errors.
+Publication is manual and separate from CI. The [release workflow](./.github/workflows/release.yml) never builds the SDK: a `prepare` run adopts the three archives from a successful main CI run, signs Sigstore provenance for each and retains an immutable ts-release candidate; a separate `publish` run promotes that candidate only after an operator enters the exact `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native@<version>` confirmation printed by the preparation. All three packages share one version, and `reactor-effect-client` is published first because the host packages pin it as an exact peer. npm trusted publishing (OIDC) replaces any token, and an `observe` run re-checks registry visibility without publishing. [release-tools/README.md](./release-tools/README.md) documents the npm prerequisites, the procedure and recovery.
 
 ## Qualification evidence
 
-The repository distinguishes tests that have actually run from build recipes and provider claims.
+These records predate the workspace split; their paths and script names refer to the previous single-package layout, and the API contracts they describe are unchanged.
 
 ### Canonical API checks
 
@@ -172,51 +99,14 @@ The following retained September 22 records predate the canonical API migration;
 - macOS arm64 native qualification ran locally on September 22, 2026: 8 Rust native tests, clippy with warnings denied, a release build, and 8 JavaScript native boundary tests passed. The Rust loopback used real local libwebrtc ICE/DTLS/SCTP, ordered binary channels, real video encode/decode, PCM, metadata, stats, direction/bitrate controls, and callback quiescence. A separate compiled test ABI drove the JavaScript `SessionClient` media parser and cancellation bounds.
 - Linux x64 qualification also ran on September 22, 2026, inside an isolated Debian 12 container in a task-owned Lima VM, using Rosetta for x86_64 execution on the arm64 Mac. Rust 1.90.0, Clang 21.1.8, all 8 native Rust tests, clippy with warnings denied, the release build, and all 8 JavaScript ABI/parser/session tests passed. The shared library loaded through the public native entry point in the pinned Node 24.14.1 Bookworm runtime and Bun 1.4.2 with glibc 2.36. This is Linux x64 userspace execution under translation, not qualification on physical x64 hardware.
 - The Linux check reproduced a build-recipe failure with Bookworm's default Clang 14: it cannot compile the pinned WebRTC libc++ headers. The source-build recipes now explicitly select Clang 21. The opt-in installer verified the LLVM signing-key fingerprint and ran successfully in the private Debian container; ordinary native build scripts never install system packages.
-- A real Chrome 153 browser loaded the browser bundle and exchanged exact binary messages over both channels with the SDK browser peer and the native bridge. Browser-generated media decoded natively as changing 160x96 BGRA frames and mono 48 kHz PCM. A separate run through a loopback-only Coturn 4.18.0 fixture proved selected relay-to-relay UDP connectivity, both binary channels, and decoded audio/video. These checks use `scripts/browser-native.sh`; native cleanup failures fail the check.
+- A real Chrome 153 browser loaded the browser bundle and exchanged exact binary messages over both channels with the SDK browser peer and the native bridge. Browser-generated media decoded natively as changing 160x96 BGRA frames and mono 48 kHz PCM. A separate run through a loopback-only Coturn 4.18.0 fixture proved selected relay-to-relay UDP connectivity, both binary channels, and decoded audio/video. These checks use the browser/native runner now under `integration/scripts/`; native cleanup failures fail the check.
 - Local Mac iteration still used Bun 1.4.0 because the task-local Bun 1.4.2 binary stalled before JavaScript execution in that host harness. Linux runtime preflight did execute Bun 1.4.2 successfully. CI pins 1.4.2 explicitly.
 - No paid or hosted Reactor generation was run. The local relay test does not prove hosted TURN credentials, Internet NAT/firewall traversal, or sustained production behavior. Chrome did not originate Reactor's custom frame metadata; that extension remains covered by the native/native loopback, not the browser test. Browser-to-native media was exercised; native-to-browser media publication was not.
 
-## Build from source
-
-The TypeScript workspace uses Bun and TypeScript. Native code requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar/zstd, and the platform link dependencies described in [`native/README.md`](./native/README.md).
-
-```sh
-bun install --frozen-lockfile
-bun run typecheck
-bun run build
-bun run lint
-bun run test:portable
-bun run native:build # Stage if missing or the native source identity changed.
-bun run test:native
-bun run test:integration
-bun run test:pack
-```
-
-The native and integration projects require a staged, source-identified library in `dist/native/<platform>-<arch>`. Build it when absent or when native inputs change. For a native source change, qualify it on a supported host:
-
-```sh
-./scripts/native-build.sh
-./scripts/native-test.sh
-```
-
-`./scripts/native-build.sh` owns release staging. `./scripts/native-test.sh` checks Rust formatting, tests, and clippy, then runs JavaScript tests against the staged library; it never restages that artifact. The isolated Linux x64 qualification recipe requires an explicit Docker context and never changes the caller's active context:
-
-```sh
-DOCKER_CONTEXT=my-context ./scripts/native-linux-x64.sh
-```
-
-Local browser/native qualification uses an existing Chrome/Chromium executable and the staged native library:
-
-```sh
-./scripts/browser-native.sh
-```
-
-Set `BUN_BINARY` or `BROWSER_EXECUTABLE` when the tested executables are not on the default path. The optional local relay fixture is explicit: set `BROWSER_NATIVE_FORCE_RELAY=1` together with `BROWSER_NATIVE_TURN_URL`, `BROWSER_NATIVE_TURN_USERNAME`, and `BROWSER_NATIVE_TURN_PASSWORD`. The runner verifies the selected relay candidates rather than treating candidate gathering as proof. Supply a local test TURN server; this command neither starts a TURN service nor contacts Reactor.
-
 ## Contributing and security
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for repository workflow, validation expectations and third-party notice rules. See [SECURITY.md](./SECURITY.md) for private vulnerability reporting guidance and the project's security boundaries.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workspace workflow, validation expectations and third-party notice rules. See [SECURITY.md](./SECURITY.md) for private vulnerability reporting guidance and the project's security boundaries.
 
 ## License
 
-The package is licensed under Apache-2.0. Third-party and derived-source notices are retained in [NOTICE](./NOTICE) and [`notices/`](./notices/).
+The packages are licensed under Apache-2.0. Third-party and derived-source notices are retained in [NOTICE](./NOTICE) and in each package's `notices/` directory.

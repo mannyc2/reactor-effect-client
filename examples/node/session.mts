@@ -3,7 +3,7 @@ import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
-import * as Native from "reactor-effect-client/native";
+import * as Native from "reactor-effect-native";
 import { inspectSession } from "../portable/session.mjs";
 
 const clientLayer = Reactor.layer().pipe(

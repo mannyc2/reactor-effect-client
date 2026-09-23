@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to `reactor-effect-client`.
+Thanks for contributing to the reactor-effect workspace.
 
 The project is intentionally small and explicit: one session authority, host transports beneath it, and application policy outside the SDK. Changes should preserve that ownership model and should be justified by a real reusable boundary or observed behavior.
 
@@ -9,10 +9,11 @@ The project is intentionally small and explicit: one session authority, host tra
 Required for the TypeScript workspace:
 
 - Bun 1.4.2, as declared by `packageManager`;
-- Node.js 22 or newer for npm/package-consumer checks;
+- Node.js 22 or newer for the Node/Vitest projects and npm package-consumer checks;
+- CPython 3.13 for the wire generator;
 - the checked-in `bun.lock`.
 
-Native development additionally requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [native/README.md](./native/README.md); ordinary build commands never install system packages.
+Native development additionally requires Rust 1.90, Clang 21 on Linux (the platform compiler on macOS), curl, tar with zstd support (or `zstd`), and a SHA-256 tool. `reactor-webrtc-sys` downloads a pinned libwebrtc prebuilt and verifies its published checksum. The explicit Linux dependency installer and supported distributions are documented in [packages/native/README.md](./packages/native/README.md); ordinary build commands never install system packages.
 
 ```sh
 bun install --frozen-lockfile
@@ -20,31 +21,47 @@ bun install --frozen-lockfile
 
 Do not commit credentials, JWTs, API keys, session exports, generated media, native build output, npm tarballs, or local environment files.
 
+## Workspace layout
+
+| Workspace           | Package                  | Role                                                                                       |
+| ------------------- | ------------------------ | ------------------------------------------------------------------------------------------ |
+| `packages/client`   | `reactor-effect-client`  | Portable core: session, coordinator, H3, orchestration, simulation, testing, wire, host    |
+| `packages/browser`  | `reactor-effect-browser` | Browser peer and media over the client's `/host` surface                                   |
+| `packages/native`   | `reactor-effect-native`  | Native peer, Rust crate, staged libraries, Node/Vitest tests                               |
+| `packages/test-kit` | private                  | Runner-agnostic assertion helpers and `FakeTrack`; imports no workspace package            |
+| `examples`          | private                  | Documentation examples compiled against the built packages for both hosts                  |
+| `integration`       | private                  | Real Chrome/native qualification, its browser bundle sources, and their modeled-host tests |
+| `scripts`           | root tooling             | `verify`, `test`, `architecture`, `pack` and the isolated-consumer fixtures                |
+| `release-tools`     | private                  | ts-release application for npm publication; its own lockfile, outside the Bun workspace    |
+
+Dependencies are declared per workspace. The root `package.json` catalog pins every version shared by more than one workspace (Effect, its platform packages, TypeScript, Vitest, types), and workspaces reference them as `catalog:`. Sibling packages are referenced as `workspace:*`; `bun pm pack` rewrites both protocols to exact versions when publishing, and the pack smoke rejects an archive that still carries either. `bun install` uses the isolated linker, so a workspace can import only what it declares.
+
+Root scripts fan out with `bun run --filter`, which runs package scripts in dependency order. Any package script can also be run directly: `bun run --filter reactor-effect-client test`, or `cd packages/client && bun test`.
+
 ## Repository boundaries
 
-- `src/session/` exposes the canonical factory and session contract; `src/session.ts` keeps wire correlation and dispatch/cancellation accounting. Its concrete `_internal/lifecycle.ts`, `remote.ts` and `cleanup.ts` modules own generation/phase admission, allocation evidence and ordered cleanup respectively. `src/coordinator/` owns HTTP allocation/inspection/termination operations.
-- `src/PeerFactory.ts` supplies the transport capability through Effect dependency injection. `src/browser/` and `src/native/` select host peers and expose media bound to one session generation.
+- `packages/client/src/session/` exposes the canonical factory and session contract; `src/session.ts` keeps wire correlation and dispatch/cancellation accounting. Its concrete `_internal/lifecycle.ts`, `remote.ts` and `cleanup.ts` modules own generation/phase admission, allocation evidence and ordered cleanup respectively. `src/coordinator/` owns HTTP allocation/inspection/termination operations.
+- `src/PeerFactory.ts` supplies the transport capability through Effect dependency injection. `src/host.ts` is the only module the host packages may reach into: it exports the peer contract types, media generation accessors, the coordinator client, observation and JSON helpers. Add to it deliberately; every export there is published and pinned by the host packages.
+- `packages/browser` and `packages/native` select host peers and expose media bound to one session generation. They import `reactor-effect-client` and `reactor-effect-client/host` only, never each other. Their build configurations enforce the host: the browser package compiles with DOM types and no Node types, the native package with Node types and no DOM.
 - `src/h3/` consumes the canonical session and owns model schema validation, provider observations, controls, and acceptance evidence. `_internal/contracts.ts` is the command/argument/reply authority and projects deployment shapes from the existing message schemas; `_internal/evidence.ts` owns pure evidence matching, not correlation lifetime. It introduces no implicit playback, flush, reset, reconnect, filesystem, or path policy.
 - `src/orchestration/` owns opt-in routing, scheduling, renewal, and recovering media. `src/Submission.ts` and `src/Sequence.ts` supply its bounded commit and affinity primitives. Keep persona, pricing, and show policy in the application.
-- `src/simulation/` implements an unpaid source behind the production orchestration contract. `src/testing/` exports reusable test utilities; private fixtures remain under `test/`.
+- `src/simulation/` implements an unpaid source behind the production orchestration contract. `src/testing/` exports reusable test utilities; private fixtures remain under each package's `test/`.
 
-The package has exactly eight public exports: the root, `browser`, `native`, `h3`, `orchestration`, `simulation`, `testing`, and `wire`. Directory entry points use `src/<name>/index.ts`; the root and generated wire facade use `src/index.ts` and `src/wire.ts`. Internal file layout does not create additional supported deep imports. Update the corresponding isolated pack consumers whenever a public contract changes.
+`reactor-effect-client` has exactly seven public exports: the root, `h3`, `orchestration`, `simulation`, `testing`, `wire` and `host`. The host packages export their root only. Directory entry points use `src/<name>/index.ts`; the root, wire and host modules use `src/index.ts`, `src/wire.ts` and `src/host.ts`. Internal file layout does not create additional supported deep imports. Update the corresponding isolated pack consumers under `scripts/pack/` whenever a public contract changes.
 
 Prefer concrete modules over generic helper layers. Expected operational failures belong in typed Effect error channels; defects and impossible invariants should remain defects rather than being turned into generic recoverable errors.
 
-`bun run check:architecture` parses source imports with the pinned TypeScript compiler. It rejects upward policy dependencies, host crossings, undeclared dependencies, nonliteral loads, missing/case-mismatched source targets and runtime import cycles. Type-only edges still obey layer boundaries but do not create initialization cycles. The public export map and Effect rc.115 pins are checked as contracts, not inferred from directory discovery.
+`bun run check:architecture` parses each package's source with the pinned TypeScript compiler. Inside `reactor-effect-client` it rejects upward policy dependencies; in every package it rejects undeclared dependencies, Node builtins outside the native package, Bun host imports, nonliteral loads, missing/case-mismatched source targets and runtime import cycles. Type-only edges still obey layer boundaries but do not create initialization cycles. The public export maps, the catalog Effect pin and the `workspace:` protocol between packages are checked as contracts, not inferred from directory discovery. Register a new package in `scripts/architecture.mjs` before adding it to the workspace.
 
-`tsconfig.platform.node.json` checks the native/portable source closure without DOM types; `tsconfig.platform.browser.json` checks browser/portable source without Node types. Both join `bun run typecheck`. Public `/testing` utilities must remain host-neutral too. Its synchronous PNG fixture uses uncompressed stored blocks and portable Base64 rather than Node zlib/Buffer; image content, not compression bytes, is the fixture contract.
+Each package's `tsconfig.build.json` is its host closure; `packages/client/tsconfig.node.json` additionally checks the client without DOM types. Public `/testing` utilities must remain host-neutral. Its synchronous PNG fixture uses uncompressed stored blocks and portable Base64 rather than Node zlib/Buffer; image content, not compression bytes, is the fixture contract.
 
 ## Validation
 
-Use the smallest check that can invalidate your change while iterating, then run the full relevant gate once the inputs are final.
-
-TypeScript/package gate:
+Use the smallest check that can invalidate your change while iterating, then run the full relevant gate once the inputs are final. Dependent workspaces resolve their siblings through built declarations, so `bun run build` precedes `bun run typecheck`, the example and native checks.
 
 ```sh
-bun run typecheck
 bun run build
+bun run typecheck
 bun run lint
 bun run check:architecture
 bun run check:examples
@@ -55,28 +72,30 @@ bun run test:integration
 bun run test:pack
 ```
 
-The pack smoke builds a real npm tarball, installs it into isolated consumers, checks the exact eight exports and declaration/import closure, compiles separate Node-without-DOM and browser-without-Node type consumers, verifies portable imports do not reach Koffi/native code, and exercises simulation plus native preflight from the installed tarball. The archived [examples](./examples/README.md) are emitted and checked again against those installations; only the offline simulation runs. Each run retains its exact tarball, package identity and consumer resolution traces under `.check/pack-*`; preserve a qualified archive when handing off a release candidate. Successfully checked temporary consumer trees are released sequentially unless `KEEP_PACK_TMP=1`; previous delivery directories are never removed.
+`bun run verify --profile portable` is the CI portable gate; `runtime` builds and runs the portable tests only; `native`, `package`, `release` and `full` are described in [scripts/README.md](./scripts/README.md).
 
-The `native` and `integration` projects run through `scripts/test.ts` with Node/Vitest and use staged native libraries. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. `scripts/build.mjs`, browser integration, and pack validation mutate the shared `dist` directory; serialize them in a shared checkout.
+The pack smoke packs each public package with `bun pm pack`, checks the exact export map, declaration/import closure and declared dependencies of every archive, then installs the archives into isolated consumers: a portable Node consumer without optional dependencies, a browser consumer whose bundle runs without the Node `Buffer` global, and a native consumer that verifies the packaged library identity. The [examples](./examples/README.md) are compiled again inside those installations against the published declarations; only the offline simulation runs. Each run retains its archives, package identity and consumer resolution traces under `.check/pack-*`. `bun --no-env-file scripts/pack.ts --portable` runs the client and browser parts on a host without a staged native library. Successfully checked temporary consumer trees are released sequentially unless `KEEP_PACK_TMP=1`; previous delivery directories are never removed.
+
+The native and integration projects run under Node/Vitest through `scripts/test.ts` and use the staged native libraries under `packages/native/lib/`. For TypeScript or fixture changes, reuse those libraries when the embedded source identity, sidecar hash, and current native inputs still match. Native source changes require rebuilding and requalifying the artifact. Package builds, browser integration, and pack validation mutate the packages' `dist` directories; serialize them in a shared checkout.
 
 Native changes:
 
 ```sh
-./scripts/native-build.sh
-./scripts/native-test.sh
+bun run native:build
+bun run native:test
 ```
 
 The build script owns release staging. The test script checks Rust formatting, runs the Rust tests and clippy with warnings denied, then runs the JavaScript native ABI/parser/session-boundary tests against the staged artifact. It never restages a second release library. Finalizer type fixes must preserve cleanup failure: use a failing defect or an asserted cleanup result when an infallible finalizer cannot carry the typed error. Do not discard shutdown errors to make tests compile. For Linux x64 use an explicit existing Docker context:
 
 ```sh
-DOCKER_CONTEXT=my-context ./scripts/native-linux-x64.sh
+DOCKER_CONTEXT=my-context bun run native:linux-x64
 ```
 
 Never start, stop, restart, or switch a developer's Docker daemon/context as part of a repository script.
 
 Provider/live validation is separate evidence. Tests using local fakes can prove SDK ownership and scheduling semantics; they cannot prove hosted model behavior, provider billing, TURN relay behavior, or browser/native interoperability. Do not spend money or run paid generation for routine contributions.
 
-`./scripts/browser-native.sh` exercises a real local Chrome/native connection after the native library has been staged in `dist/native/`. It checks both binary channels, decoded changing video, PCM audio, browser import isolation, and resource cleanup. It does not allocate a Reactor session. `BUN_BINARY` and `BROWSER_EXECUTABLE` select explicitly managed test executables.
+`bun run test:integration` exercises a real local Chrome/native connection after the native library has been staged. It builds the workspace packages, bundles `integration/browser/native-connectivity.ts` for the browser from the installed `reactor-effect-browser` package, checks both binary channels, decoded changing video, PCM audio, browser import isolation, and resource cleanup. It does not allocate a Reactor session. `BUN_BINARY`, `NODE_BINARY` and `BROWSER_EXECUTABLE` select explicitly managed test executables.
 
 For a local TURN fixture, supply `BROWSER_NATIVE_FORCE_RELAY=1` plus `BROWSER_NATIVE_TURN_URL`, `BROWSER_NATIVE_TURN_USERNAME`, and `BROWSER_NATIVE_TURN_PASSWORD`. The test requires selected relay candidates and media delivery; candidate gathering alone cannot pass. Use a loopback-only test server, not hosted credentials. Standard Chrome output does not carry Reactor's custom frame metadata, so retain the native/native metadata test separately.
 
@@ -94,9 +113,9 @@ Avoid adding a dependency when a platform or standard-library primitive already 
 
 1. verify its license is compatible with Apache-2.0 distribution;
 2. retain required copyright, license, patent and NOTICE material;
-3. update `NOTICE` or `notices/` where attribution is required;
-4. make the dependency explicit in `package.json`/Cargo metadata rather than relying on a workspace parent;
-5. extend pack/import-closure validation so a clean consumer cannot accidentally resolve a development dependency.
+3. update the affected package's `NOTICE` and `notices/` where attribution is required, and the root `NOTICE` index;
+4. declare the dependency in the package that imports it, through the catalog when another workspace shares the version, never through a workspace parent;
+5. extend the pack/import-closure validation so a clean consumer cannot accidentally resolve a development dependency.
 
 ## Pull requests
 
@@ -106,10 +125,10 @@ Do not rewrite unrelated dirty work. Do not add release publication, deployment,
 
 ## Maintainer release configuration
 
-`.github/workflows/release.yml` is the only npm publishing workflow. It uses the pinned ts-release 0.4.1 Action and public npm provider. CI qualifies the package once with both native platforms; the manual release workflow only adopts and promotes the exact retained archive. Neither preparation nor publication rebuilds native code, recompiles the SDK, or repacks downloaded bytes.
+`.github/workflows/release.yml` is the only npm publishing workflow. It uses the pinned ts-release 0.4.1 Action and public npm provider with npm trusted publishing and Sigstore provenance. Main CI qualifies the three workspace packages once, with both native platforms, and uploads one flat `npm-package` artifact holding `reactor-effect-client-<version>.tgz`, `reactor-effect-browser-<version>.tgz`, `reactor-effect-native-<version>.tgz`, `package-identity.json` and `qualification.json`; the manual release workflow only adopts and promotes those exact archives. Neither preparation nor publication rebuilds native code, recompiles the SDK, or repacks downloaded bytes. There are no release tags, GitHub releases or GitHub environments: a release is identified by the main CI run that qualified it and the preparation run that retained it.
 
-Use a successful main CI run to create a candidate with `mode=prepare`. Review its immutable Bundle, Plan and package/source identities. A separate `mode=publish` run requires the original successful preparation run ID, original CI run ID, and exact `publish reactor-effect-client@<version>` confirmation. `mode=observe` records fresh observations without publishing. Retain the same candidate and Git CAS journal when recovering uncertain outcomes.
+Use a successful main CI run to create a candidate with `mode=prepare` while `main` still points at that run's commit. Review its immutable Bundle, Plan and package/source identities. A separate `mode=publish` run requires the same CI run ID, the successful preparation run's ID as `candidate_run_id`, and the exact confirmation line printed by the preparation run: `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native@<version>`. All three packages carry that one version. The Plan publishes `reactor-effect-client` first; the browser and native publications depend on it because both pin it as an exact peer. `mode=observe` records fresh observations without publishing, and visibility requires every package to be visible. Retain the same candidate and Git CAS journal when recovering uncertain outcomes; one journal covers the three packages of a version.
 
-The current private-repository application uses an explicitly configured `NPM_TOKEN` Actions secret, TokenAuthorization and NoProvenance. ts-release 0.4.1's Trusted mode requires public-repository provenance, so OIDC/provenance is not claimed here. The manifest reflects that policy. Publication credentials are bound to the expected package and registry, and the GitHub token is bound to this repository's journal. No environment approval or branch-protection enforcement is assumed merely because workflow checks exist.
+Configure npm trusted publishing for each of the three package names against GitHub owner `mannyc2`, repository `reactor-effect-client`, workflow filename `release.yml` and no environment, with direct `npm publish` allowed. The publish job uses OIDC (`id-token: write`); there is no `NPM_TOKEN` or other long-lived npm secret. npm requires a package to exist before its trusted publisher can be configured: `reactor-effect-client` exists as a `0.0.0-reserved.0` placeholder with the trusted publisher bound, while `reactor-effect-browser` and `reactor-effect-native` must each be bootstrapped once through interactive npm authentication (a placeholder version such as `0.0.0-reserved.0`, carrying no SDK code) and then given the same trusted-publisher configuration before a publish run can succeed for them. The repository and packages must be public. Each package's `repository` metadata names this repository and its workspace directory, and each sets `publishConfig.provenance`. The explicit confirmation is an application check, not a substitute for branch protection, reviewer enforcement or account access controls.
 
-The separate `release-tools/` workspace pins its own lockfile and never enters the SDK's runtime dependencies or export map. Install it with `bun install --cwd release-tools --frozen-lockfile --ignore-scripts`, then run `bun run check:release`. See `release-tools/README.md` in the repository for the exact preparation, publication and recovery procedure. Configuration and local tests are not evidence that any npm version has been published.
+The separate `release-tools/` directory pins its own lockfile and never enters the packages' runtime dependencies or export maps. Install it with `bun install --cwd release-tools --frozen-lockfile --ignore-scripts`, then run `bun run check:release`; its tests use fake packages offline. See [release-tools/README.md](./release-tools/README.md) for the exact preparation, publication and recovery procedure. Configuration and local tests are not evidence that any npm version has been published.

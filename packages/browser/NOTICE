@@ -1,0 +1,15 @@
+reactor-effect-browser
+
+This independent SDK is not an official Reactor SDK.
+
+The browser-media implementation incorporates the user-supplied
+reactor-effect-client reference source. Protocol material, the canonical
+session implementation and their upstream notices are distributed with the
+reactor-effect-client package this host depends on.
+
+Transport uses the browser's built-in RTCPeerConnection and media tracks; no
+WebRTC engine is shipped by this package.
+
+Effect is MIT-licensed. The package declares Effect as a peer dependency; its
+license is retained in notices/effect-LICENSE. Development tooling and
+node_modules are excluded from the npm package.

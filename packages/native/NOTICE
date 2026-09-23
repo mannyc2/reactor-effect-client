@@ -1,0 +1,28 @@
+reactor-effect-native
+
+This independent SDK is not an official Reactor SDK.
+
+The native transport is built from the Rust bridge in rust/ against:
+reactor-webrtc, commit bebf63e42624ee440e066b692494dd3229d29ae7 (Apache-2.0).
+It incorporates upstream Google WebRTC binaries and associated third-party code.
+The pinned reactor-webrtc Apache terms are retained in
+notices/reactor-webrtc-LICENSE. Exact macOS arm64 and Linux x64 prebuilt SBOMs,
+plus the pinned WebRTC BSD license and patent grant, are retained under
+notices/reactor-webrtc/. Component-specific third-party redistribution texts
+for every component named by those SBOMs are retained under
+notices/reactor-webrtc/third-party/; its README names the exact pinned source
+revision and retained license/copyright or patent file for each component.
+The Rust crates linked into the native bridge and their selected license texts
+are recorded under notices/native-rust/.
+Native builds pin and verify the upstream binary artifact checksum.
+No reactor-ffi or reactor-core session implementation is included.
+
+Protocol material, the canonical session implementation and their upstream
+notices are distributed with the reactor-effect-client package this host
+depends on.
+
+Effect is MIT-licensed. The package declares Effect as a peer dependency; its
+license is retained in notices/effect-LICENSE. Koffi is an optional dependency
+used only by this native implementation; its installed distribution retains its
+upstream license. Development tooling and node_modules are excluded from the
+npm package.
