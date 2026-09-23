@@ -53,15 +53,15 @@ const videoToWire = (frame: VideoFrame): WireVideo => ({
   frameId: frame.frameId,
   timestampMicros: frame.timestampMicros,
   sequence: frame.sequence,
-  data: frame.data as Uint8Array<ArrayBuffer>,
-  metadata: frame.metadata as Uint8Array<ArrayBuffer>,
+  data: frame.data,
+  metadata: frame.metadata,
 });
 
 const audioToWire = (frame: AudioFrame): WireAudio => ({
   sampleRate: frame.sampleRate,
   channels: frame.channels,
   sequence: frame.sequence,
-  samples: frame.samples as Int16Array<ArrayBuffer>,
+  samples: frame.samples,
 });
 
 const wire = <A>(effect: Effect.Effect<A, ReactorError>): Effect.Effect<A, WireFailure> =>
