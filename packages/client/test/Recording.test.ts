@@ -80,7 +80,7 @@ const origin = (options: { readonly pending?: number; readonly segmentBytes?: nu
   let pending = options.pending ?? 0;
   const client = Http.make((request, url) =>
     Effect.sync(() => {
-      served.push({ url: url.href, authorized: request.headers["authorization"] !== undefined });
+      served.push({ url: url.href, authorized: request.headers.authorization !== undefined });
       const reply = (response: globalThis.Response) => Response.fromWeb(request, response);
       if (url.pathname === "/clips/c.m3u8") {
         if (pending > 0) {
