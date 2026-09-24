@@ -305,13 +305,14 @@ class TwinServer implements Twin {
     throw refuse(404, "not_found", "no such route");
   }
 
+  /** Shaped as the live `GET /pricing`, which lists a model by its bare name. */
   private pricing(): JsonObject {
     const rate = this.options.rate ?? { creditsPerSecond: 5, creditsPerDollar: 3000 };
     return {
       settings: { currency_code: "USD", credits_per_dollar: rate.creditsPerDollar },
       models: [
         {
-          name: H3.modelName,
+          name: H3.modelName.slice(H3.modelName.lastIndexOf("/") + 1),
           rate: { amount_per_sec: rate.creditsPerSecond, unit: "credits", denomination: "second" },
         },
       ],
