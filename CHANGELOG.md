@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-24
+
+H3 reference audio, added to the 0.3.0 API without breaking it. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, the Chrome browser/native WebRTC test on each, and the pack/install smoke of all three archives, and it rehearsed the new hosted `audio` check against the twin. That check has not run against hosted Reactor, so whether the hosted deployment declares `reference_audios` and reports `has_reference_audio` is unverified.
+
 ### Added
 
 - H3 reference audio. `H3.Request.audio` carries up to three audio references, as bytes or existing uploads, sent as the documented `reference_audios`: each 2–15 s of WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM, mono or stereo, at most 25 MiB. The adapter uploads bytes under the MIME type of their container, content-addressed with the images, and refuses before any upload, `not-submitted`, what H3 documents it would refuse: more than three, more than two beside `continueFrom`, audio with neither an image nor `continueFrom`, more than twelve references in all, and bytes that are no documented container, or a WAV or FLAC whose header gives a length outside 2–15 s or more than two channels. `H3.validateAudioReference` validates one once for reuse, and `H3.audioReferenceLimits` and the profile's new optional `audioReferences` state the bounds.
@@ -144,7 +150,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/10b7f1bde515f38a860d670c5875299661193373...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/9ccc88f2c95be65adb7153de2d7d52361eabe706...main
+[0.3.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.1
 [0.3.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0
 [0.3.0-rc.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0-rc.0
 [0.2.0]: https://github.com/mannyc2/reactor-effect-client/tree/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
