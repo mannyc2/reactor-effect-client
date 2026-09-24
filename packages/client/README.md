@@ -174,6 +174,10 @@ The adapter exposes autoplay, flush, playback, reset, and other model controls a
 
 Effect `4.0.0-rc.115` itself references the global `TextDecoderOptions` type in its channel declarations. A strict Node project that deliberately omits DOM types may need to declare that standard interface. The workspace's installed-package check first proves this is the sole upstream diagnostic, then applies a test-only declaration; it does not enable `skipLibCheck` or hide SDK declaration errors.
 
+## Example
+
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples) is an application service written against the orchestration `Engine`, run and tested offline against the simulation on Effect's test clock: gap-free observation, retrying only what `isRetryable` allows, and never resending an enqueue whose outcome is `unknown`. The repository's [other examples](https://github.com/mannyc2/reactor-effect-client/tree/main/examples) include a server that broadcasts one renewing orchestration to many browsers.
+
 ## Development
 
 This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Inside `packages/client`, `bun run test` runs the portable suite under Vitest and `bun run typecheck` checks the source closure both with browser types and with Node types.

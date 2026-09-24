@@ -17,18 +17,19 @@
         "typescript": "catalog:",
       },
     },
-    "examples": {
-      "name": "reactor-effect-examples",
+    "examples/livestream": {
+      "name": "reactor-effect-example-livestream",
       "version": "0.3.0-rc.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
-        "reactor-effect-browser": "workspace:*",
         "reactor-effect-client": "workspace:*",
         "reactor-effect-native": "workspace:*",
       },
       "devDependencies": {
+        "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "integration": {
@@ -60,6 +61,19 @@
         "reactor-effect-client": "workspace:*",
       },
     },
+    "packages/browser/examples": {
+      "name": "reactor-effect-browser-examples",
+      "version": "0.3.0-rc.0",
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "effect": "catalog:",
+        "reactor-effect-browser": "workspace:*",
+        "reactor-effect-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+      },
+    },
     "packages/client": {
       "name": "reactor-effect-client",
       "version": "0.3.0-rc.0",
@@ -74,6 +88,20 @@
       },
       "peerDependencies": {
         "effect": "catalog:",
+      },
+    },
+    "packages/client/examples": {
+      "name": "reactor-effect-client-examples",
+      "version": "0.3.0-rc.0",
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "effect": "catalog:",
+        "reactor-effect-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "packages/native": {
@@ -94,6 +122,21 @@
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
+      },
+    },
+    "packages/native/examples": {
+      "name": "reactor-effect-native-examples",
+      "version": "0.3.0-rc.0",
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "effect": "catalog:",
+        "reactor-effect-client": "workspace:*",
+        "reactor-effect-native": "workspace:*",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "packages/test-kit": {
@@ -438,13 +481,19 @@
 
     "reactor-effect-browser": ["reactor-effect-browser@workspace:packages/browser"],
 
+    "reactor-effect-browser-examples": ["reactor-effect-browser-examples@workspace:packages/browser/examples"],
+
     "reactor-effect-client": ["reactor-effect-client@workspace:packages/client"],
 
-    "reactor-effect-examples": ["reactor-effect-examples@workspace:examples"],
+    "reactor-effect-client-examples": ["reactor-effect-client-examples@workspace:packages/client/examples"],
+
+    "reactor-effect-example-livestream": ["reactor-effect-example-livestream@workspace:examples/livestream"],
 
     "reactor-effect-integration": ["reactor-effect-integration@workspace:integration"],
 
     "reactor-effect-native": ["reactor-effect-native@workspace:packages/native"],
+
+    "reactor-effect-native-examples": ["reactor-effect-native-examples@workspace:packages/native/examples"],
 
     "reactor-effect-test-kit": ["reactor-effect-test-kit@workspace:packages/test-kit"],
 

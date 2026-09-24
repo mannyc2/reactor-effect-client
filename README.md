@@ -35,7 +35,7 @@ const clientLayer = Reactor.layer().pipe(
 );
 ```
 
-The package READMEs document the session contract, coordinator helpers, H3 provider, orchestration, browser media and the native bridge. The [compiled examples](./examples/README.md) cover canonical sessions, both host compositions, H3 acceptance evidence, explicit renewal and offline simulation.
+The package READMEs document the session contract, coordinator helpers, H3 provider, orchestration, browser media and the native bridge. The [examples](./examples/README.md) are four Effect applications, one for each shape an application takes: a server that broadcasts one renewing orchestration to many browsers, a page that runs its own session over WebRTC, a command line that captures one clip's decoded media to MP4, and an application service tested offline against the simulation.
 
 ## Workspace layout
 
@@ -44,16 +44,17 @@ packages/client      reactor-effect-client   src/, test/ (Vitest on Node and Bun
 packages/browser     reactor-effect-browser  src/, test/ (Vitest on Node and Bun)
 packages/native      reactor-effect-native   src/, test/ (Vitest on Node and Bun), rust/ (crate), lib/ (staged binaries), scripts/
 packages/test-kit    private                 runner-agnostic assertion helpers and host fakes shared by the suites
-examples             private                 documentation examples compiled against the built packages
+examples/livestream  private                 the live channel example: one orchestration broadcast to many browsers
+packages/*/examples  private                 each package's own example
 integration          private                 real Chrome/native WebRTC qualification (Node/Vitest) and its browser bundle
-scripts              workspace tooling       verify profiles, test runner, architecture check, installed-package smoke
+scripts              workspace tooling       verify profiles, test runner, architecture check, examples check, installed-package smoke
 ```
 
 Every workspace declares exactly the dependencies it uses; `bun install` uses the isolated linker, so an undeclared import fails to resolve instead of leaning on a hoisted copy. Versions shared by several workspaces are pinned once in the root [`package.json`](./package.json) catalog, and sibling packages depend on each other with `workspace:*`; `bun pm pack` rewrites both to exact versions in the published manifests.
 
 ## Development
 
-Bun 1.4.2 (declared by `packageManager`), Node.js 22 or newer and CPython 3.13 for the wire generator. Native work additionally needs Rust 1.90 and the toolchain described in the [native README](./packages/native/README.md).
+Bun 1.4.2 (declared by `packageManager`), Node.js 22 or newer and CPython 3.13 for the wire generator. The examples' video tests use `ffmpeg` when it is on `PATH` and skip without it; CI installs it. Native work additionally needs Rust 1.90 and the toolchain described in the [native README](./packages/native/README.md).
 
 ```sh
 bun install --frozen-lockfile

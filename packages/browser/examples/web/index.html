@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reactor in the browser</title>
+    <style>
+      body {
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      video {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #000;
+      }
+      form,
+      .controls {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0 4px;
+      }
+      input {
+        flex: 1;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      #log {
+        font:
+          12px/1.6 ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Reactor in the browser</h1>
+    <video id="video" autoplay muted playsinline></video>
+    <audio id="audio"></audio>
+    <div class="controls">
+      <button id="start">Start</button>
+      <button id="sound">Sound on</button>
+      <button id="stop">Stop</button>
+    </div>
+    <form id="form">
+      <input id="prompt" maxlength="2000" placeholder="Describe the next clip" />
+      <button>Send</button>
+    </form>
+    <div id="log"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -7,12 +7,15 @@ linker = "isolated"
 # Bun discovery from the workspace root runs the integration modeled-host tests
 # and the script tests. Every package's suite is a Vitest project that
 # scripts/test.ts runs on Node and on Bun, and *.integration.test.ts runs under
-# Node/Vitest; they and disposable output are excluded.
+# Node/Vitest; they, the examples' Vitest suites (run by check:examples) and
+# disposable output are excluded.
 pathIgnorePatterns = [
   "**/node_modules/**",
   "**/dist/**",
   "**/.check/**",
   "**/*.integration.test.ts",
   "packages/*/test/**",
+  "packages/*/examples/**",
+  "examples/**",
   "release-tools/**",
 ]

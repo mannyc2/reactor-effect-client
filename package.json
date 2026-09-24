@@ -12,7 +12,8 @@
   "workspaces": {
     "packages": [
       "packages/*",
-      "examples",
+      "packages/*/examples",
+      "examples/*",
       "integration"
     ],
     "catalog": {
@@ -52,7 +53,7 @@
     "generate:wire": "bun run --filter reactor-effect-client generate:wire",
     "generate:check": "bun run --filter reactor-effect-client generate:check",
     "check:architecture": "node scripts/architecture.mjs",
-    "check:examples": "bun run --filter reactor-effect-examples check",
+    "check:examples": "bun --no-env-file scripts/examples.ts",
     "test": "bun --no-env-file scripts/test.ts portable",
     "test:portable": "bun --no-env-file scripts/test.ts portable",
     "test:native": "bun --no-env-file scripts/test.ts native",

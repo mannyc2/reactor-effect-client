@@ -70,7 +70,32 @@ interface NativeIdentity {
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const fixtureRoot = join(root, "scripts", "pack");
-const examplesRoot = join(root, "examples");
+/**
+ * The example sources each isolated consumer compiles, by what it installs.
+ * Every consumer compiles the portable Rundown; the browser consumer adds the
+ * page, and the native consumer, which installs @effect/platform-node, every
+ * Node program. Example tests are left out: they need Vitest.
+ */
+const exampleSources = {
+  portable: ["packages/client/examples/src/Rundown.ts"],
+  browser: [
+    "packages/client/examples/src/Rundown.ts",
+    "packages/browser/examples/src/Api.ts",
+    "packages/browser/examples/src/WebCrypto.ts",
+    "packages/browser/examples/src/app.ts",
+  ],
+  node: [
+    "packages/client/examples/src/Rundown.ts",
+    "packages/client/examples/src/main.ts",
+    "packages/browser/examples/src/Api.ts",
+    "packages/browser/examples/src/server.ts",
+    "packages/native/examples/src/Recording.ts",
+    "packages/native/examples/src/capture.ts",
+    ...readdirSync(join(root, "examples/livestream/src"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `examples/livestream/src/${name}`),
+  ],
+} as const;
 const portableOnly = process.argv.includes("--portable");
 for (const arg of process.argv.slice(2))
   if (arg !== "--portable") throw new Error(`unknown pack argument: ${arg}; use --portable`);
@@ -392,24 +417,15 @@ for (const archive of archives.values()) {
 const isolated = mkdtempSync(join(tmpdir(), "reactor-effect-pack-"));
 const fixture = (name: string): string => join(fixtureRoot, name);
 
-// Compile the workspace's documentation examples against the installed packages,
-// never against workspace source. All portable examples participate in every
-// profile; host examples are explicit.
-const stageExamples = (directory: string, host?: "node" | "browser"): readonly string[] => {
-  const profiles = host === undefined ? ["portable"] : ["portable", host];
-  const paths = profiles
-    .flatMap((profile) =>
-      readdirSync(join(examplesRoot, profile))
-        .filter((name) => name.endsWith(".mts"))
-        .map((name) => `examples/${profile}/${name}`),
-    )
-    .sort();
-  if (
-    !paths.includes("examples/portable/simulation.mts") ||
-    (host !== undefined && !paths.includes(`examples/${host}/session.mts`))
-  )
-    fail(`workspace lacks the ${host ?? "portable"} documentation examples`);
+// Compile the workspace's examples against the installed packages, never
+// against workspace source, keeping each example's own relative imports.
+const stageExamples = (
+  directory: string,
+  profile: keyof typeof exampleSources,
+): readonly string[] => {
+  const paths = [...exampleSources[profile]].sort();
   for (const path of paths) {
+    if (!existsSync(join(root, path))) fail(`workspace lacks the example source ${path}`);
     const destination = join(directory, path);
     mkdirSync(dirname(destination), { recursive: true });
     copyFileSync(join(root, path), destination);
@@ -526,9 +542,10 @@ const typecheck = (
     );
   writeConfig();
 
+  // Plain diagnostics, whatever FORCE_COLOR says, so the exception below can be recognized.
   const bare = execute(
     node,
-    ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"],
+    ["node_modules/typescript/bin/tsc", "--noEmit", "--pretty", "false", "-p", "tsconfig.json"],
     directory,
   );
   if (bare.error !== undefined) throw bare.error;
@@ -576,11 +593,19 @@ const typecheck = (
       directory,
     );
     for (const path of examples) {
-      if (!existsSync(join(directory, "compiled-examples", path.replace(/\.mts$/, ".mjs"))))
-        fail(`documentation example was not emitted: ${path}`);
+      if (!existsSync(join(directory, "compiled-examples", path.replace(/\.ts$/, ".js"))))
+        fail(`example was not emitted: ${path}`);
     }
     console.log(`installed-examples-compiled ${relative(isolated, directory)} ${examples.length}`);
   }
+};
+
+/** The examples import `.ts` files, as Node's type stripping runs them; emit rewrites them. */
+const exampleCompilerOptions = {
+  allowImportingTsExtensions: true,
+  rewriteRelativeImportExtensions: true,
+  erasableSyntaxOnly: true,
+  verbatimModuleSyntax: true,
 };
 
 const nodeCompilerOptions = {
@@ -594,6 +619,7 @@ const nodeCompilerOptions = {
   noUncheckedIndexedAccess: true,
   types: ["node"],
   typeRoots: ["./node_modules/@types"],
+  ...exampleCompilerOptions,
 };
 
 const checkRuntimeFixtures = (directory: string, names: readonly string[]): void => {
@@ -605,6 +631,7 @@ const checkRuntimeFixtures = (directory: string, names: readonly string[]): void
       "--allowJs",
       "--checkJs",
       "--noEmit",
+      "--allowImportingTsExtensions",
       "--target",
       "ES2022",
       "--module",
@@ -660,19 +687,25 @@ try {
     "simulation-smoke.mjs",
     "resolution-guard.mjs",
   ]);
-  typecheck(portable, "node-consumer.mts", nodeCompilerOptions, true, stageExamples(portable));
-  copyFileSync(
-    join(examplesRoot, "check", "simulation-smoke.mjs"),
-    join(portable, "example-smoke.mjs"),
+  typecheck(
+    portable,
+    "node-consumer.mts",
+    nodeCompilerOptions,
+    true,
+    stageExamples(portable, "portable"),
   );
-  const simulationExample = join(portable, "compiled-examples/examples/portable/simulation.mjs");
+  copyFileSync(fixture("rundown-smoke.mjs"), join(portable, "example-smoke.mjs"));
+  const rundownExample = join(
+    portable,
+    "compiled-examples/packages/client/examples/src/Rundown.js",
+  );
   for (const [runtime, command, args] of [
     ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
     ["Bun", bun, ["--no-env-file"]],
   ] as const) {
     const output = run(
       command,
-      [...args, "example-smoke.mjs", simulationExample],
+      [...args, "example-smoke.mjs", rundownExample],
       portable,
       guarded(portable, true),
     );
@@ -731,6 +764,7 @@ try {
       exactOptionalPropertyTypes: true,
       noUncheckedIndexedAccess: true,
       types: [],
+      ...exampleCompilerOptions,
     },
     false,
     stageExamples(browser, "browser"),
