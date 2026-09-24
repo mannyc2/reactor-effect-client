@@ -4,7 +4,7 @@ import { ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
-import { run, runFlowing } from "./Clock.js";
+import { runFlowing } from "./Clock.js";
 
 const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 const observed = (provider: H3.Provider, revision: bigint) =>
@@ -18,7 +18,7 @@ const failure = <A>(result: Result.Result<A, CommandFailure>): CommandFailure =>
 };
 
 test("matching submission fields still require the exact captured prompt and metadata bytes", () =>
-  run(
+  runFlowing(
     Effect.gen(function* () {
       const fake = yield* fixture({
         command: {

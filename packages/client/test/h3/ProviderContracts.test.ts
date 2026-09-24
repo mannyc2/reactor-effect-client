@@ -9,7 +9,7 @@ import type { CommandFailure, CommandReply } from "../../src/session/index.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 import { fixture, fixtureClip } from "./ProviderSession.js";
 import type { Fixture, WireMessage } from "./ProviderSession.js";
-import { run } from "./Clock.js";
+import { run, runFlowing } from "./Clock.js";
 
 const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 
@@ -267,7 +267,7 @@ const namedCases = (fake: Fixture): readonly NamedCase[] => {
 describe("H3 command consumers use the admitted reply identity", () => {
   for (const command of namedCases(Effect.runSync(fixture())))
     test(`${command.command} keeps its arguments, named result, ACK and malformed outcomes`, () =>
-      run(
+      runFlowing(
         Effect.gen(function* () {
           for (const mode of ["body", "ack", "other", "malformed"] as const)
             yield* Effect.scoped(
@@ -331,7 +331,7 @@ describe("H3 command consumers use the admitted reply identity", () => {
 
   for (const command of ["play", "stop"] as const)
     test(`${command} accepts ACK or observed messages and preserves malformed/unknown uncertainty`, () =>
-      run(
+      runFlowing(
         Effect.gen(function* () {
           for (const mode of ["ack", "body", "unknown", "malformed"] as const) {
             const fake = yield* fixture({

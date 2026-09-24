@@ -180,6 +180,13 @@ export interface PrepareHooks<E extends PolicyFailure = never> {
  * observation of its returned envelope, 15 seconds by default; `uploadTimeout`
  * bounds each reference upload, 60 seconds by default. Both are at most 10
  * minutes, and a bare number is milliseconds.
+ *
+ * H3 replies to a command before it broadcasts the state and queue the command
+ * changed. A command that needs the provider's current facts therefore waits,
+ * up to `replyTimeout` each time, for a synchronizing provider to become ready
+ * before it sends (it is refused with `InvalidState`, not submitted, if the
+ * provider does not), and after its reply for the broadcasts the reply implies,
+ * so its caller reads its own effects. `getState` and `getQueue` never wait.
  */
 export interface Options extends ReplyTimeoutOptions, UploadTimeoutOptions {
   /**

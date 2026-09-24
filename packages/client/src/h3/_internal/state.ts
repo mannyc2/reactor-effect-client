@@ -69,8 +69,14 @@ export class ProviderState {
   /**
    * Availability is derived, never stored: a cause makes the provider
    * unavailable, and otherwise it is ready exactly when its state and queue
-   * are coherent.
+   * are coherent. It is the snapshot's tag, read without building the snapshot.
    */
+  get availability(): ProviderSnapshot["_tag"] {
+    if (this.cause !== undefined) return "Unavailable";
+    return this.coherent() ? "Ready" : "Synchronizing";
+  }
+
+  /** The provider's facts, tagged with their `availability`. */
   snapshot(): ProviderSnapshot {
     const base = {
       sessionId: this.sessionId,

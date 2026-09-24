@@ -192,6 +192,15 @@ const build = (
     >();
     const uploads = new Map<string, UploadReference>();
     const uploadGate = yield* Semaphore.make(1);
+    // Callers waiting for the provider to synchronize; every applied event and
+    // any failure wakes them to look again. A woken caller may wait again at
+    // once, so the set is emptied before any waiter is released.
+    const synchronizing = new Set<Deferred.Deferred<void>>();
+    const wake = (): void => {
+      const waiters = [...synchronizing];
+      synchronizing.clear();
+      for (const waiter of waiters) Deferred.doneUnsafe(waiter, Effect.void);
+    };
 
     const emit = (event: ProviderEvent): void => events.emit(event, sizeOf(event));
     const fail = (error: ReactorError): void => {
@@ -203,6 +212,7 @@ const build = (
       for (const waiter of observedWaiters.values())
         Deferred.doneUnsafe(waiter, Effect.fail(error));
       emit({ _tag: "Diagnostic", error });
+      wake();
     };
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -340,7 +350,12 @@ const build = (
       }
     };
     yield* observation.events.pipe(
-      Stream.runForEach((source) => Effect.sync(() => reduce(source))),
+      Stream.runForEach((source) =>
+        Effect.sync(() => {
+          reduce(source);
+          wake();
+        }),
+      ),
       Effect.catch((error) => Effect.sync(() => fail(error))),
       Effect.andThen(
         Effect.sync(() => {
@@ -350,19 +365,43 @@ const build = (
       Effect.forkScoped,
     );
 
+    const refusal = (needsFacts: boolean): ReactorError | undefined =>
+      closed
+        ? ReactorError.fromCode("Closed", "H3 provider scope is closed")
+        : (fatalError ??
+          (needsFacts && state.availability !== "Ready"
+            ? ReactorError.fromCode(
+                "InvalidState",
+                "H3 provider needs current state and queue observations",
+              )
+            : undefined));
+    /**
+     * H3 replies to a command before it broadcasts the state and queue the
+     * command changed, so the provider is briefly synchronizing after every
+     * reply. A command that needs current facts waits, within its own reply
+     * deadline, for those broadcasts; it is refused, not submitted, only if
+     * they do not come or the provider fails.
+     */
+    const synchronized = Effect.gen(function* () {
+      while (!closed && fatalError === undefined && state.availability === "Synchronizing") {
+        const waiter = Deferred.makeUnsafe<void>();
+        synchronizing.add(waiter);
+        yield* Deferred.await(waiter).pipe(
+          Effect.ensuring(Effect.sync(() => synchronizing.delete(waiter))),
+        );
+      }
+    });
+    /** Wait, within one reply deadline, while the provider is only synchronizing. */
+    const settled = Effect.suspend(() =>
+      refusal(false) === undefined && state.availability === "Synchronizing"
+        ? synchronized.pipe(Effect.timeout(limits.command), Effect.ignore)
+        : Effect.void,
+    );
     const active = (operation: string, needsFacts: boolean): Effect.Effect<void, CommandFailure> =>
-      Effect.suspend(() => {
-        const current = state.snapshot();
-        const error = closed
-          ? ReactorError.fromCode("Closed", "H3 provider scope is closed")
-          : (fatalError ??
-            (needsFacts && current._tag !== "Ready"
-              ? ReactorError.fromCode(
-                  "InvalidState",
-                  "H3 provider needs current state and queue observations",
-                )
-              : undefined));
-        return error === undefined ? Effect.void : Effect.fail(localFailure(operation, error));
+      Effect.gen(function* () {
+        if (needsFacts) yield* settled;
+        const error = refusal(needsFacts);
+        if (error !== undefined) return yield* localFailure(operation, error);
       });
     const awaitObservation = (
       source: CommandReply,
@@ -418,8 +457,11 @@ const build = (
       return call(operation, args, needsFacts).pipe(
         Effect.flatMap(({ source, message }) =>
           message?.type === expected
-            ? Effect.succeed(
-                Object.freeze({ value: message.data as Payload<ReplyType<K>>, source }),
+            ? // The broadcasts a reply implies follow it: the command settles once
+              // they are observed, so its caller reads its own effects. The state
+              // and queue reads are themselves that barrier and do not wait.
+              (needsFacts ? settled : Effect.void).pipe(
+                Effect.as(Object.freeze({ value: message.data as Payload<ReplyType<K>>, source })),
               )
             : Effect.fail(
                 uncertain(operation, source, `H3 ${operation} did not return ${expected}`),
@@ -458,7 +500,9 @@ const build = (
           source.kind === "ack"
             ? Effect.succeed<ControlResult>(Object.freeze({ _tag: "Acknowledged", source }))
             : message !== undefined && message.type !== "unknown"
-              ? Effect.succeed<ControlResult>(Object.freeze({ _tag: "Reply", message, source }))
+              ? settled.pipe(
+                  Effect.as<ControlResult>(Object.freeze({ _tag: "Reply", message, source })),
+                )
               : Effect.fail(uncertain(operation, source, "Unexpected H3 control response")),
         ),
       );
@@ -635,7 +679,7 @@ const build = (
                 Result.isFailure(observed) ? observed.failure : undefined,
               );
             }
-            return yield* Deferred.await(entry.deferred).pipe(
+            const acceptance = yield* Deferred.await(entry.deferred).pipe(
               Effect.timeoutOrElse({
                 duration: limits.reconcile,
                 orElse: () => Effect.fail(original),
@@ -643,6 +687,10 @@ const build = (
               Effect.mapError(() => original),
               Effect.withSpan("reactor.h3.reconcile", {}, { captureStackTrace: false }),
             );
+            // Like every command, an enqueue settles once the snapshots its reply
+            // implies are observed, so its caller finds the clip in the queue.
+            yield* settled;
+            return acceptance;
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {

@@ -537,8 +537,40 @@ describe("H3 command and observation authority", () => {
       }),
     ));
 
-  test("an ACK followed by a body with the same request id is accepted exactly once", () =>
+  test("replies before their broadcasts, as H3 sends them: commands settle on their own effects", () =>
     run(
+      Effect.gen(function* () {
+        const { fake, provider } = yield* setup();
+        // Back to back, each enqueue returns once its clip is in the queue snapshot,
+        // so the next one never finds the provider synchronizing.
+        const first = yield* provider.enqueue(request({ prompt: "First." }));
+        expect(ready(yield* provider.current).queue.generation.map((clip) => clip.clip_id)).toEqual(
+          [first.clip.clip_id],
+        );
+        const second = yield* provider.enqueue(request({ prompt: "Second." }));
+        expect(ready(yield* provider.current).queue.generation.map((clip) => clip.clip_id)).toEqual(
+          [first.clip.clip_id, second.clip.clip_id],
+        );
+        // A setting reads back at once, and a command issued while the provider
+        // is still synchronizing waits for it instead of being refused.
+        yield* provider.setAutoplay(true);
+        expect(ready(yield* provider.current).state.autoplay).toBe(true);
+        const [third, fourth] = yield* Effect.all(
+          [
+            provider.enqueue(request({ prompt: "Third." })),
+            provider.enqueue(request({ prompt: "Fourth." })),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(ready(yield* provider.current).queue.generation.map((clip) => clip.clip_id)).toEqual(
+          expect.arrayContaining([third.clip.clip_id, fourth.clip.clip_id]),
+        );
+        expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(4);
+      }),
+    ));
+
+  test("an ACK followed by a body with the same request id is accepted exactly once", () =>
+    runFlowing(
       Effect.gen(function* () {
         let pendingClip: ReturnType<typeof fixtureClip> | undefined;
         let commandId = "";
@@ -701,7 +733,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("late metadata evidence can prove acceptance after the command loses its result", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
           command: {
@@ -807,7 +839,7 @@ describe("H3 command and observation authority", () => {
 
 describe("H3 full-snapshot freshness and lifecycle", () => {
   test("known acceptance makes stale empty snapshots Synchronizing until the explicit read barrier", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         let accepted: ReturnType<typeof fixtureClip> | undefined,
           failReads = false;
@@ -1030,7 +1062,15 @@ describe("H3 explicit commands", () => {
         const { fake, provider, events } = yield* setup({ initialPlayout: [clip] });
         const played = yield* provider.play();
         expect(played._tag).toBe("Acknowledged");
-        expect(ready(yield* provider.current).state.playing_clip_id).toBe(clip.clip_id);
+        // An ACK implies no snapshot: the playing state arrives in the broadcasts after it.
+        yield* waitFor(() =>
+          provider.current.pipe(
+            Effect.map(
+              (snapshot) =>
+                snapshot._tag === "Ready" && snapshot.state.playing_clip_id === clip.clip_id,
+            ),
+          ),
+        );
         const stopped = yield* provider.stop;
         expect(stopped._tag).toBe("Acknowledged");
         expect(fake.calls.find((call) => call.command === "stop")!.args).toEqual({});
@@ -1040,7 +1080,11 @@ describe("H3 explicit commands", () => {
           "play",
           "stop",
         ]);
-        expect(ready(yield* provider.current).state.playing).toBe(false);
+        yield* waitFor(() =>
+          provider.current.pipe(
+            Effect.map((snapshot) => snapshot._tag === "Ready" && !snapshot.state.playing),
+          ),
+        );
         yield* waitFor(() =>
           Effect.succeed(
             events.some(
@@ -1368,9 +1412,11 @@ describe("H3 preparation, cancellation and bounds", () => {
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
           command: {
-            enqueue: ({ defaults, fake, fail }) =>
+            enqueue: ({ defaults, announced, fake, fail }) =>
               Effect.gen(function* () {
                 yield* defaults;
+                // The model acted and broadcast; only its reply is lost.
+                yield* announced;
                 yield* Effect.sleep(5);
                 yield* fake.failObservation(
                   ReactorError.fromCode("Closed", "fixture source ended"),

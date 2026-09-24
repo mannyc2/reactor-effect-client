@@ -68,6 +68,11 @@ export interface ReplyContext {
   readonly fake: Fixture;
   readonly call: Call;
   readonly defaults: Effect.Effect<WireMessage | undefined, CommandFailure>;
+  /**
+   * Send now the broadcasts `defaults` queued to follow the reply, for a
+   * script whose reply is lost after the model acted on the command.
+   */
+  readonly announced: Effect.Effect<void>;
   readonly fail: (
     outcome: "unknown" | "replied" | "not-submitted",
     code?: MessageCode,
@@ -230,8 +235,19 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
     });
     const sendEvent = (event: SessionEvent) => observers.emit(event, 2048);
     const broadcast = (type: string, data: JsonObject) => sendEvent(payload(type, data));
-    const defaults = (call: Call): Effect.Effect<WireMessage | undefined, CommandFailure> =>
+    /**
+     * The model's own behavior. As H3 documents it ("Replies `clip_queued` and
+     * broadcasts `queue_update` and `state_update`"), a command's reply comes
+     * first and the snapshots it changed follow: `announce` queues them in
+     * `later`, which the command sends after its reply.
+     */
+    const defaults = (
+      call: Call,
+      later: (() => void)[],
+    ): Effect.Effect<WireMessage | undefined, CommandFailure> =>
       Effect.sync(() => {
+        const announce = (type: string, data: JsonObject) =>
+          later.push(() => broadcast(type, data));
         const { command, args } = call;
         const known = (clipId: unknown) =>
           [...generationQueue, ...playout, ...history, ...accepted].find(
@@ -269,8 +285,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               0,
               clip,
             );
-            broadcast("queue_update", queue());
-            broadcast("state_update", state());
+            announce("queue_update", queue());
+            announce("state_update", state());
             return { type: "clip_queued", data: { clip: { ...clip } } };
           }
           case "move": {
@@ -282,7 +298,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             const clip = target.splice(index, 1)[0]!;
             const position = Math.min(Number(args.position), target.length);
             target.splice(position, 0, clip);
-            broadcast("queue_update", queue());
+            announce("queue_update", queue());
             return {
               type: "clip_moved",
               data: {
@@ -297,8 +313,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             if (clip === undefined) return denied();
             generationQueue = generationQueue.filter((value) => value.clip_id !== clip.clip_id);
             playout = playout.filter((value) => value.clip_id !== clip.clip_id);
-            broadcast("queue_update", queue());
-            broadcast("state_update", state());
+            announce("queue_update", queue());
+            announce("state_update", state());
             return { type: "clip_popped", data: { clip: { ...clip } } };
           }
           case "play": {
@@ -309,22 +325,22 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             if (clip === undefined || playing !== undefined) return denied();
             playing = clip;
             playout = playout.filter((value) => value.clip_id !== clip.clip_id);
-            broadcast("clip_started", { clip: { ...clip } });
-            broadcast("queue_update", queue());
-            broadcast("state_update", state());
+            announce("clip_started", { clip: { ...clip } });
+            announce("queue_update", queue());
+            announce("state_update", state());
             return undefined;
           }
           case "stop": {
             if (playing === undefined) return denied();
             const clip = playing;
             playing = undefined;
-            broadcast("clip_stopped", { clip: { ...clip }, seconds_sent: 2.5 });
-            broadcast("state_update", state());
+            announce("clip_stopped", { clip: { ...clip }, seconds_sent: 2.5 });
+            announce("state_update", state());
             return undefined;
           }
           case "set_seed":
             seed = Number(args.seed);
-            broadcast("state_update", state());
+            announce("state_update", state());
             return { type: "seed_accepted", data: { seed } };
           case "set_clip_seconds": {
             const frames = Math.min(
@@ -333,23 +349,23 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
                 Math.ceil(Math.max(0, Math.ceil(Number(args.seconds) * 24 - 1e-6) - 124) / 17) * 17,
             );
             duration = frames / 24;
-            broadcast("state_update", state());
+            announce("state_update", state());
             return { type: "clip_length_accepted", data: { frames, clip_seconds: duration } };
           }
           case "set_canvas":
             aspect = textArg(args.aspect);
-            broadcast("state_update", state());
+            announce("state_update", state());
             return {
               type: "canvas_accepted",
               data: { aspect, width: state().width!, height: state().height! },
             };
           case "set_autoplay":
             autoplay = args.enabled === true;
-            broadcast("state_update", state());
+            announce("state_update", state());
             return { type: "autoplay_accepted", data: { enabled: autoplay } };
           case "set_flush_on_clip_end":
             flush = args.enabled === true;
-            broadcast("state_update", state());
+            announce("state_update", state());
             return { type: "flush_accepted", data: { enabled: flush } };
           case "reset": {
             const cleared = generationQueue.length + playout.length,
@@ -363,8 +379,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
             seed = 1000;
             duration = 15;
             aspect = "16:9";
-            broadcast("queue_update", queue());
-            broadcast("state_update", state());
+            announce("queue_update", queue());
+            announce("state_update", state());
             return {
               type: "session_reset",
               data: { cleared_clips: cleared, was_playing: wasPlaying },
@@ -430,9 +446,18 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               requestId: call.requestId,
               generation: call.generation,
             });
+          const later: (() => void)[] = [];
+          const announced = Effect.sync(() => {
+            for (const announce of later.splice(0)) announce();
+          });
           const commandEffect =
-            script.command?.[command]?.({ fake, call, defaults: defaults(call), fail }) ??
-            defaults(call);
+            script.command?.[command]?.({
+              fake,
+              call,
+              defaults: defaults(call, later),
+              announced,
+              fail,
+            }) ?? defaults(call, later);
           const message = yield* commandEffect.pipe(
             Effect.timeoutOrElse({
               duration: options.replyTimeout ?? 1000,
@@ -454,6 +479,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               : payload(message.type, message.data, call.requestId, "matched", call.generation);
           returns.push(result);
           if (!script.omitObservation) sendEvent(result);
+          yield* announced;
           return result;
         }),
       upload: (name, mimeType, bytes, options) =>
