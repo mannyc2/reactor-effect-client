@@ -31,6 +31,10 @@ export type {
   HandleShape,
   HandleEvent,
   HandleObservation,
+  EngineObservation,
+  ObserveEngine,
+  RoutedRequest,
+  EnqueueHooks,
   EngineError,
   RemoveOutcome,
 } from "./types.js";
