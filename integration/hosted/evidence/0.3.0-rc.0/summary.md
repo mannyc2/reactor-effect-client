@@ -88,7 +88,7 @@ The hosted sessions did what the plan asked of them: allocation, connection, a c
 The plan's five open questions:
 
 1. **Whether a token's claims carry its granted limits.** Yes. The preflights and all three runs read a grant of one session of at most 50 s, which is what they asked for.
-2. **How a started minute bills.** Not as a whole minute, as far as the balance shows. The third run took the balance from $6.12 to $6.08, a charge of $0.03 to $0.05 once the rounding to cents is allowed for, where a whole minute would have taken $0.75. That is less than even per-second billing from `ready` would take ($0.11). So one of three things is true: the balance had not caught up 4.5 minutes after the session ended, or Reactor bills less than the time from `ready` to termination, or it bills below its published rate. A later reading tells which ([the dashboard](#the-dashboard)). The billing documentation says billing is "per session-minute" and that the meter starts at `ready`. The live pricing endpoint, though, states H3's rate as 125 credits a `second`. Usage endpoints are "coming soon" ([billing](https://docs.reactor.inc/resources/billing)), so only the dashboard can settle it.
+2. **How a started minute bills.** It does not bill as a whole minute, and it does not bill at the published rate either. The third run took the balance from $6.12 to $6.08, and the balance still read $6.08 18 minutes after the session ended. That is a charge of $0.03 to $0.05 once the rounding to cents is allowed for. A whole minute would have taken $0.75, and 125 credits a second from `ready` to termination would have taken $0.11. What Reactor does bill is a question for Reactor ([the dashboard](#the-dashboard)). The billing documentation says billing is "per session-minute" and that the meter starts at `ready`. The live pricing endpoint states H3's rate as 125 credits a `second`. Usage endpoints are "coming soon" ([billing](https://docs.reactor.inc/resources/billing)). For the plan, a check's worst case of one whole minute ($0.75) is 15 to 25 times what the third check cost.
 3. **What reading an ended session returns to its own token.** A terminal state. All three DELETEs answered 200, and the library's single confirmation read returned `CLOSED`. The trail saw `CLOSED` 0.73 s, 0.76 s and 0.77 s after the request. On this evidence `terminate` needs no confirmation poll.
 4. **Whether an attached connection receives media without `resume_track`.** No; see failure 3.
 5. **Whether H3 matches its documented contract.** Its messages do. In every run each message type was known, with no unknown, duplicate or stale delivery and no diagnostic. The order differs, as failure 2 describes. The deployment does not report the documented version: it calls itself `h3-reference-to-video-turbo-realtime` at version `v0.0.0`, where the library's codec follows the documented 0.5.5. Both go upstream. Reactor's model catalog now lists FastH3 (`fast-h3`), whose schema is this command set plus picture-based enqueues. It no longer lists `h3-reference-to-video-turbo-realtime`, which the pricing endpoint still prices.
@@ -102,17 +102,27 @@ Measured for the-show and the library's defaults:
 
 ## The dashboard
 
-The Sessions page lists the first two sessions as `CLOSED`. The vertical ran 11 s, on cluster `e87af224-…`, which its evidence also names. The takeover ran 20 s, on cluster `5a004973-…`. The takeover never inspects its session, so its evidence names no cluster.
+The Sessions page lists the three sessions as `CLOSED`, with no other session among them:
 
-Those durations are the time from allocation to the DELETE, 11.26 s and 20.51 s, cut to whole seconds. They are not the time from `ready` to the end, which for the first vertical is 8.74 s to 9.24 s. So the dashboard counts a session from its allocation, earlier than the `ready` that the billing documentation names. The estimates count from allocation as well, so they still bill no less than Reactor does.
+- The first vertical ran 11 s, on cluster `e87af224-…`, which its evidence also names.
+- The takeover ran 20 s, on cluster `5a004973-…`. The takeover never inspects its session, so its evidence names no cluster.
+- The third run ran 12 s, on `5a004973-…`.
 
-The page shows no charges. Instead the balance was read before the third run, at $6.12, and at 03:23 UTC, 4.5 minutes after it ended, at $6.08. That session ran 11.51 s from allocation to the DELETE, and 8.75 s of that after `ready`. If each started minute bills whole, it would have cost $0.75. Billed by the second at 125 credits a second, it would have cost $0.11 to $0.14. The balance fell by $0.03 to $0.05, which is 300 to 500 credits, or 2.4 s to 4.0 s at the published rate.
+Those durations follow each session from its creation to its termination. The time from allocation to the DELETE was 11.26 s, 20.51 s and 11.51 s. The server's own start and end fall a little before and after those, because allocation is when `create` returned and the DELETE takes up to half a second. The durations are not the time from `ready` to the end, which was 8.74 s and 8.75 s in the two verticals. So the dashboard counts a session from its creation, earlier than the `ready` that the billing documentation names.
+
+The page shows no charges. Instead the balance was read three times:
+
+- $6.12 before the third run;
+- $6.08 at 03:23 UTC, 4.5 minutes after the run ended;
+- $6.08 again at 03:36 UTC, when the page counted exactly one more session than it had before the run.
+
+That session ran 11.51 s from allocation to the DELETE, 8.75 s of it after `ready`. Charged as a whole minute, it would have cost $0.75. Charged by the second at 125 credits a second, it would have cost $0.11 to $0.14. The balance fell by $0.03 to $0.05, or 300 to 500 credits, which is 2.4 s to 4.0 s at the published rate.
 
 | Run      | Session                                | Cluster                                | Allocated    | DELETE sent  | Dashboard duration | Estimate                    | Charge       |
 | -------- | -------------------------------------- | -------------------------------------- | ------------ | ------------ | ------------------ | --------------------------- | ------------ |
 | 61f5b7fb | `00852b71-b4bb-448e-b1dd-2323d6ac9b63` | `e87af224-6e25-4031-b689-da90664578c9` | 02:40:23.99Z | 02:40:35.25Z | 11 s               | $0.75; by the second, $0.14 | not measured |
 | 8c148d36 | `4635b882-f9a7-4af6-9238-d119eb45d793` | `5a004973-4a49-4f0e-96ac-6cd7637f61eb` | 02:42:33.32Z | 02:42:53.83Z | 20 s               | $0.75; by the second, $0.25 | not measured |
-| 9ded60b5 | `c9754939-43b8-45dd-86b0-bc00507ea2f0` | `5a004973-4a49-4f0e-96ac-6cd7637f61eb` | 03:18:20.49Z | 03:18:32.00Z | not read           | $0.75; by the second, $0.14 | $0.03–0.05   |
+| 9ded60b5 | `c9754939-43b8-45dd-86b0-bc00507ea2f0` | `5a004973-4a49-4f0e-96ac-6cd7637f61eb` | 03:18:20.49Z | 03:18:32.00Z | 12 s               | $0.75; by the second, $0.14 | $0.03–0.05   |
 
 ## The third run
 
