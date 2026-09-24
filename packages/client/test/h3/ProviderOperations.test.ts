@@ -1,14 +1,12 @@
 /** Clip operations: a committed submission's retained facts, bounded and scope-released. */
 import { describe, expect, test } from "vitest";
-import { Crypto, Effect, Exit, Result, Scope } from "effect";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { Effect, Exit, Result, Scope } from "effect";
 import { CommandFailure, ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 import type { Fixture, Script } from "./ProviderSession.js";
+import { run, runFlowing } from "./Clock.js";
 
-const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
-  Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 const request: H3.Request = { prompt: "A blue paper boat on clear water.", seconds: 7 };
 
@@ -114,7 +112,7 @@ describe("H3 clip operations", () => {
     ));
 
   test("an unknown enqueue is attributed by later evidence, and acceptances stay unchanged", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup(unknownEnqueue);
         const submission = yield* provider.prepare(request);
@@ -172,7 +170,7 @@ describe("H3 clip operations", () => {
     ));
 
   test("a table full of unresolved operations refuses a commit before sending it", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup(unknownEnqueue, { maxOperations: 1 });
         const first = yield* provider.prepare(request);
@@ -188,7 +186,7 @@ describe("H3 clip operations", () => {
     ));
 
   test("releasing an operation's scope acknowledges it and frees its slot", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup(unknownEnqueue, { maxOperations: 1 });
         const first = yield* provider.prepare(request);

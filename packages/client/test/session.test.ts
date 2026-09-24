@@ -7,7 +7,17 @@ import type { CloseReport } from "../src/SessionTypes.js";
 import { structFromObject, record } from "../src/json.js";
 import * as W from "../src/wire.generated.js";
 import { withFixture, makeSession, MockPeer, FakeTrack, stall, jsonResponse } from "./fixtures.js";
-import { test, assert, equal, failure, run, eventually } from "./harness.js";
+import {
+  test,
+  assert,
+  equal,
+  failure,
+  run,
+  eventually,
+  testClock,
+  advance,
+  within,
+} from "./harness.js";
 const peerAt = (peers: readonly MockPeer[], index = 0): MockPeer => {
   const p = peers[index];
   assert(p !== undefined, "mock peer missing");
@@ -24,14 +34,14 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
   signal,
 }) =>
   withFixture(async (fixture) => {
+    const clock = await testClock();
     const { session, peers } = makeSession(fixture, { replyTimeout: 20 });
     const release = Deferred.makeUnsafe<void>();
     let cleanup: Promise<CloseReport> | undefined;
-    let finished = false;
     let interrupted = false;
     try {
-      await run(session.start(), { signal });
-      await run(session.publish("input_audio", new FakeTrack("audio")), { signal });
+      await run(session.start(), { signal, clock });
+      await run(session.publish("input_audio", new FakeTrack("audio")), { signal, clock });
       const peer = peerAt(peers);
       const send = peer.send.bind(peer);
       peer.send = (channel, bytes) =>
@@ -45,22 +55,18 @@ test("session cleanup: a stalled publication release cannot prevent remote termi
               ),
             )
           : send(channel, bytes);
-      const closing = run(session.close(), { signal });
+      const closing = run(session.close(), { signal, clock });
       cleanup = closing;
-      void closing.then(() => {
-        finished = true;
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 150));
-      assert(finished, "close deadline inherited an uninterruptible publication wait");
-      const report = await closing;
+      // The release never comes: the close ends on its own reply deadline.
+      const report = await within(clock, closing, 20, 10);
       assert(interrupted, "publication wait was not interrupted");
       assert(report.localErrors.some((error) => error.reason._tag === "Timeout"));
       assert(report.remote.confirmed, "remote cleanup was skipped after publication failure");
-      equal(await run(session.close(), { signal }), report);
+      equal(await run(session.close(), { signal, clock }), report);
     } finally {
       Deferred.doneUnsafe(release, Effect.void);
       if (cleanup !== undefined) await cleanup;
-      else await run(session.close());
+      else await run(session.close(), { clock });
     }
   }));
 
@@ -234,9 +240,10 @@ test("session policy: bodyless control does not ACK; schema validates its correl
   signal,
 }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s, peers } = makeSession(f, { replyTimeout: 10 });
     try {
-      await run(s.start(), { signal });
+      await run(s.start(), { signal, clock });
       const p = peerAt(peers);
       p.autoReply = false;
       p.sendHook = (channel, bytes) => {
@@ -245,13 +252,16 @@ test("session policy: bodyless control does not ACK; schema validates its correl
           p.replyControl({ request_id: m.request_id, kind: 2 });
         }
       };
-      equal((await failure(s.schema(), { signal })).reason._tag, "Timeout");
+      equal(
+        (await within(clock, failure(s.schema(), { signal, clock }), 10)).reason._tag,
+        "Timeout",
+      );
       equal(s.snapshot.pending.control, 1);
       p.autoReply = true;
       p.sendHook = undefined;
-      equal((await run(s.schema(), { signal })).openapi, { openapi: "3.1.0", paths: {} });
+      equal((await run(s.schema(), { signal, clock })).openapi, { openapi: "3.1.0", paths: {} });
     } finally {
-      await run(s.close());
+      await run(s.close(), { clock });
     }
   }));
 test("session policy: readiness waits for connected peer AND BOTH channels, after HTTP answer", () =>
@@ -336,16 +346,20 @@ test("session policy: a closed data channel fails the connection as ChannelClose
   }));
 test("session policy: missing readiness times out and releases the generation", ({ signal }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s, peers } = makeSession(f, { readyTimeout: 10 }, (p) => {
       p.answerHook = () =>
         Effect.sync(() => p.emit({ type: "channel", channel: "data", open: true }));
     });
     try {
-      equal((await failure(s.start(), { signal })).reason._tag, "Timeout");
+      equal(
+        (await within(clock, failure(s.start(), { signal, clock }), 10)).reason._tag,
+        "Timeout",
+      );
       assert(peerAt(peers).closes > 0);
       equal(s.snapshot.status, "disconnected");
     } finally {
-      await run(s.close());
+      await run(s.close(), { clock });
     }
   }));
 test("session policy: reconnect reuses connection with PUT, fails uncertain commands and fences retired callbacks", ({
@@ -391,16 +405,20 @@ test("session policy: late/duplicate model replies are observable, never settle 
   signal,
 }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s, peers } = makeSession(f, { replyTimeout: 10 });
     try {
-      await run(s.start(), { signal });
+      await run(s.start(), { signal, clock });
       const p = peerAt(peers);
       p.autoReply = false;
       const events = Effect.runPromise(
         Effect.result(Stream.runCollect(s.events().pipe(Stream.take(4)))),
       );
       await eventually(() => s.snapshot.subscribers === 1);
-      equal((await failure(s.command("late", {}), { signal })).reason._tag, "Timeout");
+      equal(
+        (await within(clock, failure(s.command("late", {}), { signal, clock }), 10)).reason._tag,
+        "Timeout",
+      );
       const old = dataSent(p)[0];
       assert(old !== undefined);
       p.replyData({
@@ -409,7 +427,7 @@ test("session policy: late/duplicate model replies are observable, never settle 
         payload: { case: "message", value: { type: "late-result" } },
       });
       p.autoReply = true;
-      await run(s.command("matched", {}), { signal });
+      await run(s.command("matched", {}), { signal, clock });
       const matched = dataSent(p)[1];
       assert(matched !== undefined);
       const reply = {
@@ -427,7 +445,7 @@ test("session policy: late/duplicate model replies are observable, never settle 
       );
       equal(s.snapshot.pending.data, 0);
     } finally {
-      await run(s.close());
+      await run(s.close(), { clock });
     }
   }));
 test("session policy: observation overflow fails only the slow subscriber, not correlated replies", ({
@@ -598,10 +616,11 @@ test("session policy: close has a bounded termination request even inside an uni
   signal,
 }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s } = makeSession(f, { requestTimeout: 10 });
-    await run(s.start(), { signal });
+    await run(s.start(), { signal, clock });
     f.hook = (c) => (c.method === "DELETE" ? stall(c.signal) : undefined);
-    const report = await run(s.close(), { signal });
+    const report = await within(clock, run(s.close(), { signal, clock }), 10);
     equal(report.localClosed, true);
     equal(report.remote.confirmed, false);
     equal(report.remote.error?.reason._tag, "Timeout");
@@ -611,14 +630,18 @@ test("session policy: heartbeat is immediate, generation-scoped, and stops after
   signal,
 }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s, peers } = makeSession(f, { heartbeatInterval: 5 });
-    await run(s.start(), { signal });
+    await run(s.start(), { signal, clock });
     const p = peerAt(peers);
     const pings = (): number => controlSent(p).filter((m) => m.payload?.case === "ping").length;
-    await eventually(() => pings() >= 2);
-    await run(s.close(), { signal });
+    await eventually(() => pings() === 1);
+    await advance(clock, 5);
+    await eventually(() => pings() === 2);
+    await run(s.close(), { signal, clock });
     const count = pings();
-    await new Promise<void>((r) => setTimeout(r, 20));
+    // Two hundred heartbeat intervals after close, it has not pinged again.
+    await advance(clock, "1 second");
     equal(pings(), count);
   }));
 test("session policy: upload sequence allocates once, omits credentials on PUT, and reports notification submission only", ({
@@ -915,26 +938,34 @@ test("publication session: stalled native replacement has a deadline and cannot 
   signal,
 }) =>
   withFixture(async (f) => {
+    const clock = await testClock();
     const { session: s, peers } = makeSession(f, { replyTimeout: 35 }),
       source = new FakeTrack("audio");
     try {
-      await run(s.start(), { signal });
+      await run(s.start(), { signal, clock });
       peerAt(peers).replaceHook = () => Effect.never;
-      const error = await failure(
-        s.publish("input_audio", source).pipe(
-          Effect.timeoutOrElse({
-            duration: 200,
-            orElse: () => Effect.fail(ReactorError.fromCode("Protocol", "missing sender deadline")),
-          }),
+      // Both deadlines run on the test clock: the session's own fires first,
+      // at 35 ms; this 200 ms one fails the test only if the session had none.
+      const error = await within(
+        clock,
+        failure(
+          s.publish("input_audio", source).pipe(
+            Effect.timeoutOrElse({
+              duration: 200,
+              orElse: () =>
+                Effect.fail(ReactorError.fromCode("Protocol", "missing sender deadline")),
+            }),
+          ),
+          { signal, clock },
         ),
-        { signal },
+        5,
       );
       equal(error.reason._tag, "Timeout");
       equal(s.snapshot.status, "disconnected");
       equal(source.clones[0]?.readyState, "ended");
       equal(source.readyState, "live");
     } finally {
-      await run(s.close());
+      await run(s.close(), { clock });
     }
   }));
 test("publication session: interruption while claiming sends no media and cannot replay a late accepted claim", ({

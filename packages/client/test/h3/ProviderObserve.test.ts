@@ -4,14 +4,10 @@
  * reducer apply an event, which the snapshot then covers.
  */
 import { describe, expect, test } from "vitest";
-import { Effect, Fiber, Scheduler, Scope, Stream } from "effect";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import type { Crypto } from "effect";
+import { Effect, Fiber, Scheduler, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { fixture } from "./ProviderSession.js";
-
-const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
-  Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
+import { run, waitFor } from "./Clock.js";
 
 const trial = (maxOps: number) =>
   run(
@@ -33,8 +29,10 @@ const trial = (maxOps: number) =>
         Effect.forkScoped,
       );
       // A later acceptance is still delivered: it is never part of a snapshot.
+      // Events arrive in sequence order, so any the snapshot covered would
+      // have arrived before it.
       yield* provider.enqueue({ prompt: "A blue paper boat on clear water.", seconds: 7 });
-      yield* Effect.sleep(20);
+      yield* waitFor(() => Effect.sync(() => seen.some((event) => event._tag === "Acceptance")));
       yield* Fiber.interrupt(reader);
       return { revision: observation.revision, seen };
     }),

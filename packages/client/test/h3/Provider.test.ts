@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Cause, Crypto, Effect, Exit, Fiber, Result, Scope, Stream } from "effect";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { Cause, Effect, Exit, Fiber, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { ReactorError } from "../../src/errors.js";
 import { CommandFailure } from "../../src/session/commands.js";
@@ -9,10 +8,9 @@ import { pngBytes } from "../../src/testing/Png.js";
 import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSession.js";
 import type { Fixture, Script } from "./ProviderSession.js";
 import { at, providerSchema } from "./ProviderSchema.js";
+import { run, runFlowing, waitFor } from "./Clock.js";
 
 const options: H3.Options = { replyTimeout: 80, setupTimeout: 500, reconcileWindow: 30 };
-const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
-  Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const capture = (provider: H3.Provider) =>
   Effect.gen(function* () {
     const observation = yield* provider.observe({ capacity: 1024 });
@@ -33,10 +31,6 @@ const setup = (script: Script = {}, bounds: H3.Options = {}) =>
     const provider = yield* H3.make(fake.session, { ...options, ...bounds });
     return { fake, provider, events: yield* capture(provider) };
   });
-const waitFor = (predicate: () => Effect.Effect<boolean>) =>
-  Effect.gen(function* () {
-    while (!(yield* predicate())) yield* Effect.sleep(1);
-  }).pipe(Effect.timeout(1000));
 const observed = (provider: H3.Provider, sequence: bigint) =>
   waitFor(() => provider.current.pipe(Effect.map((snapshot) => snapshot.revision >= sequence)));
 const ready = (snapshot: H3.ProviderSnapshot) => {
@@ -604,7 +598,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("an ACK alone is unknown and never resubmitted by an inert submission", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
           command: { enqueue: () => Effect.undefined },
@@ -628,7 +622,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("uses explicit command outcomes rather than guessing from failure codes", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
           command: { enqueue: ({ fail }) => Effect.fail(fail("unknown", "InvalidInput")) },
@@ -656,7 +650,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("correlated rejection is replied while a delayed unrelated command_error cannot reject another request", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const direct = yield* setup({
           command: {
@@ -765,7 +759,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("foreign or changed acceptance metadata cannot settle a local enqueue", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { provider, fake, events } = yield* setup({
           command: {
@@ -798,7 +792,7 @@ describe("H3 command and observation authority", () => {
     ));
 
   test("a command result never substitutes for a missing observation", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const fake = yield* fixture({ omitObservation: true });
         const result = yield* Effect.result(
@@ -1224,7 +1218,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     ));
 
   test("a stalled result observer is bounded and cannot replace the exact primary rejection", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { provider, fake } = yield* setup(
           { command: { enqueue: ({ fail }) => Effect.fail(fail("replied", "Remote")) } },
@@ -1296,7 +1290,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     ));
 
   test("cancelling upload prework never dispatches the clip later", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const held = yield* gate;
         const { fake, provider } = yield* setup({
@@ -1370,7 +1364,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     ));
 
   test("a known acceptance stays known when Session observation ends during reconciliation", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup({
           command: {
@@ -1507,7 +1501,7 @@ describe("H3 preparation, cancellation and bounds", () => {
     ));
 
   test("one slow observer fails with Overflow without blocking provider commands or new observers", () =>
-    run(
+    runFlowing(
       Effect.gen(function* () {
         const { fake, provider } = yield* setup();
         const held = yield* gate;
