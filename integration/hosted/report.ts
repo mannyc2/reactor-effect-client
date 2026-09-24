@@ -174,5 +174,5 @@ export const summarize = (runs: readonly Evidence[]): string => {
         `| ${run.runId.slice(0, 8)} | ${run.check} | ${run.mode} | ${run.verdict ?? "unfinished"} | ${run.startedAt} | ${usd(run.budget.worstCaseUsd)} | ${usd(run.budget.estimatedUsd)} |`,
     ),
   ];
-  return [...table, "", ...runs.map(section)].join("\n\n").replaceAll("\n\n\n", "\n\n");
+  return [table.join("\n"), ...runs.map(section)].join("\n\n").replaceAll("\n\n\n", "\n\n");
 };

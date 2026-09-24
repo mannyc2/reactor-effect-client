@@ -59,6 +59,7 @@ import {
   sampleStats,
   since,
   spanRecorder,
+  tallyReply,
   terminationTrail,
 } from "./collect.js";
 import type { Pressure, StatsSample } from "./evidence.js";
@@ -436,6 +437,18 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
         yield* Effect.addFinalizer(() => collected.pipe(Effect.ignore));
         yield* mark(run, "connected");
         const provider = opened.source.provider;
+        // How the data channel answers the commands that follow, before the first is sent.
+        const replies: Record<string, number> = {};
+        yield* session.observe({ capacity: 4096 }).pipe(
+          Effect.flatMap((observation) =>
+            observation.events.pipe(
+              Stream.runForEach((event) => Effect.sync(() => tallyReply(replies, event))),
+              Effect.ignore,
+              Effect.forkScoped,
+            ),
+          ),
+          Effect.ignore,
+        );
         yield* sampleStats(session, run.origin, samples).pipe(Effect.forkScoped);
         yield* provider.events({ capacity: 4096 }).pipe(
           Stream.runForEach((event) => Effect.sync(() => tally.add(event))),
@@ -503,7 +516,12 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
           metadataEchoes: tally.echoes,
         };
         run.evidence.lifecycle = lifecycle;
-        yield* mark(run, "accepted");
+        const proof = acceptance.evidence.source;
+        yield* mark(
+          run,
+          "accepted",
+          `by ${proof.kind === "ack" ? "ack" : proof.type} ${proof.correlation}`,
+        );
         const operation = yield* provider.operation(submission);
         const reached = (phase: "generated" | "started" | "ended") => (fact: H3.ClipFact) =>
           Effect.sync(() => {
@@ -527,7 +545,13 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
         yield* mark(run, "clip started");
         yield* Effect.sleep(Duration.min(Duration.millis(target.windowMs), yield* until(deadline)));
         yield* collected;
-        yield* mark(run, "observed");
+        yield* mark(
+          run,
+          "observed",
+          `replies ${Object.entries(replies)
+            .map(([reply, count]) => `${reply} ${count}`)
+            .join(", ")}`,
+        );
         judge(
           run,
           "correlated acceptance",
