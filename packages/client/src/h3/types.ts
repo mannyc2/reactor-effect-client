@@ -117,13 +117,13 @@ export interface OperationFacts {
 }
 
 /**
- * A committed clip's facts as they arrive. Each resolves at most once, from
- * the provider's own reducer: a phase completes when it or a later one is
- * observed, fails with `ClipEnded` when the clip failed or was popped first,
- * and fails `Indeterminate` if the provider retires before evidence decides it.
- * every fact fails with the enqueue's own failure when that failure was
- * definite. Evidence from a later transport generation of the same session
- * still resolves the operation.
+ * A committed clip's facts as they arrive, each resolved at most once from the
+ * provider's own evidence, and a phase only once the acceptance is decided. A
+ * phase completes when it or a later one is observed, fails with `ClipEnded`
+ * when the clip failed or was popped first, and fails `Indeterminate` if the
+ * provider retires before evidence decides it. Every fact fails with the
+ * enqueue's own failure when that failure was definite. Evidence from a later
+ * transport generation of the same session still resolves the operation.
  */
 export interface ClipOperation {
   readonly submissionId: string;
@@ -181,8 +181,9 @@ export interface PrepareHooks<E extends PolicyFailure = never> {
  * bounds each reference upload, 60 seconds by default. Both are at most 10
  * minutes, and a bare number is milliseconds.
  *
- * H3 replies to a command before it broadcasts the state and queue the command
- * changed. A command that needs the provider's current facts therefore waits,
+ * H3 documents that a command replies before it broadcasts the state and queue
+ * it changed, though hosted H3 broadcasts an enqueue's queue first. A command
+ * that needs the provider's current facts therefore waits,
  * up to `replyTimeout` each time, for a synchronizing provider to become ready
  * before it sends (it is refused with `InvalidState`, not submitted, if the
  * provider does not), and after its reply for the broadcasts the reply implies,

@@ -4,10 +4,15 @@
  * packages/client/test/h3/upstream/h3-schema.md), not from the client adapter.
  * Commands answer on the data channel with their named reply, correlated by
  * request id, before the events they cause; `play` and `stop` answer with a
- * bodyless acknowledgement. Queue and state changes are broadcast as the
- * provider documents, so a client that attaches later reads the same facts.
- * Defaults follow the documentation too: autoplay is off, so a ready clip
- * waits for `play` unless the client turns autoplay on.
+ * bodyless acknowledgement. `enqueue` is the exception, as hosted H3 showed
+ * on September 24, 2026: it broadcasts the queue that lists the new clip
+ * before its `clip_queued` reply, and the twin sends the state with that
+ * queue. Queue and state changes are
+ * broadcast as the provider documents, so a client that attaches later reads
+ * the same facts. Defaults follow the documentation too: autoplay is off, so a
+ * ready clip waits for `play` unless the client turns autoplay on. Each
+ * connection receives no media until it resumes its tracks, as on hosted
+ * Reactor.
  */
 import { randomUUID } from "node:crypto";
 import type { Json, JsonObject } from "reactor-effect-client";
@@ -128,8 +133,13 @@ export class H3Model {
     private readonly faults: ModelFaults = {},
   ) {}
 
-  /** A connection opened: the model broadcasts its full queues and state, as on connect. */
+  /**
+   * A connection opened: the model broadcasts its full queues and state, as on
+   * connect. Its tracks start paused: each connection subscribes on its own.
+   */
   connected(): void {
+    this.paused.clear();
+    for (const track of tracks) this.paused.add(track.name);
     this.broadcast("queue_update", this.queue());
     this.broadcast("state_update", this.state());
   }
@@ -422,8 +432,9 @@ export class H3Model {
       ? Math.min(Math.max(position, first), this.generation.length)
       : this.generation.length;
     this.generation.splice(at, 0, clip);
-    this.reply(id, "clip_queued", { clip: { ...clip } });
+    // Hosted H3's order: the queue that lists the clip comes before the reply.
     this.changedQueues();
+    this.reply(id, "clip_queued", { clip: { ...clip } });
     this.build();
   }
 

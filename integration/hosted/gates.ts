@@ -7,11 +7,12 @@ import * as Data from "effect/Data";
 /**
  * The most one check may spend, and the most every paid run together may
  * spend: one billed minute at the published rate ($0.75 on September 24,
- * 2026), and the three checks of the plan. The operator's own limit, given
+ * 2026), and five runs: the three 0.3.0-rc.0 spent, then the vertical and the
+ * takeover once more with their causes fixed. The operator's own limit, given
  * on the command line, may only be lower.
  */
 export const maxCheckUsd = 0.75;
-export const maxTotalUsd = 2.25;
+export const maxTotalUsd = 3.75;
 /**
  * Reactor bills a session by the minute, from `ready` until it ends. Its
  * documentation does not say how a started minute rounds, so every gate
@@ -142,7 +143,7 @@ export const admitTotal = (
   totalBudgetUsd: number,
 ): number => {
   const before = reserved.reduce((sum, amount) => sum + amount, 0);
-  // A nanodollar of float slack, so three $0.75 runs still fit $2.25.
+  // A nanodollar of float slack, so five $0.75 runs still fit $3.75.
   if (!(before + worstCase <= totalBudgetUsd + 1e-9))
     return refuse(
       `the ledger holds $${before.toFixed(4)} of paid runs; one more of up to $${worstCase.toFixed(4)} exceeds the $${totalBudgetUsd} total`,

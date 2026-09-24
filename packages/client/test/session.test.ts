@@ -612,6 +612,28 @@ test("session policy: attached/pre-registered connection is never deleted and in
     );
     assert(f.calls.some((c) => c.method === "POST" && c.url.pathname.endsWith("/2345/sdp_params")));
   }));
+test("session policy: an attached connection resumes its receive-only tracks, on connect and reconnect", ({
+  signal,
+}) =>
+  withFixture(async (f) => {
+    const { session: s, peers } = makeSession(f, {
+      intent: { _tag: "Attach", sessionId: f.sessionId, connectionId: 2345 },
+    });
+    // Reactor holds a connection's media until that connection resumes it,
+    // so an attach that resumed nothing would receive no frames.
+    const resumed = (peer: MockPeer): string[] =>
+      controlSent(peer).flatMap((m) =>
+        m.payload?.case === "resume_track" ? [m.payload.value.name] : [],
+      );
+    try {
+      await run(s.start(), { signal });
+      equal(resumed(peerAt(peers)), ["main_video", "main_audio"]);
+      await run(s.reconnect(), { signal });
+      equal(resumed(peerAt(peers, 1)), ["main_video", "main_audio"]);
+    } finally {
+      await run(s.close());
+    }
+  }));
 test("session policy: close has a bounded termination request even inside an uninterruptible finalizer", ({
   signal,
 }) =>

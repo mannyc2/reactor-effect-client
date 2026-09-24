@@ -61,6 +61,13 @@ export type EncodedEvent = (typeof Events.Encoded)["events"][number];
 
 const priorities = { host: 2122260223, srflx: 1686052607, prflx: 1845501695, relay: 41885439 };
 
+/** RFC 8445's priority of a pair, with the local side controlling, as the native host reports it. */
+export const pairPriority = (local: Candidate, remote: Candidate): bigint => {
+  const g = BigInt(priorities[local.type]),
+    d = BigInt(priorities[remote.type]);
+  return (1n << 32n) * (g < d ? g : d) + 2n * (g > d ? g : d) + (g > d ? 1n : 0n);
+};
+
 export const candidateLine = (foundation: number, candidate: Candidate): string =>
   `candidate:${foundation} 1 udp ${priorities[candidate.type]} ${candidate.address} ${candidate.port} typ ${candidate.type}`;
 

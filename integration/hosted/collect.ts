@@ -10,7 +10,7 @@ import * as Exit from "effect/Exit";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
-import type { Recorded, Statistics } from "reactor-effect-client";
+import type { Recorded, SessionEvent, Statistics } from "reactor-effect-client";
 import type * as Reactor from "reactor-effect-client";
 import type * as H3 from "reactor-effect-client/h3";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
@@ -343,6 +343,19 @@ export class ContractTally {
       bump(this.echoes, message.type === "unknown" ? message.name : message.type);
   }
 }
+
+/**
+ * Counts how the session answered on its data channel: each reply as an
+ * acknowledgement or by its message type, with how the correlator attributed
+ * it. An enqueue acknowledged before its `clip_queued` shows `ack matched` and
+ * `clip_queued late`; one answered only by a broadcast shows
+ * `clip_queued unsolicited`.
+ */
+export const tallyReply = (counts: Record<string, number>, event: SessionEvent): void => {
+  if (event._tag === "Model")
+    bump(counts, `${event.kind === "ack" ? "ack" : event.type} ${event.correlation}`);
+  else if (event._tag === "CommandError") bump(counts, `command_error ${event.correlation}`);
+};
 
 /**
  * Inspects the session every half second after termination was requested,
