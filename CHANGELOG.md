@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+0.3.0-rc.0 with the three fixes that the hosted qualification found, published to npm's `latest` dist-tag. It breaks the 0.2.0 API: the 0.3.0-rc.0 section below lists every change from 0.2.0, and this section lists those since. The native sources are unchanged since 0.3.0-rc.0 (the same source identity), and `reactor-effect-native` is released with the client as always.
+
+Qualification: on September 24, 2026, the hosted qualification in `integration/hosted` passed its vertical and takeover checks against hosted Reactor, run with Bun 1.4.2 on linux x64 from a checkout of [0255871], the source of this release, with the 0.3.0-rc.0 native library (ABI 4, libwebrtc prebuilt `webrtc-7907-a5ddff60-p9`), from a workstation whose outbound UDP was open. The vertical allocated a session, was ready 2.7 s later, and had its 5 s clip accepted 0.03 s after submission by the correlated `clip_queued` reply; the clip started 2.15 s after acceptance and its first frame came 0.10 s after the start. 124 frames of 1344x768 BGRA arrived at 24.2 fps with none lost, with 48 kHz mono audio, over a direct pair whose local candidate was peer-reflexive; the session's termination was confirmed 0.65 s after its DELETE. The takeover killed the owning process mid-clip: a new process attached 2.69 s later, named the playing clip, found the queued clip's metadata intact, enqueued nothing, received its first frame 0.21 s after attaching, and terminated the session through the durable owner record. The three runs of the published 0.3.0-rc.0 that preceded them failed on the causes fixed below, and every session's termination was confirmed. Main CI qualified these archives as it did 0.3.0-rc.0's. The record, with timings, session ids and the billing reading, is [integration/hosted/evidence/0.3.0-rc.0/summary.md](./integration/hosted/evidence/0.3.0-rc.0/summary.md).
+
 ### Fixed
 
 - An attached connection resumes its receive-only tracks when it connects and whenever it reconnects, as a created one does. Reactor holds each connection's media until that connection resumes its tracks, so an attach received no frames. The hosted qualification's takeover found this on September 24, 2026.
@@ -131,9 +137,11 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
 [unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149...main
+[0.3.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0
 [0.3.0-rc.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0-rc.0
 [0.2.0]: https://github.com/mannyc2/reactor-effect-client/tree/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
 [eb0db13]: https://github.com/mannyc2/reactor-effect-client/commit/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
+[0255871]: https://github.com/mannyc2/reactor-effect-client/commit/0255871b2621102d04d1fd586e4af78a44619c5a
 [c2e6618]: https://github.com/mannyc2/reactor-effect-client/commit/c2e66189d8e6d18782b8a2b5afcc47a9fc9fd8ee
 [3f48e19]: https://github.com/mannyc2/reactor-effect-client/commit/3f48e19a095eee8e9d538390fd4b6dfa8d5431e2
 [6291dc5]: https://github.com/mannyc2/reactor-effect-client/commit/6291dc5ca27ea0111d76a4a22e40d04d64bc4498

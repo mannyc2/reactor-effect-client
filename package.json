@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect",
   "private": true,
-  "version": "0.3.0-rc.0",
+  "version": "0.3.0",
   "description": "Bun workspace for the reactor-effect-client, reactor-effect-browser and reactor-effect-native packages",
   "type": "module",
   "license": "Apache-2.0",

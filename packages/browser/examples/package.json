@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-browser-examples",
-  "version": "0.3.0-rc.0",
+  "version": "0.3.0",
   "private": true,
   "description": "reactor-effect-browser example: a page that runs a Reactor session over the browser's WebRTC, with a token server",
   "type": "module",
