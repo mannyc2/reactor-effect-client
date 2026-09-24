@@ -32,7 +32,12 @@ export const tokenSeconds = sessionSeconds + 60;
  */
 export const workSeconds = sessionSeconds - 10;
 
-export const checks = ["vertical", "takeover", "turn"] as const;
+/**
+ * The checks 0.3.0 was qualified by (`vertical`, `takeover` and `turn`), then
+ * one per capability added since: `audio`, the vertical with a reference image
+ * and a reference audio clip.
+ */
+export const checks = ["vertical", "takeover", "turn", "audio"] as const;
 export type Check = (typeof checks)[number];
 
 export interface Authorization {
@@ -90,7 +95,7 @@ const usd = (value: string | undefined, name: string, most: number): number => {
  */
 export const authorize = (args: readonly string[]): Authorization => {
   const check = args[0];
-  if (!checks.includes(check as Check)) return refuse("name the check: vertical, takeover or turn");
+  if (!checks.includes(check as Check)) return refuse(`name the check: ${checks.join(", ")}`);
   const given = options(
     args.slice(1),
     ["budget-usd", "total-budget-usd", "ledger", "network"],

@@ -31,6 +31,14 @@ Two extra checks are deliberately not planned:
 - A soak check (a whole capped session, to measure pacing drift) would repeat what the vertical measures over six seconds.
 - A cap-backstop check (never terminate, and watch the server end the session at its cap) would spend a full worst case. Its main assurance is already covered: the preflight shows the token grants at most 50 s, and the takeover shows a session outliving its owner and still ending cleanly.
 
+### Checks added after 0.3.0
+
+A capability added after 0.3.0 gets one check of its own, run once, against the published bytes of the release that carries it or from the checkout that adds it. Each release keeps its own ledger, `evidence/<version>/`, under the same limits: at most $0.75 a check. Until its check has run, the capability is qualified only by the tests and the twin.
+
+| Check   | Release | What it adds to the vertical                                                                                                                                                                                                                                                                                              |
+| ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audio` | 0.3.1   | The clip carries a gray reference image and a 3 s tone as its reference audio, because H3 takes audio only beside an image or a continuation. It records whether the deployment declares `reference_audios`, and passes only if the accepted clip reports `has_reference_audio` and one audio reference, as H3 documents. |
+
 ## What we gather, and why
 
 Every item below comes from sessions the checks pay for anyway, so gathering more costs nothing extra. Each item informs a decision.
@@ -120,6 +128,10 @@ bun hosted/qualify.ts takeover --budget-usd=0.75 --total-budget-usd=1.50 \
 # Only if neither run selected a relay pair, from a network that blocks outbound UDP:
 bun hosted/qualify.ts turn --budget-usd=0.75 --total-budget-usd=2.25 \
   --ledger=ledger --network="office, outbound UDP blocked" --i-authorize-paid-sessions
+# A check added after 0.3.0, in its release's own ledger, e.g. 0.3.1's:
+bun hosted/qualify.ts rehearse audio
+bun hosted/qualify.ts audio --budget-usd=0.75 --total-budget-usd=0.75 \
+  --ledger=evidence/0.3.1 --network="home fiber, no VPN" --i-authorize-paid-sessions
 
 bun hosted/qualify.ts summarize ledger > summary.md
 ```

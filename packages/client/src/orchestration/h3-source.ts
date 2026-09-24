@@ -13,7 +13,7 @@ import type * as Http from "effect/unstable/http/HttpClient";
 import { CommandFailure, ReactorError } from "../errors.js";
 import type { Clip as ProviderClip } from "../h3/messages.js";
 import { make as makeProvider } from "../h3/_internal/client.js";
-import { h3ReferenceTurboRealtime } from "../h3/profile.js";
+import { audioReferenceLimits, h3ReferenceTurboRealtime } from "../h3/profile.js";
 import type {
   Options as ProviderOptions,
   Provider,
@@ -352,19 +352,24 @@ export const fromH3 = (
           Scope.Scope
         > = Effect.gen(function* () {
           yield* requireReady("enqueue");
-          const references = yield* Effect.forEach(request.references, ({ uri }) =>
+          const load = (uri: string, maxBytes: number) =>
             loadReferenceBytes(uri, {
-              maxBytes:
-                options.references?.maxBytes ?? h3ReferenceTurboRealtime.references.maxBytes,
+              maxBytes: options.references?.maxBytes ?? maxBytes,
               loadTimeout: options.references?.loadTimeout ?? "5 seconds",
             }).pipe(
               Effect.provideContext(environment),
               Effect.map((bytes) => ({ _tag: "Bytes" as const, bytes })),
-            ),
+            );
+          const references = yield* Effect.forEach(request.references, ({ uri }) =>
+            load(uri, h3ReferenceTurboRealtime.references.maxBytes),
+          );
+          const audio = yield* Effect.forEach(request.audio ?? [], ({ uri }) =>
+            load(uri, audioReferenceLimits.maxBytes),
           );
           return {
             prompt: request.prompt,
             references,
+            ...(audio.length === 0 ? {} : { audio }),
             seconds: request.durationSeconds,
             metadata: JSON.stringify(request.metadata),
             ...(request.seed === undefined ? {} : { seed: request.seed }),

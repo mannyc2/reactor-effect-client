@@ -23,6 +23,7 @@ import * as Reactor from "reactor-effect-client";
 import * as H3 from "reactor-effect-client/h3";
 import { mediaGeneration } from "reactor-effect-client/host";
 import * as Orchestration from "reactor-effect-client/orchestration";
+import * as Testing from "reactor-effect-client/testing";
 import { startTwin, twinPeers } from "../hosted/twin/index.js";
 import type { Twin, TwinOptions } from "../hosted/twin/index.js";
 
@@ -356,6 +357,46 @@ test("a reference image uploads through the twin before its clip is queued", () 
       }),
     );
     expect(acceptance.clip).toMatchObject({ has_reference_image: true, reference_image_count: 1 });
+  }));
+
+test("reference audio uploads through the twin and its clip reports it; audio alone is refused", () =>
+  withTwin(async (twin) => {
+    const image = { _tag: "Bytes" as const, bytes: Testing.pngBytes(64, 48) };
+    const voice = { _tag: "Bytes" as const, bytes: Testing.wavBytes(3) };
+    const { acceptance, contract } = await run(
+      twin,
+      Effect.gen(function* () {
+        const { provider } = yield* open(yield* mint(twin));
+        const submission = yield* provider.prepare({
+          prompt: `${prompt} Audio 1 is the narrator's voice.`,
+          references: [image],
+          audio: [voice],
+        });
+        return { acceptance: yield* submission.submit, contract: provider.contract };
+      }),
+    );
+    expect(contract.referenceAudio).toBe(true);
+    expect(acceptance.clip).toMatchObject({
+      has_reference_image: true,
+      reference_image_count: 1,
+      has_reference_audio: true,
+      reference_audio_count: 1,
+    });
+    // The twin refuses what the client never sends: audio with no image or continuation.
+    const refused = await run(
+      twin,
+      Effect.gen(function* () {
+        const session = (yield* open(yield* mint(twin))).session;
+        const upload = yield* session.upload("voice.wav", "audio/wav", voice.bytes);
+        return yield* session.command("enqueue", {
+          prompt,
+          reference_images: [],
+          reference_audios: [{ ...upload.file, size: Number(upload.file.size) }],
+          metadata: "",
+        });
+      }),
+    );
+    expect(refused).toMatchObject({ kind: "message", type: "command_error" });
   }));
 
 test("a relay twin selects a relay candidate pair", () =>

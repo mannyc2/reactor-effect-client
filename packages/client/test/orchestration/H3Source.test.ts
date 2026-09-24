@@ -12,6 +12,7 @@ import type { MediaGeneration } from "../../src/session/media.js";
 import type { JsonObject } from "../../src/json.js";
 import { ReactorError } from "../../src/errors.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
+import { wavBytes } from "../../src/testing/Wav.js";
 import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
 import type { Script } from "../h3/ProviderSession.js";
 import {
@@ -224,6 +225,30 @@ test("source preparation snapshots metadata, preserves URI order and shares one 
       expect(clip.request?.metadata).toEqual({ nested: { original: true } });
       expect(clip.request?.sequence).toEqual({ id: "sequence", final: true, memberId: "final" });
       expect((yield* source.state).building).toEqual(Option.none());
+    }),
+  ));
+
+test("source preparation loads audio URIs and sends them as reference_audios beside the images", () =>
+  run(
+    Effect.gen(function* () {
+      const { source, fake } = yield* setup();
+      const voice = dataUri(wavBytes(3));
+      const id = yield* (yield* source.prepareRouted({
+        request: request({
+          references: [{ uri: dataUri(pngBytes(32, 32)) }],
+          audio: [{ uri: voice }, { uri: voice }],
+        }),
+        position: undefined,
+      })).submit;
+      expect(fake.uploaded.map((upload) => upload.mimeType)).toEqual(["image/png", "audio/wav"]);
+      const call = fake.calls.find((call) => call.command === "enqueue")!;
+      const audio = call.args.reference_audios as readonly JsonObject[];
+      expect(audio).toHaveLength(2);
+      expect(audio[0]).toEqual(audio[1]);
+      const clip = (yield* source.state).queued.find((clip) => clip.clipId === id)!;
+      expect(clip.provider.has_reference_audio).toBe(true);
+      expect(clip.provider.reference_audio_count).toBe(2);
+      expect(clip.request?.audio).toEqual([{ uri: voice }, { uri: voice }]);
     }),
   ));
 

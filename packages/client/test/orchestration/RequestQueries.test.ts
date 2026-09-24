@@ -1,6 +1,11 @@
 import { expect, test } from "vitest";
 import { Effect, Option, Result } from "effect";
-import { captureRequest, PolicyFailure, preworkFailure } from "../../src/orchestration/request.js";
+import {
+  captureRequest,
+  ClipId,
+  PolicyFailure,
+  preworkFailure,
+} from "../../src/orchestration/request.js";
 import {
   committedMs,
   emptyState,
@@ -65,6 +70,18 @@ test("malformed request objects, accessors and unsupported provider fields fail 
     request({ seed: 1.5 }),
     request({ references: [{ uri: "" }] }),
     request({ references: Array.from({ length: 10 }, () => ({ uri: "fixture" })) }),
+    // Audio needs an image or a continuation, and at most three, or two when continuing.
+    request({ audio: [{ uri: "voice.wav" }] }),
+    request({ references: [{ uri: "host.png" }], audio: [{ uri: "" }] }),
+    request({
+      references: [{ uri: "host.png" }],
+      audio: Array.from({ length: 4 }, () => ({ uri: "voice.wav" })),
+    }),
+    request({
+      continueFrom: ClipId.make("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+      audio: Array.from({ length: 3 }, () => ({ uri: "voice.wav" })),
+    }),
+    { ...request(), audio: "voice.wav" },
   ];
   for (const value of invalid) {
     const result = await Effect.runPromise(Effect.result(captureRequest(value as never)));
@@ -79,6 +96,25 @@ test("malformed request objects, accessors and unsupported provider fields fail 
   // The schema itself admits only finite numbers, so no ClipRequest carries one.
   expect(() => request({ durationSeconds: NaN })).toThrow();
   expect(() => request({ seed: Infinity })).toThrow();
+});
+test("audio is captured with an image or a continuation, detached from the caller", async () => {
+  const audio = [{ uri: "file:///voice.wav" }];
+  const withImage = await Effect.runPromise(
+    captureRequest(request({ references: [{ uri: "host.png" }], audio })),
+  );
+  audio[0]!.uri = "changed";
+  expect(withImage.audio).toEqual([{ uri: "file:///voice.wav" }]);
+  expect(Object.isFrozen(withImage.audio)).toBe(true);
+  const continued = await Effect.runPromise(
+    captureRequest(
+      request({
+        continueFrom: ClipId.make("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        audio: [{ uri: "a.wav" }, { uri: "b.wav" }],
+      }),
+    ),
+  );
+  expect(continued.audio).toHaveLength(2);
+  expect((await Effect.runPromise(captureRequest(request()))).audio).toBeUndefined();
 });
 test("prompt-only input is valid and request prework cannot borrow a command's unknown dispatch outcome", async () => {
   expect((await Effect.runPromise(captureRequest(request()))).references).toEqual([]);

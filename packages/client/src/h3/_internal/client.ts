@@ -32,6 +32,8 @@ import type {
   ProviderEvent,
   Reply,
   Request,
+  ValidatedAudioReference,
+  ValidatedReference,
 } from "../types.js";
 import { Commands } from "./contracts.js";
 import type {
@@ -569,56 +571,75 @@ const build = (
               max: before.state.clip_seconds_max,
             }),
           );
-        const files: UploadReference[] = [];
-        for (const reference of request.references) {
-          const material = referenceMaterial(reference);
-          if (material._tag === "Uploaded") {
-            files.push(material.file);
-            continue;
-          }
-          const digest = yield* crypto
-            .digest("SHA-256", material.bytes)
-            .pipe(
-              Effect.mapError(() =>
-                localFailure(
-                  "enqueue",
-                  ReactorError.fromCode("InvalidState", "Could not hash H3 reference"),
-                ),
-              ),
-            );
-          const key = `${before.transportGeneration}:${hex(digest)}`;
-          const file = yield* uploadGate.withPermit(
-            Effect.gen(function* () {
-              const cached = uploads.get(key);
-              if (cached !== undefined) return cached;
-              const uploaded = yield* session
-                .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, {
-                  uploadTimeout: limits.upload,
-                })
-                .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
-              const file = yield* checked("enqueue", () => checkedUpload(uploaded.file));
-              if (file.size !== BigInt(reference.size) || file.mime_type !== reference.mimeType)
-                return yield* localFailure(
-                  "enqueue",
-                  ReactorError.fromCode("Protocol", "H3 upload returned different file facts"),
-                );
-              if (state.snapshot().transportGeneration !== before.transportGeneration)
-                return yield* localFailure(
-                  "enqueue",
-                  ReactorError.fromCode("Disconnected", "H3 reference upload crossed a generation"),
-                );
-              if (uploads.size >= limits.cache) {
-                const first = uploads.keys().next();
-                if (!first.done) uploads.delete(first.value);
-              }
-              uploads.set(key, file);
-              return file;
-            }),
+        if (request.audio.length > 0 && !contract.referenceAudio)
+          return yield* localFailure(
+            "enqueue",
+            ReactorError.fromCode(
+              "UnsupportedCapability",
+              "The H3 deployment does not declare reference audio",
+            ),
           );
-          files.push(file);
-        }
-        const args = enqueueArguments(request, files, metadata);
+        const files: UploadReference[] = [];
+        for (const reference of request.references)
+          files.push(yield* upload(reference, "image", before.transportGeneration));
+        const audio: UploadReference[] = [];
+        for (const reference of request.audio)
+          audio.push(yield* upload(reference, "audio", before.transportGeneration));
+        const args = enqueueArguments(request, files, audio, metadata);
         return { args, generation: before.transportGeneration };
+      });
+
+    /**
+     * One reference's upload, content-addressed within a transport generation,
+     * so identical bytes upload once however many requests carry them.
+     */
+    const upload = (
+      reference: ValidatedReference | ValidatedAudioReference,
+      kind: "image" | "audio",
+      generation: bigint,
+    ) =>
+      Effect.gen(function* () {
+        const material = referenceMaterial(reference);
+        if (material._tag === "Uploaded") return material.file;
+        const digest = yield* crypto
+          .digest("SHA-256", material.bytes)
+          .pipe(
+            Effect.mapError(() =>
+              localFailure(
+                "enqueue",
+                ReactorError.fromCode("InvalidState", "Could not hash H3 reference"),
+              ),
+            ),
+          );
+        const key = `${generation}:${hex(digest)}`;
+        return yield* uploadGate.withPermit(
+          Effect.gen(function* () {
+            const cached = uploads.get(key);
+            if (cached !== undefined) return cached;
+            const uploaded = yield* session
+              .upload(`h3-${hex(digest)}`, reference.mimeType, material.bytes, {
+                uploadTimeout: limits.upload,
+              })
+              .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
+            const file = yield* checked("enqueue", () => checkedUpload(uploaded.file, kind));
+            if (file.size !== BigInt(reference.size) || file.mime_type !== reference.mimeType)
+              return yield* localFailure(
+                "enqueue",
+                ReactorError.fromCode("Protocol", "H3 upload returned different file facts"),
+              );
+            if (state.snapshot().transportGeneration !== generation)
+              return yield* localFailure(
+                "enqueue",
+                ReactorError.fromCode("Disconnected", "H3 reference upload crossed a generation"),
+              );
+            if (uploads.size >= limits.cache) {
+              const first = uploads.keys().next();
+              if (!first.done) uploads.delete(first.value);
+            }
+            uploads.set(key, file);
+            return file;
+          }),
+        );
       });
 
     const nextId = () =>

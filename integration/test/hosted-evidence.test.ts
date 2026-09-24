@@ -180,6 +180,27 @@ test("audio is required only when the session offered it, and takeover needs its
   ]);
 });
 
+test("the audio check also needs the deployment's declaration and what the clip reports", () => {
+  const audio: Draft = { ...vertical(), check: "audio" };
+  expect(missing(audio)).toEqual(["contract.referenceAudio", "acceptance.references"]);
+  audio.contract = { ...audio.contract!, referenceAudio: true };
+  audio.acceptance = {
+    ...audio.acceptance!,
+    references: {
+      images: 1,
+      audio: 1,
+      reportedImages: 1,
+      reportedAudio: null,
+      hasReferenceAudio: null,
+    },
+  };
+  expect(missing(audio)).toEqual([]);
+  conclude(audio, undefined);
+  const json = JSON.parse(JSON.stringify(Schema.encodeSync(Evidence)(audio))) as unknown;
+  expect(Schema.decodeUnknownSync(Evidence)(json)).toEqual(audio);
+  expect(summarize([audio])).toContain("the clip reports 1 image(s), ? audio");
+});
+
 test("a stop rule, a failed criterion, a failure and no criteria each fail the run", () => {
   const unknown = vertical();
   unknown.outcomes = ["unknown"];

@@ -96,6 +96,28 @@ test("a rehearsed takeover kills the owner, attaches in time and ends the sessio
   credentialFree(run.text);
 }, 180_000);
 
+test("a rehearsed audio check sends an image and an audio reference, and the clip reports both", () => {
+  const run = rehearse("audio");
+  expect(run.status, run.output).toBe(0);
+  expect(run.evidence.missing).toEqual([]);
+  expect(run.evidence.contract?.referenceAudio).toBe(true);
+  expect(run.evidence.acceptance?.references).toEqual({
+    images: 1,
+    audio: 1,
+    reportedImages: 1,
+    reportedAudio: 1,
+    hasReferenceAudio: true,
+  });
+  expect(run.evidence.criteria.map((criterion) => criterion.name)).toContain(
+    "reference audio reported",
+  );
+  // Two reference uploads, then the enqueue: the audio went up as audio.
+  expect(run.evidence.spans.filter((span) => span.name === "reactor.session.upload")).toHaveLength(
+    2,
+  );
+  credentialFree(run.text);
+}, 180_000);
+
 test("the relay check passes only on a relay pair", () => {
   const run = rehearse("turn");
   expect(run.status, run.output).toBe(0);

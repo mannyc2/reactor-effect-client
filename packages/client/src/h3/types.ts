@@ -21,7 +21,13 @@ import type {
   Queue,
   State,
 } from "./messages.js";
-import type { CanvasAspect, documentedVersion, imageMimeTypes, modelName } from "./profile.js";
+import type {
+  audioMimeTypes,
+  CanvasAspect,
+  documentedVersion,
+  imageMimeTypes,
+  modelName,
+} from "./profile.js";
 
 export type Aspect = CanvasAspect;
 export type Reference =
@@ -39,9 +45,34 @@ export interface ValidatedReference {
   readonly height: number | null;
 }
 
+declare const validatedAudio: unique symbol;
+/**
+ * Opaque validated audio input. Byte storage is private and detached from the
+ * caller. `seconds` and `channels` are read from a WAV or FLAC header; for the
+ * other formats they are null, and H3 checks them when it receives the clip.
+ */
+export interface ValidatedAudioReference {
+  readonly [validatedAudio]: true;
+  readonly _tag: "ValidatedAudioReference";
+  readonly mimeType: (typeof audioMimeTypes)[number];
+  readonly size: number;
+  readonly seconds: number | null;
+  readonly channels: number | null;
+}
+
 export interface Request {
   readonly prompt: string;
   readonly references?: readonly (Reference | ValidatedReference)[];
+  /**
+   * Up to three audio references (`Audio 1`, `Audio 2`, ... in the prompt),
+   * each 2–15 s of WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM, mono or stereo,
+   * at most 25 MiB. A clip with audio needs at least one image reference or a
+   * `continueFrom`, and a continued clip takes at most two, because its
+   * continuation uses the third for the previous clip's soundtrack. Sent as
+   * `reference_audios` only when present, and only to a deployment whose
+   * contract declares it (`Contract.referenceAudio`).
+   */
+  readonly audio?: readonly (Reference | ValidatedAudioReference)[];
   readonly seconds?: number;
   readonly seed?: number;
   readonly position?: number;
@@ -55,6 +86,12 @@ export interface Contract {
   readonly documentedVersion: typeof documentedVersion;
   readonly source: string;
   readonly subset: "prompt-and-images";
+  /**
+   * Whether the deployment's `enqueue` declares `reference_audios`. When it
+   * does not, a request with audio is refused as `UnsupportedCapability`
+   * before anything is uploaded or sent.
+   */
+  readonly referenceAudio: boolean;
   readonly deployment: { readonly title: string | null; readonly version: string | null };
 }
 

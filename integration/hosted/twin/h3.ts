@@ -411,6 +411,10 @@ export class H3Model {
       typeof args.continue_from_clip_id === "string" && args.continue_from_clip_id !== "";
     if (audios > 0 && images === 0 && !continued)
       return refuse("audio needs an image or a continued clip");
+    // A continuation spends one audio slot on the previous clip's soundtrack.
+    if (continued && audios > 2)
+      return refuse("a continued clip takes at most two audio references");
+    if (images + audios + (continued ? 1 : 0) > 12) return refuse("too many references");
     if (this.generation.length >= generationCapacity) return refuse("the generation queue is full");
     const frames = isRequestable(seconds) ? alignedFrames(seconds) : this.clipFrames;
     const clip: Clip = {

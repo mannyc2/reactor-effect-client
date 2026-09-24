@@ -19,10 +19,10 @@ Effect `4.0.0-rc.115` is an exact peer dependency. Every module in this package 
 | Import                                | Purpose                                                                                        |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `reactor-effect-client`               | Canonical `Client`, `Session`, `make`/`layer`, errors, `Coordinator`, `Peers`, and `FetchHttp` |
-| `reactor-effect-client/h3`            | H3 provider contract, state/queue/clip evidence, controls, and image validation                |
+| `reactor-effect-client/h3`            | H3 provider contract, state/queue/clip evidence, controls, and reference validation            |
 | `reactor-effect-client/orchestration` | Scheduling, renewal, source adaptation, references, submissions, and sequences                 |
 | `reactor-effect-client/simulation`    | Production simulation source, factory, and Effect service layer                                |
-| `reactor-effect-client/testing`       | Reusable fault and PNG fixtures                                                                |
+| `reactor-effect-client/testing`       | Reusable fault, PNG and WAV fixtures                                                           |
 | `reactor-effect-client/wire`          | Generated protocol messages and wire encoding/decoding                                         |
 | `reactor-effect-client/host`          | Host transport extension surface used by the first-party host packages                         |
 
@@ -148,7 +148,9 @@ const enqueueClip = (session: Session) =>
   });
 ```
 
-Use a session created with `H3.modelName`. The adapter targets the documented `0.5.5` prompt-and-images subset of `reactor/h3-reference-to-video-turbo-realtime`. Prompt-only requests are supported. Image references accept owned bytes or explicit upload references; H3 itself requires no filesystem or path services. Reference-audio input is unsupported, and FastH3 `startingFrame`/`endingFrame` fields are absent from this contract.
+Use a session created with `H3.modelName`. The adapter targets the documented `0.5.5` prompt-and-images subset of `reactor/h3-reference-to-video-turbo-realtime`, with reference audio. Prompt-only requests are supported. Image references accept owned bytes or explicit upload references; H3 itself requires no filesystem or path services. FastH3 `startingFrame`/`endingFrame` fields are absent from this contract.
+
+`Request.audio` carries up to three audio references (`Audio 1`, `Audio 2`, ... in the prompt), sent as `reference_audios`: each 2–15 s of WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM, mono or stereo, at most 25 MiB, as bytes or an existing upload. A clip with audio needs an image reference or `continueFrom`, and a continued clip takes at most two, since its continuation uses the third for the previous clip's soundtrack. The adapter identifies the container from the bytes and uploads it under that MIME type; it reads the length and channels of WAV and FLAC and refuses one outside the bounds, while H3 checks the other formats itself. Anything refused locally fails `not-submitted`, before an upload. `H3.validateAudioReference` validates one once for reuse, and `H3.audioReferenceLimits` lists the bounds. The `reference_audios` argument is optional in a deployment's schema: `provider.contract.referenceAudio` says whether this deployment declares it, and against one that does not, a request with audio fails `UnsupportedCapability` while every other request is unaffected. The accepted clip reports `has_reference_audio` and `reference_audio_count` when the deployment sends them. `ClipRequest.audio` takes `{ uri }` values for orchestration, loaded as image references are, and the simulation records them on the clip.
 
 `provider.operation(submission)` keeps a committed clip's facts for as long as its scope holds them: `accepted`, `reached("generated" | "started")` and `ended` each resolve once, every fact naming the transport generation of its evidence, and a clip that fails or is popped first fails the phases it never reached with `ClipEnded`. Evidence arriving after the reconcile window, or in a later transport generation of the same session, still attributes an unknown enqueue. A commit reserves the operation's slot before it sends, so a table full of unresolved operations refuses new commits with `Overflow` instead of discarding evidence; releasing the scope frees the slot.
 
@@ -164,7 +166,7 @@ The adapter exposes autoplay, flush, playback, reset, and other model controls a
 
 `Orchestration.Sequences` owns bounded sequence affinity and explicit member outcomes. Partial admission is represented member-by-member as accepted, rejected, or indeterminate, and a sequence remains bound to one owner until it is sealed/retired and explicitly released.
 
-`reactor-effect-client/simulation` provides `make` and `layerSim` over the same orchestration engine and media contracts. Its source and renderer hooks support unpaid local execution and controlled failures. Reusable fault and image fixtures are available through the separate `reactor-effect-client/testing` entry point.
+`reactor-effect-client/simulation` provides `make` and `layerSim` over the same orchestration engine and media contracts. Its source and renderer hooks support unpaid local execution and controlled failures. Reusable fault, image and audio fixtures (`pngBytes`, `wavBytes`) are available through the separate `reactor-effect-client/testing` entry point.
 
 ## Wire module
 

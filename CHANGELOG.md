@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- H3 reference audio. `H3.Request.audio` carries up to three audio references, as bytes or existing uploads, sent as the documented `reference_audios`: each 2–15 s of WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM, mono or stereo, at most 25 MiB. The adapter uploads bytes under the MIME type of their container, content-addressed with the images, and refuses before any upload, `not-submitted`, what H3 documents it would refuse: more than three, more than two beside `continueFrom`, audio with neither an image nor `continueFrom`, more than twelve references in all, and bytes that are no documented container, or a WAV or FLAC whose header gives a length outside 2–15 s or more than two channels. `H3.validateAudioReference` validates one once for reuse, and `H3.audioReferenceLimits` and the profile's new optional `audioReferences` state the bounds.
+- `Contract.referenceAudio` says whether a deployment's `enqueue` declares `reference_audios`. A deployment that leaves it out is still admitted, and a request with audio then fails `UnsupportedCapability` before anything is uploaded; one that declares it in another shape, or with fewer than three items, is refused as before for any contract mismatch. A request without audio sends no `reference_audios`, so it reads to a deployment exactly as it did.
+- Orchestration `ClipRequest.audio`, `{ uri }` values loaded as image references are, with the same count rules checked when the request is captured. The simulation records a clip's audio in its `has_reference_audio` and `reference_audio_count`, and a simulation whose profile has no `audioReferences` refuses a clip with audio.
+- `/testing` exports `wavBytes(seconds, options?)`, a 16-bit PCM tone whose header gives its length.
+- The hosted qualification gains an `audio` check, the vertical with a reference image and a reference audio clip, which passes only if the accepted clip reports `has_reference_audio`. It has not run against hosted Reactor yet: reference audio is qualified by the tests and a rehearsal against the twin, which now also refuses more than two audio references beside a continuation and more than twelve references in all, as H3 documents.
+
 ## [0.3.0] - 2026-09-24
 
 0.3.0-rc.0 with the three fixes that the hosted qualification found, published to npm's `latest` dist-tag. It breaks the 0.2.0 API: the 0.3.0-rc.0 section below lists every change from 0.2.0, and this section lists those since. The native sources are unchanged since 0.3.0-rc.0 (the same source identity), and `reactor-effect-native` is released with the client as always.
@@ -136,7 +144,7 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/10b7f1bde515f38a860d670c5875299661193373...main
 [0.3.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0
 [0.3.0-rc.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0-rc.0
 [0.2.0]: https://github.com/mannyc2/reactor-effect-client/tree/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149

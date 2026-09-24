@@ -18,6 +18,9 @@ export const Canvas = Schema.Literals(["16:9", "1:1", "9:16", "4:3"]);
 export type Canvas = typeof Canvas.Type;
 export const ReferenceImage = Schema.Struct({ uri: Schema.String });
 export type ReferenceImage = typeof ReferenceImage.Type;
+/** An audio reference's location, loaded as an image reference is. */
+export const ReferenceAudio = Schema.Struct({ uri: Schema.String });
+export type ReferenceAudio = typeof ReferenceAudio.Type;
 export const ClipMetadata = Schema.JsonObject;
 export type ClipMetadata = typeof ClipMetadata.Type;
 export const ClipSequence = Schema.Struct({
@@ -31,6 +34,12 @@ export type ClipSequence = typeof ClipSequence.Type;
 export class ClipRequest extends Schema.Class<ClipRequest>("OrchestrationClipRequest")({
   prompt: Schema.String,
   references: Schema.Array(ReferenceImage),
+  /**
+   * Up to three audio references whose voice or soundscape conditions the
+   * clip's soundtrack, at most two with `continueFrom`. A clip with audio needs
+   * an image reference or `continueFrom`.
+   */
+  audio: Schema.optionalKey(Schema.Array(ReferenceAudio)),
   durationSeconds: Schema.Finite,
   metadata: ClipMetadata,
   seed: Schema.optionalKey(Schema.Finite),
@@ -47,6 +56,7 @@ const captured = new WeakSet<ClipRequest>();
 const fields = new Set([
   "prompt",
   "references",
+  "audio",
   "durationSeconds",
   "metadata",
   "seed",
@@ -108,6 +118,14 @@ const checked = (request: ClipRequest): Result.Result<ClipRequest, string> => {
     request.references.some((reference) => reference.uri.length === 0)
   )
     return Result.fail("references must contain at most nine nonempty URIs");
+  const audio = request.audio ?? [];
+  const continued = request.continueFrom !== undefined;
+  if (audio.length > (continued ? 2 : 3) || audio.some((reference) => reference.uri.length === 0))
+    return Result.fail(
+      "audio must contain at most three nonempty URIs, or two with a continuation",
+    );
+  if (audio.length > 0 && request.references.length === 0 && !continued)
+    return Result.fail("audio needs an image reference or a continuation");
   if (
     request.position !== undefined &&
     (!Number.isSafeInteger(request.position) || request.position < 0)

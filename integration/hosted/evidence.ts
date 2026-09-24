@@ -181,6 +181,8 @@ export const Evidence = Schema.Struct({
       duplicates: Schema.Natural,
       stale: Schema.Natural,
       diagnostics: Counts,
+      /** Whether the deployment's `enqueue` declares `reference_audios`. */
+      referenceAudio: Schema.optionalKey(Schema.Boolean),
       /** The deployment's last `state_update`: canvas, capacities and clip bounds. */
       lastState: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
     }),
@@ -194,6 +196,19 @@ export const Evidence = Schema.Struct({
       acceptedMs: Ms,
       /** Later provider messages that listed the clip with the submission's metadata intact. */
       metadataEchoes: Counts,
+      /**
+       * The references the submission carried, and what the accepted clip
+       * reports of them (null when the deployment leaves a field out).
+       */
+      references: Schema.optionalKey(
+        Schema.Struct({
+          images: Schema.Natural,
+          audio: Schema.Natural,
+          reportedImages: Schema.NullOr(Schema.Natural),
+          reportedAudio: Schema.NullOr(Schema.Natural),
+          hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+        }),
+      ),
     }),
   ),
   lifecycle: Schema.optionalKey(
@@ -297,6 +312,7 @@ export const required = (evidence: Evidence): readonly string[] => {
     ...common,
     "contract",
     "acceptance",
+    ...(evidence.check === "audio" ? ["contract.referenceAudio", "acceptance.references"] : []),
     "lifecycle.generated",
     "lifecycle.started",
     "server",

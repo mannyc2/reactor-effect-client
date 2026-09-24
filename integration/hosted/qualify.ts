@@ -6,7 +6,7 @@
  *
  *   bun integration/hosted/qualify.ts preflight --total-budget-usd=1.50 --ledger=<dir>
  *   bun integration/hosted/qualify.ts rehearse <check> [--faults=<a,b>] [--ledger=<dir>]
- *   bun integration/hosted/qualify.ts <vertical|takeover|turn> --budget-usd=0.75 \
+ *   bun integration/hosted/qualify.ts <vertical|takeover|turn|audio> --budget-usd=0.75 \
  *     --total-budget-usd=1.50 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
  *   bun integration/hosted/qualify.ts summarize <evidence file or ledger>...
  *
@@ -34,6 +34,7 @@ import { release, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
@@ -50,6 +51,7 @@ import * as Reactor from "reactor-effect-client";
 import * as H3 from "reactor-effect-client/h3";
 import type { MediaGeneration } from "reactor-effect-client/host";
 import * as Orchestration from "reactor-effect-client/orchestration";
+import * as Testing from "reactor-effect-client/testing";
 import * as Native from "reactor-effect-native";
 import {
   AudioReader,
@@ -89,6 +91,58 @@ import { summarize } from "./report.js";
 const script = fileURLToPath(import.meta.url);
 const prompt = "A slow camera move across a sunlit table with a glass of water.";
 const tracks = H3.h3ReferenceTurboRealtime.tracks;
+
+/** A solid mid-gray PNG: an image reference that cannot make the clip black. */
+const grayPng = (width: number, height: number): Uint8Array => {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const chunk = (type: string, data: Uint8Array) => {
+    const out = new Uint8Array(12 + data.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, data.length);
+    out.set(new TextEncoder().encode(type), 4);
+    out.set(data, 8);
+    let c = 0xffffffff;
+    for (const b of out.subarray(4, 8 + data.length)) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+    view.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
+    return out;
+  };
+  const header = new Uint8Array(13);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const rows = new Uint8Array(height * (1 + width * 3)).fill(128);
+  for (let row = 0; row < height; row++) rows[row * (1 + width * 3)] = 0; // filter: none
+  const parts = [
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", new Uint8Array(deflateSync(rows))),
+    chunk("IEND", new Uint8Array()),
+  ];
+  const png = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    png.set(part, offset);
+    offset += part.length;
+  }
+  return png;
+};
+
+/**
+ * What the `audio` check submits: one image, because H3 takes audio only with
+ * an image or a continuation, and one 3 s tone as the audio reference.
+ */
+const audioRequest = (marker: string): H3.Request => ({
+  prompt: `Picture 1 is a plain gray backdrop. Audio 1 is a low, steady hum under the scene. ${prompt}`,
+  seconds: 5,
+  metadata: marker,
+  references: [{ _tag: "Bytes", bytes: grayPng(256, 144) }],
+  audio: [{ _tag: "Bytes", bytes: Testing.wavBytes(3, { sampleRate: 48_000, frequency: 220 }) }],
+});
 
 /** Where a check runs: hosted Reactor for money, or the local twin for free. */
 interface Target {
@@ -360,9 +414,14 @@ const closeSession = (run: Run, session: Reactor.Session) =>
     yield* mark(run, "closed", report.remote.confirmed ? "confirmed" : "unconfirmed");
   });
 
-/** One paid session through the public opener, observed end to end. */
-const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
+/**
+ * One paid session through the public opener, observed end to end. The `turn`
+ * check also requires a relay pair; the `audio` check submits a reference
+ * image and a reference audio clip, and requires the clip to report the audio.
+ */
+const vertical = (target: Target, run: Run, budget: Budget, check: "vertical" | "turn" | "audio") =>
   Effect.gen(function* () {
+    const relay = check === "turn";
     const { grant, rate } = yield* admitted(target, run, budget);
     const marker = `hosted-qualification:${run.evidence.runId}`;
     const tally = new ContractTally();
@@ -470,6 +529,7 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
           duplicates: 0,
           stale: 0,
           diagnostics: tally.diagnostics,
+          referenceAudio: contract.referenceAudio,
         };
         const inspector = yield* Reactor.Coordinator.make({
           apiUrl: target.apiUrl,
@@ -506,18 +566,32 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
           );
         // H3 holds a generated clip until it is played, unless autoplay is on.
         yield* recorded(run, provider.setAutoplay(true));
-        const submission = yield* provider.prepare({ prompt, seconds: 5, metadata: marker });
+        const request: H3.Request =
+          check === "audio" ? audioRequest(marker) : { prompt, seconds: 5, metadata: marker };
+        const submission = yield* provider.prepare(request);
         const submitMs = since(run.origin);
         const acceptance = yield* recorded(run, submission.submit);
         run.evidence.outcomes.push("replied");
         tally.watch(acceptance.clip.clip_id, marker);
+        const clip = acceptance.clip;
         run.evidence.acceptance = {
-          clipId: acceptance.clip.clip_id,
+          clipId: clip.clip_id,
           evidence: acceptance.evidence.kind,
           transportGeneration: String(acceptance.evidence.source.generation),
           submitMs,
           acceptedMs: since(run.origin),
           metadataEchoes: tally.echoes,
+          ...(check === "audio"
+            ? {
+                references: {
+                  images: request.references?.length ?? 0,
+                  audio: request.audio?.length ?? 0,
+                  reportedImages: clip.reference_image_count ?? null,
+                  reportedAudio: clip.reference_audio_count ?? null,
+                  hasReferenceAudio: clip.has_reference_audio ?? null,
+                },
+              }
+            : {}),
         };
         run.evidence.lifecycle = lifecycle;
         const proof = acceptance.evidence.source;
@@ -587,6 +661,16 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
             ? undefined
             : "no provider message after the reply listed the clip with its metadata",
         );
+        if (check === "audio") {
+          const references = run.evidence.acceptance.references!;
+          judge(
+            run,
+            "reference audio reported",
+            references.hasReferenceAudio === true && references.reportedAudio === references.audio
+              ? undefined
+              : `the accepted clip reports has_reference_audio ${references.hasReferenceAudio ?? "absent"} and ${references.reportedAudio ?? "no"} audio reference(s) for ${references.audio} sent`,
+          );
+        }
         const pair = run.evidence.network?.pair;
         judge(
           run,
@@ -934,9 +1018,7 @@ const execute = async (
   };
   save(run);
   const program = (
-    check === "takeover"
-      ? takeover(target, run, budget)
-      : vertical(target, run, budget, check === "turn")
+    check === "takeover" ? takeover(target, run, budget) : vertical(target, run, budget, check)
   ).pipe(
     Effect.provideService(Tracer.Tracer, run.spans.tracer),
     Effect.provide(Reactor.FetchHttp.layer),

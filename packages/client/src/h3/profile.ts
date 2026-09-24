@@ -18,9 +18,44 @@ export const referenceLimits = Object.freeze({
   minAspect: 0.25,
   maxAspect: 4,
 });
+/**
+ * H3's audio reference bounds: at most three clips, or two when the clip
+ * continues another, whose soundtrack takes the third; at most twelve
+ * references in total, counting images, audio and a continuation; each 2–15 s
+ * long, mono or stereo, and at most 25 MiB.
+ */
+export const audioReferenceLimits = Object.freeze({
+  maxAudio: 3,
+  maxAudioWithContinuation: 2,
+  maxTotal: 12,
+  maxBytes: 25 * 1024 * 1024,
+  minSeconds: 2,
+  maxSeconds: 15,
+  maxChannels: 2,
+});
 /** Adapter limits shared by request capture, reference validation and profile declarations. */
 export const metadataMaxChars = 2_000;
 export const imageMimeTypes = Object.freeze(["image/jpeg", "image/png", "image/webp"] as const);
+/**
+ * The audio formats H3 documents (WAV, MP3, AAC/M4A, OGG/Opus, FLAC and WebM),
+ * by the MIME type an upload of each carries. Bytes are identified by their
+ * container, which names the first type of each format; an existing upload
+ * may carry any of them.
+ */
+export const audioMimeTypes = Object.freeze([
+  "audio/wav",
+  "audio/mpeg",
+  "audio/aac",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/flac",
+  "audio/webm",
+  "audio/x-wav",
+  "audio/wave",
+  "audio/x-m4a",
+  "audio/opus",
+  "audio/x-flac",
+] as const);
 
 /** Shared H3 timing data and explicit defaults used by offline orchestration. */
 export type CanvasAspect = keyof typeof canvases;
@@ -50,6 +85,21 @@ export interface ModelProfile {
     /** width / height must lie within [minAspect, maxAspect]. */
     readonly minAspect: number;
     readonly maxAspect: number;
+    readonly mimeTypes: ReadonlyArray<string>;
+  };
+  /**
+   * Audio references the model takes beside its images; absent for a model
+   * that takes none, whose requests must carry no audio.
+   */
+  readonly audioReferences?: {
+    readonly max: number;
+    /** A continued clip spends one audio slot on the previous clip's soundtrack. */
+    readonly maxWithContinuation: number;
+    /** Images, audio and a continuation together. */
+    readonly maxTotal: number;
+    readonly maxBytes: number;
+    readonly minSeconds: number;
+    readonly maxSeconds: number;
     readonly mimeTypes: ReadonlyArray<string>;
   };
   readonly metadataMaxChars: number;
@@ -84,6 +134,15 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
     minAspect: referenceLimits.minAspect,
     maxAspect: referenceLimits.maxAspect,
     mimeTypes: [...imageMimeTypes],
+  },
+  audioReferences: {
+    max: audioReferenceLimits.maxAudio,
+    maxWithContinuation: audioReferenceLimits.maxAudioWithContinuation,
+    maxTotal: audioReferenceLimits.maxTotal,
+    maxBytes: audioReferenceLimits.maxBytes,
+    minSeconds: audioReferenceLimits.minSeconds,
+    maxSeconds: audioReferenceLimits.maxSeconds,
+    mimeTypes: [...audioMimeTypes],
   },
   metadataMaxChars,
   canvases: Object.entries(canvases).map(([aspect, size]) => ({

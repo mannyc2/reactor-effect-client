@@ -1,13 +1,19 @@
 import { ReactorError } from "../../errors.js";
 import { checkedString } from "../../protobuf.js";
 import type { UploadReference } from "../../wire.generated.js";
-import { metadataMaxChars, referenceLimits, requestSeconds } from "../profile.js";
-import type { Request, ValidatedReference } from "../types.js";
+import {
+  audioReferenceLimits,
+  metadataMaxChars,
+  referenceLimits,
+  requestSeconds,
+} from "../profile.js";
+import type { Request, ValidatedAudioReference, ValidatedReference } from "../types.js";
 import type { CommandArgs } from "./contracts.js";
-import { captureReference, plain } from "./references.js";
+import { captureAudioReference, captureReference, plain } from "./references.js";
 
-export interface CapturedRequest extends Omit<Request, "references"> {
+export interface CapturedRequest extends Omit<Request, "references" | "audio"> {
   readonly references: readonly ValidatedReference[];
+  readonly audio: readonly ValidatedAudioReference[];
 }
 const bad = (message: string): never => {
   throw ReactorError.fromCode("InvalidInput", message, {
@@ -45,6 +51,7 @@ export const captureRequest = (input: Request, maxPromptBytes: number): Captured
   const request = plain(input, [
     "prompt",
     "references",
+    "audio",
     "seconds",
     "seed",
     "position",
@@ -61,10 +68,25 @@ export const captureRequest = (input: Request, maxPromptBytes: number): Captured
   const references = request.references ?? [];
   if (!Array.isArray(references) || references.length > referenceLimits.maxImages)
     return bad("H3 accepts at most nine image references");
+  const audio = request.audio ?? [];
+  const continued = request.continueFrom !== undefined;
+  if (!Array.isArray(audio) || audio.length > audioReferenceLimits.maxAudio)
+    return bad("H3 accepts at most three audio references");
+  if (continued && audio.length > audioReferenceLimits.maxAudioWithContinuation)
+    return bad("A continued clip accepts at most two audio references");
+  if (audio.length > 0 && references.length === 0 && !continued)
+    return bad("Audio references need an image reference or a continuation");
+  if (references.length + audio.length + (continued ? 1 : 0) > audioReferenceLimits.maxTotal)
+    return bad("H3 accepts at most twelve references in total");
   return Object.freeze({
     prompt: request.prompt,
     references: Object.freeze(
       references.map((reference: unknown) => captureReference(reference as ValidatedReference)),
+    ),
+    audio: Object.freeze(
+      audio.map((reference: unknown) =>
+        captureAudioReference(reference as ValidatedAudioReference),
+      ),
     ),
     ...(request.seconds === undefined ? {} : { seconds: seconds(request.seconds) }),
     ...(request.seed === undefined ? {} : { seed: nonnegative(request.seed, "seed") }),
@@ -78,20 +100,28 @@ export const captureRequest = (input: Request, maxPromptBytes: number): Captured
   });
 };
 
-/** Project validated, captured input once; no reference validation or host IO happens here. */
+const wireUpload = (file: UploadReference) => ({
+  upload_id: file.upload_id,
+  name: file.name,
+  mime_type: file.mime_type,
+  size: Number(file.size),
+});
+
+/**
+ * Project validated, captured input once; no reference validation or host IO
+ * happens here. Audio is sent only when the request has some, so a request
+ * without it reads exactly as before to a deployment that takes none.
+ */
 export const enqueueArguments = (
   request: CapturedRequest,
   files: readonly UploadReference[],
+  audio: readonly UploadReference[],
   metadata: string,
 ): CommandArgs<"enqueue"> =>
   Object.freeze({
     prompt: request.prompt,
-    reference_images: files.map((file) => ({
-      upload_id: file.upload_id,
-      name: file.name,
-      mime_type: file.mime_type,
-      size: Number(file.size),
-    })),
+    reference_images: files.map(wireUpload),
+    ...(audio.length === 0 ? {} : { reference_audios: audio.map(wireUpload) }),
     metadata,
     ...(request.seconds === undefined ? {} : { seconds: request.seconds }),
     ...(request.seed === undefined ? {} : { seed: request.seed }),
