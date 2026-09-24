@@ -1,0 +1,320 @@
+{
+  "format": "reactor-hosted-qualification/v1",
+  "runId": "d7b0b5db-7a02-4ce2-8b0a-f9ae8197f235",
+  "check": "takeover",
+  "mode": "paid",
+  "startedAt": "2026-09-24T05:10:56.961Z",
+  "finishedAt": "2026-09-24T05:11:14.111Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64 6.8.0-101-generic",
+    "commit": "0255871b2621102d04d1fd586e4af78a44619c5a",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.3.0-rc.0",
+      "reactor-effect-native": "0.3.0-rc.0",
+      "effect": "4.0.0-rc.115",
+      "@effect/platform-node": "4.0.0-rc.115"
+    },
+    "native": {
+      "platform": "linux-x64",
+      "library": "libreactor_effect_native.so",
+      "sha256": "506f426b755f2baf52036555cbd07532a902bbf4806c9d89695cc5407b98288e",
+      "abiVersion": 4,
+      "sourceSha256": "6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux workstation on Wi-Fi, no VPN or exit node, outbound UDP open",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.75,
+    "totalUsd": 3.75,
+    "reservedBeforeUsd": 3,
+    "sessionSeconds": 50,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000
+    },
+    "worstCaseUsd": 0.75,
+    "estimatedUsd": 0.75
+  },
+  "grant": {
+    "maxSessions": 1,
+    "maxSessionSeconds": 50,
+    "expiresAt": 1790226767
+  },
+  "session": {
+    "id": "c572461d-260e-407d-807d-2a241bbddfc7",
+    "allocatedMs": 1005,
+    "endedMs": 16943,
+    "tracks": [
+      {
+        "name": "main_video",
+        "kind": "video",
+        "direction": "recvonly"
+      },
+      {
+        "name": "main_audio",
+        "kind": "audio",
+        "direction": "recvonly"
+      }
+    ]
+  },
+  "milestones": [
+    {
+      "atMs": 243,
+      "step": "admitted",
+      "detail": "worst case $0.7500"
+    },
+    {
+      "atMs": 454,
+      "step": "minted"
+    },
+    {
+      "atMs": 11676,
+      "step": "owner killed",
+      "detail": "clip 798ef20b-774c-4985-9b7b-26f1003e56c4"
+    },
+    {
+      "atMs": 14368,
+      "step": "attached"
+    },
+    {
+      "atMs": 16523,
+      "step": "observed"
+    },
+    {
+      "atMs": 16943,
+      "step": "terminated",
+      "detail": "confirmed"
+    },
+    {
+      "atMs": 17149,
+      "step": "trail",
+      "detail": "CLOSED"
+    }
+  ],
+  "spans": [
+    {
+      "name": "reactor.coordinator.pricing",
+      "startMs": 7,
+      "durationMs": 235.7,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.mintToken",
+      "startMs": 243.6,
+      "durationMs": 210,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.session.attach",
+      "startMs": 11712.5,
+      "durationMs": 2655.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.connect": true,
+        "reactor.session.id": "c572461d-260e-407d-807d-2a241bbddfc7"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.connect",
+      "startMs": 11713.6,
+      "durationMs": 2654.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "c572461d-260e-407d-807d-2a241bbddfc7"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 11928.8
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 12013.5
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 12240.8
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 12886.7
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 13392.7
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 14366.2
+        }
+      ]
+    },
+    {
+      "name": "reactor.session.control",
+      "startMs": 14370.1,
+      "durationMs": 68.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_16ad442e0fec1d307e0616c42c357095_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 14441.5,
+      "durationMs": 20.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_16ad442e0fec1d307e0616c42c357095_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 14462.9,
+      "durationMs": 28,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_16ad442e0fec1d307e0616c42c357095_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.close",
+      "startMs": 16514,
+      "durationMs": 8.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "c572461d-260e-407d-807d-2a241bbddfc7",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": false,
+        "reactor.termination.confirmed": false
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.terminate",
+      "startMs": 16523.6,
+      "durationMs": 419.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "c572461d-260e-407d-807d-2a241bbddfc7",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.inspect",
+      "startMs": 16944.4,
+      "durationMs": 204.8,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    }
+  ],
+  "takeover": {
+    "ownerStreamingMs": 11676,
+    "killedMs": 11676,
+    "attachMs": 2692,
+    "clipIdentified": true,
+    "metadataPreserved": true,
+    "enqueuesAfterAttach": 0,
+    "firstFreshFrameMs": 14576,
+    "video": {
+      "frames": 48,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "1344x768"
+      ],
+      "firstFrameMs": 14576,
+      "fps": 24.3,
+      "interval": {
+        "p50": 42,
+        "p95": 45,
+        "max": 45
+      },
+      "lit": 48,
+      "distinct": 48,
+      "meanLuma": 63.5,
+      "lost": 0,
+      "gaps": 0,
+      "withMetadata": 0,
+      "withFrameId": 0,
+      "withTimestamp": 0
+    }
+  },
+  "termination": {
+    "requestedMs": 16524,
+    "reportedMs": 16943,
+    "confirmed": true,
+    "remote": {
+      "attempted": true,
+      "responseReceived": true,
+      "confirmed": true,
+      "evidence": "terminal",
+      "deleteStatus": 200,
+      "state": "CLOSED"
+    },
+    "trail": [
+      {
+        "atMs": 17149,
+        "state": "CLOSED"
+      }
+    ],
+    "terminalMs": 17149
+  },
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "attach within 5 s",
+      "passed": true
+    },
+    {
+      "name": "clip identified",
+      "passed": true
+    },
+    {
+      "name": "metadata preserved",
+      "passed": true
+    },
+    {
+      "name": "no enqueue on attach",
+      "passed": true
+    },
+    {
+      "name": "fresh frames",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "missing": [],
+  "verdict": "pass",
+  "reasons": []
+}

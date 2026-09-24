@@ -1,0 +1,590 @@
+{
+  "format": "reactor-hosted-qualification/v1",
+  "runId": "6438e4e9-da74-4a92-ae31-5620ca221c13",
+  "check": "vertical",
+  "mode": "paid",
+  "startedAt": "2026-09-24T05:10:26.250Z",
+  "finishedAt": "2026-09-24T05:10:38.840Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64 6.8.0-101-generic",
+    "commit": "0255871b2621102d04d1fd586e4af78a44619c5a",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.3.0-rc.0",
+      "reactor-effect-native": "0.3.0-rc.0",
+      "effect": "4.0.0-rc.115",
+      "@effect/platform-node": "4.0.0-rc.115"
+    },
+    "native": {
+      "platform": "linux-x64",
+      "library": "libreactor_effect_native.so",
+      "sha256": "506f426b755f2baf52036555cbd07532a902bbf4806c9d89695cc5407b98288e",
+      "abiVersion": 4,
+      "sourceSha256": "6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux workstation on Wi-Fi, no VPN or exit node, outbound UDP open",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.75,
+    "totalUsd": 3.75,
+    "reservedBeforeUsd": 2.25,
+    "sessionSeconds": 50,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000
+    },
+    "worstCaseUsd": 0.75,
+    "estimatedUsd": 0.75
+  },
+  "grant": {
+    "maxSessions": 1,
+    "maxSessionSeconds": 50,
+    "expiresAt": 1790226736
+  },
+  "session": {
+    "id": "41793d68-c355-4464-b3af-dce7a72d1806",
+    "allocatedMs": 905,
+    "endedMs": 12363,
+    "tracks": [
+      {
+        "name": "main_video",
+        "kind": "video",
+        "direction": "recvonly"
+      },
+      {
+        "name": "main_audio",
+        "kind": "audio",
+        "direction": "recvonly"
+      }
+    ]
+  },
+  "server": {
+    "cluster": "5a004973-4a49-4f0e-96ac-6cd7637f61eb",
+    "zone": "us-east",
+    "serverVersion": "1.20260922.28209",
+    "transport": "webrtc/1.0",
+    "additional": {
+      "origin_country": "US",
+      "region": "us-east"
+    }
+  },
+  "milestones": [
+    {
+      "atMs": 237,
+      "step": "admitted",
+      "detail": "worst case $0.7500"
+    },
+    {
+      "atMs": 443,
+      "step": "minted"
+    },
+    {
+      "atMs": 905,
+      "step": "allocated"
+    },
+    {
+      "atMs": 3638,
+      "step": "connected"
+    },
+    {
+      "atMs": 3782,
+      "step": "accepted",
+      "detail": "by clip_queued matched"
+    },
+    {
+      "atMs": 5932,
+      "step": "clip started"
+    },
+    {
+      "atMs": 11940,
+      "step": "observed",
+      "detail": "replies state_update unsolicited 5, autoplay_accepted matched 1, queue_update unsolicited 3, clip_queued matched 1, clip_generated unsolicited 1, clip_started unsolicited 1, clip_finished unsolicited 1"
+    },
+    {
+      "atMs": 12363,
+      "step": "closed",
+      "detail": "confirmed"
+    },
+    {
+      "atMs": 12589,
+      "step": "trail",
+      "detail": "CLOSED"
+    }
+  ],
+  "spans": [
+    {
+      "name": "reactor.coordinator.pricing",
+      "startMs": 7,
+      "durationMs": 228.8,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.mintToken",
+      "startMs": 236.7,
+      "durationMs": 206.3,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.session.create",
+      "startMs": 479,
+      "durationMs": 425.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.connect": false,
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "41793d68-c355-4464-b3af-dce7a72d1806"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.connect",
+      "startMs": 905.4,
+      "durationMs": 2612.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "41793d68-c355-4464-b3af-dce7a72d1806"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 1193
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 1407.2
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 1642.3
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 2278.8
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 2783
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 3515.7
+        }
+      ]
+    },
+    {
+      "name": "reactor.session.control",
+      "startMs": 3520.2,
+      "durationMs": 68.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_5fc074c548c3e71e22aa687782d7461e_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 3591.6,
+      "durationMs": 22.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_5fc074c548c3e71e22aa687782d7461e_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 3614.4,
+      "durationMs": 22,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_5fc074c548c3e71e22aa687782d7461e_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.inspect",
+      "startMs": 3638.3,
+      "durationMs": 96.2,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 3735,
+      "durationMs": 21.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_5fc074c548c3e71e22aa687782d7461e_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.h3.enqueue",
+      "startMs": 3757.8,
+      "durationMs": 24,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "3d09aac2557b341eccb93d1e4cce54f8:1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.session.command",
+      "startMs": 3758.2,
+      "durationMs": 22.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5fc074c548c3e71e22aa687782d7461e_4",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.h3.reconcile",
+      "startMs": 3781.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "reactor.session.close",
+      "startMs": 11941.3,
+      "durationMs": 421.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "41793d68-c355-4464-b3af-dce7a72d1806",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.terminate",
+      "startMs": 11953.2,
+      "durationMs": 409.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "41793d68-c355-4464-b3af-dce7a72d1806",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "reactor.coordinator.inspect",
+      "startMs": 12364.7,
+      "durationMs": 224.1,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    }
+  ],
+  "contract": {
+    "modelName": "reactor/h3-reference-to-video-turbo-realtime",
+    "documentedVersion": "0.5.5",
+    "deploymentTitle": "h3-reference-to-video-turbo-realtime",
+    "deploymentVersion": "v0.0.0",
+    "messages": {
+      "state_update": 5,
+      "autoplay_accepted": 1,
+      "queue_update": 3,
+      "clip_queued": 1,
+      "clip_generated": 1,
+      "clip_started": 1,
+      "clip_finished": 1
+    },
+    "unknown": {},
+    "duplicates": 0,
+    "stale": 0,
+    "diagnostics": {},
+    "lastState": {
+      "clip_seconds": 15.083,
+      "clip_seconds_min": 5,
+      "clip_seconds_max": 15.084,
+      "seed": 1001,
+      "autoplay": true,
+      "flush_on_clip_end": true,
+      "aspect": "16:9",
+      "width": 1344,
+      "height": 768,
+      "playing": false,
+      "playing_clip_id": null,
+      "generation_queued": 0,
+      "generation_capacity": 20,
+      "playout_queued": 0,
+      "playout_capacity": 10,
+      "clips_played": 1,
+      "seconds_sent": 5.17,
+      "valid_commands": [
+        "enqueue",
+        "get_queue",
+        "get_state",
+        "reset",
+        "set_autoplay",
+        "set_canvas",
+        "set_clip_seconds",
+        "set_flush_on_clip_end",
+        "set_seed"
+      ]
+    }
+  },
+  "acceptance": {
+    "clipId": "f8b2038b-a870-4fe2-a552-65018f437c8c",
+    "evidence": "correlated",
+    "transportGeneration": "1",
+    "submitMs": 3757,
+    "acceptedMs": 3782,
+    "metadataEchoes": {
+      "clip_queued": 1,
+      "clip_generated": 1,
+      "queue_update": 1,
+      "clip_started": 1,
+      "clip_finished": 1
+    }
+  },
+  "lifecycle": {
+    "generated": {
+      "atMs": 5931,
+      "message": "clip_generated",
+      "transportGeneration": "1"
+    },
+    "started": {
+      "atMs": 5932,
+      "message": "clip_started",
+      "transportGeneration": "1"
+    },
+    "ended": {
+      "atMs": 11060,
+      "message": "clip_finished",
+      "transportGeneration": "1"
+    }
+  },
+  "media": {
+    "audioOffered": true,
+    "firstClipFrameMs": 6034,
+    "video": {
+      "frames": 124,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "1344x768"
+      ],
+      "firstFrameMs": 6034,
+      "fps": 24.2,
+      "interval": {
+        "p50": 41,
+        "p95": 45,
+        "max": 71
+      },
+      "lit": 123,
+      "distinct": 124,
+      "meanLuma": 71.3,
+      "lost": 0,
+      "gaps": 0,
+      "withMetadata": 0,
+      "withFrameId": 0,
+      "withTimestamp": 0
+    },
+    "audio": {
+      "blocks": 708,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "samplesPerBlock": [
+        480
+      ],
+      "firstBlockMs": 3742,
+      "peakRms": 0.0212,
+      "lost": 0
+    },
+    "pressure": {
+      "deliveredVideo": "124",
+      "deliveredAudio": "719",
+      "droppedVideo": "0",
+      "droppedAudio": "0",
+      "readerOverflows": "0"
+    }
+  },
+  "network": {
+    "pair": {
+      "local": "prflx",
+      "remote": null
+    },
+    "samples": [
+      {
+        "atMs": 3642,
+        "local": "relay",
+        "rttMs": 21,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 4643,
+        "local": "relay",
+        "rttMs": 21,
+        "receivedKbps": 42.9,
+        "jitterMs": 1,
+        "lossRatio": 0.0189
+      },
+      {
+        "atMs": 5645,
+        "local": "prflx",
+        "rttMs": 19,
+        "jitterMs": 0,
+        "lossRatio": 0.0097
+      },
+      {
+        "atMs": 6646,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 1587.1,
+        "fps": 26,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7647,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 8653.6,
+        "fps": 23,
+        "jitterMs": 14,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8648,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 8759.9,
+        "fps": 24,
+        "jitterMs": 4,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9649,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 8303.5,
+        "fps": 25,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 10651,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 8597.2,
+        "fps": 24,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 11652,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 3695.6,
+        "fps": 12,
+        "jitterMs": 3,
+        "lossRatio": 0
+      }
+    ]
+  },
+  "termination": {
+    "requestedMs": 11942,
+    "reportedMs": 12363,
+    "confirmed": true,
+    "close": {
+      "localClosed": true,
+      "allocation": "known",
+      "ownership": "owned",
+      "sessionId": "41793d68-c355-4464-b3af-dce7a72d1806",
+      "remote": {
+        "attempted": true,
+        "responseReceived": true,
+        "confirmed": true,
+        "evidence": "terminal",
+        "deleteStatus": 200,
+        "state": "CLOSED"
+      },
+      "unpublishSubmitted": [],
+      "unresolvedPublications": [],
+      "localErrors": []
+    },
+    "trail": [
+      {
+        "atMs": 12589,
+        "state": "CLOSED"
+      }
+    ],
+    "terminalMs": 12589
+  },
+  "outcomes": [
+    "replied"
+  ],
+  "criteria": [
+    {
+      "name": "correlated acceptance",
+      "passed": true
+    },
+    {
+      "name": "lifecycle progression",
+      "passed": true
+    },
+    {
+      "name": "live video",
+      "passed": true
+    },
+    {
+      "name": "audio when offered",
+      "passed": true
+    },
+    {
+      "name": "metadata preserved",
+      "passed": true
+    },
+    {
+      "name": "ICE pair selected",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "missing": [],
+  "verdict": "pass",
+  "reasons": []
+}
