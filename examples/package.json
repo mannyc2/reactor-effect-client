@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-examples",
-  "version": "0.2.0",
+  "version": "0.3.0-rc.0",
   "private": true,
   "description": "Checked-in usage examples compiled against the workspace packages",
   "type": "module",

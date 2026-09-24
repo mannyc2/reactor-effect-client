@@ -10,7 +10,7 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. Version 0.2.0 of all three packages was published to npm with provenance on September 23, 2026, by the [release workflow](./.github/workflows/release.yml), from commit `eb0db13`. `main` has since changed the public API incompatibly, so its next release is 0.3.0; [CHANGELOG.md](./CHANGELOG.md) lists what each release changes.
+This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. Version 0.2.0 of all three packages is npm's `latest`, published with provenance on September 23, 2026, by the [release workflow](./.github/workflows/release.yml) from commit `eb0db13`. 0.3.0 changes the public API incompatibly. Its release candidate, 0.3.0-rc.0, is on the `next` dist-tag (`npm install reactor-effect-client@next`), and 0.3.0 follows once the [hosted qualification](./integration/hosted) passes. [CHANGELOG.md](./CHANGELOG.md) lists what each release changes.
 
 ## Which package do I install?
 

@@ -19,7 +19,7 @@
     },
     "examples": {
       "name": "reactor-effect-examples",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -33,7 +33,7 @@
     },
     "integration": {
       "name": "reactor-effect-integration",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/bun": "catalog:",
@@ -48,7 +48,7 @@
     },
     "packages/browser": {
       "name": "reactor-effect-browser",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
       "devDependencies": {
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
@@ -62,7 +62,7 @@
     },
     "packages/client": {
       "name": "reactor-effect-client",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -78,7 +78,7 @@
     },
     "packages/native": {
       "name": "reactor-effect-native",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/node": "catalog:",
@@ -98,7 +98,7 @@
     },
     "packages/test-kit": {
       "name": "reactor-effect-test-kit",
-      "version": "0.2.0",
+      "version": "0.3.0-rc.0",
     },
   },
   "overrides": {

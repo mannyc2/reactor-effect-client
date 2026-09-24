@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-The next release is 0.3.0, because `main` already breaks the 0.2.0 API. A `^0.2.0` range does not include 0.3.0, so applications move to it deliberately.
+## [0.3.0-rc.0] - 2026-09-24
 
-Qualification: on September 23, 2026 the ABI 3 media path passed `native:test` in a linux-x64 container (Rust 1.90.0, Clang 21.1.8, Node 24.15.0, Bun 1.4.2) and in CI on GitHub's linux-x64 and darwin-arm64 runners on Node and Bun, with the Chrome integration test on each; the README's support section keeps its measured limits, and the full record is in the README at [c2e6618]. Against the ABI 2 bridge, the same load tests had failed throughput, stall and renewal on Bun and the two-session test on Node. Getting them to pass on the darwin-arm64 runner took linking the far peer against compiler-rt, holding its congestion controller at a fixed rate and stopping Spotlight during the native job.
+The first release candidate of 0.3.0, published to npm's `next` dist-tag while `latest` stays at 0.2.0: install it with `npm install reactor-effect-client@next` and the matching host package. It breaks the 0.2.0 API, and a `^0.2.0` range does not include it, so applications move to it deliberately. 0.3.0 follows once the hosted qualification in `integration/hosted` has passed its vertical and takeover checks against hosted Reactor; no hosted Reactor generation has been run against this code yet.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite at ABI 4 on GitHub's linux-x64 and darwin-arm64 runners on Node and Bun, the Chrome browser/native WebRTC test on each, and the pack/install smoke of all three archives. The media load tests first passed on September 23, 2026, at ABI 3, in a linux-x64 container (Rust 1.90.0, Clang 21.1.8, Node 24.15.0, Bun 1.4.2) and in CI; the README's support section keeps their measured limits, and that record is in the README at [c2e6618]. Against the ABI 2 bridge, the same load tests had failed throughput, stall and renewal on Bun and the two-session test on Node. Getting them to pass on the darwin-arm64 runner took linking the far peer against compiler-rt, holding its congestion controller at a fixed rate and stopping Spotlight during the native job.
 
 ### Added
 
@@ -120,6 +122,7 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
 [unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149...main
+[0.3.0-rc.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0-rc.0
 [0.2.0]: https://github.com/mannyc2/reactor-effect-client/tree/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
 [eb0db13]: https://github.com/mannyc2/reactor-effect-client/commit/eb0db13b9b5f17b6f01e31b8ceca00dd787e9149
 [c2e6618]: https://github.com/mannyc2/reactor-effect-client/commit/c2e66189d8e6d18782b8a2b5afcc47a9fc9fd8ee
