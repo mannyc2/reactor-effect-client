@@ -41,4 +41,8 @@ export type {
   Contract,
   Facts,
   ClipObservation,
+  ClipOperation,
+  ClipFact,
+  ClipPhase,
+  OperationFacts,
 } from "./types.js";

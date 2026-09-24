@@ -31,9 +31,15 @@ export type { Recorded } from "./session/recorder.js";
 export type { PeerFactoryShape } from "./PeerFactory.js";
 export type {
   SessionEvent,
+  EventPayload,
   Snapshot,
   ReadyState,
+  ReadyDescriptor,
   Status,
+  Ownership,
+  Observe,
+  Observation,
+  Attribution,
   CommandReply,
   CommandOptions,
   ReplyTimeoutOptions,
@@ -46,6 +52,7 @@ export { CloseReport } from "./SessionTypes.js";
 export { Termination } from "./coordinator/_internal/client.js";
 export type { HttpOptions } from "./coordinator/_internal/client.js";
 export type { CommandContext } from "./session/commands.js";
+export type { Correlation } from "./correlation.js";
 export type { Statistics } from "./stats.js";
 export type { Json, JsonObject } from "./json.js";
 export { Capabilities, Mapping, SessionDescriptor, Track } from "./contract.js";
