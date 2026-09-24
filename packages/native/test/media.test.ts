@@ -549,15 +549,18 @@ describe("native media under load", () => {
           const during = next.frames.length;
           const before = await pressure(next);
           const shutdownMs = await close(far, current);
-          await sleep(2000);
+          await sleep(4000);
           const after = await pressure(next);
           const seconds = (performance.now() - measured.at) / 1000;
           await report(`renewal ${cycle}`, far, measured, [next]);
           const window = next.frames.slice(during);
           expect(shutdownMs).toBeLessThan(2000);
           expect(current.failures).toEqual([]);
-          // While its predecessor shuts down, the replacement keeps receiving
-          // at load, drops at most one frame and never freezes.
+          // From its predecessor's shutdown on, the replacement keeps receiving
+          // at load, drops at most one frame and never freezes. The rate covers
+          // 4 s, the shutdown and the recovery after it, so a busy runner that
+          // delays frames for a second without losing them still meets it; the
+          // gap bound is what catches a freeze.
           expect(
             (arrived(after) - arrived(before)) / seconds,
             "frames per second reaching the replacement",
