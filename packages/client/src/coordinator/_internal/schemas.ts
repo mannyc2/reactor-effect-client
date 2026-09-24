@@ -36,11 +36,23 @@ const CreditsRate = Schema.Struct({
   denomination: Schema.Literal("second"),
 });
 
-/** Preserve the integer ratio; callers decide whether the returned price fits their budget. */
+/**
+ * Pricing lists a model by its bare name, `h3-reference-to-video-turbo-realtime`,
+ * where sessions and tokens take its connect slug,
+ * `reactor/h3-reference-to-video-turbo-realtime`: the name after the owner.
+ */
+const pricedAs = (model: string): string => model.slice(model.lastIndexOf("/") + 1);
+
+/**
+ * The rate of `model`, given by its connect slug (or its bare name). Preserve
+ * the integer ratio; callers decide whether the returned price fits their budget.
+ */
 export const modelRate = (value: unknown, model: string) =>
   Schema.decodeUnknownEffect(Pricing)(value).pipe(
     Effect.flatMap((decoded) => {
-      const matches = decoded.models.filter((entry) => entry.name === model);
+      const matches = decoded.models.filter(
+        (entry) => entry.name === model || entry.name === pricedAs(model),
+      );
       return Schema.decodeUnknownEffect(CreditsRate)(
         matches.length === 1 ? matches[0]!.rate : undefined,
       ).pipe(
