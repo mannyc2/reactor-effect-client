@@ -76,16 +76,20 @@ const mint = (twin: Twin, apiKey = twin.apiKey) =>
 /** Allocate, record the owner, connect and bind H3, as the qualification opens a session. */
 const open = (grant: Reactor.Coordinator.TokenGrant, source?: Orchestration.SessionSourceOptions) =>
   Effect.gen(function* () {
-    let owned: Reactor.Session | undefined;
+    let owned: Orchestration.Allocated | undefined;
     const opened = yield* Orchestration.openH3({
       mint: Effect.succeed(grant),
-      onAllocated: ({ session }) =>
+      onAllocated: (allocated) =>
         Effect.sync(() => {
-          owned = session;
+          owned = allocated;
         }),
       source,
     });
-    return { session: owned!, provider: opened.source.provider };
+    return {
+      session: owned!.session,
+      allocation: owned!.allocation,
+      provider: opened.source.provider,
+    };
   });
 
 /**
@@ -169,7 +173,10 @@ const owner = (apiUrl: string, stored: string) =>
       readonly expiresAt: number;
       readonly granted: { readonly maxSessions: 1; readonly maxSessionSeconds: number };
     };
-    const { session, provider } = yield* open({ ...grant, jwt: Redacted.make(grant.jwt) });
+    const { session, allocation, provider } = yield* open({
+      ...grant,
+      jwt: Redacted.make(grant.jwt),
+    });
     const playing = yield* play(provider, 10);
     // The clip after it waits in the playout queue while the first one plays. As
     // after autoplay, the provider has not yet reduced the snapshots after clip_started.
@@ -178,7 +185,7 @@ const owner = (apiUrl: string, stored: string) =>
     yield* queued.operation.reached("generated").pipe(Effect.timeout("10 seconds"));
     yield* frames(session, 24);
     yield* Console.log(
-      `owner-streaming ${session.id} ${playing.acceptance.clip.clip_id} ${queued.acceptance.clip.clip_id}`,
+      `owner-streaming ${session.id} ${playing.acceptance.clip.clip_id} ${queued.acceptance.clip.clip_id} ${allocation.endsAt}`,
     );
     return yield* Effect.never;
   }).pipe(Effect.scoped, Effect.provide(clientLayer(apiUrl)));
@@ -192,12 +199,17 @@ if (ownerArgument >= 0)
 /** The owner's report: its session, the clip it plays and the clip waiting after it. */
 const streaming = (
   child: ChildProcess,
-): Promise<{ readonly sessionId: string; readonly playing: string; readonly queued: string }> =>
+): Promise<{
+  readonly sessionId: string;
+  readonly playing: string;
+  readonly queued: string;
+  readonly endsAt: number;
+}> =>
   new Promise((resolve, reject) => {
     createInterface({ input: child.stdout! }).on("line", (line) => {
-      const [tag, sessionId, playing, queued] = line.split(" ");
-      if (tag === "owner-streaming" && sessionId && playing && queued)
-        resolve({ sessionId, playing, queued });
+      const [tag, sessionId, playing, queued, endsAt] = line.split(" ");
+      if (tag === "owner-streaming" && sessionId && playing && queued && endsAt)
+        resolve({ sessionId, playing, queued, endsAt: Number(endsAt) });
     });
     child.once("exit", (code) => reject(new Error(`the owner exited early (${code})`)));
   });
@@ -525,6 +537,92 @@ test(
       } finally {
         child.kill("SIGKILL");
       }
+    }),
+  60_000,
+);
+
+/** Start the owner process and kill it once it streams; the twin keeps its session going. */
+const killedOwner = async (twin: Twin, grant: Reactor.Coordinator.TokenGrant) => {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), "--twin-owner", twin.url],
+    {
+      env: {
+        ...process.env,
+        TWIN_OWNER_GRANT: JSON.stringify({ ...grant, jwt: Redacted.value(grant.jwt) }),
+      },
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
+  try {
+    const owned = await streaming(child);
+    child.kill("SIGKILL");
+    await until(() => twin.sessions.get(owned.sessionId)?.connected === false, 4000);
+    return owned;
+  } finally {
+    child.kill("SIGKILL");
+  }
+};
+
+test(
+  "a killed owner's session resumes through Orchestration, which only reads it and terminates it on close",
+  () =>
+    withTwin(async (twin) => {
+      const grant = await run(twin, mint(twin));
+      const { sessionId, playing, queued, endsAt } = await killedOwner(twin, grant);
+      expect(twin.sessions.get(sessionId)?.state).toBe("ACTIVE");
+      const enqueued = twin.enqueues;
+      const allocation: Orchestration.Allocation = {
+        sessionId,
+        ownership: "owned",
+        model: H3.modelName,
+        expiresAt: grant.expiresAt,
+        endsAt,
+      };
+      const resumed = await run(
+        twin,
+        Effect.gen(function* () {
+          let opens = 0;
+          const handle = yield* Orchestration.make({
+            lead: "1 second",
+            // This check has no replacement: only the recorded session resumes.
+            open: Effect.gen(function* () {
+              if (opens++ > 0)
+                return yield* Reactor.ReactorError.fromCode("InvalidState", "no replacement");
+              return yield* Orchestration.resumeH3({ allocation, jwt: grant.jwt });
+            }),
+          });
+          const state = yield* eventually(
+            handle.engine.state,
+            (current) => current.availability === "Ready" && current.playing._tag === "Some",
+          );
+          const fresh = yield* handle.media.video.pipe(
+            Stream.take(12),
+            Stream.runCollect,
+            Effect.timeout("5 seconds"),
+          );
+          return { state, fresh, cleanup: yield* handle.close };
+        }),
+      );
+      const playingNow = resumed.state.playing;
+      expect(playingNow._tag === "Some" ? String(playingNow.value.clipId) : undefined).toBe(
+        playing,
+      );
+      const listed = [...resumed.state.queued, ...resumed.state.ready].find(
+        (clip) => clip.clipId === queued,
+      );
+      expect(listed?.provider.prompt).toBe(`${prompt} The glass tips over.`);
+      expect(resumed.fresh.every(lit)).toBe(true);
+      expect(changing(resumed.fresh)).toBe(true);
+      expect(twin.enqueues).toBe(enqueued);
+      // The adopted session is owned: the orchestration's close terminated it.
+      expect(resumed.cleanup.sessions).toHaveLength(1);
+      expect(resumed.cleanup.sessions[0]!.lease).toMatchObject({
+        ownership: "owned",
+        sessionId,
+        remote: { attempted: true, confirmed: true, evidence: "terminal", state: "CLOSED" },
+      });
+      expect(twin.sessions.get(sessionId)?.state).toBe("CLOSED");
     }),
   60_000,
 );

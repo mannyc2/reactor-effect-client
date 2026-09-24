@@ -65,6 +65,8 @@ const fixture = (
   };
 };
 
+const client = () => Client.make();
+
 test("a shared Client allocates independent sessions without opening peers", async () => {
   const fake = fixture();
   await Effect.runPromise(
@@ -180,6 +182,85 @@ test("closing an attached session does not clear or terminate the remote owner",
     ).pipe(Effect.provide(fake.dependencies)),
   );
   expect(fake.open.has("existing-session")).toBe(true);
+  expect(fake.calls).toEqual([]);
+});
+
+test("closing an adopted session terminates it: one DELETE, then a read that confirms the end", async () => {
+  const fake = fixture();
+  fake.open.add("existing-session");
+  const report = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* Client.make();
+        const adopted = yield* client.attach({ sessionId: "existing-session", adopt: true });
+        expect(adopted.ownership).toBe("owned");
+        // Attaching allocates nothing; only the close reaches the coordinator.
+        expect(fake.calls).toEqual([]);
+        return yield* adopted.close;
+      }),
+    ).pipe(Effect.provide(fake.dependencies)),
+  );
+  expect(fake.calls).toEqual([
+    "DELETE /sessions/existing-session",
+    "GET /sessions/existing-session",
+  ]);
+  expect(fake.open.has("existing-session")).toBe(false);
+  expect(report).toMatchObject({
+    localClosed: true,
+    allocation: "known",
+    ownership: "owned",
+    sessionId: "existing-session",
+    remote: { attempted: true, confirmed: true },
+  });
+});
+
+test("a failed connected adoption terminates the session it adopted and reports that", async () => {
+  const fake = fixture();
+  fake.open.add("existing-session");
+  const result = await Effect.runPromise(
+    Effect.scoped(
+      Effect.result(
+        client().pipe(
+          Effect.flatMap((client) =>
+            client.attachConnected({ sessionId: "existing-session", adopt: true }),
+          ),
+        ),
+      ),
+    ).pipe(Effect.provide(fake.dependencies)),
+  );
+  expect(result._tag).toBe("Failure");
+  if (result._tag === "Failure") {
+    expect(result.failure.cleanup.ownership).toBe("owned");
+    expect(result.failure.cleanup.remote.confirmed).toBe(true);
+  }
+  expect(fake.peers).toBe(1);
+  expect(fake.open.has("existing-session")).toBe(false);
+  expect(fake.calls).toEqual([
+    "DELETE /sessions/existing-session",
+    "GET /sessions/existing-session",
+  ]);
+});
+
+test("adopt is true or absent; anything else is refused before any request", async () => {
+  const fake = fixture();
+  for (const adopt of [false, "yes", 1, null]) {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.result(
+          client().pipe(
+            Effect.flatMap((client) =>
+              client.attach({
+                sessionId: "existing-session",
+                adopt,
+              } as unknown as Client.AttachOptions),
+            ),
+          ),
+        ),
+      ).pipe(Effect.provide(fake.dependencies)),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure.reason._tag).toBe("InvalidInput");
+  }
   expect(fake.calls).toEqual([]);
 });
 

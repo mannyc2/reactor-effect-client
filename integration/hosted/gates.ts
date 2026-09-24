@@ -35,9 +35,10 @@ export const workSeconds = sessionSeconds - 10;
 /**
  * The checks 0.3.0 was qualified by (`vertical`, `takeover` and `turn`), then
  * one per capability added since: `audio`, the vertical with a reference image
- * and a reference audio clip.
+ * and a reference audio clip, and `resume`, the takeover through
+ * `Orchestration.resumeH3`.
  */
-export const checks = ["vertical", "takeover", "turn", "audio"] as const;
+export const checks = ["vertical", "takeover", "turn", "audio", "resume"] as const;
 export type Check = (typeof checks)[number];
 
 export interface Authorization {

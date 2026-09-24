@@ -180,6 +180,19 @@ test("audio is required only when the session offered it, and takeover needs its
   ]);
 });
 
+test("the resume check needs the takeover's fields and the library's own close report", () => {
+  const resume: Draft = { ...vertical(), check: "resume" };
+  expect(missing(resume)).toEqual([
+    "takeover.attachMs",
+    "takeover.clipIdentified",
+    "takeover.metadataPreserved",
+    "takeover.enqueuesAfterAttach",
+    "takeover.firstFreshFrameMs",
+    "takeover.video",
+    "termination.close",
+  ]);
+});
+
 test("the audio check also needs the deployment's declaration and what the clip reports", () => {
   const audio: Draft = { ...vertical(), check: "audio" };
   expect(missing(audio)).toEqual(["contract.referenceAudio", "acceptance.references"]);

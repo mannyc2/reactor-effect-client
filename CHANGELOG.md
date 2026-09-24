@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `AttachOptions.adopt: true` takes an attached session's remote lifetime over. The session is `owned`, so closing it, or a failed `attachConnected`, terminates it and confirms the end, and its `CloseReport` says `ownership: "owned"`. Without it an attach still never terminates the session it joined. The attach span records `reactor.session.adopt`.
+- `Orchestration.Allocation.endsAt`: when the session's granted length ends at the latest, in seconds since the epoch, taken from just before the create request so it is never later than the server's end. `openH3` sets it; it is optional in the Schema, so a 0.3.0 record still decodes.
+- `Orchestration.resumeH3({ allocation, jwt, source? })` resumes a paid H3 session that `openH3` allocated, after its owner died: it attaches with `adopt: true` and derives the session's source, with the time left until `endsAt` as its lifetime, so it is a renewal `open` and renewal terminates the session when it retires it. It sends no policy command a playing session refuses: the session keeps its canvas (the source options take no `canvas`), queue and playback, and only `holdLastFrame`, which H3 accepts at any time, is applied. A record without `endsAt`, for another model or past its end is refused before anything is sent, and a failure after attaching terminates the adopted session and reports it in the `AcquisitionFailure`. It runs in a `reactor.orchestration.resume` span.
+- The hosted qualification gains a `resume` check: the takeover, with the new process resuming through `resumeH3` and ending the session by closing the resumed source. It has not run against hosted Reactor yet; the tests and a rehearsal against the twin qualify resume, including a twin test in which a killed owner's session resumes through an orchestration and its close terminates it.
+
 ## [0.3.1] - 2026-09-24
 
 H3 reference audio, added to the 0.3.0 API without breaking it. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.

@@ -67,8 +67,9 @@ export class RemoteSession {
           );
         const intent = options.intent;
         if (intent._tag === "Attach") {
+          // An adopted session is owned from here on: its cleanup terminates it.
           self.value = {
-            ownership: "attached",
+            ownership: intent.adopt === true ? "owned" : "attached",
             id: intent.sessionId,
             ...(intent.connectionId === undefined ? {} : { connectionId: intent.connectionId }),
           };

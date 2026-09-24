@@ -29,7 +29,13 @@ export type AcquisitionIntent =
       readonly model: { readonly name: string; readonly version?: string };
       readonly extraArgs?: Json;
     }
-  | { readonly _tag: "Attach"; readonly sessionId: string; readonly connectionId?: number };
+  | {
+      readonly _tag: "Attach";
+      readonly sessionId: string;
+      readonly connectionId?: number;
+      /** The attached session's remote lifetime is taken over: it is owned. */
+      readonly adopt?: true;
+    };
 
 /**
  * The session-owned reply budget. The session's default and a call's override

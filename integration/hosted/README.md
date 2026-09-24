@@ -35,9 +35,10 @@ Two extra checks are deliberately not planned:
 
 A capability added after 0.3.0 gets one check of its own, run once, against the published bytes of the release that carries it or from the checkout that adds it. Each release keeps its own ledger, `evidence/<version>/`, under the same limits: at most $0.75 a check. Until its check has run, the capability is qualified only by the tests and the twin.
 
-| Check   | Release | What it adds to the vertical                                                                                                                                                                                                                                                                                              |
-| ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audio` | 0.3.1   | The clip carries a gray reference image and a 3 s tone as its reference audio, because H3 takes audio only beside an image or a continuation. It records whether the deployment declares `reference_audios`, and passes only if the accepted clip reports `has_reference_audio` and one audio reference, as H3 documents. |
+| Check    | Release | What it adds to the vertical                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audio`  | 0.3.1   | The clip carries a gray reference image and a 3 s tone as its reference audio, because H3 takes audio only beside an image or a continuation. It records whether the deployment declares `reference_audios`, and passes only if the accepted clip reports `has_reference_audio` and one audio reference, as H3 documents.                                                                                              |
+| `resume` | 0.3.2   | The takeover, but the new process resumes the session with `Orchestration.resumeH3` from the owner record `openH3` handed the owner, which adopts it. It passes only if the resume sends nothing but state and queue reads, identifies the playing clip, keeps the queued clip's metadata, receives fresh frames, and closing the resumed source terminates the session and confirms it, with no help from the record. |
 
 ## What we gather, and why
 
@@ -132,6 +133,9 @@ bun hosted/qualify.ts turn --budget-usd=0.75 --total-budget-usd=2.25 \
 bun hosted/qualify.ts rehearse audio
 bun hosted/qualify.ts audio --budget-usd=0.75 --total-budget-usd=0.75 \
   --ledger=evidence/0.3.1 --network="home fiber, no VPN" --i-authorize-paid-sessions
+bun hosted/qualify.ts rehearse resume
+bun hosted/qualify.ts resume --budget-usd=0.75 --total-budget-usd=0.75 \
+  --ledger=evidence/0.3.2 --network="home fiber, no VPN" --i-authorize-paid-sessions
 
 bun hosted/qualify.ts summarize ledger > summary.md
 ```
