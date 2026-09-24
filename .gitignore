@@ -11,3 +11,4 @@ coverage/
 packages/native/rust/target/
 packages/native/lib/
 *.tsbuildinfo
+.channel/

@@ -43,6 +43,10 @@ The entry point also exports `videoFrames`, `audioSamples`, `webAudioSamples`, `
 
 If the host lacks `RTCPeerConnection` or `MediaStream`, building `Browser.layer` fails with `UnsupportedHost`, before any coordinator request can be made.
 
+## Example
+
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples) is a page that runs its own session over the browser's WebRTC, with a server that only mints short tokens: `ManagedRuntime` behind ordinary DOM code, a session held in a scope until Stop, and a clip followed through its operation facts.
+
 ## Development
 
 This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Its tests are simulated-host policy tests: they do not establish browser WebRTC or codec support. Real Chrome interoperability with the native host is exercised by the workspace's `integration` project.

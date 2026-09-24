@@ -1,0 +1,23 @@
+{
+  "name": "reactor-effect-example-livestream",
+  "version": "0.3.0-rc.0",
+  "private": true,
+  "description": "Server-side livestream: one Reactor orchestration broadcast to many browsers",
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*",
+    "reactor-effect-native": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

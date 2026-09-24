@@ -1,0 +1,21 @@
+{
+  "name": "reactor-effect-browser-examples",
+  "version": "0.3.0-rc.0",
+  "private": true,
+  "description": "reactor-effect-browser example: a page that runs a Reactor session over the browser's WebRTC, with a token server",
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-browser": "workspace:*",
+    "reactor-effect-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  },
+  "scripts": {
+    "build": "bun build src/app.ts --target=browser --outdir=dist",
+    "start": "node src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit"
+  }
+}

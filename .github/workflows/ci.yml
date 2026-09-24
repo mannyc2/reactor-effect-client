@@ -54,10 +54,18 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
+      # The livestream example's test and the native example's recorder test
+      # encode video with a real ffmpeg, which the runner image lacks.
+      - name: Install ffmpeg for the examples
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
+
       # Generation, format, lint, dependency-ordered build, every workspace's
-      # typecheck, architecture, compiled examples, portable tests and the
-      # Node/Bun import guards. Runs once; nothing here varies by host.
+      # typecheck, architecture, the examples' offline tests and browser
+      # bundle, portable tests and the Node/Bun import guards. Runs once;
+      # nothing here varies by host.
       - name: Shared portable verification
+        env:
+          EXAMPLES_REQUIRE_FFMPEG: "1"
         run: bun run verify --profile portable
 
       - name: Install isolated release tooling

@@ -68,6 +68,10 @@ It has costs the in-process host does not:
 - every frame is copied across the IPC channel and then once more, because Node's advanced serialization delivers a message's typed arrays as views into one shared message buffer, and each frame's data must be the whole of an exact allocation of its own (a 1344x768 BGRA frame is about 4 MB);
 - the parent must be Node: under Bun, building the layer fails with `UnsupportedCapability`, not submitted.
 
+## Example
+
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples) is a command line that generates one H3 clip and writes its decoded frames and audio to an MP4, filling what the host dropped from `recorder`'s gaps; `--isolated` runs it on `Native.Isolated.layer()`. The repository's [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream) broadcasts an orchestration's decoded media to many browsers.
+
 ## Package layout
 
 | Path                                 | Contents                                                                                                     |

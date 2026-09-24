@@ -1,0 +1,23 @@
+{
+  "name": "reactor-effect-native-examples",
+  "version": "0.3.0-rc.0",
+  "private": true,
+  "description": "reactor-effect-native example: a command-line capture of one H3 clip, decoded on the server and written to MP4",
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "effect": "catalog:",
+    "reactor-effect-client": "workspace:*",
+    "reactor-effect-native": "workspace:*"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "capture": "node src/capture.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

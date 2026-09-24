@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reactor live channel</title>
+    <style>
+      body {
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      video {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #000;
+      }
+      form {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0 4px;
+      }
+      input {
+        flex: 1;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      #log {
+        font:
+          12px/1.6 ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+        max-height: 18em;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Reactor live channel</h1>
+    <video id="video" autoplay muted playsinline controls></video>
+    <form id="form">
+      <input id="prompt" maxlength="2000" placeholder="Describe the next clip" required />
+      <button>Send</button>
+    </form>
+    <p id="note"></p>
+    <div id="log"></div>
+    <script type="module">
+      const video = document.getElementById("video");
+      const note = document.getElementById("note");
+      const log = document.getElementById("log");
+      const write = (text) => {
+        log.textContent = `${new Date().toLocaleTimeString()}  ${text}\n${log.textContent}`.slice(
+          0,
+          20000,
+        );
+      };
+
+      // One long fragmented MP4. It ends when the encoder restarts, so reconnect;
+      // and jump to the live edge whenever playback falls behind it.
+      const connect = () => {
+        video.src = `/live.mp4?at=${Date.now()}`;
+        video.play().catch(() => {});
+      };
+      video.addEventListener("error", () => setTimeout(connect, 1000));
+      video.addEventListener("ended", () => setTimeout(connect, 1000));
+      setInterval(() => {
+        const ranges = video.buffered;
+        const edge = ranges.length > 0 ? ranges.end(ranges.length - 1) : 0;
+        if (edge - video.currentTime > 3) video.currentTime = edge - 0.5;
+      }, 1000);
+      connect();
+
+      const describe = (event) => {
+        switch (event._tag) {
+          case "Clip":
+            return `clip ${event.clipId.slice(-8)} ${event.phase}${event.prompt ? `: ${event.prompt}` : ""}`;
+          case "Renewal":
+            return `renewal ${event.phase}${event.session ? ` (session ${event.session.slice(-8)})` : ""}${event.lostClips ? `, ${event.lostClips} clips lost` : ""}`;
+          case "Media":
+            return `media ${event.state}${event.session ? ` (session ${event.session.slice(-8)})` : ""}`;
+          case "Starved":
+            return "nothing ready to play";
+          case "OffAir":
+            return `off air: ${event.reason}`;
+        }
+      };
+      new EventSource("/api/events").onmessage = (message) =>
+        write(describe(JSON.parse(message.data)));
+
+      document.getElementById("form").addEventListener("submit", async (submit) => {
+        submit.preventDefault();
+        const input = document.getElementById("prompt");
+        const response = await fetch("/api/prompts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ prompt: input.value.trim() }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.ok && body._tag === "Accepted") {
+          note.textContent = `Queued as clip ${body.clipId.slice(-8)}.`;
+          input.value = "";
+        } else if (response.ok) {
+          note.textContent = "Sent, but its outcome is unknown; watch the log.";
+        } else if (response.status === 429) {
+          note.textContent = `${body.message}. Try again in ${body.retryAfterSeconds} s.`;
+        } else {
+          note.textContent = body.message ?? `The channel refused the prompt (${response.status}).`;
+        }
+      });
+    </script>
+  </body>
+</html>
