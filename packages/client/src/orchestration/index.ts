@@ -4,6 +4,7 @@ export {
   ClipSequence,
   ClipMetadata,
   ReferenceImage,
+  ReferenceAudio,
   Canvas,
   PolicyFailure,
 } from "./request.js";

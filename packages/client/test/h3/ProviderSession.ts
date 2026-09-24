@@ -270,6 +270,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               124 + Math.ceil(Math.max(0, Math.ceil(requested * 24 - 1e-6) - 124) / 17) * 17,
             );
             const count = Array.isArray(args.reference_images) ? args.reference_images.length : 0;
+            const audio = Array.isArray(args.reference_audios) ? args.reference_audios.length : 0;
             const clip = fixtureClip({
               prompt: textArg(args.prompt),
               metadata: textArg(args.metadata),
@@ -278,6 +279,8 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
               seed: typeof args.seed === "number" ? args.seed : seed++,
               has_reference_image: count > 0,
               reference_image_count: count,
+              has_reference_audio: audio > 0,
+              reference_audio_count: audio,
             });
             accepted.push(clip);
             generationQueue.splice(

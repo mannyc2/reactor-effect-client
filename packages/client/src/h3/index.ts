@@ -1,6 +1,6 @@
 /** Portable H3 Reference Turbo Realtime provider over a canonical, already connected Session. */
 export { make } from "./_internal/client.js";
-export { validateReference } from "./_internal/references.js";
+export { validateAudioReference, validateReference } from "./_internal/references.js";
 export {
   modelName,
   documentedVersion,
@@ -8,6 +8,7 @@ export {
   requestSeconds,
   canvases,
   referenceLimits,
+  audioReferenceLimits,
 } from "./profile.js";
 export {
   h3ReferenceTurboRealtime,
@@ -26,6 +27,7 @@ export type { Message, MessageType, Payload, DecodedMessage } from "./messages.j
 export type {
   Reference,
   ValidatedReference,
+  ValidatedAudioReference,
   Request,
   Options,
   Aspect,

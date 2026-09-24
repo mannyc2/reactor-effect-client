@@ -7,6 +7,7 @@ import { ClipId } from "../../src/orchestration/request.js";
 import * as Simulation from "../../src/simulation/index.js";
 import type { SimOptions } from "../../src/simulation/index.js";
 import { buildFailsEveryNth } from "../../src/testing/Faults.js";
+import * as H3 from "../../src/h3/index.js";
 import {
   audioFrame,
   gate,
@@ -281,3 +282,45 @@ test("simulation source rejects invalid options and layerSim provides one shared
       }).pipe(Effect.provide(Simulation.layerSim()));
     }),
   ));
+
+test("the simulation records a clip's audio references", () =>
+  runClock(
+    Effect.gen(function* () {
+      const engine = yield* Engine;
+      const voiced = request({
+        durationSeconds: 5,
+        references: [{ uri: "host.png" }],
+        audio: [{ uri: "voice.wav" }, { uri: "room.wav" }],
+      });
+      const id = yield* engine.enqueue(voiced);
+      const plain = yield* engine.enqueue(input());
+      const queued = (yield* engine.state).queued;
+      const clip = queued.find((entry) => entry.clipId === id)!;
+      expect(clip.provider).toMatchObject({
+        has_reference_image: true,
+        has_reference_audio: true,
+        reference_audio_count: 2,
+      });
+      expect((clip as LocalClipRecord).request.audio).toEqual(voiced.audio);
+      expect(queued.find((entry) => entry.clipId === plain)!.provider).toMatchObject({
+        has_reference_audio: false,
+        reference_audio_count: 0,
+      });
+    }).pipe(Effect.provide(Simulation.layerSim({ fixedBuildTime: 60_000, buildRatio: 0 }))),
+  ));
+
+test("a simulation whose profile takes no audio refuses a clip with audio, not submitted", () => {
+  const { audioReferences: _, ...silent } = H3.h3ReferenceTurboRealtime;
+  return runClock(
+    Effect.gen(function* () {
+      const engine = yield* Engine;
+      const refused = yield* Effect.result(
+        engine.enqueue(
+          request({ references: [{ uri: "host.png" }], audio: [{ uri: "voice.wav" }] }),
+        ),
+      );
+      expect(Result.isFailure(refused) && refused.failure.context.outcome).toBe("not-submitted");
+      expect((yield* engine.state).queued).toEqual([]);
+    }).pipe(Effect.provide(Simulation.layerSim({ profile: silent }))),
+  );
+});

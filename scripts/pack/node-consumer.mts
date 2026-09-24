@@ -33,6 +33,23 @@ const sameOwner = new Orchestration.ClipRequest({
   sameSessionAs: priorClip,
 });
 void engine.prepare(sameOwner);
+// Reference audio travels beside an image, from bytes the /testing fixture writes.
+const voiced = new Orchestration.ClipRequest({
+  prompt: "Audio 1 is the host's voice",
+  references: [{ uri: "file:///host.png" }],
+  audio: [{ uri: "file:///voice.wav" }],
+  durationSeconds: 5,
+  metadata: {},
+});
+void engine.prepare(voiced);
+const spoken: H3.Request = {
+  prompt: "Audio 1 is the host's voice",
+  references: [{ _tag: "Bytes", bytes: Testing.pngBytes(2, 2) }],
+  audio: [{ _tag: "Bytes", bytes: Testing.wavBytes(3) }],
+};
+const audioBounds: number = H3.audioReferenceLimits.maxAudio;
+const validatedAudio: Effect.Effect<H3.ValidatedAudioReference, Root.ReactorError> =
+  H3.validateAudioReference({ _tag: "Bytes", bytes: Testing.wavBytes(3) });
 const media: Orchestration.MediaShape = simulated.media;
 const encoded = Wire.ControlClientMessage.encode({
   request_id: "fixture",
@@ -53,4 +70,7 @@ void [
   media,
   encoded,
   fixtureBytes,
+  spoken,
+  audioBounds,
+  validatedAudio,
 ];

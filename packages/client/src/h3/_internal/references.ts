@@ -1,8 +1,13 @@
 import * as Effect from "effect/Effect";
 import { parsedInput, ReactorError } from "../../errors.js";
 import type { UploadReference } from "../../wire.generated.js";
-import { imageMimeTypes, referenceLimits } from "../profile.js";
-import type { Reference, ValidatedReference } from "../types.js";
+import {
+  audioMimeTypes,
+  audioReferenceLimits,
+  imageMimeTypes,
+  referenceLimits,
+} from "../profile.js";
+import type { Reference, ValidatedAudioReference, ValidatedReference } from "../types.js";
 
 interface ImageFacts {
   readonly mimeType: ValidatedReference["mimeType"];
@@ -12,7 +17,7 @@ interface ImageFacts {
 export type Material =
   | { readonly _tag: "Bytes"; readonly bytes: Uint8Array<ArrayBuffer> }
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
-const materials = new WeakMap<ValidatedReference, Material>();
+const materials = new WeakMap<ValidatedReference | ValidatedAudioReference, Material>();
 const invalid = (message: string): never => {
   throw ReactorError.fromCode("InvalidInput", message, {
     operation: "H3 reference",
@@ -122,6 +127,88 @@ const inspectImage = (bytes: Uint8Array): ImageFacts => {
   return invalid("Reference must contain a supported PNG, JPEG, or WebP image");
 };
 
+interface AudioFacts {
+  readonly mimeType: ValidatedAudioReference["mimeType"];
+  readonly seconds: number | null;
+  readonly channels: number | null;
+}
+
+/** A WAV's length and channels, from its `fmt ` chunk and the data it holds. */
+const inspectWav = (bytes: Uint8Array): AudioFacts => {
+  if (le32(bytes, 4) + 8 > bytes.length) return invalid("WAV is truncated");
+  let offset = 12,
+    channels: number | undefined,
+    byteRate: number | undefined,
+    data: number | undefined;
+  while (offset + 8 <= bytes.length) {
+    const id = ascii(bytes, offset, 4),
+      size = le32(bytes, offset + 4),
+      body = offset + 8;
+    if (id === "fmt ") {
+      if (size < 16 || body + 16 > bytes.length) return invalid("WAV format chunk is truncated");
+      channels = le16(bytes, body + 2);
+      byteRate = le32(bytes, body + 8);
+    } else if (id === "data") {
+      // A streaming writer may leave the size at its maximum: count what is there.
+      data = Math.min(size, bytes.length - body);
+      break;
+    }
+    offset = body + size + (size % 2);
+  }
+  if (channels === undefined || byteRate === undefined || data === undefined)
+    return invalid("WAV has no format or data chunk");
+  if (channels === 0 || byteRate === 0) return invalid("WAV format is invalid");
+  return { mimeType: "audio/wav", seconds: data / byteRate, channels };
+};
+
+/** A FLAC's length and channels, from its STREAMINFO block; an unknown length stays null. */
+const inspectFlac = (bytes: Uint8Array): AudioFacts => {
+  const info = 8;
+  if (bytes.length < info + 34 || (bytes[4]! & 127) !== 0)
+    return invalid("FLAC has no stream info");
+  if (uint16(bytes, 5) * 256 + bytes[7]! < 34) return invalid("FLAC stream info is truncated");
+  const rate = bytes[info + 10]! * 4096 + bytes[info + 11]! * 16 + (bytes[info + 12]! >> 4);
+  const channels = ((bytes[info + 12]! >> 1) & 7) + 1;
+  const samples = (bytes[info + 13]! & 15) * 0x100000000 + uint32(bytes, info + 14);
+  if (rate === 0) return invalid("FLAC sample rate is invalid");
+  return { mimeType: "audio/flac", seconds: samples === 0 ? null : samples / rate, channels };
+};
+
+/** An Ogg stream's channels from its first page's Opus or Vorbis header; its length stays null. */
+const inspectOgg = (bytes: Uint8Array): AudioFacts => {
+  const payload = bytes.length > 26 ? 27 + bytes[26]! : bytes.length;
+  const channels =
+    ascii(bytes, payload, 8) === "OpusHead"
+      ? bytes[payload + 9]
+      : bytes[payload] === 1 && ascii(bytes, payload + 1, 6) === "vorbis"
+        ? bytes[payload + 11]
+        : undefined;
+  return { mimeType: "audio/ogg", seconds: null, channels: channels ?? null };
+};
+
+/**
+ * The only audio-container identification used by the provider and its loaders.
+ * WAV and FLAC headers give a length and channel count that are checked here;
+ * the other formats are recognized by their container and checked by H3.
+ */
+const inspectAudio = (bytes: Uint8Array): AudioFacts => {
+  if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 4) === "WAVE")
+    return inspectWav(bytes);
+  if (bytes.length >= 4 && ascii(bytes, 0, 4) === "fLaC") return inspectFlac(bytes);
+  if (bytes.length >= 4 && ascii(bytes, 0, 4) === "OggS") return inspectOgg(bytes);
+  if (bytes.length >= 12 && ascii(bytes, 4, 4) === "ftyp")
+    return { mimeType: "audio/mp4", seconds: null, channels: null };
+  if (bytes.length >= 4 && uint32(bytes, 0) === 0x1a45dfa3)
+    return { mimeType: "audio/webm", seconds: null, channels: null };
+  if (bytes.length >= 3 && ascii(bytes, 0, 3) === "ID3")
+    return { mimeType: "audio/mpeg", seconds: null, channels: null };
+  if (bytes.length >= 2 && bytes[0] === 255 && (bytes[1]! & 246) === 240)
+    return { mimeType: "audio/aac", seconds: null, channels: null };
+  if (bytes.length >= 2 && bytes[0] === 255 && (bytes[1]! & 224) === 224 && (bytes[1]! & 6) !== 0)
+    return { mimeType: "audio/mpeg", seconds: null, channels: null };
+  return invalid("Audio reference must be WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM");
+};
+
 export const plain = (input: unknown, allowed: readonly string[]): Record<string, unknown> => {
   if (
     input === null ||
@@ -141,7 +228,14 @@ export const plain = (input: unknown, allowed: readonly string[]): Record<string
 };
 
 /** Validates wire identity and a safe JSON size projection without inventing upload provenance. */
-export const checkedUpload = (input: unknown): UploadReference => {
+export const checkedUpload = (
+  input: unknown,
+  kind: "image" | "audio" = "image",
+): UploadReference => {
+  const [mimeTypes, maxBytes]: readonly [readonly string[], number] =
+    kind === "image"
+      ? [imageMimeTypes, referenceLimits.maxBytes]
+      : [audioMimeTypes, audioReferenceLimits.maxBytes];
   const file = plain(input, ["upload_id", "name", "mime_type", "size", "_unknown"]);
   if (
     typeof file.upload_id !== "string" ||
@@ -149,10 +243,10 @@ export const checkedUpload = (input: unknown): UploadReference => {
     typeof file.name !== "string" ||
     file.name.length === 0 ||
     file.name.length > 1024 ||
-    !(imageMimeTypes as readonly string[]).includes(String(file.mime_type)) ||
+    !mimeTypes.includes(String(file.mime_type)) ||
     typeof file.size !== "bigint" ||
     file.size <= 0n ||
-    file.size > BigInt(referenceLimits.maxBytes)
+    file.size > BigInt(maxBytes)
   ) {
     return invalid("Uploaded reference has invalid identity, type, or size");
   }
@@ -165,7 +259,12 @@ export const checkedUpload = (input: unknown): UploadReference => {
 };
 
 export const captureReference = (input: Reference | ValidatedReference): ValidatedReference => {
-  if (input !== null && typeof input === "object" && materials.has(input as ValidatedReference))
+  if (
+    input !== null &&
+    typeof input === "object" &&
+    materials.has(input as ValidatedReference) &&
+    (input as ValidatedReference)._tag === "ValidatedReference"
+  )
     return input as ValidatedReference;
   const object = plain(input, ["_tag", "bytes", "file"]);
   let material: Material, facts: ValidatedReference;
@@ -196,15 +295,74 @@ export const captureReference = (input: Reference | ValidatedReference): Validat
       width: null,
       height: null,
     } as ValidatedReference;
-  } else return invalid("Reference must be Bytes or Uploaded; reference audio is unsupported");
+  } else return invalid("Reference must be Bytes or Uploaded");
   const validated = Object.freeze(facts) as ValidatedReference;
   materials.set(validated, material);
   return validated;
 };
 
-export const referenceMaterial = (reference: ValidatedReference): Material =>
-  materials.get(reference) ?? invalid("Unknown validated reference");
+export const captureAudioReference = (
+  input: Reference | ValidatedAudioReference,
+): ValidatedAudioReference => {
+  if (
+    input !== null &&
+    typeof input === "object" &&
+    materials.has(input as ValidatedAudioReference) &&
+    (input as ValidatedAudioReference)._tag === "ValidatedAudioReference"
+  )
+    return input as ValidatedAudioReference;
+  const object = plain(input, ["_tag", "bytes", "file"]);
+  let material: Material, facts: ValidatedAudioReference;
+  if (object._tag === "Bytes" && object.bytes instanceof Uint8Array && object.file === undefined) {
+    if (object.bytes.byteLength === 0 || object.bytes.byteLength > audioReferenceLimits.maxBytes)
+      return invalid("Audio exceeds the 25 MiB bound");
+    const bytes = new Uint8Array(object.bytes),
+      audio = inspectAudio(bytes);
+    if (
+      audio.channels !== null &&
+      (audio.channels < 1 || audio.channels > audioReferenceLimits.maxChannels)
+    )
+      return invalid("Audio must be mono or stereo");
+    if (
+      audio.seconds !== null &&
+      (audio.seconds < audioReferenceLimits.minSeconds ||
+        audio.seconds > audioReferenceLimits.maxSeconds)
+    )
+      return invalid("Audio must be 2 to 15 seconds long");
+    material = { _tag: "Bytes", bytes };
+    facts = {
+      _tag: "ValidatedAudioReference",
+      ...audio,
+      size: bytes.length,
+    } as ValidatedAudioReference;
+  } else if (object._tag === "Uploaded" && object.bytes === undefined) {
+    const file = checkedUpload(object.file, "audio");
+    material = { _tag: "Uploaded", file };
+    facts = {
+      _tag: "ValidatedAudioReference",
+      mimeType: file.mime_type as ValidatedAudioReference["mimeType"],
+      size: Number(file.size),
+      seconds: null,
+      channels: null,
+    } as ValidatedAudioReference;
+  } else return invalid("Audio reference must be Bytes or Uploaded");
+  const validated = Object.freeze(facts) as ValidatedAudioReference;
+  materials.set(validated, material);
+  return validated;
+};
+
+export const referenceMaterial = (
+  reference: ValidatedReference | ValidatedAudioReference,
+): Material => materials.get(reference) ?? invalid("Unknown validated reference");
 export const validateReference = (
   input: Reference,
 ): Effect.Effect<ValidatedReference, ReactorError> =>
   parsedInput(() => captureReference(input), "H3 reference");
+/**
+ * Validate an audio reference once: its container, and for WAV and FLAC its
+ * length and channels, so a request can reuse it without checking it again.
+ */
+export const validateAudioReference = (
+  input: Reference,
+): Effect.Effect<ValidatedAudioReference, ReactorError> =>
+  parsedInput(() => captureAudioReference(input), "H3 reference");

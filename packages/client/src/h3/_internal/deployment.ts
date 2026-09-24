@@ -1,7 +1,13 @@
 import * as Predicate from "effect/Predicate";
 import { ReactorError } from "../../errors.js";
 import { jsonObject } from "../../json.js";
-import { documentedVersion, modelName, referenceLimits, source } from "../profile.js";
+import {
+  audioReferenceLimits,
+  documentedVersion,
+  modelName,
+  referenceLimits,
+  source,
+} from "../profile.js";
 import type { Contract } from "../types.js";
 import { deploymentCommands, messageShapes } from "./contracts.js";
 import type { Shape } from "./contracts.js";
@@ -71,12 +77,18 @@ export const validateDeployment = (input: unknown): Contract => {
       return incompatible(`${location} nullability`);
     if (expected.nullable !== true && nullable) return incompatible(`${location} nullability`);
     if (expected.type === "array") {
+      const counted =
+        location === "command enqueue.reference_images"
+          ? referenceLimits.maxImages
+          : location === "command enqueue.reference_audios"
+            ? audioReferenceLimits.maxAudio
+            : undefined;
       if (
-        location === "command enqueue.reference_images" &&
+        counted !== undefined &&
         ((typeof actual.minItems === "number" && actual.minItems > 0) ||
-          (typeof actual.maxItems === "number" && actual.maxItems < referenceLimits.maxImages))
+          (typeof actual.maxItems === "number" && actual.maxItems < counted))
       )
-        return incompatible("command enqueue.reference_images count bounds");
+        return incompatible(`${location} count bounds`);
       if (expected.items !== undefined)
         check(actual.items, expected.items, `${location} items`, depth + 1);
     } else if (expected.type === "object") {
@@ -106,6 +118,7 @@ export const validateDeployment = (input: unknown): Contract => {
     check(schema, shape, `message ${name}`);
     messageSchemas.set(name, schema);
   }
+  const declared = new Set<string>();
   for (const command of deploymentCommands) {
     const { name } = command;
     const post = record(
@@ -114,7 +127,25 @@ export const validateDeployment = (input: unknown): Contract => {
     );
     if (post.operationId !== name) return incompatible(`command ${name} operationId`);
     const args = bodySchema(post.requestBody, `command ${name}`);
-    check(args, command.args, `command ${name}`);
+    // A capability argument the deployment leaves undeclared is not checked;
+    // the contract records that requests may not use it.
+    const properties = resolve(args, `command ${name}`).properties;
+    const present = command.capabilities.filter(
+      (argument) => Predicate.isObject(properties) && Object.hasOwn(properties, argument),
+    );
+    for (const argument of present) declared.add(`${name}.${argument}`);
+    check(
+      args,
+      {
+        ...command.args,
+        fields: Object.fromEntries(
+          Object.entries(command.args.fields ?? {}).filter(
+            ([field]) => !command.capabilities.includes(field) || present.includes(field),
+          ),
+        ),
+      },
+      `command ${name}`,
+    );
     const required = resolve(args, `command ${name}`).required ?? [];
     if (!Array.isArray(required) || required.some((key) => !command.supplied.includes(String(key))))
       return incompatible(`command ${name} unsupported required argument`);
@@ -138,6 +169,7 @@ export const validateDeployment = (input: unknown): Contract => {
     documentedVersion,
     source,
     subset: "prompt-and-images",
+    referenceAudio: declared.has("enqueue.reference_audios"),
     deployment: Object.freeze({
       title: typeof info.title === "string" ? info.title : null,
       version: typeof info.version === "string" ? info.version : null,

@@ -23,6 +23,7 @@ export const Commands = {
     args: Schema.Struct({
       prompt: Schema.String,
       reference_images: Schema.NullOr(Schema.Array(Upload)),
+      reference_audios: Schema.optionalKey(Schema.NullOr(Schema.Array(Upload))),
       seconds: Schema.optionalKey(Schema.NullOr(NumberArgument)),
       seed: Schema.optionalKey(Schema.NullOr(Schema.Int)),
       position: Schema.optionalKey(Schema.NullOr(Schema.Int)),
@@ -135,12 +136,22 @@ export const messageShapes: Readonly<Record<MessageType, Shape>> = Object.fromEn
   Object.entries(Payloads).map(([name, schema]) => [name, structuralShape(schema)]),
 ) as Readonly<Record<MessageType, Shape>>;
 
+/**
+ * Arguments a request sends only when it uses them, and that a deployment may
+ * leave undeclared: it is then admitted without that capability. When it
+ * declares one, the declaration must have the shape above.
+ */
+export const capabilityArguments: Partial<Record<CommandName, readonly string[]>> = {
+  enqueue: ["reference_audios"],
+};
+
 export const deploymentCommands = Object.entries(Commands).map(([name, command]) => {
   const shape = structuralShape(command.args, true);
   return {
     name,
     args: { ...shape, required: [] },
     supplied: shape.required ?? [],
+    capabilities: capabilityArguments[name as CommandName] ?? [],
     reply: command.reply,
   };
 });

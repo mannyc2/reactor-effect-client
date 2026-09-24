@@ -351,10 +351,20 @@ export const source = (
           id: submissionId,
           prepare: Effect.gen(function* () {
             yield* validate("enqueue");
+            const audio = request.audio?.length ?? 0;
+            const audioLimits = profile.audioReferences;
             if (
               !isRequestableSeconds(profile, request.durationSeconds) ||
               request.prompt.length > profile.prompt.maxChars ||
-              request.references.length > profile.references.max
+              request.references.length > profile.references.max ||
+              (audio > 0 &&
+                (audioLimits === undefined ||
+                  audio >
+                    (request.continueFrom === undefined
+                      ? audioLimits.max
+                      : audioLimits.maxWithContinuation) ||
+                  request.references.length + audio + (request.continueFrom === undefined ? 0 : 1) >
+                    audioLimits.maxTotal))
             ) {
               return yield* PolicyFailure.refuse(
                 "InvalidRequest",
@@ -430,6 +440,8 @@ export const source = (
                       ready: false,
                       has_reference_image: request.references.length > 0,
                       reference_image_count: request.references.length,
+                      has_reference_audio: (request.audio?.length ?? 0) > 0,
+                      reference_audio_count: request.audio?.length ?? 0,
                     }),
                   });
                   const clip: Clip = { record, popped: false, disposed: false };

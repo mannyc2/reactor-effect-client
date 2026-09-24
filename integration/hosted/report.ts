@@ -93,6 +93,9 @@ const section = (evidence: Evidence): string => {
           ? undefined
           : `ended +${seconds(lifecycle.ended.atMs - acceptance.acceptedMs)}`,
         `metadata echoed by ${counts(acceptance.metadataEchoes)}`,
+        acceptance.references === undefined
+          ? undefined
+          : `sent ${acceptance.references.images} image(s) and ${acceptance.references.audio} audio; the clip reports ${acceptance.references.reportedImages ?? "?"} image(s), ${acceptance.references.reportedAudio ?? "?"} audio (has_reference_audio ${acceptance.references.hasReferenceAudio ?? "?"})`,
       ]
         .filter((part) => part !== undefined)
         .join("; "),
@@ -143,7 +146,7 @@ const section = (evidence: Evidence): string => {
   if (contract !== undefined)
     add(
       "Contract",
-      `${contract.deploymentTitle ?? "untitled"} ${contract.deploymentVersion ?? "?"} (documented ${contract.documentedVersion}); messages ${counts(contract.messages)}; unknown ${counts(contract.unknown)}; ${contract.duplicates} duplicate, ${contract.stale} stale; diagnostics ${counts(contract.diagnostics)}`,
+      `${contract.deploymentTitle ?? "untitled"} ${contract.deploymentVersion ?? "?"} (documented ${contract.documentedVersion})${contract.referenceAudio === undefined ? "" : `; reference_audios ${contract.referenceAudio ? "declared" : "not declared"}`}; messages ${counts(contract.messages)}; unknown ${counts(contract.unknown)}; ${contract.duplicates} duplicate, ${contract.stale} stale; diagnostics ${counts(contract.diagnostics)}`,
     );
   const takeover = evidence.takeover;
   if (takeover !== undefined)
