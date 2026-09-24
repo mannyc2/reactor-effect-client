@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- An attached connection resumes its receive-only tracks when it connects and whenever it reconnects, as a created one does. Reactor holds each connection's media until that connection resumes its tracks, so an attach received no frames. The hosted qualification's takeover found this on September 24, 2026.
+- `session.stats` reports the candidate pair that carries the connection. That is the pair a transport names in `selectedCandidatePairId`, as browsers report it, or else the nominated, succeeded pair that received the most since the previous sample. It used to take the first nominated, succeeded pair, but ICE leaves a pair nominated after moving off it. So a hosted session reported a relay pair that carried nothing while its media arrived over a direct one.
+- H3: an enqueue is accepted by its matched `clip_queued` reply, with `correlated` evidence, even when a broadcast listed its clip first. Hosted H3 broadcasts the queue before it replies, so every hosted acceptance read `metadata`. Evidence by metadata that arrives while the reply is awaited is now held until the reply is observed. It decides the acceptance only if the reply does not: after an acknowledgement or a lost reply, or when a new transport generation, a provider failure or the provider's close ends the wait first. The clip operation records its clip's facts meanwhile and resolves them once the acceptance is decided; a reply that refuses the enqueue discards both.
+
 ## [0.3.0-rc.0] - 2026-09-24
 
 The first release candidate of 0.3.0, published to npm's `next` dist-tag while `latest` stays at 0.2.0: install it with `npm install reactor-effect-client@next` and the matching host package. It breaks the 0.2.0 API, and a `^0.2.0` range does not include it, so applications move to it deliberately. 0.3.0 follows once the hosted qualification in `integration/hosted` has passed its vertical and takeover checks against hosted Reactor; no hosted Reactor generation has been run against this code yet.

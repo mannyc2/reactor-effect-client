@@ -94,6 +94,10 @@ export interface CommandOptions extends ReplyTimeoutOptions {
 
 export interface SessionOptions extends HttpOptions, SessionTimeouts {
   readonly intent: AcquisitionIntent;
+  /**
+   * Whether every connection, created or attached, resumes its receive-only
+   * tracks once ready; true by default.
+   */
   readonly autoResumeTracks?: boolean;
   readonly maxPending?: number;
   readonly requestNamespace?: string;

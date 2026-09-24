@@ -407,8 +407,12 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
           ...(pressure === undefined ? {} : { pressure }),
         };
       }
+      // The pair that carried the media: the last sample that named its local
+      // candidate while it received. The native host names no remote
+      // candidate, because reactor-webrtc reports only the local one, which is
+      // what says whether this side went through TURN.
       const paired = samples.findLast(
-        (sample) => sample.local !== undefined && sample.remote !== undefined,
+        (sample) => sample.local !== undefined && (sample.receivedKbps ?? 0) > 0,
       );
       run.evidence.network = {
         samples,
@@ -588,9 +592,9 @@ const vertical = (target: Target, run: Run, budget: Budget, relay: boolean) =>
           run,
           relay ? "relay pair selected" : "ICE pair selected",
           pair === undefined
-            ? "no stats sample named the selected pair"
+            ? "no stats sample named a pair that was receiving"
             : relay && pair.local !== "relay" && pair.remote !== "relay"
-              ? `the selected pair was ${pair.local} to ${pair.remote}`
+              ? `the pair carrying the media was ${pair.local ?? "?"}${pair.remote === null ? "" : ` to ${pair.remote}`}`
               : undefined,
         );
       }),
@@ -876,9 +880,7 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
         judge(
           run,
           "fresh frames",
-          fresh.frames === 0
-            ? "no frame arrived after attaching; the attach resumed no track, so hosted Reactor may need it to"
-            : liveVideo(fresh),
+          fresh.frames === 0 ? "no frame arrived after attaching" : liveVideo(fresh),
         );
       }),
     );

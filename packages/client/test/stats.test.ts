@@ -26,7 +26,10 @@ test("stats policy: generation changes and decreasing counters reset the rate ba
   const s = new StatsSampler();
   s.sample([pair(100, 100)], 1n, 0);
   equal(s.sample([pair(200, 200)], 2n, 1000).rates, undefined);
-  equal(s.sample([pair(0, 0)], 2n, 2000).rates, undefined);
+  const fallen = s.sample([pair(0, 0)], 2n, 2000);
+  equal(fallen.rates, undefined);
+  // A falling counter restarts the pair's baseline; it is still the pair reported.
+  equal(fallen.pair?.id, "pair");
   s.reset();
   equal(s.sample([pair(1, 1)], 2n, 3000).rates, undefined);
 });
@@ -69,6 +72,89 @@ test("stats policy: missing nominated succeeded pair is explicit and bounded inp
     "Protocol",
   );
   throws(() => sampler.sample([], 1n, NaN), "Protocol");
+});
+const local = (id: string, candidateType: string) => ({
+  id,
+  type: "local-candidate",
+  candidateType,
+});
+const nominated = (id: string, localCandidateId: string, received: number) => ({
+  id,
+  type: "candidate-pair",
+  nominated: true,
+  state: "succeeded",
+  bytesSent: 0,
+  bytesReceived: received,
+  localCandidateId,
+});
+test("stats policy: the pair carrying traffic is reported, not a nominated pair ICE moved off", () => {
+  const s = new StatsSampler();
+  // As a hosted session showed: ICE nominated the relay pair first and left it
+  // nominated after moving to the direct pair, which then carried the media.
+  const report = (stale: number, live: number) => [
+    local("relay", "relay"),
+    local("prflx", "prflx"),
+    nominated("stale", "relay", stale),
+    nominated("live", "prflx", live),
+  ];
+  equal(s.sample(report(4_600, 900), 1n, 0).pair?.localCandidateType, "relay");
+  equal(s.sample(report(4_600, 1_250_000), 1n, 1000).pair?.localCandidateType, "prflx");
+  const settled = s.sample(report(4_600, 2_500_000), 1n, 2000);
+  equal(settled.pair?.id, "live");
+  equal(settled.rates?.receivedBitsPerSecond, 10_000_000);
+  // With nothing received since the last sample, the pair reported before stands.
+  equal(s.sample(report(4_600, 2_500_000), 1n, 3000).pair?.id, "live");
+  // A new generation compares nothing with the last one's counters.
+  equal(s.sample(report(9_000, 20), 2n, 4000).pair?.id, "stale");
+  s.reset();
+  equal(s.sample(report(4_600, 4_600), 2n, 5000).pair?.id, "stale");
+});
+test("stats policy: a pair keeps its identity when the native host renumbers its pairs", () => {
+  const s = new StatsSampler();
+  // The native host names pairs by position; its priority says which pair it is.
+  const native = (
+    pairs: readonly { type: string; priority: bigint; received: bigint; nominated?: boolean }[],
+  ) =>
+    pairs.flatMap(({ type, priority, received, nominated = true }, index) => [
+      local(`local-candidate-${index}`, type),
+      {
+        id: `candidate-pair-${index}`,
+        type: "candidate-pair",
+        state: nominated ? "succeeded" : "waiting",
+        nominated,
+        priority,
+        bytesSent: 0n,
+        bytesReceived: received,
+        localCandidateId: `local-candidate-${index}`,
+      },
+    ]);
+  // The relay pair carried the session's first minutes before ICE moved off it.
+  const stale = { type: "relay", priority: 100n, received: 50_000_000n };
+  const live = (received: bigint) => ({ type: "prflx", priority: 200n, received });
+  s.sample(native([stale, live(1_000_000n)]), 1n, 0);
+  equal(s.sample(native([stale, live(2_000_000n)]), 1n, 1000).pair?.localCandidateType, "prflx");
+  // A new pair sorts first, and every pair after it moves up a position.
+  const added = { type: "host", priority: 300n, received: 0n, nominated: false };
+  const shifted = s.sample(native([added, stale, live(3_000_000n)]), 1n, 2000);
+  equal(shifted.pair?.localCandidateType, "prflx");
+  equal(shifted.rates?.receivedBitsPerSecond, 8_000_000);
+});
+test("stats policy: a transport's selected pair is reported where the host names one", () => {
+  const sample = new StatsSampler().sample(
+    [
+      local("host", "host"),
+      local("relay", "relay"),
+      { id: "remote", type: "remote-candidate", candidateType: "srflx" },
+      nominated("first", "relay", 9_000),
+      { ...nominated("second", "host", 10), remoteCandidateId: "remote" },
+      { id: "T01", type: "transport", selectedCandidatePairId: "second" },
+    ],
+    1n,
+    0,
+  );
+  equal(sample.pair?.id, "second");
+  equal(sample.pair?.localCandidateType, "host");
+  equal(sample.pair?.remoteCandidateType, "srflx");
 });
 
 test("session stats use the injected monotonic clock across wall jumps and reconnect reset", ({

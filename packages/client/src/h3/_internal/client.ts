@@ -88,6 +88,14 @@ const hex = (bytes: Uint8Array) =>
 
 interface PendingAcceptance extends AcceptanceIdentity {
   readonly deferred: Deferred.Deferred<Acceptance, ReactorError>;
+  /** The enqueue still awaits its reply, the one evidence that correlates. */
+  awaiting: boolean;
+  /**
+   * Evidence by metadata that came while the reply was awaited: hosted H3
+   * broadcasts the queue that lists a new clip before it replies. The reply
+   * decides whether it counts.
+   */
+  held: Acceptance | undefined;
 }
 type ObservationResult = DecodedMessage | undefined;
 
@@ -203,10 +211,38 @@ const build = (
     };
 
     const emit = (event: ProviderEvent): void => events.emit(event, sizeOf(event));
+    /** Decide a submission's acceptance: record it, resolve its waiters and announce it. */
+    const record = (entry: PendingAcceptance, acceptance: Acceptance): void => {
+      entry.held = undefined;
+      if (acceptances.size >= limits.acceptances) {
+        const first = acceptances.entries().next();
+        if (!first.done) {
+          acceptances.delete(first.value[0]);
+          retain(first.value[1], -1);
+        }
+      }
+      acceptances.set(entry.id, acceptance);
+      retain(acceptance, 1);
+      operations.accept(acceptance);
+      Deferred.doneUnsafe(entry.deferred, Effect.succeed(acceptance));
+      emit({ _tag: "Acceptance", acceptance });
+    };
+    /**
+     * Held evidence decides the acceptance once the reply cannot: it came
+     * without correlating the clip, or the wait for it ended short of a
+     * definite failure, which discards the evidence instead.
+     */
+    const decideHeld = (entry: PendingAcceptance): void => {
+      if (entry.held !== undefined) record(entry, entry.held);
+    };
     const fail = (error: ReactorError): void => {
       if (fatalError !== undefined) return;
       fatalError = error;
       state.unavailable(error);
+      // Recording held evidence resumes its waiters at once: by now the provider
+      // refuses their new work, and they can read the acceptance before anyone
+      // learns of the failure.
+      for (const entry of pending.values()) decideHeld(entry);
       Deferred.doneUnsafe(fatal, Effect.succeed(error));
       for (const entry of pending.values()) Deferred.doneUnsafe(entry.deferred, Effect.fail(error));
       for (const waiter of observedWaiters.values())
@@ -241,28 +277,26 @@ const build = (
         operations.lateEvidence(id, clip, source);
         return;
       }
-      const previous = acceptances.get(entry.id);
-      if (previous !== undefined) {
-        if (previous.clip.clip_id !== clip.clip_id)
-          fail(
-            ReactorError.fromCode("Protocol", "H3 acceptance identity named two clips", {
-              operation: "enqueue",
-            }),
-          );
+      const previous = acceptances.get(entry.id) ?? entry.held;
+      if (previous !== undefined && previous.clip.clip_id !== clip.clip_id) {
+        fail(
+          ReactorError.fromCode("Protocol", "H3 acceptance identity named two clips", {
+            operation: "enqueue",
+          }),
+        );
         return;
       }
-      if (acceptances.size >= limits.acceptances) {
-        const first = acceptances.entries().next();
-        if (!first.done) {
-          acceptances.delete(first.value[0]);
-          retain(first.value[1], -1);
+      if (acceptances.has(entry.id)) return;
+      // Until the reply is observed, it may still correlate the acceptance; the
+      // clip's facts are recorded meanwhile.
+      if (acceptance.evidence.kind === "metadata" && entry.awaiting) {
+        if (entry.held === undefined) {
+          entry.held = acceptance;
+          operations.identify(acceptance);
         }
+        return;
       }
-      acceptances.set(entry.id, acceptance);
-      retain(acceptance, 1);
-      operations.accept(acceptance);
-      Deferred.doneUnsafe(entry.deferred, Effect.succeed(acceptance));
-      emit({ _tag: "Acceptance", acceptance });
+      record(entry, acceptance);
     };
 
     const reduce = (source: SessionEvent): void => {
@@ -273,7 +307,9 @@ const build = (
         if (state.transportGeneration !== before) {
           uploads.clear();
           for (const entry of pending.values())
-            if (entry.generation !== source.generation)
+            if (entry.generation !== source.generation) {
+              // No reply to an earlier generation's enqueue can correlate now.
+              decideHeld(entry);
               Deferred.doneUnsafe(
                 entry.deferred,
                 Effect.fail(
@@ -284,6 +320,7 @@ const build = (
                   ),
                 ),
               );
+            }
         }
         if (source._tag !== "Model") {
           emit({ _tag: "Session", source });
@@ -364,6 +401,14 @@ const build = (
       ),
       Effect.forkScoped,
     );
+    // Enqueues execute in a scope of their own. Finalizers run last-added first,
+    // so a closing provider refuses new work before that scope interrupts them.
+    const executions = yield* Scope.fork(scope);
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        closed = true;
+      }),
+    );
 
     const refusal = (needsFacts: boolean): ReactorError | undefined =>
       closed
@@ -376,11 +421,12 @@ const build = (
               )
             : undefined));
     /**
-     * H3 replies to a command before it broadcasts the state and queue the
-     * command changed, so the provider is briefly synchronizing after every
-     * reply. A command that needs current facts waits, within its own reply
-     * deadline, for those broadcasts; it is refused, not submitted, only if
-     * they do not come or the provider fails.
+     * H3 documents that a command replies before it broadcasts the state and
+     * queue it changed (hosted H3 broadcasts an enqueue's queue first), so the
+     * provider may be briefly synchronizing after a reply. A command that needs
+     * current facts waits, within its own reply deadline, for those
+     * broadcasts; it is refused, not submitted, only if they do not come or
+     * the provider fails.
      */
     const synchronized = Effect.gen(function* () {
       while (!closed && fatalError === undefined && state.availability === "Synchronizing") {
@@ -602,16 +648,16 @@ const build = (
             Effect.mapError((error) => preparationFailure("enqueue", error)),
           );
           const staged = yield* stage(request, metadata);
-          return {
-            ...staged,
-            entry: {
-              id,
-              metadata,
-              prompt: request.prompt,
-              generation: staged.generation,
-              deferred: Deferred.makeUnsafe<Acceptance, ReactorError>(),
-            } satisfies PendingAcceptance,
+          const entry: PendingAcceptance = {
+            id,
+            metadata,
+            prompt: request.prompt,
+            generation: staged.generation,
+            deferred: Deferred.makeUnsafe<Acceptance, ReactorError>(),
+            awaiting: true,
+            held: undefined,
           };
+          return { ...staged, entry };
         }),
         commit: ({ entry }) =>
           Effect.gen(function* () {
@@ -679,6 +725,10 @@ const build = (
                 Result.isFailure(observed) ? observed.failure : undefined,
               );
             }
+            // The reply was observed or is lost: evidence by metadata that came
+            // while it was awaited now decides, and later evidence at once.
+            entry.awaiting = false;
+            decideHeld(entry);
             const acceptance = yield* Deferred.await(entry.deferred).pipe(
               Effect.timeoutOrElse({
                 duration: limits.reconcile,
@@ -692,8 +742,14 @@ const build = (
             yield* settled;
             return acceptance;
           }).pipe(
-            Effect.ensuring(
+            Effect.onExit((exit) =>
               Effect.sync(() => {
+                // However the enqueue ends, interrupted as the provider closes or
+                // otherwise, the evidence it saw still decides; only a definite
+                // failure discards it.
+                const error = Exit.findError(exit);
+                if (!(error._tag === "Success" && error.success.context.outcome !== "unknown"))
+                  decideHeld(entry);
                 pending.delete(id);
               }),
             ),
@@ -760,7 +816,7 @@ const build = (
                 ),
               );
         },
-      }).pipe(Scope.provide(scope));
+      }).pipe(Scope.provide(executions));
     const prepare: Provider["prepare"] = <E extends PolicyFailure = never>(
       input: Request,
       hooks: PrepareHooks<E> = {},

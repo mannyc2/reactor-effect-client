@@ -687,7 +687,11 @@ export class Session {
             connectionId: c.connectionId,
           }),
         );
-        if (self.options.autoResumeTracks ?? self.options.intent._tag === "Create")
+        // Each connection subscribes to its own receive-only tracks, an attached
+        // one as much as the one that created the session: hosted Reactor holds
+        // a connection's media until that connection resumes them. A data-only
+        // peer has no tracks to resume.
+        if ((self.options.autoResumeTracks ?? true) && c.peer.mediaSupported !== false)
           for (const track of capabilities.tracks)
             if (track.direction === "recvonly") {
               const outcome = yield* Effect.result(self.setTrackActive(track.name, true));

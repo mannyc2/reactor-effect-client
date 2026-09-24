@@ -32,7 +32,7 @@ import type {
   RawMedia,
   VideoFrame,
 } from "reactor-effect-client/host";
-import { Events, candidateLine, offer, peerOf } from "./protocol.js";
+import { Events, candidateLine, offer, pairPriority, peerOf } from "./protocol.js";
 import type { Candidate, Media, ServerEvent } from "./protocol.js";
 
 const width = 160;
@@ -540,31 +540,52 @@ class TwinPeer implements Peer {
       const audioPackets = self.delivered.audio / 2n;
       const mediaBytes =
         self.delivered.video * BigInt(videoPacketBytes) + audioPackets * BigInt(audioPacketBytes);
-      const candidate = (id: string, type: string, entry: Candidate) => ({
-        id,
-        type,
-        timestamp,
-        candidateType: entry.type,
-        address: entry.address,
-        port: entry.port,
-        protocol: "udp",
-      });
-      return Object.freeze([
+      // As the native host reports pairs (packages/native/rust/src/protocol/stats.rs):
+      // each with its local candidate only, because reactor-webrtc names neither
+      // the remote candidate nor the selected pair. Hosted sessions showed ICE
+      // nominate the relay pair first and leave it nominated after moving to a
+      // direct one, so a pair the connection left comes first, still nominated,
+      // with only what it carried at the start. Where only the relay works, the
+      // direct pair failed.
+      const direct = pair.local.type !== "relay";
+      const pairs = [
+        ...self.gathered
+          .filter((entry) => entry.type !== pair.local.type || entry.port !== pair.local.port)
+          .map((entry) =>
+            direct
+              ? { entry, state: "succeeded", nominated: true, sent: 1_900n, received: 4_600n }
+              : { entry, state: "failed", nominated: false, sent: 0n, received: 0n },
+          ),
         {
-          id: "CPtwin",
-          type: "candidate-pair",
-          timestamp,
+          entry: pair.local,
           state: "succeeded",
           nominated: true,
-          localCandidateId: "ILtwin",
-          remoteCandidateId: "IRtwin",
-          bytesSent: self.bytesSent,
-          bytesReceived: self.bytesReceived + mediaBytes,
-          ...(self.roundTrip === undefined ? {} : { currentRoundTripTime: self.roundTrip }),
-          availableOutgoingBitrate: 2_500_000,
+          sent: self.bytesSent,
+          received: self.bytesReceived + mediaBytes,
         },
-        candidate("ILtwin", "local-candidate", pair.local),
-        candidate("IRtwin", "remote-candidate", pair.remote),
+      ];
+      return Object.freeze([
+        ...pairs.flatMap(({ entry, state, nominated, sent, received }, index) => [
+          {
+            id: `local-candidate-${index}`,
+            type: "local-candidate",
+            candidateType: entry.type,
+            relayProtocol: entry.type === "relay" ? "udp" : "",
+          },
+          {
+            id: `candidate-pair-${index}`,
+            type: "candidate-pair",
+            state,
+            nominated,
+            writable: state === "succeeded",
+            priority: pairPriority(entry, pair.remote),
+            bytesSent: sent,
+            bytesReceived: received,
+            ...(self.roundTrip === undefined ? {} : { currentRoundTripTime: self.roundTrip }),
+            availableOutgoingBitrate: 2_500_000,
+            localCandidateId: `local-candidate-${index}`,
+          },
+        ]),
         ...(video === undefined
           ? []
           : [

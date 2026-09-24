@@ -13,6 +13,8 @@ type Terminal = "clip_finished" | "clip_stopped" | "clip_failed" | "clip_popped"
 interface OperationRecord {
   readonly identity: AcceptanceIdentity;
   acceptance: Acceptance | undefined;
+  /** The clip the evidence names, from before the acceptance is decided. */
+  clipId: string | undefined;
   generated: ClipFact | undefined;
   started: ClipFact | undefined;
   ended: ClipFact | undefined;
@@ -26,8 +28,11 @@ interface OperationRecord {
   readonly finished: Deferred.Deferred<ClipFact, ReactorError | CommandFailure>;
 }
 
+/** Nothing more can change it: its clip ended once accepted, or it was decided without one. */
 const settledRecord = (record: OperationRecord): boolean =>
-  record.ended !== undefined || record.indeterminate || record.rejected;
+  (record.ended !== undefined && record.acceptance !== undefined) ||
+  record.indeterminate ||
+  record.rejected;
 
 const indeterminate = (): ReactorError =>
   ReactorError.fromCode("Indeterminate", "H3 provider retired before the clip's evidence", {
@@ -36,9 +41,9 @@ const indeterminate = (): ReactorError =>
 
 /**
  * Clip operations keyed by submission: a retained, bounded projection of the
- * reducer's evidence, written only from the reducer's synchronous path. Nothing
- * reads it back: it is neither the provider's acceptance authority nor its
- * clip state.
+ * provider's evidence, written only synchronously, on the provider's own paths.
+ * Nothing reads it back: it is neither the provider's acceptance authority nor
+ * its clip state.
  */
 export class Operations {
   private readonly records = new Map<string, OperationRecord>();
@@ -67,6 +72,7 @@ export class Operations {
     this.records.set(identity.id, {
       identity,
       acceptance: undefined,
+      clipId: undefined,
       generated: undefined,
       started: undefined,
       ended: undefined,
@@ -94,10 +100,27 @@ export class Operations {
     if (failure._tag !== "Success" || !CommandFailure.is(failure.success)) return;
     if (failure.success.context.outcome === "unknown") return;
     record.rejected = true;
-    // No clip will ever carry this submission: every fact fails with the enqueue's failure.
+    this.forget(record);
+    // No clip will ever carry this submission: every fact fails with the enqueue's
+    // failure, and what a clip showed before the refusal is not its fact.
+    record.generated = undefined;
+    record.started = undefined;
+    record.ended = undefined;
     Deferred.doneUnsafe(record.accepted, Effect.fail(failure.success));
     for (const deferred of [record.reachedGenerated, record.reachedStarted, record.finished])
       Deferred.doneUnsafe(deferred, Effect.fail(failure.success));
+  }
+
+  /**
+   * Evidence the provider holds until the enqueue's reply decides the
+   * acceptance: the clip's facts are recorded meanwhile, and resolve once the
+   * acceptance does.
+   */
+  identify(acceptance: Acceptance): void {
+    const record = this.records.get(acceptance.submissionId);
+    if (record === undefined || record.clipId !== undefined || record.rejected) return;
+    record.clipId = acceptance.clip.clip_id;
+    this.byClip.set(record.clipId, record);
   }
 
   /** The acceptance the provider recorded, on the same path that records it. */
@@ -105,8 +128,15 @@ export class Operations {
     const record = this.records.get(acceptance.submissionId);
     if (record === undefined || record.acceptance !== undefined) return;
     record.acceptance = acceptance;
-    this.byClip.set(acceptance.clip.clip_id, record);
+    this.identify(acceptance);
     Deferred.doneUnsafe(record.accepted, Effect.succeed(acceptance));
+    this.publish(record);
+  }
+
+  /** Stop following a record's clip. */
+  private forget(record: OperationRecord): void {
+    if (record.clipId !== undefined && this.byClip.get(record.clipId) === record)
+      this.byClip.delete(record.clipId);
   }
 
   /**
@@ -175,38 +205,41 @@ export class Operations {
     if (record === undefined || record.ended !== undefined || record.indeterminate) return;
     const fact = this.fact(clipId, message, source);
     // Started implies generated: every implied phase completes with the first evidence.
-    if (record.generated === undefined) {
-      record.generated = fact;
-      Deferred.doneUnsafe(record.reachedGenerated, Effect.succeed(fact));
-    }
-    if (rank === 2 && record.started === undefined) {
-      record.started = fact;
-      Deferred.doneUnsafe(record.reachedStarted, Effect.succeed(fact));
-    }
+    record.generated ??= fact;
+    if (rank === 2) record.started ??= fact;
+    this.publish(record);
   }
 
   private end(clipId: string, message: Terminal, source: CommandReply): void {
     const record = this.byClip.get(clipId);
     if (record === undefined || record.ended !== undefined || record.indeterminate) return;
-    const fact = this.fact(clipId, message, source);
-    record.ended = fact;
-    if (message === "clip_failed" || message === "clip_popped") {
-      const ended = new ReactorError({
+    record.ended = this.fact(clipId, message, source);
+    this.publish(record);
+  }
+
+  /** Resolve what a record established, once its acceptance is decided. */
+  private publish(record: OperationRecord): void {
+    if (record.acceptance === undefined) return;
+    const { generated, started, ended } = record;
+    if (generated !== undefined)
+      Deferred.doneUnsafe(record.reachedGenerated, Effect.succeed(generated));
+    if (started !== undefined) Deferred.doneUnsafe(record.reachedStarted, Effect.succeed(started));
+    if (ended === undefined) return;
+    if (ended.message === "clip_failed" || ended.message === "clip_popped") {
+      const error = new ReactorError({
         reason: new ClipEnded({
-          message: `clip ended by ${message}`,
-          clipId,
-          lifecycle: message,
-          transportGeneration: source.generation,
+          message: `clip ended by ${ended.message}`,
+          clipId: ended.clipId,
+          lifecycle: ended.message,
+          transportGeneration: ended.transportGeneration,
         }),
         context: { operation: "clip operation" },
       });
       // A phase that was not reached never will be.
-      if (record.generated === undefined)
-        Deferred.doneUnsafe(record.reachedGenerated, Effect.fail(ended));
-      if (record.started === undefined)
-        Deferred.doneUnsafe(record.reachedStarted, Effect.fail(ended));
+      if (generated === undefined) Deferred.doneUnsafe(record.reachedGenerated, Effect.fail(error));
+      if (started === undefined) Deferred.doneUnsafe(record.reachedStarted, Effect.fail(error));
     }
-    Deferred.doneUnsafe(record.finished, Effect.succeed(fact));
+    Deferred.doneUnsafe(record.finished, Effect.succeed(ended));
   }
 
   /** The provider retired: what evidence did not decide is Indeterminate. */
@@ -222,11 +255,7 @@ export class Operations {
 
   private release(id: string, record: OperationRecord): void {
     this.records.delete(id);
-    if (
-      record.acceptance !== undefined &&
-      this.byClip.get(record.acceptance.clip.clip_id) === record
-    )
-      this.byClip.delete(record.acceptance.clip.clip_id);
+    this.forget(record);
   }
 
   /** A scoped view; releasing the last holder acknowledges and releases the operation. */
@@ -258,13 +287,18 @@ export class Operations {
           reached: (phase: ClipPhase) =>
             Deferred.await(phase === "generated" ? record.reachedGenerated : record.reachedStarted),
           ended: Deferred.await(record.finished),
+          // A clip's facts are the operation's once its acceptance is decided.
           facts: Effect.sync((): OperationFacts =>
             Object.freeze({
               submissionId: id,
-              ...(record.acceptance === undefined ? {} : { acceptance: record.acceptance }),
-              ...(record.generated === undefined ? {} : { generated: record.generated }),
-              ...(record.started === undefined ? {} : { started: record.started }),
-              ...(record.ended === undefined ? {} : { ended: record.ended }),
+              ...(record.acceptance === undefined
+                ? {}
+                : {
+                    acceptance: record.acceptance,
+                    ...(record.generated === undefined ? {} : { generated: record.generated }),
+                    ...(record.started === undefined ? {} : { started: record.started }),
+                    ...(record.ended === undefined ? {} : { ended: record.ended }),
+                  }),
               indeterminate: record.indeterminate,
             }),
           ),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Cause, Effect, Exit, Fiber, Result, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Result, Scope, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { ReactorError } from "../../src/errors.js";
 import { CommandFailure } from "../../src/session/commands.js";
@@ -756,6 +756,363 @@ describe("H3 command and observation authority", () => {
         expect(accepted.evidence.kind).toBe("metadata");
         expect(accepted.evidence.source.correlation).toBe("late");
         expect(accepted.clip.ready).toBe(true);
+        expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
+      }),
+    ));
+
+  test("the matched reply correlates an acceptance though a broadcast listed the clip first", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { fake, provider, events } = yield* setup({
+          command: {
+            // Hosted H3's order: the queue that lists the new clip, then the reply.
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                const reply = yield* defaults;
+                yield* announced;
+                return reply;
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        const accepted = yield* prepared.submit;
+        expect(accepted.evidence.kind).toBe("correlated");
+        expect(accepted.evidence.source).toBe(fake.returns.at(-1));
+        expect(yield* provider.acceptances).toEqual([accepted]);
+        const operation = yield* provider.operation(prepared);
+        expect(yield* operation.accepted).toBe(accepted);
+        yield* waitFor(() => Effect.succeed(events.some((event) => event._tag === "Acceptance")));
+        expect(events.filter((event) => event._tag === "Acceptance")).toEqual([
+          { _tag: "Acceptance", acceptance: accepted },
+        ]);
+      }),
+    ));
+
+  test("a broadcast that listed the clip proves it once the reply is lost, and its facts accrue meanwhile", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { provider, events } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced, fake, fail }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                yield* fake.emit("clip_generated", {
+                  clip: { ...fake.accepted.at(-1)!, ready: true },
+                });
+                // The provider takes these while the reply is still awaited.
+                yield* Effect.sleep(1);
+                return yield* fail("unknown");
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        const accepted = yield* prepared.submit;
+        expect(accepted.evidence.kind).toBe("metadata");
+        expect(accepted.evidence.source).toMatchObject({ kind: "message", type: "queue_update" });
+        const operation = yield* provider.operation(prepared);
+        expect(yield* operation.accepted).toBe(accepted);
+        expect(yield* operation.reached("generated")).toMatchObject({
+          clipId: accepted.clip.clip_id,
+          message: "clip_generated",
+        });
+        // Held, the evidence was decided only when the reply was lost, after the clip's facts.
+        const generatedAt = events.findIndex(
+          (event) => event._tag === "Message" && event.message.type === "clip_generated",
+        );
+        const acceptedAt = events.findIndex((event) => event._tag === "Acceptance");
+        expect(generatedAt).toBeGreaterThanOrEqual(0);
+        expect(acceptedAt).toBeGreaterThan(generatedAt);
+      }),
+    ));
+
+  test("an acknowledgement after a broadcast that listed the clip accepts it by that broadcast", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { provider } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                yield* Effect.sleep(1);
+                // A bodyless acknowledgement names no clip.
+                return undefined;
+              }),
+          },
+        });
+        const accepted = yield* provider.enqueue(request());
+        expect(accepted.evidence.kind).toBe("metadata");
+        expect(accepted.evidence.source).toMatchObject({ kind: "message", type: "queue_update" });
+      }),
+    ));
+
+  test("a new transport generation decides the evidence an unanswered enqueue held", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { provider } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced, fake, fail }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                yield* Effect.sleep(1);
+                yield* fake.status("disconnected");
+                yield* fake.status("ready", 2n);
+                yield* Effect.sleep(1);
+                return yield* fail("unknown", "Disconnected");
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        const accepted = yield* prepared.submit;
+        expect(accepted.evidence.kind).toBe("metadata");
+        expect(accepted.evidence.source.generation).toBe(1n);
+        expect(yield* provider.acceptance(prepared.id)).toBe(accepted);
+      }),
+    ));
+
+  test("evidence held for a reply that refuses the enqueue never becomes an acceptance", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { fake, provider } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced, fake }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                yield* fake.emit("clip_generated", {
+                  clip: { ...fake.accepted.at(-1)!, ready: true },
+                });
+                return {
+                  type: "command_error",
+                  data: { command: "enqueue", reason: "fixture refusal" },
+                };
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        const refused = yield* Effect.flip(prepared.submit);
+        expect(refused.context.outcome).toBe("replied");
+        expect(yield* provider.acceptances).toEqual([]);
+        const operation = yield* provider.operation(prepared);
+        expect(yield* Effect.flip(operation.accepted)).toBe(refused);
+        // What the clip showed before the refusal is not the operation's fact.
+        expect(yield* Effect.flip(operation.reached("generated"))).toBe(refused);
+        const later = yield* fake.emit("clip_started", { clip: { ...fake.accepted.at(-1)! } });
+        yield* observed(provider, later.sequence);
+        const facts = yield* operation.facts;
+        expect(facts.generated).toBeUndefined();
+        expect(facts.started).toBeUndefined();
+      }),
+    ));
+
+  test("closing the provider records the evidence an unanswered enqueue held", () =>
+    run(
+      Effect.gen(function* () {
+        const fake = yield* fixture({
+          command: {
+            // The queue lists the clip; the reply never comes.
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                return yield* Effect.never;
+              }),
+          },
+        });
+        const providerScope = yield* Scope.make();
+        const provider = yield* H3.make(fake.session, options).pipe(Scope.provide(providerScope));
+        const prepared = yield* provider.prepare(request());
+        yield* prepared.submit.pipe(Effect.forkScoped);
+        yield* waitFor(() =>
+          provider.current.pipe(Effect.map((snapshot) => snapshot.clips.length > 0)),
+        );
+        const operation = yield* provider.operation(prepared);
+        expect(yield* provider.acceptances).toEqual([]);
+        yield* Scope.close(providerScope, Exit.void);
+        const accepted = yield* provider.acceptance(prepared.id);
+        expect(accepted?.evidence.kind).toBe("metadata");
+        expect(yield* operation.accepted).toBe(accepted);
+      }),
+    ));
+
+  test("a provider failure records held evidence before it announces itself", () =>
+    run(
+      Effect.gen(function* () {
+        const { fake, provider } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                return yield* Effect.never;
+              }),
+          },
+        });
+        // A supervisor already waiting for the failure, as one would be.
+        const seen = yield* provider.failure.pipe(
+          Effect.andThen(provider.acceptances),
+          Effect.forkScoped,
+        );
+        const prepared = yield* provider.prepare(request());
+        yield* prepared.submit.pipe(Effect.forkScoped);
+        yield* waitFor(() =>
+          provider.current.pipe(Effect.map((snapshot) => snapshot.clips.length > 0)),
+        );
+        yield* fake.failObservation(ReactorError.fromCode("Closed", "fixture source ended"));
+        const acceptances = yield* Fiber.join(seen);
+        expect(acceptances.map((acceptance) => acceptance.submissionId)).toEqual([prepared.id]);
+      }),
+    ));
+
+  test("a waiter that held evidence resumes cannot send new work while the provider fails", () =>
+    run(
+      Effect.gen(function* () {
+        let first = true;
+        const { fake, provider } = yield* setup({
+          command: {
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                const reply = yield* defaults;
+                yield* announced;
+                if (!first) return reply;
+                first = false;
+                return yield* Effect.never;
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        yield* prepared.submit.pipe(Effect.forkScoped);
+        yield* waitFor(() =>
+          provider.current.pipe(Effect.map((snapshot) => snapshot.clips.length > 0)),
+        );
+        const operation = yield* provider.operation(prepared);
+        // A pipeline: once a clip is accepted, submit the next.
+        let waiting = false;
+        const next = yield* Effect.sync(() => {
+          waiting = true;
+        }).pipe(
+          Effect.andThen(operation.accepted),
+          Effect.andThen(Effect.result(provider.enqueue(request()))),
+          Effect.forkScoped,
+        );
+        yield* waitFor(() => Effect.succeed(waiting));
+        yield* Effect.yieldNow;
+        yield* fake.failObservation(ReactorError.fromCode("Closed", "fixture source ended"));
+        const result = yield* Fiber.join(next);
+        expect(Result.isFailure(result) && result.failure.context.outcome).toBe("not-submitted");
+        expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
+      }),
+    ));
+
+  test("a waiter that held evidence resumes cannot send new work while the provider closes", () =>
+    run(
+      Effect.gen(function* () {
+        let first = true;
+        const fake = yield* fixture({
+          command: {
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                const reply = yield* defaults;
+                yield* announced;
+                if (!first) return reply;
+                first = false;
+                return yield* Effect.never;
+              }),
+          },
+        });
+        const providerScope = yield* Scope.make();
+        const provider = yield* H3.make(fake.session, options).pipe(Scope.provide(providerScope));
+        const prepared = yield* provider.prepare(request());
+        yield* prepared.submit.pipe(Effect.forkScoped);
+        yield* waitFor(() =>
+          provider.current.pipe(Effect.map((snapshot) => snapshot.clips.length > 0)),
+        );
+        const operation = yield* provider.operation(prepared);
+        let waiting = false;
+        const next = yield* Effect.sync(() => {
+          waiting = true;
+        }).pipe(
+          Effect.andThen(operation.accepted),
+          Effect.andThen(Effect.result(provider.enqueue(request()))),
+          Effect.forkScoped,
+        );
+        yield* waitFor(() => Effect.succeed(waiting));
+        yield* Effect.yieldNow;
+        yield* Scope.close(providerScope, Exit.void);
+        const result = yield* Fiber.join(next);
+        expect(Result.isFailure(result) && result.failure.context.outcome).toBe("not-submitted");
+        expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
+      }),
+    ));
+
+  test("an enqueue interrupted beneath an open provider records its evidence and leaves it open", () =>
+    runFlowing(
+      Effect.gen(function* () {
+        const { provider } = yield* setup({
+          command: {
+            // The session's command is interrupted; the provider's scope is not.
+            enqueue: ({ defaults, announced }) =>
+              Effect.gen(function* () {
+                yield* defaults;
+                yield* announced;
+                yield* Effect.sleep(1);
+                return yield* Effect.interrupt;
+              }),
+          },
+        });
+        const prepared = yield* provider.prepare(request());
+        const exit = yield* Effect.exit(prepared.submit);
+        expect(Exit.isFailure(exit)).toBe(true);
+        expect((yield* provider.acceptance(prepared.id))?.evidence.kind).toBe("metadata");
+        expect((yield* provider.getState).value.playing).toBe(false);
+        expect((yield* provider.current)._tag).toBe("Ready");
+      }),
+    ));
+
+  test("an operation whose clip ended while its acceptance was held keeps its slot", () =>
+    run(
+      Effect.gen(function* () {
+        const reply = yield* gate;
+        let first = true;
+        const { fake, provider } = yield* setup(
+          {
+            command: {
+              enqueue: ({ defaults, announced, fake }) =>
+                Effect.gen(function* () {
+                  const message = yield* defaults;
+                  yield* announced;
+                  if (first) {
+                    first = false;
+                    yield* fake.emit("clip_finished", {
+                      clip: { ...fake.accepted.at(-1)!, ready: true },
+                      seconds_sent: 5,
+                    });
+                    yield* reply.wait;
+                  }
+                  return message;
+                }),
+            },
+          },
+          { maxOperations: 1 },
+        );
+        const held = yield* provider.prepare(request());
+        const submitted = yield* held.submit.pipe(Effect.forkScoped);
+        yield* waitFor(() =>
+          provider.current.pipe(Effect.map((snapshot) => snapshot.clips.length > 0)),
+        );
+        const operation = yield* provider.operation(held);
+        // Its clip ended, but its acceptance is undecided: the slot is not free.
+        const next = yield* provider.prepare(request());
+        const overflow = yield* Effect.flip(next.submit);
+        expect(overflow.reason._tag).toBe("Overflow");
+        expect(overflow.context.outcome).toBe("not-submitted");
+        yield* reply.release;
+        const accepted = yield* Fiber.join(submitted);
+        expect(accepted.evidence.kind).toBe("correlated");
+        expect(yield* operation.accepted).toBe(accepted);
+        expect((yield* operation.ended).message).toBe("clip_finished");
         expect(fake.calls.filter((call) => call.command === "enqueue")).toHaveLength(1);
       }),
     ));

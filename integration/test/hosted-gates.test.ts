@@ -50,7 +50,7 @@ test("paid use needs a check, the authorization flag, bounded budgets, a ledger 
     expect(
       refused(() => authorize(["turn", ...without("--budget-usd"), `--budget-usd=${budget}`])),
     ).toContain("--budget-usd");
-  for (const total of ["0", "2.26", "NaN"])
+  for (const total of ["0", "3.76", "NaN"])
     expect(
       refused(() =>
         authorize(["turn", ...without("--total-budget-usd"), `--total-budget-usd=${total}`]),
@@ -100,7 +100,8 @@ test("the published rate must fit the whole capped session, billed by the minute
 
 test("the ledger admits a run only while every reserved worst case fits the total", () => {
   expect(admitTotal([], 0.75, 1.5)).toBe(0);
-  // Three $0.75 runs fit $2.25 exactly, and binary fractions never refuse a fit.
+  // Five $0.75 runs fit $3.75 exactly, and binary fractions never refuse a fit.
+  expect(admitTotal([0.75, 0.75, 0.75, 0.75], 0.75, 3.75)).toBeCloseTo(3);
   expect(admitTotal([0.75, 0.75], 0.75, 2.25)).toBeCloseTo(1.5);
   expect(admitTotal([0.1, 0.2], 1.2, 1.5)).toBeCloseTo(0.3);
   expect(refused(() => admitTotal([0.75, 0.75], 0.75, 1.5))).toContain("exceeds the $1.5 total");

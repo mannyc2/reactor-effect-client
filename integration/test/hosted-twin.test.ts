@@ -301,10 +301,10 @@ test(
         droppedVideo: 0n,
       });
       expect(result.pressure.deliveredVideo >= 24n).toBe(true);
-      expect(result.stats.pair).toMatchObject({
-        localCandidateType: "host",
-        remoteCandidateType: "host",
-      });
+      // As on the native host, the pair names its local candidate only, and it
+      // is the direct pair carrying the media, not the relay pair ICE left.
+      expect(result.stats.pair).toMatchObject({ localCandidateType: "host" });
+      expect(result.stats.pair?.remoteCandidateType).toBeUndefined();
       expect((result.stats.pair?.bytesReceived ?? 0n) > 0n).toBe(true);
       expect(result.stats.roundTripTimeSeconds).toBeGreaterThan(0);
       expect(result.stats.framesPerSecond).toBeGreaterThan(12);
@@ -368,10 +368,7 @@ test("a relay twin selects a relay candidate pair", () =>
           return yield* session.stats;
         }),
       );
-      expect(stats.pair).toMatchObject({
-        localCandidateType: "relay",
-        remoteCandidateType: "host",
-      });
+      expect(stats.pair).toMatchObject({ localCandidateType: "relay" });
     },
     { relay: true },
   ));

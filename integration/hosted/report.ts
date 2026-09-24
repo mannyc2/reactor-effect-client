@@ -127,9 +127,16 @@ const section = (evidence: Evidence): string => {
         sample.receivedKbps === undefined ? [] : [sample.receivedKbps],
       ),
     );
+    // The native host names only the local candidate of a pair.
+    const pair =
+      network.pair === undefined
+        ? "no pair"
+        : network.pair.remote === null
+          ? `local ${network.pair.local ?? "?"}`
+          : `${network.pair.local ?? "?"} to ${network.pair.remote}`;
     add(
       "Network path",
-      `${network.pair === undefined ? "no pair" : `${network.pair.local ?? "?"} to ${network.pair.remote ?? "?"}`}, RTT median ${rtt ?? "?"} ms, received median ${kbps ?? "?"} kbps over ${network.samples.length} samples`,
+      `${pair}, RTT median ${rtt ?? "?"} ms, received median ${kbps ?? "?"} kbps over ${network.samples.length} samples`,
     );
   }
   const contract = evidence.contract;
