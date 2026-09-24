@@ -102,6 +102,26 @@ describe("Reactor HTTP session contract (offline)", () => {
         Coordinator.modelRate({ ...facts, models: [other, entry] }, options.modelName),
       ),
     ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
+    // Nor does an entry in any other shape: the catalog is shared by every model.
+    expect(
+      await Effect.runPromise(
+        Coordinator.modelRate(
+          {
+            ...facts,
+            models: [
+              { id: "3dc9e64e-ebc1-4824-a63b-2ad0dbb15ca8" },
+              { name: "reactor/unpriced" },
+              {
+                name: "reactor/per-token",
+                rate: { amount_per_token: 3, unit: "credits", denomination: "token" },
+              },
+              entry,
+            ],
+          },
+          options.modelName,
+        ),
+      ),
+    ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
     // A listing under the full slug, or asking by bare name, prices the same.
     expect(
       await Effect.runPromise(
@@ -130,6 +150,20 @@ describe("Reactor HTTP session contract (offline)", () => {
       })),
       { ...facts, models: [{ ...entry, rate: { ...entry.rate, unit: "dollars" } }] },
       { ...facts, models: [{ ...entry, rate: { ...entry.rate, denomination: "minute" } }] },
+      {
+        ...facts,
+        models: [
+          { ...entry, rate: { amount_per_min: 7.5, unit: "credits", denomination: "minute" } },
+        ],
+      },
+      {
+        ...facts,
+        models: [
+          { ...entry, rate: { amount_per_min: 420, unit: "credits", denomination: "second" } },
+        ],
+      },
+      { ...facts, models: [{ name: entry.name }] },
+      { settings: facts.settings },
     ]) {
       const failure = await Effect.runPromise(
         Effect.flip(Coordinator.modelRate(invalid, options.modelName)),
@@ -140,6 +174,35 @@ describe("Reactor HTTP session contract (offline)", () => {
         context: { operation: "pricing" },
       });
     }
+  });
+
+  test("prices a model from the pricing shape Reactor documents", async () => {
+    // From https://docs.reactor.inc/resources/billing on September 24, 2026: a
+    // rate per minute, no currency code, and a catalog that may be absent.
+    const documented = {
+      settings: {
+        credits_per_dollar: 10_000,
+        purchase: { min_dollars: 1, max_dollars: 1_000 },
+        auto_topup: { min_dollars: 5 },
+        max_account_credits: 0,
+      },
+      models: [
+        {
+          id: "f7d3a8b2-1c4e-4d2a-9b6f-0d8e3c1b5a47",
+          name: "helios",
+          rate: { amount_per_min: 1020, unit: "credits", denomination: "minute" },
+        },
+      ],
+    };
+    expect(await Effect.runPromise(Coordinator.modelRate(documented, "reactor/helios"))).toEqual({
+      creditsPerDollar: 10_000,
+      creditsPerSecond: 17,
+    });
+    expect(
+      await Effect.runPromise(
+        Effect.flip(Coordinator.modelRate({ settings: documented.settings }, "reactor/helios")),
+      ),
+    ).toMatchObject({ reason: { _tag: "Protocol" }, context: { operation: "pricing" } });
   });
 
   test("prices H3 from Reactor's live pricing document", async () => {
