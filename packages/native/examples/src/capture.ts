@@ -19,6 +19,11 @@ import { toMp4 } from "./Recording.ts";
 
 /** The session's cap: a token for 90 seconds bounds what one capture can cost. */
 const sessionSeconds = 90;
+/**
+ * Reactor bills a session by the minute. Its documentation does not say how
+ * a started minute rounds, so the bound counts it whole: two minutes.
+ */
+const billedSeconds = Math.ceil(sessionSeconds / 60) * 60;
 
 /**
  * One clip, captured on this machine: a paid H3 session over the native
@@ -127,8 +132,8 @@ const capture = Command.make(
     const coordinator = yield* Reactor.Coordinator.make({ apiUrl });
     const rate = yield* Reactor.Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
     yield* Console.log(
-      `at most ${((sessionSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
-        `the session is capped at ${sessionSeconds} seconds`,
+      `at most ${((billedSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
+        `the session is capped at ${sessionSeconds} seconds, billed as ${billedSeconds / 60} minutes`,
     );
     // The API key stays here: the session runs on a token for one session.
     const grant = yield* coordinator.mintToken({

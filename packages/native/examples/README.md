@@ -9,7 +9,7 @@ REACTOR_API_KEY=… node src/capture.ts --prompt "A paper boat on a rain-soaked 
 node src/capture.ts --help
 ```
 
-It prints the most the session can cost before it starts: the token caps the session at 90 seconds. Needs `ffmpeg` on `PATH`, and a native library for the host (`bun run native:build`, or an installed package's staged one). `--reference image.png` starts the clip from an image; `--isolated` runs the native peer in a child process of its own (Node only).
+It prints the most the session can cost before it starts: the token caps the session at 90 seconds, and Reactor bills by the minute, so the bound counts two whole minutes. Needs `ffmpeg` on `PATH`, and a native library for the host (`bun run native:build`, or an installed package's staged one). `--reference image.png` starts the clip from an image; `--isolated` runs the native peer in a child process of its own (Node only).
 
 ## What it shows
 

@@ -10,9 +10,10 @@ import { Api, TokenUnavailable } from "./Api.ts";
 
 /**
  * Mints one short session token per request. The token caps the session it
- * starts at five minutes, so a page closed without cleanup costs at most
- * that. A real deployment authenticates and rate-limits this endpoint: every
- * token it hands out can start a paid session.
+ * starts at five minutes, so a page closed without cleanup leaves it running
+ * no longer than that; Reactor bills it by the minute. A real deployment
+ * authenticates and rate-limits this endpoint: every token it hands out can
+ * start a paid session.
  */
 const SessionHandlers = HttpApiBuilder.group(
   Api,
