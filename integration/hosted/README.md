@@ -1,6 +1,6 @@
 # Hosted qualification
 
-CI cannot check one thing: that the library works against hosted Reactor. These checks do, for money, so they run only when a maintainer authorizes the spend. They gate 0.3.0. Until they pass, 0.3.0-rc.0 stays on npm's `next` tag.
+CI cannot check one thing: that the library works against hosted Reactor. These checks do, for money, so they run only when a maintainer authorizes the spend. They gated 0.3.0: the published 0.3.0-rc.0 failed them on three library causes, and 0.3.0 released the fixes after they passed from a checkout ([the record](./evidence/0.3.0-rc.0/summary.md)).
 
 This directory holds:
 
@@ -100,7 +100,7 @@ Qualify the published bytes. Run from a machine whose network carries WebRTC med
 
 ```sh
 mkdir reactor-qualification && cd reactor-qualification && npm init -y > /dev/null
-npm install reactor-effect-client@0.3.0-rc.0 reactor-effect-native@0.3.0-rc.0 \
+npm install reactor-effect-client@0.3.0 reactor-effect-native@0.3.0 \
   effect@4.0.0-rc.115 @effect/platform-node@4.0.0-rc.115
 cp -R <this repository>/integration/hosted ./hosted
 
