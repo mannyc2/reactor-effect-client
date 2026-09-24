@@ -405,7 +405,10 @@ test("named mutation acknowledgement without its payload remains unknown even wh
       });
       const outcome = yield* Effect.result(source.setCanvas("9:16"));
       expect(Result.isFailure(outcome) && outcome.failure.context.outcome).toBe("unknown");
-      expect((yield* source.state).canvas).toEqual(Option.some("9:16"));
+      // The model changed the canvas: its state broadcast follows the bare ACK.
+      yield* untilEffect(
+        source.state.pipe(Effect.map((state) => Option.getOrUndefined(state.canvas) === "9:16")),
+      );
       expect(fake.calls.filter((call) => call.command === "set_canvas")).toHaveLength(1);
     }),
   ));

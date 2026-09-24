@@ -9,44 +9,69 @@ const failure = (operation: string, message: string, cause?: unknown) =>
     ...(cause === undefined ? {} : { detail: cause }),
   });
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+/**
+ * Only the settings are read strictly. The catalog is shared by every model,
+ * so an entry in a shape this client does not price never stops it pricing
+ * the model it was asked for; an absent catalog is empty, as Reactor's
+ * pricing documentation says. Credits are sold per US dollar, so a stated
+ * currency must be that one.
+ */
 const Pricing = Schema.Struct({
   settings: Schema.Struct({
-    currency_code: Schema.Literal("USD"),
+    currency_code: Schema.optional(Schema.Literal("USD")),
     credits_per_dollar: PositiveInteger,
   }),
-  models: Schema.Array(
-    Schema.Struct({
-      name: Schema.String,
-      rate: Schema.Struct({
-        amount_per_sec: Schema.Finite,
-        unit: Schema.String,
-        denomination: Schema.String,
-      }),
-    }),
-  ),
+  models: Schema.optional(Schema.Array(Schema.Unknown)),
 });
+const isEntry = Schema.is(Schema.Struct({ name: Schema.String, rate: Schema.Unknown }));
 
 const unknownRate = (cause?: unknown) =>
   failure("pricing", "Reactor pricing has an unknown model, currency or rate unit", cause);
 
-/** The one rate this client prices: whole credits per second. Other models' rates may differ. */
-const CreditsRate = Schema.Struct({
-  amount_per_sec: PositiveInteger,
-  unit: Schema.Literal("credits"),
-  denomination: Schema.Literal("second"),
-});
+/**
+ * The rates this client prices: whole credits per second, as the live pricing
+ * document states them, or per minute, as its documentation does.
+ */
+const CreditsRate = Schema.Union([
+  Schema.Struct({
+    amount_per_sec: PositiveInteger,
+    unit: Schema.Literal("credits"),
+    denomination: Schema.Literal("second"),
+  }),
+  Schema.Struct({
+    amount_per_min: PositiveInteger,
+    unit: Schema.Literal("credits"),
+    denomination: Schema.Literal("minute"),
+  }),
+]);
 
-/** Preserve the integer ratio; callers decide whether the returned price fits their budget. */
+/**
+ * Pricing lists a model by its bare name, `h3-reference-to-video-turbo-realtime`,
+ * where sessions and tokens take its connect slug,
+ * `reactor/h3-reference-to-video-turbo-realtime`: the name after the owner.
+ */
+const pricedAs = (model: string): string => model.slice(model.lastIndexOf("/") + 1);
+
+/**
+ * The rate of `model`, given by its connect slug (or its bare name), in
+ * credits per second: exactly as stated for a per-second rate, and a
+ * per-minute rate divided by 60. Callers decide whether the price fits their
+ * budget, and how the time they are billed rounds: Reactor's documentation
+ * bills by the session-minute.
+ */
 export const modelRate = (value: unknown, model: string) =>
   Schema.decodeUnknownEffect(Pricing)(value).pipe(
     Effect.flatMap((decoded) => {
-      const matches = decoded.models.filter((entry) => entry.name === model);
+      const matches = (decoded.models ?? [])
+        .filter(isEntry)
+        .filter((entry) => entry.name === model || entry.name === pricedAs(model));
       return Schema.decodeUnknownEffect(CreditsRate)(
         matches.length === 1 ? matches[0]!.rate : undefined,
       ).pipe(
         Effect.map((rate) => ({
           creditsPerDollar: decoded.settings.credits_per_dollar,
-          creditsPerSecond: rate.amount_per_sec,
+          creditsPerSecond:
+            "amount_per_sec" in rate ? rate.amount_per_sec : rate.amount_per_min / 60,
         })),
       );
     }),

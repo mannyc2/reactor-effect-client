@@ -23,6 +23,7 @@ import {
 } from "effect/unstable/http";
 import * as Coordinator from "../src/coordinator/index.js";
 import { ReactorError } from "../src/errors.js";
+import * as H3 from "../src/h3/index.js";
 
 type RequestFixture = (url: string, init: RequestInit) => Promise<Response>;
 const fetchLayer = (request: RequestFixture) =>
@@ -78,8 +79,9 @@ const terminate = (jwt: Redacted.Redacted<string>, sessionId: string) =>
 
 describe("Reactor HTTP session contract (offline)", () => {
   test("model pricing preserves exact credit ratios and rejects ambiguous economics", async () => {
+    // Pricing names a model by its bare name; the caller asks by connect slug.
     const entry = {
-      name: options.modelName,
+      name: "fast-h3",
       rate: { amount_per_sec: 7, unit: "credits", denomination: "second" },
     };
     const facts = {
@@ -100,9 +102,46 @@ describe("Reactor HTTP session contract (offline)", () => {
         Coordinator.modelRate({ ...facts, models: [other, entry] }, options.modelName),
       ),
     ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
+    // Nor does an entry in any other shape: the catalog is shared by every model.
+    expect(
+      await Effect.runPromise(
+        Coordinator.modelRate(
+          {
+            ...facts,
+            models: [
+              { id: "3dc9e64e-ebc1-4824-a63b-2ad0dbb15ca8" },
+              { name: "reactor/unpriced" },
+              {
+                name: "reactor/per-token",
+                rate: { amount_per_token: 3, unit: "credits", denomination: "token" },
+              },
+              entry,
+            ],
+          },
+          options.modelName,
+        ),
+      ),
+    ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
+    // A listing under the full slug, or asking by bare name, prices the same.
+    expect(
+      await Effect.runPromise(
+        Coordinator.modelRate(
+          { ...facts, models: [{ ...entry, name: options.modelName }] },
+          options.modelName,
+        ),
+      ),
+    ).toEqual({ creditsPerDollar: 1_000, creditsPerSecond: 7 });
+    expect(await Effect.runPromise(Coordinator.modelRate(facts, "fast-h3"))).toEqual({
+      creditsPerDollar: 1_000,
+      creditsPerSecond: 7,
+    });
     for (const invalid of [
       { ...facts, models: [] },
       { ...facts, models: [entry, entry] },
+      // The bare name and the full slug both listed is ambiguous too.
+      { ...facts, models: [entry, { ...entry, name: options.modelName }] },
+      // Another owner's model of the same bare name is not this one's slug.
+      { ...facts, models: [{ ...entry, name: "other/fast-h3" }] },
       { ...facts, settings: { ...facts.settings, currency_code: "EUR" } },
       { ...facts, settings: { ...facts.settings, credits_per_dollar: 1.5 } },
       ...[0, -1, 1.5, Infinity].map((amount_per_sec) => ({
@@ -111,6 +150,20 @@ describe("Reactor HTTP session contract (offline)", () => {
       })),
       { ...facts, models: [{ ...entry, rate: { ...entry.rate, unit: "dollars" } }] },
       { ...facts, models: [{ ...entry, rate: { ...entry.rate, denomination: "minute" } }] },
+      {
+        ...facts,
+        models: [
+          { ...entry, rate: { amount_per_min: 7.5, unit: "credits", denomination: "minute" } },
+        ],
+      },
+      {
+        ...facts,
+        models: [
+          { ...entry, rate: { amount_per_min: 420, unit: "credits", denomination: "second" } },
+        ],
+      },
+      { ...facts, models: [{ name: entry.name }] },
+      { settings: facts.settings },
     ]) {
       const failure = await Effect.runPromise(
         Effect.flip(Coordinator.modelRate(invalid, options.modelName)),
@@ -121,6 +174,76 @@ describe("Reactor HTTP session contract (offline)", () => {
         context: { operation: "pricing" },
       });
     }
+  });
+
+  test("prices a model from the pricing shape Reactor documents", async () => {
+    // From https://docs.reactor.inc/resources/billing on September 24, 2026: a
+    // rate per minute, no currency code, and a catalog that may be absent.
+    const documented = {
+      settings: {
+        credits_per_dollar: 10_000,
+        purchase: { min_dollars: 1, max_dollars: 1_000 },
+        auto_topup: { min_dollars: 5 },
+        max_account_credits: 0,
+      },
+      models: [
+        {
+          id: "f7d3a8b2-1c4e-4d2a-9b6f-0d8e3c1b5a47",
+          name: "helios",
+          rate: { amount_per_min: 1020, unit: "credits", denomination: "minute" },
+        },
+      ],
+    };
+    expect(await Effect.runPromise(Coordinator.modelRate(documented, "reactor/helios"))).toEqual({
+      creditsPerDollar: 10_000,
+      creditsPerSecond: 17,
+    });
+    expect(
+      await Effect.runPromise(
+        Effect.flip(Coordinator.modelRate({ settings: documented.settings }, "reactor/helios")),
+      ),
+    ).toMatchObject({ reason: { _tag: "Protocol" }, context: { operation: "pricing" } });
+  });
+
+  test("prices H3 from Reactor's live pricing document", async () => {
+    // Trimmed from GET https://api.reactor.inc/pricing on September 24, 2026.
+    const live = {
+      settings: {
+        credits_per_dollar: 10_000,
+        purchase: { min_dollars: 1, max_dollars: 1_000 },
+        auto_topup: { min_dollars: 5 },
+        max_account_credits: 0,
+        currency_code: "USD",
+      },
+      models: [
+        {
+          id: "3dc9e64e-ebc1-4824-a63b-2ad0dbb15ca8",
+          name: "fast-h3",
+          rate: {
+            amount_per_sec: 125,
+            amount_per_sec_usd: "0.0125",
+            currency_code: "USD",
+            unit: "credits",
+            denomination: "second",
+          },
+        },
+        {
+          id: "1581ec29-63bc-4d09-9fbc-e1c1cb04a10c",
+          name: "h3-reference-to-video-turbo-realtime",
+          rate: {
+            amount_per_sec: 125,
+            amount_per_sec_usd: "0.0125",
+            currency_code: "USD",
+            unit: "credits",
+            denomination: "second",
+          },
+        },
+      ],
+    };
+    expect(await Effect.runPromise(Coordinator.modelRate(live, H3.modelName))).toEqual({
+      creditsPerDollar: 10_000,
+      creditsPerSecond: 125,
+    });
   });
 
   test("reads public pricing through the supplied client without applying spending policy", async () => {
