@@ -4,6 +4,7 @@ import {
   Duration,
   Effect,
   Fiber,
+  Layer,
   FileSystem,
   Path,
   PlatformError,
@@ -19,6 +20,8 @@ import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import * as TestPlatform from "../Platform.js";
 import { fixture, gate } from "./ProviderSession.js";
 import type { Script } from "./ProviderSession.js";
+import { TestClock } from "effect/testing";
+import { waitFor as waitForEffect } from "./Clock.js";
 
 type Services =
   | Scope.Scope
@@ -26,12 +29,12 @@ type Services =
   | Path.Path
   | Crypto.Crypto
   | HttpClient.HttpClient;
+/** On a `TestClock`, as the other H3 suites run (see ./Clock.ts). */
 const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
-  Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(TestPlatform.layer))));
-const waitFor = (predicate: () => boolean) =>
-  Effect.gen(function* () {
-    while (!predicate()) yield* Effect.sleep(1);
-  }).pipe(Effect.timeout(1000));
+  Effect.runPromise(
+    Effect.scoped(effect.pipe(Effect.provide(Layer.merge(TestPlatform.layer, TestClock.layer())))),
+  );
+const waitFor = (predicate: () => boolean) => waitForEffect(() => Effect.sync(predicate));
 
 /** Source files belong to the fixture. No production preparation may stage a copy. */
 const setup = (script: Script = {}, stream?: FileSystem.FileSystem["stream"]) =>

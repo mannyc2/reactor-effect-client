@@ -1,14 +1,12 @@
 import { expect, test } from "vitest";
-import { Crypto, Effect, Result, Scope } from "effect";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { Effect, Result } from "effect";
 import { ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
 import { CommandFailure } from "../../src/session/commands.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
+import { run, runFlowing } from "./Clock.js";
 
 const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
-const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Crypto.Crypto>) =>
-  Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(NodeCrypto.layer))));
 const observed = (provider: H3.Provider, revision: bigint) =>
   Effect.gen(function* () {
     while ((yield* provider.current).revision < revision) yield* Effect.yieldNow;
@@ -67,7 +65,7 @@ test("matching submission fields still require the exact captured prompt and met
   ));
 
 test("expired acceptance tokens cannot be revived by late matching clips and release their pending capacity", () =>
-  run(
+  runFlowing(
     Effect.gen(function* () {
       const fake = yield* fixture({ command: { enqueue: () => Effect.undefined } });
       const provider = yield* H3.make(fake.session, { ...options, maxPending: 1 });
@@ -104,7 +102,7 @@ test("expired acceptance tokens cannot be revived by late matching clips and rel
   ));
 
 test("bounded reconciliation retains the exact unknown failure, original code and structured cause", () =>
-  run(
+  runFlowing(
     Effect.gen(function* () {
       const cause = new Error("independent transport failure");
       let original: CommandFailure | undefined;
