@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-native",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Native WebRTC host for reactor-effect-client over the reactor-effect-native Rust bridge: decoded media generations and explicit file upload",
   "type": "module",
   "license": "Apache-2.0",
