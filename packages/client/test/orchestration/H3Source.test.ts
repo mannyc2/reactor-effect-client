@@ -341,6 +341,7 @@ test("admission-to-ready time is measured on elapsed time, so a wall-clock step 
         yield* (yield* source.prepareRouted({ request: request(), position: undefined })).submit;
         yield* wall.step(60_000);
         yield* emit("clip_generated", { clip: { ...fake.accepted[0]!, ready: true } });
+        yield* until(() => events.some((event) => event._tag === "Ready"));
         const ready = events.find((event) => event._tag === "Ready");
         const timing = ready?._tag === "Ready" ? ready.timing : undefined;
         expect(timing?._tag).toBe("Bounded");

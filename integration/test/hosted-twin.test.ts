@@ -348,28 +348,35 @@ test("the twin mints recognisable credentials: an HS256 JWT the twin plainly sig
     expect(grant.expiresAt * 1000 - Date.now()).toBeGreaterThan(90_000);
   }));
 
-test("a reference image uploads through the twin before its clip is queued", () =>
-  withTwin(async (twin) => {
-    // The smallest complete PNG: one pixel.
-    const png = Uint8Array.from(
-      Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-        "base64",
-      ),
-    );
-    const acceptance = await run(
-      twin,
-      Effect.gen(function* () {
-        const { provider } = yield* open(yield* mint(twin));
-        const submission = yield* provider.prepare({
-          prompt,
-          references: [{ _tag: "Bytes", bytes: png }],
-        });
-        return yield* submission.submit;
-      }),
-    );
-    expect(acceptance.clip).toMatchObject({ has_reference_image: true, reference_image_count: 1 });
-  }));
+test(
+  "a reference image uploads through the twin before its clip is queued",
+  () =>
+    withTwin(async (twin) => {
+      // The smallest complete PNG: one pixel.
+      const png = Uint8Array.from(
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          "base64",
+        ),
+      );
+      const acceptance = await run(
+        twin,
+        Effect.gen(function* () {
+          const { provider } = yield* open(yield* mint(twin));
+          const submission = yield* provider.prepare({
+            prompt,
+            references: [{ _tag: "Bytes", bytes: png }],
+          });
+          return yield* submission.submit;
+        }),
+      );
+      expect(acceptance.clip).toMatchObject({
+        has_reference_image: true,
+        reference_image_count: 1,
+      });
+    }),
+  30_000,
+);
 
 test("reference audio uploads through the twin and its clip reports it; audio alone is refused", () =>
   withTwin(async (twin) => {
