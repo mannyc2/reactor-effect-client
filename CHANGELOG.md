@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-25
+
+The orchestration lineup, added to the 0.3.3 API without breaking it. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, the Chrome browser/native WebRTC test on each, and the pack/install smoke of all three archives, whose Node consumer compiles the lineup against the packed declarations. The portable suites run the lineup's 30-minute simulated show and its one-filler run that must starve. The lineup has run only against the simulation and the H3 source fixture: it has not run on hosted H3.
+
 ### Added
 
 - `Orchestration.makeLineup({ filler })`, and `layerLineup` for the new `Lineup` service: clips ahead of filler over an orchestration's `Engine`. A clip is enqueued behind the clips already waiting and ahead of all waiting filler, and once Ready it moves directly behind the Ready clips, so clips overtake filler only and never each other; `filler.ready` filler clips are kept Ready behind the playing clip, built one at a time. `enqueue` returns a `LineupClip` whose `fate` settles as `Started` or `Failed` (a failed build, a clip lost with its session, a clip removed with `remove`, or one still waiting when the orchestration fails or closes), and `state` reports what is playing, the Ready filler and how often playout ran dry. The lineup knows its clips by the requests it captured, so applications no longer tag clip roles in `metadata` and parse them back. A 30-minute simulated show with bursts, an 8-minute silence, build jitter and failed builds checks it: playout never runs dry, clips join back to back, keep their order and overtake filler only, and nothing is cut.
@@ -176,7 +182,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/a13af75daa4f09e34b116af3db3e66e65e0a5b17...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/6f56a1969a2489fb4c8e50066de5b4ba70f9b7a1...main
+[0.3.4]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.3
 [0.3.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.2
 [0.3.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.1
