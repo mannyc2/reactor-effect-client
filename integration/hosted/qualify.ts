@@ -78,6 +78,7 @@ import {
   authorize,
   billedUsd,
   checks,
+  liveClipVideo,
   liveVideo,
   maxCheckUsd,
   maxSchedulerUsd,
@@ -649,9 +650,9 @@ const vertical = (target: Target, run: Run, budget: Budget, check: "vertical" | 
             ? undefined
             : "generated and started were not both observed",
         );
-        // Judged by the clip's own frames: what arrived before it started
-        // cannot make a frozen or black clip look live.
-        judge(run, "live video", liveVideo(video.seenSince(lifecycle.started!.atMs)));
+        // Started is a provider fact: idle frames can still arrive before the
+        // media update. Require continued motion at the end of this window.
+        judge(run, "live video", liveClipVideo(video.seenSince(lifecycle.started!.atMs)));
         judge(
           run,
           "audio when offered",

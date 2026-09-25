@@ -16,7 +16,7 @@ import type * as H3 from "reactor-effect-client/h3";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
 import { terminal } from "reactor-effect-client/host";
 import type { AudioSummary, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
-import type { VideoSeen } from "./gates.js";
+import { liveVideoMotionFrames, type ClipVideoSeen } from "./gates.js";
 
 /** Milliseconds since `origin`, a `Date.now()` reading. */
 export const since = (origin: number): number => Date.now() - origin;
@@ -182,13 +182,19 @@ export class VideoReader {
   }
 
   /** What the frames arriving at or after `atMs` showed. */
-  seenSince(atMs: number): VideoSeen {
+  seenSince(atMs: number): ClipVideoSeen {
     const frames = this.seen.filter((frame) => frame.atMs >= atMs);
+    const recentLit = frames.slice(-liveVideoMotionFrames).filter((frame) => frame.lit);
+    let recentChanges = 0;
+    for (let index = 1; index < recentLit.length; index++)
+      if (recentLit[index]!.digest !== recentLit[index - 1]!.digest) recentChanges++;
     return {
       frames: frames.length,
       formats: [...new Set(frames.map((frame) => frame.format))],
       lit: frames.filter((frame) => frame.lit).length,
       distinct: new Set(frames.map((frame) => frame.digest)).size,
+      recentLitFrames: recentLit.length,
+      recentChanges,
     };
   }
 

@@ -190,6 +190,9 @@ export const stopFor = (evidence: {
   return undefined;
 };
 
+/** About one third of a second at 24 fps, within the rehearsal's 1.5 s window. */
+export const liveVideoMotionFrames = 8;
+
 /** What the video reader saw, summarized as it read: frames are never kept. */
 export interface VideoSeen {
   readonly frames: number;
@@ -200,12 +203,28 @@ export interface VideoSeen {
   readonly distinct: number;
 }
 
-/** Frames the vertical check needs to see: changing, not black, in BGRA. */
+export interface ClipVideoSeen extends VideoSeen {
+  /** Lit frames among the latest eight arrivals. */
+  readonly recentLitFrames: number;
+  /** Image changes between adjacent lit frames among those arrivals. */
+  readonly recentChanges: number;
+}
+
+/** Frames a reader needs to see after attaching: changing, not black, in BGRA. */
 export const liveVideo = (video: VideoSeen): string | undefined => {
   if (video.frames < 2) return "fewer than two frames arrived";
   if (video.formats.some((format) => format !== "BGRA")) return "a frame was not BGRA";
   if (video.lit === 0) return "every frame was black";
   return video.distinct > 1 ? undefined : "the frames never changed";
+};
+
+/** The timed clip window must keep changing after any delayed pre-start frames. */
+export const liveClipVideo = (video: ClipVideoSeen): string | undefined => {
+  const basic = liveVideo(video);
+  if (basic !== undefined) return basic;
+  if (video.recentLitFrames < liveVideoMotionFrames)
+    return "fewer than eight recent lit frames arrived";
+  return video.recentChanges > 1 ? undefined : "the recent frames did not keep changing";
 };
 
 /**
