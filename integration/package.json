@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-integration",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Real local browser/native WebRTC qualification over the public host packages",
   "type": "module",

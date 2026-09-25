@@ -7,10 +7,10 @@ This is not an official Reactor SDK.
 ## Install
 
 ```sh
-npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.115
+npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
 ```
 
-`reactor-effect-client` and Effect `4.0.0-rc.115` are exact peer dependencies. The package needs a secure context with WebRTC and Web Crypto. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
+`reactor-effect-client` and Effect `4.0.0-rc.117` are peer dependencies (`^4.0.0-rc.117`); later rc releases are accepted without a forced SDK bump. The package needs a secure context with WebRTC and Web Crypto. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
 
 ## Usage
 

@@ -18,7 +18,7 @@ Four programs, each showing what one part of the SDK is for, written as Effect a
 
 ## Using one outside this repository
 
-Each example's `package.json` names its dependencies with this workspace's `catalog:` and `workspace:*` protocols. In a project of your own, use the versions in the root [`package.json`](../package.json) (`effect` and the `@effect/*` packages at `4.0.0-rc.115`, the three SDK packages at the same version as each other), and keep the root override `"@effect/platform-node-shared": "4.0.0-rc.115"` in an npm project that depends on `@effect/platform-node`: the platform's caret range otherwise admits a later prerelease built against a different Effect. The examples import `@effect/platform-node` by module; see below.
+Each example's `package.json` names its dependencies with this workspace's `catalog:` and `workspace:*` protocols. In a project of your own, use the versions in the root [`package.json`](../package.json) (`effect` and the `@effect/*` packages at `^4.0.0-rc.117`, the three SDK packages at the same version as each other), and keep the root override `"@effect/platform-node-shared": "^4.0.0-rc.117"` in an npm project that depends on `@effect/platform-node`: the platform's caret range on its internal shared package can otherwise resolve to a later prerelease with a different Effect peer. The examples import `@effect/platform-node` by module; see below.
 
 ## What is checked
 

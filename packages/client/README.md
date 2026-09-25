@@ -9,10 +9,10 @@ This is not an official Reactor SDK. Protocol material is attributed in [NOTICE]
 ## Install
 
 ```sh
-npm install reactor-effect-client effect@4.0.0-rc.115
+npm install reactor-effect-client effect@4.0.0-rc.117
 ```
 
-Effect `4.0.0-rc.115` is an exact peer dependency. Every module in this package is portable: importing it selects no host and loads no native code. Add `reactor-effect-browser` or `reactor-effect-native` for a transport.
+Effect `4.0.0-rc.117` is a peer dependency (`^4.0.0-rc.117`); later rc releases are accepted without a forced SDK bump. Every module in this package is portable: importing it selects no host and loads no native code. Add `reactor-effect-browser` or `reactor-effect-native` for a transport.
 
 ## Modules
 
@@ -174,7 +174,7 @@ The adapter exposes autoplay, flush, playback, reset, and other model controls a
 
 ## Declarations without DOM types
 
-Effect `4.0.0-rc.115` itself references the global `TextDecoderOptions` type in its channel declarations. A strict Node project that deliberately omits DOM types may need to declare that standard interface. The workspace's installed-package check first proves this is the sole upstream diagnostic, then applies a test-only declaration; it does not enable `skipLibCheck` or hide SDK declaration errors.
+Effect `4.0.0-rc.117` itself references the global `TextDecoderOptions` type in its channel declarations. A strict Node project that deliberately omits DOM types may need to declare that standard interface. The workspace's installed-package check first proves this is the sole upstream diagnostic, then applies a test-only declaration; it does not enable `skipLibCheck` or hide SDK declaration errors.
 
 ## Example
 

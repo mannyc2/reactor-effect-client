@@ -32,7 +32,7 @@ describe("architecture contract", () => {
     expect(checkWorkspace(workspace)).toEqual([]);
     expect(
       checkWorkspace({ ...workspace, workspaces: { catalog: { effect: "latest" } } }),
-    ).toContain("workspace catalog must pin effect to 4.0.0-rc.115");
+    ).toContain("workspace catalog must pin effect to ^4.0.0-rc.117");
     expect(checkManifest(client, clientRule)).toEqual([]);
     expect(checkManifest(native, nativeRule)).toEqual([]);
     expect(
