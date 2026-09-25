@@ -19,7 +19,7 @@
     },
     "examples/livestream": {
       "name": "reactor-effect-example-livestream",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -34,7 +34,7 @@
     },
     "integration": {
       "name": "reactor-effect-integration",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/bun": "catalog:",
@@ -49,7 +49,7 @@
     },
     "packages/browser": {
       "name": "reactor-effect-browser",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "devDependencies": {
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
@@ -63,7 +63,7 @@
     },
     "packages/browser/examples": {
       "name": "reactor-effect-browser-examples",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -76,7 +76,7 @@
     },
     "packages/client": {
       "name": "reactor-effect-client",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -92,7 +92,7 @@
     },
     "packages/client/examples": {
       "name": "reactor-effect-client-examples",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -106,7 +106,7 @@
     },
     "packages/native": {
       "name": "reactor-effect-native",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/node": "catalog:",
@@ -126,7 +126,7 @@
     },
     "packages/native/examples": {
       "name": "reactor-effect-native-examples",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -141,29 +141,29 @@
     },
     "packages/test-kit": {
       "name": "reactor-effect-test-kit",
-      "version": "0.3.2",
+      "version": "0.3.3",
     },
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.115",
+    "@effect/platform-node-shared": "^4.0.0-rc.117",
   },
   "catalog": {
-    "@effect/platform-bun": "4.0.0-rc.115",
-    "@effect/platform-node": "4.0.0-rc.115",
-    "@effect/vitest": "4.0.0-rc.115",
+    "@effect/platform-bun": "^4.0.0-rc.117",
+    "@effect/platform-node": "^4.0.0-rc.117",
+    "@effect/vitest": "^4.0.0-rc.117",
     "@types/bun": "1.4.2",
     "@types/node": "22.20.2",
-    "effect": "4.0.0-rc.115",
+    "effect": "^4.0.0-rc.117",
     "koffi": "3.2.1",
     "typescript": "7.0.2",
     "vitest": "5.0.0",
   },
   "packages": {
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.115", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.115" }, "peerDependencies": { "effect": "^4.0.0-rc.115" } }, "sha512-ilTFcs66ghInP8WHCJYa4bx/yzohYM9dRR//qjmVBBpSKu1hrCTiRWpEcc1N6zrnOEPk2kyVaKg5ykSMgiBMqQ=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.117", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.117" }, "peerDependencies": { "effect": "^4.0.0-rc.117" } }, "sha512-jyvoxPjT9562z5Tc2gib9GB16jcgh43jhpsuNQxs9B8WJ7RB2doPBQdrYLSSWRodGPLJBKJGzToRRbJiaGblsw=="],
 
-    "@effect/platform-node": ["@effect/platform-node@4.0.0-rc.115", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.115", "undici": "^8.10.2" }, "peerDependencies": { "effect": "^4.0.0-rc.115", "redis": ">=5.0.0 <7.0.0" } }, "sha512-mW03Wjq2FiTL5oi9yOkaKpCyUNBaduKgTk7qMHNELvC21Jq2qOAfdsfH+p+s2zmpB9w2RSa+ApODv4WjO9wQfw=="],
+    "@effect/platform-node": ["@effect/platform-node@4.0.0-rc.117", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.117", "undici": "^8.10.2" }, "peerDependencies": { "effect": "^4.0.0-rc.117", "redis": ">=5.0.0 <7.0.0" } }, "sha512-WbPcvQDkqXFnCeG6LohJ9eVNapCDhZbCpezhYKxm0IsZEk7swakRh7RkC1t2CXzd3hGmszTv2k9e/pXyZuL+wQ=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-rc.115", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.3" }, "peerDependencies": { "effect": "^4.0.0-rc.115" } }, "sha512-rcBwhDIfb82akJoTv7Vwh8K5x9vC/XfuePS7JjOr+z+dORXzsmKqI1BUQF27ARCN9fTAbDh7I6YvBlWhLjnqNg=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-rc.117", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.3" }, "peerDependencies": { "effect": "^4.0.0-rc.117" } }, "sha512-GyRkEfLBG49MwJe+/XDPiXYcQ44RA9p2z0AurlsWhR1cd1PqOUMEZU1pORL+/R5hR8aH6ZuqoJYD8lAc6h+wlA=="],
 
     "@effect/tsgo": ["@effect/tsgo@0.45.0", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.45.0", "@effect/tsgo-darwin-x64": "0.45.0", "@effect/tsgo-linux-arm": "0.45.0", "@effect/tsgo-linux-arm64": "0.45.0", "@effect/tsgo-linux-x64": "0.45.0", "@effect/tsgo-win32-arm64": "0.45.0", "@effect/tsgo-win32-x64": "0.45.0" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-gPG0ixVHgtYBUe5DbKX9vzHlhqd9+ZEfs4m/XWy0808av0A2XqMzaG3F5rnPBN7EUJRPlo9TluIi8WHx/pBV+A=="],
 
@@ -181,7 +181,7 @@
 
     "@effect/tsgo-win32-x64": ["@effect/tsgo-win32-x64@0.45.0", "", { "os": "win32", "cpu": "x64" }, "sha512-1Hsr/sT5dmIafoY9L0ASJo4VqGyPNzM1nwTb4Wj1Lmjq6kGuwO/PVozFg3WZZ0piChFmgiU3nx1AKZfyqgjGUw=="],
 
-    "@effect/vitest": ["@effect/vitest@4.0.0-rc.115", "", { "peerDependencies": { "effect": "^4.0.0-rc.115", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-DJR0hfdr3HNXAkzW8AzfvUz6VmrNFLrKk9tZGDURi33faMyxkc7ZewxELMMZwGpOTGN4mfqYVbX2CXgI+ZJBeQ=="],
+    "@effect/vitest": ["@effect/vitest@4.0.0-rc.117", "", { "peerDependencies": { "effect": "^4.0.0-rc.117", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-jJg9M7T3OhTcvoD9Zi28S5+0H+axlSHAYjXM8TYeLJy/FVlPe0B/Vc3ZfaqUF0rwkfQ6ziyCdjiBS46+182H1Q=="],
 
     "@jridgewell/resolve-uri": ["@jridgewell/resolve-uri@3.1.2", "", {}, "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw=="],
 
@@ -423,7 +423,7 @@
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
-    "effect": ["effect@4.0.0-rc.115", "", {}, "sha512-ogYulZ5ffeOzrJqQrG0XOkDO5lKn2s9KNHhoxJy/6wKUkF0i12dlVXWA9TgsgQ+zV/JzizyG0+XMPepZEQX6vw=="],
+    "effect": ["effect@4.0.0-rc.117", "", {}, "sha512-UUyi9QiOW4nySFIBM3KnYbNMd9EZliOdKfBcyLD0mPMPheO2fkuXS5y0opjWc9oqzlJxPQICEGm8gGw3kh9j/w=="],
 
     "es-module-lexer": ["es-module-lexer@2.3.2", "", {}, "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw=="],
 

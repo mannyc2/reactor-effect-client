@@ -12,7 +12,7 @@ import * as Ast from "typescript/unstable/ast";
 /** @typedef {{ workspaces?: { catalog?: Record<string, string> }, overrides?: Record<string, string> }} RootManifest */
 /** @typedef {{ directory: string, entries: Readonly<Record<string, string>>, area: (path: string) => string, forbidden: Readonly<Record<string, readonly string[]>>, hostBuiltins: boolean }} Rule */
 
-export const EFFECT_PIN = "4.0.0-rc.115";
+export const EFFECT_PIN = "^4.0.0-rc.117";
 
 /** @param {string} path */
 const clientArea = (path) => {

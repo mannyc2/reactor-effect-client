@@ -796,22 +796,26 @@ try {
       readonly version?: string;
       readonly dependencies?: Readonly<Record<string, DependencyTree>>;
     }
+    // The catalog and override may carry a caret range (^4.0.0-rc.117); the
+    // resolved versions are always exact.  Compare resolved versions against
+    // each other so a caret range in the catalog does not fail this check.
+    const resolvedEffectVersion = nodeSharedVersion.replace(/^[\^~>=<]+/, "");
     const checkEffectVersions = (tree: DependencyTree): void => {
       for (const [name, dependency] of Object.entries(tree.dependencies ?? {})) {
         if (
           (name === "effect" ||
             name === "@effect/platform-node" ||
             name === "@effect/platform-node-shared") &&
-          dependency.version !== nodeSharedVersion
+          dependency.version !== resolvedEffectVersion
         )
           fail(
-            `isolated native fixture resolved ${name}@${dependency.version}, expected ${nodeSharedVersion}`,
+            `isolated native fixture resolved ${name}@${dependency.version}, expected ${resolvedEffectVersion}`,
           );
         checkEffectVersions(dependency);
       }
     };
     checkEffectVersions(JSON.parse(nativeDependencies) as DependencyTree);
-    console.log(`installed-native-effect-stack ${nodeSharedVersion}`);
+    console.log(`installed-native-effect-stack ${resolvedEffectVersion}`);
     copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
     const nativeOutput = run(
       node,

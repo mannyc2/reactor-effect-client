@@ -109,8 +109,8 @@ Qualify the published bytes. Run from a machine whose network carries WebRTC med
 
 ```sh
 mkdir reactor-qualification && cd reactor-qualification && npm init -y > /dev/null
-npm install reactor-effect-client@0.3.0 reactor-effect-native@0.3.0 \
-  effect@4.0.0-rc.115 @effect/platform-node@4.0.0-rc.115
+npm install reactor-effect-client@0.3.3 reactor-effect-native@0.3.3 \
+  effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
 cp -R <this repository>/integration/hosted ./hosted
 
 # Free: the same checks against the local twin, over the installed packages.

@@ -7,10 +7,10 @@ This is not an official Reactor SDK. Native WebRTC dependencies are attributed i
 ## Install
 
 ```sh
-npm install reactor-effect-client reactor-effect-native effect@4.0.0-rc.115 @effect/platform-node@4.0.0-rc.115
+npm install reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
 ```
 
-`reactor-effect-client`, Effect `4.0.0-rc.115` and `@effect/platform-node` `4.0.0-rc.115` are exact peer dependencies. Koffi is an optional dependency; it and the shared library are loaded only when `Native.layer()` is built, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `Native.Isolated.layer()` is built. A consumer using that prerelease should retain the root override `"@effect/platform-node-shared": "4.0.0-rc.115"`, because the platform's caret range otherwise permits a later prerelease with a different Effect peer.
+`reactor-effect-client`, Effect `4.0.0-rc.117` and `@effect/platform-node` `4.0.0-rc.117` are peer dependencies; caret ranges (`^4.0.0-rc.117`) allow later rc releases without a forced SDK bump. Koffi is an optional dependency; it and the shared library are loaded only when `Native.layer()` is built, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `Native.Isolated.layer()` is built. A consumer using the rc prerelease should retain the root override `"@effect/platform-node-shared": "^4.0.0-rc.117"` (matching their installed `@effect/platform-node`), because the platform's own caret range on its internal shared package can otherwise resolve to a different prerelease with a different Effect peer.
 
 ## Usage
 

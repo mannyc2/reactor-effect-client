@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Bun workspace for the reactor-effect-client, reactor-effect-browser and reactor-effect-native packages",
   "type": "module",
   "license": "Apache-2.0",
@@ -17,12 +17,12 @@
       "integration"
     ],
     "catalog": {
-      "@effect/platform-bun": "4.0.0-rc.115",
-      "@effect/platform-node": "4.0.0-rc.115",
-      "@effect/vitest": "4.0.0-rc.115",
+      "@effect/platform-bun": "^4.0.0-rc.117",
+      "@effect/platform-node": "^4.0.0-rc.117",
+      "@effect/vitest": "^4.0.0-rc.117",
       "@types/bun": "1.4.2",
       "@types/node": "22.20.2",
-      "effect": "4.0.0-rc.115",
+      "effect": "^4.0.0-rc.117",
       "koffi": "3.2.1",
       "typescript": "7.0.2",
       "vitest": "5.0.0"
@@ -41,7 +41,7 @@
     "typescript": "catalog:"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.115"
+    "@effect/platform-node-shared": "^4.0.0-rc.117"
   },
   "scripts": {
     "prepare": "effect-tsgo patch --typescript",

@@ -10,18 +10,18 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. Version 0.3.2 of all three packages is npm's `latest`, published with provenance by the [release workflow](./.github/workflows/release.yml). 0.3.0's sources passed the [hosted qualification](./integration/hosted) against hosted Reactor; 0.3.1 adds H3 reference audio and 0.3.2 adopting and resuming a recorded session, whose own hosted checks have not run yet. 0.3.0 changed the 0.2.0 public API incompatibly, so a `^0.2.0` range does not include it. [CHANGELOG.md](./CHANGELOG.md) lists what each release changes.
+This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. Version 0.3.3 of all three packages is npm's `latest`, published with provenance by the [release workflow](./.github/workflows/release.yml). 0.3.3 widens the Effect peer dependencies from exact `4.0.0-rc.115` to caret `^4.0.0-rc.117`, so later rc releases are accepted without a forced SDK release. 0.3.0's sources passed the [hosted qualification](./integration/hosted) against hosted Reactor; 0.3.1 adds H3 reference audio and 0.3.2 adopting and resuming a recorded session, whose own hosted checks have not run yet. 0.3.0 changed the 0.2.0 public API incompatibly, so a `^0.2.0` range does not include it. [CHANGELOG.md](./CHANGELOG.md) lists what each release changes.
 
 ## Which package do I install?
 
-- Every application installs `reactor-effect-client` and Effect `4.0.0-rc.115`. Its modules (`/h3`, `/orchestration`, `/simulation`, `/testing`, `/wire`) are subpaths of one package because they share exactly one dependency set and are portable; splitting them would add installs without isolating anything.
+- Every application installs `reactor-effect-client` and Effect `4.0.0-rc.117`. Its modules (`/h3`, `/orchestration`, `/simulation`, `/testing`, `/wire`) are subpaths of one package because they share exactly one dependency set and are portable; splitting them would add installs without isolating anything.
 - A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries the optional Koffi dependency, Node-only code and the staged shared libraries. Portable and browser consumers never download native binaries.
 - The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. They reach the internals they need through the published `reactor-effect-client/host` module; applications never need it.
 
 ```sh
-npm install reactor-effect-client effect@4.0.0-rc.115
+npm install reactor-effect-client effect@4.0.0-rc.117
 npm install reactor-effect-browser                                      # browsers
-npm install reactor-effect-native @effect/platform-node@4.0.0-rc.115    # Node
+npm install reactor-effect-native @effect/platform-node@4.0.0-rc.117    # Node
 ```
 
 ```ts
