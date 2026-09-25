@@ -15,7 +15,7 @@ export const applicationCommit = sourceCommit;
 export const sourceTree = "3".repeat(40);
 export const ciRunId = "7101";
 export const repository = "mannyc2/reactor-effect-client";
-export const effectPin = "4.0.0-rc.115";
+export const effectPin = "^4.0.0-rc.117";
 /** @typedef {"reactor-effect-client" | "reactor-effect-browser" | "reactor-effect-native"} PackageName */
 /** @type {PackageName} */
 export const clientPackage = "reactor-effect-client";
