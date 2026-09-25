@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Orchestration.makeScheduler`, `layerScheduler` and `Scheduler.lineup`: an opt-in, keyed scheduler with priority lanes, a seconds-based filler runway, per-session Ready ordering, monotonic timing windows, `Follow` and `At` boundaries, explicit withdrawal and drain, and a keyed as-run stream. `Unknown` gains a terminal marker when its source retires without proof. A session's queued clips now report `ClipRecord.sessionId`; the engine state reports the live, preferred and retiring sessions even while a replacement has no clips.
+- Scheduler keys are carried in library-owned H3 provider metadata. The app's `ClipRequest.metadata` is unchanged, and a resumed H3 session can recognize a scheduler item by key.
+
+### Changed
+
+- **Breaking:** `makeLineup`, `layerLineup`, `Lineup` and `ClipFate` leave the public orchestration API. Apps use `makeScheduler(Scheduler.lineup({ runway, clip }))`, submit keyed items into the `line` lane, and read `ItemHandle.started`, `ItemHandle.outcome` and `asRun` instead.
+- `Engine.move` refuses a rank outside the clip's physical session range with `InvalidRequest`; it no longer clamps a cross-session rank into that session's queue.
+
+### Qualification
+
+- The scheduler's ordering, timing, fate and renewal checks run against the simulation and controlled source fixtures. Hosted H3 facts and output presentation require their own qualification; a provider `Started` event is not proof of encoded output.
+
 ## [0.4.0] - 2026-09-25
 
 Monotonic elapsed time in renewal, a lineup fate for a start nobody saw, and the end of the option names 0.3.0 renamed. It breaks the 0.3 API in two ways, so a `^0.3.0` range does not include it: `ClipFate` has a new member, which a switch over it written to be exhaustive must handle, and the `?: never` declarations of the removed option names are gone. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.

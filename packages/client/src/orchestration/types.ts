@@ -31,6 +31,8 @@ export const BuildTiming = Data.taggedEnum<BuildTiming>();
 /** A provider clip is visible even when this application never submitted it. */
 export interface ClipRecord {
   readonly clipId: ClipId;
+  /** Physical session that owns this clip, including during a renewal overlap. */
+  readonly sessionId: string;
   readonly durationSeconds: number;
   readonly provider: Clip;
   readonly request?: ClipRequest;
@@ -57,10 +59,21 @@ export interface Playback {
    * monotonic clock instead.
    */
   readonly startedAt: Option.Option<number>;
+  /** Monotonic start observation, available only when this process saw Started. */
+  readonly startedAtMonotonicMillis?: number;
 }
 
 export interface EngineState {
   readonly availability: "Ready" | "Synchronizing" | "Unavailable";
+  /** Every live physical source, including one with no clips yet. */
+  readonly sessions: readonly {
+    readonly sessionId: string;
+    readonly availability: EngineState["availability"];
+  }[];
+  /** The source that receives an unconstrained new request. */
+  readonly preferredSessionId: Option.Option<string>;
+  /** The source draining ahead of a ready replacement, if there is one. */
+  readonly retiringSessionId: Option.Option<string>;
   readonly queued: readonly ClipRecord[];
   /** Provider queue order, including an independently observed active build. */
   readonly generationOrder: readonly ClipId[];
@@ -97,11 +110,16 @@ export type EngineEvent =
       readonly durationSeconds: number;
       /** Epoch milliseconds of the local observation, as every event's `at` is. */
       readonly at: number;
+      /** Monotonic instant captured with `at`, for elapsed as-run accounting. */
+      readonly atMonotonicMillis?: number;
     }
   | {
       readonly _tag: "Ended";
       readonly clipId: ClipId;
       readonly termination: "finished" | "stopped";
+      /** Local observation time of the end, when the source provides it. */
+      readonly at?: number;
+      readonly atMonotonicMillis?: number;
     }
   | {
       readonly _tag: "Failed";
@@ -153,6 +171,7 @@ export interface EngineShape {
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
   readonly pauseAndStop: Effect.Effect<void, EngineError>;
   readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;
+  /** A global rank within this clip's physical session range in the chosen queue. */
   readonly move: (
     id: ClipId,
     position: number,

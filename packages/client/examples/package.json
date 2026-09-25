@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-client-examples",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "reactor-effect-client example: an application service over the orchestration engine, run and tested offline against the simulation",
   "type": "module",

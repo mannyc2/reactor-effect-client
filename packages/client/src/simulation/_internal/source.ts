@@ -98,7 +98,13 @@ export const source = (
     let generation: Clip[] = [];
     let playout: Clip[] = [];
     let building: Clip | undefined;
-    let playing: { readonly clip: Clip; readonly startedAt: number } | undefined;
+    let playing:
+      | {
+          readonly clip: Clip;
+          readonly startedAt: number;
+          readonly startedAtMonotonicMillis: number;
+        }
+      | undefined;
     let stopSignal: Deferred.Deferred<void> | undefined;
     let sequence = 0;
     let prepared = 0n;
@@ -167,9 +173,14 @@ export const source = (
         ),
     };
 
-    const state: Effect.Effect<EngineState> = Effect.sync(() =>
-      Object.freeze({
-        availability: closed || failed !== undefined ? "Unavailable" : "Ready",
+    const state: Effect.Effect<EngineState> = Effect.sync(() => {
+      const availability =
+        closed || failed !== undefined ? ("Unavailable" as const) : ("Ready" as const);
+      return Object.freeze({
+        availability,
+        sessions: [{ sessionId: id, availability }],
+        preferredSessionId: Option.some(id),
+        retiringSessionId: Option.none(),
         queued: Object.freeze(
           generation.filter((clip) => !clip.popped && clip !== building).map((clip) => clip.record),
         ),
@@ -194,14 +205,15 @@ export const source = (
                 clipId: playing.clip.record.clipId,
                 record: Option.some(playing.clip.record),
                 startedAt: Option.some(playing.startedAt),
+                startedAtMonotonicMillis: playing.startedAtMonotonicMillis,
               }),
         continuable: Object.freeze([...retained]),
         failed: Object.freeze([...failures]),
         started,
         canvas: Option.some(canvas),
         capacities: Object.freeze({ generation: generationCapacity, playout: playoutCapacity }),
-      }),
-    );
+      });
+    });
 
     const builder = Effect.gen(function* () {
       while (!closed && failed === undefined) {
@@ -287,7 +299,7 @@ export const source = (
         }
         playout = playout.filter((clip) => clip !== next);
         const at = clock.currentTimeMillisUnsafe();
-        playing = { clip: next, startedAt: at };
+        playing = { clip: next, startedAt: at, startedAtMonotonicMillis: monotonicMillis(clock) };
         started = true;
         const stopped = yield* Deferred.make<void>();
         stopSignal = stopped;
@@ -296,6 +308,7 @@ export const source = (
           clipId: next.record.clipId,
           durationSeconds: next.record.durationSeconds,
           at,
+          atMonotonicMillis: playing.startedAtMonotonicMillis,
         });
         yield* signalBuild;
         const presentation =
@@ -319,6 +332,8 @@ export const source = (
             _tag: "Ended",
             clipId: next.record.clipId,
             termination: wasStopped ? "stopped" : "finished",
+            at: clock.currentTimeMillisUnsafe(),
+            atMonotonicMillis: monotonicMillis(clock),
           });
         if (!wasStopped && autoplay && playout.length === 0)
           emit({ _tag: "Starved", at: clock.currentTimeMillisUnsafe() });
@@ -430,6 +445,7 @@ export const source = (
                   const seconds = alignSecondsTo(profile, request.durationSeconds);
                   const record: LocalClipRecord = Object.freeze({
                     clipId,
+                    sessionId: id,
                     seq,
                     durationSeconds: seconds,
                     request,

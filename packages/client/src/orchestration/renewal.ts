@@ -39,6 +39,7 @@ import { emptyState, isIdle } from "./queries.js";
 import { activeIds, generation, resolve } from "./routing.js";
 import type { Candidate } from "./routing.js";
 import type {
+  ClipRecord,
   CleanupReport,
   EngineError,
   EngineEvent,
@@ -108,6 +109,21 @@ const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent>
   event._tag === "Engine" ? Result.succeed(event.event) : Result.fail(event);
 const renewalsOnly = (event: HandleEvent): Result.Result<Renewal, HandleEvent> =>
   event._tag === "Renewal" ? Result.succeed(event.event) : Result.fail(event);
+
+/** A physical source supplies facts; the renewing handle assigns their owner. */
+const withSessionId = (state: EngineState, sessionId: string): EngineState => {
+  const record = (clip: ClipRecord): ClipRecord => Object.freeze({ ...clip, sessionId });
+  return Object.freeze({
+    ...state,
+    queued: state.queued.map(record),
+    building: Option.map(state.building, (build) => ({ ...build, record: record(build.record) })),
+    ready: state.ready.map(record),
+    playing: Option.map(state.playing, (playing) => ({
+      ...playing,
+      record: Option.map(playing.record, record),
+    })),
+  });
+};
 
 type Replacement =
   | { readonly _tag: "Absent" }
@@ -754,13 +770,31 @@ export const make = <R>(
 
     const state: Effect.Effect<EngineState> = Effect.gen(function* () {
       const live = [...slots.values()].filter((slot) => !slot.closed);
-      const values = yield* Effect.forEach(live, (slot) => slot.source.state);
+      const values = (yield* Effect.forEach(live, (slot) => slot.source.state)).map(
+        (value, index) => withSessionId(value, live[index]!.source.id),
+      );
       const primary = values[live.indexOf(current!)] ?? emptyState();
+      const next = replacement._tag === "Ready" ? replacement.slot : undefined;
+      const preferred =
+        next !== undefined && current !== undefined && !(yield* openSequences(current))
+          ? next
+          : current;
       const builds = values.flatMap((value) =>
         Option.isSome(value.building) ? [value.building.value] : [],
       );
       return Object.freeze({
         ...primary,
+        sessions: Object.freeze(
+          values.map((value, index) => ({
+            sessionId: live[index]!.source.id,
+            availability: value.availability,
+          })),
+        ),
+        preferredSessionId: Option.fromUndefinedOr(preferred?.source.id),
+        retiringSessionId:
+          next !== undefined && current !== undefined && !current.closed
+            ? Option.some(current.source.id)
+            : Option.none(),
         availability: values.some((value) => value.availability === "Unavailable")
           ? "Unavailable"
           : values.some((value) => value.availability === "Synchronizing")
@@ -879,7 +913,13 @@ export const make = <R>(
                 const value = yield* slot.source.state;
                 preceding += queue === "generation" ? generation(value).length : value.ready.length;
               }
-              yield* selected.slot.source.move(id, Math.max(0, position - preceding));
+              if (position < preceding || position >= preceding + own.length)
+                return yield* PolicyFailure.refuse(
+                  "InvalidRequest",
+                  "Move position is outside the clip's session range",
+                  "move",
+                );
+              yield* selected.slot.source.move(id, position - preceding);
             }),
           ),
         ),

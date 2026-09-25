@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-browser",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Browser WebRTC host for reactor-effect-client: built-in peer connections, generation-scoped tracks, media conversion and recording",
   "type": "module",
   "license": "Apache-2.0",
