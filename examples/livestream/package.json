@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-example-livestream",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "description": "Server-side livestream: one Reactor orchestration broadcast to many browsers",
   "type": "module",

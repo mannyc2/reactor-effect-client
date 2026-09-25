@@ -92,18 +92,6 @@ export interface TokenOptions {
    * bare number is milliseconds.
    */
   readonly expiresAfter: Duration.Input;
-  /**
-   * @deprecated Removed in 0.3.0: use `maxSessionDuration` (a bare number is
-   * milliseconds, so `maxSessionDurationSeconds: 60` becomes
-   * `maxSessionDuration: "60 seconds"`).
-   */
-  readonly maxSessionDurationSeconds?: never;
-  /**
-   * @deprecated Removed in 0.3.0: use `expiresAfter` (a bare number is
-   * milliseconds, so `expiresAfterSeconds: 300` becomes
-   * `expiresAfter: "300 seconds"`).
-   */
-  readonly expiresAfterSeconds?: never;
 }
 /** Token options after validation, in the wire's whole seconds. */
 export interface TokenRequest {

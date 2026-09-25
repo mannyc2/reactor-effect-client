@@ -22,8 +22,6 @@ export interface DownloadOptions {
    * milliseconds.
    */
   readonly downloadTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `downloadTimeout` (a bare number is milliseconds). */
-  readonly timeoutMs?: never;
   readonly maxManifestBytes?: number;
   readonly maxSegmentBytes?: number;
   readonly maxTotalBytes?: number;
