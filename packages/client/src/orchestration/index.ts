@@ -45,6 +45,8 @@ export type { H3Source, SessionSourceOptions } from "./h3-source.js";
 export { layer, make } from "./renewal.js";
 export type { Options, Opened, Renewal, MediaTail } from "./renewal.js";
 export { Allocation, openH3, resumeH3 } from "./open-h3.js";
+export { Lineup, layerLineup, makeLineup } from "./lineup.js";
+export type { ClipFate, LineupClip, LineupOptions, LineupShape, LineupState } from "./lineup.js";
 export type { Allocated, OpenedH3, OpenH3Options, ResumeH3Options } from "./open-h3.js";
 export * as References from "./references.js";
 export * as Sequences from "../Sequence.js";

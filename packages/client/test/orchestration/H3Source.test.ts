@@ -3,7 +3,7 @@ import { Effect, Fiber, Option, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
-import { ClipId } from "../../src/orchestration/request.js";
+import { captureRequest, ClipId } from "../../src/orchestration/request.js";
 import { isIdle } from "../../src/orchestration/queries.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import type { EngineEvent } from "../../src/orchestration/types.js";
@@ -225,6 +225,18 @@ test("source preparation snapshots metadata, preserves URI order and shares one 
       expect(clip.request?.metadata).toEqual({ nested: { original: true } });
       expect(clip.request?.sequence).toEqual({ id: "sequence", final: true, memberId: "final" });
       expect((yield* source.state).building).toEqual(Option.none());
+    }),
+  ));
+
+test("a local clip's record holds the captured request itself, so a lineup knows its own clips", () =>
+  run(
+    Effect.gen(function* () {
+      const { source } = yield* setup();
+      const captured = yield* captureRequest(request());
+      const prepared = yield* source.prepareRouted({ request: captured, position: undefined });
+      const clipId = yield* prepared.submit;
+      const clip = (yield* source.state).queued.find((entry) => entry.clipId === clipId)!;
+      expect(clip.request).toBe(captured);
     }),
   ));
 
