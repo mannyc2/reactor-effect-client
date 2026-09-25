@@ -19,7 +19,7 @@
     },
     "examples/livestream": {
       "name": "reactor-effect-example-livestream",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -34,7 +34,7 @@
     },
     "integration": {
       "name": "reactor-effect-integration",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/bun": "catalog:",
@@ -49,7 +49,7 @@
     },
     "packages/browser": {
       "name": "reactor-effect-browser",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
@@ -63,7 +63,7 @@
     },
     "packages/browser/examples": {
       "name": "reactor-effect-browser-examples",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -76,7 +76,7 @@
     },
     "packages/client": {
       "name": "reactor-effect-client",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -92,7 +92,7 @@
     },
     "packages/client/examples": {
       "name": "reactor-effect-client-examples",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -106,7 +106,7 @@
     },
     "packages/native": {
       "name": "reactor-effect-native",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@types/node": "catalog:",
@@ -126,7 +126,7 @@
     },
     "packages/native/examples": {
       "name": "reactor-effect-native-examples",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -141,7 +141,7 @@
     },
     "packages/test-kit": {
       "name": "reactor-effect-test-kit",
-      "version": "0.3.3",
+      "version": "0.3.4",
     },
   },
   "overrides": {
