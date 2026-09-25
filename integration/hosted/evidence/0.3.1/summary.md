@@ -1,6 +1,6 @@
-| Run | Check | Mode | Verdict | Started | Worst case | Estimated |
-|---|---|---|---|---|---|---|
-| 4c1d9482 | audio | paid | pass | 2026-09-25T00:21:41.330Z | $0.750 | $0.750 |
+| Run      | Check | Mode | Verdict | Started                  | Worst case | Estimated |
+| -------- | ----- | ---- | ------- | ------------------------ | ---------- | --------- |
+| 4c1d9482 | audio | paid | pass    | 2026-09-25T00:21:41.330Z | $0.750     | $0.750    |
 
 ### audio: pass (paid, run 4c1d9482, 2026-09-25T00:21:41.330Z)
 
