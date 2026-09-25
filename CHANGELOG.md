@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Orchestration.makeLineup({ filler })`, and `layerLineup` for the new `Lineup` service: clips ahead of filler over an orchestration's `Engine`. A clip is enqueued behind the clips already waiting and ahead of all waiting filler, and once Ready it moves directly behind the Ready clips, so clips overtake filler only and never each other; `filler.ready` filler clips are kept Ready behind the playing clip, built one at a time. `enqueue` returns a `LineupClip` whose `fate` settles as `Started` or `Failed` (a failed build, a clip lost with its session, a clip removed with `remove`, or one still waiting when the orchestration fails or closes), and `state` reports what is playing, the Ready filler and how often playout ran dry. The lineup knows its clips by the requests it captured, so applications no longer tag clip roles in `metadata` and parse them back. A 30-minute simulated show with bursts, an 8-minute silence, build jitter and failed builds checks it: playout never runs dry, clips join back to back, keep their order and overtake filler only, and nothing is cut.
+
 ## [0.3.3] - 2026-09-25
 
 Effect dependency bump from `4.0.0-rc.115` to `^4.0.0-rc.117`. No public API changes; the native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
