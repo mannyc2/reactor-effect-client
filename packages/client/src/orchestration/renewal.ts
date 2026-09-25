@@ -84,6 +84,16 @@ export interface Options<R = never> {
   readonly reconnectTimeout?: Duration.Input | undefined;
   readonly maxSessions?: number;
   /**
+   * How long past the retiring source's final clip a planned switch waits for
+   * that clip's missing video frames; 250 milliseconds by default. Frames can
+   * land after the clip's Ended, but one the provider never sent never does,
+   * so the switch then proceeds and `Switched.tail` reports the shortfall. The
+   * grace also starts when the source reports nothing playing, in case Ended
+   * was lost. At most 5 seconds, since the retiring source running dry within
+   * it is not reported as `Starved`. A bare number is milliseconds.
+   */
+  readonly handoffGrace?: Duration.Input | undefined;
+  /**
    * The video frames the media output keeps for a reader that has not taken
    * them, 96 by default (4 seconds at 24 fps). Past it the orchestration fails
    * with `Overflow`.
@@ -176,6 +186,15 @@ export const make = <R>(
     const reconnectTimeout = Duration.toMillis(
       yield* parsed(() =>
         duration(options.reconnectTimeout ?? "10 seconds", "orchestration reconnectTimeout"),
+      ),
+    );
+    const handoffGraceMs = Duration.toMillis(
+      yield* parsed(() =>
+        duration(options.handoffGrace ?? "250 millis", "orchestration handoffGrace", {
+          allowZero: true,
+          // Starvation during the grace is not reported, so it stays short.
+          maximum: "5 seconds",
+        }),
       ),
     );
     const leadSeconds = Duration.toSeconds(
@@ -521,11 +540,16 @@ export const make = <R>(
                 Effect.gen(function* () {
                   if (event._tag === "SessionFailed")
                     return yield* scheduleRecovery(slot, event.failure, "replace");
+                  // Once the final clip has ended or arrived in full, a planned
+                  // switch follows within its bounded grace, so the retiring
+                  // source running dry is not starvation. Before its Ended, no
+                  // switch is due yet, and that starvation is reported.
                   if (
                     event._tag === "Starved" &&
                     slot === current &&
                     replacement._tag === "Ready" &&
-                    slot.finalVideo !== "incomplete"
+                    (slot.finalClip().video !== "incomplete" ||
+                      slot.finalClip().endedAgoMs !== undefined)
                   ) {
                     const next = yield* replacement.slot.source.state;
                     if (
@@ -820,13 +844,17 @@ export const make = <R>(
           next !== undefined && current !== undefined && !current.closed
             ? Option.some(current.source.id)
             : Option.none(),
+        // No media condition: a short final clip holds the switch only for the
+        // grace past its Ended, or past the source first reported idle. Gating on the playing clip's frames instead
+        // could hold only in the instant between its last frame and Ended, so
+        // a lossy clip let the retiring source roll into its next filler.
         handoffReady:
           next !== undefined &&
+          preferred === next &&
           current !== undefined &&
           !current.closed &&
           !current.recovering &&
-          primary.availability === "Ready" &&
-          current.finalVideo !== "incomplete",
+          primary.availability === "Ready",
         availability: values.some((value) => value.availability === "Unavailable")
           ? "Unavailable"
           : values.some((value) => value.availability === "Synchronizing")
@@ -1063,16 +1091,21 @@ export const make = <R>(
             nextState.ready.length === 0
           )
             return;
-          const tail = yield* retired(current);
+          // The provider reports nothing playing: a lost Ended must not hold
+          // the switch until expiry, so the grace also starts here.
+          current.observedIdle();
           if (
             !canHandoff({
               sequenceOpen: false,
               currentIdle: isIdle(oldState),
               replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
-              video: current.finalVideo,
+              finalClip: current.finalClip(),
+              graceMs: handoffGraceMs,
             })
           )
             return;
+          // Read only for a switch that happens: it can wait on source pressure.
+          const tail = yield* retired(current);
           const old = current;
           // The switch is traced; the tick that found it is not.
           yield* Effect.gen(function* () {

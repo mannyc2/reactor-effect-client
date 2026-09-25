@@ -88,19 +88,36 @@ export const decideRenewal = (facts: RenewalFacts): RenewalDecision => {
     : "Retain";
 };
 
+/** The retiring source's last started clip, as its owner has observed it. */
+export interface FinalClip {
+  readonly video: "not-started" | "count-complete" | "incomplete";
+  /** Monotonic milliseconds since that clip's Ended was observed; undefined while it plays. */
+  readonly endedAgoMs: number | undefined;
+}
+
 export interface HandoffFacts {
   readonly sequenceOpen: boolean;
   readonly currentIdle: boolean;
   readonly replacementReady: boolean;
-  readonly video: "not-started" | "count-complete" | "incomplete";
+  readonly finalClip: FinalClip;
+  readonly graceMs: number;
 }
 
-/** The final clip must arrive; lifetime loss is reported separately at retirement. */
+/**
+ * Media and provider events arrive on separate readers, so a clip's last frames
+ * can land after its Ended. A frame the provider never sent never lands, so a
+ * short clip is waited on only for the grace past Ended; waiting for the count
+ * instead left the retiring source idle until expiry. The shortfall is still
+ * reported, with any earlier loss, on the retirement's tail.
+ */
+export const finalClipSettled = (clip: FinalClip, graceMs: number): boolean =>
+  clip.video !== "incomplete" || (clip.endedAgoMs !== undefined && clip.endedAgoMs >= graceMs);
+
 export const canHandoff = (facts: HandoffFacts): boolean =>
   !facts.sequenceOpen &&
   facts.currentIdle &&
   facts.replacementReady &&
-  facts.video !== "incomplete";
+  finalClipSettled(facts.finalClip, facts.graceMs);
 
 export const needsReplacement = (
   phase: SourcePhase,

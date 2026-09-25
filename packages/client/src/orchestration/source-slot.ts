@@ -84,6 +84,7 @@ export const make = (options: Options) =>
     let finalClipFrames = 0;
     let finalClipReceived = 0;
     let framesAtBoundary = 0;
+    let finalClipEndedAt: number | undefined;
     let receivedAudioSamples = 0;
     let retiredDrops: Loss = noLoss;
 
@@ -160,12 +161,20 @@ export const make = (options: Options) =>
       get media() {
         return media;
       },
-      get finalVideo() {
-        return finalClipFrames === 0
-          ? ("not-started" as const)
-          : finalClipReceived >= finalClipFrames
-            ? ("count-complete" as const)
-            : ("incomplete" as const);
+      finalClip: (): Lifecycle.FinalClip => ({
+        video:
+          finalClipFrames === 0
+            ? "not-started"
+            : finalClipReceived >= finalClipFrames
+              ? "count-complete"
+              : "incomplete",
+        endedAgoMs:
+          finalClipEndedAt === undefined ? undefined : monotonicMillis(clock) - finalClipEndedAt,
+      }),
+      /** The source reports nothing playing; starts the grace if no Ended was seen. */
+      observedIdle: (): void => {
+        if (finalClipFrames > 0 && finalClipEndedAt === undefined)
+          finalClipEndedAt = monotonicMillis(clock);
       },
       get accepted(): ReadonlySet<ClipId> {
         return accepted;
@@ -234,6 +243,8 @@ export const make = (options: Options) =>
               Stream.runForEach((event) =>
                 Effect.suspend(() => {
                   if (closed()) return Effect.void;
+                  // A repeated Started, as after a reconnect, is still playing.
+                  if (event._tag === "Started") finalClipEndedAt = undefined;
                   if (event._tag === "Started" && !started.has(event.clipId)) {
                     started.add(event.clipId);
                     finalClipFrames = Math.round(
@@ -244,7 +255,10 @@ export const make = (options: Options) =>
                     finalClipReceived = receivedFrames - framesAtBoundary;
                     expectedFrames += finalClipFrames;
                   }
-                  if (event._tag === "Ended") framesAtBoundary = receivedFrames;
+                  if (event._tag === "Ended") {
+                    framesAtBoundary = receivedFrames;
+                    finalClipEndedAt = monotonicMillis(clock);
+                  }
                   return receive(event);
                 }),
               ),

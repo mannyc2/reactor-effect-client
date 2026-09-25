@@ -1441,6 +1441,22 @@ export const makeScheduler = (
         }
       });
 
+    // An accepted drain still owes air to every line not yet Ready, and to a
+    // Ready line held for a future At anchor, which runway must reach. Filler
+    // is the only material that can cover either, so it keeps playing and
+    // refilling until nothing accepted can still leave the host frozen. An
+    // Unknown item does not count: without a fenced source it can stay open
+    // until the scheduler closes, and filler for it would never stop.
+    const fillerHeld = (nowMs: number): boolean =>
+      draining &&
+      finishAccepted &&
+      [...items.values()].some(
+        (item) =>
+          item.phase === "Accepted" ||
+          item.phase === "Building" ||
+          (item.phase === "Ready" && item.atMs !== undefined && item.atMs > nowMs),
+      );
+
     const drainPending = (state: EngineState): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (!draining) return;
@@ -1451,6 +1467,7 @@ export const makeScheduler = (
           if (item.clipId === playingId) continue;
           yield* requestWithdrawal(item, "withdrawn");
         }
+        if (fillerHeld(monotonicMillis(clock))) return;
         for (const entry of filler.values()) {
           if (
             entry.clipId !== undefined &&
@@ -1544,7 +1561,7 @@ export const makeScheduler = (
         refillActive,
         maxBuildsInFlight,
         accepting: accepting || (draining && finishAccepted),
-        fillerEnabled: !draining,
+        fillerEnabled: !draining || fillerHeld(monotonicMillis(clock)),
         fillerRetryAtMs,
         fillerUnknown: unknownFiller !== undefined,
         fillerUnknownSessionId: unknownFiller?.sessionId,

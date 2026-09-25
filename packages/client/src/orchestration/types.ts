@@ -74,7 +74,11 @@ export interface EngineState {
   readonly preferredSessionId: Option.Option<string>;
   /** The source draining ahead of a ready replacement, if there is one. */
   readonly retiringSessionId: Option.Option<string>;
-  /** The retiring source's final observed clip has arrived in full. Absent on physical sources. */
+  /**
+   * The retiring source can hand off once idle: no sequence holds it
+   * preferred, it is not recovering, and its media cannot hold the switch past
+   * the final clip's grace. Absent on physical sources.
+   */
   readonly handoffReady?: boolean;
   readonly queued: readonly ClipRecord[];
   /** Provider queue order, including an independently observed active build. */
@@ -130,7 +134,11 @@ export type EngineEvent =
       readonly sessionId?: string;
     }
   | { readonly _tag: "Starved"; readonly at: number }
-  /** Media completion wakes policies before the next autoplay boundary. */
+  /**
+   * The retiring source's final clip arrived in full while a replacement is
+   * Ready. An observation only: a short clip still switches once its grace
+   * past Ended elapses, without this event.
+   */
   | { readonly _tag: "HandoffReady"; readonly sessionId: string }
   | { readonly _tag: "SessionFailed"; readonly failure: ReactorFailure };
 export const EngineEvent = Data.taggedEnum<EngineEvent>();

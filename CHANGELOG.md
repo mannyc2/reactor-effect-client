@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `Orchestration.makeScheduler`, `layerScheduler` and `Scheduler.lineup`: an opt-in, keyed scheduler with priority lanes, a seconds-based filler runway, per-session Ready ordering, monotonic timing windows, `Follow` and `At` boundaries, explicit withdrawal and drain, and a keyed as-run stream. `Unknown` gains a terminal marker when its source retires without proof. A session's queued clips now report `ClipRecord.sessionId`; the engine state reports the live, preferred and retiring sessions even while a replacement has no clips.
+- The orchestration option `handoffGrace`, 250 ms by default and at most 5 seconds: how long a planned switch waits past the retiring session's final clip `Ended`, or past the session first reporting nothing playing, for that clip's missing video frames. A frame the provider never sent never arrives, so the switch then proceeds and `Switched.tail` reports the shortfall; before, one lost frame in that clip held the retiring session idle until it expired.
 - Scheduler keys are carried in library-owned H3 provider metadata. The app's `ClipRequest.metadata` is unchanged, and a resumed H3 session can recognize a scheduler item by key.
 
 ### Changed
