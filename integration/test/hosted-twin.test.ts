@@ -739,8 +739,9 @@ test(
         const result = await run(
           twin,
           Effect.gen(function* () {
+            // This test loses the model reply, not the loopback transport ACK.
             const { provider } = yield* open(yield* mint(twin), {
-              provider: { replyTimeout: "500 millis", reconcileWindow: "250 millis" },
+              provider: { replyTimeout: "2 seconds", reconcileWindow: "250 millis" },
             });
             const submission = yield* provider.prepare({ prompt, seconds: 5 });
             const failure = yield* Effect.flip(submission.submit);
