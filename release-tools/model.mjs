@@ -7,7 +7,7 @@ import * as Npm from "@mannyc1/ts-release-npm";
 export const repository = "mannyc2/reactor-effect-client";
 export const principal = "reactor-npm-publisher";
 export const journalRemote = `https://github.com/${repository}.git`;
-export const effectPin = "4.0.0-rc.115";
+export const effectPin = "^4.0.0-rc.117";
 /** @typedef {"reactor-effect-client" | "reactor-effect-browser" | "reactor-effect-native"} PackageName */
 /** @typedef {{ readonly name: PackageName, readonly exports: readonly string[], readonly dependsOn: readonly PackageName[] }} WorkspacePackage */
 /** @type {PackageName} */
