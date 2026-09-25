@@ -1,4 +1,3 @@
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -13,29 +12,41 @@ import * as Stream from "effect/Stream";
 import { ReactorError } from "../errors.js";
 import { captureRequest, ClipRequest, PolicyFailure } from "./request.js";
 import type { ClipId } from "./request.js";
-import { generation } from "./routing.js";
+import { activeIds, generation } from "./routing.js";
 import { Engine } from "./types.js";
 import type { ClipRecord, EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 
 /**
- * How a lineup clip began playing, or why it never will. `at` is when the
- * start was observed, in milliseconds since the epoch, as the engine's
- * `Started` event reports it.
+ * How a lineup clip began playing, or why it never will.
+ *
+ * - `Started`: `at` is when the start was observed, in epoch milliseconds, as
+ *   the engine's `Started` event reports it.
+ * - `Failed`: it will not play. Its build failed, it was lost with its
+ *   session, it was removed with `remove`, or it was still waiting when the
+ *   orchestration failed or closed.
+ * - `Unobserved`: it may have played, but its start was never observed. The
+ *   lineup lost sight of it (after its observer fell behind, the clip was no
+ *   longer queued, or was playing with no start time), or saw it end without
+ *   seeing it start. There is no `at`: the lineup never invents a start.
+ *
+ * `Unobserved` was added in 0.4.0, so a switch over `ClipFate` written for
+ * 0.3.4 must handle it.
  */
 export type ClipFate =
   | { readonly _tag: "Started"; readonly at: number; readonly durationSeconds: number }
-  | { readonly _tag: "Failed"; readonly reason: string };
+  | { readonly _tag: "Failed"; readonly reason: string }
+  | { readonly _tag: "Unobserved" };
 
 /** A clip the lineup enqueued. */
 export interface LineupClip {
   readonly clipId: ClipId;
-  /**
-   * Waits for the clip to start or fail. A clip lost with its session,
-   * removed with `remove`, or still waiting when the orchestration fails or
-   * closes has failed.
-   */
+  /** Waits until the clip's fate is known: it started, it will not play, or its start went unobserved. */
   readonly fate: Effect.Effect<ClipFate>;
-  /** Takes the clip out of its queue before it starts; its fate is then a failure. */
+  /**
+   * Takes the clip out of its queue before it starts. A removed clip will not
+   * play, even one that was already building (`in_flight`): the source
+   * discards that build. Its fate is then `Failed` with reason `Removed`.
+   */
   readonly remove: Effect.Effect<RemoveOutcome, EngineError>;
 }
 
@@ -44,7 +55,12 @@ export interface LineupOptions {
   readonly filler: {
     /** Filler clips kept Ready behind the playing clip, from 1 to 1024. */
     readonly ready: number;
-    /** The nth filler clip, counting from zero. */
+    /**
+     * The nth filler clip, counting from zero. A lineup asks for each n once, in
+     * order, and enqueues that request until it is admitted, so a refusal before
+     * it was sent does not skip an n. A new lineup starts again from zero, so
+     * keep `clip` pure: the same n may be asked for again.
+     */
     readonly clip: (n: number) => ClipRequest;
   };
 }
@@ -62,7 +78,8 @@ export interface LineupShape {
   /**
    * Enqueues a clip behind the clips already waiting and ahead of all waiting
    * filler. The lineup chooses its place, so a request that names its own
-   * `position` or `before` is refused.
+   * `position` or `before` is refused. The request is captured before any of
+   * its fields is read, as `Engine.enqueue` captures it.
    */
   readonly enqueue: (request: ClipRequest) => Effect.Effect<LineupClip, EngineError>;
   readonly state: Effect.Effect<LineupState>;
@@ -116,9 +133,17 @@ export const makeLineup = (
       captureRequest(options.filler.clip(n)).pipe(
         Effect.tap((request) => Effect.sync(() => fillers.add(request))),
       );
-    // A malformed filler request fails the lineup here rather than every refill later.
-    yield* fillerAt(0);
-    let made = 0;
+    // The filler to enqueue next, kept until it is admitted, and the n it came
+    // from. The first is captured here, so a malformed filler request fails the
+    // lineup rather than every refill, and it is the first filler enqueued.
+    let fillerIndex = 0;
+    let upcoming: ClipRequest | undefined = yield* fillerAt(0);
+    // Admitted: enqueued, or sent with an unknown outcome, which the renewal
+    // resolves by replacing the session. A refusal keeps the same request.
+    const admitted = Effect.sync(() => {
+      fillerIndex++;
+      upcoming = undefined;
+    });
     const isFiller = (record: ClipRecord) =>
       record.request !== undefined && fillers.has(record.request);
     const isClip = (record: ClipRecord) =>
@@ -188,7 +213,14 @@ export const makeLineup = (
       if (state.availability !== "Ready") return;
       if (generation(state).some(isFiller)) return;
       if (state.ready.filter(isFiller).length >= target) return;
-      yield* engine.enqueue(yield* fillerAt(made++));
+      const request = upcoming ?? (yield* fillerAt(fillerIndex));
+      upcoming = request;
+      yield* engine.enqueue(request).pipe(
+        Effect.tap(() => admitted),
+        Effect.tapError((failure) =>
+          failure.context.outcome === "unknown" ? admitted : Effect.void,
+        ),
+      );
     });
 
     const reconcile = permit
@@ -207,6 +239,11 @@ export const makeLineup = (
           );
         case "Failed":
           return Effect.asVoid(settle(event.clipId, { _tag: "Failed", reason: event.reason }));
+        case "Ended":
+          // Its start settles a clip first; a clip still waiting here ended
+          // without its start being seen. Only a registered waiter is settled,
+          // so a start held for an enqueue in flight is never overwritten.
+          return Effect.asVoid(release(event.clipId, { _tag: "Unobserved" }));
         case "Starved":
           return Effect.sync(() => {
             starved++;
@@ -218,21 +255,33 @@ export const makeLineup = (
       }
     };
 
-    // After an observer falls behind, the fresh state settles what it can: a
-    // waiting clip that is playing has started, and one that is listed failed has failed.
+    // After an observer falls behind, the fresh state settles what it can. A
+    // waiting clip that is playing started: at its observed start time, or
+    // unobserved when the state has none. One listed failed failed. On a Ready
+    // engine, one in no queue, not playing and not failed left while the lineup
+    // could not see it, so it may have played: unobserved. A closed or
+    // recovering engine's state proves no such thing, and its clips keep
+    // waiting for the close or a later observation. Anything queued keeps waiting.
     const recover = (state: EngineState) =>
       Effect.gen(function* () {
         const playing = Option.getOrUndefined(state.playing);
-        const now = yield* Clock.currentTimeMillis;
+        const active = new Set(activeIds(state));
+        const complete = state.availability === "Ready";
         for (const clipId of [...waiting.keys()]) {
-          if (playing?.clipId === clipId && Option.isSome(playing.record))
-            yield* settle(clipId, {
-              _tag: "Started",
-              at: Option.getOrElse(playing.startedAt, () => now),
-              durationSeconds: playing.record.value.durationSeconds,
-            });
+          if (playing?.clipId === clipId)
+            yield* settle(
+              clipId,
+              Option.isSome(playing.startedAt) && Option.isSome(playing.record)
+                ? {
+                    _tag: "Started",
+                    at: playing.startedAt.value,
+                    durationSeconds: playing.record.value.durationSeconds,
+                  }
+                : { _tag: "Unobserved" },
+            );
           else if (state.failed.includes(clipId))
             yield* settle(clipId, { _tag: "Failed", reason: "The clip failed unobserved" });
+          else if (complete && !active.has(clipId)) yield* settle(clipId, { _tag: "Unobserved" });
         }
       });
 
@@ -284,14 +333,19 @@ export const makeLineup = (
     const enqueue: LineupShape["enqueue"] = (input) =>
       permit.withPermit(
         Effect.gen(function* () {
-          if (input.position !== undefined || input.before !== undefined)
+          // Captured before any field is read, so a caller's accessor never runs
+          // and a malformed request is refused as InvalidRequest.
+          const captured = yield* captureRequest(input);
+          if (captured.position !== undefined || captured.before !== undefined)
             return yield* PolicyFailure.refuse(
               "InvalidRequest",
               "A lineup chooses where its clips go",
               "enqueue",
             );
           const last = generation(yield* engine.state).findLastIndex((record) => !isFiller(record));
-          const request = yield* captureRequest(new ClipRequest({ ...input, position: last + 1 }));
+          const request = yield* captureRequest(
+            new ClipRequest({ ...captured, position: last + 1 }),
+          );
           clips.add(request);
           const fate = yield* Deferred.make<ClipFate>();
           const seen = new Map<ClipId, ClipFate>();

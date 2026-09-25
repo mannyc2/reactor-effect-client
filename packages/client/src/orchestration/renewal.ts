@@ -31,6 +31,7 @@ import type { MediaPressure } from "../session/media.js";
 import * as MediaBuffer from "./media-buffer.js";
 import * as SourceSlot from "./source-slot.js";
 import type { SourceSlot as Slot } from "./source-slot.js";
+import { monotonicMillis } from "./elapsed.js";
 import { canHandoff, decideRenewal } from "./renewal-state.js";
 import { PolicyFailure, captureRequest } from "./request.js";
 import type { ClipId } from "./request.js";
@@ -492,7 +493,7 @@ export const make = <R>(
               source: value.source,
               scope: owned,
               media,
-              openedAt: clock.currentTimeMillisUnsafe(),
+              openedAt: monotonicMillis(clock),
               maxSeconds: Duration.toSeconds(lifetime),
               cleanupBudgetMs: reconnectTimeout,
               recordCleanup,
@@ -931,7 +932,7 @@ export const make = <R>(
                 yield* announce({ _tag: "Prepared" });
               } else {
                 openFailures++;
-                retryAt = clock.currentTimeMillisUnsafe() + 5000;
+                retryAt = monotonicMillis(clock) + 5000;
                 yield* announce({
                   _tag: "SetupFailed",
                   reason: "Could not prepare the next source",
@@ -949,7 +950,7 @@ export const make = <R>(
           }
           const decision = decideRenewal({
             running: !closing && terminalFailure === undefined,
-            now: clock.currentTimeMillisUnsafe(),
+            now: monotonicMillis(clock),
             current,
             replacement: replacement._tag === "Ready" ? replacement.slot.phase : replacement._tag,
             leadSeconds,
@@ -1022,6 +1023,8 @@ export const make = <R>(
         }),
       )
       .pipe(Effect.catch(fail));
+    // Spaced polling, not a fixed rate: each tick runs 100 ms after the previous one
+    // finished, so a slow tick delays the next instead of overlapping it.
     yield* Effect.forever(Effect.sleep(100).pipe(Effect.andThen(tick))).pipe(Effect.forkIn(scope));
 
     const pressure: Effect.Effect<MediaPressure, ReactorError> = Effect.suspend(() => {

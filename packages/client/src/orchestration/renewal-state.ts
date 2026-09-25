@@ -47,6 +47,7 @@ export const isClosed = (phase: SourcePhase): boolean =>
   phase._tag === "Closing" || phase._tag === "Closed";
 
 export interface Lifetime {
+  /** When the source opened, in monotonic milliseconds, so wall-clock corrections cannot age it. */
   readonly openedAt: number;
   readonly maxSeconds: number;
 }
@@ -61,6 +62,7 @@ export const recoveryBudget = (source: Lifetime, now: number, timeoutMs: number)
 
 export interface RenewalFacts {
   readonly running: boolean;
+  /** Monotonic milliseconds, as `Lifetime.openedAt` and `retryAt` are. */
   readonly now: number;
   readonly current: (Lifetime & { readonly phase: SourcePhase }) | undefined;
   readonly replacement: "Absent" | "Opening" | SourcePhase;

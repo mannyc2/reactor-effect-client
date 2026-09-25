@@ -18,6 +18,10 @@ import type { Submission } from "../Submission.js";
 import type { Affinity } from "../Sequence.js";
 import type { Canvas, ClipId, ClipRequest } from "./request.js";
 
+/**
+ * How long a clip took to become Ready, measured on the monotonic clock, so a
+ * correction of the host's wall clock does not change it.
+ */
 export type BuildTiming =
   | { readonly _tag: "Measured"; readonly buildMs: number }
   | { readonly _tag: "Bounded"; readonly admissionToReadyMs: number }
@@ -31,6 +35,7 @@ export interface ClipRecord {
   readonly provider: Clip;
   readonly request?: ClipRequest;
   readonly seq?: number;
+  /** When this process enqueued the clip: epoch milliseconds of the local observation. */
   readonly enqueuedAt?: number;
 }
 
@@ -45,7 +50,12 @@ export interface Playback {
   readonly clipId: ClipId;
   /** Initial provider state may name a playing clip without describing it. */
   readonly record: Option.Option<ClipRecord>;
-  /** A local observation time, never reconstructed from queue order. */
+  /**
+   * When the start was observed locally, in epoch milliseconds, never
+   * reconstructed from queue order. It is a recorded instant: compare it with
+   * wall time (`Clock.currentTimeMillis`), and measure elapsed time on the
+   * monotonic clock instead.
+   */
   readonly startedAt: Option.Option<number>;
 }
 
@@ -56,6 +66,7 @@ export interface EngineState {
   readonly generationOrder: readonly ClipId[];
   readonly building: Option.Option<{
     readonly record: ClipRecord;
+    /** When the build was seen to start, in epoch milliseconds of the local observation. */
     readonly startedAt: Option.Option<number>;
   }>;
   readonly ready: readonly ClipRecord[];
@@ -84,6 +95,7 @@ export type EngineEvent =
       readonly _tag: "Started";
       readonly clipId: ClipId;
       readonly durationSeconds: number;
+      /** Epoch milliseconds of the local observation, as every event's `at` is. */
       readonly at: number;
     }
   | {

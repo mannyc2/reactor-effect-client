@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+These changes add a member to the output union `ClipFate`, which breaks a switch over it that was written to be exhaustive, so they release as 0.4.0.
+
+### Changed
+
+- **Breaking:** `ClipFate` gains `Unobserved`: the clip may have played, but its start was never seen, and it carries no `at`. A lineup settles a waiting clip as `Unobserved` in three cases: its observer fell behind and, on a Ready engine, the clip is then in no queue, not playing and not failed; the clip is playing with no observed start time; or the clip ended without its start being seen. Before, the first case stayed waiting until the orchestration closed and was then labelled `Failed`, and the second got the recovery time as an invented start.
+- `Lineup.enqueue` captures the request before it reads `position` or `before`, as `Engine.enqueue` does. A request whose field is an accessor is now refused as `InvalidRequest` without the accessor running; before, the lineup read the field first.
+- A lineup's first filler is the `filler.clip(0)` request it validated when it started, so it no longer asks for `clip(0)` twice. It moves to the next n only once a filler is admitted: enqueued, or sent with an unknown outcome. A filler refused before it was sent, or refused by the provider, is sent again as the same request instead of skipping an n.
+
+### Fixed
+
+- Renewal measured a source's age, expiry, lead, retry cooldown and recovery budget as differences of wall-clock readings. A correction of the host's clock could therefore expire a source early or late, or prepare its replacement too late, as late as after the paid session had ended. They are measured on Effect's monotonic clock now. So are `BuildTiming`'s H3 `Bounded` and simulated `Measured` times. Recorded instants (every event's `at`, `startedAt`, `enqueuedAt` and `Allocation.endsAt`) stay epoch milliseconds and are documented as such.
+
+### Documentation
+
+- A lineup clip removed with `remove` will not play, even one that was already building (`in_flight`): the source discards that build, as H3 documents for `pop`.
+- The renewal tick is spaced polling: each tick runs 100 ms after the previous one finished.
+
 ## [0.3.4] - 2026-09-25
 
 The orchestration lineup, added to the 0.3.3 API without breaking it. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
