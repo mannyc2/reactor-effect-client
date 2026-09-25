@@ -46,10 +46,6 @@ export interface Poll {
   readonly initialDelay: Duration.Input;
   /** The longest wait, at most 1 minute. A bare number is milliseconds. */
   readonly maxDelay: Duration.Input;
-  /** @deprecated Removed in 0.3.0: use `initialDelay` (a bare number is milliseconds). */
-  readonly initialMs?: never;
-  /** @deprecated Removed in 0.3.0: use `maxDelay` (a bare number is milliseconds). */
-  readonly maxMs?: never;
 }
 export const SESSION_POLL: Poll = Object.freeze({
   attempts: 20,
@@ -82,8 +78,6 @@ export interface HttpOptions {
    * milliseconds.
    */
   readonly requestTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `requestTimeout` (a bare number is milliseconds). */
-  readonly requestTimeoutMs?: never;
   readonly maxResponseBytes?: number;
   readonly maxResponseChunks?: number;
   readonly sessionPoll?: Poll;

@@ -81,10 +81,6 @@ export interface Options<R = never> {
    * milliseconds.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `lead` (a bare number is milliseconds). */
-  readonly leadSeconds?: never;
-  /** @deprecated Removed in 0.3.0: use `reconnectTimeout` (a bare number is milliseconds). */
-  readonly reconnectTimeoutMs?: never;
   readonly maxSessions?: number;
   /**
    * The video frames the media output keeps for a reader that has not taken
@@ -106,11 +102,6 @@ export interface Options<R = never> {
    * `observe` to read renewals together with the engine events they follow.
    */
   readonly onRenewal?: (event: Renewal) => Effect.Effect<void>;
-  /**
-   * @deprecated Removed in 0.3.0: the orchestration logs through Effect's
-   * logger at debug level, annotated with `module: "reactor.orchestration"`.
-   */
-  readonly log?: never;
 }
 
 const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent> =>

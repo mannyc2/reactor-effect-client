@@ -14,8 +14,6 @@ export interface LoadLimits {
   readonly maxBytes: number;
   /** How long loading one reference may take. A bare number is milliseconds. */
   readonly loadTimeout: Duration.Input;
-  /** @deprecated Removed in 0.3.0: use `loadTimeout` (a bare number is milliseconds). */
-  readonly timeoutMs?: never;
 }
 
 const failure = (message: string, detail?: unknown): ReactorError =>

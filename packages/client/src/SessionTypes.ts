@@ -79,17 +79,6 @@ export interface SessionTimeouts extends ReplyTimeoutOptions, UploadTimeoutOptio
    * minutes. `"Infinity"` disables the heartbeat. A bare number is milliseconds.
    */
   readonly heartbeatInterval?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `readyTimeout` (a bare number is milliseconds). */
-  readonly readyTimeoutMs?: never;
-  /** @deprecated Removed in 0.3.0: use `connectTimeout` (a bare number is milliseconds). */
-  readonly connectTimeoutMs?: never;
-  /** @deprecated Removed in 0.3.0: use `replyTimeout` (a bare number is milliseconds). */
-  readonly commandTimeoutMs?: never;
-  /**
-   * @deprecated Removed in 0.3.0: use `heartbeatInterval` (a bare number is
-   * milliseconds, and `"Infinity"` disables the heartbeat).
-   */
-  readonly heartbeatMs?: never;
 }
 
 /** A command's options. */

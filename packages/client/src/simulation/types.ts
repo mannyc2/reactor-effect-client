@@ -31,10 +31,6 @@ export interface SimOptions {
    * milliseconds.
    */
   readonly playoutGap?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `fixedBuildTime` (a bare number is milliseconds). */
-  readonly buildFixedMs?: never;
-  /** @deprecated Removed in 0.3.0: use `playoutGap` (a bare number is milliseconds). */
-  readonly playoutGapMs?: never;
   readonly faults?: SimulatedFaults;
   /** Completes before Ready and may extend duration to fit locally rendered speech. */
   readonly build?: (record: LocalClipRecord) => Effect.Effect<number, Error>;

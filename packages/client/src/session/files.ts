@@ -16,8 +16,6 @@ export interface FileUploadOptions extends UploadTimeoutOptions {
    * is milliseconds.
    */
   readonly readTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
-  readonly readTimeoutMs?: never;
 }
 
 /** Scoped, bounded host file loading shared by uploads and reference preparation. */

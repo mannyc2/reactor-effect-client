@@ -6,13 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-These changes add a member to the output union `ClipFate`, which breaks a switch over it that was written to be exhaustive, so they release as 0.4.0.
+## [0.4.0] - 2026-09-25
+
+Monotonic elapsed time in renewal, a lineup fate for a start nobody saw, and the end of the option names 0.3.0 renamed. It breaks the 0.3 API in two ways, so a `^0.3.0` range does not include it: `ClipFate` has a new member, which a switch over it written to be exhaustive must handle, and the `?: never` declarations of the removed option names are gone. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, the Chrome browser/native WebRTC test on each, and the pack/install smoke of all three archives. The portable suites include the wall-clock step tests for renewal and build timing and the lineup's fate tests over a scripted engine. The lineup and the monotonic renewal timing have run only against the simulation, the H3 source fixture and scripted engines: neither has run on hosted H3.
 
 ### Changed
 
 - **Breaking:** `ClipFate` gains `Unobserved`: the clip may have played, but its start was never seen, and it carries no `at`. A lineup settles a waiting clip as `Unobserved` in three cases: its observer fell behind and, on a Ready engine, the clip is then in no queue, not playing and not failed; the clip is playing with no observed start time; or the clip ended without its start being seen. Before, the first case stayed waiting until the orchestration closed and was then labelled `Failed`, and the second got the recovery time as an invented start.
 - `Lineup.enqueue` captures the request before it reads `position` or `before`, as `Engine.enqueue` does. A request whose field is an accessor is now refused as `InvalidRequest` without the accessor running; before, the lineup read the field first.
 - A lineup's first filler is the `filler.clip(0)` request it validated when it started, so it no longer asks for `clip(0)` twice. It moves to the next n only once a filler is admitted: enqueued, or sent with an unknown outcome. A filler refused before it was sent, or refused by the provider, is sent again as the same request instead of skipping an n.
+
+### Removed
+
+- **Breaking:** the `?: never` declarations kept through 0.3.x for the option names that 0.3.0 replaced with `Duration.Input` options, as the 0.3.0 entry promised for the next minor. A literal that still sets one fails TypeScript's excess property check as any unknown key does; one held in a variable or spread now compiles, and the key is ignored. The names, with what replaced them:
+  - session options: `readyTimeoutMs`, `connectTimeoutMs`, `commandTimeoutMs` and `heartbeatMs` (`readyTimeout`, `connectTimeout`, `replyTimeout`, `heartbeatInterval`), and `FileUploadOptions.readTimeoutMs` (`readTimeout`);
+  - coordinator: `initialMs`, `maxMs` and `requestTimeoutMs` (`initialDelay`, `maxDelay`, `requestTimeout`), `DownloadOptions.timeoutMs` (`downloadTimeout`), and a token's `maxSessionDurationSeconds` and `expiresAfterSeconds` (`maxSessionDuration`, `expiresAfter`);
+  - H3: `commandTimeoutMs`, `setupTimeoutMs`, `reconcileWindowMs` and `resultHookTimeoutMs` (`replyTimeout`, `setupTimeout`, `reconcileWindow`, `resultHookTimeout`);
+  - orchestration: `leadSeconds` and `reconnectTimeoutMs` (`lead`, `reconnectTimeout`), `log` (the orchestration logs through Effect's logger), and the reference `LoadLimits.timeoutMs` (`loadTimeout`);
+  - simulation: `buildFixedMs` and `playoutGapMs` (`fixedBuildTime`, `playoutGap`);
+  - browser: `AudioContextOptions.timeoutMs` (`transitionTimeout`), `WebAudioOptions.activationTimeoutMs` and `readTimeoutMs` (`activationTimeout`, `readTimeout`), and `MediaOptions.readTimeoutMs` (`readTimeout`).
 
 ### Fixed
 
@@ -199,7 +213,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/6f56a1969a2489fb4c8e50066de5b4ba70f9b7a1...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/62f63d68dcdf25411adb747f4905823b7bbab077...main
+[0.4.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.4.0
 [0.3.4]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.3
 [0.3.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.2

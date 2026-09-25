@@ -243,14 +243,6 @@ export interface Options extends ReplyTimeoutOptions, UploadTimeoutOptions {
    * at most 1 minute. A bare number is milliseconds.
    */
   readonly resultHookTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `replyTimeout` (a bare number is milliseconds). */
-  readonly commandTimeoutMs?: never;
-  /** @deprecated Removed in 0.3.0: use `setupTimeout` (a bare number is milliseconds). */
-  readonly setupTimeoutMs?: never;
-  /** @deprecated Removed in 0.3.0: use `reconcileWindow` (a bare number is milliseconds). */
-  readonly reconcileWindowMs?: never;
-  /** @deprecated Removed in 0.3.0: use `resultHookTimeout` (a bare number is milliseconds). */
-  readonly resultHookTimeoutMs?: never;
   readonly maxPending?: number;
   readonly maxTrackedClips?: number;
   readonly maxAcceptances?: number;

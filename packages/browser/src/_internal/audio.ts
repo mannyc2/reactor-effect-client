@@ -46,8 +46,6 @@ export interface AudioContextOptions {
    * seconds by default and at most 1 minute. A bare number is milliseconds.
    */
   readonly transitionTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `transitionTimeout` (a bare number is milliseconds). */
-  readonly timeoutMs?: never;
 }
 export const audioContext = (
   options: AudioContextOptions = {},
@@ -124,10 +122,6 @@ export interface WebAudioOptions {
    * seconds by default and at most 10 minutes. A bare number is milliseconds.
    */
   readonly readTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `activationTimeout` (a bare number is milliseconds). */
-  readonly activationTimeoutMs?: never;
-  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
-  readonly readTimeoutMs?: never;
 }
 // A worklet is registered once per context and URL. Failed registration is retryable, not cached success.
 const modules = new WeakMap<AudioContext, Map<string, Promise<void>>>();

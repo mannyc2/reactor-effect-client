@@ -22,8 +22,6 @@ export interface MediaOptions {
    * and at most 10 minutes. A bare number is milliseconds.
    */
   readonly readTimeout?: Duration.Input | undefined;
-  /** @deprecated Removed in 0.3.0: use `readTimeout` (a bare number is milliseconds). */
-  readonly readTimeoutMs?: never;
 }
 export interface VideoSample {
   readonly format: "RGBA";

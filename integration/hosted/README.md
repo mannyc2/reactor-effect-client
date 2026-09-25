@@ -109,7 +109,7 @@ Qualify the published bytes. Run from a machine whose network carries WebRTC med
 
 ```sh
 mkdir reactor-qualification && cd reactor-qualification && npm init -y > /dev/null
-npm install reactor-effect-client@0.3.4 reactor-effect-native@0.3.4 \
+npm install reactor-effect-client@0.4.0 reactor-effect-native@0.4.0 \
   effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
 cp -R <this repository>/integration/hosted ./hosted
 
