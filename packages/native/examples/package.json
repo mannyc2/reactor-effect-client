@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-native-examples",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "reactor-effect-native example: a command-line capture of one H3 clip, decoded on the server and written to MP4",
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-test-kit",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Runner-agnostic assertion helpers and host fakes shared by the workspace test suites",
   "type": "module",
