@@ -37,6 +37,7 @@ export interface PolicySnapshot {
   readonly refillActive: boolean;
   readonly maxBuildsInFlight: number;
   readonly accepting: boolean;
+  readonly fillerEnabled: boolean;
   readonly fillerRetryAtMs: number;
   readonly fillerUnknown: boolean;
   readonly fillerUnknownSessionId: string | undefined;
@@ -47,7 +48,7 @@ export interface PolicySnapshot {
 export type PolicyAction =
   | { readonly _tag: "Withdraw"; readonly key: ItemKey; readonly reason: "late" }
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
-  | { readonly _tag: "WithdrawFiller"; readonly clipId: ClipId }
+  | { readonly _tag: "WithdrawFiller"; readonly clipIds: ReadonlyArray<ClipId> }
   | { readonly _tag: "Build"; readonly key: ItemKey }
   | { readonly _tag: "BuildFiller"; readonly targetSeconds: number }
   | { readonly _tag: "Order"; readonly clipId: ClipId; readonly position: number };
@@ -124,21 +125,36 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   if (
     preferred !== undefined &&
     retiring !== undefined &&
+    engine.handoffReady === true &&
+    !engine.queued.some((clip) => clip.sessionId === retiring) &&
+    Option.getOrUndefined(engine.building)?.record.sessionId !== retiring &&
+    !items.some(
+      (item) =>
+        (item.phase === "Building" || item.phase === "Unknown") &&
+        (item.sessionId ?? item.unknownSessionId) === retiring,
+    ) &&
     engine.ready.some(
       (clip) => clip.sessionId === preferred && owned.get(clip.clipId)?._tag === "Item",
     )
   ) {
-    const staleFiller = engine.ready.find(
+    const staleFiller = engine.ready.filter(
       (clip) => clip.sessionId === retiring && owned.get(clip.clipId)?._tag === "Filler",
     );
-    if (staleFiller !== undefined)
-      return { ...base, action: { _tag: "WithdrawFiller", clipId: staleFiller.clipId } };
+    if (staleFiller.length > 0)
+      return {
+        ...base,
+        action: { _tag: "WithdrawFiller", clipIds: staleFiller.map((clip) => clip.clipId) },
+      };
   }
 
   // Physical sources are independent queues. A move never ranks across them.
   let offset = 0;
   for (const session of engine.sessions) {
     const actual = engine.ready.filter((clip) => clip.sessionId === session.sessionId);
+    if (session.availability !== "Ready") {
+      offset += actual.length;
+      continue;
+    }
     const rank = (clipId: ClipId): readonly [number, number] => {
       const clip = owned.get(clipId);
       if (clip === undefined) return [-1, 0];
@@ -267,6 +283,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   if (eligible[0] !== undefined)
     return { ...base, action: { _tag: "Build", key: eligible[0].key } };
   if (
+    snapshot.fillerEnabled &&
     filling &&
     runway < fillTarget &&
     !(

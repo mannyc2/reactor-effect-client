@@ -78,6 +78,11 @@ const scheduler: Effect.Effect<
 const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
 declare const queued: Orchestration.ItemHandle;
 const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
+declare const schedulerHandle: Orchestration.SchedulerShape;
+const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
+const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
+const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
+const stoppedRenewal: Effect.Effect<void, Orchestration.EngineError> = engine.stopRenewal;
 const encoded = Wire.ControlClientMessage.encode({
   request_id: "fixture",
   kind: 1,
@@ -106,4 +111,7 @@ void [
   scheduler,
   itemKey,
   started,
+  drained,
+  terminalFailure,
+  stoppedRenewal,
 ];

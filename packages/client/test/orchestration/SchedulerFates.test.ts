@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Clock, Effect, Exit, Fiber, Option, Queue, Stream } from "effect";
+import { Clock, Effect, Exit, Fiber, Option, Queue, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
@@ -12,7 +12,7 @@ import type {
   SchedulerOptions,
 } from "../../src/orchestration/scheduler.js";
 import { Engine } from "../../src/orchestration/types.js";
-import type { EngineEvent, EngineShape } from "../../src/orchestration/types.js";
+import type { EngineEvent, EngineShape, EngineState } from "../../src/orchestration/types.js";
 import * as Simulation from "../../src/simulation/index.js";
 import {
   failure,
@@ -61,6 +61,135 @@ const settled = (effect: Effect.Effect<AsRunStatus>) =>
     const exit = fiber.pollUnsafe();
     return exit !== undefined && Exit.isSuccess(exit) ? exit.value : "waiting";
   });
+
+// PR #34, c1171c9: an inbox can close after admitting a command, or before a
+// later call. A controlled Scope owns this race; a live session cannot force it.
+test("scope closure settles pending and subsequent scheduler calls", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+      const scope = yield* Scope.make();
+      const entered = yield* gate;
+      const engine: EngineShape = {
+        ...handle.engine,
+        enqueueOnSource: undefined,
+        enqueue: () => entered.release.pipe(Effect.andThen(Effect.never)),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(
+        Effect.provideService(Engine, engine),
+        Scope.provide(scope),
+      );
+      const spec = { key: ItemKey.make("closing"), lane: "line", request: clip("closing") };
+      yield* scheduler.submit(spec);
+      yield* entered.wait;
+      const pending = yield* scheduler
+        .withdraw(spec.key)
+        .pipe(Effect.asVoid, Effect.result, Effect.forkScoped);
+      yield* advance(100);
+      yield* Scope.close(scope, Exit.void);
+      const later = yield* Effect.forEach(
+        [scheduler.submit(spec), scheduler.withdraw(spec.key), scheduler.drain()],
+        (call) => call.pipe(Effect.asVoid, Effect.result, Effect.forkScoped),
+      );
+      yield* advance(100);
+      for (const fiber of [pending, ...later]) {
+        const exit = fiber.pollUnsafe();
+        expect(exit).toBeDefined();
+        if (exit !== undefined && Exit.isSuccess(exit)) {
+          expect(Result.isFailure(exit.value)).toBe(true);
+          if (Result.isFailure(exit.value))
+            expect(refusal(exit.value.failure)).toBe("SessionClosed");
+        }
+      }
+    }),
+  ));
+
+test("a terminal observation failure is available to the scheduler supervisor", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+      const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+      const engine: EngineShape = {
+        ...handle.engine,
+        observe: () =>
+          Effect.map(handle.engine.state, (initial) => ({
+            initial,
+            events: Stream.fromQueue(feed),
+          })),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const cause = ReactorError.fromCode("Disconnected", "Observation stopped");
+      yield* Queue.fail(feed, cause);
+      yield* advance(100);
+      expect(scheduler.failure).toBeDefined();
+      expect(yield* scheduler.failure).toBe(cause);
+    }),
+  ));
+
+test("Synchronizing Ready facts do not repeat an acknowledged move", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+      let stale: EngineState | undefined;
+      let moves = 0;
+      const engine: EngineShape = {
+        ...handle.engine,
+        state: Effect.suspend(() =>
+          stale === undefined ? handle.engine.state : Effect.succeed(stale),
+        ),
+        move: (id, position, queue) =>
+          Effect.gen(function* () {
+            moves++;
+            if (moves > 1) return yield* Effect.never;
+            const before = yield* handle.engine.state;
+            yield* handle.engine.move(id, position, queue);
+            stale = {
+              ...before,
+              availability: "Synchronizing",
+              sessions: before.sessions.map((session) => ({
+                ...session,
+                availability: "Synchronizing",
+              })),
+            };
+          }),
+      };
+      const scheduler = yield* makeScheduler({
+        lanes: [{ name: "line" }],
+        filler: {
+          runway: { floor: "10 seconds", target: "15 seconds" },
+          clip: () => clip("filler"),
+        },
+      }).pipe(Effect.provideService(Engine, engine));
+      yield* advance(500);
+      yield* scheduler.submit({ key: ItemKey.make("move"), lane: "line", request: clip("line") });
+      yield* advance(1_000);
+      expect(moves).toBe(1);
+    }),
+  ));
+
+test("terminal key history has an explicit bound and retained handles keep their fate", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+      const scheduler = yield* makeScheduler({ ...options, maxHistory: 2 }).pipe(
+        Effect.provideService(Engine, handle.engine),
+      );
+      const specs = [0, 1, 2].map((index) => ({
+        key: ItemKey.make(`history-${index}`),
+        lane: "line",
+        request: clip("history"),
+        window: { notBefore: "1 hour" as const, firm: false },
+      }));
+      const handles = [];
+      for (const spec of specs) {
+        handles.push(yield* scheduler.submit(spec));
+        yield* scheduler.withdraw(spec.key);
+      }
+      expect(yield* scheduler.submit(specs[2]!)).toBe(handles[2]);
+      expect(yield* scheduler.submit(specs[0]!)).not.toBe(handles[0]);
+      expect(yield* handles[0]!.outcome).toEqual({ _tag: "Dropped", reason: "withdrawn" });
+    }),
+  ));
 
 test("a clip that starts and ends before its enqueue reply retains its observed fate", () =>
   runClock(
@@ -137,7 +266,7 @@ test("drain waits for the playing boundary, withdraws waiting work, and retains 
         request: clip("Waiting line"),
       });
       yield* advance(100);
-      const draining = yield* Effect.forkScoped(scheduler.drain);
+      const draining = yield* Effect.forkScoped(scheduler.drain());
       yield* advance(100);
       expect((yield* scheduler.state).accepting).toBe(false);
       expect(draining.pollUnsafe()).toBeUndefined();
@@ -184,7 +313,7 @@ test("drain removes Ready filler before the current playing clip ends", () =>
       const before = yield* handle.engine.state;
       expect(Option.isSome(before.playing)).toBe(true);
       expect(before.ready.length).toBeGreaterThan(0);
-      const draining = yield* Effect.forkScoped(scheduler.drain);
+      const draining = yield* Effect.forkScoped(scheduler.drain());
       yield* advance(4_500);
       yield* Fiber.join(draining);
       const after = yield* handle.engine.state;
@@ -251,7 +380,7 @@ test("withdraw and drain wait for an in-flight enqueue, then remove its clip", (
       const item = yield* scheduler.submit({ key, lane: "line", request: clip("Delayed line") });
       yield* entered.wait;
       const withdrawing = yield* Effect.forkScoped(scheduler.withdraw(key));
-      const draining = yield* Effect.forkScoped(scheduler.drain);
+      const draining = yield* Effect.forkScoped(scheduler.drain());
       yield* advance(200);
       expect(withdrawing.pollUnsafe()).toBeUndefined();
       expect(draining.pollUnsafe()).toBeUndefined();
@@ -403,6 +532,8 @@ test("an orchestration failure ends uncertainty without claiming the clip failed
         _tag: "Unknown",
       });
       expect(yield* settled(item.firstDecisive)).toBe("waiting");
+      expect(yield* settled(item.started)).toBe("waiting");
+      expect(yield* settled(item.outcome)).toBe("waiting");
       yield* Queue.offer(feed, {
         _tag: "SessionFailed",
         failure: ReactorError.fromCode("Closed", "Source closed"),
@@ -631,7 +762,7 @@ test("unknown filler is not replayed after an absent observation and holds drain
       yield* advance(2_000);
       expect(feeds).toHaveLength(2);
       expect(sends).toBe(1);
-      const draining = yield* Effect.forkScoped(scheduler.drain);
+      const draining = yield* Effect.forkScoped(scheduler.drain());
       yield* advance(1_000);
       expect(draining.pollUnsafe()).toBeUndefined();
     }),
@@ -737,7 +868,7 @@ test("a fresh snapshot forgets filler that ended during an observation gap", () 
       expect(Option.isNone((yield* handle.engine.state).playing)).toBe(true);
       yield* Queue.fail(feeds[0]!, ReactorError.fromCode("Overflow", "Observation gap"));
       yield* advance(200);
-      yield* scheduler.drain;
+      yield* scheduler.drain();
       expect(removals).toBe(0);
     }),
   ));
@@ -763,7 +894,7 @@ test("an uncertain removal has no false Dropped status or tight replay", () =>
       const result = yield* Effect.result(scheduler.withdraw(key));
       expect(result._tag).toBe("Failure");
       expect(removals).toBe(1);
-      const draining = yield* Effect.forkScoped(scheduler.drain);
+      const draining = yield* Effect.forkScoped(scheduler.drain());
       yield* advance(3_000);
       expect(draining.pollUnsafe()).toBeUndefined();
       expect(removals).toBe(1);

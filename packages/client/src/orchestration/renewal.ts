@@ -165,6 +165,7 @@ export const make = <R>(
       })),
     );
     const fatal = yield* Deferred.make<ReactorFailure>();
+    let renewing = true;
     const slots = new Map<string, Slot>();
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
@@ -311,6 +312,10 @@ export const make = <R>(
           replacement = { _tag: "Absent" };
         if (slot !== current) return;
         const pending = replacement;
+        if (!renewing && pending._tag === "Absent") {
+          yield* fail(cause);
+          return;
+        }
         const selected =
           pending._tag === "Ready"
             ? pending.slot
@@ -436,7 +441,8 @@ export const make = <R>(
         video: (frame) =>
           Effect.suspend(() => {
             if (slot !== current || terminalFailure !== undefined) return Effect.void;
-            slot.recordVideo();
+            if (slot.recordVideo() && replacement._tag === "Ready")
+              emit({ _tag: "HandoffReady", sessionId: slot.source.id });
             return buffer.offerVideo(frame).pipe(Effect.catch(fail));
           }),
         audio: (frame) =>
@@ -512,11 +518,25 @@ export const make = <R>(
             yield* slot.source.setAutoplay(false);
             yield* slot.observe(
               (event) =>
-                Effect.suspend(() => {
+                Effect.gen(function* () {
                   if (event._tag === "SessionFailed")
-                    return scheduleRecovery(slot, event.failure, "replace");
+                    return yield* scheduleRecovery(slot, event.failure, "replace");
+                  if (
+                    event._tag === "Starved" &&
+                    slot === current &&
+                    replacement._tag === "Ready" &&
+                    slot.finalVideo !== "incomplete"
+                  ) {
+                    const next = yield* replacement.slot.source.state;
+                    if (
+                      next.availability === "Ready" &&
+                      next.ready.length > 0 &&
+                      isIdle(yield* slot.source.state) &&
+                      !(yield* openSequences(slot))
+                    )
+                      return;
+                  }
                   if (event._tag !== "Starved" || slot === current) emit(event);
-                  return Effect.void;
                 }),
               (cause) => scheduleRecovery(slot, cause, "replace"),
             );
@@ -800,6 +820,13 @@ export const make = <R>(
           next !== undefined && current !== undefined && !current.closed
             ? Option.some(current.source.id)
             : Option.none(),
+        handoffReady:
+          next !== undefined &&
+          current !== undefined &&
+          !current.closed &&
+          !current.recovering &&
+          primary.availability === "Ready" &&
+          current.finalVideo !== "incomplete",
         availability: values.some((value) => value.availability === "Unavailable")
           ? "Unavailable"
           : values.some((value) => value.availability === "Synchronizing")
@@ -865,6 +892,20 @@ export const make = <R>(
           })),
         ),
       failure: Deferred.await(fatal),
+      stopRenewal: Effect.gen(function* () {
+        // Fence allocation before waiting on a command already in progress.
+        renewing = false;
+        yield* commands.withPermit(
+          Effect.gen(function* () {
+            if (replacement._tag !== "Opening") return;
+            const pending = replacement.fiber;
+            replacement = { _tag: "Absent" };
+            yield* Fiber.interrupt(pending);
+            const result = yield* Fiber.await(pending);
+            if (Exit.isSuccess(result)) yield* result.value.close;
+          }),
+        );
+      }),
       setAutoplay: (enabled) =>
         commands.withPermit(
           guard(
@@ -1006,7 +1047,8 @@ export const make = <R>(
               );
               return;
             case "Prepare":
-              replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
+              if (renewing)
+                replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
               return;
             case "InspectHandoff":
               break;
@@ -1027,9 +1069,7 @@ export const make = <R>(
               sequenceOpen: false,
               currentIdle: isIdle(oldState),
               replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
-              video: tail.tail.video.status,
-              droppedVideo: tail.tail.sourceDrops.video,
-              droppedAudio: tail.tail.sourceDrops.audio,
+              video: current.finalVideo,
             })
           )
             return;

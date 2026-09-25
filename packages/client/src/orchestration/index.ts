@@ -67,6 +67,8 @@ export type {
   AsRunEvent,
   ItemHandle,
   WithdrawOutcome,
+  DrainOptions,
+  ItemFailureReason,
 } from "./scheduler.js";
 export type { Allocated, OpenedH3, OpenH3Options, ResumeH3Options } from "./open-h3.js";
 export * as References from "./references.js";

@@ -129,6 +129,16 @@ test("deadline admission counts the current boundary but lets a line overtake Re
         }),
       );
       expect(Result.isFailure(impossible) && impossible.failure._tag).toBe("WouldMissDeadline");
+      // PR #34: an already elapsed relative deadline is a deadline refusal.
+      const expired = yield* Effect.result(
+        scheduler.submit({
+          key: ItemKey.make("elapsed-deadline"),
+          lane: "line",
+          request: clip("Expired line"),
+          window: { startBy: -1, firm: true },
+        }),
+      );
+      expect(Result.isFailure(expired) && expired.failure._tag).toBe("WouldMissDeadline");
       const line = yield* scheduler.submit({
         key: ItemKey.make("feasible-deadline"),
         lane: "line",
@@ -136,7 +146,8 @@ test("deadline admission counts the current boundary but lets a line overtake Re
         window: { startBy: "8 seconds", firm: true },
       });
       yield* elapse(clock, 8_000);
-      expect((yield* line.started)._tag).toBe("Started");
+      // H3 quantizes five requested seconds to 124 frames at 24 fps.
+      expect(yield* line.started).toMatchObject({ _tag: "Started", durationSeconds: 124 / 24 });
     }),
   ));
 
@@ -329,7 +340,7 @@ test("At follows a corrected wall clock while elapsed windows remain monotonic",
     }),
   ));
 
-test("a backward wall correction defers a Ready At clip when filler runs out", () =>
+test("a backward wall correction retries a refused At deferral without closing the scheduler", () =>
   runClock(
     Effect.gen(function* () {
       const clock = yield* TestClock.testClockWith(Effect.succeed);
@@ -342,9 +353,18 @@ test("a backward wall correction defers a Ready At clip when filler runs out", (
               ? Effect.fail(ReactorError.fromCode("InvalidState", "Filler unavailable"))
               : Effect.succeed(record.durationSeconds),
         });
-        const scheduler = yield* makeScheduler(options).pipe(
-          Effect.provideService(Engine, handle.engine),
-        );
+        let removals = 0;
+        const engine: EngineShape = {
+          ...handle.engine,
+          // PR #34: a temporary refusal to hold one anchor must not kill all lanes.
+          remove: (id) =>
+            Effect.suspend(() =>
+              ++removals === 1
+                ? PolicyFailure.refuse("SessionRecovering", "Queue is synchronizing")
+                : handle.engine.remove(id),
+            ),
+        };
+        const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
         const events: AsRunEvent[] = [];
         yield* scheduler.asRun.pipe(
           Stream.runForEach((event) =>
@@ -369,6 +389,8 @@ test("a backward wall correction defers a Ready At clip when filler runs out", (
         expect(status(events, key, "Ready")).toBeDefined();
         yield* wall.step(-30_000);
         yield* elapse(clock, 12_000);
+        expect((yield* scheduler.state).accepting).toBe(true);
+        expect(removals).toBe(2);
         expect(status(events, key, "Started")).toBeUndefined();
         expect(
           events.filter((event) => event.key === key && event.status._tag === "Accepted"),

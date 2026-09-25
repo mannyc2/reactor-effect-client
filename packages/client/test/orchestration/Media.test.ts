@@ -115,53 +115,46 @@ test("planned handoff retains queued old video and audio instead of claiming the
     }),
   ));
 
-for (const kind of ["video", "audio", "incomplete"] as const)
-  test(`${kind} loss prevents a clean handoff and forces an evidenced replacement at expiry`, () =>
-    runClock(
-      Effect.gen(function* () {
-        const { handle, sources, renewals, warm } = yield* renewalFixture();
-        const old = yield* handle.engine.enqueue(member("old"));
-        yield* warm;
-        const next = yield* handle.engine.enqueue(member("next"));
-        yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
-        yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
-        const expectedReceived = kind === "incomplete" ? 23 : 24;
-        for (let frame = 0; frame < expectedReceived; frame++)
-          yield* sources[0]!.video(videoFrame());
-        yield* untilEffect(
-          handle.media.pressure.pipe(
-            Effect.map((pressure) => pressure.queuedVideo === expectedReceived),
-          ),
-        );
-        yield* sources[0]!.setPressure(
-          kind === "video" ? { droppedVideo: 1n } : kind === "audio" ? { droppedAudio: 1n } : {},
-        );
-        yield* sources[0]!.setState(readyState());
-        yield* TestClock.adjust(100);
-        expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-        expect(sources[0]!.status().closed).toBe(false);
-        yield* TestClock.adjust(400);
-        yield* until(
-          () => renewals.some((event) => event._tag === "Replaced"),
-          TestClock.adjust(100),
-          "expired lossy source never retired",
-        );
-        const replaced = renewals.find((event) => event._tag === "Replaced");
-        if (replaced?._tag !== "Replaced")
-          throw new Error("Expected replacement, not a clean switch");
-        expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-        expect(replaced.tail.video.receivedFrames).toBe(expectedReceived);
-        expect(replaced.tail.video.status).toBe(
-          kind === "incomplete" ? "incomplete" : "count-complete",
-        );
-        expect(replaced.tail.sourceDrops).toEqual({
-          video: kind === "video" ? 1n : 0n,
-          audio: kind === "audio" ? 1n : 0n,
-        });
-        expect(replaced.tail.audio.status).toBe("unverified");
-        expect(sources.flatMap((source) => source.sends)).toHaveLength(2);
-      }),
-    ));
+test("incomplete final video forces an evidenced replacement at expiry", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { handle, sources, renewals, warm } = yield* renewalFixture();
+      const old = yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
+      const expectedReceived = 23;
+      for (let frame = 0; frame < expectedReceived; frame++) yield* sources[0]!.video(videoFrame());
+      yield* untilEffect(
+        handle.media.pressure.pipe(
+          Effect.map((pressure) => pressure.queuedVideo === expectedReceived),
+        ),
+      );
+      yield* sources[0]!.setState(readyState());
+      yield* TestClock.adjust(100);
+      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
+      expect(sources[0]!.status().closed).toBe(false);
+      yield* TestClock.adjust(400);
+      yield* until(
+        () => renewals.some((event) => event._tag === "Replaced"),
+        TestClock.adjust(100),
+        "expired lossy source never retired",
+      );
+      const replaced = renewals.find((event) => event._tag === "Replaced");
+      if (replaced?._tag !== "Replaced")
+        throw new Error("Expected replacement, not a clean switch");
+      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
+      expect(replaced.tail.video.receivedFrames).toBe(expectedReceived);
+      expect(replaced.tail.video.status).toBe("incomplete");
+      expect(replaced.tail.sourceDrops).toEqual({
+        video: 0n,
+        audio: 0n,
+      });
+      expect(replaced.tail.audio.status).toBe("unverified");
+      expect(sources.flatMap((source) => source.sends)).toHaveLength(2);
+    }),
+  ));
 
 test("a frame-only terminal failure fails media readers without requiring an engine-event reader", () =>
   run(
@@ -426,7 +419,7 @@ test("a prepared replacement's losses before it feeds the output are not the out
     }),
   ));
 
-test("unavailable source pressure stays unknown in replacement evidence instead of becoming zero", () =>
+test("unavailable source pressure stays unknown in handoff evidence instead of becoming zero", () =>
   runClock(
     Effect.gen(function* () {
       const unavailable = ReactorError.fromCode("Disconnected", "pressure sample unavailable");
@@ -441,16 +434,12 @@ test("unavailable source pressure stays unknown in replacement evidence instead 
       yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
       yield* sources[0]!.setState(readyState());
       yield* TestClock.adjust(100);
-      expect(sources[0]!.status().closed).toBe(false);
-      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-      yield* TestClock.adjust(400);
       yield* until(
-        () => renewals.some((event) => event._tag === "Replaced"),
+        () => renewals.some((event) => event._tag === "Switched"),
         TestClock.adjust(100),
       );
-      const replaced = renewals.find((event) => event._tag === "Replaced");
-      if (replaced?._tag !== "Replaced")
-        throw new Error("The expired source must explicitly retire");
+      const replaced = renewals.find((event) => event._tag === "Switched");
+      if (replaced?._tag !== "Switched") throw new Error("The idle source must explicitly retire");
       expect(replaced.tail.sourceDrops).toEqual({ video: null, audio: null });
       expect(replaced.tail.audio.status).toBe("unverified");
     }),

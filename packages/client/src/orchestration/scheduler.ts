@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -14,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { duration } from "../duration.js";
 import { parsedInput, ReactorError } from "../errors.js";
+import type { ReactorFailure } from "../errors.js";
 import { monotonicMillis } from "./elapsed.js";
 import { captureRequest, PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
@@ -81,7 +83,14 @@ export interface SchedulerOptions {
   };
   /** Provider build admissions in flight on the preferred source, independent of runway. Defaults to one. */
   readonly maxBuildsInFlight?: number;
+  /** Completed keys retained for idempotency, oldest first; defaults to 4096. Active keys are never evicted. */
+  readonly maxHistory?: number;
 }
+
+export type ItemFailureReason =
+  | { readonly _tag: "Scheduler"; readonly cause: ReactorFailure }
+  | { readonly _tag: "Command"; readonly cause: EngineError }
+  | { readonly _tag: "Clip"; readonly message: string };
 
 export type AsRunStatus =
   | { readonly _tag: "Accepted" }
@@ -91,6 +100,7 @@ export type AsRunStatus =
       readonly _tag: "Started";
       readonly at: number;
       readonly sessionId: string;
+      readonly durationSeconds: number;
       readonly lateByMillis?: number;
     }
   | {
@@ -100,7 +110,7 @@ export type AsRunStatus =
       readonly airedSeconds: number;
     }
   | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" }
-  | { readonly _tag: "Failed"; readonly reason: string }
+  | { readonly _tag: "Failed"; readonly reason: ItemFailureReason }
   | { readonly _tag: "Unobserved" }
   | {
       readonly _tag: "Unknown";
@@ -142,6 +152,11 @@ export interface ItemHandle {
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
+
+export interface DrainOptions {
+  /** Finish only current playback, or every item already accepted. Defaults to playing. */
+  readonly finish?: "playing" | "accepted";
+}
 
 export interface SchedulerState {
   readonly accepting: boolean;
@@ -268,7 +283,11 @@ type Message =
       readonly key: ItemKey;
       readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError>;
     }
-  | { readonly _tag: "Drain"; readonly reply: Deferred.Deferred<void, EngineError> }
+  | {
+      readonly _tag: "Drain";
+      readonly finish: "playing" | "accepted";
+      readonly reply: Deferred.Deferred<void, EngineError>;
+    }
   | { readonly _tag: "Snapshot"; readonly state: EngineState; readonly acquiredSerial: number }
   | { readonly _tag: "Event"; readonly event: EngineEvent }
   | { readonly _tag: "Tick" }
@@ -277,7 +296,7 @@ type Message =
       readonly command: Command;
       readonly result: Result.Result<CommandValue, EngineError>;
     }
-  | { readonly _tag: "Closed"; readonly reason: string };
+  | { readonly _tag: "Closed"; readonly cause: ReactorFailure };
 
 const invalid = (message: string): PolicyFailure =>
   PolicyFailure.refuse("InvalidRequest", message, "submit");
@@ -345,7 +364,10 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
   Effect.gen(function* () {
     const captured = yield* captureDuration(input);
     return yield* parsedInput(
-      () => Duration.toMillis(duration(captured, name, { allowZero })),
+      () =>
+        Duration.toMillis(
+          duration(captured, name, { allowZero, allowNegative: name === "startBy" }),
+        ),
       "submit",
     ).pipe(Effect.mapError((error) => invalid(error.message)));
   });
@@ -402,6 +424,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       (typeof window.firm !== "boolean" ||
         (notBeforeOffsetMs !== undefined &&
           startByOffsetMs !== undefined &&
+          startByOffsetMs >= 0 &&
           notBeforeOffsetMs > startByOffsetMs))
     )
       return yield* invalid("Scheduled window is inconsistent");
@@ -457,7 +480,9 @@ export interface SchedulerShape {
     item: ItemSpec,
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
-  readonly drain: Effect.Effect<void, EngineError>;
+  readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
+  /** Original terminal failure, including Closed when the owning scope ends. */
+  readonly failure: Effect.Effect<ReactorFailure>;
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
   readonly asRun: Stream.Stream<AsRunEvent>;
@@ -489,23 +514,30 @@ export const makeScheduler = (
         throw ReactorError.fromCode("InvalidInput", "Scheduler lanes must be unique and nonempty");
       return options.lanes.map((lane) => lane.name);
     }, "makeScheduler");
-    const { floorSeconds, targetSeconds, maxBuildsInFlight } = yield* parsedInput(() => {
-      const floorSeconds =
-        Duration.toMillis(
-          duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
-        ) / 1000;
-      const targetSeconds =
-        Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
-      const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
-      if (
-        floorSeconds > targetSeconds ||
-        !Number.isSafeInteger(maxBuildsInFlight) ||
-        maxBuildsInFlight < 1 ||
-        maxBuildsInFlight > 1024
-      )
-        throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
-      return { floorSeconds, targetSeconds, maxBuildsInFlight };
-    }, "makeScheduler");
+    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory } = yield* parsedInput(
+      () => {
+        const floorSeconds =
+          Duration.toMillis(
+            duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
+          ) / 1000;
+        const targetSeconds =
+          Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
+        const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
+        const maxHistory = options.maxHistory ?? 4096;
+        if (
+          floorSeconds > targetSeconds ||
+          !Number.isSafeInteger(maxBuildsInFlight) ||
+          maxBuildsInFlight < 1 ||
+          maxBuildsInFlight > 1024 ||
+          !Number.isSafeInteger(maxHistory) ||
+          maxHistory < 0 ||
+          maxHistory > 65_536
+        )
+          throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
+        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory };
+      },
+      "makeScheduler",
+    );
     const captureFiller = (
       index: number,
       runway: number,
@@ -560,7 +592,12 @@ export const makeScheduler = (
       starved: 0,
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
+    const stopped = yield* Deferred.make<ReactorFailure>();
+    const closedCall = Deferred.await(stopped).pipe(
+      Effect.flatMap((cause) => PolicyFailure.refuse("SessionClosed", cause.message)),
+    );
     const items = new Map<ItemKey, Entry>();
+    const history = new Map<ItemKey, Pick<Entry, "fingerprint" | "handle">>();
     const owned = new Map<ClipId, OwnedClip>();
     // An event can overtake its enqueue reply. Keep only the evidence needed to
     // decide that clip's fate until the one in-flight command returns its ID.
@@ -572,7 +609,7 @@ export const makeScheduler = (
     let accepting = true;
     let starved = 0;
     let refillActive = false;
-    let ended: string | undefined;
+    let ended: ReactorFailure | undefined;
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
@@ -586,6 +623,8 @@ export const makeScheduler = (
     let snapshotAcquiredSerial = 0;
     let lastProcessedSnapshotSerial = 0;
     let draining = false;
+    let finishAccepted = false;
+    let autoplayPaused = false;
     let drained = false;
     let observationReady = false;
     let blockedMove: string | undefined;
@@ -600,7 +639,7 @@ export const makeScheduler = (
           status._tag === "Ready" ||
           status._tag === "Started"
             ? status._tag
-            : status._tag === "Unknown"
+            : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
         yield* PubSub.publish(events, {
@@ -615,32 +654,62 @@ export const makeScheduler = (
           status._tag === "Dropped" ||
           status._tag === "Failed" ||
           status._tag === "Unobserved" ||
-          status._tag === "Unknown"
+          (status._tag === "Unknown" && status.terminal === true)
         ) {
           yield* Deferred.succeed(entry.startedWaiter, status);
           yield* Deferred.succeed(entry.outcomeWaiter, status);
         }
       });
 
-    const closeActor = (reason: string): Effect.Effect<void> =>
+    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (ended !== undefined) return;
-        ended = reason;
+        ended = cause;
         accepting = false;
+        yield* Deferred.succeed(stopped, cause);
         for (const item of items.values()) {
           if (item.phase === "Terminal") continue;
           if (item.phase === "Unknown") {
             yield* emit(item, { _tag: "Unknown", terminal: true });
             item.phase = "Terminal";
-          } else yield* emit(item, { _tag: "Failed", reason });
+          } else yield* emit(item, { _tag: "Failed", reason: { _tag: "Scheduler", cause } });
         }
-        const closed = PolicyFailure.refuse("SessionClosed", reason);
+        const closed = PolicyFailure.refuse("SessionClosed", cause.message);
         for (const [key, pending] of pendingWithdrawals) {
           for (const reply of pending.replies) yield* Deferred.fail(reply, closed);
           pendingWithdrawals.delete(key);
         }
         for (const reply of drainReplies.splice(0)) yield* Deferred.fail(reply, closed);
+        yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
       });
+
+    const prune = (state: EngineState): void => {
+      const active = new Set(activeIds(state));
+      if (state.availability === "Ready") {
+        for (const id of removedIds) if (!active.has(id)) removedIds.delete(id);
+        for (const id of removalRetryAtMs.keys()) if (!active.has(id)) removalRetryAtMs.delete(id);
+        for (const id of removalUnknownAtSerial.keys())
+          if (!active.has(id)) removalUnknownAtSerial.delete(id);
+      }
+      for (const [key, item] of items) {
+        if (
+          item.phase !== "Terminal" ||
+          pendingBuilds.has(key) ||
+          pendingWithdrawals.has(key) ||
+          pendingAtDeferrals.has(key) ||
+          pendingItemRemovals.has(key) ||
+          (item.clipId !== undefined && active.has(item.clipId))
+        )
+          continue;
+        if (item.clipId !== undefined) {
+          owned.delete(item.clipId);
+          playingStartedMs.delete(item.clipId);
+        }
+        history.set(key, { fingerprint: item.fingerprint, handle: item.handle });
+        items.delete(key);
+      }
+      while (history.size > maxHistory) history.delete(history.keys().next().value!);
+    };
 
     const publishState = (state: EngineState): Effect.Effect<void> => {
       const playing = Option.getOrUndefined(state.playing);
@@ -732,8 +801,11 @@ export const makeScheduler = (
             pendingFillerRemovals.delete(clipId);
           }
         }
+        const keyed = new Map<string, ReturnType<typeof activeRecords>[number]>();
         for (const record of activeRecords(state)) {
-          const index = fillerIndexFromKey(keyFromProviderMetadata(record.provider.metadata));
+          const key = keyFromProviderMetadata(record.provider.metadata);
+          if (key !== undefined && !removedIds.has(record.clipId)) keyed.set(key, record);
+          const index = fillerIndexFromKey(key);
           if (index === undefined || removedIds.has(record.clipId)) continue;
           const existing = owned.get(record.clipId);
           if (existing?._tag === "Filler") {
@@ -752,12 +824,9 @@ export const makeScheduler = (
           if (fillerIndex !== priorIndex) upcomingFiller = undefined;
         }
         for (const item of items.values()) {
+          if (item.phase === "Terminal") continue;
           if (item.clipId === undefined) {
-            const resumed = activeRecords(state).find(
-              (record) =>
-                !removedIds.has(record.clipId) &&
-                keyFromProviderMetadata(record.provider.metadata) === item.key,
-            );
+            const resumed = keyed.get(item.key);
             if (resumed !== undefined) {
               item.clipId = resumed.clipId;
               item.sessionId = resumed.sessionId;
@@ -766,7 +835,7 @@ export const makeScheduler = (
             }
           }
           const clipId = item.clipId;
-          if (clipId === undefined || item.phase === "Terminal") continue;
+          if (clipId === undefined) continue;
           const playing = Option.getOrUndefined(state.playing);
           if (playing?.clipId === clipId) {
             const record = Option.getOrUndefined(playing.record);
@@ -786,6 +855,7 @@ export const makeScheduler = (
                 _tag: "Started",
                 at,
                 sessionId: record.sessionId,
+                durationSeconds: record.durationSeconds,
                 ...((item.atMs ?? item.startByMs) === undefined ||
                 startedAtMonotonicMillis <= (item.atMs ?? item.startByMs)!
                   ? {}
@@ -811,7 +881,10 @@ export const makeScheduler = (
             if (item.phase === "Accepted" || item.phase === "Unknown")
               yield* emit(item, { _tag: "Building" });
           } else if (state.failed.includes(clipId))
-            yield* emit(item, { _tag: "Failed", reason: "The clip failed unobserved" });
+            yield* emit(item, {
+              _tag: "Failed",
+              reason: { _tag: "Clip", message: "The clip failed unobserved" },
+            });
           else if (
             recoverMissing &&
             item.sessionId !== undefined &&
@@ -830,7 +903,7 @@ export const makeScheduler = (
       Effect.gen(function* () {
         if (event._tag === "Starved") starved++;
         if (event._tag === "SessionFailed") {
-          yield* closeActor(event.failure.message);
+          yield* closeActor(event.failure);
           return;
         }
         if (!("clipId" in event)) return;
@@ -849,7 +922,9 @@ export const makeScheduler = (
                   item.phase = "Terminal";
                 }
               }
-              yield* closeActor("Unattributed clip evidence exceeded its bound");
+              yield* closeActor(
+                ReactorError.fromCode("Overflow", "Unattributed clip evidence exceeded its bound"),
+              );
               return;
             }
             earlyClipEvents.set(event.clipId, [event]);
@@ -911,6 +986,7 @@ export const makeScheduler = (
                 _tag: "Started",
                 at: event.at,
                 sessionId,
+                durationSeconds: event.durationSeconds,
                 ...((item.atMs ?? item.startByMs) === undefined ||
                 item.startedAtMonoMs <= (item.atMs ?? item.startByMs)!
                   ? {}
@@ -938,7 +1014,7 @@ export const makeScheduler = (
             playingStartedMs.delete(event.clipId);
             break;
           case "Failed":
-            yield* emit(item, { _tag: "Failed", reason: event.reason });
+            yield* emit(item, { _tag: "Failed", reason: { _tag: "Clip", message: event.reason } });
             break;
           default:
             break;
@@ -1067,13 +1143,15 @@ export const makeScheduler = (
             break;
           }
           case "DeferAt":
-            yield* sendCommand({ _tag: "DeferAt", key: action.key, clipId: action.clipId });
+            if (canRetryRemoval(action.clipId))
+              yield* sendCommand({ _tag: "DeferAt", key: action.key, clipId: action.clipId });
             break;
           case "WithdrawFiller":
-            if (!pendingFillerRemovals.has(action.clipId) && canRetryRemoval(action.clipId)) {
-              pendingFillerRemovals.add(action.clipId);
-              yield* sendCommand({ _tag: "RemoveFiller", clipId: action.clipId });
-            }
+            for (const clipId of action.clipIds)
+              if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
+                pendingFillerRemovals.add(clipId);
+                yield* sendCommand({ _tag: "RemoveFiller", clipId });
+              }
             break;
           case "Order": {
             const signature =
@@ -1096,7 +1174,10 @@ export const makeScheduler = (
             if (item?.phase !== "Accepted") break;
             const prepared = yield* Effect.result(keyedRequest(item.request, item.key));
             if (Result.isFailure(prepared)) {
-              yield* emit(item, { _tag: "Failed", reason: prepared.failure.message });
+              yield* emit(item, {
+                _tag: "Failed",
+                reason: { _tag: "Command", cause: prepared.failure },
+              });
               break;
             }
             yield* sendCommand({
@@ -1121,7 +1202,7 @@ export const makeScheduler = (
                   )
                 : Result.succeed(upcomingFiller);
             if (Result.isFailure(captured)) {
-              yield* closeActor(captured.failure.message);
+              yield* closeActor(captured.failure);
               break;
             }
             upcomingFiller = captured.success;
@@ -1129,7 +1210,7 @@ export const makeScheduler = (
               keyedRequest(captured.success, fillerKey(fillerIndex)),
             );
             if (Result.isFailure(prepared)) {
-              yield* closeActor(prepared.failure.message);
+              yield* closeActor(prepared.failure);
               break;
             }
             yield* sendCommand({
@@ -1232,7 +1313,10 @@ export const makeScheduler = (
                   result.failure.reason._tag,
                 )
               )
-                yield* emit(item, { _tag: "Failed", reason: result.failure.message });
+                yield* emit(item, {
+                  _tag: "Failed",
+                  reason: { _tag: "Command", cause: result.failure },
+                });
               else item.retryAtMs = monotonicMillis(clock) + 1_000;
             }
             break;
@@ -1318,17 +1402,19 @@ export const makeScheduler = (
             break;
           }
           case "RemoveDuplicate":
-            if (Result.isFailure(result))
-              yield* closeActor("A duplicate keyed clip could not be withdrawn");
+            if (Result.isFailure(result)) yield* closeActor(result.failure);
             break;
           case "DeferAt": {
             pendingAtDeferrals.delete(command.key);
             const item = items.get(command.key);
             if (Result.isFailure(result)) {
-              if (item?.phase !== "Started" && item?.phase !== "Terminal")
-                yield* closeActor("A timed clip could not be held for its anchor");
+              removalRetryAtMs.set(command.clipId, monotonicMillis(clock) + 1_000);
+              if (result.failure.context.outcome === "unknown")
+                removalUnknownAtSerial.set(command.clipId, snapshotAcquiredSerial);
               break;
             }
+            removalRetryAtMs.delete(command.clipId);
+            removalUnknownAtSerial.delete(command.clipId);
             owned.delete(command.clipId);
             removedIds.add(command.clipId);
             playingStartedMs.delete(command.clipId);
@@ -1360,6 +1446,7 @@ export const makeScheduler = (
         if (!draining) return;
         const playingId = Option.getOrUndefined(state.playing)?.clipId;
         for (const item of items.values()) {
+          if (finishAccepted) break;
           if (item.phase === "Terminal" || item.phase === "Started") continue;
           if (item.clipId === playingId) continue;
           yield* requestWithdrawal(item, "withdrawn");
@@ -1403,6 +1490,7 @@ export const makeScheduler = (
 
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
+      prune(state);
       refreshAnchors();
       if (!observationReady) {
         yield* publishState(state);
@@ -1455,7 +1543,8 @@ export const makeScheduler = (
         targetSeconds,
         refillActive,
         maxBuildsInFlight,
-        accepting,
+        accepting: accepting || (draining && finishAccepted),
+        fillerEnabled: !draining,
         fillerRetryAtMs,
         fillerUnknown: unknownFiller !== undefined,
         fillerUnknownSessionId: unknownFiller?.sessionId,
@@ -1463,12 +1552,23 @@ export const makeScheduler = (
       });
       refillActive = decision.refillActive;
       yield* publishState(state);
-      if (!draining && commandCount === 0 && decision.action !== undefined)
+      if ((!draining || finishAccepted) && commandCount === 0 && decision.action !== undefined)
         yield* applyPolicy(decision.action, state);
+      if (
+        draining &&
+        finishAccepted &&
+        !autoplayPaused &&
+        commandCount === 0 &&
+        [...items.values()].every((item) => item.phase === "Terminal")
+      ) {
+        autoplayPaused = true;
+        yield* sendCommand({ _tag: "PauseAutoplay" });
+      }
       if (
         drainFailure === undefined &&
         drainReplies.length > 0 &&
         commandCount === 0 &&
+        [...items.values()].every((item) => item.phase === "Terminal") &&
         pendingWithdrawals.size === 0 &&
         unknownFiller === undefined
       ) {
@@ -1486,10 +1586,20 @@ export const makeScheduler = (
         const message = yield* Queue.take(inbox);
         if (ended !== undefined && message._tag !== "CommandDone") {
           if (message._tag === "Submit")
-            yield* Deferred.fail(message.reply, invalid("Scheduler is closed"));
-          else if (message._tag === "Withdraw") yield* Deferred.succeed(message.reply, "not-found");
+            yield* Deferred.fail(
+              message.reply,
+              PolicyFailure.refuse("SessionClosed", ended.message),
+            );
+          else if (message._tag === "Withdraw")
+            yield* Deferred.fail(
+              message.reply,
+              PolicyFailure.refuse("SessionClosed", ended.message),
+            );
           else if (message._tag === "Drain")
-            yield* Deferred.fail(message.reply, PolicyFailure.refuse("SessionClosed", ended));
+            yield* Deferred.fail(
+              message.reply,
+              PolicyFailure.refuse("SessionClosed", ended.message),
+            );
           continue;
         }
         switch (message._tag) {
@@ -1498,7 +1608,7 @@ export const makeScheduler = (
               yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
               break;
             }
-            const existing = items.get(message.item.key);
+            const existing = items.get(message.item.key) ?? history.get(message.item.key);
             if (existing !== undefined) {
               if (existing.fingerprint === message.item.fingerprint)
                 yield* Deferred.succeed(message.reply, existing.handle);
@@ -1582,7 +1692,20 @@ export const makeScheduler = (
             drainReplies.push(message.reply);
             if (!draining) {
               draining = true;
-              yield* sendCommand({ _tag: "PauseAutoplay" });
+              finishAccepted = message.finish === "accepted";
+              // Renewal admission must stop even while an earlier enqueue is
+              // awaiting its reply in the command worker.
+              const stoppedRenewal = yield* Effect.result(engine.stopRenewal);
+              if (Result.isFailure(stoppedRenewal)) {
+                drainFailure = stoppedRenewal.failure;
+                for (const reply of drainReplies.splice(0))
+                  yield* Deferred.fail(reply, stoppedRenewal.failure);
+                break;
+              }
+              if (!finishAccepted) {
+                autoplayPaused = true;
+                yield* sendCommand({ _tag: "PauseAutoplay" });
+              }
             }
             yield* drainPending(yield* engine.state);
             break;
@@ -1606,8 +1729,11 @@ export const makeScheduler = (
             if (commandCount === 0) earlyClipEvents.clear();
             break;
           case "Closed":
-            yield* closeActor(message.reason);
-            yield* Deferred.fail(initialized, ReactorError.fromCode("Closed", message.reason));
+            yield* closeActor(message.cause);
+            yield* Deferred.fail(
+              initialized,
+              ReactorError.fromCode("Closed", message.cause.message),
+            );
             break;
         }
         if (ended === undefined) yield* reconcile;
@@ -1636,18 +1762,42 @@ export const makeScheduler = (
           ),
         );
         if (Result.isSuccess(result)) {
-          yield* Queue.offer(inbox, { _tag: "Closed", reason: "The orchestration closed" });
+          yield* Queue.offer(inbox, {
+            _tag: "Closed",
+            cause: ReactorError.fromCode("Closed", "The orchestration closed"),
+          });
           return;
         }
         if (result.failure.reason._tag !== "Overflow") {
-          yield* Queue.offer(inbox, { _tag: "Closed", reason: result.failure.message });
+          yield* Queue.offer(inbox, { _tag: "Closed", cause: result.failure });
           return;
         }
       }
     });
-    yield* Effect.forkScoped(commandWorker);
-    yield* Effect.forkScoped(actor);
-    yield* Effect.forkScoped(observe);
+    // A defect remains a defect, but it must wake waiters just as a typed
+    // terminal failure does. Scope interruption uses the finalizer below.
+    const supervise = (effect: Effect.Effect<void>) =>
+      effect.pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && ended === undefined
+            ? Effect.gen(function* () {
+                accepting = false;
+                yield* Deferred.failCause(stopped, exit.cause);
+                yield* Deferred.failCause(initialized, exit.cause);
+                for (const item of items.values()) {
+                  yield* Deferred.failCause(item.startedWaiter, exit.cause);
+                  yield* Deferred.failCause(item.outcomeWaiter, exit.cause);
+                  yield* Deferred.failCause(item.firstDecisiveWaiter, exit.cause);
+                }
+                yield* Queue.shutdown(inbox);
+                yield* Queue.shutdown(commandQueue);
+              })
+            : Effect.void,
+        ),
+      );
+    yield* Effect.forkScoped(supervise(commandWorker));
+    yield* Effect.forkScoped(supervise(actor));
+    yield* Effect.forkScoped(supervise(observe));
     yield* Effect.forkScoped(
       Effect.gen(function* () {
         for (;;) {
@@ -1658,17 +1808,7 @@ export const makeScheduler = (
     );
     yield* Queue.offer(inbox, { _tag: "Tick" });
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(
-        [...items.values()].filter((item) => item.phase !== "Terminal"),
-        (item) =>
-          Effect.gen(function* () {
-            if (item.phase === "Unknown") {
-              yield* emit(item, { _tag: "Unknown", terminal: true });
-              item.phase = "Terminal";
-            } else yield* emit(item, { _tag: "Failed", reason: ended ?? "The scheduler closed" });
-          }),
-        { discard: true },
-      ),
+      closeActor(ReactorError.fromCode("Closed", "The scheduler closed")),
     );
     yield* Deferred.await(initialized);
 
@@ -1676,20 +1816,22 @@ export const makeScheduler = (
       input,
     ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
       Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const item = yield* captureItem(input, new Set(lanes));
         yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", item.key);
         const reply = yield* Deferred.make<
           ItemHandle,
           KeyMismatch | WouldMissDeadline | EngineError
         >();
-        yield* Queue.offer(inbox, { _tag: "Submit", item, reply });
-        return yield* Deferred.await(reply);
+        if (!(yield* Queue.offer(inbox, { _tag: "Submit", item, reply }))) return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
       }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
-        yield* Queue.offer(inbox, { _tag: "Withdraw", key, reply });
-        return yield* Deferred.await(reply);
+        if (!(yield* Queue.offer(inbox, { _tag: "Withdraw", key, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
       }).pipe(
         Effect.withSpan(
           "Scheduler.withdraw",
@@ -1699,15 +1841,21 @@ export const makeScheduler = (
           },
         ),
       );
-    const drain: SchedulerShape["drain"] = Effect.gen(function* () {
-      const reply = yield* Deferred.make<void, EngineError>();
-      yield* Queue.offer(inbox, { _tag: "Drain", reply });
-      yield* Deferred.await(reply);
-    }).pipe(Effect.withSpan("Scheduler.drain", {}, { captureStackTrace: false }));
+    const drain: SchedulerShape["drain"] = (options = {}): Effect.Effect<void, EngineError> =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<void, EngineError>();
+        const finish = options.finish ?? "playing";
+        if (finish !== "playing" && finish !== "accepted")
+          return yield* invalid("Drain finish must be playing or accepted");
+        if (!(yield* Queue.offer(inbox, { _tag: "Drain", finish, reply })))
+          return yield* closedCall;
+        yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      }).pipe(Effect.withSpan("Scheduler.drain", {}, { captureStackTrace: false }));
     return {
       submit,
       withdraw,
       drain,
+      failure: Deferred.await(stopped),
       state: SubscriptionRef.get(stateRef),
       asRun: Stream.fromPubSub(events),
     };

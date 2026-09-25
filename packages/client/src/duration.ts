@@ -11,6 +11,8 @@ export interface DurationPolicy {
   readonly maximum?: Duration.Input | undefined;
   /** Accept zero. */
   readonly allowZero?: boolean | undefined;
+  /** Accept a signed relative offset, such as an already elapsed deadline. */
+  readonly allowNegative?: boolean | undefined;
   /** Accept an infinite duration (`"Infinity"`). */
   readonly allowInfinite?: boolean | undefined;
   /** Accept only a whole number of seconds, for a value the wire carries in seconds. */
@@ -44,7 +46,8 @@ export const duration = (
   const decoded = containsNaN(input) ? Option.none() : Duration.fromInput(input);
   if (Option.isNone(decoded)) return reject("is not a duration");
   const value = decoded.value;
-  if (Duration.isNegative(value)) return reject("must not be negative");
+  if (Duration.isNegative(value) && policy.allowNegative !== true)
+    return reject("must not be negative");
   if (Duration.isZero(value) && policy.allowZero !== true) return reject("must be positive");
   if (!Duration.isFinite(value)) {
     if (policy.allowInfinite === true) return value;

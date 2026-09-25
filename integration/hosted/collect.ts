@@ -218,6 +218,7 @@ export class VideoReader {
     const elapsed = arrivals.length > 1 ? arrivals.at(-1)! - arrivals[0]! : 0;
     return {
       frames: this.frames,
+      arrivalsMs: [...arrivals],
       formats: [...this.formats],
       sizes: [...this.sizes],
       ...(arrivals.length === 0 ? {} : { firstFrameMs: arrivals[0]! }),
@@ -244,6 +245,7 @@ export class AudioReader {
   private readonly rates = new Set<number>();
   private readonly channels = new Set<number>();
   private readonly lengths = new Set<number>();
+  private readonly arrivals: number[] = [];
 
   add(element: Recorded<AudioFrame>, atMs: number): void {
     if (element._tag === "Lost") {
@@ -252,6 +254,7 @@ export class AudioReader {
     }
     const block = element.frame;
     this.blocks++;
+    if (this.arrivals.length < 100_000) this.arrivals.push(atMs);
     this.first ??= atMs;
     this.rates.add(block.sampleRate);
     this.channels.add(block.channels);
@@ -269,6 +272,7 @@ export class AudioReader {
   summary(): AudioSummary {
     return {
       blocks: this.blocks,
+      arrivalsMs: [...this.arrivals],
       sampleRates: [...this.rates],
       channels: [...this.channels],
       samplesPerBlock: [...this.lengths],

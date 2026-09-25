@@ -41,6 +41,8 @@ const Spread = Schema.Struct({ p50: Ms, p95: Ms, max: Ms });
 
 export const VideoSummary = Schema.Struct({
   frames: Schema.Natural,
+  /** Individual decoded arrivals, relative to run start; absent in older evidence. */
+  arrivalsMs: Schema.optionalKey(Schema.Array(Ms)),
   formats: Schema.Array(Schema.String),
   sizes: Schema.Array(Schema.String),
   firstFrameMs: Schema.optionalKey(Ms),
@@ -60,6 +62,7 @@ export type VideoSummary = typeof VideoSummary.Type;
 
 export const AudioSummary = Schema.Struct({
   blocks: Schema.Natural,
+  arrivalsMs: Schema.optionalKey(Schema.Array(Ms)),
   sampleRates: Schema.Array(Schema.Natural),
   channels: Schema.Array(Schema.Natural),
   samplesPerBlock: Schema.Array(Schema.Natural),
@@ -341,6 +344,12 @@ export const Evidence = Schema.Struct({
         }),
       ),
       metadata: Schema.Struct({ observed: Counts, mismatched: Counts }),
+      media: Schema.optionalKey(
+        Schema.Struct({
+          retiring: Schema.Struct({ video: VideoSummary, audio: AudioSummary }),
+          replacement: Schema.Struct({ video: VideoSummary, audio: AudioSummary }),
+        }),
+      ),
       decodedHandoff: Schema.optionalKey(
         Schema.Struct({
           oldLastFrameMs: Ms,
@@ -396,6 +405,8 @@ export const required = (evidence: Evidence): readonly string[] => {
       "scheduler.positionZero",
       "scheduler.poppedBuild",
       "scheduler.decodedHandoff",
+      "scheduler.media.retiring.video.arrivalsMs.0",
+      "scheduler.media.replacement.video.arrivalsMs.0",
     ];
   if (evidence.check === "takeover" || evidence.check === "resume")
     return [

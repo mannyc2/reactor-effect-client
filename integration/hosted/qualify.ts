@@ -759,10 +759,22 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
       );
     const oldVideo = new VideoReader();
     const newVideo = new VideoReader();
+    const oldAudio = new AudioReader();
+    const newAudio = new AudioReader();
+    const saveMedia = () => {
+      run.evidence.scheduler = {
+        ...run.evidence.scheduler!,
+        media: {
+          retiring: { video: oldVideo.summary(), audio: oldAudio.summary() },
+          replacement: { video: newVideo.summary(), audio: newAudio.summary() },
+        },
+      };
+    };
     let deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
     const body = Effect.scoped(
       Effect.gen(function* () {
         let oldSession: Reactor.Session | undefined;
+        yield* Effect.addFinalizer(() => Effect.sync(saveMedia));
         const old = yield* Orchestration.openH3({
           mint: Effect.succeed(grant),
           onAllocated: ({ session }) =>
@@ -784,6 +796,12 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           Effect.ignore,
           Effect.forkScoped,
         );
+        if (oldMedia.tracks.some((track) => track.kind === "audio"))
+          yield* readInto(
+            Reactor.recorder(oldMedia.audio(tracks.audio)),
+            oldAudio,
+            run.origin,
+          ).pipe(Effect.ignore, Effect.forkScoped);
         const provider = old.source.provider;
         yield* recorded(run, provider.setAutoplay(false));
         const submit = (seconds: number, name: string, position?: number) =>
@@ -998,6 +1016,12 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           Effect.ignore,
           Effect.forkScoped,
         );
+        if (newMedia.tracks.some((track) => track.kind === "audio"))
+          yield* readInto(
+            Reactor.recorder(newMedia.audio(tracks.audio)),
+            newAudio,
+            run.origin,
+          ).pipe(Effect.ignore, Effect.forkScoped);
         const newProvider = replacement.source.provider;
         yield* recorded(run, newProvider.setAutoplay(false));
         const newSubmission = yield* newProvider.prepare({
@@ -1058,6 +1082,7 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
             ? undefined
             : "a watched clip message had missing metadata, or none was observed",
         );
+        saveMedia();
         yield* mark(run, "scheduler observed");
       }),
     ).pipe(Effect.provide(clientLayer(target)));

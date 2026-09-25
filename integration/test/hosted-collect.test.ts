@@ -52,6 +52,7 @@ test("the video reader summarizes frames, their pacing and the recorder's gaps w
   expect(reader.firstAfter(1_100)).toBe(1_210);
   expect(reader.summary()).toEqual({
     frames: 4,
+    arrivalsMs: [1_000, 1_040, 1_210, 1_250],
     formats: ["BGRA"],
     sizes: ["4x2"],
     firstFrameMs: 1_000,
@@ -131,6 +132,7 @@ test("the audio reader keeps rates, shapes, loudness and loss", () => {
   reader.add(block(3, 16_384), 530);
   expect(reader.summary()).toEqual({
     blocks: 2,
+    arrivalsMs: [500, 530],
     sampleRates: [48_000],
     channels: [1],
     samplesPerBlock: [480],

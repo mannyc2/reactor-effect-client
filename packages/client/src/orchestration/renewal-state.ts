@@ -93,18 +93,14 @@ export interface HandoffFacts {
   readonly currentIdle: boolean;
   readonly replacementReady: boolean;
   readonly video: "not-started" | "count-complete" | "incomplete";
-  readonly droppedVideo: bigint | null;
-  readonly droppedAudio: bigint | null;
 }
 
-/** Unknown pressure never establishes a clean handoff. Queued output remains caller-owned. */
+/** The final clip must arrive; lifetime loss is reported separately at retirement. */
 export const canHandoff = (facts: HandoffFacts): boolean =>
   !facts.sequenceOpen &&
   facts.currentIdle &&
   facts.replacementReady &&
-  facts.video !== "incomplete" &&
-  facts.droppedVideo === 0n &&
-  facts.droppedAudio === 0n;
+  facts.video !== "incomplete";
 
 export const needsReplacement = (
   phase: SourcePhase,

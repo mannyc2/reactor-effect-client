@@ -74,6 +74,8 @@ export interface EngineState {
   readonly preferredSessionId: Option.Option<string>;
   /** The source draining ahead of a ready replacement, if there is one. */
   readonly retiringSessionId: Option.Option<string>;
+  /** The retiring source's final observed clip has arrived in full. Absent on physical sources. */
+  readonly handoffReady?: boolean;
   readonly queued: readonly ClipRecord[];
   /** Provider queue order, including an independently observed active build. */
   readonly generationOrder: readonly ClipId[];
@@ -128,6 +130,8 @@ export type EngineEvent =
       readonly sessionId?: string;
     }
   | { readonly _tag: "Starved"; readonly at: number }
+  /** Media completion wakes policies before the next autoplay boundary. */
+  | { readonly _tag: "HandoffReady"; readonly sessionId: string }
   | { readonly _tag: "SessionFailed"; readonly failure: ReactorFailure };
 export const EngineEvent = Data.taggedEnum<EngineEvent>();
 
@@ -172,6 +176,8 @@ export interface EngineShape {
    * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
    */
   readonly failure: Effect.Effect<ReactorFailure>;
+  /** Permanently stop new renewal allocations; already acquired sources may finish. */
+  readonly stopRenewal: Effect.Effect<void, EngineError>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
   readonly pauseAndStop: Effect.Effect<void, EngineError>;
   readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;

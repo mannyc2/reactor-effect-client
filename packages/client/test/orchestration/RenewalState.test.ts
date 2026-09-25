@@ -70,8 +70,6 @@ test("a handoff requires complete independent queue, sequence and media evidence
     currentIdle: true,
     replacementReady: true,
     video: "count-complete" as const,
-    droppedVideo: 0n,
-    droppedAudio: 0n,
   };
   expect(canHandoff(ready)).toBe(true);
   expect(canHandoff({ ...ready, video: "not-started" })).toBe(true);
@@ -80,10 +78,6 @@ test("a handoff requires complete independent queue, sequence and media evidence
     { currentIdle: false },
     { replacementReady: false },
     { video: "incomplete" as const },
-    { droppedVideo: 1n },
-    { droppedAudio: 1n },
-    { droppedVideo: null },
-    { droppedAudio: null },
   ])
     expect(canHandoff({ ...ready, ...missing })).toBe(false);
 });

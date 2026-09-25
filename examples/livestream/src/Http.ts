@@ -43,6 +43,13 @@ const toChannelEvent = Effect.fnUntraced(function* (
       const inner = event.event;
       if (inner._tag === "Starved") return { _tag: "Starved" };
       if (inner._tag === "SessionFailed") return { _tag: "OffAir", reason: inner.failure.message };
+      if (inner._tag === "HandoffReady")
+        return {
+          _tag: "Renewal",
+          phase: "HandoffReady",
+          session: inner.sessionId,
+          lostClips: null,
+        };
       const state = yield* engine.state;
       const record = [...upcoming(state), ...Option.toArray(playing(state))].find(
         (value) => value.clipId === inner.clipId,

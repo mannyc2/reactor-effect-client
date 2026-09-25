@@ -324,13 +324,28 @@ test("scheduler evidence requires a separately confirmed replacement close", () 
   expect(missing(run)).toEqual([
     "scheduler.replacement.session.endedMs",
     "scheduler.replacement.termination",
+    "scheduler.media.retiring.video.arrivalsMs.0",
+    "scheduler.media.replacement.video.arrivalsMs.0",
   ]);
+  const audio = {
+    blocks: 0,
+    arrivalsMs: [],
+    sampleRates: [],
+    channels: [],
+    samplesPerBlock: [],
+    peakRms: 0,
+    lost: 0,
+  };
   run.scheduler = {
     ...run.scheduler!,
     replacement: {
       ...run.scheduler!.replacement,
       session: { ...run.scheduler!.replacement.session!, endedMs: 22_000 },
       termination: { requestedMs: 21_000, reportedMs: 22_000, confirmed: false },
+    },
+    media: {
+      retiring: { video: { ...video, arrivalsMs: [14_000] }, audio },
+      replacement: { video: { ...video, arrivalsMs: [16_000] }, audio },
     },
   };
   expect(missing(run)).toEqual([]);
