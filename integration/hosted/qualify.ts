@@ -8,10 +8,12 @@
  *   bun integration/hosted/qualify.ts rehearse <check> [--faults=<a,b>] [--ledger=<dir>]
  *   bun integration/hosted/qualify.ts <vertical|takeover|turn|audio|resume> --budget-usd=0.75 \
  *     --total-budget-usd=1.50 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
+ *   bun integration/hosted/qualify.ts scheduler --budget-usd=1.50 \
+ *     --total-budget-usd=3.75 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
  *   bun integration/hosted/qualify.ts summarize <evidence file or ledger>...
  *
- * `REACTOR_API_KEY` mints one token per paid check, for one session capped at
- * 50 s server-side; `REACTOR_API_URL` overrides the coordinator. A paid check
+ * `REACTOR_API_KEY` mints one token per session, each capped at 50 s
+ * server-side; `scheduler` uses two. `REACTOR_API_URL` overrides the coordinator. A paid check
  * refuses before allocating unless the published rate fits its budget, the
  * ledger's earlier runs leave room for its worst case, and the returned token
  * grants no more than it asked for. It saves its evidence (never a token) at
@@ -78,9 +80,11 @@ import {
   checks,
   liveVideo,
   maxCheckUsd,
+  maxSchedulerUsd,
   maxTotalUsd,
   options,
   sessionSeconds,
+  sessionsFor,
   tokenSeconds,
   workSeconds,
   worstCaseUsd,
@@ -316,15 +320,15 @@ const environment = (target: Target): Draft["environment"] => {
  * The spending gates, in order: the published rate must fit this check's
  * budget, and its worst case what the ledger has left. The evidence records
  * that worst case before any token exists, so the ledger reserves it even if
- * this process dies next. Then one token is minted and must grant no more
- * than asked for.
+ * this process dies next. Then the first token is minted and must grant no more
+ * than asked for; a two-session check reserves both before that point.
  */
-const admitted = (target: Target, run: Run, budget: Budget) =>
+const admitted = (target: Target, run: Run, budget: Budget, sessionCount = 1) =>
   Effect.gen(function* () {
     const coordinator = yield* Reactor.Coordinator.make({ apiUrl: target.apiUrl });
     const rate = yield* Reactor.Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
     run.evidence.budget.rate = rate;
-    const worst = yield* gate(() => admit(rate, budget.checkUsd));
+    const worst = yield* gate(() => admit(rate, budget.checkUsd, sessionCount));
     yield* gate(() => admitTotal([budget.reservedUsd], worst, budget.totalUsd));
     run.evidence.budget.worstCaseUsd = round(worst);
     yield* mark(run, "admitted", `worst case $${worst.toFixed(4)}`);
@@ -384,7 +388,8 @@ const afterSession = (
     if (endedMs !== undefined) {
       run.evidence.session = { ...session, endedMs };
       run.evidence.budget.estimatedUsd = round(
-        billedUsd(rate, (endedMs - session.allocatedMs) / 1000),
+        billedUsd(rate, (endedMs - session.allocatedMs) / 1000) +
+          (run.evidence.scheduler?.replacement.estimatedUsd ?? 0),
       );
     }
     judge(
@@ -700,6 +705,361 @@ const vertical = (target: Target, run: Run, budget: Budget, check: "vertical" | 
         }),
       ),
     );
+    return yield* body.pipe(Effect.ensuring(afterSession(target, run, grant.jwt, rate)));
+  });
+
+/** Two bounded H3 sessions that measure the provider facts scheduler policy depends on. */
+const scheduler = (target: Target, run: Run, budget: Budget) =>
+  Effect.gen(function* () {
+    // Reserve both server-capped sessions before either token is minted.
+    const { grant, rate } = yield* admitted(target, run, budget, sessionsFor("scheduler"));
+    run.evidence.scheduler = {
+      replacement: {},
+      builds: [],
+      latencyByRequestedSeconds: [],
+      metadata: { observed: {}, mismatched: {} },
+    };
+    const coordinator = yield* Reactor.Coordinator.make({ apiUrl: target.apiUrl });
+    const nextGrant = yield* coordinator.mintToken({
+      apiKey: target.apiKey,
+      modelName: H3.modelName,
+      maxSessionDuration: `${sessionSeconds} seconds`,
+      expiresAfter: `${tokenSeconds} seconds`,
+    });
+    run.secrets.push(Redacted.value(nextGrant.jwt));
+    yield* gate(() => acceptGrant(nextGrant.granted));
+    run.evidence.scheduler = {
+      ...run.evidence.scheduler,
+      replacement: {
+        grant: { ...nextGrant.granted, expiresAt: nextGrant.expiresAt },
+      },
+    };
+    yield* mark(run, "replacement minted");
+
+    const marker = `hosted-qualification:${run.evidence.runId}:scheduler`;
+    const observed: { type: string; clipId: string; metadata: string; atMs: number }[] = [];
+    const watch = (provider: H3.Provider) =>
+      provider.events({ capacity: 4096 }).pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event._tag !== "Message" || event.disposition !== "applied") return;
+            const message = event.message;
+            if (message.type === "unknown" || !("clip" in message.data)) return;
+            if (observed.length < 256)
+              observed.push({
+                type: message.type,
+                clipId: message.data.clip.clip_id,
+                metadata: message.data.clip.metadata,
+                atMs: since(run.origin),
+              });
+          }),
+        ),
+        Effect.forkScoped,
+      );
+    const oldVideo = new VideoReader();
+    const newVideo = new VideoReader();
+    let deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
+    const body = Effect.scoped(
+      Effect.gen(function* () {
+        let oldSession: Reactor.Session | undefined;
+        const old = yield* Orchestration.openH3({
+          mint: Effect.succeed(grant),
+          onAllocated: ({ session }) =>
+            Effect.gen(function* () {
+              oldSession = session;
+              deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
+              run.evidence.session = { id: session.id, allocatedMs: since(run.origin), tracks: [] };
+              yield* mark(run, "allocated");
+            }),
+        });
+        yield* Effect.addFinalizer(() => closeSession(run, oldSession!).pipe(Effect.ignore));
+        yield* watch(old.source.provider);
+        const oldMedia = yield* Native.media(oldSession!);
+        run.evidence.session = {
+          ...run.evidence.session!,
+          tracks: oldMedia.tracks.map(({ name, kind, direction }) => ({ name, kind, direction })),
+        };
+        yield* readInto(Reactor.recorder(oldMedia.video(tracks.video)), oldVideo, run.origin).pipe(
+          Effect.ignore,
+          Effect.forkScoped,
+        );
+        const provider = old.source.provider;
+        yield* recorded(run, provider.setAutoplay(false));
+        const submit = (seconds: number, name: string, position?: number) =>
+          Effect.gen(function* () {
+            const submission = yield* provider.prepare({
+              prompt,
+              seconds,
+              metadata: `${marker}:${name}`,
+              ...(position === undefined ? {} : { position }),
+            });
+            const submittedMs = since(run.origin);
+            const acceptance = yield* recorded(run, submission.submit);
+            run.evidence.outcomes.push("replied");
+            const operation = yield* provider.operation(submission);
+            run.evidence.scheduler = {
+              ...run.evidence.scheduler!,
+              builds: [
+                ...run.evidence.scheduler!.builds,
+                {
+                  clipId: acceptance.clip.clip_id,
+                  requestedSeconds: seconds,
+                  submittedMs,
+                },
+              ],
+            };
+            yield* mark(run, `${name} accepted`);
+            return { acceptance, operation, submittedMs };
+          });
+        // The second request asks for position zero while the first is building.
+        const first = yield* submit(5, "building");
+        const next = yield* submit(15, "position-zero", 0);
+        const queued = yield* recorded(run, provider.getQueue);
+        run.evidence.outcomes.push("replied");
+        run.evidence.scheduler = {
+          ...run.evidence.scheduler!,
+          positionZero: {
+            buildingClipId: first.acceptance.clip.clip_id,
+            requestedClipId: next.acceptance.clip.clip_id,
+            generationOrder: queued.value.generation.map((clip) => clip.clip_id),
+          },
+        };
+        judge(
+          run,
+          "position zero while building",
+          queued.value.generation[0]?.clip_id === first.acceptance.clip.clip_id &&
+            queued.value.generation[1]?.clip_id === next.acceptance.clip.clip_id
+            ? undefined
+            : "the building clip and position-zero request were not observed in that order",
+        );
+        for (const entry of [first, next]) {
+          yield* entry.operation.reached("generated").pipe(Effect.timeout(yield* until(deadline)));
+          const readyQueue = yield* recorded(run, provider.getQueue);
+          run.evidence.outcomes.push("replied");
+          const readyClip = readyQueue.value.playout.find(
+            (clip) => clip.clip_id === entry.acceptance.clip.clip_id,
+          );
+          const readyMs = since(run.origin);
+          run.evidence.scheduler = {
+            ...run.evidence.scheduler,
+            builds: run.evidence.scheduler.builds.map((build) =>
+              build.clipId === entry.acceptance.clip.clip_id
+                ? {
+                    ...build,
+                    readyMs,
+                    ...(readyClip === undefined ? {} : { readySeconds: readyClip.seconds }),
+                    submitToReadyMs: readyMs - entry.submittedMs,
+                  }
+                : build,
+            ),
+          };
+          judge(
+            run,
+            `Ready duration ${entry.acceptance.clip.clip_id}`,
+            readyClip === undefined
+              ? "the generated clip was not listed in the Ready queue"
+              : undefined,
+          );
+        }
+        const builds = run.evidence.scheduler.builds.filter((build) => build.readyMs !== undefined);
+        run.evidence.scheduler = {
+          ...run.evidence.scheduler,
+          latencyByRequestedSeconds: [
+            ...new Set(builds.map((build) => build.requestedSeconds)),
+          ].map((seconds) => {
+            const values = builds
+              .filter((build) => build.requestedSeconds === seconds)
+              .map((build) => build.submitToReadyMs!)
+              .sort((a, b) => a - b);
+            return {
+              requestedSeconds: seconds,
+              count: values.length,
+              p50Ms: values[Math.floor((values.length - 1) * 0.5)]!,
+              p95Ms: values[Math.floor((values.length - 1) * 0.95)]!,
+            };
+          }),
+        };
+        // Move only after both clips are Ready. The reply records latency and queue.
+        const moveStart = since(run.origin);
+        const moved = yield* recorded(run, provider.move(next.acceptance.clip.clip_id, 0));
+        run.evidence.outcomes.push("replied");
+        const moveEnd = since(run.origin);
+        run.evidence.scheduler = {
+          ...run.evidence.scheduler,
+          readyMove: {
+            clipId: next.acceptance.clip.clip_id,
+            replyMs: moveEnd,
+            elapsedMs: moveEnd - moveStart,
+            queue: moved.value.queue,
+            position: moved.value.position,
+          },
+        };
+        judge(
+          run,
+          "Ready move reply",
+          moved.value.queue === "playout" && moved.value.position === 0
+            ? undefined
+            : "move did not place the Ready clip first in playout",
+        );
+        // Pop a queued build. A bounded observation can show later messages, not
+        // prove that the provider saved compute or that no picture was rendered.
+        const popped = yield* submit(10, "popped");
+        const beforePop = yield* recorded(run, provider.getQueue);
+        run.evidence.outcomes.push("replied");
+        const wasGeneration =
+          beforePop.value.generation[0]?.clip_id === popped.acceptance.clip.clip_id;
+        yield* recorded(run, provider.pop(popped.acceptance.clip.clip_id));
+        run.evidence.outcomes.push("replied");
+        const poppedMs = since(run.origin);
+        yield* Effect.sleep(
+          Duration.min(
+            Duration.millis(target.mode === "rehearsal" ? 700 : 2_000),
+            yield* until(deadline),
+          ),
+        );
+        const untilMs = since(run.origin);
+        const poppedEvents = observed.filter(
+          (event) => event.clipId === popped.acceptance.clip.clip_id && event.atMs > poppedMs,
+        );
+        run.evidence.scheduler = {
+          ...run.evidence.scheduler,
+          poppedBuild: {
+            clipId: popped.acceptance.clip.clip_id,
+            wasGeneration,
+            poppedMs,
+            observedUntilMs: untilMs,
+            generatedAfterPop: poppedEvents.some((event) => event.type === "clip_generated"),
+            startedAfterPop: poppedEvents.some((event) => event.type === "clip_started"),
+          },
+        };
+        judge(
+          run,
+          "pop generation head",
+          !wasGeneration
+            ? "the clip was not at the head of the generation queue before pop"
+            : poppedEvents.some(
+                  (event) => event.type === "clip_generated" || event.type === "clip_started",
+                )
+              ? "the popped clip generated or started after the pop reply"
+              : undefined,
+        );
+        yield* recorded(run, provider.setAutoplay(true));
+        yield* next.operation.reached("started").pipe(Effect.timeout(yield* until(deadline)));
+        yield* mark(run, "old clip started");
+
+        let replacementSession: Reactor.Session | undefined;
+        const replacement = yield* Orchestration.openH3({
+          mint: Effect.succeed(nextGrant),
+          onAllocated: ({ session }) =>
+            Effect.gen(function* () {
+              replacementSession = session;
+              run.evidence.scheduler = {
+                ...run.evidence.scheduler!,
+                replacement: {
+                  ...run.evidence.scheduler!.replacement,
+                  session: { id: session.id, allocatedMs: since(run.origin) },
+                },
+              };
+              yield* mark(run, "replacement allocated");
+            }),
+        }).pipe(Effect.timeout(yield* until(deadline)));
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            const requestedMs = since(run.origin);
+            const report = yield* replacementSession!.close;
+            const reportedMs = since(run.origin);
+            const previous = run.evidence.scheduler!.replacement;
+            const allocation = previous.session!;
+            run.evidence.scheduler = {
+              ...run.evidence.scheduler!,
+              replacement: {
+                ...previous,
+                session: { ...allocation, endedMs: reportedMs },
+                termination: { requestedMs, reportedMs, confirmed: report.remote.confirmed },
+                estimatedUsd: round(billedUsd(rate, (reportedMs - allocation.allocatedMs) / 1000)),
+              },
+            };
+            judge(
+              run,
+              "replacement confirmed termination",
+              report.remote.confirmed ? undefined : "the replacement session end was not confirmed",
+            );
+            yield* mark(
+              run,
+              "replacement closed",
+              report.remote.confirmed ? "confirmed" : "unconfirmed",
+            );
+          }).pipe(Effect.ignore),
+        );
+        yield* watch(replacement.source.provider);
+        const newMedia = yield* Native.media(replacementSession!);
+        yield* readInto(Reactor.recorder(newMedia.video(tracks.video)), newVideo, run.origin).pipe(
+          Effect.ignore,
+          Effect.forkScoped,
+        );
+        const newProvider = replacement.source.provider;
+        yield* recorded(run, newProvider.setAutoplay(false));
+        const newSubmission = yield* newProvider.prepare({
+          prompt,
+          seconds: 5,
+          metadata: `${marker}:replacement`,
+        });
+        const newAcceptance = yield* recorded(run, newSubmission.submit);
+        run.evidence.outcomes.push("replied");
+        const newOperation = yield* newProvider.operation(newSubmission);
+        yield* newOperation.reached("generated").pipe(Effect.timeout(yield* until(deadline)));
+        yield* recorded(run, provider.stop);
+        const oldStopMs = since(run.origin);
+        yield* recorded(run, newProvider.setAutoplay(true));
+        yield* newOperation.reached("started").pipe(Effect.timeout(yield* until(deadline)));
+        const newStartMs = since(run.origin);
+        yield* Effect.sleep(Duration.min(Duration.millis(target.windowMs), yield* until(deadline)));
+        const oldLastFrameMs = oldVideo.lastBefore(oldStopMs);
+        const replacementFirstFrameMs = newVideo.firstAfter(newStartMs);
+        if (oldLastFrameMs !== undefined && replacementFirstFrameMs !== undefined)
+          run.evidence.scheduler = {
+            ...run.evidence.scheduler,
+            decodedHandoff: {
+              oldLastFrameMs,
+              replacementFirstFrameMs,
+              gapMs: replacementFirstFrameMs - oldLastFrameMs,
+            },
+          };
+        judge(
+          run,
+          "decoded handoff observation",
+          oldLastFrameMs !== undefined && replacementFirstFrameMs !== undefined
+            ? undefined
+            : "both sides did not deliver a decoded frame around the switch",
+        );
+        const watched = new Set([
+          first.acceptance.clip.clip_id,
+          next.acceptance.clip.clip_id,
+          popped.acceptance.clip.clip_id,
+          newAcceptance.clip.clip_id,
+        ]);
+        const counts: Record<string, number> = {};
+        const mismatched: Record<string, number> = {};
+        for (const event of observed) {
+          if (!watched.has(event.clipId)) continue;
+          counts[event.type] = (counts[event.type] ?? 0) + 1;
+          if (!event.metadata.includes(marker))
+            mismatched[event.type] = (mismatched[event.type] ?? 0) + 1;
+        }
+        run.evidence.scheduler = {
+          ...run.evidence.scheduler,
+          metadata: { observed: counts, mismatched },
+        };
+        judge(
+          run,
+          "observed clip metadata",
+          Object.keys(counts).length > 0 && Object.keys(mismatched).length === 0
+            ? undefined
+            : "a watched clip message had missing metadata, or none was observed",
+        );
+        yield* mark(run, "scheduler observed");
+      }),
+    ).pipe(Effect.provide(clientLayer(target)));
     return yield* body.pipe(Effect.ensuring(afterSession(target, run, grant.jwt, rate)));
   });
 
@@ -1096,9 +1456,11 @@ const execute = async (
   };
   save(run);
   const program = (
-    check === "takeover" || check === "resume"
-      ? takeover(target, run, budget, check)
-      : vertical(target, run, budget, check)
+    check === "scheduler"
+      ? scheduler(target, run, budget)
+      : check === "takeover" || check === "resume"
+        ? takeover(target, run, budget, check)
+        : vertical(target, run, budget, check)
   ).pipe(
     Effect.provideService(Tracer.Tracer, run.spans.tracer),
     Effect.provide(Reactor.FetchHttp.layer),
@@ -1116,6 +1478,9 @@ const execute = async (
   const session = run.evidence.session;
   if (session !== undefined && run.evidence.termination?.confirmed !== true)
     run.evidence.cleanup = `Session ${session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s, so the server ends it by ${new Date(origin + session.allocatedMs + sessionSeconds * 1000).toISOString()}; confirm in the Reactor dashboard that it ended, and what it cost.`;
+  const replacement = run.evidence.scheduler?.replacement;
+  if (replacement?.session !== undefined && replacement.termination?.confirmed !== true)
+    run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Replacement session ${replacement.session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s; confirm its termination and cost in the Reactor dashboard.`;
   save(run);
   console.log(`hosted-qualification-${run.evidence.verdict} ${check} ${file}`);
   for (const reason of run.evidence.reasons) console.log(`  - ${reason}`);
@@ -1211,7 +1576,11 @@ const rehearse = async (args: readonly string[]): Promise<number> => {
         windowMs: 1_500,
       },
       check,
-      { checkUsd: maxCheckUsd, totalUsd: maxTotalUsd, reservedUsd: 0 },
+      {
+        checkUsd: check === "scheduler" ? maxSchedulerUsd : maxCheckUsd,
+        totalUsd: maxTotalUsd,
+        reservedUsd: 0,
+      },
       ledger,
     );
   } finally {

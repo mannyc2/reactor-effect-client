@@ -144,6 +144,51 @@ test("a rehearsed resume adopts the killed owner's session through resumeH3, onl
   credentialFree(run.text);
 }, 180_000);
 
+test("a rehearsed scheduler records two bounded sessions and measured queue and decoded-media facts", () => {
+  const run = rehearse("scheduler");
+  expect(run.status, run.output).toBe(0);
+  const evidence = run.evidence;
+  const scheduler = evidence.scheduler!;
+  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+  expect(evidence.budget.worstCaseUsd).toBeLessThanOrEqual(1.5);
+  expect(evidence.missing).toEqual([]);
+  expect(evidence.termination?.confirmed).toBe(true);
+  expect(scheduler.replacement.termination?.confirmed).toBe(true);
+  expect(scheduler.replacement.session?.id).not.toBe(evidence.session?.id);
+  expect(
+    scheduler.builds
+      .filter((build) => build.readyMs !== undefined)
+      .map((build) => build.requestedSeconds),
+  ).toEqual([5, 15]);
+  expect(scheduler.latencyByRequestedSeconds.map((bucket) => bucket.requestedSeconds)).toEqual([
+    5, 15,
+  ]);
+  expect(scheduler.builds[0]?.readySeconds).toBeGreaterThanOrEqual(5);
+  expect(scheduler.readyMove).toMatchObject({ queue: "playout", position: 0 });
+  expect(scheduler.positionZero?.generationOrder.slice(0, 2)).toEqual([
+    scheduler.positionZero!.buildingClipId,
+    scheduler.positionZero!.requestedClipId,
+  ]);
+  expect(scheduler.poppedBuild?.wasGeneration).toBe(true);
+  expect(scheduler.poppedBuild?.startedAfterPop).toBe(false);
+  expect(scheduler.decodedHandoff?.replacementFirstFrameMs).toBeGreaterThan(
+    scheduler.decodedHandoff?.oldLastFrameMs ?? 0,
+  );
+  expect(Object.keys(scheduler.metadata.observed).length).toBeGreaterThan(0);
+  expect(scheduler.metadata.mismatched).toEqual({});
+  credentialFree(run.text);
+}, 180_000);
+
+test("an uncertain scheduler enqueue stops before opening the replacement session", () => {
+  const run = rehearse("scheduler", ["dropEnqueueReply"]);
+  expect(run.status, run.output).toBe(1);
+  expect(run.evidence.outcomes).toContain("unknown");
+  expect(run.evidence.scheduler?.replacement.session).toBeUndefined();
+  expect(run.evidence.termination?.confirmed).toBe(true);
+  expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+  credentialFree(run.text);
+}, 180_000);
+
 test("the relay check passes only on a relay pair", () => {
   const run = rehearse("turn");
   expect(run.status, run.output).toBe(0);

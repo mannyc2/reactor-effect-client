@@ -93,9 +93,37 @@ test("the published rate must fit the whole capped session, billed by the minute
   // The 50 s cap still bills a whole minute.
   expect(worstCaseUsd(live)).toBe(0.75);
   expect(admit(live, 0.75)).toBe(0.75);
+  expect(admit(live, 1.5, 2)).toBe(1.5);
+  expect(refused(() => admit(live, 1.49, 2))).toContain("over the $1.49 budget");
   expect(refused(() => admit(live, 0.5))).toContain("over the $0.5 budget");
   const cheap = { creditsPerSecond: 10, creditsPerDollar: 2000 };
   expect(worstCaseUsd(cheap)).toBeCloseTo(0.3);
+});
+
+test("the scheduler check alone can authorize two capped sessions", () => {
+  const scheduler = authorize([
+    "scheduler",
+    "--i-authorize-paid-sessions",
+    "--budget-usd=1.50",
+    "--total-budget-usd=3.75",
+    "--ledger=ledger",
+    "--network=home fiber",
+  ]);
+  expect(scheduler.budgetUsd).toBe(1.5);
+  expect(
+    refused(() =>
+      authorize([
+        "vertical",
+        "--i-authorize-paid-sessions",
+        "--budget-usd=1.50",
+        "--total-budget-usd=3.75",
+        "--ledger=ledger",
+        "--network=home fiber",
+      ]),
+    ),
+  ).toContain("--budget-usd");
+  expect(admitTotal([0.75, 0.75, 0.75], 1.5, 3.75)).toBe(2.25);
+  expect(refused(() => admitTotal([0.75, 0.75, 0.75], 1.5, 3.74))).toContain("exceeds");
 });
 
 test("the ledger admits a run only while every reserved worst case fits the total", () => {

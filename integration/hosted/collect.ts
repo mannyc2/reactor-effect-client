@@ -201,6 +201,11 @@ export class VideoReader {
     return this.arrivals.find((at) => at >= atMs);
   }
 
+  /** Last decoded frame arrival at or before a handoff observation. */
+  lastBefore(atMs: number): number | undefined {
+    return this.arrivals.findLast((at) => at <= atMs);
+  }
+
   summary(): VideoSummary {
     const arrivals = this.arrivals;
     const intervals = arrivals.slice(1).map((at, index) => at - arrivals[index]!);

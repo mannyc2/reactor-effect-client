@@ -9,7 +9,7 @@ import { join } from "node:path";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import * as Reactor from "reactor-effect-client";
-import { Refused, checks, maxCheckUsd, stopFor } from "./gates.js";
+import { Refused, checks, maxCheckUsd, maxSchedulerUsd, stopFor } from "./gates.js";
 
 export const format = "reactor-hosted-qualification/v1";
 
@@ -267,6 +267,89 @@ export const Evidence = Schema.Struct({
       terminalMs: Schema.optionalKey(Ms),
     }),
   ),
+  /** Two capped sessions and observations relevant to scheduler policy. These
+   * are protocol and decoded-media observations, not billing or output proof. */
+  scheduler: Schema.optionalKey(
+    Schema.Struct({
+      replacement: Schema.Struct({
+        grant: Schema.optionalKey(
+          Schema.Struct({
+            maxSessions: Schema.Natural,
+            maxSessionSeconds: Schema.Natural,
+            expiresAt: Schema.Finite,
+          }),
+        ),
+        session: Schema.optionalKey(
+          Schema.Struct({
+            id: Schema.String,
+            allocatedMs: Ms,
+            endedMs: Schema.optionalKey(Ms),
+          }),
+        ),
+        termination: Schema.optionalKey(
+          Schema.Struct({
+            requestedMs: Ms,
+            reportedMs: Ms,
+            confirmed: Schema.Boolean,
+          }),
+        ),
+        estimatedUsd: Schema.optionalKey(Usd),
+      }),
+      builds: Schema.Array(
+        Schema.Struct({
+          clipId: Schema.String,
+          requestedSeconds: Schema.Finite,
+          readySeconds: Schema.optionalKey(Schema.Finite),
+          submittedMs: Ms,
+          readyMs: Schema.optionalKey(Ms),
+          /** Submission to Ready includes provider queue waiting. */
+          submitToReadyMs: Schema.optionalKey(Ms),
+        }),
+      ),
+      latencyByRequestedSeconds: Schema.Array(
+        Schema.Struct({
+          requestedSeconds: Schema.Finite,
+          count: Schema.Natural,
+          p50Ms: Ms,
+          p95Ms: Ms,
+        }),
+      ),
+      readyMove: Schema.optionalKey(
+        Schema.Struct({
+          clipId: Schema.String,
+          replyMs: Ms,
+          elapsedMs: Ms,
+          queue: Schema.String,
+          position: Schema.Natural,
+        }),
+      ),
+      positionZero: Schema.optionalKey(
+        Schema.Struct({
+          buildingClipId: Schema.String,
+          requestedClipId: Schema.String,
+          generationOrder: Schema.Array(Schema.String),
+        }),
+      ),
+      poppedBuild: Schema.optionalKey(
+        Schema.Struct({
+          clipId: Schema.String,
+          wasGeneration: Schema.Boolean,
+          poppedMs: Ms,
+          observedUntilMs: Ms,
+          generatedAfterPop: Schema.Boolean,
+          startedAfterPop: Schema.Boolean,
+        }),
+      ),
+      metadata: Schema.Struct({ observed: Counts, mismatched: Counts }),
+      decodedHandoff: Schema.optionalKey(
+        Schema.Struct({
+          oldLastFrameMs: Ms,
+          replacementFirstFrameMs: Ms,
+          gapMs: Ms,
+        }),
+      ),
+    }),
+  ),
   outcomes: Schema.Array(Schema.Literals(["not-submitted", "unknown", "replied"])),
   criteria: Schema.Array(Criterion),
   missing: Schema.Array(Schema.String),
@@ -298,6 +381,22 @@ export const required = (evidence: Evidence): readonly string[] => {
     "session.endedMs",
     "termination",
   ];
+  if (evidence.check === "scheduler")
+    return [
+      ...common,
+      "scheduler.replacement.grant",
+      "scheduler.replacement.session",
+      "scheduler.replacement.session.endedMs",
+      "scheduler.replacement.termination",
+      "scheduler.builds.0.readyMs",
+      "scheduler.builds.0.readySeconds",
+      "scheduler.builds.1.readyMs",
+      "scheduler.builds.1.readySeconds",
+      "scheduler.readyMove",
+      "scheduler.positionZero",
+      "scheduler.poppedBuild",
+      "scheduler.decodedHandoff",
+    ];
   if (evidence.check === "takeover" || evidence.check === "resume")
     return [
       ...common,
@@ -350,7 +449,11 @@ export const conclude = (evidence: Draft, failure: string | undefined): void => 
   const reasons: string[] = [];
   const stop = stopFor({
     outcomes: evidence.outcomes,
-    terminationConfirmed: evidence.termination?.confirmed,
+    terminationConfirmed:
+      evidence.termination?.confirmed === false ||
+      evidence.scheduler?.replacement.termination?.confirmed === false
+        ? false
+        : evidence.termination?.confirmed,
   });
   if (stop !== undefined) reasons.push(stop);
   if (failure !== undefined) reasons.push(failure);
@@ -429,7 +532,12 @@ export const readLedger = (directory: string): readonly LedgerEntry[] => {
 export const reservedUsd = (evidence: Evidence): number =>
   evidence.mode !== "paid"
     ? 0
-    : (evidence.budget.worstCaseUsd ?? (evidence.grant === undefined ? 0 : maxCheckUsd));
+    : (evidence.budget.worstCaseUsd ??
+      (evidence.grant === undefined
+        ? 0
+        : evidence.check === "scheduler"
+          ? maxSchedulerUsd
+          : maxCheckUsd));
 
 /** The ledger's lock: one paid run at a time may reserve budget. */
 export const lockLedger = (directory: string): (() => void) => {

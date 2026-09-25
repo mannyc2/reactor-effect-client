@@ -5,13 +5,14 @@
 import * as Data from "effect/Data";
 
 /**
- * The most one check may spend, and the most every paid run together may
- * spend: one billed minute at the published rate ($0.75 on September 24,
- * 2026), and five runs: the three 0.3.0-rc.0 spent, then the vertical and the
- * takeover once more with their causes fixed. The operator's own limit, given
- * on the command line, may only be lower.
+ * One-session checks may reserve one billed minute at the published rate
+ * ($0.75 on September 24, 2026). The scheduler check reserves two. All paid
+ * runs still share the total ceiling, and the operator's command-line limit
+ * may only be lower.
  */
 export const maxCheckUsd = 0.75;
+/** Two independently capped sessions in the scheduler qualification. */
+export const maxSchedulerUsd = 1.5;
 export const maxTotalUsd = 3.75;
 /**
  * Reactor bills a session by the minute, from `ready` until it ends. Its
@@ -38,8 +39,9 @@ export const workSeconds = sessionSeconds - 10;
  * and a reference audio clip, and `resume`, the takeover through
  * `Orchestration.resumeH3`.
  */
-export const checks = ["vertical", "takeover", "turn", "audio", "resume"] as const;
+export const checks = ["vertical", "takeover", "turn", "audio", "resume", "scheduler"] as const;
 export type Check = (typeof checks)[number];
+export const sessionsFor = (check: Check): number => (check === "scheduler" ? 2 : 1);
 
 export interface Authorization {
   readonly check: Check;
@@ -89,7 +91,7 @@ const usd = (value: string | undefined, name: string, most: number): number => {
 
 /**
  * Read an explicit authorization from the command line: the check, a budget
- * for it of at most `maxCheckUsd`, a total of at most `maxTotalUsd` across
+ * for it of at most its check-specific ceiling, a total of at most `maxTotalUsd` across
  * every paid run in the ledger, the ledger directory, a description of the
  * network, and the flag that says a person authorized paid use. Anything
  * missing, unknown or out of bounds refuses.
@@ -104,7 +106,11 @@ export const authorize = (args: readonly string[]): Authorization => {
   );
   if (!given.has("--i-authorize-paid-sessions"))
     return refuse("paid use needs --i-authorize-paid-sessions from the authorizing maintainer");
-  const budgetUsd = usd(given.get("budget-usd"), "budget-usd", maxCheckUsd);
+  const budgetUsd = usd(
+    given.get("budget-usd"),
+    "budget-usd",
+    check === "scheduler" ? maxSchedulerUsd : maxCheckUsd,
+  );
   const totalBudgetUsd = usd(given.get("total-budget-usd"), "total-budget-usd", maxTotalUsd);
   if (budgetUsd > totalBudgetUsd) return refuse("--budget-usd cannot exceed --total-budget-usd");
   const ledger = given.get("ledger") ?? "";
@@ -128,12 +134,12 @@ export const billedUsd = (rate: Rate, seconds: number): number =>
 /** The worst case of one session at `rate`: the whole server-enforced cap, billed by the minute. */
 export const worstCaseUsd = (rate: Rate): number => billedUsd(rate, sessionSeconds);
 
-/** Refuse unless the whole session fits the budget at the published rate. */
-export const admit = (rate: Rate, budgetUsd: number): number => {
-  const cost = worstCaseUsd(rate);
+/** Refuse unless every capped session fits the budget at the published rate. */
+export const admit = (rate: Rate, budgetUsd: number, sessions = 1): number => {
+  const cost = worstCaseUsd(rate) * sessions;
   if (!(cost <= budgetUsd + 1e-9))
     return refuse(
-      `a ${sessionSeconds} s session bills up to $${cost.toFixed(4)}, over the $${budgetUsd} budget`,
+      `${sessions} capped ${sessionSeconds} s session(s) bill up to $${cost.toFixed(4)}, over the $${budgetUsd} budget`,
     );
   return cost;
 };
