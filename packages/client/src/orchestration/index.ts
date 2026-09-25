@@ -63,6 +63,7 @@ export type {
   SchedulerShape,
   SchedulerState,
   AsRunStatus,
+  FirstDecisiveStatus,
   AsRunEvent,
   ItemHandle,
   WithdrawOutcome,

@@ -108,6 +108,22 @@ export type AsRunStatus =
       readonly terminal?: true;
     };
 
+/** The first observed start or a disposition that rules out a known start. */
+export type FirstDecisiveStatus =
+  | Extract<
+      AsRunStatus,
+      { readonly _tag: "Started" | "Ended" | "Dropped" | "Failed" | "Unobserved" }
+    >
+  | { readonly _tag: "Unknown"; readonly terminal: true };
+
+const isFirstDecisive = (status: AsRunStatus): status is FirstDecisiveStatus =>
+  status._tag === "Started" ||
+  status._tag === "Ended" ||
+  status._tag === "Dropped" ||
+  status._tag === "Failed" ||
+  status._tag === "Unobserved" ||
+  (status._tag === "Unknown" && status.terminal === true);
+
 export interface AsRunEvent {
   readonly key: ItemKey;
   /** Epoch milliseconds when this evidence was observed. */
@@ -121,6 +137,8 @@ export interface ItemHandle {
   readonly started: Effect.Effect<AsRunStatus>;
   /** Resolves when the item ends or cannot be known to end. */
   readonly outcome: Effect.Effect<AsRunStatus>;
+  /** Retains the first decisive evidence, even if later as-run events or a lost reply follow. */
+  readonly firstDecisive: Effect.Effect<FirstDecisiveStatus>;
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
@@ -175,6 +193,7 @@ interface Entry extends PlannedItem {
   readonly handle: ItemHandle;
   readonly startedWaiter: Deferred.Deferred<AsRunStatus>;
   readonly outcomeWaiter: Deferred.Deferred<AsRunStatus>;
+  readonly firstDecisiveWaiter: Deferred.Deferred<FirstDecisiveStatus>;
   readonly atWallMs?: number;
   phase: PlannedItem["phase"];
   retryAtMs?: number;
@@ -582,6 +601,7 @@ export const makeScheduler = (
           at: clock.currentTimeMillisUnsafe(),
           status,
         });
+        if (isFirstDecisive(status)) yield* Deferred.succeed(entry.firstDecisiveWaiter, status);
         if (status._tag === "Started") yield* Deferred.succeed(entry.startedWaiter, status);
         if (
           status._tag === "Ended" ||
@@ -1436,10 +1456,12 @@ export const makeScheduler = (
             }
             const startedWaiter = yield* Deferred.make<AsRunStatus>();
             const outcomeWaiter = yield* Deferred.make<AsRunStatus>();
+            const firstDecisiveWaiter = yield* Deferred.make<FirstDecisiveStatus>();
             const handle: ItemHandle = {
               key: message.item.key,
               started: Deferred.await(startedWaiter),
               outcome: Deferred.await(outcomeWaiter),
+              firstDecisive: Deferred.await(firstDecisiveWaiter),
             };
             const item: Entry = {
               key: message.item.key,
@@ -1467,6 +1489,7 @@ export const makeScheduler = (
               handle,
               startedWaiter,
               outcomeWaiter,
+              firstDecisiveWaiter,
             };
             items.set(item.key, item);
             yield* PubSub.publish(events, {

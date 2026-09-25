@@ -95,6 +95,7 @@ test("drain waits for the playing boundary, withdraws waiting work, and retains 
       yield* Fiber.join(draining);
       const ended = yield* playing.outcome;
       expect(ended._tag).toBe("Ended");
+      expect(yield* playing.firstDecisive).toEqual(started);
       if (ended._tag === "Ended") {
         expect(ended.termination).toBe("finished");
         expect(ended.airedSeconds).toBeGreaterThan(4.9);
@@ -305,7 +306,7 @@ test("an unknown enqueue is not replayed after its source retires", () =>
       );
       const events = yield* watch(scheduler);
       const key = ItemKey.make("lost-reply");
-      yield* scheduler.submit({ key, lane: "line", request: clip("Lost reply") });
+      const item = yield* scheduler.submit({ key, lane: "line", request: clip("Lost reply") });
       yield* advance(1_000);
       expect(sources[0]!.sends).toHaveLength(1);
       expect(events.some((event) => event.key === key && event.status._tag === "Unknown")).toBe(
@@ -322,6 +323,7 @@ test("an unknown enqueue is not replayed after its source retires", () =>
         _tag: "Unknown",
         terminal: true,
       });
+      expect(yield* item.firstDecisive).toEqual({ _tag: "Unknown", terminal: true });
     }),
   ));
 
@@ -342,11 +344,12 @@ test("an orchestration failure ends uncertainty without claiming the clip failed
       const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
       const events = yield* watch(scheduler);
       const key = ItemKey.make("unknown-on-close");
-      yield* scheduler.submit({ key, lane: "line", request: clip("Uncertain line") });
+      const item = yield* scheduler.submit({ key, lane: "line", request: clip("Uncertain line") });
       yield* advance(200);
       expect(events.filter((event) => event.key === key).at(-1)?.status).toEqual({
         _tag: "Unknown",
       });
+      expect(yield* settled(item.firstDecisive)).toBe("waiting");
       yield* Queue.offer(feed, {
         _tag: "SessionFailed",
         failure: ReactorError.fromCode("Closed", "Source closed"),
@@ -356,6 +359,7 @@ test("an orchestration failure ends uncertainty without claiming the clip failed
         _tag: "Unknown",
         terminal: true,
       });
+      expect(yield* item.firstDecisive).toEqual({ _tag: "Unknown", terminal: true });
     }),
   ));
 
