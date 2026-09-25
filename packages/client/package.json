@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-client",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Scoped Reactor sessions, H3 provider state and explicit orchestration over Effect",
   "type": "module",
   "license": "Apache-2.0",

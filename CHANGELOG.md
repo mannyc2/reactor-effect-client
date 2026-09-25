@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-25
+
+Adopting an attached session and resuming a recorded H3 session, added to the 0.3.1 API without breaking it. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, the Chrome browser/native WebRTC test on each, and the pack/install smoke of all three archives. It ran the twin test in which a killed owner's session resumes through an orchestration whose close terminates it, and rehearsed the new hosted `resume` check against the twin. That check has not run against hosted Reactor.
+
 ### Added
 
 - `AttachOptions.adopt: true` takes an attached session's remote lifetime over. The session is `owned`, so closing it, or a failed `attachConnected`, terminates it and confirms the end, and its `CloseReport` says `ownership: "owned"`. Without it an attach still never terminates the session it joined. The attach span records `reactor.session.adopt`.
@@ -157,7 +163,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/9ccc88f2c95be65adb7153de2d7d52361eabe706...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/1403125acfbb6cae9ba755f4d536d98243ead152...main
+[0.3.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.2
 [0.3.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.1
 [0.3.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0
 [0.3.0-rc.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.0-rc.0
