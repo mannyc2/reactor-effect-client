@@ -118,6 +118,32 @@ test("a rehearsed audio check sends an image and an audio reference, and the cli
   credentialFree(run.text);
 }, 180_000);
 
+test("a rehearsed resume adopts the killed owner's session through resumeH3, only reads it, and its close ends it", () => {
+  const run = rehearse("resume");
+  expect(run.status, run.output).toBe(0);
+  expect(run.evidence.missing).toEqual([]);
+  const takeover = run.evidence.takeover!;
+  expect(takeover.clipIdentified).toBe(true);
+  expect(takeover.metadataPreserved).toBe(true);
+  expect(takeover.enqueuesAfterAttach).toBe(0);
+  expect(takeover.video?.frames).toBeGreaterThan(1);
+  // The library's close of the adopted session is the termination, not the record.
+  expect(run.evidence.termination?.close).toMatchObject({
+    ownership: "owned",
+    remote: { attempted: true, confirmed: true },
+  });
+  expect(run.evidence.termination?.remote).toBeUndefined();
+  expect(
+    run.evidence.criteria
+      .filter((criterion) => !criterion.passed)
+      .map((criterion) => criterion.name),
+  ).toEqual([]);
+  const names = run.evidence.criteria.map((criterion) => criterion.name);
+  expect(names).toContain("only reads on resume");
+  expect(names).toContain("adopted close terminates");
+  credentialFree(run.text);
+}, 180_000);
+
 test("the relay check passes only on a relay pair", () => {
   const run = rehearse("turn");
   expect(run.status, run.output).toBe(0);

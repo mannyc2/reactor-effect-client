@@ -45,6 +45,14 @@ export interface AttachOptions {
   readonly sessionId: string;
   readonly connectionId?: number;
   readonly jwt?: Redacted.Redacted<string>;
+  /**
+   * Take over the session's remote lifetime, as a process that resumes a
+   * session its dead owner recorded does: the session is `owned`, so closing
+   * it, or a failed connected attach, terminates it and its `CloseReport`
+   * says whether the end was confirmed. Without it an attach never
+   * terminates the session it joined.
+   */
+  readonly adopt?: true;
 }
 
 /** One lifecycle and command contract, independent of the selected host peer. */

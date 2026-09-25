@@ -1,4 +1,5 @@
 import type * as Effect from "effect/Effect";
+import type * as Redacted from "effect/Redacted";
 import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
 import type * as Http from "effect/unstable/http/HttpClient";
@@ -12,6 +13,12 @@ import * as Wire from "reactor-effect-client/wire";
 declare const factory: Root.Factory;
 const owner = factory.create({ model: "fixture/installed-consumer" });
 const attached = factory.attach({ sessionId: "sess_fixture_existing" });
+const adopted = factory.attach({ sessionId: "sess_fixture_existing", adopt: true });
+declare const record: Orchestration.Allocation;
+declare const token: Redacted.Redacted<string>;
+const endsAt: number | undefined = record.endsAt;
+const resumed: Effect.Effect<Orchestration.OpenedH3, Root.AcquisitionFailure, unknown> =
+  Orchestration.resumeH3({ allocation: record, jwt: token, source: { holdLastFrame: true } });
 declare const session: Root.Session;
 // H3 composes through the public canonical Session without introducing
 // filesystem/path requirements into portable provider construction.
@@ -64,6 +71,9 @@ void [
   Simulation,
   owner,
   attached,
+  adopted,
+  endsAt,
+  resumed,
   provider,
   coordinator,
   engine,

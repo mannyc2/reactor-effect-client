@@ -6,7 +6,7 @@
  *
  *   bun integration/hosted/qualify.ts preflight --total-budget-usd=1.50 --ledger=<dir>
  *   bun integration/hosted/qualify.ts rehearse <check> [--faults=<a,b>] [--ledger=<dir>]
- *   bun integration/hosted/qualify.ts <vertical|takeover|turn|audio> --budget-usd=0.75 \
+ *   bun integration/hosted/qualify.ts <vertical|takeover|turn|audio|resume> --budget-usd=0.75 \
  *     --total-budget-usd=1.50 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
  *   bun integration/hosted/qualify.ts summarize <evidence file or ledger>...
  *
@@ -708,6 +708,8 @@ interface OwnerRecord {
   readonly jwt: string;
   readonly expiresAt: number;
   readonly allocatedAt: number;
+  /** The library's owner record, which `resumeH3` resumes from. */
+  readonly allocation: Orchestration.Allocation;
 }
 
 /**
@@ -730,7 +732,7 @@ const owner = (target: Target, grantFile: string, recordFile: string, marker: st
         let deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
         const opened = yield* Orchestration.openH3({
           mint: Effect.succeed(grant),
-          onAllocated: ({ session }) =>
+          onAllocated: ({ session, allocation }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               allocated = session;
@@ -740,6 +742,7 @@ const owner = (target: Target, grantFile: string, recordFile: string, marker: st
                 jwt: stored.jwt,
                 expiresAt: grant.expiresAt,
                 allocatedAt: now,
+                allocation,
               };
               writeFileSync(recordFile, JSON.stringify(record), { mode: 0o600 });
             }),
@@ -775,8 +778,14 @@ const owner = (target: Target, grantFile: string, recordFile: string, marker: st
     );
   });
 
-/** Kill the owner while it streams and take the session over from this process. */
-const takeover = (target: Target, run: Run, budget: Budget) =>
+/**
+ * Kill the owner while it streams and take the session over from this
+ * process. The `takeover` check attaches with the raw session API and ends
+ * the session through the durable owner record; the `resume` check resumes it
+ * with `Orchestration.resumeH3`, which adopts it, and ends it by closing the
+ * resumed source, so the library's own close report is the termination.
+ */
+const takeover = (target: Target, run: Run, budget: Budget, check: "takeover" | "resume") =>
   Effect.gen(function* () {
     const { grant, rate } = yield* admitted(target, run, budget);
     const marker = `hosted-qualification:${run.evidence.runId}`;
@@ -863,16 +872,56 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
         run.evidence.takeover = { ownerStreamingMs, killedMs };
         yield* mark(run, "owner killed", `clip ${streaming.playing}`);
         const video = new VideoReader();
-        const taken = yield* Effect.scoped(
-          Effect.gen(function* () {
+        /** The attached or resumed session's provider, its video, and how it ends. */
+        const attach = Effect.gen(function* () {
+          if (check === "takeover") {
             const client = yield* Reactor.Client;
             const session = yield* client.attachConnected({
               sessionId: record.sessionId,
               jwt: Redacted.make(record.jwt),
             });
+            const media = yield* Native.media(session);
+            return {
+              provider: yield* H3.make(session),
+              tracks: media.tracks,
+              video: media.video(tracks.video),
+              close: Effect.void,
+            };
+          }
+          const opened = yield* Orchestration.resumeH3({
+            allocation: record.allocation,
+            jwt: Redacted.make(record.jwt),
+          });
+          const media = yield* opened.source.media;
+          return {
+            provider: opened.source.provider,
+            tracks: [] as readonly MediaGeneration["tracks"][number][],
+            video: media.video,
+            // The adopted session is owned: closing its source terminates it.
+            close: Effect.gen(function* () {
+              const requestedMs = since(run.origin);
+              const report = yield* opened.source.close;
+              run.evidence.termination = {
+                requestedMs,
+                reportedMs: since(run.origin),
+                confirmed: report.lease.remote.confirmed,
+                close: report.lease,
+                trail: [],
+              };
+              yield* mark(
+                run,
+                "closed",
+                `${report.lease.ownership ?? "?"}, ${report.lease.remote.confirmed ? "confirmed" : "unconfirmed"}`,
+              );
+            }),
+          };
+        });
+        const taken = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const attached = yield* attach;
             const attachMs = since(run.origin) - killedMs;
-            yield* mark(run, "attached");
-            const provider = yield* H3.make(session);
+            yield* mark(run, check === "takeover" ? "attached" : "resumed");
+            const provider = attached.provider;
             // The first coherent state and queue the attacher reads: the playing
             // clip shows only as `playing_clip_id`, the queued one with its metadata.
             const facts = yield* Effect.gen(function* () {
@@ -885,14 +934,17 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
             const queued = [...facts.queue.generation, ...facts.queue.playout].find(
               (clip) => clip.clip_id === streaming.queued,
             );
-            const media = yield* Native.media(session);
             run.evidence.session = {
               ...run.evidence.session!,
-              tracks: media.tracks.map(({ name, kind, direction }) => ({ name, kind, direction })),
+              tracks: attached.tracks.map(({ name, kind, direction }) => ({
+                name,
+                kind,
+                direction,
+              })),
             };
             const attachedAt = since(run.origin);
             yield* readInto(
-              Reactor.recorder(media.video(tracks.video)).pipe(Stream.take(48)),
+              Reactor.recorder(attached.video).pipe(Stream.take(48)),
               video,
               run.origin,
             ).pipe(
@@ -901,6 +953,7 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
               ),
               Effect.ignore,
             );
+            yield* attached.close;
             return {
               attachMs,
               playingClipId: facts.state.playing_clip_id,
@@ -920,6 +973,11 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
               (span.name === "reactor.session.command" &&
                 span.attributes["reactor.operation"] === "enqueue"),
           ).length;
+        // What this process asked of the session: a resume only reads it.
+        const commands = run.spans
+          .records()
+          .filter((span) => span.name === "reactor.session.command")
+          .map((span) => String(span.attributes["reactor.operation"]));
         run.evidence.takeover = {
           ownerStreamingMs,
           killedMs,
@@ -933,6 +991,26 @@ const takeover = (target: Target, run: Run, budget: Budget) =>
           video: video.summary(),
         };
         yield* mark(run, "observed");
+        if (check === "resume") {
+          const reads = commands.filter((name) => name !== "get_state" && name !== "get_queue");
+          judge(
+            run,
+            "only reads on resume",
+            reads.length === 0 ? undefined : `the resume sent ${reads.join(", ")}`,
+          );
+          const close = run.evidence.termination?.close;
+          judge(
+            run,
+            "adopted close terminates",
+            close === undefined
+              ? "the resumed source was never closed"
+              : close.ownership !== "owned"
+                ? `the resumed session's close reported it ${close.ownership ?? "without ownership"}`
+                : close.remote.attempted
+                  ? undefined
+                  : "closing the adopted session attempted no termination",
+          );
+        }
         yield* terminateByRecord;
         judge(
           run,
@@ -1018,7 +1096,9 @@ const execute = async (
   };
   save(run);
   const program = (
-    check === "takeover" ? takeover(target, run, budget) : vertical(target, run, budget, check)
+    check === "takeover" || check === "resume"
+      ? takeover(target, run, budget, check)
+      : vertical(target, run, budget, check)
   ).pipe(
     Effect.provideService(Tracer.Tracer, run.spans.tracer),
     Effect.provide(Reactor.FetchHttp.layer),

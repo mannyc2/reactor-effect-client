@@ -12,7 +12,8 @@ import { Client } from "../../src/session/index.js";
 import type { CreateOptions, Factory, Session } from "../../src/session/index.js";
 import type { MediaGeneration } from "../../src/session/media.js";
 import { fixture } from "../h3/ProviderSession.js";
-import { cleanPressure, run } from "./SourceFixture.js";
+import { TestClock } from "effect/testing";
+import { cleanPressure, run, runClock } from "./SourceFixture.js";
 
 const media: MediaGeneration = {
   generation: 1n,
@@ -43,9 +44,11 @@ const clientOf = (session: Session, created: CreateOptions[]) =>
   } satisfies Factory);
 
 test("the owner is registered after allocation, with the grant, before connect", () =>
-  run(
+  runClock(
     Effect.gen(function* () {
       const fake = yield* fixture();
+      // The create request goes out at 1,000 s; the granted 120 s end no later than 1,120 s.
+      yield* TestClock.setTime(1_000_000);
       const created: CreateOptions[] = [];
       const registered: { allocated: Allocated; connects: number }[] = [];
       const opened = yield* openH3({
@@ -67,6 +70,7 @@ test("the owner is registered after allocation, with the grant, before connect",
         ownership: fake.session.ownership,
         model: H3.modelName,
         expiresAt: grant.expiresAt,
+        endsAt: 1_120,
       });
       expect(fake.lifecycleCalls.connect).toBe(1);
       expect(opened.source.provider.sessionId).toBe(fake.session.id);

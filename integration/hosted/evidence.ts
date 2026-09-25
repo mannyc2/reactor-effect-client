@@ -298,7 +298,7 @@ export const required = (evidence: Evidence): readonly string[] => {
     "session.endedMs",
     "termination",
   ];
-  if (evidence.check === "takeover")
+  if (evidence.check === "takeover" || evidence.check === "resume")
     return [
       ...common,
       "takeover.attachMs",
@@ -307,6 +307,8 @@ export const required = (evidence: Evidence): readonly string[] => {
       "takeover.enqueuesAfterAttach",
       "takeover.firstFreshFrameMs",
       "takeover.video",
+      // A resume is ended by the library's own close of the adopted session.
+      ...(evidence.check === "resume" ? ["termination.close"] : []),
     ];
   return [
     ...common,

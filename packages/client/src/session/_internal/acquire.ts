@@ -73,6 +73,11 @@ const validate = (
   }
   const credential = options.jwt === undefined ? {} : { jwt: options.jwt };
   if (input._tag === "Attach") {
+    const adopt: unknown = input.options.adopt;
+    if (adopt !== undefined && adopt !== true)
+      throw ReactorError.fromCode("InvalidInput", "attach adopt must be true when given", {
+        outcome: "not-submitted",
+      });
     return {
       ...credential,
       intent: {
@@ -81,6 +86,7 @@ const validate = (
         ...(input.options.connectionId === undefined
           ? {}
           : { connectionId: uint32(input.options.connectionId, "attach connectionId") }),
+        ...(adopt === true ? { adopt } : {}),
       },
     };
   }
@@ -128,7 +134,10 @@ export const makeFactory = (
         yield* Effect.annotateCurrentSpan(
           validated.intent._tag === "Create"
             ? { "reactor.model.name": validated.intent.model.name }
-            : { "reactor.session.id": validated.intent.sessionId },
+            : {
+                "reactor.session.id": validated.intent.sessionId,
+                "reactor.session.adopt": validated.intent.adopt === true,
+              },
         );
         if (peers.check !== undefined) yield* restore(peers.check);
         const bytes = yield* restore(crypto.randomBytes(16)).pipe(
@@ -171,7 +180,10 @@ export const makeFactory = (
           const id = yield* implementation.allocate();
           const session: Session = {
             id,
-            ownership: validated.intent._tag === "Create" ? "owned" : "attached",
+            ownership:
+              validated.intent._tag === "Create" || validated.intent.adopt === true
+                ? "owned"
+                : "attached",
             connect: implementation.start(),
             reconnect: implementation.reconnect(),
             current: Effect.sync(() => implementation.snapshot),
