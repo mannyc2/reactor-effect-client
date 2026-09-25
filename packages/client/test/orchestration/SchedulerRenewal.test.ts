@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Fiber, Option, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ClipRequest } from "../../src/orchestration/request.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
@@ -7,7 +7,8 @@ import { ItemKey, makeScheduler } from "../../src/orchestration/scheduler.js";
 import { Engine } from "../../src/orchestration/types.js";
 import type { EngineShape } from "../../src/orchestration/types.js";
 import * as Simulation from "../../src/simulation/index.js";
-import { failure, runClock, videoFrame } from "./SourceFixture.js";
+import { failure, gate, refusal, runClock, sourceFixture, videoFrame } from "./SourceFixture.js";
+import type { SourceFixture } from "./SourceFixture.js";
 
 const clip = (prompt: string) =>
   new ClipRequest({ prompt, references: [], durationSeconds: 5, metadata: {} });
@@ -97,17 +98,17 @@ test("uncertain filler on the retiring source does not hold replacement runway",
       });
       yield* Stream.runDrain(handle.media.video).pipe(Effect.forkScoped);
       const attempts: { readonly source: string; readonly prompt: string }[] = [];
+      const enqueue = (request: ClipRequest) =>
+        Effect.gen(function* () {
+          const preferred = Option.getOrUndefined((yield* handle.engine.state).preferredSessionId);
+          attempts.push({ source: preferred ?? "absent", prompt: request.prompt });
+          if (preferred === sourceIds[0]) return yield* failure("unknown");
+          return yield* handle.engine.enqueue(request);
+        });
       const engine: EngineShape = {
         ...handle.engine,
-        enqueue: (request) =>
-          Effect.gen(function* () {
-            const preferred = Option.getOrUndefined(
-              (yield* handle.engine.state).preferredSessionId,
-            );
-            attempts.push({ source: preferred ?? "absent", prompt: request.prompt });
-            if (preferred === sourceIds[0]) return yield* failure("unknown");
-            return yield* handle.engine.enqueue(request);
-          }),
+        enqueue,
+        enqueueOnSource: enqueue,
       };
       yield* makeScheduler({
         lanes: [{ name: "line" }],
@@ -120,5 +121,43 @@ test("uncertain filler on the retiring source does not hold replacement runway",
       expect(sourceIds).toHaveLength(2);
       expect(attempts).toContainEqual({ source: sourceIds[0], prompt: "filler-0" });
       expect(attempts).toContainEqual({ source: sourceIds[1], prompt: "filler-1" });
+    }),
+  ));
+
+test("a source-fenced enqueue refuses a route switch before dispatch", () =>
+  runClock(
+    Effect.gen(function* () {
+      const entered = yield* gate;
+      const release = yield* gate;
+      const sources: SourceFixture[] = [];
+      const handle = yield* Renewal.make({
+        lead: "7 seconds",
+        open: Effect.gen(function* () {
+          const index = sources.length;
+          const source = yield* sourceFixture(`fenced-${index + 1}`, {
+            ...(index === 0
+              ? { prework: () => entered.release.pipe(Effect.andThen(release.wait)) }
+              : {}),
+          });
+          sources.push(source);
+          return { source: source.source, lifetime: index === 0 ? "10 seconds" : "Infinity" };
+        }),
+      });
+      yield* Stream.runDrain(handle.media.video).pipe(Effect.forkScoped);
+      const enqueueOnSource = handle.engine.enqueueOnSource;
+      expect(enqueueOnSource).toBeDefined();
+      const pending = yield* enqueueOnSource!(clip("fenced line"), "fenced-1").pipe(
+        Effect.forkScoped,
+      );
+      yield* entered.wait;
+      yield* advance(3_500);
+      expect(Option.getOrUndefined((yield* handle.engine.state).preferredSessionId)).toBe(
+        "fenced-2",
+      );
+      yield* release.release;
+      const denied = yield* Effect.flip(Fiber.join(pending));
+      expect(refusal(denied)).toBe("RouteChanged");
+      expect(denied.context.outcome).toBe("not-submitted");
+      expect(sources.flatMap((source) => source.sends)).toEqual([]);
     }),
   ));

@@ -159,6 +159,10 @@ export interface EngineShape {
     request: ClipRequest,
   ) => Effect.Effect<Submission<ClipId, EngineError>, EngineError>;
   readonly enqueue: (request: ClipRequest) => Effect.Effect<ClipId, EngineError>;
+  /** Refuse before dispatch if routing would select another physical source. */
+  readonly enqueueOnSource?:
+    | ((request: ClipRequest, expectedSessionId: string) => Effect.Effect<ClipId, EngineError>)
+    | undefined;
   readonly state: Effect.Effect<EngineState>;
   /** Later events only, subscribed when the stream runs; use `observe` to pair them with a state. */
   readonly events: Stream.Stream<EngineEvent, ReactorError>;

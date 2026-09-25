@@ -231,7 +231,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const activeFiller = [...owned.entries()].filter(
     ([clipId, owner]) =>
       owner._tag === "Filler" &&
-      owner.sessionId === preferred &&
+      (owner.sessionId === undefined || owner.sessionId === preferred) &&
       !engine.ready.some((clip) => clip.clipId === clipId) &&
       Option.getOrUndefined(engine.playing)?.clipId !== clipId &&
       !engine.failed.includes(clipId),
@@ -240,7 +240,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     items.filter(
       (item) =>
         (item.phase === "Building" || item.phase === "Unknown") &&
-        (item.sessionId ?? item.unknownSessionId) === preferred,
+        (item.sessionId ?? item.unknownSessionId ?? preferred) === preferred,
     ).length +
     activeFiller +
     (snapshot.fillerUnknown &&

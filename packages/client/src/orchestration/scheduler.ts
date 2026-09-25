@@ -248,6 +248,10 @@ type Command =
 
 type CommandValue = ClipId | RemoveOutcome | void;
 
+type EarlyClipEvent = Extract<EngineEvent, { readonly _tag: "Started" | "Ended" | "Failed" }>;
+
+const maxEarlyClipIds = 4096;
+
 interface PendingWithdrawal {
   readonly reason: "late" | "withdrawn";
   readonly replies: Deferred.Deferred<WithdrawOutcome, EngineError>[];
@@ -558,6 +562,9 @@ export const makeScheduler = (
     const initialized = yield* Deferred.make<void, ReactorError>();
     const items = new Map<ItemKey, Entry>();
     const owned = new Map<ClipId, OwnedClip>();
+    // An event can overtake its enqueue reply. Keep only the evidence needed to
+    // decide that clip's fate until the one in-flight command returns its ID.
+    const earlyClipEvents = new Map<ClipId, EarlyClipEvent[]>();
     const removedIds = new Set<ClipId>();
     const filler = new Map<number, FillerEntry>();
     const playingStartedMs = new Map<ClipId, number>();
@@ -827,6 +834,34 @@ export const makeScheduler = (
           return;
         }
         if (!("clipId" in event)) return;
+        if (
+          commandCount > 0 &&
+          (event._tag === "Started" || event._tag === "Ended" || event._tag === "Failed")
+        ) {
+          const prior = earlyClipEvents.get(event.clipId);
+          if (prior === undefined) {
+            if (earlyClipEvents.size >= maxEarlyClipIds) {
+              // A lost pre-ack start cannot be recast as a definite failure.
+              for (const key of pendingBuilds) {
+                const item = items.get(key);
+                if (item !== undefined && item.phase !== "Terminal" && item.phase !== "Started") {
+                  yield* emit(item, { _tag: "Unknown", terminal: true });
+                  item.phase = "Terminal";
+                }
+              }
+              yield* closeActor("Unattributed clip evidence exceeded its bound");
+              return;
+            }
+            earlyClipEvents.set(event.clipId, [event]);
+          } else if (
+            !prior.some((seen) =>
+              event._tag === "Started"
+                ? seen._tag === "Started"
+                : seen._tag === "Ended" || seen._tag === "Failed",
+            )
+          )
+            prior.push(event);
+        }
         const owner = owned.get(event.clipId);
         if (owner === undefined) return;
         if (owner._tag === "Filler") {
@@ -910,19 +945,30 @@ export const makeScheduler = (
         }
       });
 
+    const replayEarlyClipEvents = (clipId: ClipId): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const saved = earlyClipEvents.get(clipId);
+        earlyClipEvents.delete(clipId);
+        if (saved === undefined) return;
+        for (const event of saved) yield* onEvent(event);
+      });
+
     const executeCommand = (command: Command): Effect.Effect<CommandValue, EngineError> => {
       switch (command._tag) {
         case "Build":
         case "BuildFiller":
           return Effect.gen(function* () {
             if (
+              command.sessionId === undefined ||
               Option.getOrUndefined((yield* engine.state).preferredSessionId) !== command.sessionId
             )
               return yield* PolicyFailure.refuse(
                 "RouteChanged",
                 "The preferred source changed before dispatch",
               );
-            return yield* engine.enqueue(command.request);
+            return yield* engine.enqueueOnSource === undefined
+              ? engine.enqueue(command.request)
+              : engine.enqueueOnSource(command.request, command.sessionId);
           });
         case "RemoveItem":
         case "RemoveFiller":
@@ -1147,17 +1193,31 @@ export const makeScheduler = (
               item.acknowledgedAtSnapshotSerial = snapshotAcquiredSerial;
               owned.set(clipId, { _tag: "Item", key: item.key });
               item.sessionId =
-                knownRecord(yield* engine.state, clipId)?.sessionId ?? command.sessionId;
+                knownRecord(yield* engine.state, clipId)?.sessionId ??
+                (engine.enqueueOnSource === undefined ? undefined : command.sessionId);
               item.unknownSessionId = undefined;
               item.unknownCause = undefined;
+              yield* replayEarlyClipEvents(clipId);
               const pending = pendingWithdrawals.get(item.key);
-              if (pending !== undefined) yield* sendItemRemoval(item, pending.reason);
-              else if (item.phase === "Accepted" || item.phase === "Unknown")
+              if (pending !== undefined) {
+                if (
+                  item.phase === "Started" ||
+                  item.status._tag === "Ended" ||
+                  item.status._tag === "Unobserved"
+                )
+                  yield* finishWithdrawal(item.key, Result.succeed("already-started"));
+                else if (item.phase === "Terminal")
+                  yield* finishWithdrawal(item.key, Result.succeed("not-found"));
+                else yield* sendItemRemoval(item, pending.reason);
+              } else if (item.phase === "Accepted" || item.phase === "Unknown")
                 yield* emit(item, { _tag: "Building" });
               yield* observed(yield* engine.state);
             } else if (result.failure.context.outcome === "unknown") {
               if (item.clipId === undefined) {
-                item.unknownSessionId = command.sessionId;
+                // A generic engine may re-route between the state read and dispatch.
+                // Only an owner-fenced enqueue can attribute its unknown result.
+                item.unknownSessionId =
+                  engine.enqueueOnSource === undefined ? undefined : command.sessionId;
                 item.unknownCause = result.failure;
                 yield* emit(item, { _tag: "Unknown" });
               }
@@ -1181,7 +1241,8 @@ export const makeScheduler = (
             if (Result.isSuccess(result)) {
               const clipId = result.success as ClipId;
               const actualSessionId =
-                knownRecord(yield* engine.state, clipId)?.sessionId ?? command.sessionId;
+                knownRecord(yield* engine.state, clipId)?.sessionId ??
+                (engine.enqueueOnSource === undefined ? undefined : command.sessionId);
               owned.set(clipId, {
                 _tag: "Filler",
                 index: command.index,
@@ -1195,11 +1256,12 @@ export const makeScheduler = (
               });
               fillerIndex = Math.max(fillerIndex, command.index + 1);
               upcomingFiller = undefined;
+              yield* replayEarlyClipEvents(clipId);
             } else if (result.failure.context.outcome === "unknown") {
               if (!filler.has(command.index))
                 unknownFiller = {
                   index: command.index,
-                  sessionId: command.sessionId,
+                  sessionId: engine.enqueueOnSource === undefined ? undefined : command.sessionId,
                 };
             } else {
               fillerRetryAtMs = monotonicMillis(clock) + 1_000;
@@ -1541,6 +1603,7 @@ export const makeScheduler = (
             break;
           case "CommandDone":
             yield* handleCommandDone(message.command, message.result);
+            if (commandCount === 0) earlyClipEvents.clear();
             break;
           case "Closed":
             yield* closeActor(message.reason);

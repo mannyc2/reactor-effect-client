@@ -78,6 +78,7 @@ test("a persistent capacity refusal is retried at a bounded pace", () =>
       let attempts = 0;
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: () =>
           Effect.sync(() => {
             attempts++;

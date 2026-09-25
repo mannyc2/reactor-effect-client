@@ -162,6 +162,7 @@ test("a retiring source does not consume the replacement's deadline or build slo
         ...handle.engine,
         state: Effect.succeed(state),
         observe: () => Effect.succeed({ initial: state, events: Stream.never }),
+        enqueueOnSource: undefined,
         enqueue: () =>
           Effect.sync(() => {
             attempts++;

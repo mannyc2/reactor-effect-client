@@ -641,7 +641,7 @@ export const make = <R>(
     const sequenceError = (error: Sequence.SequenceError) =>
       PolicyFailure.sequence(error.sequenceId, error.code);
 
-    const prepare: EngineShape["prepare"] = (input) =>
+    const prepare = (input: Parameters<EngineShape["prepare"]>[0], expectedSessionId?: string) =>
       Effect.gen(function* () {
         const request = yield* captureRequest(input);
         const id = `${namespace}:${++submissionSequence}`;
@@ -655,6 +655,11 @@ export const make = <R>(
               // closes. Only selecting or committing fresh work needs a live owner.
               yield* guard("enqueue", Effect.void);
               const decision = yield* route(request).pipe(commands.withPermits(1));
+              if (expectedSessionId !== undefined && decision.owner !== expectedSessionId)
+                return yield* PolicyFailure.refuse(
+                  "RouteChanged",
+                  "The selected source changed before dispatch",
+                );
               const target = slots.get(decision.owner);
               if (target === undefined)
                 return yield* PolicyFailure.refuse("SessionRetired", "Selected source was retired");
@@ -848,6 +853,8 @@ export const make = <R>(
       prepare,
       enqueue: (request) =>
         prepare(request).pipe(Effect.flatMap((submission) => submission.submit)),
+      enqueueOnSource: (request, expectedSessionId) =>
+        prepare(request, expectedSessionId).pipe(Effect.flatMap((submission) => submission.submit)),
       state,
       events: Stream.filterMap(observations.stream(), engineOnly),
       observe: (options) =>

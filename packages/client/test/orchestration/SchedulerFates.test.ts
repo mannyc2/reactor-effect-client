@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Exit, Fiber, Option, Queue, Stream } from "effect";
+import { Clock, Effect, Exit, Fiber, Option, Queue, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
@@ -61,6 +61,57 @@ const settled = (effect: Effect.Effect<AsRunStatus>) =>
     const exit = fiber.pollUnsafe();
     return exit !== undefined && Exit.isSuccess(exit) ? exit.value : "waiting";
   });
+
+test("a clip that starts and ends before its enqueue reply retains its observed fate", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+      const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+      const clipId = record("early-finished", 5).clipId;
+      const enqueueEarly = () =>
+        Effect.gen(function* () {
+          yield* Queue.offer(feed, {
+            _tag: "Started",
+            clipId,
+            durationSeconds: 5,
+            at: yield* Clock.currentTimeMillis,
+            atMonotonicMillis: Number((yield* Clock.monotonicTimeNanos) / 1_000_000n),
+          });
+          yield* Effect.sleep("5 seconds");
+          yield* Queue.offer(feed, {
+            _tag: "Ended",
+            clipId,
+            termination: "finished",
+            at: yield* Clock.currentTimeMillis,
+            atMonotonicMillis: Number((yield* Clock.monotonicTimeNanos) / 1_000_000n),
+          });
+          yield* Effect.sleep("100 millis");
+          return clipId;
+        });
+      const engine: EngineShape = {
+        ...handle.engine,
+        enqueue: enqueueEarly,
+        enqueueOnSource: enqueueEarly,
+        observe: () =>
+          Effect.map(handle.engine.state, (initial) => ({
+            initial,
+            events: Stream.fromQueue(feed),
+          })),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const events = yield* watch(scheduler);
+      const key = ItemKey.make("early-finished");
+      const item = yield* scheduler.submit({ key, lane: "line", request: clip("Early finish") });
+      yield* advance(5_500);
+      const statuses = events
+        .filter((event) => event.key === key)
+        .map((event) => event.status._tag);
+      expect(statuses).toContain("Started");
+      expect(statuses).toContain("Ended");
+      expect((yield* item.firstDecisive)._tag).toBe("Started");
+      expect((yield* item.outcome)._tag).toBe("Ended");
+    }),
+  ));
 
 test("drain waits for the playing boundary, withdraws waiting work, and retains as-run evidence", () =>
   runClock(
@@ -187,6 +238,7 @@ test("withdraw and drain wait for an in-flight enqueue, then remove its clip", (
       const handle = yield* Simulation.make({ fixedBuildTime: "10 seconds", buildRatio: 0 });
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: (request) =>
           entered.release.pipe(
             Effect.andThen(release.wait),
@@ -334,6 +386,7 @@ test("an orchestration failure ends uncertainty without claiming the clip failed
       const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: () => Effect.fail(failure("unknown")),
         observe: () =>
           Effect.map(handle.engine.state, (initial) => ({
@@ -413,6 +466,7 @@ test("withdraw of an unknown enqueue waits through an absent snapshot, then remo
       const engine: EngineShape = {
         ...handle.engine,
         state: Effect.sync(() => state),
+        enqueueOnSource: undefined,
         enqueue: (request) =>
           request.prompt === "Unknown withdrawal"
             ? Effect.fail(failure("unknown"))
@@ -510,6 +564,7 @@ test("the initial observation adopts resumed filler before planning a build", ()
       const engine: EngineShape = {
         ...handle.engine,
         state: Effect.succeed(state),
+        enqueueOnSource: undefined,
         enqueue: (request) =>
           Effect.sync(() => {
             sends.push(schedulerKeyOf(request) ?? "unkeyed");
@@ -551,6 +606,7 @@ test("unknown filler is not replayed after an absent observation and holds drain
       let sends = 0;
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: () =>
           Effect.sync(() => {
             sends++;
@@ -593,6 +649,7 @@ test("a snapshot acquired before filler acceptance cannot erase its ownership", 
       let observations = 0;
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: (request) =>
           Effect.gen(function* () {
             sends++;
@@ -648,6 +705,7 @@ test("a fresh snapshot forgets filler that ended during an observation gap", () 
       let removals = 0;
       const engine: EngineShape = {
         ...handle.engine,
+        enqueueOnSource: undefined,
         enqueue: (request) => {
           sends++;
           return sends === 1
