@@ -306,6 +306,9 @@ describe("isolated native host", () => {
                 Effect.result(peer.send("data", Uint8Array.of(1, 2))),
                 { startImmediately: true },
               );
+              yield* Effect.promise(() =>
+                until(() => peer.link.dispatched > dispatched, "the held send was not dispatched"),
+              );
               expect(peer.link.dispatched).toBe(dispatched + 1);
               process.kill(peer.link.child!.pid!, "SIGKILL");
               const pending = yield* Fiber.join(sending);
@@ -510,6 +513,9 @@ Effect.runFork(
                   .pipe(Stream.runForEach((frame) => Effect.sync(() => aFrames.push(frame)))),
                 { startImmediately: true },
               );
+              yield* Effect.promise(() =>
+                until(() => a.link.dispatched > opening, "the video stream never opened"),
+              );
               expect(a.link.dispatched).toBe(opening + 1);
               const dispatched = a.link.dispatched;
               const answering = yield* Effect.forkChild(a.answer("fixture answer"), {
@@ -519,6 +525,12 @@ Effect.runFork(
                 startImmediately: true,
               });
               // Both requests are on the channel: whatever they release is late.
+              yield* Effect.promise(() =>
+                until(
+                  () => a.link.dispatched >= dispatched + 2,
+                  "late requests were not dispatched",
+                ),
+              );
               expect(a.link.dispatched).toBe(dispatched + 2);
               a.close();
               yield* Fiber.join(answering);
@@ -610,6 +622,9 @@ Effect.runFork(
               const sending = yield* Effect.forkChild(peer.send("data", Uint8Array.of(7)), {
                 startImmediately: true,
               });
+              yield* Effect.promise(() =>
+                until(() => peer.link.dispatched > dispatched, "the held send was not dispatched"),
+              );
               expect(peer.link.dispatched).toBe(dispatched + 1);
               yield* Fiber.interrupt(sending);
               const interrupted = yield* Fiber.await(sending);
@@ -620,9 +635,13 @@ Effect.runFork(
               const direction = yield* Effect.exit(peer.direction("main_video", true));
               // A statistics read the child never completes: the shutdown deadline
               // kills the child under it.
+              const beforeStats = peer.link.dispatched;
               const reading = yield* Effect.forkChild(Effect.result(peer.stats), {
                 startImmediately: true,
               });
+              yield* Effect.promise(() =>
+                until(() => peer.link.dispatched > beforeStats, "statistics were not dispatched"),
+              );
               const shutdown = yield* Effect.exit(peer.shutdown);
               const stats = yield* Fiber.join(reading);
               return { interrupted, snapshot, direction, stats, shutdown, link: peer.link };

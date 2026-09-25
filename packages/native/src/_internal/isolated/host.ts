@@ -425,7 +425,9 @@ export class IsolatedPeer implements Peer {
       return fromWire(found.success);
     const outcome = sent ? "unknown" : "not-submitted";
     const detail = found._tag === "Success" ? found.success : Cause.squash(cause);
-    if (this.closed && this.link.exit === undefined)
+    // IPC may close before Node reports the child's exit. A fenced link is
+    // already lost, even if that exit event has not reached this process yet.
+    if (this.closed && this.link.exit === undefined && this.link.fence === undefined)
       return ReactorError.fromCode("Closed", "native WebRTC peer is closed", {
         operation,
         outcome,
