@@ -20,6 +20,7 @@ import {
   isRequestableSeconds,
 } from "../../h3/profile.js";
 import { Observations } from "../../observation.js";
+import { monotonicMillis } from "../../orchestration/elapsed.js";
 import { PolicyFailure, captureRequest } from "../../orchestration/request.js";
 import type { Canvas, ClipId } from "../../orchestration/request.js";
 import type {
@@ -38,6 +39,7 @@ interface Clip {
   record: LocalClipRecord;
   popped: boolean;
   disposed: boolean;
+  /** Epoch milliseconds, reported as the build's start. */
   buildStartedAt?: number;
 }
 
@@ -210,6 +212,8 @@ export const source = (
         }
         building = next;
         next.buildStartedAt = clock.currentTimeMillisUnsafe();
+        // The build's length is measured on the monotonic clock, its start reported in wall time.
+        const buildStartedMonotonic = monotonicMillis(clock);
         emit({
           _tag: "Building",
           clipId: next.record.clipId,
@@ -223,7 +227,7 @@ export const source = (
               )
             : options.build(next.record),
         );
-        const buildMs = Math.max(0, clock.currentTimeMillisUnsafe() - next.buildStartedAt);
+        const buildMs = Math.max(0, monotonicMillis(clock) - buildStartedMonotonic);
         generation = generation.filter((clip) => clip !== next);
         building = undefined;
         if (next.popped || closed) {

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Fiber, Option, Result, Stream } from "effect";
+import { Clock, Effect, Fiber, Option, Result, Stream } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
@@ -26,6 +26,7 @@ import {
   untilEffect,
   refusal,
 } from "./SourceFixture.js";
+import { steppableWall } from "./WallClock.js";
 
 const media: MediaGeneration = {
   generation: 1n,
@@ -304,6 +305,25 @@ test("cancelled source reference prework remains inert and does not leave a hidd
       yield* held.release;
       expect((yield* prepared.state)._tag).toBe("Prepared");
       expect(fake.calls.filter((call) => call.command === "enqueue")).toEqual([]);
+    }),
+  ));
+
+test("admission-to-ready time is measured on elapsed time, so a wall-clock step leaves it unchanged", () =>
+  run(
+    Effect.gen(function* () {
+      const wall = yield* steppableWall;
+      yield* Effect.gen(function* () {
+        const { source, fake, events, emit } = yield* setup();
+        yield* (yield* source.prepareRouted({ request: request(), position: undefined })).submit;
+        yield* wall.step(60_000);
+        yield* emit("clip_generated", { clip: { ...fake.accepted[0]!, ready: true } });
+        const ready = events.find((event) => event._tag === "Ready");
+        const timing = ready?._tag === "Ready" ? ready.timing : undefined;
+        expect(timing?._tag).toBe("Bounded");
+        expect(timing?._tag === "Bounded" ? timing.admissionToReadyMs : undefined).toBeLessThan(
+          10_000,
+        );
+      }).pipe(Effect.provideService(Clock.Clock, wall.clock));
     }),
   ));
 

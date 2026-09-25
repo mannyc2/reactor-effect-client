@@ -10,6 +10,7 @@ import { ReactorError } from "../errors.js";
 import type { Submission } from "../Submission.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import { PolicyFailure, type ClipId } from "./request.js";
+import { monotonicMillis } from "./elapsed.js";
 import * as Lifecycle from "./renewal-state.js";
 import type { EngineError, EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
 
@@ -85,7 +86,7 @@ export const make = (options: Options) =>
 
     const closed = () => Lifecycle.isClosed(phase);
     const recoveryBudget = () =>
-      Lifecycle.recoveryBudget(options, clock.currentTimeMillisUnsafe(), options.cleanupBudgetMs);
+      Lifecycle.recoveryBudget(options, monotonicMillis(clock), options.cleanupBudgetMs);
     const closeMedia = Effect.suspend(() =>
       mediaScope === undefined ? Effect.void : Scope.close(mediaScope, Exit.void),
     );
@@ -160,12 +161,12 @@ export const make = (options: Options) =>
         return accepted;
       },
       recoveryBudget,
-      expired: () => Lifecycle.expired(options, clock.currentTimeMillisUnsafe()),
+      expired: () => Lifecycle.expired(options, monotonicMillis(clock)),
       needsReplacement: () =>
         Lifecycle.needsReplacement(
           phase,
           indeterminate,
-          Lifecycle.expired(options, clock.currentTimeMillisUnsafe()),
+          Lifecycle.expired(options, monotonicMillis(clock)),
         ),
       beginRecovery: (mode: Lifecycle.RecoveryMode): boolean => {
         const previous = phase;
@@ -319,10 +320,7 @@ export const make = (options: Options) =>
           );
           return {
             sessionId: options.source.id,
-            ageSeconds: Math.max(
-              0,
-              Lifecycle.ageMillis(options, clock.currentTimeMillisUnsafe()) / 1000,
-            ),
+            ageSeconds: Math.max(0, Lifecycle.ageMillis(options, monotonicMillis(clock)) / 1000),
             tail: {
               video: {
                 framesPerSecond: media.videoFramesPerSecond,

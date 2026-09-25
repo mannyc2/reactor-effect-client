@@ -1,16 +1,27 @@
 import { expect, test } from "vitest";
-import { Clock, Effect, Exit, Option, Stream } from "effect";
+import { Clock, Effect, Exit, Option, Queue, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import { ReactorError } from "../../src/errors.js";
 import * as H3 from "../../src/h3/index.js";
 import { makeLineup } from "../../src/orchestration/lineup.js";
 import type { ClipFate, LineupOptions } from "../../src/orchestration/lineup.js";
-import { ClipRequest, PolicyFailure } from "../../src/orchestration/request.js";
-import type { ClipId } from "../../src/orchestration/request.js";
+import { ClipId, ClipRequest, PolicyFailure } from "../../src/orchestration/request.js";
 import { Engine } from "../../src/orchestration/types.js";
-import type { EngineEvent, EngineShape } from "../../src/orchestration/types.js";
+import type {
+  EngineError,
+  EngineEvent,
+  EngineShape,
+  EngineState,
+} from "../../src/orchestration/types.js";
 import * as Simulation from "../../src/simulation/index.js";
 import type { SimOptions } from "../../src/simulation/index.js";
-import { refusal, runClock } from "./SourceFixture.js";
+import {
+  failure,
+  readyState,
+  record as fixtureRecord,
+  refusal,
+  runClock,
+} from "./SourceFixture.js";
 
 const filler: LineupOptions["filler"]["clip"] = (n) =>
   new ClipRequest({
@@ -396,5 +407,196 @@ test("a lineup refuses a filler count outside 1 to 1024 and a malformed filler c
       expect(refusal(blank)).toBe("InvalidRequest");
       const engine = yield* Engine;
       expect((yield* engine.state).generationOrder).toHaveLength(0);
+    }).pipe(Effect.provide(quick)),
+  ));
+
+// ---- an engine the test drives ----------------------------------------------------------------
+
+/**
+ * An engine whose state, observations and enqueue replies the test writes. Its
+ * state is `view()` until `set` replaces it. Each observation reads the state
+ * as it is then and takes the events emitted after it; `overflow` fails the
+ * newest one as an observer that fell behind.
+ */
+const scripted = (
+  reply: (request: ClipRequest, attempt: number) => Effect.Effect<ClipId, EngineError>,
+  view: () => EngineState = () => readyState(),
+) =>
+  Effect.sync(() => {
+    let state = view;
+    const feeds: Queue.Queue<EngineEvent, ReactorError>[] = [];
+    const requests: ClipRequest[] = [];
+    const engine: EngineShape = {
+      prepare: () => Effect.die("The scripted engine prepares nothing"),
+      enqueue: (request) =>
+        Effect.suspend(() => {
+          requests.push(request);
+          return reply(request, requests.length);
+        }),
+      state: Effect.sync(() => state()),
+      events: Stream.never,
+      observe: () =>
+        Effect.gen(function* () {
+          const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+          feeds.push(feed);
+          return { initial: state(), events: Stream.fromQueue(feed) };
+        }),
+      failure: Effect.never,
+      setAutoplay: () => Effect.void,
+      pauseAndStop: Effect.void,
+      remove: () => Effect.succeed("unstarted" as const),
+      move: () => Effect.void,
+      setCanvas: () => Effect.void,
+    };
+    return {
+      engine,
+      requests,
+      set: (next: EngineState) =>
+        Effect.sync(() => {
+          state = () => next;
+        }),
+      emit: (event: EngineEvent) => Effect.suspend(() => Queue.offer(feeds.at(-1)!, event)),
+      overflow: Effect.suspend(() =>
+        Queue.fail(feeds.at(-1)!, ReactorError.fromCode("Overflow", "The observer fell behind")),
+      ),
+    };
+  });
+const refusedFiller = PolicyFailure.refuse("QueueFull", "The fixture takes no filler", "enqueue");
+/** Lineup clips get ids; filler is refused before it is sent, so it never gets in the way. */
+const clipsOnly = (request: ClipRequest, attempt: number) =>
+  request.prompt.startsWith("The host waits")
+    ? Effect.fail(refusedFiller)
+    : Effect.succeed(ClipId.make(`clip-${attempt}`));
+/** The clip's fate if it has settled, without waiting for one. */
+const fateNow = (fate: Effect.Effect<ClipFate>) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(fate);
+    yield* Effect.yieldNow;
+    const exit = fiber.pollUnsafe();
+    return exit !== undefined && Exit.isSuccess(exit) ? exit.value : "waiting";
+  });
+
+test("a clip whose start and end both fell while the observer was behind is Unobserved, not left waiting", () =>
+  runClock(
+    Effect.gen(function* () {
+      const fake = yield* scripted(clipsOnly);
+      const clips = yield* lineup(1).pipe(Effect.provideService(Engine, fake.engine));
+      yield* advance(100);
+      const gone = yield* clips.enqueue(clip(6));
+      const waiting = yield* clips.enqueue(clip(6));
+      // During the gap the first clip played and ended; the second is still queued.
+      yield* fake.set(
+        readyState({
+          queued: [fixtureRecord(waiting.clipId, 6)],
+          generationOrder: [waiting.clipId],
+        }),
+      );
+      yield* fake.overflow;
+      yield* advance(100);
+      expect(yield* fateNow(gone.fate)).toEqual({ _tag: "Unobserved" });
+      expect(yield* fateNow(waiting.fate)).toBe("waiting");
+    }),
+  ));
+
+test("a clip playing with no observed start time is Unobserved; one with a start time started then", () =>
+  runClock(
+    Effect.gen(function* () {
+      const fake = yield* scripted(clipsOnly);
+      const clips = yield* lineup(1).pipe(Effect.provideService(Engine, fake.engine));
+      yield* advance(100);
+      const first = yield* clips.enqueue(clip(6));
+      const second = yield* clips.enqueue(clip(6));
+      const playing = (clipId: ClipId, startedAt: Option.Option<number>) =>
+        readyState({
+          playing: Option.some({
+            clipId,
+            record: Option.some(fixtureRecord(clipId, 6)),
+            startedAt,
+          }),
+        });
+      yield* fake.set({
+        ...playing(first.clipId, Option.none()),
+        queued: [fixtureRecord(second.clipId, 6)],
+        generationOrder: [second.clipId],
+      });
+      yield* fake.overflow;
+      yield* advance(5_000);
+      expect(yield* fateNow(first.fate)).toEqual({ _tag: "Unobserved" });
+      yield* fake.set(playing(second.clipId, Option.some(1_234)));
+      yield* fake.overflow;
+      yield* advance(100);
+      expect(yield* fateNow(second.fate)).toEqual({
+        _tag: "Started",
+        at: 1_234,
+        durationSeconds: 6,
+      });
+    }),
+  ));
+
+test("a waiting clip that ends without its start being seen is Unobserved", () =>
+  runClock(
+    Effect.gen(function* () {
+      const fake = yield* scripted(clipsOnly);
+      const clips = yield* lineup(1).pipe(Effect.provideService(Engine, fake.engine));
+      yield* advance(100);
+      const entry = yield* clips.enqueue(clip(6));
+      yield* fake.emit({ _tag: "Ended", clipId: entry.clipId, termination: "finished" });
+      yield* advance(100);
+      expect(yield* fateNow(entry.fate)).toEqual({ _tag: "Unobserved" });
+    }),
+  ));
+
+test("the validated first filler is the first enqueued, a refused filler is sent again as the same clip, and an unknown outcome moves on", () =>
+  runClock(
+    Effect.gen(function* () {
+      const asked: number[] = [];
+      let ready: EngineState["ready"] = [];
+      // Refused before it is sent, then sent with an unknown outcome, then admitted as Ready filler.
+      const fake = yield* scripted(
+        (request, attempt) => {
+          if (attempt === 1) return Effect.fail(refusedFiller);
+          if (attempt === 2) return Effect.fail(failure("unknown"));
+          const clipId = ClipId.make(`filler-${attempt}`);
+          ready = [...ready, { ...fixtureRecord(clipId, 5), request }];
+          return Effect.succeed(clipId);
+        },
+        () => readyState({ ready }),
+      );
+      yield* lineup(1, (n) => {
+        asked.push(n);
+        return filler(n);
+      }).pipe(Effect.provideService(Engine, fake.engine));
+      yield* advance(3_500);
+      expect(asked).toEqual([0, 1]);
+      expect(fake.requests).toHaveLength(3);
+      expect(fake.requests[1]).toBe(fake.requests[0]);
+      expect(fake.requests[2]).not.toBe(fake.requests[1]);
+      expect(fake.requests.map((request) => request.prompt)).toEqual([
+        "The host waits at the desk (0).",
+        "The host waits at the desk (0).",
+        "The host waits at the desk (1).",
+      ]);
+    }),
+  ));
+
+test("a request whose position is an accessor is refused as InvalidRequest, and the accessor never runs", () =>
+  runClock(
+    Effect.gen(function* () {
+      const clips = yield* lineup(1);
+      let read = false;
+      const input = Object.defineProperty(
+        { prompt: "The host speaks to camera.", references: [], durationSeconds: 6, metadata: {} },
+        "position",
+        {
+          enumerable: true,
+          get: () => {
+            read = true;
+            return 0;
+          },
+        },
+      ) as unknown as ClipRequest;
+      const refused = yield* Effect.flip(clips.enqueue(input));
+      expect(refusal(refused)).toBe("InvalidRequest");
+      expect(read).toBe(false);
     }).pipe(Effect.provide(quick)),
   ));

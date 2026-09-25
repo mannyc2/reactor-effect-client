@@ -28,6 +28,7 @@ import type { MediaGeneration } from "../session/media.js";
 import * as Submission from "../Submission.js";
 import { PolicyFailure, captureRequest, preworkFailure } from "./request.js";
 import type { Canvas, ClipId, ClipRequest } from "./request.js";
+import { monotonicMillis } from "./elapsed.js";
 import { emptyState, isIdle } from "./queries.js";
 import { loadReferenceBytes } from "./references.js";
 import type { LoadLimits } from "./references.js";
@@ -45,7 +46,10 @@ import type {
 interface Annotation {
   readonly request: ClipRequest;
   readonly seq: number;
+  /** Epoch milliseconds of the local enqueue, the record's `enqueuedAt`. */
   readonly enqueuedAt: number;
+  /** The same moment in monotonic milliseconds, which admission-to-ready time is measured from. */
+  readonly admittedAt: number;
 }
 interface Times {
   readonly generatedAt?: number;
@@ -68,7 +72,9 @@ const record = (clip: ProviderClip, annotations: ReadonlyMap<string, Annotation>
     clipId: clip.clip_id as ClipId,
     durationSeconds: clip.seconds,
     provider: clip,
-    ...(annotation ?? {}),
+    ...(annotation === undefined
+      ? {}
+      : { request: annotation.request, seq: annotation.seq, enqueuedAt: annotation.enqueuedAt }),
   });
 };
 
@@ -275,7 +281,10 @@ export const fromH3 = (
                     ? { _tag: "Unknown" }
                     : {
                         _tag: "Bounded",
-                        admissionToReadyMs: Math.max(0, at - annotation.enqueuedAt),
+                        admissionToReadyMs: Math.max(
+                          0,
+                          monotonicMillis(clock) - annotation.admittedAt,
+                        ),
                       },
               });
               break;
@@ -405,6 +414,7 @@ export const fromH3 = (
                   request,
                   seq: ++sequence,
                   enqueuedAt: clock.currentTimeMillisUnsafe(),
+                  admittedAt: monotonicMillis(clock),
                 });
               }),
             result: (id, result) =>
