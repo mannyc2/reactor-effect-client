@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `Orchestration.makeContinuous`, `ContinuousOptions`, `ContinuousHandleShape` and `CleanupSummary` support bounded renewal beyond the legacy 64-source lifetime cap. `make`/`layer`, explicit `maxSessions` semantics and complete legacy reports remain unchanged. Continuous adapters must provide unique lifetime source/clip identities; private incarnations fence captured work, source histories stay bounded and incomplete-evidence capacity is reserved before opening. Summaries distinguish confirmed cleanup from unknown submission outcomes with exact bigint counts and cannot be decoded as legacy complete history. This is offline lifecycle evidence, not new hosted qualification.
+
+### Fixed
+
+- Source retirement and handle close join one completion Exit, preserving original defects and factual incomplete cleanup while releasing completed submission/source references. A stalled finalizer remains pending and retains ownership.
+
 ## [0.5.0] - 2026-09-26
 
 The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host has one fix, and it is released with the client as always.
