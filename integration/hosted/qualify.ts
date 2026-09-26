@@ -40,6 +40,12 @@ import { deflateSync } from "node:zlib";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -51,12 +57,14 @@ import type { Mutable } from "effect/Types";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
 import * as H3 from "reactor-effect-client/h3";
-import type { MediaGeneration } from "reactor-effect-client/host";
+import type { AudioFrame, VideoFrame, MediaGeneration } from "reactor-effect-client/host";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Testing from "reactor-effect-client/testing";
 import * as Native from "reactor-effect-native";
 import {
   AudioReader,
+  FrameAttribution,
+  elapsedClock,
   ContractTally,
   VideoReader,
   readInto,
@@ -66,12 +74,23 @@ import {
   tallyReply,
   terminationTrail,
 } from "./collect.js";
-import type { Pressure, StatsSample } from "./evidence.js";
-import { Writer, conclude, format, lockLedger, readLedger, reservedUsd } from "./evidence.js";
+import type { Pressure, StatsSample, SchedulerRenewal } from "./evidence.js";
+import {
+  Writer,
+  conclude,
+  format,
+  lockLedger,
+  readLedger,
+  reservedUsd,
+  renewalJudgments,
+  confirmedOwnedCleanup,
+} from "./evidence.js";
 import type { Draft, LedgerEntry } from "./evidence.js";
 import {
   Refused,
   acceptGrant,
+  acceptRenewalGrant,
+  ceilingFor,
   admit,
   admitRelayCheck,
   admitTotal,
@@ -81,7 +100,6 @@ import {
   liveClipVideo,
   liveVideo,
   maxCheckUsd,
-  maxSchedulerUsd,
   maxTotalUsd,
   options,
   sessionSeconds,
@@ -164,6 +182,8 @@ interface Target {
    * pacing, short against the twin, whose pacing is synthetic.
    */
   readonly windowMs: number;
+  /** Harness fault injection is reachable only through the loopback entrypoint. */
+  readonly faults?: readonly string[];
 }
 
 interface Budget {
@@ -1089,6 +1109,644 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
     return yield* body.pipe(Effect.ensuring(afterSession(target, run, grant.jwt, rate)));
   });
 
+/** The public renewal owner controls every activation; the harness only submits and observes. */
+const pressureEvidence = (value: {
+  readonly deliveredVideo: bigint;
+  readonly deliveredAudio: bigint;
+  readonly droppedVideo: bigint;
+  readonly droppedAudio: bigint;
+  readonly readerOverflows: bigint;
+}): Pressure => ({
+  deliveredVideo: String(value.deliveredVideo),
+  deliveredAudio: String(value.deliveredAudio),
+  droppedVideo: String(value.droppedVideo),
+  droppedAudio: String(value.droppedAudio),
+  readerOverflows: String(value.readerOverflows),
+});
+const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const time = yield* elapsedClock;
+      const clock = yield* Clock.Clock;
+      const attribution = new FrameAttribution();
+      const video = new VideoReader(),
+        audio = new AudioReader();
+      const sources: {
+        sessionId: string;
+        generation: string;
+        video: VideoReader;
+        audio: AudioReader;
+      }[] = [];
+      let attributed = true;
+      let videoLoss: Extract<Reactor.Recorded<VideoFrame>, { readonly _tag: "Lost" }> | undefined;
+      let audioLoss: Extract<Reactor.Recorded<AudioFrame>, { readonly _tag: "Lost" }> | undefined;
+      let evidence: SchedulerRenewal = {
+        version: 1,
+        clock: "effect-monotonic",
+        scenario: "two-source-accepted-drain",
+        configuration: {
+          constructor: "legacy",
+          setupLimitMs: 20000,
+          workLimitMs: 40000,
+          cleanupLimitMs: 20000,
+          leadMs: 40000,
+          graceMs: 250,
+          clipSeconds: 5,
+          maxSessions: 2,
+          maxOpenAttempts: 2,
+        },
+        openAttempts: 0,
+        allocations: [],
+        items: [],
+        switches: [],
+        fillerRequests: 0,
+        fillerEvents: [],
+        media: {
+          video: video.summary(),
+          audio: audio.summary(),
+          sources: [],
+          attributionComplete: true,
+          audioCompleteness: "unverified",
+        },
+      };
+      const snapshot = () => {
+        const summaries = sources.map((source) => ({
+          ...source,
+          video: source.video.summary(),
+          audio: source.audio.summary(),
+        }));
+        const oldId = evidence.allocations[0]?.sessionId,
+          nextId = evidence.allocations[1]?.sessionId;
+        const oldFrames = summaries
+          .filter((source) => source.sessionId === oldId)
+          .flatMap((source) => source.video.arrivalsMs ?? []);
+        const nextFrames = summaries
+          .filter((source) => source.sessionId === nextId)
+          .flatMap((source) => source.video.arrivalsMs ?? []);
+        const boundary =
+          oldId !== undefined &&
+          nextId !== undefined &&
+          oldFrames.length > 0 &&
+          nextFrames.length > 0
+            ? {
+                retiringSessionId: oldId,
+                replacementSessionId: nextId,
+                lastRetiringFrameMs: Math.max(...oldFrames),
+                firstReplacementFrameMs: Math.min(...nextFrames),
+                gapMs: Math.min(...nextFrames) - Math.max(...oldFrames),
+              }
+            : undefined;
+        evidence = {
+          ...evidence,
+          media: {
+            ...evidence.media,
+            video: video.summary(),
+            audio: audio.summary(),
+            sources: summaries,
+            attributionComplete: attributed,
+            ...(boundary === undefined ? {} : { decodedBoundary: boundary }),
+          },
+        };
+        run.evidence.schedulerRenewal = evidence;
+        save(run);
+      };
+      const allocation = (
+        slot: 1 | 2,
+        fields: Partial<SchedulerRenewal["allocations"][number]>,
+      ) => {
+        evidence = {
+          ...evidence,
+          allocations: evidence.allocations.map((entry) =>
+            entry.slot === slot ? { ...entry, ...fields } : entry,
+          ),
+        };
+        snapshot();
+      };
+      // Every intermediate file remains failed until conclude validates complete evidence.
+      run.evidence.verdict = "fail";
+      run.evidence.reasons = ["scheduler renewal is incomplete"];
+      snapshot();
+      const failure = yield* Deferred.make<never, Reactor.ReactorFailure>();
+      const ownerScope = yield* Scope.make();
+      const observationScope = yield* Effect.scope;
+      let handle: Orchestration.HandleShape | undefined;
+      let firstAllocation: number | undefined;
+      let prepared = false;
+      let rate: { creditsPerSecond: number; creditsPerDollar: number } | undefined;
+      const sourceReader = (frame: VideoFrame | AudioFrame) => {
+        const tag = attribution.get(frame);
+        if (tag === undefined) {
+          attributed = false;
+          return undefined;
+        }
+        let row = sources.find(
+          (source) =>
+            source.sessionId === tag.sessionId && source.generation === String(tag.generation),
+        );
+        if (row === undefined) {
+          if (sources.length >= 16) {
+            attributed = false;
+            return undefined;
+          }
+          row = {
+            sessionId: tag.sessionId,
+            generation: String(tag.generation),
+            video: new VideoReader(),
+            audio: new AudioReader(),
+          };
+          sources.push(row);
+        }
+        return row;
+      };
+      const watch = <E extends Reactor.ReactorFailure>(effect: Effect.Effect<void, E>) =>
+        effect.pipe(
+          Effect.catchCause((cause) => Deferred.failCause(failure, cause)),
+          Effect.forkScoped,
+        );
+      const waitFor = (predicate: () => boolean) =>
+        Effect.gen(function* () {
+          while (!predicate()) yield* Effect.sleep("10 millis");
+        });
+      const workDeadline = Effect.gen(function* () {
+        for (;;) {
+          const deadline = firstAllocation === undefined ? 20000 : firstAllocation + 40000;
+          const left = deadline - time.now();
+          if (left <= 0)
+            return yield* Reactor.ReactorError.fromCode(
+              "Timeout",
+              "scheduler renewal exceeded its shared deadline",
+            );
+          yield* Effect.sleep(left);
+        }
+      });
+      const body = Effect.gen(function* () {
+        const admittedRun = yield* admitted(target, run, budget, sessionsFor("scheduler-renewal"));
+        rate = admittedRun.rate;
+        yield* gate(() => acceptRenewalGrant(admittedRun.grant.granted));
+        evidence = {
+          ...evidence,
+          allocations: [
+            {
+              slot: 1,
+              grant: { ...admittedRun.grant.granted, expiresAt: admittedRun.grant.expiresAt },
+            },
+          ],
+        };
+        snapshot();
+        const coordinator = yield* Reactor.Coordinator.make({ apiUrl: target.apiUrl });
+        const second = yield* coordinator.mintToken({
+          apiKey: target.apiKey,
+          modelName: H3.modelName,
+          maxSessionDuration: `${sessionSeconds} seconds`,
+          expiresAfter: `${tokenSeconds} seconds`,
+        });
+        run.secrets.push(Redacted.value(second.jwt));
+        yield* gate(() => acceptRenewalGrant(second.granted));
+        evidence = {
+          ...evidence,
+          allocations: [
+            ...evidence.allocations,
+            { slot: 2, grant: { ...second.granted, expiresAt: second.expiresAt } },
+          ],
+        };
+        snapshot();
+        const grants = [admittedRun.grant, second] as const;
+        const open = Effect.gen(function* () {
+          const index = evidence.openAttempts;
+          evidence = { ...evidence, openAttempts: index + 1 };
+          snapshot();
+          if (index >= grants.length) {
+            const refused = Reactor.ReactorError.fromCode(
+              "InvalidState",
+              "scheduler renewal refused a third open attempt",
+            );
+            yield* Deferred.fail(failure, refused);
+            return yield* refused;
+          }
+          const slot = index === 0 ? 1 : 2;
+          let allocatedSession: Reactor.Session | undefined;
+          const opened = yield* Orchestration.openH3({
+            mint: Effect.succeed(grants[index]!),
+            onAllocated: ({ session, allocation: record }) =>
+              Effect.suspend(() => {
+                allocatedSession = session;
+                const allocatedMs = time.now();
+                firstAllocation ??= allocatedMs;
+                const wall = clock.currentTimeMillisUnsafe();
+                allocation(slot, {
+                  sessionId: session.id,
+                  allocatedMs,
+                  allocatedAt: DateTime.formatIso(DateTime.makeUnsafe(wall)),
+                  capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(record.endsAt! * 1000)),
+                });
+                // Keep the identity durable before rejecting a late first allocation;
+                // the acquisition owner still needs to close that actual lease.
+                return slot === 1 && allocatedMs > evidence.configuration.setupLimitMs
+                  ? Reactor.ReactorError.fromCode("Timeout", "renewal setup deadline elapsed")
+                  : Effect.void;
+              }),
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.sync(() => {
+                if (Reactor.AcquisitionFailure.is(error) && error.cleanup.sessionId !== undefined)
+                  allocation(slot, {
+                    closedMs: time.now(),
+                    leaseCleanup: error.cleanup,
+                  });
+              }),
+            ),
+            Effect.onExit((exit) =>
+              Effect.gen(function* () {
+                if (Exit.isSuccess(exit) || allocatedSession === undefined) return;
+                const current = yield* allocatedSession.current;
+                if (current.close !== undefined)
+                  allocation(slot, { leaseCleanup: current.close, closedMs: time.now() });
+              }),
+            ),
+          );
+          const decorated = attribution.source(opened.source);
+          const source: Orchestration.Source = {
+            ...decorated,
+            prepareRouted: (plan, hooks = {}) =>
+              decorated.prepareRouted(plan, {
+                ...hooks,
+                result: (id, result) =>
+                  Effect.gen(function* () {
+                    // The physical result hook names the source even when no provider
+                    // clip could be correlated. It forwards the original outcome unchanged.
+                    evidence = {
+                      ...evidence,
+                      items: evidence.items.map((item) =>
+                        item.key === plan.request.metadata.qualificationKey
+                          ? {
+                              ...item,
+                              sessionId: opened.source.id,
+                              ...(Result.isSuccess(result) ? { clipId: result.success } : {}),
+                            }
+                          : item,
+                      ),
+                    };
+                    if (Result.isFailure(result) && result.failure.context.outcome !== undefined)
+                      run.evidence.outcomes.push(result.failure.context.outcome);
+                    snapshot();
+                    yield* hooks.result?.(id, result) ?? Effect.void;
+                  }),
+              }),
+            close: Effect.gen(function* () {
+              allocation(slot, { closeRequestedMs: time.now() });
+              if (target.mode === "rehearsal" && target.faults?.includes("stallClose") === true)
+                return yield* Effect.never;
+              const cleanup = yield* opened.source.close;
+              allocation(slot, { closedMs: time.now(), cleanup });
+              if (!confirmedOwnedCleanup(cleanup, opened.source.id))
+                yield* Deferred.fail(
+                  failure,
+                  Reactor.ReactorError.fromCode("Shutdown", "source cleanup was not confirmed"),
+                );
+              return cleanup;
+            }),
+          };
+          return { source, lifetime: opened.lifetime };
+        });
+        const owner = yield* Orchestration.make({
+          open,
+          lead: "40 seconds",
+          handoffGrace: "250 millis",
+          maxSessions: 2,
+        }).pipe(Scope.provide(ownerScope));
+        handle = owner;
+        yield* watch(
+          readInto(
+            attribution.recorded(owner.media.video),
+            {
+              add: (element, atMs) => {
+                video.add(element, atMs);
+                if (element._tag === "Lost") videoLoss = element;
+                else {
+                  const source = sourceReader(element.frame);
+                  if (videoLoss !== undefined) source?.video.add(videoLoss, atMs);
+                  source?.video.add(element, atMs);
+                  videoLoss = undefined;
+                }
+              },
+            },
+            time.elapsed,
+          ),
+        );
+        yield* watch(
+          readInto(
+            attribution.recorded(owner.media.audio),
+            {
+              add: (element, atMs) => {
+                audio.add(element, atMs);
+                if (element._tag === "Lost") audioLoss = element;
+                else {
+                  const source = sourceReader(element.frame);
+                  if (audioLoss !== undefined) source?.audio.add(audioLoss, atMs);
+                  source?.audio.add(element, atMs);
+                  audioLoss = undefined;
+                }
+              },
+            },
+            time.elapsed,
+          ),
+        );
+        const observeState = (state: Orchestration.EngineState) => {
+          const records = [
+            ...state.queued,
+            ...state.ready,
+            ...Option.toArray(Option.map(state.building, (building) => building.record)),
+            ...Option.toArray(Option.flatMap(state.playing, (playing) => playing.record)),
+          ];
+          evidence = {
+            ...evidence,
+            items: evidence.items.map((item) => {
+              const record = records.find(
+                (clip) => clip.request?.metadata.qualificationKey === item.key,
+              );
+              return record === undefined
+                ? item
+                : { ...item, clipId: record.clipId, sessionId: record.sessionId };
+            }),
+          };
+          const preferred = Option.getOrUndefined(state.preferredSessionId);
+          if (
+            prepared &&
+            preferred !== undefined &&
+            preferred === evidence.allocations[1]?.sessionId &&
+            evidence.prepared === undefined
+          )
+            evidence = {
+              ...evidence,
+              prepared: { atMs: time.now(), preferredSessionId: preferred },
+            };
+        };
+        const observation = yield* owner.observe({ capacity: 4096 });
+        observeState(observation.initial.engine);
+        yield* watch(
+          observation.events.pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (event._tag === "Renewal") {
+                  if (event.event._tag === "Prepared") prepared = true;
+                  if (event.event._tag === "Switched") {
+                    const renewal = event.event;
+                    evidence = {
+                      ...evidence,
+                      switches: [
+                        ...evidence.switches,
+                        {
+                          atMs: time.now(),
+                          retiringSessionId: renewal.sessionId,
+                          ...(renewal.handoff === undefined ? {} : { handoff: renewal.handoff }),
+                          tail: {
+                            ...renewal.tail,
+                            sourceDrops: {
+                              video:
+                                renewal.tail.sourceDrops.video === null
+                                  ? null
+                                  : String(renewal.tail.sourceDrops.video),
+                              audio:
+                                renewal.tail.sourceDrops.audio === null
+                                  ? null
+                                  : String(renewal.tail.sourceDrops.audio),
+                            },
+                          },
+                        },
+                      ],
+                    };
+                  }
+                }
+                observeState(yield* owner.engine.state);
+                snapshot();
+              }),
+            ),
+          ),
+        );
+        const request = (key: string) =>
+          new Orchestration.ClipRequest({
+            prompt,
+            references: [],
+            durationSeconds: 5,
+            metadata: { qualificationKey: key },
+          });
+        const scheduler = yield* Orchestration.makeScheduler(
+          Orchestration.lineup({
+            runway: { floor: 0, target: "5 seconds" },
+            clip: () => {
+              evidence = { ...evidence, fillerRequests: evidence.fillerRequests + 1 };
+              return request("filler");
+            },
+          }),
+        ).pipe(
+          Effect.provideService(Orchestration.Engine, owner.engine),
+          Scope.provide(ownerScope),
+        );
+        yield* scheduler.asRun.pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              const status: SchedulerRenewal["items"][number]["statuses"][number] = {
+                _tag: event.status._tag,
+                atMs: time.now(),
+                ...("sessionId" in event.status ? { sessionId: event.status.sessionId } : {}),
+                ...("terminal" in event.status ? { terminal: event.status.terminal } : {}),
+                ...(event.status._tag === "Ended" ? { termination: event.status.termination } : {}),
+                ...(event.status._tag === "Failed"
+                  ? { failureKind: event.status.reason._tag }
+                  : {}),
+              };
+              evidence = {
+                ...evidence,
+                items: evidence.items.map((item) =>
+                  item.key === event.key ? { ...item, statuses: [...item.statuses, status] } : item,
+                ),
+              };
+              if (!evidence.items.some((item) => item.key === event.key))
+                evidence = {
+                  ...evidence,
+                  fillerEvents: [...evidence.fillerEvents, { key: event.key, status }],
+                };
+              observeState(yield* owner.engine.state);
+              snapshot();
+              if (event.status._tag === "Unknown" || event.status._tag === "Failed") {
+                if (event.status._tag === "Unknown") run.evidence.outcomes.push("unknown");
+                yield* Deferred.fail(
+                  failure,
+                  Reactor.ReactorError.fromCode(
+                    "InvalidState",
+                    "scheduler item has no qualified outcome",
+                  ),
+                );
+              }
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const submit = (key: "qualification-A" | "qualification-B") =>
+          Effect.gen(function* () {
+            evidence = {
+              ...evidence,
+              items: [...evidence.items, { key, requestedSeconds: 5, statuses: [] }],
+            };
+            snapshot();
+            return yield* recorded(
+              run,
+              scheduler.submit({
+                key: Orchestration.ItemKey.make(key),
+                lane: "line",
+                request: request(key),
+              }),
+            );
+          });
+        const a = yield* submit("qualification-A");
+        const aStarted = yield* a.started;
+        if (aStarted._tag !== "Started")
+          return yield* Reactor.ReactorError.fromCode("InvalidState", "A did not start");
+        const aEnded = yield* a.outcome;
+        if (aEnded._tag !== "Ended")
+          return yield* Reactor.ReactorError.fromCode("InvalidState", "A did not end");
+        yield* waitFor(() => evidence.prepared !== undefined);
+        const b = yield* submit("qualification-B");
+        yield* waitFor(
+          () =>
+            evidence.items[1]?.sessionId === evidence.allocations[1]?.sessionId &&
+            evidence.items[1]!.statuses.some(
+              (status) => status._tag === "Building" || status._tag === "Ready",
+            ),
+        );
+        evidence = {
+          ...evidence,
+          drain: {
+            requestedMs: time.now(),
+            acceptedKeys: ["qualification-A", "qualification-B"],
+            outcome: "pending",
+            allocationsWhenRequested: evidence.allocations.filter(
+              (slot) => slot.sessionId !== undefined,
+            ).length,
+          },
+        };
+        snapshot();
+        yield* recorded(run, scheduler.drain({ finish: "accepted" })).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              evidence = { ...evidence, drain: { ...evidence.drain!, outcome: "failed" } };
+              snapshot();
+            }),
+          ),
+        );
+        evidence = {
+          ...evidence,
+          drain: {
+            ...evidence.drain!,
+            completedMs: time.now(),
+            outcome: "completed",
+            allocationsWhenCompleted: evidence.allocations.filter(
+              (slot) => slot.sessionId !== undefined,
+            ).length,
+          },
+        };
+        if ((yield* b.outcome)._tag !== "Ended")
+          return yield* Reactor.ReactorError.fromCode("InvalidState", "B did not end");
+        yield* waitFor(
+          () =>
+            evidence.switches.length === 1 &&
+            evidence.items[1]!.statuses.some((status) => status._tag === "Ended"),
+        );
+        evidence = {
+          ...evidence,
+          media: { ...evidence.media, pressure: pressureEvidence(yield* owner.media.pressure) },
+        };
+        snapshot();
+      });
+      yield* body.pipe(
+        Effect.raceFirst(Deferred.await(failure)),
+        Effect.raceFirst(workDeadline),
+        Effect.onExit(() =>
+          Effect.gen(function* () {
+            evidence = {
+              ...evidence,
+              cleanup: {
+                _tag: "Legacy",
+                requestedMs: time.now(),
+                incomplete: ["canonical close is pending"],
+              },
+            };
+            snapshot();
+            // A durable failed checkpoint precedes SDK finalizers. An uninterruptible
+            // source close still needs the separately documented external emergency bound.
+            let overdue = false;
+            const closing = yield* Effect.gen(function* () {
+              if (handle !== undefined) {
+                const report = yield* handle.close;
+                evidence = {
+                  ...evidence,
+                  cleanup: {
+                    ...evidence.cleanup!,
+                    report,
+                    completedMs: time.now(),
+                    incomplete: overdue ? ["cleanup observation deadline elapsed"] : [],
+                  },
+                };
+                snapshot();
+              }
+              yield* Scope.close(ownerScope, Exit.void);
+            }).pipe(Effect.forkIn(observationScope));
+            const closed = yield* Fiber.await(closing).pipe(
+              Effect.asSome,
+              Effect.interruptible,
+              Effect.timeoutOrElse({
+                duration: 20000,
+                orElse: () =>
+                  Effect.sync(() => {
+                    overdue = true;
+                    evidence = {
+                      ...evidence,
+                      cleanup: {
+                        ...evidence.cleanup!,
+                        incomplete: ["cleanup observation deadline elapsed"],
+                      },
+                    };
+                    snapshot();
+                    return Option.none();
+                  }),
+              }),
+            );
+            if (Option.isNone(closed))
+              return yield* Reactor.ReactorError.fromCode(
+                "Timeout",
+                "canonical cleanup exceeded its observation budget",
+              );
+            if (Exit.isFailure(closed.value)) {
+              evidence = {
+                ...evidence,
+                cleanup: { ...evidence.cleanup!, incomplete: ["canonical close failed"] },
+              };
+              snapshot();
+              return yield* Effect.failCause(closed.value.cause);
+            }
+            if (
+              rate !== undefined &&
+              evidence.allocations.every(
+                (slot) => slot.closedMs !== undefined && slot.allocatedMs !== undefined,
+              )
+            )
+              run.evidence.budget.estimatedUsd = round(
+                evidence.allocations.reduce(
+                  (sum, slot) =>
+                    sum + billedUsd(rate!, (slot.closedMs! - slot.allocatedMs!) / 1000),
+                  0,
+                ),
+              );
+            snapshot();
+          }),
+        ),
+      );
+      run.evidence.criteria.push(...renewalJudgments(run.evidence));
+      snapshot();
+    }),
+  ).pipe(Effect.provide(clientLayer(target)));
+
 interface OwnerRecord {
   readonly sessionId: string;
   readonly jwt: string;
@@ -1481,13 +2139,19 @@ const execute = async (
     writer: new Writer(file, () => secrets),
   };
   save(run);
-  const program = (
-    check === "scheduler"
+  type CheckProgram = ReturnType<typeof schedulerRenewal> | ReturnType<typeof scheduler>;
+  const selected: Effect.Effect<
+    void,
+    Effect.Error<CheckProgram>,
+    Effect.Services<CheckProgram>
+  > = check === "scheduler-renewal"
+    ? schedulerRenewal(target, run, budget)
+    : check === "scheduler"
       ? scheduler(target, run, budget)
       : check === "takeover" || check === "resume"
         ? takeover(target, run, budget, check)
-        : vertical(target, run, budget, check)
-  ).pipe(
+        : vertical(target, run, budget, check);
+  const program = selected.pipe(
     Effect.provideService(Tracer.Tracer, run.spans.tracer),
     Effect.provide(Reactor.FetchHttp.layer),
   );
@@ -1507,6 +2171,13 @@ const execute = async (
   const replacement = run.evidence.scheduler?.replacement;
   if (replacement?.session !== undefined && replacement.termination?.confirmed !== true)
     run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Replacement session ${replacement.session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s; confirm its termination and cost in the Reactor dashboard.`;
+  for (const slot of run.evidence.schedulerRenewal?.allocations ?? []) {
+    if (
+      slot.sessionId !== undefined &&
+      (slot.cleanup?.lease ?? slot.leaseCleanup)?.remote.confirmed !== true
+    )
+      run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Session ${slot.sessionId} was not confirmed ended. Its recorded cap expiry is ${slot.capEndsAt ?? "unknown"}; confirm termination and cost in the Reactor dashboard.`;
+  }
   save(run);
   console.log(`hosted-qualification-${run.evidence.verdict} ${check} ${file}`);
   for (const reason of run.evidence.reasons) console.log(`  - ${reason}`);
@@ -1600,10 +2271,11 @@ const rehearse = async (args: readonly string[]): Promise<number> => {
         network: "loopback twin",
         ownerArgs: [`--twin=${twin.url}`],
         windowMs: 1_500,
+        faults,
       },
       check,
       {
-        checkUsd: check === "scheduler" ? maxSchedulerUsd : maxCheckUsd,
+        checkUsd: ceilingFor(check),
         totalUsd: maxTotalUsd,
         reservedUsd: 0,
       },

@@ -75,6 +75,8 @@ interface Clip {
 }
 
 export interface ModelFaults {
+  readonly noVideo?: boolean;
+  readonly stallBuild?: boolean;
   /** Receive every enqueue and never answer it. */
   readonly dropEnqueueReply?: boolean;
   readonly blackFrames?: boolean;
@@ -154,7 +156,13 @@ export class H3Model {
           : { id: playing.clip.clip_id, elapsedMs: now - playing.startedAt },
       hold: playing === undefined && !this.flush ? (this.held ?? null) : null,
       paused: [...this.paused],
-      video: this.faults.blackFrames ? "black" : this.faults.frozenFrames ? "frozen" : "live",
+      video: this.faults.noVideo
+        ? "absent"
+        : this.faults.blackFrames
+          ? "black"
+          : this.faults.frozenFrames
+            ? "frozen"
+            : "live",
       audio: this.faults.noAudio !== true,
     };
   }
@@ -529,6 +537,7 @@ export class H3Model {
       return;
     const id = this.generation[0]!.clip_id;
     this.building = id;
+    if (this.faults.stallBuild === true) return;
     this.later(buildMs, () => {
       if (this.building !== id) return this.build();
       this.building = undefined;

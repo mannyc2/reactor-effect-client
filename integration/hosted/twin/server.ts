@@ -42,6 +42,14 @@ export interface TwinRate {
 }
 
 export interface TwinFaults {
+  readonly refuseFirstAllocation?: boolean;
+  readonly refuseSecondAllocation?: boolean;
+  readonly failConnect?: boolean;
+  readonly overgrantSecondToken?: boolean;
+  readonly noFirstVideo?: boolean;
+  readonly noSecondVideo?: boolean;
+  readonly dropSecondEnqueueReply?: boolean;
+  readonly stallSecondBuild?: boolean;
   /** Tokens grant two sessions instead of the one asked for. */
   readonly overgrant?: boolean;
   /**
@@ -348,7 +356,11 @@ class TwinServer implements Twin {
     const grant: Grant = {
       id: `twin-jwt-${randomUUID()}`,
       model,
-      maxSessions: this.options.faults?.overgrant === true ? 2 : sessions,
+      maxSessions:
+        this.options.faults?.overgrant === true ||
+        (this.options.faults?.overgrantSecondToken === true && this.grants.size === 1)
+          ? 2
+          : sessions,
       maxSessionSeconds: seconds,
       expiresAt: issuedAt + expiresAfter,
       sessions: 0,
@@ -432,6 +444,8 @@ class TwinServer implements Twin {
     if (resource !== "connections") throw refuse(404, "not_found", "no such route");
     if (session.state !== "ACTIVE") throw refuse(409, "session_ended", "the session has ended");
     if (cid === undefined) {
+      if (this.options.faults?.failConnect === true)
+        throw refuse(403, "fixture_connect_refused", "fixture connect refusal");
       if (method !== "POST") throw refuse(405, "method_not_allowed", method);
       await read(request);
       const connection: Connection = {
@@ -482,6 +496,11 @@ class TwinServer implements Twin {
       throw refuse(400, "unsupported_transport", "the twin speaks WebRTC 1.0 only");
     if (grant.sessions >= grant.maxSessions)
       throw refuse(403, "session_limit", "the token's sessions are used");
+    if (
+      (this.created === 0 && this.options.faults?.refuseFirstAllocation === true) ||
+      (this.created === 1 && this.options.faults?.refuseSecondAllocation === true)
+    )
+      throw refuse(403, "fixture_allocation_refused", "fixture allocation refusal");
     grant.sessions++;
     this.created++;
     const faults = this.options.faults ?? {};
@@ -497,7 +516,15 @@ class TwinServer implements Twin {
             this.enqueued++;
           },
         },
-        faults,
+        {
+          ...faults,
+          noVideo:
+            this.created === 1 ? faults.noFirstVideo === true : faults.noSecondVideo === true,
+          dropEnqueueReply:
+            faults.dropEnqueueReply === true ||
+            (this.created === 2 && faults.dropSecondEnqueueReply === true),
+          stallBuild: this.created === 2 && faults.stallSecondBuild === true,
+        },
       ),
       connections: new Map(),
       peer: undefined,

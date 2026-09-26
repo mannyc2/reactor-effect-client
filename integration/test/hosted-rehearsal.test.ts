@@ -3,7 +3,7 @@
  * same script and checks a paid run executes, through its command line, with
  * every failure path the stop rules exist for. Nothing leaves loopback.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,4 +240,131 @@ test("a token that grants more than asked is refused before any session exists",
   expect(run.evidence.reasons[0]).toContain("invalid or unbounded session grant");
   expect(run.evidence.session).toBeUndefined();
   expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+}, 180_000);
+
+test("public renewal uses the real scheduler, planned switch and accepted drain", () => {
+  const run = rehearse("scheduler-renewal");
+  expect(run.status, run.output).toBe(0);
+  const renewal = run.evidence.schedulerRenewal!;
+  expect(renewal.configuration.constructor).toBe("legacy");
+  expect(renewal.openAttempts).toBe(2);
+  expect(renewal.switches).toHaveLength(1);
+  expect(renewal.drain?.outcome).toBe("completed");
+  expect(renewal.media.attributionComplete).toBe(true);
+  expect(renewal.media.decodedBoundary?.gapMs).toBeGreaterThanOrEqual(0);
+  expect(renewal.allocations.every((slot) => slot.cleanup?.lease.remote.confirmed === true)).toBe(
+    true,
+  );
+  expect(run.evidence.scheduler).toBeUndefined();
+  credentialFree(run.text);
+}, 180_000);
+
+for (const fault of [
+  "refuseFirstAllocation",
+  "refuseSecondAllocation",
+  "failConnect",
+  "overgrantSecondToken",
+  "slowDelete",
+  "ignoreDelete",
+  "dropSecondEnqueueReply",
+  "noFirstVideo",
+  "noSecondVideo",
+  "stallSecondBuild",
+])
+  test(`public renewal retains failed evidence for ${fault}`, () => {
+    const run = rehearse("scheduler-renewal", [fault]);
+    expect(run.status, run.output).toBe(1);
+    expect(run.evidence.verdict).toBe("fail");
+    const renewal = run.evidence.schedulerRenewal!;
+    expect(
+      renewal.allocations.filter((slot) => slot.sessionId !== undefined).length,
+    ).toBeLessThanOrEqual(2);
+    expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+    if (fault === "overgrantSecondToken" || fault === "refuseFirstAllocation")
+      expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
+    if (fault === "refuseSecondAllocation") {
+      expect(renewal.openAttempts).toBe(3);
+      expect(renewal.allocations.filter((slot) => slot.sessionId !== undefined)).toHaveLength(1);
+    }
+    if (fault === "failConnect")
+      expect(renewal.allocations[0]?.leaseCleanup?.remote.confirmed).toBe(true);
+    if (fault === "dropSecondEnqueueReply") {
+      expect(run.evidence.outcomes).toContain("unknown");
+      expect(renewal.items[1]?.sessionId).toBe(renewal.allocations[1]?.sessionId);
+      expect(renewal.items[1]?.statuses.some((status) => status._tag === "Unknown")).toBe(true);
+    }
+    if (fault === "stallSecondBuild") expect(renewal.switches).toEqual([]);
+    credentialFree(run.text);
+  }, 180_000);
+
+/** The parent process is the explicit external emergency owner for these two interruption fixtures. */
+const stopAtCheckpoint = async (fault: string | undefined, signal: NodeJS.Signals) => {
+  const ledger = mkdtempSync(join(tmpdir(), "hosted-renewal-interrupt-"));
+  const child = spawn(
+    process.execPath,
+    [
+      script,
+      "rehearse",
+      "scheduler-renewal",
+      `--ledger=${ledger}`,
+      ...(fault === undefined ? [] : [`--faults=${fault}`]),
+    ],
+    { env: { PATH: process.env.PATH ?? "" }, stdio: "ignore" },
+  );
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once("exit", resolve);
+    child.once("error", reject);
+  });
+  const deadline = Date.now() + 90_000;
+  let checkpoint: Evidence | undefined;
+  let file: string | undefined;
+  try {
+    while (Date.now() < deadline) {
+      const name = readdirSync(ledger).find((entry) => entry.endsWith(".json"));
+      if (name !== undefined) {
+        file = join(ledger, name);
+        checkpoint = Schema.decodeUnknownSync(Evidence)(JSON.parse(readFileSync(file, "utf8")));
+        const source = checkpoint.schedulerRenewal?.allocations[0];
+        if (
+          fault === undefined
+            ? source?.sessionId !== undefined
+            : source?.closeRequestedMs !== undefined
+        )
+          break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(file).toBeDefined();
+    expect(checkpoint?.schedulerRenewal?.allocations[0]?.sessionId).toBeDefined();
+    child.kill(signal);
+    const emergency = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    try {
+      await exited;
+    } finally {
+      clearTimeout(emergency);
+    }
+    return Schema.decodeUnknownSync(Evidence)(JSON.parse(readFileSync(file!, "utf8")));
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+};
+
+test("public renewal interruption after allocation preserves the canonical lease report", async () => {
+  const evidence = await stopAtCheckpoint(undefined, "SIGINT");
+  expect(evidence.verdict).toBe("fail");
+  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+  const source = evidence.schedulerRenewal!.allocations[0]!;
+  expect(source.cleanup?.lease.remote.confirmed ?? source.leaseCleanup?.remote.confirmed).toBe(
+    true,
+  );
+}, 180_000);
+
+test("public renewal stalled close leaves a durable failed checkpoint after emergency termination", async () => {
+  const evidence = await stopAtCheckpoint("stallClose", "SIGKILL");
+  expect(evidence.verdict).toBe("fail");
+  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+  const source = evidence.schedulerRenewal!.allocations[0]!;
+  expect(source.closeRequestedMs).toBeDefined();
+  expect(source.cleanup).toBeUndefined();
+  expect(source.leaseCleanup).toBeUndefined();
 }, 180_000);

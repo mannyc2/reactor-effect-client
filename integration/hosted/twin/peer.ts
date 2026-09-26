@@ -434,7 +434,12 @@ class TwinPeer implements Peer {
   private dueVideo(count: number, now: number, dueAt: number): VideoFrame[] {
     const track = this.receiving.find((entry) => entry.kind === "video");
     const media = this.media;
-    if (track === undefined || count <= 0 || media?.state.paused.includes(track.name) !== false)
+    if (
+      track === undefined ||
+      count <= 0 ||
+      media?.state.paused.includes(track.name) !== false ||
+      media.state.video === "absent"
+    )
       return [];
     const dropped = Math.max(0, count - videoBurst);
     this.dropped.video += BigInt(dropped);

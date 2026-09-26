@@ -181,3 +181,9 @@ test("the runner refuses without an explicit authorization, before any request",
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("hosted-qualification-refused");
 });
+
+test("public scheduler renewal reserves two sessions under its own discriminator", () => {
+  const auth = authorize(["scheduler-renewal", ...without("--budget-usd"), "--budget-usd=1.50"]);
+  expect(auth.check).toBe("scheduler-renewal");
+  expect(auth.budgetUsd).toBe(1.5);
+});
