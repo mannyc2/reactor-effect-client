@@ -23,6 +23,7 @@
     "integration/hosted/evidence/**/*.json",
     "release-tools/node_modules/**",
     "release-tools/bun.lock",
-    ".release/**"
+    ".release/**",
+    ".agents/skills/**"
   ]
 }

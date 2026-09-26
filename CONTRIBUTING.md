@@ -56,6 +56,14 @@ Prefer concrete modules over generic helper layers. Expected operational failure
 
 Each package's `tsconfig.build.json` is its host closure; `packages/client/tsconfig.node.json` additionally checks the client without DOM types. Public `/testing` utilities must remain host-neutral. Its synchronous PNG fixture uses uncompressed stored blocks and portable Base64 rather than Node zlib/Buffer; image content, not compression bytes, is the fixture contract.
 
+## Scheduling work
+
+Start with the Effect version installed for the target branch: read `packages/client/node_modules/effect/AGENTS.md` and its relevant `ai-docs`, declarations, and source before choosing an API. The root has no `node_modules/effect` under Bun's isolated linker. `Schedule` governs in-process retry and recurrence; the orchestration's `Engine`, `Submission`, `Sequence`, and H3 clip operation already own distinct queue and dispatch facts. Audit those existing boundaries before adding a scheduling abstraction. Use `effect-development` for an architecture audit when changing their ownership.
+
+Define the observable contract before implementation: whether order and capacity are per physical source or span renewal, which contiguous Ready clips can actually play, what a deadline or interruption cancels, and which outcomes remain unknown after a lost reply, observation overflow, or source retirement. Measure elapsed work with Effect's monotonic clock and use wall-clock time for recorded instants. A provider `Started` fact does not establish presented or encoded output. Keep editorial priority, filler policy, and output confirmation with the application that owns them.
+
+List the failure modes the change could introduce and map them to existing checks or direct workflow evidence. Add a committed test only for a concrete uncovered failure, following the `testing` skill's failure-first guidance when isolation is warranted. Use `TestClock` and event barriers for timed orchestration behavior; a long single-source simulation does not establish renewal ordering. For a public API change, run the relevant portable gate and isolated package-consumer check after the final build. Native or presentation claims need their corresponding real boundary check.
+
 ## Validation
 
 Use the smallest check that can invalidate your change while iterating, then run the full relevant gate once the inputs are final. Dependent workspaces resolve their siblings through built declarations, so `bun run build` precedes `bun run typecheck`, `bun run lint`, the example and native checks.
