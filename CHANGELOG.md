@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Planned `Switched` renewal events include immutable `handoff` evidence captured before retirement waits: the replacement session, eligibility decision, final clip's local decoded-frame counts and observed grace origin. `sessionId` still identifies the retiring source and aggregate `tail` accounting is unchanged. The field is optional in the public type so historical event values remain assignable. Audio and output presentation completeness remain unverified; hosted qualification of this change has not run.
+- Opt-in `Orchestration.makeContinuous`, `ContinuousOptions`, `ContinuousHandleShape` and `CleanupSummary` support bounded renewal beyond the legacy 64-source lifetime cap. `make`/`layer`, explicit `maxSessions` semantics and complete legacy reports remain unchanged. Continuous adapters must provide unique lifetime source/clip identities; private incarnations fence captured work, source histories stay bounded and incomplete-evidence capacity is reserved before opening. Summaries distinguish confirmed cleanup from unknown submission outcomes with exact bigint counts and cannot be decoded as legacy complete history. This is offline lifecycle evidence, not new hosted qualification.
 
 ### Changed
 
@@ -17,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Scheduler terminal publication now follows retained item/control settlement and admission fencing, so immediate owner closure after `scheduler.failure` cannot strand those waits. Typed termination preserves terminal `Unknown` and earlier decisive evidence; defects and unexpected interruption keep their original Cause. This ordering does not establish remote cleanup completion or wait for resumed callers.
+- Source retirement and handle close join one completion Exit, preserving original defects and factual incomplete cleanup while releasing completed submission/source references. A stalled finalizer remains pending and retains ownership.
 
 ## [0.5.0] - 2026-09-26
 
