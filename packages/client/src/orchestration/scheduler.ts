@@ -888,11 +888,44 @@ export const makeScheduler = (
       while (history.size > maxHistory) history.delete(history.keys().next().value!);
     };
 
-    // A retained uncertain source need not have Ready clips. Sharing the empty
-    // projection keeps large overlap ledgers from allocating arrays per tick.
+    // Capture membership and public rows in one pass. A fresh token reads every
+    // source on every observation, including in-place changes to Engine arrays;
+    // immutable empty rows can be reused without treating array identity as proof.
     const noReady: SchedulerState["sessions"][number]["ready"] = [];
-    const emptySourceRows = new Map<string, SchedulerState["sessions"][number]>();
-    const publishState = (state: EngineState): Effect.Effect<void> => {
+    const sourceRows = new Map<
+      string,
+      { readonly empty: SchedulerState["sessions"][number]; seen: symbol }
+    >();
+    const projectSources = (state: EngineState) => {
+      const seen = Symbol();
+      const sessions = state.sessions.map<SchedulerState["sessions"][number]>(({ sessionId }) => {
+        let cached = sourceRows.get(sessionId);
+        if (cached === undefined) {
+          cached = { empty: { sessionId, ready: noReady }, seen };
+          sourceRows.set(sessionId, cached);
+        } else cached.seen = seen;
+        if (state.ready.length === 0) return cached.empty;
+        return {
+          sessionId,
+          ready: state.ready
+            .filter((clip) => clip.sessionId === sessionId)
+            .map((clip) => {
+              const owner = owned.get(clip.clipId);
+              return owner === undefined ? "other" : owner._tag === "Filler" ? "filler" : owner.key;
+            }),
+        };
+      });
+      // Bound cached rows by snapshot size without scanning unchanged overlap.
+      // Membership still requires this observation's token, even before pruning.
+      if (sourceRows.size > state.sessions.length)
+        for (const [id, cached] of sourceRows) if (cached.seen !== seen) sourceRows.delete(id);
+      // Only the serialized actor uses this membership view, before its next projection.
+      return { sessions, has: (id: string) => sourceRows.get(id)?.seen === seen };
+    };
+    const publishState = (
+      state: EngineState,
+      sessions = projectSources(state).sessions,
+    ): Effect.Effect<void> => {
       const playing = Option.getOrUndefined(state.playing);
       const playingOwner = playing === undefined ? undefined : owned.get(playing.clipId);
       const playingKey: SchedulerState["playing"] =
@@ -915,28 +948,7 @@ export const makeScheduler = (
             .filter((item) => item.lane === name && item.phase !== "Terminal")
             .map((item) => item.key),
         })),
-        sessions: state.sessions.map(({ sessionId }) => {
-          if (state.ready.length === 0) {
-            const existing = emptySourceRows.get(sessionId);
-            if (existing !== undefined) return existing;
-            const row = { sessionId, ready: noReady };
-            emptySourceRows.set(sessionId, row);
-            return row;
-          }
-          return {
-            sessionId,
-            ready: state.ready
-              .filter((clip) => clip.sessionId === sessionId)
-              .map((clip) => {
-                const owner = owned.get(clip.clipId);
-                return owner === undefined
-                  ? "other"
-                  : owner._tag === "Filler"
-                    ? "filler"
-                    : owner.key;
-              }),
-          };
-        }),
+        sessions,
         starved,
       });
     };
@@ -1745,20 +1757,17 @@ export const makeScheduler = (
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
       if (ended !== undefined) return;
-      const liveSources = new Set(state.sessions.map((source) => source.sessionId));
-      // Cache only immutable empty projections, bounded by the live snapshot.
-      // Engine arrays may be mutated, so array identity is never evidence.
-      for (const id of emptySourceRows.keys()) if (!liveSources.has(id)) emptySourceRows.delete(id);
       prune(state);
       refreshAnchors();
+      const sources = projectSources(state);
       if (!observationReady) {
-        yield* publishState(state);
+        yield* publishState(state, sources.sessions);
         return;
       }
       updateRecovery(state);
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
-          uncertain.sessionId !== undefined && !liveSources.has(uncertain.sessionId);
+          uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
         if (sourceRetired) unknownFillers.delete(uncertain.index);
         if (
           sourceRetired ||
@@ -1783,7 +1792,7 @@ export const makeScheduler = (
           item.phase === "Unknown" &&
           item.clipId === undefined &&
           item.unknownSessionId !== undefined &&
-          !liveSources.has(item.unknownSessionId)
+          !sources.has(item.unknownSessionId)
         )
           yield* resolveRetiredUnknown(item);
       if (draining) yield* drainPending(state);
@@ -1809,7 +1818,7 @@ export const makeScheduler = (
         blockedMove,
       });
       refillActive = decision.refillActive;
-      yield* publishState(state);
+      yield* publishState(state, sources.sessions);
       if ((!draining || finishAccepted) && commandCount === 0 && decision.action !== undefined)
         yield* applyPolicy(decision.action, state);
       if (
