@@ -1,5 +1,7 @@
 # Shared integration handoffs
 
+These are historical packet-stage records. All listed pending local integration checks are now complete; see the [final combined report](final-integration-handoff.md) for actual passing gates, investigated failures and remaining remote/hosted gates.
+
 Branch: `codex/integrate-orchestration-packets`, worktree `/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client`. D remains the only writer of the public consumer/type assertions and shared documentation. Runtime source changes are local cherry-picks from their designated owners; no remote merge or push occurred.
 
 ## 003-E switch evidence

@@ -1,5 +1,7 @@
 # 005 package-tooling handoff
 
+The packet-stage evidence below is retained. Final combined portable, native, Chrome/native, release and full package qualification with Bun now pass; see the [final integration report](final-integration-handoff.md). Remote npm/OS CI, Linux execution and paid hosted qualification remain unrun.
+
 Implementation: `3cb73b39b62570602fb03f14d474a9e99247c593`, branch `codex/pin-qualification-stack`, worktree `/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client`. Input and freshly fetched remote main: `c47e50c784f6889b542cf8ee316067b688ca4737`; no drift. Shared original plans were read, not changed.
 
 ## Contract and scope
