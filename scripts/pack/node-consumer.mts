@@ -58,25 +58,31 @@ const audioBounds: number = H3.audioReferenceLimits.maxAudio;
 const validatedAudio: Effect.Effect<H3.ValidatedAudioReference, Root.ReactorError> =
   H3.validateAudioReference({ _tag: "Bytes", bytes: Testing.wavBytes(3) });
 const media: Orchestration.MediaShape = simulated.media;
-// A lineup plays the application's clips ahead of the filler it keeps Ready.
-const lineup: Effect.Effect<
-  Orchestration.LineupShape,
+// The lineup preset is one scheduler policy over the same Engine.
+const scheduler: Effect.Effect<
+  Orchestration.SchedulerShape,
   Root.ReactorError | Orchestration.PolicyFailure,
   Orchestration.Engine | Scope.Scope
-> = Orchestration.makeLineup({
-  filler: {
-    ready: 3,
-    clip: (n) =>
+> = Orchestration.makeScheduler(
+  Orchestration.lineup({
+    runway: { floor: "5 seconds", target: "15 seconds" },
+    clip: ({ index }) =>
       new Orchestration.ClipRequest({
-        prompt: `The host waits at the desk (${n})`,
+        prompt: `The host waits at the desk (${index})`,
         references: [],
         durationSeconds: 5,
         metadata: {},
       }),
-  },
-});
-declare const queued: Orchestration.LineupClip;
-const fate: Effect.Effect<Orchestration.ClipFate> = queued.fate;
+  }),
+);
+const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
+declare const queued: Orchestration.ItemHandle;
+const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
+declare const schedulerHandle: Orchestration.SchedulerShape;
+const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
+const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
+const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
+const stoppedRenewal: Effect.Effect<void, Orchestration.EngineError> = engine.stopRenewal;
 const encoded = Wire.ControlClientMessage.encode({
   request_id: "fixture",
   kind: 1,
@@ -102,6 +108,10 @@ void [
   spoken,
   audioBounds,
   validatedAudio,
-  lineup,
-  fate,
+  scheduler,
+  itemKey,
+  started,
+  drained,
+  terminalFailure,
+  stoppedRenewal,
 ];

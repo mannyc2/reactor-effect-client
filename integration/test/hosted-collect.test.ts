@@ -19,6 +19,7 @@ import {
   terminationTrail,
 } from "../hosted/collect.js";
 import type { StatsSample } from "../hosted/evidence.js";
+import { liveClipVideo } from "../hosted/gates.js";
 
 const frame = (
   sequence: number,
@@ -51,6 +52,7 @@ test("the video reader summarizes frames, their pacing and the recorder's gaps w
   expect(reader.firstAfter(1_100)).toBe(1_210);
   expect(reader.summary()).toEqual({
     frames: 4,
+    arrivalsMs: [1_000, 1_040, 1_210, 1_250],
     formats: ["BGRA"],
     sizes: ["4x2"],
     firstFrameMs: 1_000,
@@ -77,8 +79,39 @@ test("a clip is judged by the frames that arrived while it played", () => {
   reader.add(frame(2, 120), 100);
   reader.add(frame(3, 120), 140);
   expect(reader.summary().distinct).toBe(3);
-  expect(reader.seenSince(100)).toEqual({ frames: 2, formats: ["BGRA"], lit: 2, distinct: 1 });
-  expect(reader.seenSince(1_000)).toEqual({ frames: 0, formats: [], lit: 0, distinct: 0 });
+  expect(reader.seenSince(100)).toEqual({
+    frames: 2,
+    formats: ["BGRA"],
+    lit: 2,
+    distinct: 1,
+    recentLitFrames: 2,
+    recentChanges: 0,
+  });
+  expect(reader.seenSince(1_000)).toEqual({
+    frames: 0,
+    formats: [],
+    lit: 0,
+    distinct: 0,
+    recentLitFrames: 0,
+    recentChanges: 0,
+  });
+});
+
+test("a late idle frame cannot make frozen output live, while sustained motion passes", () => {
+  const reader = new VideoReader();
+  // The provider can announce Started before the media update reaches a reader.
+  for (let sequence = 0; sequence < 5; sequence++)
+    reader.add(frame(sequence, 90), 100 + sequence * 40);
+  for (let sequence = 5; sequence < 12; sequence++)
+    reader.add(frame(sequence, 120), 100 + sequence * 40);
+  const seen = reader.seenSince(100);
+  expect(seen.distinct).toBe(2);
+  expect(seen.recentLitFrames).toBe(8);
+  expect(seen.recentChanges).toBe(1);
+  expect(liveClipVideo(seen)).toBe("the recent frames did not keep changing");
+  for (let sequence = 12; sequence < 20; sequence++)
+    reader.add(frame(sequence, 120 + sequence), 100 + sequence * 40);
+  expect(liveClipVideo(reader.seenSince(100))).toBeUndefined();
 });
 
 test("the audio reader keeps rates, shapes, loudness and loss", () => {
@@ -99,6 +132,7 @@ test("the audio reader keeps rates, shapes, loudness and loss", () => {
   reader.add(block(3, 16_384), 530);
   expect(reader.summary()).toEqual({
     blocks: 2,
+    arrivalsMs: [500, 530],
     sampleRates: [48_000],
     channels: [1],
     samplesPerBlock: [480],

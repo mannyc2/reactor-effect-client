@@ -39,6 +39,7 @@ import { emptyState, isIdle } from "./queries.js";
 import { activeIds, generation, resolve } from "./routing.js";
 import type { Candidate } from "./routing.js";
 import type {
+  ClipRecord,
   CleanupReport,
   EngineError,
   EngineEvent,
@@ -83,6 +84,18 @@ export interface Options<R = never> {
   readonly reconnectTimeout?: Duration.Input | undefined;
   readonly maxSessions?: number;
   /**
+   * How long past the retiring source's final clip a planned switch waits for
+   * that clip's missing video frames; 250 milliseconds by default. Frames can
+   * land after the clip's Ended, but one the provider never sent never does,
+   * so the switch then proceeds and `Switched.tail` reports the shortfall. The
+   * grace also starts when the source reports nothing playing, in case Ended
+   * was lost. At most 5 seconds, since the retiring source running dry within
+   * it is not reported as `Starved`. Renewal checks every 100 milliseconds, so
+   * the switch can come up to one check after the grace. A bare number is
+   * milliseconds.
+   */
+  readonly handoffGrace?: Duration.Input | undefined;
+  /**
    * The video frames the media output keeps for a reader that has not taken
    * them, 96 by default (4 seconds at 24 fps). Past it the orchestration fails
    * with `Overflow`.
@@ -108,6 +121,21 @@ const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent>
   event._tag === "Engine" ? Result.succeed(event.event) : Result.fail(event);
 const renewalsOnly = (event: HandleEvent): Result.Result<Renewal, HandleEvent> =>
   event._tag === "Renewal" ? Result.succeed(event.event) : Result.fail(event);
+
+/** A physical source supplies facts; the renewing handle assigns their owner. */
+const withSessionId = (state: EngineState, sessionId: string): EngineState => {
+  const record = (clip: ClipRecord): ClipRecord => Object.freeze({ ...clip, sessionId });
+  return Object.freeze({
+    ...state,
+    queued: state.queued.map(record),
+    building: Option.map(state.building, (build) => ({ ...build, record: record(build.record) })),
+    ready: state.ready.map(record),
+    playing: Option.map(state.playing, (playing) => ({
+      ...playing,
+      record: Option.map(playing.record, record),
+    })),
+  });
+};
 
 type Replacement =
   | { readonly _tag: "Absent" }
@@ -149,6 +177,7 @@ export const make = <R>(
       })),
     );
     const fatal = yield* Deferred.make<ReactorFailure>();
+    let renewing = true;
     const slots = new Map<string, Slot>();
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
@@ -159,6 +188,15 @@ export const make = <R>(
     const reconnectTimeout = Duration.toMillis(
       yield* parsed(() =>
         duration(options.reconnectTimeout ?? "10 seconds", "orchestration reconnectTimeout"),
+      ),
+    );
+    const handoffGraceMs = Duration.toMillis(
+      yield* parsed(() =>
+        duration(options.handoffGrace ?? "250 millis", "orchestration handoffGrace", {
+          allowZero: true,
+          // Starvation during the grace is not reported, so it stays short.
+          maximum: "5 seconds",
+        }),
       ),
     );
     const leadSeconds = Duration.toSeconds(
@@ -295,6 +333,10 @@ export const make = <R>(
           replacement = { _tag: "Absent" };
         if (slot !== current) return;
         const pending = replacement;
+        if (!renewing && pending._tag === "Absent") {
+          yield* fail(cause);
+          return;
+        }
         const selected =
           pending._tag === "Ready"
             ? pending.slot
@@ -420,7 +462,8 @@ export const make = <R>(
         video: (frame) =>
           Effect.suspend(() => {
             if (slot !== current || terminalFailure !== undefined) return Effect.void;
-            slot.recordVideo();
+            if (slot.recordVideo() && replacement._tag === "Ready")
+              emit({ _tag: "HandoffReady", sessionId: slot.source.id });
             return buffer.offerVideo(frame).pipe(Effect.catch(fail));
           }),
         audio: (frame) =>
@@ -496,11 +539,30 @@ export const make = <R>(
             yield* slot.source.setAutoplay(false);
             yield* slot.observe(
               (event) =>
-                Effect.suspend(() => {
+                Effect.gen(function* () {
                   if (event._tag === "SessionFailed")
-                    return scheduleRecovery(slot, event.failure, "replace");
+                    return yield* scheduleRecovery(slot, event.failure, "replace");
+                  // Once the final clip has ended or arrived in full, a planned
+                  // switch follows within its bounded grace, so the retiring
+                  // source running dry is not starvation. Before its Ended, no
+                  // switch is due yet, and that starvation is reported.
+                  if (
+                    event._tag === "Starved" &&
+                    slot === current &&
+                    replacement._tag === "Ready" &&
+                    (slot.finalClip().video !== "incomplete" ||
+                      slot.finalClip().endedAgoMs !== undefined)
+                  ) {
+                    const next = yield* replacement.slot.source.state;
+                    if (
+                      next.availability === "Ready" &&
+                      next.ready.length > 0 &&
+                      isIdle(yield* slot.source.state) &&
+                      !(yield* openSequences(slot))
+                    )
+                      return;
+                  }
                   if (event._tag !== "Starved" || slot === current) emit(event);
-                  return Effect.void;
                 }),
               (cause) => scheduleRecovery(slot, cause, "replace"),
             );
@@ -625,7 +687,7 @@ export const make = <R>(
     const sequenceError = (error: Sequence.SequenceError) =>
       PolicyFailure.sequence(error.sequenceId, error.code);
 
-    const prepare: EngineShape["prepare"] = (input) =>
+    const prepare = (input: Parameters<EngineShape["prepare"]>[0], expectedSessionId?: string) =>
       Effect.gen(function* () {
         const request = yield* captureRequest(input);
         const id = `${namespace}:${++submissionSequence}`;
@@ -639,6 +701,11 @@ export const make = <R>(
               // closes. Only selecting or committing fresh work needs a live owner.
               yield* guard("enqueue", Effect.void);
               const decision = yield* route(request).pipe(commands.withPermits(1));
+              if (expectedSessionId !== undefined && decision.owner !== expectedSessionId)
+                return yield* PolicyFailure.refuse(
+                  "RouteChanged",
+                  "The selected source changed before dispatch",
+                );
               const target = slots.get(decision.owner);
               if (target === undefined)
                 return yield* PolicyFailure.refuse("SessionRetired", "Selected source was retired");
@@ -754,13 +821,43 @@ export const make = <R>(
 
     const state: Effect.Effect<EngineState> = Effect.gen(function* () {
       const live = [...slots.values()].filter((slot) => !slot.closed);
-      const values = yield* Effect.forEach(live, (slot) => slot.source.state);
+      const values = (yield* Effect.forEach(live, (slot) => slot.source.state)).map(
+        (value, index) => withSessionId(value, live[index]!.source.id),
+      );
       const primary = values[live.indexOf(current!)] ?? emptyState();
+      const next = replacement._tag === "Ready" ? replacement.slot : undefined;
+      const preferred =
+        next !== undefined && current !== undefined && !(yield* openSequences(current))
+          ? next
+          : current;
       const builds = values.flatMap((value) =>
         Option.isSome(value.building) ? [value.building.value] : [],
       );
       return Object.freeze({
         ...primary,
+        sessions: Object.freeze(
+          values.map((value, index) => ({
+            sessionId: live[index]!.source.id,
+            availability: value.availability,
+          })),
+        ),
+        preferredSessionId: Option.fromUndefinedOr(preferred?.source.id),
+        retiringSessionId:
+          next !== undefined && current !== undefined && !current.closed
+            ? Option.some(current.source.id)
+            : Option.none(),
+        // No media condition: a short final clip holds the switch only for the
+        // grace past its Ended, or past the source first reported idle. Gating
+        // on the playing clip's frames instead could hold only in the instant
+        // between its last frame and Ended, so a lossy clip let the retiring
+        // source roll into its next filler.
+        handoffReady:
+          next !== undefined &&
+          preferred === next &&
+          current !== undefined &&
+          !current.closed &&
+          !current.recovering &&
+          primary.availability === "Ready",
         availability: values.some((value) => value.availability === "Unavailable")
           ? "Unavailable"
           : values.some((value) => value.availability === "Synchronizing")
@@ -814,6 +911,8 @@ export const make = <R>(
       prepare,
       enqueue: (request) =>
         prepare(request).pipe(Effect.flatMap((submission) => submission.submit)),
+      enqueueOnSource: (request, expectedSessionId) =>
+        prepare(request, expectedSessionId).pipe(Effect.flatMap((submission) => submission.submit)),
       state,
       events: Stream.filterMap(observations.stream(), engineOnly),
       observe: (options) =>
@@ -824,6 +923,20 @@ export const make = <R>(
           })),
         ),
       failure: Deferred.await(fatal),
+      stopRenewal: Effect.gen(function* () {
+        // Fence allocation before waiting on a command already in progress.
+        renewing = false;
+        yield* commands.withPermit(
+          Effect.gen(function* () {
+            if (replacement._tag !== "Opening") return;
+            const pending = replacement.fiber;
+            replacement = { _tag: "Absent" };
+            yield* Fiber.interrupt(pending);
+            const result = yield* Fiber.await(pending);
+            if (Exit.isSuccess(result)) yield* result.value.close;
+          }),
+        );
+      }),
       setAutoplay: (enabled) =>
         commands.withPermit(
           guard(
@@ -879,7 +992,13 @@ export const make = <R>(
                 const value = yield* slot.source.state;
                 preceding += queue === "generation" ? generation(value).length : value.ready.length;
               }
-              yield* selected.slot.source.move(id, Math.max(0, position - preceding));
+              if (position < preceding || position >= preceding + own.length)
+                return yield* PolicyFailure.refuse(
+                  "InvalidRequest",
+                  "Move position is outside the clip's session range",
+                  "move",
+                );
+              yield* selected.slot.source.move(id, position - preceding);
             }),
           ),
         ),
@@ -959,7 +1078,8 @@ export const make = <R>(
               );
               return;
             case "Prepare":
-              replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
+              if (renewing)
+                replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
               return;
             case "InspectHandoff":
               break;
@@ -974,18 +1094,21 @@ export const make = <R>(
             nextState.ready.length === 0
           )
             return;
-          const tail = yield* retired(current);
+          // The provider reports nothing playing: a lost Ended must not hold
+          // the switch until expiry, so the grace also starts here.
+          current.observedIdle();
           if (
             !canHandoff({
               sequenceOpen: false,
               currentIdle: isIdle(oldState),
               replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
-              video: tail.tail.video.status,
-              droppedVideo: tail.tail.sourceDrops.video,
-              droppedAudio: tail.tail.sourceDrops.audio,
+              finalClip: current.finalClip(),
+              graceMs: handoffGraceMs,
             })
           )
             return;
+          // Read only for a switch that happens: it can wait on source pressure.
+          const tail = yield* retired(current);
           const old = current;
           // The switch is traced; the tick that found it is not.
           yield* Effect.gen(function* () {

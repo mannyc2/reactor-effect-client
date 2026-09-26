@@ -84,6 +84,7 @@ export const ChannelEvent = Schema.Union([
     phase: Schema.Literals([
       "Opened",
       "Prepared",
+      "HandoffReady",
       "SetupFailed",
       "Recovering",
       "Reconnected",

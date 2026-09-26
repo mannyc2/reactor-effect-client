@@ -59,6 +59,7 @@ export const member = (
 ) => request({ sequence: { id, final, memberId }, ...fields });
 export const record = (id: string, seconds = 1): ClipRecord => ({
   clipId: ClipId.make(id),
+  sessionId: "fixture",
   durationSeconds: seconds,
   provider: fixtureClip({ clip_id: id, seconds, frames: Math.round(seconds * 24) }),
 });
@@ -271,6 +272,7 @@ export const sourceFixture = (id: string, script: SourceScript = {}) =>
                 const accept = Effect.sync(() => {
                   const clip = {
                     ...record(`${id}/clip/${dispatchIndex}`, plan.request.durationSeconds),
+                    sessionId: id,
                     request: plan.request,
                     seq: dispatchIndex,
                     enqueuedAt: 0,

@@ -267,6 +267,7 @@ test("the ledger reserves each paid run's worst case and refuses unreadable evid
   expect(reservedUsd(admittedOnly)).toBe(0.1);
   // A grant without a recorded worst case reserves the most a check may spend.
   expect(reservedUsd(grantWithoutReservation)).toBe(0.75);
+  expect(reservedUsd({ ...grantWithoutReservation, check: "scheduler" })).toBe(1.5);
   expect(reservedUsd(beforeAdmission)).toBe(0);
   const ledger = directory();
   new Writer(join(ledger, "a.json"), () => []).save(paid);
@@ -274,6 +275,85 @@ test("the ledger reserves each paid run's worst case and refuses unreadable evid
   expect(readLedger(join(ledger, "absent"))).toEqual([]);
   writeFileSync(join(ledger, "b.json"), "{ not evidence");
   expect(() => readLedger(ledger)).toThrow(Refused);
+});
+
+test("scheduler evidence requires a separately confirmed replacement close", () => {
+  const run: Draft = {
+    ...vertical(),
+    check: "scheduler",
+    scheduler: {
+      replacement: {
+        grant: { maxSessions: 1, maxSessionSeconds: 50, expiresAt: 1_790_000_000 },
+        session: { id: "replacement", allocatedMs: 15_000 },
+      },
+      builds: [
+        {
+          clipId: "first",
+          requestedSeconds: 5,
+          submittedMs: 2_000,
+          readyMs: 4_000,
+          readySeconds: 5,
+        },
+        {
+          clipId: "second",
+          requestedSeconds: 15,
+          submittedMs: 3_000,
+          readyMs: 7_000,
+          readySeconds: 15,
+        },
+      ],
+      latencyByRequestedSeconds: [],
+      readyMove: { clipId: "second", replyMs: 8_000, elapsedMs: 50, queue: "playout", position: 0 },
+      positionZero: {
+        buildingClipId: "first",
+        requestedClipId: "second",
+        generationOrder: ["first", "second"],
+      },
+      poppedBuild: {
+        clipId: "popped",
+        wasGeneration: true,
+        poppedMs: 9_000,
+        observedUntilMs: 10_000,
+        generatedAfterPop: false,
+        startedAfterPop: false,
+      },
+      metadata: { observed: { clip_queued: 2 }, mismatched: {} },
+      decodedHandoff: { oldLastFrameMs: 14_000, replacementFirstFrameMs: 16_000, gapMs: 2_000 },
+    },
+  };
+  expect(missing(run)).toEqual([
+    "scheduler.replacement.session.endedMs",
+    "scheduler.replacement.termination",
+    "scheduler.media.retiring.video.arrivalsMs.0",
+    "scheduler.media.replacement.video.arrivalsMs.0",
+  ]);
+  const audio = {
+    blocks: 0,
+    arrivalsMs: [],
+    sampleRates: [],
+    channels: [],
+    samplesPerBlock: [],
+    peakRms: 0,
+    lost: 0,
+  };
+  run.scheduler = {
+    ...run.scheduler!,
+    replacement: {
+      ...run.scheduler!.replacement,
+      session: { ...run.scheduler!.replacement.session!, endedMs: 22_000 },
+      termination: { requestedMs: 21_000, reportedMs: 22_000, confirmed: false },
+    },
+    media: {
+      retiring: { video: { ...video, arrivalsMs: [14_000] }, audio },
+      replacement: { video: { ...video, arrivalsMs: [16_000] }, audio },
+    },
+  };
+  expect(missing(run)).toEqual([]);
+  conclude(run, undefined);
+  expect(run.verdict).toBe("fail");
+  expect(run.reasons).toContain(
+    "remote termination is unconfirmed; the session may still be billing",
+  );
 });
 
 test("one run at a time holds the ledger", () => {

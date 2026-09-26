@@ -4,6 +4,9 @@ import type { EngineState } from "./types.js";
 
 export const emptyState = (): EngineState => ({
   availability: "Synchronizing",
+  sessions: [],
+  preferredSessionId: Option.none(),
+  retiringSessionId: Option.none(),
   queued: [],
   generationOrder: [],
   building: Option.none(),

@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged.
+
+### Added
+
+- `Orchestration.makeScheduler`, `layerScheduler` and `Scheduler.lineup`: an opt-in, keyed scheduler with priority lanes, a seconds-based filler runway, per-session Ready ordering, monotonic timing windows, `Follow` and `At` boundaries, explicit withdrawal, and a keyed as-run stream. `Unknown` gains a terminal marker when its source retires without proof.
+- Scheduler handles and items: `firstDecisive` retains an item's first start or definitive disposition; `Started.durationSeconds` is the provider-observed duration; `Failed.reason` (`ItemFailureReason`) distinguishes a `Clip` failure, a `Command` refusal and `Scheduler` termination; `scheduler.failure` exposes the original terminal failure; `maxHistory` bounds how many completed keys are retained (4096 by default).
+- `drain()` withdraws waiting clips and waits for the current one to end; `drain({ finish: "accepted" })` lets every accepted item reach its disposition and keeps filler playing until each has started or settled. Both stop renewal. A drain with an `Unknown` item completes only once that item settles, which with the renewal engine is when its source retires.
+- An engine may provide `enqueueOnSource`, which fences an enqueue to one physical source; the renewal engine does. `EngineState.handoffReady` and the `HandoffReady` event report a final clip that arrived in full. Clip records and the `Started` and `Ended` events carry an optional monotonic instant for elapsed accounting. A session's queued clips report `ClipRecord.sessionId`, and the engine state reports the live, preferred and retiring sessions even while a replacement has no clips.
+- The orchestration option `handoffGrace`, 250 ms by default and at most 5 seconds: how long a planned switch waits past the retiring session's final clip `Ended`, or past the session first reporting nothing playing, for that clip's missing video frames. Renewal checks every 100 ms, so the switch can come up to one check later.
+- Scheduler keys are carried in library-owned H3 provider metadata. The app's `ClipRequest.metadata` is unchanged, and a resumed H3 session can recognize a scheduler item by key.
+- A capped two-session hosted `scheduler` check and an offline rehearsal of it.
+
+### Changed
+
+- **Breaking:** `makeLineup`, `layerLineup`, `Lineup` and `ClipFate` leave the public orchestration API. Apps use `makeScheduler(Scheduler.lineup({ runway, clip }))`, submit keyed items into the `line` lane, and read `ItemHandle.started`, `ItemHandle.outcome` and `asRun` instead.
+- **Breaking:** an `Engine` implementation must provide `stopRenewal`, and `EngineState.sessions`, `preferredSessionId`, `retiringSessionId` and `ClipRecord.sessionId` are required, so a hand-written engine or state fixture needs them.
+- **Breaking:** `EngineEvent` gains `HandoffReady`, which a switch over it written to be exhaustive must handle.
+- Renewal hands off on the retiring session's final clip. In 0.4.0 one lost frame anywhere in the session held the retiring session idle until it expired, ending `Replaced`. The switch now depends only on the final clip, waits for its missing frames at most `handoffGrace`, and ends `Switched` with any shortfall on `Switched.tail`. The retiring session running dry within the grace is not reported as `Starved`.
+- `Engine.move` refuses a rank outside the clip's physical session range with `InvalidRequest`; it no longer clamps a cross-session rank into that session's queue.
+
+### Fixed
+
+- The native isolated host classifies a call on a link fenced by the child's exit as lost, not `Closed`.
+
+### Qualification
+
+- The scheduler's ordering, timing, fate, drain and renewal checks run against the simulation and controlled source fixtures; the handoff tests bound the gap, not only its outcome. The hosted `scheduler` check has not run, so hosted H3 timing, handoff and output presentation are unqualified. A provider `Started` event is not proof of encoded output.
+
 ## [0.4.0] - 2026-09-25
 
 Monotonic elapsed time in renewal, a lineup fate for a start nobody saw, and the end of the option names 0.3.0 renamed. It breaks the 0.3 API in two ways, so a `^0.3.0` range does not include it: `ClipFate` has a new member, which a switch over it written to be exhaustive must handle, and the `?: never` declarations of the removed option names are gone. The native sources are unchanged since 0.3.0, and `reactor-effect-native` is released with the client as always.

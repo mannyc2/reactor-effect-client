@@ -31,6 +31,7 @@ import type { Canvas, ClipId, ClipRequest } from "./request.js";
 import { monotonicMillis } from "./elapsed.js";
 import { emptyState, isIdle } from "./queries.js";
 import { loadReferenceBytes } from "./references.js";
+import { metadataForH3 } from "./scheduler-key.js";
 import type { LoadLimits } from "./references.js";
 import type {
   ClipRecord,
@@ -54,6 +55,7 @@ interface Annotation {
 interface Times {
   readonly generatedAt?: number;
   readonly startedAt?: number;
+  readonly startedAtMonotonicMillis?: number;
 }
 
 export interface H3SourceOptions {
@@ -66,10 +68,15 @@ export interface H3SourceOptions {
   readonly maxAnnotations?: number;
 }
 
-const record = (clip: ProviderClip, annotations: ReadonlyMap<string, Annotation>): ClipRecord => {
+const record = (
+  clip: ProviderClip,
+  annotations: ReadonlyMap<string, Annotation>,
+  sessionId: string,
+): ClipRecord => {
   const annotation = annotations.get(clip.clip_id);
   return Object.freeze({
     clipId: clip.clip_id as ClipId,
+    sessionId,
     durationSeconds: clip.seconds,
     provider: clip,
     ...(annotation === undefined
@@ -83,12 +90,15 @@ const project = (
   snapshot: ProviderSnapshot,
   annotations: ReadonlyMap<string, Annotation>,
   times: ReadonlyMap<string, Times>,
+  sessionId: string,
 ): EngineState => {
   const facts = snapshot._tag === "Ready" ? snapshot : snapshot.lastFacts;
   const known = new Map(snapshot.clips.map((entry) => [entry.clip.clip_id, entry.clip]));
   const playingId = facts?.state.playing_clip_id ?? null;
   const playingClip = playingId === null ? undefined : known.get(playingId);
   const playingTime = playingId === null ? undefined : times.get(playingId)?.startedAt;
+  const playingMono =
+    playingId === null ? undefined : times.get(playingId)?.startedAtMonotonicMillis;
   const aspect = facts?.state.aspect;
   const canvas: Option.Option<Canvas> =
     aspect === "16:9" || aspect === "1:1" || aspect === "9:16" || aspect === "4:3"
@@ -108,14 +118,20 @@ const project = (
   return Object.freeze({
     ...emptyState(),
     availability: snapshot._tag,
-    queued: Object.freeze((facts?.queue.generation ?? []).map((clip) => record(clip, annotations))),
+    sessions: [{ sessionId, availability: snapshot._tag }],
+    preferredSessionId: Option.some(sessionId),
+    queued: Object.freeze(
+      (facts?.queue.generation ?? []).map((clip) => record(clip, annotations, sessionId)),
+    ),
     generationOrder: Object.freeze(
       (facts?.queue.generation ?? []).map((clip) => clip.clip_id as ClipId),
     ),
     // H3 does not report a build start. Queue-head estimates remain estimates in
     // an application's horizon calculation, never observed Building records.
     building: Option.none(),
-    ready: Object.freeze((facts?.queue.playout ?? []).map((clip) => record(clip, annotations))),
+    ready: Object.freeze(
+      (facts?.queue.playout ?? []).map((clip) => record(clip, annotations, sessionId)),
+    ),
     playing:
       playingId === null
         ? Option.none()
@@ -124,8 +140,9 @@ const project = (
             record:
               playingClip === undefined
                 ? Option.none()
-                : Option.some(record(playingClip, annotations)),
+                : Option.some(record(playingClip, annotations, sessionId)),
             startedAt: playingTime === undefined ? Option.none() : Option.some(playingTime),
+            ...(playingMono === undefined ? {} : { startedAtMonotonicMillis: playingMono }),
           }),
     continuable: Object.freeze(continuable),
     failed: Object.freeze(
@@ -236,7 +253,7 @@ export const fromH3 = (
     let starvationArmed = false;
     const closeGate = yield* Semaphore.make(1);
     const state = provider.current.pipe(
-      Effect.map((snapshot) => project(snapshot, annotations, times)),
+      Effect.map((snapshot) => project(snapshot, annotations, times, session.id)),
     );
     const emit = (event: EngineEvent): void => observations.emit(event, 256);
 
@@ -290,9 +307,21 @@ export const fromH3 = (
               break;
             }
             case "clip_started":
-              times.set(clipId, { ...previous, startedAt: previous.startedAt ?? at });
+              const startedAtMonotonicMillis =
+                previous.startedAtMonotonicMillis ?? monotonicMillis(clock);
+              times.set(clipId, {
+                ...previous,
+                startedAt: previous.startedAt ?? at,
+                startedAtMonotonicMillis,
+              });
               starvationArmed = false;
-              emit({ _tag: "Started", clipId, durationSeconds: clip.seconds, at });
+              emit({
+                _tag: "Started",
+                clipId,
+                durationSeconds: clip.seconds,
+                at,
+                atMonotonicMillis: startedAtMonotonicMillis,
+              });
               break;
             case "clip_finished":
             case "clip_stopped":
@@ -301,6 +330,8 @@ export const fromH3 = (
                 _tag: "Ended",
                 clipId,
                 termination: message.type === "clip_finished" ? "finished" : "stopped",
+                at,
+                atMonotonicMillis: monotonicMillis(clock),
               });
               break;
             case "clip_failed":
@@ -380,7 +411,7 @@ export const fromH3 = (
             references,
             ...(audio.length === 0 ? {} : { audio }),
             seconds: request.durationSeconds,
-            metadata: JSON.stringify(request.metadata),
+            metadata: metadataForH3(request),
             ...(request.seed === undefined ? {} : { seed: request.seed }),
             ...(request.continueFrom === undefined ? {} : { continueFrom: request.continueFrom }),
             ...(plan.position === undefined ? {} : { position: plan.position }),

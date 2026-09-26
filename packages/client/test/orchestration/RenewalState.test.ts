@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   canHandoff,
+  finalClipSettled,
   decideRenewal,
   isClosed,
   needsReplacement,
@@ -69,23 +70,36 @@ test("a handoff requires complete independent queue, sequence and media evidence
     sequenceOpen: false,
     currentIdle: true,
     replacementReady: true,
-    video: "count-complete" as const,
-    droppedVideo: 0n,
-    droppedAudio: 0n,
+    finalClip: { video: "count-complete" as const, endedAgoMs: undefined },
+    graceMs: 250,
   };
   expect(canHandoff(ready)).toBe(true);
-  expect(canHandoff({ ...ready, video: "not-started" })).toBe(true);
+  expect(canHandoff({ ...ready, finalClip: { video: "not-started", endedAgoMs: undefined } })).toBe(
+    true,
+  );
   for (const missing of [
     { sequenceOpen: true },
     { currentIdle: false },
     { replacementReady: false },
-    { video: "incomplete" as const },
-    { droppedVideo: 1n },
-    { droppedAudio: 1n },
-    { droppedVideo: null },
-    { droppedAudio: null },
+    { finalClip: { video: "incomplete" as const, endedAgoMs: undefined } },
+    { finalClip: { video: "incomplete" as const, endedAgoMs: 249 } },
   ])
     expect(canHandoff({ ...ready, ...missing })).toBe(false);
+});
+
+test("a short final clip hands off once its grace past Ended has elapsed", () => {
+  const short = (endedAgoMs: number | undefined) => ({
+    video: "incomplete" as const,
+    endedAgoMs,
+  });
+  expect(finalClipSettled(short(undefined), 250)).toBe(false);
+  expect(finalClipSettled(short(0), 250)).toBe(false);
+  expect(finalClipSettled(short(249), 250)).toBe(false);
+  expect(finalClipSettled(short(250), 250)).toBe(true);
+  expect(finalClipSettled(short(0), 0)).toBe(true);
+  // A clip still playing is never settled by the grace, however long it runs.
+  expect(finalClipSettled(short(undefined), 0)).toBe(false);
+  expect(finalClipSettled({ video: "count-complete", endedAgoMs: undefined }, 250)).toBe(true);
 });
 
 test("recovery uses remaining lifetime while cleanup can retain its full independent budget", () => {

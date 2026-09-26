@@ -31,6 +31,8 @@ export const BuildTiming = Data.taggedEnum<BuildTiming>();
 /** A provider clip is visible even when this application never submitted it. */
 export interface ClipRecord {
   readonly clipId: ClipId;
+  /** Physical session that owns this clip, including during a renewal overlap. */
+  readonly sessionId: string;
   readonly durationSeconds: number;
   readonly provider: Clip;
   readonly request?: ClipRequest;
@@ -57,10 +59,27 @@ export interface Playback {
    * monotonic clock instead.
    */
   readonly startedAt: Option.Option<number>;
+  /** Monotonic start observation, available only when this process saw Started. */
+  readonly startedAtMonotonicMillis?: number;
 }
 
 export interface EngineState {
   readonly availability: "Ready" | "Synchronizing" | "Unavailable";
+  /** Every live physical source, including one with no clips yet. */
+  readonly sessions: readonly {
+    readonly sessionId: string;
+    readonly availability: EngineState["availability"];
+  }[];
+  /** The source that receives an unconstrained new request. */
+  readonly preferredSessionId: Option.Option<string>;
+  /** The source draining ahead of a ready replacement, if there is one. */
+  readonly retiringSessionId: Option.Option<string>;
+  /**
+   * The retiring source can hand off once idle: no sequence holds it
+   * preferred, it is not recovering, and its media cannot hold the switch past
+   * the final clip's grace. Absent on physical sources.
+   */
+  readonly handoffReady?: boolean;
   readonly queued: readonly ClipRecord[];
   /** Provider queue order, including an independently observed active build. */
   readonly generationOrder: readonly ClipId[];
@@ -97,11 +116,16 @@ export type EngineEvent =
       readonly durationSeconds: number;
       /** Epoch milliseconds of the local observation, as every event's `at` is. */
       readonly at: number;
+      /** Monotonic instant captured with `at`, for elapsed as-run accounting. */
+      readonly atMonotonicMillis?: number;
     }
   | {
       readonly _tag: "Ended";
       readonly clipId: ClipId;
       readonly termination: "finished" | "stopped";
+      /** Local observation time of the end, when the source provides it. */
+      readonly at?: number;
+      readonly atMonotonicMillis?: number;
     }
   | {
       readonly _tag: "Failed";
@@ -110,6 +134,12 @@ export type EngineEvent =
       readonly sessionId?: string;
     }
   | { readonly _tag: "Starved"; readonly at: number }
+  /**
+   * The retiring source's final clip arrived in full while a replacement is
+   * Ready. An observation only: a short clip still switches once its grace
+   * past Ended elapses, without this event.
+   */
+  | { readonly _tag: "HandoffReady"; readonly sessionId: string }
   | { readonly _tag: "SessionFailed"; readonly failure: ReactorFailure };
 export const EngineEvent = Data.taggedEnum<EngineEvent>();
 
@@ -141,6 +171,10 @@ export interface EngineShape {
     request: ClipRequest,
   ) => Effect.Effect<Submission<ClipId, EngineError>, EngineError>;
   readonly enqueue: (request: ClipRequest) => Effect.Effect<ClipId, EngineError>;
+  /** Refuse before dispatch if routing would select another physical source. */
+  readonly enqueueOnSource?:
+    | ((request: ClipRequest, expectedSessionId: string) => Effect.Effect<ClipId, EngineError>)
+    | undefined;
   readonly state: Effect.Effect<EngineState>;
   /** Later events only, subscribed when the stream runs; use `observe` to pair them with a state. */
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
@@ -150,9 +184,12 @@ export interface EngineShape {
    * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
    */
   readonly failure: Effect.Effect<ReactorFailure>;
+  /** Permanently stop new renewal allocations; already acquired sources may finish. */
+  readonly stopRenewal: Effect.Effect<void, EngineError>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
   readonly pauseAndStop: Effect.Effect<void, EngineError>;
   readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;
+  /** A global rank within this clip's physical session range in the chosen queue. */
   readonly move: (
     id: ClipId,
     position: number,

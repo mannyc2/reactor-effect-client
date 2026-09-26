@@ -81,6 +81,10 @@ export const make = (options: Options) =>
     let mediaScope: Scope.Closeable | undefined;
     let expectedFrames = 0;
     let receivedFrames = 0;
+    let finalClipFrames = 0;
+    let finalClipReceived = 0;
+    let framesAtBoundary = 0;
+    let finalClipEndedAt: number | undefined;
     let receivedAudioSamples = 0;
     let retiredDrops: Loss = noLoss;
 
@@ -157,6 +161,21 @@ export const make = (options: Options) =>
       get media() {
         return media;
       },
+      finalClip: (): Lifecycle.FinalClip => ({
+        video:
+          finalClipFrames === 0
+            ? "not-started"
+            : finalClipReceived >= finalClipFrames
+              ? "count-complete"
+              : "incomplete",
+        endedAgoMs:
+          finalClipEndedAt === undefined ? undefined : monotonicMillis(clock) - finalClipEndedAt,
+      }),
+      /** The source reports nothing playing; starts the grace if no Ended was seen. */
+      observedIdle: (): void => {
+        if (finalClipFrames > 0 && finalClipEndedAt === undefined)
+          finalClipEndedAt = monotonicMillis(clock);
+      },
       get accepted(): ReadonlySet<ClipId> {
         return accepted;
       },
@@ -224,11 +243,21 @@ export const make = (options: Options) =>
               Stream.runForEach((event) =>
                 Effect.suspend(() => {
                   if (closed()) return Effect.void;
+                  // A repeated Started, as after a reconnect, is still playing.
+                  if (event._tag === "Started") finalClipEndedAt = undefined;
                   if (event._tag === "Started" && !started.has(event.clipId)) {
                     started.add(event.clipId);
-                    expectedFrames += Math.round(
+                    finalClipFrames = Math.round(
                       event.durationSeconds * media.videoFramesPerSecond,
                     );
+                    // Media and provider events use separate readers. Include
+                    // frames that overtook Started after the preceding Ended.
+                    finalClipReceived = receivedFrames - framesAtBoundary;
+                    expectedFrames += finalClipFrames;
+                  }
+                  if (event._tag === "Ended") {
+                    framesAtBoundary = receivedFrames;
+                    finalClipEndedAt = monotonicMillis(clock);
                   }
                   return receive(event);
                 }),
@@ -282,8 +311,10 @@ export const make = (options: Options) =>
           media = next;
           return Effect.void;
         }),
-      recordVideo: (): void => {
+      recordVideo: (): boolean => {
         receivedFrames++;
+        finalClipReceived++;
+        return finalClipFrames > 0 && finalClipReceived === finalClipFrames;
       },
       recordAudio: (samples: number): void => {
         receivedAudioSamples += samples;

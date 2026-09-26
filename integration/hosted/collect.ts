@@ -16,7 +16,7 @@ import type * as H3 from "reactor-effect-client/h3";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
 import { terminal } from "reactor-effect-client/host";
 import type { AudioSummary, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
-import type { VideoSeen } from "./gates.js";
+import { liveVideoMotionFrames, type ClipVideoSeen } from "./gates.js";
 
 /** Milliseconds since `origin`, a `Date.now()` reading. */
 export const since = (origin: number): number => Date.now() - origin;
@@ -182,13 +182,19 @@ export class VideoReader {
   }
 
   /** What the frames arriving at or after `atMs` showed. */
-  seenSince(atMs: number): VideoSeen {
+  seenSince(atMs: number): ClipVideoSeen {
     const frames = this.seen.filter((frame) => frame.atMs >= atMs);
+    const recentLit = frames.slice(-liveVideoMotionFrames).filter((frame) => frame.lit);
+    let recentChanges = 0;
+    for (let index = 1; index < recentLit.length; index++)
+      if (recentLit[index]!.digest !== recentLit[index - 1]!.digest) recentChanges++;
     return {
       frames: frames.length,
       formats: [...new Set(frames.map((frame) => frame.format))],
       lit: frames.filter((frame) => frame.lit).length,
       distinct: new Set(frames.map((frame) => frame.digest)).size,
+      recentLitFrames: recentLit.length,
+      recentChanges,
     };
   }
 
@@ -201,12 +207,18 @@ export class VideoReader {
     return this.arrivals.find((at) => at >= atMs);
   }
 
+  /** Last decoded frame arrival at or before a handoff observation. */
+  lastBefore(atMs: number): number | undefined {
+    return this.arrivals.findLast((at) => at <= atMs);
+  }
+
   summary(): VideoSummary {
     const arrivals = this.arrivals;
     const intervals = arrivals.slice(1).map((at, index) => at - arrivals[index]!);
     const elapsed = arrivals.length > 1 ? arrivals.at(-1)! - arrivals[0]! : 0;
     return {
       frames: this.frames,
+      arrivalsMs: [...arrivals],
       formats: [...this.formats],
       sizes: [...this.sizes],
       ...(arrivals.length === 0 ? {} : { firstFrameMs: arrivals[0]! }),
@@ -233,6 +245,7 @@ export class AudioReader {
   private readonly rates = new Set<number>();
   private readonly channels = new Set<number>();
   private readonly lengths = new Set<number>();
+  private readonly arrivals: number[] = [];
 
   add(element: Recorded<AudioFrame>, atMs: number): void {
     if (element._tag === "Lost") {
@@ -241,6 +254,7 @@ export class AudioReader {
     }
     const block = element.frame;
     this.blocks++;
+    if (this.arrivals.length < 100_000) this.arrivals.push(atMs);
     this.first ??= atMs;
     this.rates.add(block.sampleRate);
     this.channels.add(block.channels);
@@ -258,6 +272,7 @@ export class AudioReader {
   summary(): AudioSummary {
     return {
       blocks: this.blocks,
+      arrivalsMs: [...this.arrivals],
       sampleRates: [...this.rates],
       channels: [...this.channels],
       samplesPerBlock: [...this.lengths],

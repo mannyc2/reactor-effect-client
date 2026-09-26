@@ -4,6 +4,7 @@ import * as H3 from "../../src/h3/index.js";
 import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
 import { captureRequest, ClipId } from "../../src/orchestration/request.js";
+import { keyedRequest, keyFromProviderMetadata } from "../../src/orchestration/scheduler-key.js";
 import { isIdle } from "../../src/orchestration/queries.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import type { EngineEvent } from "../../src/orchestration/types.js";
@@ -92,6 +93,29 @@ test("sameSessionAs remains local scheduling metadata and never enters an H3 com
       expect(args.sameSessionAs).toBeUndefined();
       expect(args.same_session_as).toBeUndefined();
       expect(args.continue_from_clip_id).toBeUndefined();
+    }),
+  ));
+
+test("a scheduler key reaches provider metadata while the application request stays intact", () =>
+  run(
+    Effect.gen(function* () {
+      const { source, fake } = yield* setup();
+      const input = request({ metadata: { editorial: { segment: "opening" } } });
+      const keyed = yield* keyedRequest(input, "opening-1");
+      const prepared = yield* source.prepareRouted({ request: keyed, position: undefined });
+      const clipId = yield* prepared.submit;
+      const call = fake.calls.find((entry) => entry.command === "enqueue")!;
+      const envelope = metadataOf(textArg(call.args.metadata));
+      const caller = metadataOf(textArg(envelope.caller));
+      expect(caller).toMatchObject({
+        reactor_effect_scheduler: 1,
+        key: "opening-1",
+        application: { editorial: { segment: "opening" } },
+      });
+      const clip = (yield* source.state).queued.find((entry) => entry.clipId === clipId)!;
+      expect(keyFromProviderMetadata(clip.provider.metadata)).toBe("opening-1");
+      expect(input.metadata).toEqual({ editorial: { segment: "opening" } });
+      expect(clip.request?.metadata).toEqual(input.metadata);
     }),
   ));
 
@@ -317,6 +341,7 @@ test("admission-to-ready time is measured on elapsed time, so a wall-clock step 
         yield* (yield* source.prepareRouted({ request: request(), position: undefined })).submit;
         yield* wall.step(60_000);
         yield* emit("clip_generated", { clip: { ...fake.accepted[0]!, ready: true } });
+        yield* until(() => events.some((event) => event._tag === "Ready"));
         const ready = events.find((event) => event._tag === "Ready");
         const timing = ready?._tag === "Ready" ? ready.timing : undefined;
         expect(timing?._tag).toBe("Bounded");
@@ -349,6 +374,7 @@ test("duplicate lifecycle messages emit once, keep observed timing and never inf
       const playing = Option.getOrThrow((yield* source.state).playing);
       expect(playing.clipId).toBe(id);
       expect(Option.isSome(playing.startedAt)).toBe(true);
+      expect(playing.startedAtMonotonicMillis).toBeTypeOf("number");
       expect(Option.isSome(playing.record)).toBe(true);
       expect(fake.calls.some((call) => call.command === "play")).toBe(false);
     }),
@@ -367,6 +393,7 @@ test("snapshot-only playback changes preserve unknown start time and do not emit
       const playing = Option.getOrThrow((yield* source.state).playing);
       expect(Option.isSome(playing.record)).toBe(true);
       expect(playing.startedAt).toEqual(Option.none());
+      expect(playing.startedAtMonotonicMillis).toBeUndefined();
       yield* emit(
         "state_update",
         fake.state({ playing: false, playing_clip_id: null, playout_queued: 0, clips_played: 1 }),
@@ -389,7 +416,7 @@ test("source stop is faithful and ends playback without autoplay changes, replay
       expect(fake.calls.slice(before).map((call) => [call.command, call.args])).toEqual([
         ["stop", {}],
       ]);
-      expect(events.filter((event) => event._tag === "Ended")).toEqual([
+      expect(events.filter((event) => event._tag === "Ended")).toMatchObject([
         { _tag: "Ended", clipId: ClipId.make(clip.clip_id), termination: "stopped" },
       ]);
       expect(events.some((event) => event._tag === "Starved")).toBe(false);

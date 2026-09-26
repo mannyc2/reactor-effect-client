@@ -413,16 +413,92 @@ test("close joins pending commit accounting and preserves each canonical attache
     }),
   ));
 
-test("pauseAndStop applies explicit policy in order and mutation routing uses the unique active owner", () =>
+test("flattened queued, building, ready and playing records name their owning session", () =>
   runClock(
     Effect.gen(function* () {
       const a = record("old"),
-        b = record("warm");
+        b = record("warm"),
+        oldReady = record("old-ready"),
+        warmReady = record("warm-ready"),
+        warmBuilding = record("warm-building"),
+        oldPlaying = record("old-playing");
+      const { handle, warm } = yield* renewalFixture((index) => ({
+        initial: readyState(
+          index === 0
+            ? {
+                queued: [a],
+                generationOrder: [a.clipId],
+                ready: [oldReady],
+                playing: Option.some({
+                  clipId: oldPlaying.clipId,
+                  record: Option.some(oldPlaying),
+                  startedAt: Option.some(0),
+                }),
+              }
+            : {
+                queued: [b],
+                generationOrder: [b.clipId, warmBuilding.clipId],
+                building: Option.some({ record: warmBuilding, startedAt: Option.some(0) }),
+                ready: [warmReady],
+              },
+        ),
+      }));
+      yield* warm;
+      const state = yield* handle.engine.state;
+      expect(state.queued.map((clip) => [clip.clipId, clip.sessionId])).toEqual([
+        [a.clipId, "source-1"],
+        [b.clipId, "source-2"],
+      ]);
+      expect(state.building.pipe(Option.map(({ record }) => record.sessionId))).toEqual(
+        Option.some("source-2"),
+      );
+      expect(state.ready.map((clip) => [clip.clipId, clip.sessionId])).toEqual([
+        [oldReady.clipId, "source-1"],
+        [warmReady.clipId, "source-2"],
+      ]);
+      expect(
+        state.playing.pipe(
+          Option.flatMap(({ record }) => record),
+          Option.map((clip) => clip.sessionId),
+        ),
+      ).toEqual(Option.some("source-1"));
+    }),
+  ));
+
+test("an empty replacement is visible as the preferred session while the old queue drains", () =>
+  runClock(
+    Effect.gen(function* () {
+      const oldReady = record("old-ready");
+      const { handle, warm } = yield* renewalFixture((index) => ({
+        initial: readyState(index === 0 ? { ready: [oldReady] } : {}),
+      }));
+      const before = yield* handle.engine.state;
+      expect(before.sessions).toEqual([{ sessionId: "source-1", availability: "Ready" }]);
+      expect(before.preferredSessionId).toEqual(Option.some("source-1"));
+      expect(before.retiringSessionId).toEqual(Option.none());
+      yield* warm;
+      const during = yield* handle.engine.state;
+      expect(during.sessions).toEqual([
+        { sessionId: "source-1", availability: "Ready" },
+        { sessionId: "source-2", availability: "Ready" },
+      ]);
+      expect(during.ready.map((clip) => clip.clipId)).toEqual([oldReady.clipId]);
+      expect(during.preferredSessionId).toEqual(Option.some("source-2"));
+      expect(during.retiringSessionId).toEqual(Option.some("source-1"));
+    }),
+  ));
+
+test("pauseAndStop applies explicit policy and moves refuse ranks in another session", () =>
+  runClock(
+    Effect.gen(function* () {
+      const a = record("old"),
+        b = record("warm"),
+        warmReady = record("warm-ready");
       const { handle, sources, warm } = yield* renewalFixture((index) => ({
         initial: readyState(
           index === 0
-            ? { queued: [a], generationOrder: [a.clipId] }
-            : { queued: [b], generationOrder: [b.clipId] },
+            ? { queued: [a], generationOrder: [a.clipId], ready: [record("old-ready")] }
+            : { queued: [b], generationOrder: [b.clipId], ready: [warmReady] },
         ),
       }));
       yield* warm;
@@ -432,10 +508,19 @@ test("pauseAndStop applies explicit policy in order and mutation routing uses th
           { command: "autoplay", value: false },
           { command: "stop" },
         ]);
-      yield* handle.engine.move(b.clipId, 9999, "generation");
+      const wrongGeneration = yield* Effect.result(handle.engine.move(b.clipId, 0, "generation"));
+      expect(Result.isFailure(wrongGeneration) && refusal(wrongGeneration.failure)).toBe(
+        "InvalidRequest",
+      );
+      const wrongPlayout = yield* Effect.result(handle.engine.move(warmReady.clipId, 0, "playout"));
+      expect(Result.isFailure(wrongPlayout) && refusal(wrongPlayout.failure)).toBe(
+        "InvalidRequest",
+      );
+      expect(sources[1]!.controls.filter((call) => call.command === "move")).toEqual([]);
+      yield* handle.engine.move(b.clipId, 1, "generation");
       expect(sources[1]!.controls.at(-1)).toEqual({
         command: "move",
-        value: { clipId: b.clipId, position: 9998 },
+        value: { clipId: b.clipId, position: 0 },
       });
       expect(yield* handle.engine.remove(b.clipId)).toBe("generation");
       const missing = yield* Effect.result(handle.engine.remove(ClipId.make("missing")));

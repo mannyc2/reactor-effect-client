@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import { Effect, Fiber, Option, Result, Stream } from "effect";
+import { Clock, Effect, Fiber, Option, Result, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
-import type { EngineEvent } from "../../src/orchestration/types.js";
+import type { EngineEvent, HandleShape } from "../../src/orchestration/types.js";
 import { renewalFixture } from "./RenewalFixture.js";
 import {
   audioFrame,
@@ -115,53 +115,172 @@ test("planned handoff retains queued old video and audio instead of claiming the
     }),
   ));
 
-for (const kind of ["video", "audio", "incomplete"] as const)
-  test(`${kind} loss prevents a clean handoff and forces an evidenced replacement at expiry`, () =>
-    runClock(
-      Effect.gen(function* () {
-        const { handle, sources, renewals, warm } = yield* renewalFixture();
-        const old = yield* handle.engine.enqueue(member("old"));
-        yield* warm;
-        const next = yield* handle.engine.enqueue(member("next"));
-        yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
-        yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
-        const expectedReceived = kind === "incomplete" ? 23 : 24;
-        for (let frame = 0; frame < expectedReceived; frame++)
-          yield* sources[0]!.video(videoFrame());
-        yield* untilEffect(
-          handle.media.pressure.pipe(
-            Effect.map((pressure) => pressure.queuedVideo === expectedReceived),
-          ),
-        );
-        yield* sources[0]!.setPressure(
-          kind === "video" ? { droppedVideo: 1n } : kind === "audio" ? { droppedAudio: 1n } : {},
-        );
-        yield* sources[0]!.setState(readyState());
-        yield* TestClock.adjust(100);
-        expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-        expect(sources[0]!.status().closed).toBe(false);
-        yield* TestClock.adjust(400);
-        yield* until(
-          () => renewals.some((event) => event._tag === "Replaced"),
-          TestClock.adjust(100),
-          "expired lossy source never retired",
-        );
-        const replaced = renewals.find((event) => event._tag === "Replaced");
-        if (replaced?._tag !== "Replaced")
-          throw new Error("Expected replacement, not a clean switch");
-        expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-        expect(replaced.tail.video.receivedFrames).toBe(expectedReceived);
-        expect(replaced.tail.video.status).toBe(
-          kind === "incomplete" ? "incomplete" : "count-complete",
-        );
-        expect(replaced.tail.sourceDrops).toEqual({
-          video: kind === "video" ? 1n : 0n,
-          audio: kind === "audio" ? 1n : 0n,
-        });
-        expect(replaced.tail.audio.status).toBe("unverified");
-        expect(sources.flatMap((source) => source.sends)).toHaveLength(2);
-      }),
-    ));
+/** Every engine event's tag the handle republishes, in order, from now on. */
+const collectEngineEvents = (handle: HandleShape) =>
+  Effect.gen(function* () {
+    const tags: EngineEvent["_tag"][] = [];
+    const { events } = yield* handle.observe({ capacity: 1024 });
+    yield* events.pipe(
+      Stream.runForEach((event) =>
+        Effect.sync(() => {
+          if (event._tag === "Engine") tags.push(event.event._tag);
+        }),
+      ),
+      Effect.forkScoped,
+    );
+    return tags;
+  });
+
+// PR #34, 886091b: a frame the provider never sent cannot arrive later, so a
+// short final clip held the switch until the retiring source expired.
+test("a short final clip switches once the default grace past its Ended has elapsed", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { handle, sources, renewals, warm } = yield* renewalFixture();
+      const observed = yield* collectEngineEvents(handle);
+      const old = yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
+      for (let frame = 0; frame < 23; frame++) yield* sources[0]!.video(videoFrame());
+      yield* sources[0]!.setState(readyState());
+      yield* sources[0]!.emit({ _tag: "Ended", clipId: old, termination: "finished" });
+      yield* sources[0]!.emit({ _tag: "Starved", at: 0 });
+      // The handle republishes Ended only after the source's owner has timed it,
+      // and the Queued marker only after it has judged the Starved before it.
+      yield* sources[0]!.emit({ _tag: "Queued", clipId: old, durationSeconds: 1 });
+      yield* until(() => observed.includes("Queued"));
+      const endedAt = yield* Clock.currentTimeMillis;
+      // The switch is imminent, so the retiring source running dry is not starvation.
+      expect(observed).toContain("Ended");
+      expect(observed).not.toContain("Starved");
+      yield* TestClock.adjust(240);
+      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
+      yield* until(
+        () => renewals.some((event) => event._tag === "Switched"),
+        TestClock.adjust(10),
+        "short final clip never switched",
+      );
+      // Before the source's one-second expiry, which would have replaced it.
+      const waited = (yield* Clock.currentTimeMillis) - endedAt;
+      expect(waited).toBeGreaterThanOrEqual(250);
+      expect(waited).toBeLessThanOrEqual(360);
+      expect(renewals.some((event) => event._tag === "Replaced")).toBe(false);
+      const switched = renewals.find((event) => event._tag === "Switched");
+      if (switched?._tag !== "Switched") throw new Error("Expected a planned switch");
+      expect(switched.tail.video).toEqual({
+        framesPerSecond: 24,
+        expectedFrames: 24,
+        receivedFrames: 23,
+        status: "incomplete",
+      });
+    }),
+  ));
+
+test("a final frame landing after Ended switches at once, inside the grace", () =>
+  runClock(
+    Effect.gen(function* () {
+      // The longest grace, far past expiry at 1 s: only the completed count
+      // can explain a switch.
+      const { handle, sources, renewals, warm } = yield* renewalFixture(() => ({}), {
+        handoffGrace: "5 seconds",
+      });
+      const observed = yield* collectEngineEvents(handle);
+      const received: number[] = [];
+      yield* handle.media.video.pipe(
+        Stream.runForEach((frame) =>
+          Effect.sync(() => {
+            received.push(frame.data[0]!);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      const old = yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
+      for (let frame = 0; frame < 23; frame++) yield* sources[0]!.video(videoFrame(1));
+      yield* sources[0]!.emit({ _tag: "Ended", clipId: old, termination: "finished" });
+      yield* sources[0]!.setState(readyState());
+      yield* until(() => observed.includes("Ended"));
+      yield* TestClock.adjust(200);
+      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
+      yield* sources[0]!.video(videoFrame(2));
+      yield* until(
+        () => renewals.some((event) => event._tag === "Switched"),
+        TestClock.adjust(10),
+        "completed final clip never switched",
+      );
+      const switched = renewals.find((event) => event._tag === "Switched");
+      if (switched?._tag !== "Switched") throw new Error("Expected a planned switch");
+      expect(switched.tail.video.status).toBe("count-complete");
+      yield* until(() => received.length === 24);
+      expect(received.at(-1)).toBe(2);
+    }),
+  ));
+
+test("the handoff grace is validated when the orchestration is made", () =>
+  run(
+    Effect.gen(function* () {
+      for (const invalid of [-1, Number.NaN, "Infinity", "5001 millis"] as const) {
+        const refused = yield* Effect.flip(renewalFixture(() => ({}), { handoffGrace: invalid }));
+        expect(refused.reason._tag).toBe("InvalidInput");
+      }
+      for (const valid of [0, "5 seconds"] as const) {
+        const { handle } = yield* renewalFixture(() => ({}), { handoffGrace: valid });
+        yield* handle.close;
+      }
+    }),
+  ));
+
+// A lost Ended must not hold the switch until expiry either: withdrawing the
+// retiring source's filler relies on the switch following its last clip.
+test("a final clip whose Ended is lost switches once the grace past observed idle elapses", () =>
+  runClock(
+    Effect.gen(function* () {
+      // A short grace: this fixture's source expires 400 ms after warming.
+      const { handle, sources, renewals, warm } = yield* renewalFixture(() => ({}), {
+        handoffGrace: "150 millis",
+      });
+      const observed = yield* collectEngineEvents(handle);
+      const old = yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 1, at: 0 });
+      const expectedReceived = 23;
+      for (let frame = 0; frame < expectedReceived; frame++) yield* sources[0]!.video(videoFrame());
+      yield* untilEffect(
+        handle.media.pressure.pipe(
+          Effect.map((pressure) => pressure.queuedVideo === expectedReceived),
+        ),
+      );
+      yield* sources[0]!.setState(readyState());
+      // Before the grace has started, no switch is due yet: the source running
+      // dry is reported as starvation.
+      yield* sources[0]!.emit({ _tag: "Starved", at: 0 });
+      yield* until(() => observed.includes("Starved"));
+      const idleFrom = yield* Clock.currentTimeMillis;
+      yield* until(
+        () => renewals.some((event) => event._tag === "Switched"),
+        TestClock.adjust(10),
+        "idle source with a lost Ended never switched",
+      );
+      // The first tick sees the idle source and starts the grace; the switch
+      // lands within the grace plus a tick after that, before expiry at 1 s.
+      const waited = (yield* Clock.currentTimeMillis) - idleFrom;
+      expect(waited).toBeGreaterThanOrEqual(150);
+      expect(waited).toBeLessThanOrEqual(360);
+      expect(renewals.some((event) => event._tag === "Replaced")).toBe(false);
+      const switched = renewals.find((event) => event._tag === "Switched");
+      if (switched?._tag !== "Switched") throw new Error("Expected a planned switch");
+      expect(switched.tail.video.receivedFrames).toBe(expectedReceived);
+      expect(switched.tail.video.status).toBe("incomplete");
+      expect(switched.tail.audio.status).toBe("unverified");
+    }),
+  ));
 
 test("a frame-only terminal failure fails media readers without requiring an engine-event reader", () =>
   run(
@@ -426,7 +545,7 @@ test("a prepared replacement's losses before it feeds the output are not the out
     }),
   ));
 
-test("unavailable source pressure stays unknown in replacement evidence instead of becoming zero", () =>
+test("unavailable source pressure stays unknown in handoff evidence instead of becoming zero", () =>
   runClock(
     Effect.gen(function* () {
       const unavailable = ReactorError.fromCode("Disconnected", "pressure sample unavailable");
@@ -441,16 +560,12 @@ test("unavailable source pressure stays unknown in replacement evidence instead 
       yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
       yield* sources[0]!.setState(readyState());
       yield* TestClock.adjust(100);
-      expect(sources[0]!.status().closed).toBe(false);
-      expect(renewals.some((event) => event._tag === "Switched")).toBe(false);
-      yield* TestClock.adjust(400);
       yield* until(
-        () => renewals.some((event) => event._tag === "Replaced"),
+        () => renewals.some((event) => event._tag === "Switched"),
         TestClock.adjust(100),
       );
-      const replaced = renewals.find((event) => event._tag === "Replaced");
-      if (replaced?._tag !== "Replaced")
-        throw new Error("The expired source must explicitly retire");
+      const replaced = renewals.find((event) => event._tag === "Switched");
+      if (replaced?._tag !== "Switched") throw new Error("The idle source must explicitly retire");
       expect(replaced.tail.sourceDrops).toEqual({ video: null, audio: null });
       expect(replaced.tail.audio.status).toBe("unverified");
     }),
@@ -485,5 +600,26 @@ test("terminal media failure is published once and later source failures cannot 
         "not-submitted",
       );
       expect(sources[0]!.sends).toEqual([]);
+    }),
+  ));
+
+// Without a media gate, handoffReady is what lets a scheduler withdraw the
+// retiring source's Ready filler. An open sequence keeps that source preferred,
+// and its members still need the filler behind them.
+test("handoffReady stays false while an open sequence keeps the retiring source preferred", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { handle, sources, warm } = yield* renewalFixture();
+      yield* handle.engine.enqueue(member("old", false));
+      yield* warm;
+      yield* sources[1]!.setState(readyState());
+      const open = yield* handle.engine.state;
+      expect(Option.getOrUndefined(open.retiringSessionId)).toBe(sources[0]!.source.id);
+      expect(Option.getOrUndefined(open.preferredSessionId)).toBe(sources[0]!.source.id);
+      expect(open.handoffReady).toBe(false);
+      yield* handle.engine.enqueue(member("old", true));
+      const sealed = yield* handle.engine.state;
+      expect(Option.getOrUndefined(sealed.preferredSessionId)).toBe(sources[1]!.source.id);
+      expect(sealed.handoffReady).toBe(true);
     }),
   ));
