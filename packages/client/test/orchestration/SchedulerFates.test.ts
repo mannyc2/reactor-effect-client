@@ -1178,3 +1178,58 @@ test("canceling a withdrawal wait leaves the owned command and scheduler alive",
       expect((yield* scheduler.state).accepting).toBe(true);
     }),
   ));
+
+for (const strategy of ["sequential", "parallel"] as const) {
+  test(`an external ${strategy} close joins terminal settlement already in progress`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+        const scope = yield* Scope.make(strategy);
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+        const engine: EngineShape = {
+          ...simulation.engine,
+          observe: () =>
+            Effect.map(simulation.engine.state, (initial) => ({
+              initial,
+              events: Stream.fromQueue(feed),
+            })),
+        };
+        const scheduler = yield* makeScheduler(options).pipe(
+          Effect.provideService(Engine, engine),
+          Effect.provideService(Scheduler.MaxOpsBeforeYield, 32),
+          Scope.provide(scope),
+        );
+        const items = yield* Effect.forEach([0, 1, 2, 3], (index) =>
+          scheduler.submit({
+            key: ItemKey.make(`competing-${index}`),
+            lane: "line",
+            request: clip("competing close"),
+            window: { notBefore: "1 hour", firm: false },
+          }),
+        );
+        let acceptingWhenCloseBegan: boolean | undefined;
+        const closer = yield* scheduler.asRun.pipe(
+          Stream.filter((event) => event.status._tag === "Failed"),
+          Stream.take(1),
+          Stream.runForEach(() =>
+            Effect.gen(function* () {
+              acceptingWhenCloseBegan = (yield* scheduler.state).accepting;
+              yield* Scope.close(scope, Exit.void);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const cause = ReactorError.fromCode("Disconnected", "First terminal claim");
+        yield* Queue.fail(feed, cause);
+        yield* Fiber.join(closer);
+        expect(acceptingWhenCloseBegan).toBe(true);
+        expect(yield* scheduler.failure).toBe(cause);
+        for (const item of items)
+          for (const wait of [item.started, item.outcome, item.firstDecisive])
+            expect(yield* wait).toEqual({ _tag: "Failed", reason: { _tag: "Scheduler", cause } });
+        expect((yield* scheduler.state).accepting).toBe(false);
+      }),
+    ));
+}
