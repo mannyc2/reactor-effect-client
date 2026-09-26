@@ -85,6 +85,8 @@ export interface SchedulerOptions {
   readonly maxBuildsInFlight?: number;
   /** Completed keys retained for idempotency, oldest first; defaults to 4096. Active keys are never evicted. */
   readonly maxHistory?: number;
+  /** Unknown admission service deadline; defaults to 60 seconds, positive and finite up to 10 minutes. */
+  readonly unknownRecoveryTimeout?: Duration.Input;
 }
 
 export type ItemFailureReason =
@@ -114,7 +116,7 @@ export type AsRunStatus =
   | { readonly _tag: "Unobserved" }
   | {
       readonly _tag: "Unknown";
-      /** The original source retired without keyed proof; no further reconciliation is possible. */
+      /** Source retirement or scheduler failure ended reconciliation; remote fate remains unknown. */
       readonly terminal?: true;
     };
 
@@ -202,6 +204,12 @@ interface CapturedItem {
   readonly late: PlannedItem["late"];
 }
 
+interface UnknownAdmission {
+  readonly sessionId: string | undefined;
+  readonly atMs: number;
+  readonly cause: EngineError;
+}
+
 interface Entry extends PlannedItem {
   readonly request: ClipRequest;
   readonly fingerprint: string;
@@ -217,6 +225,7 @@ interface Entry extends PlannedItem {
   sessionId: string | undefined;
   unknownSessionId: string | undefined;
   unknownCause: EngineError | undefined;
+  unknownAtMs: number | undefined;
   acknowledgedAtSnapshotSerial?: number;
   startedAtMonoMs?: number;
   startedAtEpochMs?: number;
@@ -514,8 +523,8 @@ export const makeScheduler = (
         throw ReactorError.fromCode("InvalidInput", "Scheduler lanes must be unique and nonempty");
       return options.lanes.map((lane) => lane.name);
     }, "makeScheduler");
-    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory } = yield* parsedInput(
-      () => {
+    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
+      yield* parsedInput(() => {
         const floorSeconds =
           Duration.toMillis(
             duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
@@ -524,6 +533,21 @@ export const makeScheduler = (
           Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
         const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
         const maxHistory = options.maxHistory ?? 4096;
+        const recoveryOption = Object.getOwnPropertyDescriptor(options, "unknownRecoveryTimeout");
+        if (recoveryOption !== undefined && !("value" in recoveryOption))
+          throw ReactorError.fromCode(
+            "InvalidInput",
+            "Unknown recovery timeout must be a data property",
+          );
+        const unknownRecoveryMs = Duration.toMillis(
+          duration(
+            recoveryOption === undefined
+              ? "60 seconds"
+              : (options.unknownRecoveryTimeout ?? "60 seconds"),
+            "unknown recovery timeout",
+            { maximum: "10 minutes" },
+          ),
+        );
         if (
           floorSeconds > targetSeconds ||
           !Number.isSafeInteger(maxBuildsInFlight) ||
@@ -534,10 +558,8 @@ export const makeScheduler = (
           maxHistory > 65_536
         )
           throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
-        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory };
-      },
-      "makeScheduler",
-    );
+        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs };
+      }, "makeScheduler");
     const captureFiller = (
       index: number,
       runway: number,
@@ -566,12 +588,8 @@ export const makeScheduler = (
       });
     let fillerIndex = 0;
     let fillerRetryAtMs = 0;
-    let unknownFiller:
-      | {
-          readonly index: number;
-          readonly sessionId: string | undefined;
-        }
-      | undefined;
+    const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
+    const maxUnknownFillers = 4096;
     let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
@@ -630,8 +648,9 @@ export const makeScheduler = (
     let observationReady = false;
     let blockedMove: string | undefined;
 
-    const emit = (entry: Entry, status: AsRunStatus): Effect.Effect<void> =>
+    const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (ended !== undefined && !terminal) return;
         if (JSON.stringify(entry.status) === JSON.stringify(status)) return;
         entry.status = status;
         entry.phase =
@@ -679,9 +698,11 @@ export const makeScheduler = (
             } else if (item.phase !== "Terminal") {
               yield* emit(
                 item,
-                item.phase === "Unknown"
+                item.phase === "Unknown" ||
+                  (item.unknownAtMs !== undefined && item.clipId === undefined)
                   ? { _tag: "Unknown", terminal: true }
                   : { _tag: "Failed", reason: { _tag: "Scheduler", cause: terminal.value } },
+                true,
               );
             }
           }
@@ -719,6 +740,126 @@ export const makeScheduler = (
     const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
       terminate(Exit.succeed(cause));
 
+    interface RecoveryDeadline {
+      readonly deadlineMs: number;
+      readonly sessionId: string | undefined;
+      readonly cause: EngineError;
+    }
+    let recoveryState: EngineState | undefined;
+    let capacityRecovery: RecoveryDeadline | undefined;
+    let recoveryDeadline: RecoveryDeadline | undefined;
+    let recoveryChanged = Deferred.makeUnsafe<void>();
+
+    // Retain the original age while Closing hides the old source and acquisition
+    // is still pending. Only accepted evidence or a Ready replacement clears it.
+    const updateRecovery = (state = recoveryState, fresh?: UnknownAdmission): void => {
+      if (ended !== undefined) return;
+      recoveryState = state;
+      const preferred =
+        state === undefined ? undefined : Option.getOrUndefined(state.preferredSessionId);
+      const ready =
+        preferred !== undefined &&
+        state?.sessions.some(
+          (source) => source.sessionId === preferred && source.availability === "Ready",
+        ) === true;
+      let earliest: RecoveryDeadline | undefined;
+      let drainDeadline: RecoveryDeadline | undefined;
+      const consider = (
+        atMs: number,
+        sessionId: string | undefined,
+        cause: EngineError,
+        newlyObserved = false,
+      ): void => {
+        const deadlineMs = atMs + unknownRecoveryMs;
+        if (
+          ((!ready && newlyObserved) || sessionId === undefined || sessionId === preferred) &&
+          (earliest === undefined || deadlineMs < earliest.deadlineMs)
+        )
+          earliest = { deadlineMs, sessionId, cause };
+        if (draining && (drainDeadline === undefined || deadlineMs < drainDeadline.deadlineMs))
+          drainDeadline = { deadlineMs, sessionId, cause };
+      };
+      for (const entry of unknownFillers.values())
+        consider(entry.atMs, entry.sessionId, entry.cause);
+      for (const item of items.values())
+        if (
+          item.phase !== "Terminal" &&
+          item.clipId === undefined &&
+          item.unknownAtMs !== undefined &&
+          item.unknownCause !== undefined
+        )
+          consider(item.unknownAtMs, item.unknownSessionId, item.unknownCause);
+      if (fresh !== undefined) consider(fresh.atMs, fresh.sessionId, fresh.cause, true);
+      if (
+        ready &&
+        (earliest === undefined ||
+          (capacityRecovery?.sessionId !== undefined && capacityRecovery.sessionId !== preferred))
+      )
+        capacityRecovery = undefined;
+      if (
+        earliest !== undefined &&
+        (capacityRecovery === undefined || earliest.deadlineMs < capacityRecovery.deadlineMs)
+      )
+        capacityRecovery = earliest;
+      const next =
+        drainDeadline !== undefined &&
+        (capacityRecovery === undefined || drainDeadline.deadlineMs < capacityRecovery.deadlineMs)
+          ? drainDeadline
+          : capacityRecovery;
+      if (
+        next?.deadlineMs !== recoveryDeadline?.deadlineMs ||
+        next?.cause !== recoveryDeadline?.cause
+      ) {
+        recoveryDeadline = next;
+        Deferred.doneUnsafe(recoveryChanged, Exit.void);
+      }
+    };
+
+    const provedUnknown = (atMs: number | undefined): void => {
+      if (atMs !== undefined && capacityRecovery?.deadlineMs === atMs + unknownRecoveryMs)
+        capacityRecovery = undefined;
+    };
+
+    const watchdog = Effect.gen(function* () {
+      for (;;) {
+        // A committed result and its queued actor evidence can arrive in one
+        // turn. Coalesce those revisions before allocating a replacement timer;
+        // the original monotonic deadline remains unchanged.
+        yield* Effect.yieldNow;
+        recoveryChanged = Deferred.makeUnsafe<void>();
+        const episode = recoveryDeadline;
+        if (episode === undefined) {
+          yield* Deferred.await(recoveryChanged);
+          continue;
+        }
+        yield* Deferred.await(recoveryChanged).pipe(
+          Effect.timeoutOrElse({
+            duration: Math.max(0, episode.deadlineMs - monotonicMillis(clock)),
+            orElse: () => Effect.void,
+          }),
+        );
+        // A canceled timer may already have resumed. Recheck the retained
+        // identity without awaiting the actor, Engine state, or its permits.
+        if (
+          ended === undefined &&
+          recoveryDeadline === episode &&
+          monotonicMillis(clock) >= episode.deadlineMs
+        ) {
+          const causes = new Set<EngineError>([episode.cause]);
+          for (const item of items.values())
+            if (item.unknownCause !== undefined) causes.add(item.unknownCause);
+          for (const entry of unknownFillers.values()) causes.add(entry.cause);
+          yield* closeActor(
+            ReactorError.fromCode("Timeout", "Scheduler unknown recovery deadline elapsed", {
+              operation: "scheduler.unknownRecovery",
+              detail: [...causes],
+            }),
+          );
+          return;
+        }
+      }
+    });
+
     const prune = (state: EngineState): void => {
       const active = new Set(activeIds(state));
       if (state.availability === "Ready") {
@@ -747,6 +888,10 @@ export const makeScheduler = (
       while (history.size > maxHistory) history.delete(history.keys().next().value!);
     };
 
+    // A retained uncertain source need not have Ready clips. Sharing the empty
+    // projection keeps large overlap ledgers from allocating arrays per tick.
+    const noReady: SchedulerState["sessions"][number]["ready"] = [];
+    const emptySourceRows = new Map<string, SchedulerState["sessions"][number]>();
     const publishState = (state: EngineState): Effect.Effect<void> => {
       const playing = Option.getOrUndefined(state.playing);
       const playingOwner = playing === undefined ? undefined : owned.get(playing.clipId);
@@ -770,15 +915,28 @@ export const makeScheduler = (
             .filter((item) => item.lane === name && item.phase !== "Terminal")
             .map((item) => item.key),
         })),
-        sessions: state.sessions.map(({ sessionId }) => ({
-          sessionId,
-          ready: state.ready
-            .filter((clip) => clip.sessionId === sessionId)
-            .map((clip) => {
-              const owner = owned.get(clip.clipId);
-              return owner === undefined ? "other" : owner._tag === "Filler" ? "filler" : owner.key;
-            }),
-        })),
+        sessions: state.sessions.map(({ sessionId }) => {
+          if (state.ready.length === 0) {
+            const existing = emptySourceRows.get(sessionId);
+            if (existing !== undefined) return existing;
+            const row = { sessionId, ready: noReady };
+            emptySourceRows.set(sessionId, row);
+            return row;
+          }
+          return {
+            sessionId,
+            ready: state.ready
+              .filter((clip) => clip.sessionId === sessionId)
+              .map((clip) => {
+                const owner = owned.get(clip.clipId);
+                return owner === undefined
+                  ? "other"
+                  : owner._tag === "Filler"
+                    ? "filler"
+                    : owner.key;
+              }),
+          };
+        }),
         starved,
       });
     };
@@ -856,7 +1014,8 @@ export const makeScheduler = (
           filler.set(index, { index, clipId: record.clipId, sessionId: record.sessionId });
           const priorIndex = fillerIndex;
           fillerIndex = Math.max(fillerIndex, index + 1);
-          if (unknownFiller?.index === index) unknownFiller = undefined;
+          provedUnknown(unknownFillers.get(index)?.atMs);
+          unknownFillers.delete(index);
           if (fillerIndex !== priorIndex) upcomingFiller = undefined;
         }
         for (const item of items.values()) {
@@ -866,6 +1025,9 @@ export const makeScheduler = (
             if (resumed !== undefined) {
               item.clipId = resumed.clipId;
               item.sessionId = resumed.sessionId;
+              provedUnknown(item.unknownAtMs);
+              item.unknownAtMs = undefined;
+              item.unknownCause = undefined;
               item.unknownSessionId = undefined;
               owned.set(resumed.clipId, { _tag: "Item", key: item.key });
             }
@@ -932,7 +1094,7 @@ export const makeScheduler = (
           )
             yield* emit(item, { _tag: "Unobserved" });
         }
-        yield* publishState(state);
+        updateRecovery(state);
       });
 
     const onEvent = (event: EngineEvent): Effect.Effect<void> =>
@@ -1099,6 +1261,37 @@ export const makeScheduler = (
         const command = yield* Queue.take(commandQueue);
         if (ended !== undefined) continue;
         const result = yield* Effect.result(executeCommand(command));
+        // Capture uncertainty before actor delivery: drain may be awaiting a
+        // permit in stopRenewal while this committed command finishes.
+        if (
+          ended === undefined &&
+          Result.isFailure(result) &&
+          result.failure.context.outcome === "unknown"
+        ) {
+          let fresh: UnknownAdmission | undefined;
+          const sessionId =
+            engine.enqueueOnSource === undefined ||
+            (command._tag !== "Build" && command._tag !== "BuildFiller")
+              ? undefined
+              : command.sessionId;
+          if (command._tag === "Build") {
+            const item = items.get(command.key);
+            if (item !== undefined && item.phase !== "Terminal" && item.clipId === undefined) {
+              item.unknownAtMs ??= monotonicMillis(clock);
+              item.unknownCause = result.failure;
+              item.unknownSessionId = sessionId;
+              fresh = { sessionId, atMs: item.unknownAtMs, cause: result.failure };
+            }
+          } else if (
+            command._tag === "BuildFiller" &&
+            !filler.has(command.index) &&
+            !unknownFillers.has(command.index)
+          ) {
+            fresh = { sessionId, atMs: monotonicMillis(clock), cause: result.failure };
+            unknownFillers.set(command.index, { ...fresh, index: command.index });
+          }
+          updateRecovery(recoveryState, fresh);
+        }
         yield* Queue.offer(inbox, { _tag: "CommandDone", command, result });
       }
     });
@@ -1227,6 +1420,14 @@ export const makeScheduler = (
             break;
           }
           case "BuildFiller": {
+            if (unknownFillers.size >= maxUnknownFillers) {
+              yield* closeActor(
+                ReactorError.fromCode("Overflow", "Scheduler uncertain filler ledger is full", {
+                  operation: "scheduler.unknownRecovery",
+                }),
+              );
+              break;
+            }
             const captured =
               upcomingFiller === undefined
                 ? yield* Effect.result(
@@ -1314,6 +1515,8 @@ export const makeScheduler = (
               item.sessionId =
                 knownRecord(yield* engine.state, clipId)?.sessionId ??
                 (engine.enqueueOnSource === undefined ? undefined : command.sessionId);
+              provedUnknown(item.unknownAtMs);
+              item.unknownAtMs = undefined;
               item.unknownSessionId = undefined;
               item.unknownCause = undefined;
               yield* replayEarlyClipEvents(clipId);
@@ -1380,11 +1583,7 @@ export const makeScheduler = (
               upcomingFiller = undefined;
               yield* replayEarlyClipEvents(clipId);
             } else if (result.failure.context.outcome === "unknown") {
-              if (!filler.has(command.index))
-                unknownFiller = {
-                  index: command.index,
-                  sessionId: engine.enqueueOnSource === undefined ? undefined : command.sessionId,
-                };
+              // The worker already retained this identity and its original age.
             } else {
               fillerRetryAtMs = monotonicMillis(clock) + 1_000;
               if (result.failure.context.outcome === "replied") {
@@ -1545,30 +1744,31 @@ export const makeScheduler = (
 
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
+      if (ended !== undefined) return;
+      const liveSources = new Set(state.sessions.map((source) => source.sessionId));
+      // Cache only immutable empty projections, bounded by the live snapshot.
+      // Engine arrays may be mutated, so array identity is never evidence.
+      for (const id of emptySourceRows.keys()) if (!liveSources.has(id)) emptySourceRows.delete(id);
       prune(state);
       refreshAnchors();
       if (!observationReady) {
         yield* publishState(state);
         return;
       }
-      if (unknownFiller !== undefined) {
-        const uncertain = unknownFiller;
+      updateRecovery(state);
+      for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
-          uncertain.sessionId !== undefined &&
-          !state.sessions.some((session) => session.sessionId === uncertain.sessionId);
-        if (sourceRetired) {
-          unknownFiller = undefined;
-          fillerIndex = Math.max(fillerIndex, uncertain.index + 1);
-          upcomingFiller = undefined;
-        } else if (
-          uncertain.sessionId !== undefined &&
-          Option.getOrUndefined(state.preferredSessionId) !== uncertain.sessionId &&
-          fillerIndex <= uncertain.index
+          uncertain.sessionId !== undefined && !liveSources.has(uncertain.sessionId);
+        if (sourceRetired) unknownFillers.delete(uncertain.index);
+        if (
+          sourceRetired ||
+          (uncertain.sessionId !== undefined &&
+            Option.getOrUndefined(state.preferredSessionId) !== uncertain.sessionId)
         ) {
-          // A replacement may build independently, with a distinct key. The
-          // uncertain old request can still be adopted if it later appears.
-          fillerIndex = uncertain.index + 1;
-          upcomingFiller = undefined;
+          if (fillerIndex <= uncertain.index) {
+            fillerIndex = uncertain.index + 1;
+            upcomingFiller = undefined;
+          }
         }
       }
       for (const [key, pending] of pendingWithdrawals) {
@@ -1583,10 +1783,14 @@ export const makeScheduler = (
           item.phase === "Unknown" &&
           item.clipId === undefined &&
           item.unknownSessionId !== undefined &&
-          !state.sessions.some((session) => session.sessionId === item.unknownSessionId)
+          !liveSources.has(item.unknownSessionId)
         )
           yield* resolveRetiredUnknown(item);
       if (draining) yield* drainPending(state);
+      const preferred = Option.getOrUndefined(state.preferredSessionId);
+      let unknownFillerCount = 0;
+      for (const entry of unknownFillers.values())
+        if (entry.sessionId === undefined || entry.sessionId === preferred) unknownFillerCount++;
       const decision = plan({
         engine: state,
         items: [...items.values()],
@@ -1601,8 +1805,7 @@ export const makeScheduler = (
         accepting: accepting || (draining && finishAccepted),
         fillerEnabled: !draining || fillerHeld(monotonicMillis(clock)),
         fillerRetryAtMs,
-        fillerUnknown: unknownFiller !== undefined,
-        fillerUnknownSessionId: unknownFiller?.sessionId,
+        unknownFillerCount,
         blockedMove,
       });
       refillActive = decision.refillActive;
@@ -1625,7 +1828,7 @@ export const makeScheduler = (
         commandCount === 0 &&
         [...items.values()].every((item) => item.phase === "Terminal") &&
         pendingWithdrawals.size === 0 &&
-        unknownFiller === undefined
+        unknownFillers.size === 0
       ) {
         const after = yield* engine.state;
         if (Option.isNone(after.playing) && !activeIds(after).some((clipId) => owned.has(clipId))) {
@@ -1656,6 +1859,7 @@ export const makeScheduler = (
             }
             const nowMs = monotonicMillis(clock);
             const state = yield* engine.state;
+            if (ended !== undefined) continue;
             const startByMs =
               message.item.startByOffsetMs === undefined
                 ? undefined
@@ -1697,6 +1901,7 @@ export const makeScheduler = (
               sessionId: undefined,
               unknownSessionId: undefined,
               unknownCause: undefined,
+              unknownAtMs: undefined,
               handle,
               startedWaiter,
               outcomeWaiter,
@@ -1709,6 +1914,9 @@ export const makeScheduler = (
               status: item.status,
             });
             yield* observed(state);
+            // Submit returns its committed view; other messages publish once
+            // through reconciliation after all their evidence is adopted.
+            yield* publishState(state);
             yield* Deferred.succeed(message.reply, handle);
             break;
           }
@@ -1732,9 +1940,11 @@ export const makeScheduler = (
             if (!draining) {
               draining = true;
               finishAccepted = message.finish === "accepted";
+              updateRecovery();
               // Renewal admission must stop even while an earlier enqueue is
               // awaiting its reply in the command worker.
               const stoppedRenewal = yield* Effect.result(engine.stopRenewal);
+              if (ended !== undefined) break;
               if (Result.isFailure(stoppedRenewal)) {
                 drainFailure = stoppedRenewal.failure;
                 for (const reply of drainReplies.splice(0))
@@ -1823,6 +2033,7 @@ export const makeScheduler = (
             : Effect.void,
         ),
       );
+    yield* Effect.forkScoped(supervise(watchdog));
     yield* Effect.forkScoped(supervise(commandWorker));
     yield* Effect.forkScoped(supervise(actor));
     yield* Effect.forkScoped(supervise(observe));
