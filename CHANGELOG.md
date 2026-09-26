@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged.
+## [0.5.0] - 2026-09-26
+
+The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host has one fix, and it is released with the client as always.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, and the pack/install smoke of all three archives. The portable suites include the scheduler's ordering, timing, fate, drain and renewal tests; the handoff tests bound the gap, not only its outcome. The scheduler and the final-clip handoff have run only against the simulation, the H3 source fixture and scripted engines: the hosted `scheduler` check has not run, so hosted H3 timing, handoff and output presentation are unqualified. A provider `Started` event is not proof of encoded output.
 
 ### Added
 
@@ -29,10 +33,6 @@ The keyed scheduler replaces the lineup, and renewal hands off on the retiring s
 ### Fixed
 
 - The native isolated host classifies a call on a link fenced by the child's exit as lost, not `Closed`.
-
-### Qualification
-
-- The scheduler's ordering, timing, fate, drain and renewal checks run against the simulation and controlled source fixtures; the handoff tests bound the gap, not only its outcome. The hosted `scheduler` check has not run, so hosted H3 timing, handoff and output presentation are unqualified. A provider `Started` event is not proof of encoded output.
 
 ## [0.4.0] - 2026-09-25
 
@@ -241,7 +241,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/62f63d68dcdf25411adb747f4905823b7bbab077...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/9d2fbd34da41c5be82bdf8e8e482f226fddd7c19...main
+[0.5.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.5.0
 [0.4.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.4.0
 [0.3.4]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.3
