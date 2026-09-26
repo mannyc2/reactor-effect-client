@@ -10,7 +10,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { duration } from "../duration.js";
@@ -481,7 +481,7 @@ export interface SchedulerShape {
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
-  /** Original terminal failure, including Closed when the owning scope ends. */
+  /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
   readonly failure: Effect.Effect<ReactorFailure>;
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
@@ -593,6 +593,7 @@ export const makeScheduler = (
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
     const stopped = yield* Deferred.make<ReactorFailure>();
+    const settled = yield* Deferred.make<void>();
     const closedCall = Deferred.await(stopped).pipe(
       Effect.flatMap((cause) => PolicyFailure.refuse("SessionClosed", cause.message)),
     );
@@ -609,7 +610,7 @@ export const makeScheduler = (
     let accepting = true;
     let starved = 0;
     let refillActive = false;
-    let ended: ReactorFailure | undefined;
+    let ended: Exit.Exit<ReactorFailure> | undefined;
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
@@ -661,27 +662,62 @@ export const makeScheduler = (
         }
       });
 
-    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (ended !== undefined) return;
-        ended = cause;
+    // The claim is synchronous; interruption masking alone would still allow
+    // two closers to publish conflicting results. Join only local bookkeeping,
+    // never the worker scope (a worker can itself own terminal settlement).
+    const terminate = (terminal: Exit.Exit<ReactorFailure>): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (ended !== undefined) return Deferred.await(settled);
+        ended = terminal;
         accepting = false;
-        yield* Deferred.succeed(stopped, cause);
-        for (const item of items.values()) {
-          if (item.phase === "Terminal") continue;
-          if (item.phase === "Unknown") {
-            yield* emit(item, { _tag: "Unknown", terminal: true });
-            item.phase = "Terminal";
-          } else yield* emit(item, { _tag: "Failed", reason: { _tag: "Scheduler", cause } });
-        }
-        const closed = PolicyFailure.refuse("SessionClosed", cause.message);
-        for (const [key, pending] of pendingWithdrawals) {
-          for (const reply of pending.replies) yield* Deferred.fail(reply, closed);
-          pendingWithdrawals.delete(key);
-        }
-        for (const reply of drainReplies.splice(0)) yield* Deferred.fail(reply, closed);
-        yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
-      });
+        return Effect.gen(function* () {
+          for (const item of items.values()) {
+            if (Exit.isFailure(terminal)) {
+              yield* Deferred.failCause(item.startedWaiter, terminal.cause);
+              yield* Deferred.failCause(item.outcomeWaiter, terminal.cause);
+              yield* Deferred.failCause(item.firstDecisiveWaiter, terminal.cause);
+            } else if (item.phase !== "Terminal") {
+              yield* emit(
+                item,
+                item.phase === "Unknown"
+                  ? { _tag: "Unknown", terminal: true }
+                  : { _tag: "Failed", reason: { _tag: "Scheduler", cause: terminal.value } },
+              );
+            }
+          }
+          const closed = Exit.isSuccess(terminal)
+            ? Exit.fail(PolicyFailure.refuse("SessionClosed", terminal.value.message))
+            : Exit.failCause(terminal.cause);
+          for (const pending of pendingWithdrawals.values())
+            for (const reply of pending.replies) yield* Deferred.done(reply, closed);
+          pendingWithdrawals.clear();
+          for (const reply of drainReplies.splice(0)) yield* Deferred.done(reply, closed);
+          yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
+          yield* Deferred.done(
+            initialized,
+            Exit.isFailure(terminal)
+              ? Exit.failCause(terminal.cause)
+              : Exit.fail(ReactorError.fromCode("Closed", terminal.value.message)),
+          );
+          // Supervisors may close the owner immediately when this wakes them.
+          yield* Deferred.done(stopped, terminal);
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              // A bookkeeping defect must release joiners with that Cause, never
+              // leave an unfinished latch or report a partial settlement as success.
+              yield* Deferred.done(settled, exit);
+              if (Exit.isFailure(exit)) {
+                yield* Deferred.failCause(initialized, exit.cause);
+                yield* Deferred.failCause(stopped, exit.cause);
+              }
+            }),
+          ),
+        );
+      }).pipe(Effect.uninterruptible);
+
+    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
+      terminate(Exit.succeed(cause));
 
     const prune = (state: EngineState): void => {
       const active = new Set(activeIds(state));
@@ -1061,6 +1097,7 @@ export const makeScheduler = (
     const commandWorker = Effect.gen(function* () {
       for (;;) {
         const command = yield* Queue.take(commandQueue);
+        if (ended !== undefined) continue;
         const result = yield* Effect.result(executeCommand(command));
         yield* Queue.offer(inbox, { _tag: "CommandDone", command, result });
       }
@@ -1068,6 +1105,7 @@ export const makeScheduler = (
 
     const sendCommand = (command: Command): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (ended !== undefined) return;
         if (command._tag === "Build") pendingBuilds.add(command.key);
         if (command._tag === "DeferAt") pendingAtDeferrals.add(command.key);
         commandCount++;
@@ -1601,24 +1639,8 @@ export const makeScheduler = (
     const actor = Effect.gen(function* () {
       for (;;) {
         const message = yield* Queue.take(inbox);
-        if (ended !== undefined && message._tag !== "CommandDone") {
-          if (message._tag === "Submit")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          else if (message._tag === "Withdraw")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          else if (message._tag === "Drain")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          continue;
-        }
+        // Queued public calls observe the same terminal result through closedCall.
+        if (ended !== undefined && message._tag !== "CommandDone") continue;
         switch (message._tag) {
           case "Submit": {
             if (!accepting) {
@@ -1791,24 +1813,13 @@ export const makeScheduler = (
         }
       }
     });
-    // A defect remains a defect, but it must wake waiters just as a typed
-    // terminal failure does. Scope interruption uses the finalizer below.
+    // Orderly scope teardown has already claimed and settled Closed before
+    // worker interruption; unexpected interruption retains its original Cause.
     const supervise = (effect: Effect.Effect<void>) =>
       effect.pipe(
         Effect.onExit((exit) =>
           Exit.isFailure(exit) && ended === undefined
-            ? Effect.gen(function* () {
-                accepting = false;
-                yield* Deferred.failCause(stopped, exit.cause);
-                yield* Deferred.failCause(initialized, exit.cause);
-                for (const item of items.values()) {
-                  yield* Deferred.failCause(item.startedWaiter, exit.cause);
-                  yield* Deferred.failCause(item.outcomeWaiter, exit.cause);
-                  yield* Deferred.failCause(item.firstDecisiveWaiter, exit.cause);
-                }
-                yield* Queue.shutdown(inbox);
-                yield* Queue.shutdown(commandQueue);
-              })
+            ? terminate(Exit.failCause(exit.cause))
             : Effect.void,
         ),
       );
@@ -1876,7 +1887,12 @@ export const makeScheduler = (
       state: SubscriptionRef.get(stateRef),
       asRun: Stream.fromPubSub(events),
     };
-  });
+  }).pipe(
+    Effect.provideServiceEffect(
+      Scope.Scope,
+      Effect.flatMap(Scope.Scope, (parent) => Scope.fork(parent, "sequential")),
+    ),
+  );
 
 export const layerScheduler = (
   options: SchedulerOptions,
