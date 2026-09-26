@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { parsed, positiveLimit, ReactorError } from "../errors.js";
-import type { SourceCleanup } from "./types.js";
+import type { CleanupSummary, SourceCleanup } from "./types.js";
 
 export interface Options {
   readonly retainedSuccessfulCleanups?: number;
@@ -9,33 +9,9 @@ export interface Options {
 }
 
 /** Local completion is independent of a source's canonical remote-cleanup report. */
-export interface Retirement {
-  readonly accounting: "settled" | "timed-out" | "not-applicable";
-  readonly scope: "closed" | "failed";
-  readonly affinity: "retired" | "failed" | "not-applicable";
-  readonly errors: readonly ReactorError[];
-}
-
-export interface Record {
-  readonly ordinal: bigint;
-  readonly source?: { readonly sessionId: string; readonly incarnation: bigint };
-  readonly cleanup?: SourceCleanup;
-  readonly conflictingCleanup?: SourceCleanup;
-  readonly retirement: Retirement;
-  readonly disposition: "complete" | "incomplete";
-}
-
-export interface Summary {
-  readonly format: "reactor-orchestration-cleanup-summary/v1";
-  readonly totalRetirements: bigint;
-  readonly omittedComplete: {
-    readonly noAllocation: bigint;
-    readonly ownedTerminated: bigint;
-    readonly attachedDetached: bigint;
-  };
-  readonly retained: readonly Record[];
-  readonly exhausted: boolean;
-}
+export type Retirement = CleanupSummary["retained"][number]["retirement"];
+export type Record = CleanupSummary["retained"][number];
+export type Summary = CleanupSummary;
 
 type CompleteKind = keyof Summary["omittedComplete"];
 
@@ -70,6 +46,7 @@ const completeKind = (attempt: Attempt, retirement: Retirement): CompleteKind | 
     retirement.scope !== "closed" ||
     retirement.affinity === "failed" ||
     retirement.errors.length > 0 ||
+    retirement.unknownSubmissions > 0n ||
     !cleanup.lease.localClosed ||
     cleanup.lease.localErrors.length > 0 ||
     cleanup.lease.unresolvedPublications.length > 0 ||

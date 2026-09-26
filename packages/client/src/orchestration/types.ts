@@ -11,7 +11,7 @@ import type { ReactorError, ReactorFailure } from "../errors.js";
 import type { ObservationOptions } from "../observation.js";
 import type { Clip } from "../h3/messages.js";
 import type { CommandFailure, PolicyFailure } from "../errors.js";
-import { CommandFailureFromJson, PolicyFailureFromJson } from "../errors.js";
+import { CommandFailureFromJson, PolicyFailureFromJson, ReactorErrorFromJson } from "../errors.js";
 import { CloseReport } from "../SessionTypes.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import type { Submission } from "../Submission.js";
@@ -339,6 +339,64 @@ export interface SourceCleanup extends Schema.Schema.Type<typeof SourceCleanup> 
 export const CleanupReport = Schema.Struct({ sessions: Schema.Array(SourceCleanup) });
 export interface CleanupReport extends Schema.Schema.Type<typeof CleanupReport> {}
 
+const cleanupCount = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+/**
+ * Continuous cleanup is explicitly summarized. The absence of `sessions` makes
+ * legacy complete-history decoders reject it instead of accepting truncated evidence.
+ * JSON codecs encode its exact counts and ordinals as decimal strings.
+ */
+export const CleanupSummary = Schema.Struct({
+  format: Schema.Literal("reactor-orchestration-cleanup-summary/v1"),
+  totalRetirements: cleanupCount,
+  omittedComplete: Schema.Struct({
+    noAllocation: cleanupCount,
+    ownedTerminated: cleanupCount,
+    attachedDetached: cleanupCount,
+  }),
+  retained: Schema.Array(
+    Schema.Struct({
+      ordinal: cleanupCount,
+      source: Schema.optionalKey(
+        Schema.Struct({ sessionId: Schema.String, incarnation: cleanupCount }),
+      ),
+      cleanup: Schema.optionalKey(SourceCleanup),
+      conflictingCleanup: Schema.optionalKey(SourceCleanup),
+      retirement: Schema.Struct({
+        accounting: Schema.Literals(["settled", "timed-out", "not-applicable"]),
+        scope: Schema.Literals(["closed", "failed"]),
+        affinity: Schema.Literals(["retired", "failed", "not-applicable"]),
+        errors: Schema.Array(ReactorErrorFromJson),
+        /** Settled bookkeeping can still record an unknown dispatch outcome. */
+        unknownSubmissions: cleanupCount,
+      }),
+      disposition: Schema.Literals(["complete", "incomplete"]),
+    }),
+  ),
+  exhausted: Schema.Boolean,
+}).check(
+  Schema.makeFilter((summary) => {
+    const omitted = summary.omittedComplete;
+    if (
+      summary.totalRetirements !==
+      BigInt(summary.retained.length) +
+        omitted.noAllocation +
+        omitted.ownedTerminated +
+        omitted.attachedDetached
+    )
+      return "Retirement totals must equal retained rows plus omitted complete retirements";
+    let previous = 0n;
+    for (const row of summary.retained) {
+      if (row.ordinal <= previous || row.ordinal > summary.totalRetirements)
+        return "Retirement ordinals must be unique, increasing, and within the total";
+      if (row.retirement.unknownSubmissions > 0n && row.disposition === "complete")
+        return "Unknown submission evidence must remain incomplete";
+      previous = row.ordinal;
+    }
+    return true;
+  }),
+);
+export interface CleanupSummary extends Schema.Schema.Type<typeof CleanupSummary> {}
+
 /** Resolved by the one router; the full request remains a local annotation. */
 export interface RoutedRequest {
   readonly request: ClipRequest;
@@ -392,6 +450,12 @@ export interface HandleShape {
     Affinity<string>,
     "get" | "snapshots" | "seal" | "acknowledgeIndeterminate" | "release"
   >;
+}
+
+/** Opt-in continuous renewal retains bounded cleanup evidence in a distinct report. */
+export interface ContinuousHandleShape extends Omit<HandleShape, "close" | "cleanup"> {
+  readonly close: Effect.Effect<CleanupSummary>;
+  readonly cleanup: Effect.Effect<Option.Option<CleanupSummary>>;
 }
 
 export class Engine extends Context.Service<Engine, EngineShape>()(

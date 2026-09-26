@@ -12,6 +12,7 @@ const complete: Retention.Retirement = {
   scope: "closed",
   affinity: "retired",
   errors: [],
+  unknownSubmissions: 0n,
 };
 const unopened: Retention.Retirement = {
   ...complete,
@@ -197,6 +198,7 @@ test("local retirement failures retain clean canonical evidence by reference", a
         { ...complete, accounting: "timed-out" as const },
         { ...complete, scope: "failed" as const },
         { ...complete, affinity: "failed" as const },
+        { ...complete, unknownSubmissions: 1n },
         { ...complete, errors: [ReactorError.fromCode("InvalidState", "retirement failed")] },
       ]) {
         const owner = yield* retention.reserve;
@@ -205,7 +207,7 @@ test("local retirement failures retain clean canonical evidence by reference", a
         expect(row.disposition).toBe("incomplete");
         expect(row.cleanup).toBe(owned);
       }
-      expect((yield* retention.summary).retained).toHaveLength(4);
+      expect((yield* retention.summary).retained).toHaveLength(5);
     }),
     { signal },
   );
