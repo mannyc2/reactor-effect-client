@@ -72,6 +72,70 @@ const report: CloseReport = {
 };
 
 describe("evidence codecs", () => {
+  it("continuous summaries preserve exact bigint counts and cannot decode as complete legacy history", () => {
+    const count = 900719925474099312345n;
+    const cleanup: Orchestration.CleanupSummary = {
+      format: "reactor-orchestration-cleanup-summary/v1",
+      totalRetirements: count + 1n,
+      omittedComplete: { noAllocation: count, ownedTerminated: 0n, attachedDetached: 0n },
+      retained: [
+        {
+          ordinal: count + 1n,
+          source: { sessionId: "s-1", incarnation: count },
+          cleanup: { lease: report, policy: [] },
+          retirement: {
+            accounting: "timed-out",
+            scope: "failed",
+            affinity: "retired",
+            errors: reasons.map(failure),
+            unknownSubmissions: 1n,
+          },
+          disposition: "incomplete",
+        },
+      ],
+      exhausted: true,
+    };
+    expect(
+      Result.isFailure(
+        Schema.decodeResult(Orchestration.CleanupSummary)({
+          ...cleanup,
+          totalRetirements: count + 2n,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        Schema.decodeResult(Orchestration.CleanupSummary)({
+          ...cleanup,
+          retained: cleanup.retained.map((row) => ({ ...row, disposition: "complete" as const })),
+        }),
+      ),
+    ).toBe(true);
+    const json = persisted(Orchestration.CleanupSummary, cleanup);
+    expect(JSON.stringify(json)).toContain(`"${count}"`);
+    expect(JSON.stringify(json)).not.toContain(secret);
+    const restoredSummary = restored(Orchestration.CleanupSummary, json);
+    expect(restoredSummary.totalRetirements).toBe(count + 1n);
+    expect(
+      restoredSummary.retained[0]?.retirement.errors.map((error) => error.reason._tag),
+    ).toEqual(reasons.map((reason) => reason._tag));
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(Schema.toCodecJson(Orchestration.CleanupReport))(json),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        Schema.decodeResult(Orchestration.CleanupSummary)({ ...cleanup, totalRetirements: -1n }),
+      ),
+    ).toBe(true);
+    expect(
+      Result.isFailure(
+        Schema.decodeResult(Schema.toCodecJson(Orchestration.CleanupSummary))({ sessions: [] }),
+      ),
+    ).toBe(true);
+  });
+
   it("encodes every reason as the failure's diagnostic JSON, and decodes it back", () => {
     for (const reason of reasons) {
       const error = failure(reason);
