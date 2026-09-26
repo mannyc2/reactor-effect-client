@@ -53,4 +53,22 @@ describe("public types", () => {
       Orchestration.EnqueueHooks | undefined
     >();
   });
+
+  it("keeps historical switch events assignable and exposes handoff evidence through Renewal", () => {
+    type Switched = Extract<Orchestration.Renewal, { readonly _tag: "Switched" }>;
+    type Handoff = NonNullable<Switched["handoff"]>;
+    expectTypeOf<Omit<Switched, "handoff">>().toExtend<Switched>();
+    expectTypeOf<undefined>().toExtend<Switched["handoff"]>();
+    expectTypeOf<Handoff["replacementSessionId"]>().toEqualTypeOf<string>();
+    expectTypeOf<Handoff["decision"]>().toEqualTypeOf<
+      "no-observed-start" | "count-complete" | "grace-elapsed"
+    >();
+    expectTypeOf<
+      Extract<Handoff["finalClip"], { readonly _tag: "Observed" }>["clipId"]
+    >().toEqualTypeOf<Orchestration.ClipId>();
+    expectTypeOf<Handoff["grace"]["_tag"]>().toEqualTypeOf<"NotObserved" | "Observed">();
+    expectTypeOf<
+      Extract<Handoff["grace"], { readonly _tag: "Observed" }>["origin"]
+    >().toEqualTypeOf<"Ended" | "Idle">();
+  });
 });
