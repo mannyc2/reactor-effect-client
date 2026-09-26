@@ -18,6 +18,7 @@ import {
   browserPackage,
   clientPackage,
   digest,
+  effectPin,
   hostPackages,
   intentFor,
   loadOffline,
@@ -46,6 +47,71 @@ const flippedLastByte = (bytes) => {
   changed[changed.length - 1] = last ^ 1;
   return changed;
 };
+
+test("qualification stack metadata survives candidate retention as exact raw identity bytes while Effect remains range-valued", () =>
+  withFixture(async (fixture) => {
+    const version = "4.0.0-rc.117";
+    const node = "@effect/platform-node";
+    const shared = "@effect/platform-node-shared";
+    const qualificationStack = {
+      format: "reactor-effect-qualification-stack/v1",
+      selection: "frozen-workspace",
+      lockfileVersion: 2,
+      lockfileSha256: digest("frozen qualification fixture"),
+      requirements: { effect: effectPin, nodePlatform: effectPin, nodeSharedOverride: effectPin },
+      selected: { effect: version, nodePlatform: version, nodeShared: version },
+      workspaceResolution: ["client", "browser", "native"].flatMap((directory) => {
+        const owner = `packages/${directory}`;
+        return [
+          [owner, "effect"],
+          ...(directory === "browser"
+            ? []
+            : [
+                [owner, node],
+                [`${owner} -> ${node}`, "effect"],
+                [`${owner} -> ${node}`, shared],
+                [`${owner} -> ${node} -> ${shared}`, "effect"],
+              ]),
+        ].map(([owner, name]) => ({
+          owner,
+          requested: name,
+          name,
+          version,
+          lockCoordinate: `${name}@${version}`,
+        }));
+      }),
+      consumers: ["portable-node", "browser", "native"].map((name) => ({
+        name,
+        installer: "bun",
+        instances: (name === "native" ? ["effect", node, shared] : ["effect"]).map((name) => ({
+          path: `./dependencies/${name}`,
+          name,
+          version,
+        })),
+      })),
+    };
+    const augmented = { ...fixture.identity, qualificationStack };
+    assert.equal(validatePackageIdentity(augmented).effect, effectPin);
+    assert.throws(() => validatePackageIdentity({ ...augmented, effect: version }), /SchemaError/);
+    // The release schema validates its original fields. Pack owns validation of
+    // the additive record; retaining original bytes keeps that evidence intact.
+    const original = Buffer.from(`${JSON.stringify(augmented, null, 4)}\n\n`);
+    writeFileSync(fixture.identityPath, original);
+    const { input } = await prepared(fixture);
+    const loaded = await Effect.runPromise(loadOffline(input));
+    const retained = loaded.bundle.artifacts.find(
+      (entry) => entry.logicalName === "package-identity.json",
+    );
+    assert.ok(retained?._tag === "OwnedFile");
+    assert.deepEqual(
+      Buffer.from(await Effect.runPromise(loaded.readContent(retained.content))),
+      original,
+    );
+    assert.deepEqual(
+      (await retainedJson(loaded, "package-identity.json")).qualificationStack,
+      qualificationStack,
+    );
+  }));
 
 test("prepare and load retain the exact qualified archives, both native identities and three dependent npm operations", () =>
   withFixture(async (fixture) => {
