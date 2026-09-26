@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Planned `Switched` renewal events include immutable `handoff` evidence captured before retirement waits: the replacement session, eligibility decision, final clip's local decoded-frame counts and observed grace origin. `sessionId` still identifies the retiring source and aggregate `tail` accounting is unchanged. The field is optional in the public type so historical event values remain assignable. Audio and output presentation completeness remain unverified; hosted qualification of this change has not run.
 
+### Fixed
+
+- Scheduler terminal publication now follows retained item/control settlement and admission fencing, so immediate owner closure after `scheduler.failure` cannot strand those waits. Typed termination preserves terminal `Unknown` and earlier decisive evidence; defects and unexpected interruption keep their original Cause. This ordering does not establish remote cleanup completion or wait for resumed callers.
+
 ## [0.5.0] - 2026-09-26
 
 The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host has one fix, and it is released with the client as always.
