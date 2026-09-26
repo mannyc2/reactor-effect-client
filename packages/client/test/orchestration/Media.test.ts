@@ -676,7 +676,9 @@ test("source evidence preserves duplicate boundaries and uses monotonic grace af
           openedAt: 0,
           maxSeconds: 60,
           cleanupBudgetMs: 1000,
-          recordCleanup: () => {},
+          recordCleanup: () => Effect.void,
+          retired: () => Effect.void,
+          boundedHistory: false,
           retireSequences: Effect.void,
         });
         let events = 0;

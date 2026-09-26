@@ -30,7 +30,7 @@ import * as Submission from "../Submission.js";
 import type { MediaPressure } from "../session/media.js";
 import * as MediaBuffer from "./media-buffer.js";
 import * as SourceSlot from "./source-slot.js";
-import type { SourceSlot as Slot } from "./source-slot.js";
+import * as Retention from "./retention.js";
 import { monotonicMillis } from "./elapsed.js";
 import { handoffEvidence, decideRenewal } from "./renewal-state.js";
 import { PolicyFailure, captureRequest } from "./request.js";
@@ -41,6 +41,8 @@ import type { Candidate } from "./routing.js";
 import type {
   ClipRecord,
   CleanupReport,
+  CleanupSummary,
+  ContinuousHandleShape,
   EngineError,
   EngineEvent,
   EngineShape,
@@ -117,6 +119,35 @@ export interface Options<R = never> {
   readonly onRenewal?: (event: Renewal) => Effect.Effect<void>;
 }
 
+/**
+ * Each open must supply a globally unique physical source ID; clip IDs must
+ * never be reassigned during this handle's lifetime. Continuous mode checks live
+ * collisions, but cannot detect historical reuse after eviction with bounded memory.
+ * Source/clip IDs are limited to 1024 UTF-16 code units; each source admits at most
+ * 4096 accepted IDs and 4096 distinct Started IDs. Sequence history still requires
+ * explicit acknowledgement/release and keeps its independent bounds.
+ */
+export interface ContinuousOptions<R = never> extends Options<R> {
+  /** Supply globally unique source IDs and never reassign clip IDs; historical reuse cannot be checked after eviction. */
+  readonly open: Options<R>["open"];
+  /** No cumulative successful-open cap when omitted; explicit values retain legacy semantics. */
+  readonly maxSessions?: number;
+  /** Newest complete cleanup details retained, 0..4096; defaults to 64. */
+  readonly retainedSuccessfulCleanups?: number;
+  /**
+   * Incomplete cleanup or unknown-submission records plus outstanding reservations,
+   * 2..4096; defaults to 16. Unknown outcomes can exhaust it despite confirmed termination.
+   */
+  readonly maxUnresolvedCleanups?: number;
+}
+
+interface Owner {
+  readonly namespace: string;
+  readonly incarnation: bigint;
+  readonly sessionId: string;
+}
+type Slot = SourceSlot.SourceSlot & { readonly owner: Owner };
+
 const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent> =>
   event._tag === "Engine" ? Result.succeed(event.event) : Result.fail(event);
 const renewalsOnly = (event: HandleEvent): Result.Result<Renewal, HandleEvent> =>
@@ -137,6 +168,42 @@ const withSessionId = (state: EngineState, sessionId: string): EngineState => {
   });
 };
 
+/** A completed caller handle keeps only its Exit, not the routing or source closures. */
+const logicalSubmission = (id: string) => {
+  let execute: Effect.Effect<ClipId, EngineError> | undefined;
+  let inspect: Effect.Effect<Submission.State<ClipId, EngineError>> | undefined;
+  let outcome: Exit.Exit<ClipId, EngineError> | undefined;
+  return {
+    attach: (
+      submit: Effect.Effect<ClipId, EngineError>,
+      state: Effect.Effect<Submission.State<ClipId, EngineError>>,
+    ) => {
+      execute = submit;
+      inspect = state;
+    },
+    complete: (exit: Exit.Exit<ClipId, EngineError>) => {
+      outcome ??= exit;
+      execute = undefined;
+      inspect = undefined;
+    },
+    outcome: () => outcome,
+    submission: {
+      id,
+      submit: Effect.suspend(
+        () => outcome ?? execute ?? Effect.die(new Error("Logical submission has no execution")),
+      ),
+      state: Effect.suspend(() =>
+        outcome === undefined
+          ? (inspect ?? Effect.succeed<Submission.State<ClipId, EngineError>>({ _tag: "Prepared" }))
+          : Effect.succeed<Submission.State<ClipId, EngineError>>({
+              _tag: "Completed",
+              exit: outcome,
+            }),
+      ),
+    } satisfies Submission.Submission<ClipId, EngineError>,
+  };
+};
+
 type Replacement =
   | { readonly _tag: "Absent" }
   | { readonly _tag: "Opening"; readonly fiber: Fiber.Fiber<Slot, ReactorFailure> }
@@ -146,9 +213,7 @@ type Replacement =
  * Explicit application policy for renewal, sequence affinity and continuous
  * recovering media. A physical source still owns each connection generation.
  */
-export const make = <R>(
-  options: Options<R>,
-): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto | R> =>
+const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const context = yield* Effect.context<R>();
@@ -158,8 +223,7 @@ export const make = <R>(
       .pipe(Effect.mapError((cause) => errorOf(cause, "InvalidState")));
     const namespace = Array.from(random, (byte) => byte.toString(16).padStart(2, "0")).join("");
     const commands = yield* Semaphore.make(1);
-    const closeGate = yield* Semaphore.make(1);
-    const affinity = yield* Sequence.makeAffinity<string>().pipe(
+    const affinity = yield* Sequence.makeAffinity<Owner>().pipe(
       Effect.mapError((cause) => errorOf(cause, "InvalidInput")),
     );
     // One ordered stream: engine events, renewals and media transitions.
@@ -178,11 +242,17 @@ export const make = <R>(
     );
     const fatal = yield* Deferred.make<ReactorFailure>();
     let renewing = true;
-    const slots = new Map<string, Slot>();
+    const slots = new Map<Owner, Slot>();
+    const physicalOwners = new Map<string, Owner>();
+    const retention = continuous ? yield* Retention.make(options) : undefined;
+    let incarnation = 0n;
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
-    const maxSessions = options.maxSessions ?? 64;
-    if (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 4096) {
+    const maxSessions = options.maxSessions ?? (continuous ? Infinity : 64);
+    if (
+      (options.maxSessions !== undefined || !continuous) &&
+      (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 4096)
+    ) {
       return yield* ReactorError.fromCode("InvalidInput", "Invalid orchestration bounds");
     }
     const reconnectTimeout = Duration.toMillis(
@@ -206,12 +276,16 @@ export const make = <R>(
     );
     let current: Slot | undefined;
     let replacement: Replacement = { _tag: "Absent" };
-    let opened = 0;
+    let opened = 0n;
     let openFailures = 0;
     let retryAt = 0;
     let autoplay = true;
     let closing = false;
     let finalReport: CleanupReport | undefined;
+    let finalSummary: CleanupSummary | undefined;
+    let firstCleanup: SourceCleanup | undefined;
+    let initializing = true;
+    const retirementCauses = new Set<Cause.Cause<never>>();
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
@@ -278,7 +352,7 @@ export const make = <R>(
     const openSequences = (slot: Slot) =>
       affinity.snapshots.pipe(
         Effect.map((entries) =>
-          entries.some((entry) => entry.owner === slot.source.id && entry.status === "open"),
+          entries.some((entry) => entry.owner === slot.owner && entry.status === "open"),
         ),
       );
     const expired = (slot: Slot) => slot.expired();
@@ -288,6 +362,7 @@ export const make = <R>(
     // replacement's loss before it fed the output is not the output's.
     let outputLoss: SourceSlot.Loss = SourceSlot.noLoss;
     let ownerBaseline: SourceSlot.Loss = SourceSlot.noLoss;
+    let outputOwner: Owner | undefined;
     const ownerLoss = (slot: Slot) =>
       Effect.result(slot.pressure.pipe(Effect.timeout(recoveryBudget(slot)))).pipe(
         Effect.map(SourceSlot.lossOf),
@@ -296,17 +371,33 @@ export const make = <R>(
       ownerLoss(slot).pipe(
         Effect.map((loss) => {
           ownerBaseline = loss;
+          outputOwner = slot.owner;
         }),
       );
-    const retireOwner = (slot: Slot) =>
-      ownerLoss(slot).pipe(
-        Effect.map((loss) => {
-          outputLoss = SourceSlot.addLoss(outputLoss, SourceSlot.subtractLoss(loss, ownerBaseline));
-          ownerBaseline = SourceSlot.noLoss;
-        }),
+    const retireOwner = (slot: Slot): Effect.Effect<void> =>
+      Effect.suspend(() =>
+        outputOwner !== slot.owner
+          ? Effect.void
+          : ownerLoss(slot).pipe(
+              Effect.map((loss) => {
+                outputLoss = SourceSlot.addLoss(
+                  outputLoss,
+                  SourceSlot.subtractLoss(loss, ownerBaseline),
+                );
+                ownerBaseline = SourceSlot.noLoss;
+                outputOwner = undefined;
+              }),
+            ),
       );
     const retired = (slot: Slot) => slot.retired(buffer.forwarded);
-    const closeSlot = (slot: Slot) => slot.close;
+    const closeSlot = (slot: Slot) =>
+      slot.close.pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (Exit.isFailure(exit)) retirementCauses.add(exit.cause);
+          }),
+        ),
+      );
 
     const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -343,7 +434,7 @@ export const make = <R>(
             : yield* pending._tag === "Opening" ? Fiber.join(pending.fiber) : acquire;
         replacement = { _tag: "Absent" };
         if (closing || terminalFailure !== undefined) {
-          yield* selected.close;
+          yield* closeSlot(selected);
           return;
         }
         current = selected;
@@ -488,9 +579,21 @@ export const make = <R>(
             "Overflow",
             "Orchestration session and cleanup-history bound reached",
           );
+        if (continuous && (closing || terminalFailure !== undefined || !renewing))
+          return yield* ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
+        const reservation = retention === undefined ? undefined : yield* retention.reserve;
+        const attemptIncarnation = reservation?.incarnation ?? ++incarnation;
+        const recordAttempt = (cleanup: SourceCleanup): Effect.Effect<void> => {
+          if (initializing && firstCleanup === undefined) firstCleanup = cleanup;
+          return retention !== undefined && reservation !== undefined
+            ? retention.record(reservation, cleanup)
+            : Effect.sync(() => recordCleanup(cleanup));
+        };
         const owned = yield* Scope.make();
         let acquired: Slot | undefined;
         let acquiredSource: Source | undefined;
+        let acquisitionCleanup: SourceCleanup | undefined;
+        let acquisitionDefect: ReactorError | undefined;
         return yield* restore(
           Effect.gen(function* () {
             // Replace the captured Scope explicitly in one context operation.
@@ -506,6 +609,13 @@ export const make = <R>(
               }),
             );
             acquiredSource = value.source;
+            if (retention !== undefined && reservation !== undefined)
+              yield* retention.identify(reservation, value.source.id);
+            const owner: Owner = Object.freeze({
+              namespace,
+              incarnation: attemptIncarnation,
+              sessionId: value.source.id,
+            });
             const lifetime = yield* parsed(() =>
               duration(value.lifetime, "source lifetime", { allowInfinite: true }),
             );
@@ -517,24 +627,52 @@ export const make = <R>(
                 "renewal lead must be shorter than the source lifetime",
                 { operation: "renewal", outcome: "not-submitted" },
               );
-            if (slots.has(value.source.id))
+            if (physicalOwners.has(value.source.id))
               return yield* ReactorError.fromCode(
                 "InvalidInput",
                 "Orchestration sources must have distinct session identities",
               );
             const media = yield* value.source.media;
-            const slot = yield* SourceSlot.make({
+            const local = yield* SourceSlot.make({
               source: value.source,
               scope: owned,
               media,
               openedAt: monotonicMillis(clock),
               maxSeconds: Duration.toSeconds(lifetime),
               cleanupBudgetMs: reconnectTimeout,
-              recordCleanup,
-              retireSequences: affinity.retire(value.source.id).pipe(Effect.asVoid),
+              recordCleanup: recordAttempt,
+              boundedHistory: continuous,
+              retired: (facts, retirementExit) =>
+                Effect.gen(function* () {
+                  if (acquisitionCleanup !== undefined) yield* recordAttempt(acquisitionCleanup);
+                  if (retention !== undefined && reservation !== undefined) {
+                    const lossExit =
+                      acquired === undefined
+                        ? Exit.void
+                        : yield* Effect.exit(retireOwner(acquired));
+                    yield* retention.finish(reservation, {
+                      ...facts,
+                      errors: [
+                        ...facts.errors,
+                        ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
+                        ...(Exit.isFailure(lossExit)
+                          ? [errorOf(lossExit.cause, "InvalidState", "media loss accounting")]
+                          : []),
+                      ],
+                    });
+                    slots.delete(owner);
+                    if (physicalOwners.get(owner.sessionId) === owner)
+                      physicalOwners.delete(owner.sessionId);
+                    if (Exit.isFailure(lossExit))
+                      return yield* Exit.asVoidAll([retirementExit, lossExit]);
+                  }
+                }),
+              retireSequences: affinity.retire(owner).pipe(Effect.asVoid),
             });
+            const slot: Slot = Object.assign(local, { owner });
             acquired = slot;
-            slots.set(slot.source.id, slot);
+            slots.set(owner, slot);
+            physicalOwners.set(owner.sessionId, owner);
             opened++;
             yield* slot.source.setAutoplay(false);
             yield* slot.observe(
@@ -579,15 +717,51 @@ export const make = <R>(
             Exit.isSuccess(exit)
               ? Effect.void
               : Effect.gen(function* () {
+                  // Capture an acquisition failure even if the source also
+                  // returns cleanup. Conflicting reports belong to this attempt.
+                  if (Cause.hasDies(exit.cause)) {
+                    const cause = Cause.findError(exit.cause);
+                    retirementCauses.add(
+                      Result.isFailure(cause)
+                        ? cause.failure
+                        : Cause.fromReasons(
+                            exit.cause.reasons.filter((reason) => !Cause.isFailReason(reason)),
+                          ),
+                    );
+                    acquisitionDefect = errorOf(exit.cause, "InvalidState", "source acquisition");
+                  }
+                  const failure = Cause.findErrorOption(exit.cause);
+                  if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
+                    acquisitionCleanup = { lease: failure.value.cleanup, policy: [] };
                   if (acquired !== undefined) yield* closeSlot(acquired);
                   else {
-                    if (acquiredSource !== undefined) recordCleanup(yield* acquiredSource.close);
-                    yield* Scope.close(owned, exit);
-                    if (Exit.isFailure(exit)) {
-                      const failure = Cause.findErrorOption(exit.cause);
-                      if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
-                        recordCleanup({ lease: failure.value.cleanup, policy: [] });
+                    const sourceExit =
+                      acquiredSource === undefined
+                        ? Exit.void
+                        : yield* Effect.exit(
+                            acquiredSource.close.pipe(Effect.flatMap(recordAttempt)),
+                          );
+                    const scopeExit = yield* Effect.exit(Scope.close(owned, exit));
+                    if (acquisitionCleanup !== undefined) yield* recordAttempt(acquisitionCleanup);
+                    if (retention !== undefined && reservation !== undefined) {
+                      yield* retention.finish(reservation, {
+                        accounting: "not-applicable",
+                        unknownSubmissions: 0n,
+                        affinity: "not-applicable",
+                        scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
+                        errors: [
+                          ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
+                          ...[sourceExit, scopeExit].flatMap((result) =>
+                            Exit.isFailure(result)
+                              ? [errorOf(result.cause, "InvalidState", "acquisition retirement")]
+                              : [],
+                          ),
+                        ],
+                      });
                     }
+                    const retirementExit = Exit.asVoidAll([sourceExit, scopeExit]);
+                    if (Exit.isFailure(retirementExit)) retirementCauses.add(retirementExit.cause);
+                    yield* retirementExit;
                   }
                 }),
           ),
@@ -598,25 +772,48 @@ export const make = <R>(
       Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
 
-    const close: Effect.Effect<CleanupReport> = closeGate.withPermit(
+    const close = yield* Effect.cached(
       Effect.uninterruptible(
         Effect.gen(function* () {
-          if (finalReport !== undefined) return finalReport;
           closing = true;
-          if (replacement._tag === "Opening") yield* Fiber.interrupt(replacement.fiber);
-          yield* Effect.forEach([...slots.values()], closeSlot, { discard: true });
+          const exits: Exit.Exit<void>[] = [];
+          if (replacement._tag === "Opening") {
+            const pending = replacement.fiber;
+            replacement = { _tag: "Absent" };
+            // Interrupt joins acquisition cleanup. Its original defect remains
+            // visible; ordinary cancellation alone is not a close failure.
+            yield* Fiber.interrupt(pending);
+            const result = yield* Fiber.await(pending);
+            if (Exit.isFailure(result) && Cause.hasDies(result.cause)) {
+              const failure = Cause.findError(result.cause);
+              exits.push(
+                Exit.failCause(
+                  Result.isFailure(failure)
+                    ? failure.failure
+                    : Cause.fromReasons(
+                        result.cause.reasons.filter((reason) => !Cause.isFailReason(reason)),
+                      ),
+                ),
+              );
+            }
+          }
+          for (const slot of [...slots.values()]) yield* Effect.exit(closeSlot(slot));
+          for (const cause of retirementCauses) exits.push(Exit.failCause(cause));
           buffer.end();
           setMedia({ _tag: "Closed" });
           observations.end();
-          // The reader delivers what was announced before close, within a bound.
           if (renewalReader !== undefined)
             yield* Fiber.await(renewalReader).pipe(
               Effect.interruptible,
               Effect.timeout("1 second"),
               Effect.ignore,
             );
-          finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
-          return finalReport;
+          if (retention === undefined)
+            finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
+          else finalSummary = yield* retention.summary;
+          current = undefined;
+          replacement = { _tag: "Absent" };
+          return yield* Exit.asVoidAll(exits);
         }),
       ),
     );
@@ -625,10 +822,10 @@ export const make = <R>(
       Effect.tap((slot) => slot.source.setAutoplay(true)),
       Effect.catch((cause) =>
         close.pipe(
-          Effect.flatMap((report) => {
+          Effect.flatMap(() => {
             // An AcquisitionFailure from `open` already carries the lease it
             // recorded, by reference; any later failure takes the recorded lease.
-            const lease = report.sessions[0]?.lease;
+            const lease = firstCleanup?.lease;
             return Effect.fail(
               AcquisitionFailure.is(cause) || (lease === undefined && ReactorError.is(cause))
                 ? cause
@@ -638,7 +835,10 @@ export const make = <R>(
         ),
       ),
     );
+    initializing = false;
+    firstCleanup = undefined;
     // The first owner's loss from its start is the output's: no baseline.
+    outputOwner = current.owner;
     setMedia({
       _tag: "Ready",
       sessionId: current.source.id,
@@ -664,8 +864,8 @@ export const make = <R>(
       Effect.gen(function* () {
         const values = yield* Effect.suspend(() =>
           Effect.forEach([...slots.values()], (slot) =>
-            Effect.map(slot.source.state, (state): Candidate<string> => ({
-              owner: slot.source.id,
+            Effect.map(slot.source.state, (state): Candidate<Owner> => ({
+              owner: slot.owner,
               state,
               accepted: slot.accepted,
               closed: slot.closed,
@@ -682,34 +882,47 @@ export const make = <R>(
             : current;
         if (preferred === undefined)
           return yield* PolicyFailure.refuse("SessionRecovering", "No source is ready");
-        return yield* resolve(request, values, preferred.source.id, binding);
+        return yield* resolve(request, values, preferred.owner, binding);
       });
     const sequenceError = (error: Sequence.SequenceError) =>
       PolicyFailure.sequence(error.sequenceId, error.code);
 
     const prepare = (input: Parameters<EngineShape["prepare"]>[0], expectedSessionId?: string) =>
       Effect.gen(function* () {
+        const expectedOwner =
+          expectedSessionId === undefined ? undefined : physicalOwners.get(expectedSessionId);
         const request = yield* captureRequest(input);
         const id = `${namespace}:${++submissionSequence}`;
         const gate = yield* Semaphore.make(1);
+        const logical = logicalSubmission(id);
+        let selectedOwner: Owner | undefined;
         let active: Submission.Submission<ClipId, EngineError> | undefined;
         let activeOwner: Slot | undefined;
         const submit = gate.withPermit(
           Effect.gen(function* () {
+            const completed = logical.outcome();
+            if (completed !== undefined) return yield* completed;
             if (active === undefined) {
               // A committed submission remains a readable outcome after the handle
               // closes. Only selecting or committing fresh work needs a live owner.
               yield* guard("enqueue", Effect.void);
               const decision = yield* route(request).pipe(commands.withPermits(1));
-              if (expectedSessionId !== undefined && decision.owner !== expectedSessionId)
+              if (expectedSessionId !== undefined && decision.owner !== expectedOwner)
                 return yield* PolicyFailure.refuse(
                   "RouteChanged",
                   "The selected source changed before dispatch",
                 );
+              if (continuous && selectedOwner !== undefined && selectedOwner !== decision.owner)
+                return yield* PolicyFailure.refuse(
+                  "SessionRetired",
+                  "Selected source incarnation was retired",
+                );
+              selectedOwner = decision.owner;
               const target = slots.get(decision.owner);
               if (target === undefined)
                 return yield* PolicyFailure.refuse("SessionRetired", "Selected source was retired");
               const sequence = request.sequence;
+              let resultAccounted = false;
               active = yield* target.source.prepareRouted(
                 { request, position: decision.position },
                 {
@@ -736,20 +949,27 @@ export const make = <R>(
                             active,
                             Effect.gen(function* () {
                               if (sequence !== undefined) {
-                                yield* affinity.bind(sequence.id, target.source.id);
+                                yield* affinity.bind(sequence.id, target.owner);
                                 yield* affinity.begin(
                                   sequence.id,
                                   sequence.memberId ?? submissionId,
                                 );
                               }
                             }).pipe(Effect.mapError(sequenceError)),
+                            (exit) => {
+                              logical.complete(exit);
+                              active = undefined;
+                              activeOwner = undefined;
+                            },
                           );
                         }),
                       ),
                     ),
                   result: (submissionId, result) =>
                     Effect.gen(function* () {
-                      target.recordResult(result);
+                      if (resultAccounted) return;
+                      resultAccounted = true;
+                      yield* target.recordResult(result).pipe(Effect.catch(fail));
                       if (sequence !== undefined) {
                         const memberId = sequence.memberId ?? submissionId;
                         const account = Result.isSuccess(result)
@@ -766,7 +986,7 @@ export const make = <R>(
                           Effect.catch((cause) =>
                             Effect.gen(function* () {
                               target.markIndeterminate();
-                              yield* affinity.retire(target.source.id);
+                              yield* affinity.retire(target.owner);
                               yield* fail(
                                 ReactorError.fromCode(
                                   "InvalidState",
@@ -796,7 +1016,12 @@ export const make = <R>(
                 selected.state.pipe(
                   Effect.flatMap((state) =>
                     Effect.sync(() => {
-                      if (state._tag === "Completed") activeOwner?.forgetCompleted(selected);
+                      if (state._tag === "Completed") {
+                        logical.complete(state.exit);
+                        activeOwner?.forgetCompleted(selected);
+                        active = undefined;
+                        activeOwner = undefined;
+                      }
                       if (state._tag === "Prepared" && active === selected) {
                         active = undefined;
                         activeOwner = undefined;
@@ -808,15 +1033,15 @@ export const make = <R>(
             );
           }),
         );
-        return {
-          id,
+        logical.attach(
           submit,
-          state: Effect.suspend(() =>
+          Effect.suspend(() =>
             active === undefined
               ? Effect.succeed<Submission.State<ClipId, EngineError>>({ _tag: "Prepared" })
               : active.state,
           ),
-        };
+        );
+        return logical.submission;
       });
 
     const state: Effect.Effect<EngineState> = Effect.gen(function* () {
@@ -933,7 +1158,7 @@ export const make = <R>(
             replacement = { _tag: "Absent" };
             yield* Fiber.interrupt(pending);
             const result = yield* Fiber.await(pending);
-            if (Exit.isSuccess(result)) yield* result.value.close;
+            if (Exit.isSuccess(result)) yield* closeSlot(result.value);
           }),
         );
       }),
@@ -1041,6 +1266,15 @@ export const make = <R>(
                 yield* log("Prepared the next session for renewal");
                 yield* announce({ _tag: "Prepared" });
               } else {
+                if (continuous) {
+                  const error = Cause.findErrorOption(result.cause);
+                  if (
+                    Option.isSome(error) &&
+                    ReactorError.is(error.value) &&
+                    error.value.reason._tag === "Overflow"
+                  )
+                    return yield* fail(error.value);
+                }
                 openFailures++;
                 retryAt = monotonicMillis(clock) + 5000;
                 yield* announce({
@@ -1171,7 +1405,7 @@ export const make = <R>(
         }),
       );
     });
-    return {
+    const facets = {
       engine,
       media: {
         video: buffer.video,
@@ -1188,19 +1422,75 @@ export const make = <R>(
       sessionId: Effect.sync(() =>
         current === undefined || current.closed ? Option.none() : Option.some(current.source.id),
       ),
-      close,
-      cleanup: Effect.sync(() =>
-        finalReport === undefined ? Option.none() : Option.some(finalReport),
-      ),
       sequences: {
-        get: affinity.get,
-        snapshots: affinity.snapshots,
+        get: (id: string) =>
+          affinity
+            .get(id)
+            .pipe(
+              Effect.map((entry) =>
+                entry === undefined
+                  ? undefined
+                  : Object.freeze({ ...entry, owner: entry.owner.sessionId }),
+              ),
+            ),
+        snapshots: affinity.snapshots.pipe(
+          Effect.map((entries) =>
+            Object.freeze(
+              entries.map((entry) => Object.freeze({ ...entry, owner: entry.owner.sessionId })),
+            ),
+          ),
+        ),
         seal: affinity.seal,
         acknowledgeIndeterminate: affinity.acknowledgeIndeterminate,
         release: affinity.release,
       },
-    } satisfies HandleShape;
+    } satisfies Omit<HandleShape, "close" | "cleanup">;
+    return {
+      legacy: {
+        ...facets,
+        close: close.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (finalReport === undefined) throw new Error("Missing legacy cleanup report");
+              return finalReport;
+            }),
+          ),
+        ),
+        cleanup: Effect.sync(() => Option.fromUndefinedOr(finalReport)),
+      } satisfies HandleShape,
+      continuous: {
+        ...facets,
+        close: close.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (finalSummary === undefined) throw new Error("Missing continuous cleanup summary");
+              return finalSummary;
+            }),
+          ),
+        ),
+        cleanup: Effect.sync(() => Option.fromUndefinedOr(finalSummary)),
+      } satisfies ContinuousHandleShape,
+    };
   });
+
+/** Legacy renewal retains complete cleanup history and defaults to 64 successful opens. */
+export const make = <R>(
+  options: Options<R>,
+): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto | R> =>
+  makeOwner(options, false).pipe(Effect.map((owner) => owner.legacy));
+
+/**
+ * Bounded continuous renewal. Adapters must meet ContinuousOptions' unique-ID
+ * precondition. Retired anchors no longer retained can refuse as missing rather
+ * than SessionRetired; captured operations remain fenced to their exact incarnation.
+ */
+export const makeContinuous = <R>(
+  options: ContinuousOptions<R>,
+): Effect.Effect<
+  ContinuousHandleShape,
+  ReactorError | AcquisitionFailure,
+  Scope.Scope | Crypto.Crypto | R
+> => makeOwner(options, true).pipe(Effect.map((owner) => owner.continuous));
 
 /**
  * The handle's `Engine`, `Media` and `Handle` services from one orchestration,

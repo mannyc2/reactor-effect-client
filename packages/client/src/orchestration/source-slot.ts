@@ -4,14 +4,14 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { ReactorError } from "../errors.js";
+import { errorOf, ReactorError } from "../errors.js";
 import type { Submission } from "../Submission.js";
 import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
 import { PolicyFailure, type ClipId } from "./request.js";
 import { monotonicMillis } from "./elapsed.js";
 import * as Lifecycle from "./renewal-state.js";
+import type { Retirement } from "./retention.js";
 import type { EngineError, EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
 
 interface Options extends Lifecycle.Lifetime {
@@ -19,7 +19,9 @@ interface Options extends Lifecycle.Lifetime {
   readonly scope: Scope.Closeable;
   readonly media: MediaSource;
   readonly cleanupBudgetMs: number;
-  readonly recordCleanup: (cleanup: SourceCleanup) => void;
+  readonly recordCleanup: (cleanup: SourceCleanup) => Effect.Effect<void>;
+  readonly retired: (retirement: Retirement, exit: Exit.Exit<void>) => Effect.Effect<void>;
+  readonly boundedHistory: boolean;
   readonly retireSequences: Effect.Effect<void>;
 }
 
@@ -68,13 +70,18 @@ export const subtractLoss = (a: Loss, b: Loss): Loss => ({
 export const make = (options: Options) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
-    const closeGate = yield* Semaphore.make(1);
     let phase: Lifecycle.SourcePhase = { _tag: "Active" };
     let indeterminate = false;
+    let accountingTimedOut = false;
+    let unknownSubmissions = 0n;
+    let contractFailure: ReactorError | undefined;
     let inFlight = 0;
     let settled = yield* Deferred.make<void>();
     yield* Deferred.succeed(settled, undefined);
-    const submissions = new Set<Submission<ClipId, EngineError>>();
+    const submissions = new Map<
+      Submission<ClipId, EngineError>,
+      (exit: Exit.Exit<ClipId, EngineError>) => void
+    >();
     const accepted = new Set<ClipId>();
     const started = new Set<ClipId>();
     let media = options.media;
@@ -97,6 +104,15 @@ export const make = (options: Options) =>
       mediaScope === undefined ? Effect.void : Scope.close(mediaScope, Exit.void),
     );
 
+    const completed = (submission: Submission<ClipId, EngineError>) =>
+      submission.state.pipe(
+        Effect.map((state) => {
+          if (state._tag !== "Completed") return;
+          submissions.get(submission)?.(state.exit);
+          submissions.delete(submission);
+        }),
+      );
+
     const joinCommitted = (budget: number): Effect.Effect<void> =>
       Effect.suspend(() =>
         Effect.all(
@@ -104,10 +120,15 @@ export const make = (options: Options) =>
             Deferred.await(settled),
             // A result hook can signal accounting before execution returns. Join
             // the original handles as well so closing the scope cannot erase a known result.
-            Effect.forEach([...submissions], (submission) => Effect.exit(submission.submit), {
-              concurrency: "unbounded",
-              discard: true,
-            }),
+            Effect.forEach(
+              [...submissions.keys()],
+              (submission) =>
+                Effect.exit(submission.submit).pipe(Effect.andThen(completed(submission))),
+              {
+                concurrency: "unbounded",
+                discard: true,
+              },
+            ),
           ],
           { concurrency: "unbounded", discard: true },
         ),
@@ -118,34 +139,63 @@ export const make = (options: Options) =>
           orElse: () =>
             Effect.sync(() => {
               indeterminate = true;
+              accountingTimedOut = true;
             }),
         }),
       );
 
-    const close = closeGate
-      .withPermit(
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            if (closed()) return;
-            phase = Lifecycle.transitionSource(phase, { _tag: "Close" });
-            yield* closeMedia;
-            options.recordCleanup(yield* options.source.close);
-            // Remote retirement must not borrow time from this local accounting budget.
-            yield* joinCommitted(options.cleanupBudgetMs);
-            yield* options.retireSequences;
-            yield* Scope.close(options.scope, Exit.void);
-            submissions.clear();
-            phase = Lifecycle.transitionSource(phase, { _tag: "Closed" });
-          }),
-        ),
-      )
-      .pipe(
+    const close = yield* Effect.cached(
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          phase = Lifecycle.transitionSource(phase, { _tag: "Close" });
+          // Each stage owns an independent obligation. A defect is retained while
+          // later stages still run; a stalled finalizer keeps this close pending.
+          const mediaExit = yield* Effect.exit(closeMedia);
+          const sourceExit = yield* Effect.exit(
+            options.source.close.pipe(Effect.flatMap(options.recordCleanup)),
+          );
+          const accountingExit = yield* Effect.exit(joinCommitted(options.cleanupBudgetMs));
+          const affinityExit = yield* Effect.exit(options.retireSequences);
+          const scopeExit = yield* Effect.exit(Scope.close(options.scope, Exit.void));
+          const completionExit = yield* Effect.exit(
+            Effect.forEach([...submissions.keys()], completed, { discard: true }),
+          );
+          const stages = [
+            mediaExit,
+            sourceExit,
+            accountingExit,
+            affinityExit,
+            scopeExit,
+            completionExit,
+          ];
+          const errors = stages.flatMap((exit) =>
+            Exit.isFailure(exit) ? [errorOf(exit.cause, "InvalidState", "source retirement")] : [],
+          );
+          submissions.clear();
+          if (contractFailure !== undefined) errors.push(contractFailure);
+          phase = Lifecycle.transitionSource(phase, { _tag: "Closed" });
+          const exit = Exit.asVoidAll(stages);
+          yield* options.retired(
+            {
+              accounting:
+                accountingTimedOut || Exit.isFailure(accountingExit) ? "timed-out" : "settled",
+              scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
+              affinity: Exit.isSuccess(affinityExit) ? "retired" : "failed",
+              errors,
+              unknownSubmissions,
+            },
+            exit,
+          );
+          return yield* exit;
+        }),
+      ).pipe(
         Effect.withSpan(
           "reactor.orchestration.source.close",
           { attributes: { "reactor.session.id": options.source.id } },
           { captureStackTrace: false },
         ),
-      );
+      ),
+    );
 
     return {
       source: options.source,
@@ -214,24 +264,56 @@ export const make = (options: Options) =>
       register: (
         submission: Submission<ClipId, EngineError>,
         admit: Effect.Effect<void, EngineError>,
+        onCompleted: (exit: Exit.Exit<ClipId, EngineError>) => void,
       ) =>
         Effect.gen(function* () {
-          for (const previous of submissions) {
-            if ((yield* previous.state)._tag === "Completed") submissions.delete(previous);
-          }
+          if (closed())
+            return yield* PolicyFailure.refuse(
+              "SessionRetired",
+              "Selected source incarnation was retired",
+            );
+          for (const previous of submissions.keys()) yield* completed(previous);
           if (submissions.size >= 4096)
             return yield* PolicyFailure.refuse(
               "SubmissionCapacity",
               "Committed source submissions reached their bound",
             );
+          if (options.boundedHistory && accepted.size + inFlight >= 4096)
+            return yield* PolicyFailure.refuse(
+              "SubmissionCapacity",
+              "Source accepted-history capacity reached",
+            );
           yield* admit;
           if (inFlight++ === 0) settled = Deferred.makeUnsafe<void>();
-          submissions.add(submission);
+          submissions.set(submission, onCompleted);
+          // The source scope is closed only after committed joins. This observer
+          // releases logical references even if the caller abandoned its wait.
+          yield* Effect.exit(submission.submit).pipe(
+            Effect.andThen(completed(submission)),
+            Effect.forkIn(options.scope),
+          );
         }),
-      recordResult: (result: Result.Result<ClipId, EngineError>): void => {
-        if (Result.isSuccess(result)) accepted.add(result.success);
-        else if (result.failure.context.outcome === "unknown") indeterminate = true;
-      },
+      recordResult: (result: Result.Result<ClipId, EngineError>) =>
+        Effect.suspend(() => {
+          if (Result.isSuccess(result)) {
+            if (
+              options.boundedHistory &&
+              (result.success.length === 0 || result.success.length > 1024)
+            ) {
+              indeterminate = true;
+              contractFailure ??= ReactorError.fromCode(
+                "Protocol",
+                "Source accepted identity exceeds its bound",
+              );
+              return Effect.fail(contractFailure);
+            }
+            accepted.add(result.success);
+          } else if (result.failure.context.outcome === "unknown") {
+            indeterminate = true;
+            unknownSubmissions++;
+          }
+          return Effect.void;
+        }),
       finishAccounting: (): void => {
         if (--inFlight === 0) Deferred.doneUnsafe(settled, Effect.void);
       },
@@ -257,6 +339,23 @@ export const make = (options: Options) =>
                     finalClipGraceOrigin = undefined;
                   }
                   if (event._tag === "Started" && !started.has(event.clipId)) {
+                    if (
+                      options.boundedHistory &&
+                      (event.clipId.length === 0 || event.clipId.length > 1024)
+                    ) {
+                      contractFailure ??= ReactorError.fromCode(
+                        "Protocol",
+                        "Source Started identity exceeds its bound",
+                      );
+                      return Effect.fail(contractFailure);
+                    }
+                    if (options.boundedHistory && started.size >= 4096) {
+                      contractFailure ??= ReactorError.fromCode(
+                        "Overflow",
+                        "Source Started history capacity reached",
+                      );
+                      return Effect.fail(contractFailure);
+                    }
                     started.add(event.clipId);
                     finalClipId = event.clipId;
                     finalClipFrames = Math.round(
