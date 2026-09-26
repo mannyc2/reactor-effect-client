@@ -184,6 +184,8 @@ interface Target {
   readonly windowMs: number;
   /** Harness fault injection is reachable only through the loopback entrypoint. */
   readonly faults?: readonly string[];
+  /** Only rehearsal may select legacy; hosted qualification always uses continuous. */
+  readonly renewalConstructor?: "legacy" | "continuous";
 }
 
 interface Budget {
@@ -1126,6 +1128,8 @@ const pressureEvidence = (value: {
 const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
   Effect.scoped(
     Effect.gen(function* () {
+      const constructor =
+        target.mode === "rehearsal" ? (target.renewalConstructor ?? "continuous") : "continuous";
       const time = yield* elapsedClock;
       const clock = yield* Clock.Clock;
       const attribution = new FrameAttribution();
@@ -1145,7 +1149,10 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
         clock: "effect-monotonic",
         scenario: "two-source-accepted-drain",
         configuration: {
-          constructor: "legacy",
+          constructor,
+          ...(constructor === "continuous"
+            ? ({ retainedSuccessfulCleanups: 1, maxUnresolvedCleanups: 2 } as const)
+            : {}),
           setupLimitMs: 20000,
           workLimitMs: 40000,
           cleanupLimitMs: 20000,
@@ -1229,7 +1236,10 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
       const failure = yield* Deferred.make<never, Reactor.ReactorFailure>();
       const ownerScope = yield* Scope.make();
       const observationScope = yield* Effect.scope;
-      let handle: Orchestration.HandleShape | undefined;
+      let handle:
+        | { readonly _tag: "Legacy"; readonly owner: Orchestration.HandleShape }
+        | { readonly _tag: "Continuous"; readonly owner: Orchestration.ContinuousHandleShape }
+        | undefined;
       let firstAllocation: number | undefined;
       let prepared = false;
       let rate: { creditsPerSecond: number; creditsPerDollar: number } | undefined;
@@ -1408,13 +1418,27 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           };
           return { source, lifetime: opened.lifetime };
         });
-        const owner = yield* Orchestration.make({
+        const ownerOptions = {
           open,
           lead: "40 seconds",
           handoffGrace: "250 millis",
           maxSessions: 2,
-        }).pipe(Scope.provide(ownerScope));
-        handle = owner;
+        } as const;
+        handle =
+          constructor === "continuous"
+            ? {
+                _tag: "Continuous",
+                owner: yield* Orchestration.makeContinuous({
+                  ...ownerOptions,
+                  retainedSuccessfulCleanups: 1,
+                  maxUnresolvedCleanups: 2,
+                }).pipe(Scope.provide(ownerScope)),
+              }
+            : {
+                _tag: "Legacy",
+                owner: yield* Orchestration.make(ownerOptions).pipe(Scope.provide(ownerScope)),
+              };
+        const owner = handle.owner;
         yield* watch(
           readInto(
             attribution.recorded(owner.media.video),
@@ -1667,7 +1691,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
             evidence = {
               ...evidence,
               cleanup: {
-                _tag: "Legacy",
+                _tag: constructor === "continuous" ? "Continuous" : "Legacy",
                 requestedMs: time.now(),
                 incomplete: ["canonical close is pending"],
               },
@@ -1678,12 +1702,15 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
             let overdue = false;
             const closing = yield* Effect.gen(function* () {
               if (handle !== undefined) {
-                const report = yield* handle.close;
+                const result =
+                  handle._tag === "Continuous"
+                    ? { _tag: "Continuous" as const, summary: yield* handle.owner.close }
+                    : { _tag: "Legacy" as const, report: yield* handle.owner.close };
                 evidence = {
                   ...evidence,
                   cleanup: {
-                    ...evidence.cleanup!,
-                    report,
+                    ...result,
+                    requestedMs: evidence.cleanup!.requestedMs,
                     completedMs: time.now(),
                     incomplete: overdue ? ["cleanup observation deadline elapsed"] : [],
                   },
@@ -2249,7 +2276,15 @@ const rehearse = async (args: readonly string[]): Promise<number> => {
   if (!checks.includes(check)) return refused("name the check to rehearse");
   let given: ReadonlyMap<string, string>;
   try {
-    given = options(args.slice(1), ["faults", "ledger"]);
+    given = options(args.slice(1), ["faults", "ledger", "constructor"]);
+    if (
+      given.has("constructor") &&
+      (check !== "scheduler-renewal" ||
+        !["legacy", "continuous"].includes(given.get("constructor")!))
+    )
+      throw new Refused({
+        message: "--constructor=legacy|continuous is only for scheduler-renewal rehearsal",
+      });
   } catch (cause) {
     return refused(cause);
   }
@@ -2272,6 +2307,7 @@ const rehearse = async (args: readonly string[]): Promise<number> => {
         ownerArgs: [`--twin=${twin.url}`],
         windowMs: 1_500,
         faults,
+        renewalConstructor: given.get("constructor") === "legacy" ? "legacy" : "continuous",
       },
       check,
       {
