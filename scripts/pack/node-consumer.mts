@@ -83,6 +83,18 @@ const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
 const stoppedRenewal: Effect.Effect<void, Orchestration.EngineError> = engine.stopRenewal;
+type Switched = Extract<Orchestration.Renewal, { readonly _tag: "Switched" }>;
+declare const historicalTail: Switched["tail"];
+const historicalSwitched: Orchestration.Renewal = {
+  _tag: "Switched",
+  sessionId: "retiring-fixture",
+  ageSeconds: 30,
+  tail: historicalTail,
+};
+declare const switched: Switched;
+const handoff: Switched["handoff"] = switched.handoff;
+const handoffDecision: "no-observed-start" | "count-complete" | "grace-elapsed" | undefined =
+  handoff?.decision;
 const encoded = Wire.ControlClientMessage.encode({
   request_id: "fixture",
   kind: 1,
@@ -114,4 +126,6 @@ void [
   drained,
   terminalFailure,
   stoppedRenewal,
+  historicalSwitched,
+  handoffDecision,
 ];
