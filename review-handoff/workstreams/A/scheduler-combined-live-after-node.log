@@ -1,0 +1,27 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts (34 tests | 1 failed) 7917ms
+   × uncertain filler ledger fails before dispatching a 4097th identity 5075ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:660:1
+    658|   ));
+    659|
+    660| test("uncertain filler ledger fails before dispatching a 4097th identi…
+       | ^
+    661|   // This is an operation bound: no deadline is advanced or awaited. T…
+    662|   // clock avoids sorting thousands of canceled virtual watchdog sleep…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 33 passed (34)
+   Start at  18:05:11
+   Duration  9.02s (tests 89%, transform 6%, import 5%)
+

@@ -1,0 +1,24 @@
+{
+  "format": "reactor-pack-archive-requirements/v1",
+  "installer": "bun",
+  "reason": "Bun omits npm local-tarball provenance metadata",
+  "originalManifest": "install-browser.manifest.json",
+  "normalizedManifest": "install-browser.normalized-manifest.json",
+  "verification": "complete-installed-archive-byte-identity",
+  "archives": [
+    {
+      "name": "reactor-effect-client",
+      "version": "0.5.0",
+      "installSpecifier": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-Nw1rG5/reactor-effect-client-d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c.tgz",
+      "sha256": "d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c",
+      "filesChecked": 298
+    },
+    {
+      "name": "reactor-effect-browser",
+      "version": "0.5.0",
+      "installSpecifier": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-Nw1rG5/reactor-effect-browser-252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8.tgz",
+      "sha256": "252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8",
+      "filesChecked": 33
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-rehearsal.test.ts:
+(pass) public renewal legacy uses the real scheduler, planned switch and accepted drain [17332.97ms]
+(pass) public renewal continuous uses the real scheduler, planned switch and accepted drain [17181.04ms]
+(pass) public renewal legacy retains failed evidence for refuseFirstAllocation [222.08ms]
+(pass) public renewal legacy retains failed evidence for refuseSecondAllocation [15890.20ms]
+(pass) public renewal legacy retains failed evidence for failConnect [254.04ms]
+(pass) public renewal legacy retains failed evidence for overgrantSecondToken [177.59ms]
+(pass) public renewal legacy retains failed evidence for slowDelete [13390.33ms]
+(pass) public renewal legacy retains failed evidence for ignoreDelete [13141.45ms]
+(pass) public renewal legacy retains failed evidence for dropSecondEnqueueReply [34523.85ms]
+(pass) public renewal legacy retains failed evidence for noFirstVideo [23611.14ms]
+(pass) public renewal legacy retains failed evidence for noSecondVideo [17227.76ms]
+(pass) public renewal legacy retains failed evidence for stallSecondBuild [40466.02ms]
+(pass) public renewal continuous retains failed evidence for refuseFirstAllocation [355.40ms]
+303 |       ).toBeLessThanOrEqual(2);
+304 |       expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+305 |       if (fault === "overgrantSecondToken" || fault === "refuseFirstAllocation")
+306 |         expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
+307 |       if (fault === "refuseSecondAllocation") {
+308 |         expect(renewal.openAttempts).toBe(3);
+                                           ^
+error: expect(received).toBe(expected)
+
+Expected: 3
+Received: 2
+
+      at <anonymous> (/Users/chriscarroll/.codex/worktrees/b8d3/reactor-effect-client/integration/test/hosted-rehearsal.test.ts:308:38)
+(fail) public renewal continuous retains failed evidence for refuseSecondAllocation [15961.27ms]
+(pass) public renewal continuous retains failed evidence for failConnect [497.50ms]
+(pass) public renewal continuous retains failed evidence for overgrantSecondToken [170.69ms]
+(pass) public renewal continuous retains failed evidence for slowDelete [11427.50ms]
+(pass) public renewal continuous retains failed evidence for ignoreDelete [11556.90ms]
+(pass) public renewal continuous retains failed evidence for dropSecondEnqueueReply [31035.55ms]
+(pass) public renewal continuous retains failed evidence for noFirstVideo [17222.86ms]
+(pass) public renewal continuous retains failed evidence for noSecondVideo [17103.84ms]
+(pass) public renewal continuous retains failed evidence for stallSecondBuild [40442.73ms]
+(pass) public renewal legacy interruption after allocation preserves the canonical lease report [324.52ms]
+(pass) public renewal legacy stalled close leaves a durable failed checkpoint after emergency termination [11699.04ms]
+(pass) public renewal continuous interruption after allocation preserves the canonical lease report [365.57ms]
+(pass) public renewal continuous stalled close leaves a durable failed checkpoint after emergency termination [11469.01ms]
+
+1 tests failed:
+(fail) public renewal continuous retains failed evidence for refuseSecondAllocation [15961.27ms]
+
+ 25 pass
+ 11 filtered out
+ 1 fail
+ 231 expect() calls
+Ran 26 tests across 1 file. [363.52s]
+real 363.60
+user 34.68
+sys 8.79

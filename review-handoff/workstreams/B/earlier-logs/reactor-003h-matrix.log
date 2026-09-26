@@ -1,0 +1,25 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-rehearsal.test.ts:
+(pass) public renewal uses the real scheduler, planned switch and accepted drain [17425.39ms]
+(pass) public renewal retains failed evidence for refuseFirstAllocation [278.47ms]
+(pass) public renewal retains failed evidence for refuseSecondAllocation [16279.72ms]
+(pass) public renewal retains failed evidence for failConnect [228.53ms]
+(pass) public renewal retains failed evidence for overgrantSecondToken [182.87ms]
+(pass) public renewal retains failed evidence for slowDelete [11432.18ms]
+(pass) public renewal retains failed evidence for ignoreDelete [11779.24ms]
+(pass) public renewal retains failed evidence for dropSecondEnqueueReply [31403.44ms]
+(pass) public renewal retains failed evidence for noFirstVideo [17309.88ms]
+(pass) public renewal retains failed evidence for noSecondVideo [17224.79ms]
+(pass) public renewal retains failed evidence for stallSecondBuild [40324.07ms]
+(pass) public renewal interruption after allocation preserves the canonical lease report [282.50ms]
+(pass) public renewal stalled close leaves a durable failed checkpoint after emergency termination [11384.00ms]
+
+ 13 pass
+ 11 filtered out
+ 0 fail
+ 114 expect() calls
+Ran 13 tests across 1 file. [175.82s]
+real 175.85
+user 16.67
+sys 3.70

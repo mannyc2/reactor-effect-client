@@ -1,0 +1,14 @@
+{
+  "codex/integrate-orchestration-packets": "dec33ea21cd8c00311d3cb100cbd5a7184420c05",
+  "codex/bound-unknown-admission": "7d3d129a9a29285ba20f833732560c93bc899cf9",
+  "codex/fix-combined-scheduler-regressions": "cdb7a773fa8f0583914b7a0f0c219d6c1431f245",
+  "codex/optimize-scheduler-uncertainty": "a790eb613a7a8c77079abd83e41b165d5cb9777f",
+  "codex/qualify-switch-evidence": "c34e95b8874d7cffaa2c400173e15c417289369a",
+  "codex/hosted-renewal-harness": "bc3fd98eb3a5bcae526824550a0483433682b8d7",
+  "codex/diagnose-hosted-upload": "4934b6e08d58d9b61021cfe2307b43bbb97e7c32",
+  "codex/renewal-retention-core": "763052cd82bf5f27278ea55e0e306d86889396c0",
+  "codex/bound-renewal-retention": "776c4f38b9e9b966dfe49fb03db4d9404373109c",
+  "codex/continuous-api-assertions": "96551d914a0b94b34b3027d380c2ff49f0691836",
+  "codex/fix-scheduler-settlement": "6bf95b2a07135467711a708dbe3713275cec098b",
+  "codex/pin-qualification-stack": "468b6652bfffa43d7ec6871bee457328a3e76859"
+}

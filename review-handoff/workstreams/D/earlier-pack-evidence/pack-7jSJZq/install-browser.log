@@ -1,0 +1,13 @@
+bun add v1.4.2 (744846f84)
+
+installed effect@4.0.0-rc.117
+installed reactor-effect-client@/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-7jSJZq/reactor-effect-client-d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c.tgz
+installed reactor-effect-browser@/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-7jSJZq/reactor-effect-browser-252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8.tgz
+installed typescript@7.0.2 with binaries:
+ - tsc
+installed @typescript/typescript-darwin-arm64@7.0.2
+
+5 packages installed [649.00ms]
+Resolving dependencies
+Resolved, downloaded and extracted [6]
+Saved lockfile

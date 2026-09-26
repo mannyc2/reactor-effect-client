@@ -1,0 +1,9 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+
+ Test Files  4 passed (4)
+      Tests  87 passed (87)
+   Start at  17:28:04
+   Duration  4.97s (tests 70%, import 16%, transform 15%)
+

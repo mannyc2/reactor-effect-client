@@ -1,0 +1,11 @@
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .

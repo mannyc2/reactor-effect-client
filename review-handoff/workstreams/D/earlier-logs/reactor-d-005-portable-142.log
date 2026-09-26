@@ -1,0 +1,314 @@
+$ bun --no-env-file scripts/verify.ts --profile portable
+verify portable: bun run generate:check
+$ bun run --filter reactor-effect-client generate:check
+reactor-effect-client generate:check: wire-generation-ok format=reactor-wire-ts/1 python=3.13.5 sha256=b26b2740daec7913568e9c4a27cb73daf212e90e3e7e47f3068a1db08611f40f
+reactor-effect-client generate:check: Exited with code 0
+verify portable: bun run format:check
+$ oxfmt --check .
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 2048ms on 323 files using 8 threads.
+verify portable: bun run build
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+verify portable: Node and Bun portable runtime imports
+(node:64412) ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register()`:
+--import 'data:text/javascript,import { register } from "node:module"; import { pathToFileURL } from "node:url"; register("./scripts/pack/resolution-guard.mjs", pathToFileURL("./"));'
+(Use `node --trace-warnings ...` to show where the warning was created)
+portable-runtime-import-ok node v22.13.1
+portable-runtime-import-ok bun v26.3.0
+verify portable: bun run lint
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .
+verify portable: bun run typecheck
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+verify portable: bun run check:architecture
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 72 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles
+verify portable: bun run check:examples
+$ bun --no-env-file scripts/examples.ts
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  17:01:38
+   Duration  25.93s (tests 87%, import 9%, transform 4%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  17:02:04
+   Duration  25.66s (tests 91%, import 6%, transform 3%)
+
+examples-tested reactor-effect-example-livestream node bun
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:02:31
+   Duration  1.00s (transform 43%, import 41%, tests 16%, worker 1%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:02:32
+   Duration  588ms (import 39%, transform 38%, tests 23%)
+
+examples-tested reactor-effect-native-examples node bun
+$ bun build src/app.ts --target=browser --outdir=dist
+Bundled 313 modules in 38ms
+
+  app.js  0.70 MB  (entry point)
+
+examples-bundled reactor-effect-browser-examples
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:02:33
+   Duration  1.02s (transform 55%, import 30%, tests 14%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:02:34
+   Duration  653ms (transform 61%, import 23%, tests 16%)
+
+examples-tested reactor-effect-client-examples node bun
+examples-ok 4 workspaces
+verify portable: bun run test:portable
+$ bun --no-env-file scripts/test.ts portable
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+
+ Test Files  61 passed (61)
+      Tests  757 passed (757)
+   Start at  17:02:35
+   Duration  55.49s (tests 53%, import 42%, transform 5%)
+
+     Import  185 modules were evaluated 280 times · 19.96s total, 42% of tracked time
+             ~6.77s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+
+ Test Files  61 passed (61)
+      Tests  757 passed (757)
+   Start at  17:03:31
+   Duration  23.80s (tests 62%, import 32%, transform 6%, worker 1%)
+
+     Import  185 modules were evaluated 240 times · 6.62s total, 32% of tracked time
+             ~1.52s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/browser
+
+
+ Test Files  6 passed (6)
+      Tests  58 passed (58)
+   Start at  17:03:55
+   Duration  2.69s (import 47%, tests 37%, transform 15%, worker 1%)
+
+    Isolate  6 workers spawned · ~87ms startup each (spawn + environment, per file)
+             at least ~435ms faster with isolate: false — reuses workers across files instead of one per file
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/browser
+
+
+ Test Files  6 passed (6)
+      Tests  58 passed (58)
+   Start at  17:03:58
+   Duration  2.26s (tests 44%, import 37%, transform 17%, worker 2%)
+
+    Isolate  6 workers spawned · ~66ms startup each (spawn + environment, per file)
+             at least ~330ms faster with isolate: false — reuses workers across files instead of one per file
+
+bun test v1.4.2 (744846f84)
+
+scripts/pack-effect-stack.test.ts:
+(pass) frozen JSONC selection keeps exact versions separate from compatibility ranges and hashes the bytes [1.60ms]
+(pass) a later aligned frozen RC qualifies; the old range-minimum equality rejects it [11.65ms]
+(pass) hashes original lock bytes and rejects invalid UTF-8 even inside JSONC comments [0.49ms]
+(pass) rejects unsupported lock [0.07ms]
+(pass) rejects invalid JSONC [0.64ms]
+(pass) rejects missing tuple [0.08ms]
+(pass) rejects range coordinate [0.02ms]
+(pass) rejects partial coordinate [0.02ms]
+(pass) rejects malformed coordinate
+(pass) rejects wrong tuple name [0.01ms]
+(pass) rejects unsupported tuple
+(pass) rejects stale catalog [0.02ms]
+(pass) rejects mixed and incompatible duplicate lock coordinates [0.17ms]
+(pass) owner-relative resolution succeeds without an undeclared root Effect [6.71ms]
+(pass) rejects stale workspace metadata [6.77ms]
+(pass) rejects missing version workspace metadata [7.16ms]
+(pass) rejects malformed version workspace metadata [6.56ms]
+(pass) rejects wrong name workspace metadata [6.27ms]
+(pass) rejects nested Effect resolved by @effect/platform-node [6.43ms]
+(pass) rejects nested Effect resolved by @effect/platform-node-shared [6.83ms]
+(pass) rejects nested shared-platform [7.33ms]
+(pass) rejects missing declared workspace dependency [6.04ms]
+(pass) consumer validation retains repeated aligned occurrences and rejects nested mismatches [0.13ms]
+(pass) rejects malformed consumer tree null [0.04ms]
+(pass) rejects malformed consumer tree [] [0.02ms]
+(pass) rejects malformed consumer tree {"dependencies":[]} [0.01ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{}}} [0.04ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{"version":"^4.0.0-rc.117"}}} [0.03ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{"version":"4.0.0-rc.117","dependencies":null}}} [0.01ms]
+(pass) rejects malformed consumer tree {"problems":["invalid peer"],"dependencies":{"effect":{"version":"4.0.0-rc.117"},"@effect/platform-node":{"version":"4.0.0-rc.117","dependencies":{"effect":{"version":"4.0.0-rc.117"},"@effect/platform-node-shared":{"version":"4.0.0-rc.117","dependencies":{"effect":{"version":"4.0.0-rc.117"}}}}}}} [0.11ms]
+(pass) consumer kind requires its complete stack and selected exact version [0.27ms]
+(pass) complete evidence requires every successful consumer and preserves lock and resolution records [7.68ms]
+
+scripts/architecture.test.mjs:
+(pass) architecture contract > keeps the exact public targets and the catalog Effect pin [0.23ms]
+(pass) architecture contract > rejects upward policy dependencies, including type-only imports [0.30ms]
+(pass) architecture contract > keeps host imports and undeclared dependencies out of portable source [0.07ms]
+(pass) architecture contract > requires exact source closure without case-insensitive or workspace fallbacks [0.06ms]
+(pass) architecture contract > rejects runtime cycles but permits non-initializing type backreferences [0.07ms]
+(pass) architecture contract > the compiler parser ignores comments/strings and catches dynamic and type-only edges [336.59ms]
+
+integration/test/recording.test.ts:
+(pass) recording harness policy: uses downloaded bytes and one element, with independent timeline/observation labels and cleanup [14.30ms]
+(pass) recording harness policy: silent decoded-window observations cannot pass [5.14ms]
+(pass) recording harness policy: repeated picture cannot pass solely because audio or container bytes exist [2.97ms]
+(pass) recording harness policy: rejected normal playback releases URL, element, listener and graph [0.50ms]
+(pass) recording harness policy: stalled play has a distinct activation deadline and cleanup [22.04ms]
+(pass) recording harness policy: play resolution alone is not playback evidence; missing callbacks time out [21.80ms]
+(pass) recording harness policy: interruption releases resources and late play fulfillment cannot rearm callbacks [11.65ms]
+(pass) recording harness policy: media error events fail with observed diagnostics and release native owners [0.71ms]
+(pass) recording harness policy: stopped context fails instead of relabelling a static audio clock [0.35ms]
+(pass) recording harness policy: failed graph acquisition still revokes the already-created URL [0.21ms]
+(pass) recording harness policy: unsupported frame callbacks do not become a byte-only playback pass [0.21ms]
+(pass) recording harness policy: canvas readback failure unwinds the element and its audio route [0.40ms]
+(pass) recording harness policy: observation storage is bounded even for an unexpectedly long recording [35.20ms]
+(pass) recording harness policy: invalid limits or empty input do not allocate a recording URL [0.30ms]
+
+integration/test/hosted-collect.test.ts:
+(pass) the video reader summarizes frames, their pacing and the recorder's gaps without keeping any [0.27ms]
+(pass) a clip is judged by the frames that arrived while it played [0.08ms]
+(pass) a late idle frame cannot make frozen output live, while sustained motion passes [0.12ms]
+(pass) the audio reader keeps rates, shapes, loudness and loss [0.21ms]
+(pass) a stats sample keeps the pair, RTT, rates, fps, jitter and loss in evidence units [0.05ms]
+(pass) stats are sampled every second and a failed read is skipped [2.40ms]
+(pass) the tally counts messages, unknown types, repeats, diagnostics and metadata echoes [0.20ms]
+(pass) the span recorder keeps the library's spans and only their reactor attributes [0.96ms]
+(pass) the termination trail follows the coordinator until the session is terminal or gone [1.32ms]
+(pass) a refused read is recorded by its status, and never taken for the session's end [0.45ms]
+
+integration/test/hosted-evidence.test.ts:
+(pass) a complete run encodes to JSON and decodes back unchanged [2.02ms]
+(pass) a run missing any required field fails as incomplete, whatever else passed [0.09ms]
+(pass) audio is required only when the session offered it, and takeover needs its own fields [0.04ms]
+(pass) the resume check needs the takeover's fields and the library's own close report [0.02ms]
+(pass) the audio check also needs the deployment's declaration and what the clip reports [0.69ms]
+(pass) a stop rule, a failed criterion, a failure and no criteria each fail the run [0.07ms]
+(pass) the writer claims a new file, replaces it atomically, and refuses a credential [1.33ms]
+(pass) the ledger reserves each paid run's worst case and refuses unreadable evidence [1.20ms]
+(pass) scheduler evidence requires a separately confirmed replacement close [0.12ms]
+(pass) one run at a time holds the ledger [0.58ms]
+(pass) the summary names every run and what each saw [0.09ms]
+
+integration/test/hosted-rehearsal.test.ts:
+(pass) a rehearsed vertical passes with complete evidence and no credential [3059.25ms]
+(pass) a rehearsed takeover kills the owner, attaches in time and ends the session by its record [4554.18ms]
+(pass) a rehearsed audio check sends an image and an audio reference, and the clip reports both [3022.17ms]
+(pass) a rehearsed resume adopts the killed owner's session through resumeH3, only reads it, and its close ends it [4359.20ms]
+(pass) a rehearsed scheduler records two bounded sessions and measured queue and decoded-media facts [5457.15ms]
+(pass) an uncertain scheduler enqueue stops before opening the replacement session [20500.94ms]
+(pass) the relay check passes only on a relay pair [3037.72ms]
+(pass) a lost enqueue reply stops the check as unknown, and the session still ends [20679.40ms]
+(pass) a termination the library cannot confirm fails with cleanup instructions and a trail [4574.42ms]
+(pass) black video, frozen video and missing audio each fail their criterion [8974.46ms]
+(pass) a token that grants more than asked is refused before any session exists [188.75ms]
+
+integration/test/hosted-gates.test.ts:
+(pass) paid use needs a check, the authorization flag, bounded budgets, a ledger and a network [1.71ms]
+(pass) an unknown argument refuses, so a misspelled budget is never ignored [0.06ms]
+(pass) session time bills by the minute, a started minute whole [0.04ms]
+(pass) the published rate must fit the whole capped session, billed by the minute [0.36ms]
+(pass) the scheduler check alone can authorize two capped sessions [4.58ms]
+(pass) the ledger admits a run only while every reserved worst case fits the total [0.09ms]
+(pass) a token that grants more than one capped session is refused [0.05ms]
+(pass) an unknown outcome or an unconfirmed termination stops the check [0.02ms]
+(pass) live video is BGRA, lit and changing [0.05ms]
+(pass) the relay check runs only while no earlier paid run selected a relay pair [0.06ms]
+(pass) the runner refuses without an explicit authorization, before any request [122.62ms]
+
+integration/test/hosted-twin.test.ts:
+(pass) the vertical check runs end to end against the twin [6464.51ms]
+(pass) the twin mints recognisable credentials: an HS256 JWT the twin plainly signed [9.26ms]
+(pass) a reference image uploads through the twin before its clip is queued [260.97ms]
+(pass) reference audio uploads through the twin and its clip reports it; audio alone is refused [533.88ms]
+(pass) a relay twin selects a relay candidate pair [290.50ms]
+(pass) a second client attaches with the persisted token, sees the queued clip and replaces the first connection [1448.92ms]
+(pass) another process takes the session over after its owner is killed [5768.22ms]
+(pass) a killed owner's session resumes through Orchestration, which only reads it and terminates it on close [5777.57ms]
+(pass) overgrant: a token for two sessions is refused before any allocation [5.70ms]
+(pass) slowDelete: the close cannot confirm, and a later read sees the session end [1744.57ms]
+(pass) ignoreDelete: the session runs on until the cap ends it [2028.24ms]
+(pass) the cap ends a connected session on its own, and its connection closes [2025.43ms]
+(pass) dropEnqueueReply: the enqueue arrives, is never answered, and its outcome is unknown [2486.76ms]
+(pass) blackFrames: a playing clip's frames are all black [1777.12ms]
+(pass) frozenFrames: a playing clip's frames never change [1732.91ms]
+(pass) noAudio: the session offers audio and sends none [2500.69ms]
+(pass) a wrong API key, a missing or foreign token and a spent grant are refused [16.57ms]
+
+integration/test/publication.test.ts:
+(pass) publication harness policy: receiver playback pixels/audio, explicit clocks, cloned tracks and idempotent cleanup [28.45ms]
+(pass) publication harness policy: packet-like progress/static pictures cannot pass changing decoded video [105.26ms]
+(pass) publication harness policy: silent decoded audio cannot pass despite changing video [107.63ms]
+(pass) publication harness policy: activation rejection releases partial owners without touching borrowed tracks [14.09ms]
+(pass) publication harness policy: activation deadline and late play cannot recreate graph/callbacks [37.45ms]
+(pass) publication harness policy: activation interruption releases both sinks and consumes late promises [33.89ms]
+(pass) publication harness policy: interrupted observation joins cleanup; late video callback cannot retain pixels [26.05ms]
+(pass) publication harness policy: partial graph failure stops owned clones and detaches elements [0.38ms]
+(pass) publication harness policy: absent native frame callbacks fails explicitly, not packet-only success [0.23ms]
+(pass) publication harness policy: failed decoded pixel readback immediately closes native owners [0.57ms]
+(pass) publication harness policy: regressing video timestamps cannot be relabelled as received presentation [0.77ms]
+(pass) publication harness policy: closed peer is not evidence of successful unpublication [0.83ms]
+(pass) publication harness policy: suspended context is not evidence of remote silence [0.25ms]
+(pass) publication harness policy: finite quiet window keeps receiver active and permits fresh decoded observations [366.13ms]
+(pass) publication harness policy: continuing native presentation cannot pass retirement [522.76ms]
+(pass) publication harness policy: non-silent audio alone prevents false retirement [523.44ms]
+(pass) publication harness policy: missing audio windows cannot count as silence [451.23ms]
+(pass) publication harness policy: slow observer retention overflow is explicit [162.18ms]
+(pass) publication harness policy: stopped borrowed lease without ended event is caught by liveness polling [0.37ms]
+
+ 131 pass
+ 0 fail
+ 535 expect() calls
+Ran 131 tests across 9 files. [116.56s]

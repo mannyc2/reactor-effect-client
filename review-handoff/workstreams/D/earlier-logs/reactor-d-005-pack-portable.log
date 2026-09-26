@@ -1,0 +1,19 @@
+consumer-installer bun profile portable
+pack-created .check/pack-wjmdDf/reactor-effect-client-0.5.0.tgz
+pack-created .check/pack-wjmdDf/reactor-effect-browser-0.5.0.tgz
+installed-package-identity portable-node reactor-effect-client 298 files
+45 |   readonly workspaceResolution: readonly WorkspaceResolution[];
+46 |   readonly consumers: readonly ConsumerResolution[];
+47 | }
+48 | 
+49 | const fail = (message: string): never => {
+50 |   throw new Error(`pack Effect qualification: ${message}`);
+                 ^
+error: pack Effect qualification: portable-node ./dependencies/reactor-effect-client: invalid dependency
+      at fail (/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/scripts/pack-effect-stack.ts:50:13)
+      at visit (/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/scripts/pack-effect-stack.ts:271:7)
+      at visit (/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/scripts/pack-effect-stack.ts:287:7)
+      at inspectConsumerTree (/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/scripts/pack-effect-stack.ts:290:3)
+      at /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/scripts/pack.ts:693:25
+
+Bun v1.4.2 (macOS arm64)

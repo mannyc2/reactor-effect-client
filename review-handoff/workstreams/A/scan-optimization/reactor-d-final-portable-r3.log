@@ -1,0 +1,145 @@
+$ bun --no-env-file scripts/verify.ts --profile portable
+verify portable: bun run generate:check
+$ bun run --filter reactor-effect-client generate:check
+reactor-effect-client generate:check: wire-generation-ok format=reactor-wire-ts/1 python=3.13.5 sha256=b26b2740daec7913568e9c4a27cb73daf212e90e3e7e47f3068a1db08611f40f
+reactor-effect-client generate:check: Exited with code 0
+verify portable: bun run format:check
+$ oxfmt --check .
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 4024ms on 331 files using 8 threads.
+verify portable: bun run build
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+verify portable: Node and Bun portable runtime imports
+(node:5856) ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register()`:
+--import 'data:text/javascript,import { register } from "node:module"; import { pathToFileURL } from "node:url"; register("./scripts/pack/resolution-guard.mjs", pathToFileURL("./"));'
+(Use `node --trace-warnings ...` to show where the warning was created)
+portable-runtime-import-ok node v22.13.1
+portable-runtime-import-ok bun v26.3.0
+verify portable: bun run lint
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .
+verify portable: bun run typecheck
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+verify portable: bun run check:architecture
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 73 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles
+verify portable: bun run check:examples
+$ bun --no-env-file scripts/examples.ts
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  18:38:04
+   Duration  24.80s (tests 91%, import 6%, transform 3%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  18:38:30
+   Duration  24.27s (tests 94%, import 4%, transform 3%)
+
+examples-tested reactor-effect-example-livestream node bun
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  18:38:55
+   Duration  833ms (import 49%, transform 33%, tests 18%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  18:38:56
+   Duration  636ms (import 39%, transform 37%, tests 22%, worker 1%)
+
+examples-tested reactor-effect-native-examples node bun
+$ bun build src/app.ts --target=browser --outdir=dist
+Bundled 313 modules in 50ms
+
+  app.js  0.70 MB  (entry point)
+
+examples-bundled reactor-effect-browser-examples
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  18:38:57
+   Duration  1.67s (transform 61%, import 26%, tests 13%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  18:38:58
+   Duration  1.20s (transform 59%, tests 23%, import 18%)
+
+examples-tested reactor-effect-client-examples node bun
+examples-ok 4 workspaces
+verify portable: bun run test:portable
+$ bun --no-env-file scripts/test.ts portable
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts (34 tests | 1 failed) 7318ms
+   × uncertain filler ledger fails before dispatching a 4097th identity 5033ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:660:1
+    658|   ));
+    659|
+    660| test("uncertain filler ledger fails before dispatching a 4097th identi…
+       | ^
+    661|   // This is an operation bound: no deadline is advanced or awaited. T…
+    662|   // clock avoids sorting thousands of canceled virtual watchdog sleep…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 63 passed (64)
+      Tests  1 failed | 848 passed (849)
+   Start at  18:39:00
+   Duration  60.57s (tests 65%, import 32%, transform 2%)
+
+     Import  189 modules were evaluated 261 times · 17.13s total, 32% of tracked time
+             ~4.73s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+error: script "test:portable" exited with code 1
+error: script "verify" exited with code 1
+real 132.33
+user 87.87
+sys 19.37

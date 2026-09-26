@@ -1,0 +1,19 @@
+{
+  "name": "portable-node",
+  "dependencies": {
+    "effect": {
+      "version": "4.0.0-rc.117",
+      "overridden": false
+    },
+    "reactor-effect-client": {
+      "version": "0.5.0",
+      "overridden": false,
+      "invalid": "\"/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-wjmdDf/reactor-effect-client-d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c.tgz\" from the root project",
+      "dependencies": {
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    }
+  }
+}

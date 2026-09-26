@@ -1,0 +1,12 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/437f/reactor-effect-client/packages/client
+
+
+ Test Files  27 passed (27)
+      Tests  266 passed (266)
+   Start at  17:23:32
+   Duration  38.95s (tests 56%, import 27%, transform 17%)
+
+    Isolate  27 workers spawned · ~97ms startup each (spawn + environment, per file)
+             at least ~2.52s faster with isolate: false — reuses workers across files instead of one per file
+

@@ -1,0 +1,363 @@
+$ bun --no-env-file scripts/verify.ts --profile portable
+verify portable: bun run generate:check
+$ bun run --filter reactor-effect-client generate:check
+reactor-effect-client generate:check: wire-generation-ok format=reactor-wire-ts/1 python=3.13.5 sha256=b26b2740daec7913568e9c4a27cb73daf212e90e3e7e47f3068a1db08611f40f
+reactor-effect-client generate:check: Exited with code 0
+verify portable: bun run format:check
+$ oxfmt --check .
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 986ms on 331 files using 8 threads.
+verify portable: bun run build
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+verify portable: Node and Bun portable runtime imports
+(node:2437) ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register()`:
+--import 'data:text/javascript,import { register } from "node:module"; import { pathToFileURL } from "node:url"; register("./scripts/pack/resolution-guard.mjs", pathToFileURL("./"));'
+(Use `node --trace-warnings ...` to show where the warning was created)
+portable-runtime-import-ok node v22.13.1
+portable-runtime-import-ok bun v26.3.0
+verify portable: bun run lint
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .
+verify portable: bun run typecheck
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+verify portable: bun run check:architecture
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 73 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles
+verify portable: bun run check:examples
+$ bun --no-env-file scripts/examples.ts
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  18:08:35
+   Duration  23.91s (tests 94%, import 4%, transform 2%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  18:08:59
+   Duration  23.57s (tests 95%, import 3%, transform 2%)
+
+examples-tested reactor-effect-example-livestream node bun
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  18:09:23
+   Duration  700ms (import 46%, transform 33%, tests 20%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  18:09:24
+   Duration  535ms (import 37%, tests 31%, transform 31%, worker 1%)
+
+examples-tested reactor-effect-native-examples node bun
+$ bun build src/app.ts --target=browser --outdir=dist
+Bundled 313 modules in 41ms
+
+  app.js  0.70 MB  (entry point)
+
+examples-bundled reactor-effect-browser-examples
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  18:09:25
+   Duration  814ms (transform 51%, import 30%, tests 18%, worker 1%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  18:09:26
+   Duration  623ms (transform 61%, import 27%, tests 11%, worker 1%)
+
+examples-tested reactor-effect-client-examples node bun
+examples-ok 4 workspaces
+verify portable: bun run test:portable
+$ bun --no-env-file scripts/test.ts portable
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+
+ Test Files  64 passed (64)
+      Tests  849 passed (849)
+   Start at  18:09:27
+   Duration  44.41s (tests 62%, import 35%, transform 3%)
+
+     Import  189 modules were evaluated 245 times · 13.42s total, 35% of tracked time
+             ~3.07s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+
+ Test Files  64 passed (64)
+      Tests  849 passed (849)
+   Start at  18:10:12
+   Duration  25.15s (tests 65%, import 30%, transform 4%, worker 1%)
+
+     Import  189 modules were evaluated 258 times · 6.57s total, 30% of tracked time
+             ~1.76s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/browser
+
+
+ Test Files  6 passed (6)
+      Tests  58 passed (58)
+   Start at  18:10:37
+   Duration  2.85s (import 49%, tests 34%, transform 17%, worker 1%)
+
+    Isolate  6 workers spawned · ~86ms startup each (spawn + environment, per file)
+             at least ~431ms faster with isolate: false — reuses workers across files instead of one per file
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/browser
+
+
+ Test Files  6 passed (6)
+      Tests  58 passed (58)
+   Start at  18:10:40
+   Duration  1.75s (tests 49%, import 35%, transform 14%, worker 1%)
+
+bun test v1.4.2 (744846f84)
+
+scripts/pack-effect-stack.test.ts:
+(pass) frozen JSONC selection keeps exact versions separate from compatibility ranges and hashes the bytes [1.70ms]
+(pass) a later aligned frozen RC qualifies; the old range-minimum equality rejects it [14.41ms]
+(pass) hashes original lock bytes and rejects invalid UTF-8 even inside JSONC comments [0.34ms]
+(pass) Bun archive metadata becomes npm-valid only after exact byte verification; wrong requirements still fail [1541.35ms]
+(pass) rejects unsupported lock [0.08ms]
+(pass) rejects invalid JSONC [0.67ms]
+(pass) rejects missing tuple [0.06ms]
+(pass) rejects range coordinate [0.03ms]
+(pass) rejects partial coordinate
+(pass) rejects malformed coordinate [0.01ms]
+(pass) rejects wrong tuple name [0.01ms]
+(pass) rejects unsupported tuple [0.01ms]
+(pass) rejects stale catalog [0.03ms]
+(pass) rejects mixed and incompatible duplicate lock coordinates [0.20ms]
+(pass) owner-relative resolution succeeds without an undeclared root Effect [7.37ms]
+(pass) rejects stale workspace metadata [7.46ms]
+(pass) rejects missing version workspace metadata [6.97ms]
+(pass) rejects malformed version workspace metadata [5.94ms]
+(pass) rejects wrong name workspace metadata [6.45ms]
+(pass) rejects nested Effect resolved by @effect/platform-node [7.95ms]
+(pass) rejects nested Effect resolved by @effect/platform-node-shared [8.14ms]
+(pass) rejects nested shared-platform [7.33ms]
+(pass) rejects missing declared workspace dependency [5.86ms]
+(pass) consumer validation retains repeated aligned occurrences and rejects nested mismatches [0.27ms]
+(pass) rejects malformed consumer tree null [0.04ms]
+(pass) rejects malformed consumer tree [] [0.04ms]
+(pass) rejects malformed consumer tree {"dependencies":[]} [0.03ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{}}} [0.04ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{"version":"^4.0.0-rc.117"}}} [0.03ms]
+(pass) rejects malformed consumer tree {"dependencies":{"effect":{"version":"4.0.0-rc.117","dependencies":null}}} [0.02ms]
+(pass) rejects malformed consumer tree {"problems":["invalid peer"],"dependencies":{"effect":{"version":"4.0.0-rc.117"},"@effect/platform-node":{"version":"4.0.0-rc.117","dependencies":{"effect":{"version":"4.0.0-rc.117"},"@effect/platform-node-shared":{"version":"4.0.0-rc.117","dependencies":{"effect":{"version":"4.0.0-rc.117"}}}}}}} [0.01ms]
+(pass) consumer kind requires its complete stack and selected exact version [0.14ms]
+(pass) complete evidence requires every successful consumer and preserves lock and resolution records [6.32ms]
+
+scripts/architecture.test.mjs:
+(pass) architecture contract > keeps the exact public targets and the catalog Effect pin [0.20ms]
+(pass) architecture contract > rejects upward policy dependencies, including type-only imports [0.35ms]
+(pass) architecture contract > keeps host imports and undeclared dependencies out of portable source [0.08ms]
+(pass) architecture contract > requires exact source closure without case-insensitive or workspace fallbacks [0.06ms]
+(pass) architecture contract > rejects runtime cycles but permits non-initializing type backreferences [0.05ms]
+(pass) architecture contract > the compiler parser ignores comments/strings and catches dynamic and type-only edges [308.43ms]
+
+integration/test/recording.test.ts:
+(pass) recording harness policy: uses downloaded bytes and one element, with independent timeline/observation labels and cleanup [12.60ms]
+(pass) recording harness policy: silent decoded-window observations cannot pass [4.57ms]
+(pass) recording harness policy: repeated picture cannot pass solely because audio or container bytes exist [2.69ms]
+(pass) recording harness policy: rejected normal playback releases URL, element, listener and graph [0.39ms]
+(pass) recording harness policy: stalled play has a distinct activation deadline and cleanup [25.31ms]
+(pass) recording harness policy: play resolution alone is not playback evidence; missing callbacks time out [21.81ms]
+(pass) recording harness policy: interruption releases resources and late play fulfillment cannot rearm callbacks [11.66ms]
+(pass) recording harness policy: media error events fail with observed diagnostics and release native owners [0.82ms]
+(pass) recording harness policy: stopped context fails instead of relabelling a static audio clock [0.66ms]
+(pass) recording harness policy: failed graph acquisition still revokes the already-created URL [0.35ms]
+(pass) recording harness policy: unsupported frame callbacks do not become a byte-only playback pass [0.25ms]
+(pass) recording harness policy: canvas readback failure unwinds the element and its audio route [0.36ms]
+(pass) recording harness policy: observation storage is bounded even for an unexpectedly long recording [33.97ms]
+(pass) recording harness policy: invalid limits or empty input do not allocate a recording URL [0.24ms]
+
+integration/test/hosted-collect.test.ts:
+(pass) the video reader summarizes frames, their pacing and the recorder's gaps without keeping any [0.36ms]
+(pass) a clip is judged by the frames that arrived while it played [0.09ms]
+(pass) a late idle frame cannot make frozen output live, while sustained motion passes [0.14ms]
+(pass) the audio reader keeps rates, shapes, loudness and loss [0.23ms]
+(pass) a stats sample keeps the pair, RTT, rates, fps, jitter and loss in evidence units [0.06ms]
+(pass) stats are sampled every second and a failed read is skipped [2.43ms]
+(pass) the tally counts messages, unknown types, repeats, diagnostics and metadata echoes [0.19ms]
+(pass) the span recorder keeps the library's spans and only their reactor attributes [0.87ms]
+(pass) the termination trail follows the coordinator until the session is terminal or gone [1.11ms]
+(pass) a refused read is recorded by its status, and never taken for the session's end [0.44ms]
+
+integration/test/hosted-renewal.test.ts:
+(pass) renewal elapsed clock ignores wall corrections and injects the same origin into media readers [0.91ms]
+(pass) attribution preserves objects and resets recorder accounting at source and generation boundaries [1.13ms]
+(pass) complete legacy renewal evidence encodes, while absent milestone fields remain valid incomplete checkpoints [4.40ms]
+(pass) renewal refuses incomplete or contradictory evidence even when supplied criteria all pass [1.13ms]
+(pass) handoff codec rejects impossible count and grace claims [0.65ms]
+(pass) a partial new two-session paid run retains the full ceiling without a reservation [0.07ms]
+(pass) every committed historical ledger still decodes and preserves its reservation [4.16ms]
+(pass) canonical owned cleanup rejects contradictory confirmation and failed required evidence [0.16ms]
+(pass) continuous summary reconciles compaction with original source reports and gates paid qualification [0.76ms]
+(pass) continuous omissions cannot replace missing canonical cleanup or hide incomplete retained evidence [0.45ms]
+(pass) constructor schema requires its actual retention settings [0.19ms]
+
+integration/test/hosted-evidence.test.ts:
+(pass) a complete run encodes to JSON and decodes back unchanged [0.34ms]
+(pass) a run missing any required field fails as incomplete, whatever else passed [0.12ms]
+(pass) audio is required only when the session offered it, and takeover needs its own fields [0.04ms]
+(pass) the resume check needs the takeover's fields and the library's own close report [0.05ms]
+(pass) the audio check also needs the deployment's declaration and what the clip reports [0.60ms]
+(pass) a stop rule, a failed criterion, a failure and no criteria each fail the run [0.05ms]
+(pass) the writer claims a new file, replaces it atomically, and refuses a credential [1.18ms]
+(pass) the ledger reserves each paid run's worst case and refuses unreadable evidence [0.82ms]
+(pass) scheduler evidence requires a separately confirmed replacement close [0.11ms]
+(pass) one run at a time holds the ledger [0.43ms]
+(pass) the summary names every run and what each saw [0.07ms]
+
+integration/test/hosted-rehearsal.test.ts:
+(pass) a rehearsed vertical passes with complete evidence and no credential [2969.55ms]
+(pass) a rehearsed takeover kills the owner, attaches in time and ends the session by its record [4365.98ms]
+(pass) a rehearsed audio check sends an image and an audio reference, and the clip reports both [3041.10ms]
+(pass) a rehearsed resume adopts the killed owner's session through resumeH3, only reads it, and its close ends it [4459.72ms]
+(pass) a rehearsed scheduler records two bounded sessions and measured queue and decoded-media facts [5472.89ms]
+(pass) an uncertain scheduler enqueue stops before opening the replacement session [20496.58ms]
+(pass) the relay check passes only on a relay pair [3167.40ms]
+(pass) a lost enqueue reply stops the check as unknown, and the session still ends [20479.33ms]
+(pass) a termination the library cannot confirm fails with cleanup instructions and a trail [4901.10ms]
+(pass) black video, frozen video and missing audio each fail their criterion [8992.80ms]
+(pass) a token that grants more than asked is refused before any session exists [171.82ms]
+(pass) public renewal legacy uses the real scheduler, planned switch and accepted drain [17116.16ms]
+(pass) public renewal continuous uses the real scheduler, planned switch and accepted drain [17145.21ms]
+(pass) public renewal legacy retains failed evidence for refuseFirstAllocation [228.08ms]
+(pass) public renewal legacy retains failed evidence for refuseSecondAllocation [15660.39ms]
+(pass) public renewal legacy retains failed evidence for failConnect [251.56ms]
+(pass) public renewal legacy retains failed evidence for overgrantSecondToken [246.45ms]
+(pass) public renewal legacy retains failed evidence for slowDelete [11399.68ms]
+(pass) public renewal legacy retains failed evidence for ignoreDelete [11525.17ms]
+(pass) public renewal legacy retains failed evidence for dropSecondEnqueueReply [30952.64ms]
+(pass) public renewal legacy retains failed evidence for noFirstVideo [17130.72ms]
+(pass) public renewal legacy retains failed evidence for noSecondVideo [17098.88ms]
+(pass) public renewal legacy retains failed evidence for stallSecondBuild [40299.43ms]
+(pass) public renewal continuous retains failed evidence for refuseFirstAllocation [210.61ms]
+(pass) public renewal continuous retains failed evidence for refuseSecondAllocation [15703.37ms]
+(pass) public renewal continuous retains failed evidence for failConnect [213.88ms]
+(pass) public renewal continuous retains failed evidence for overgrantSecondToken [171.31ms]
+(pass) public renewal continuous retains failed evidence for slowDelete [11441.52ms]
+(pass) public renewal continuous retains failed evidence for ignoreDelete [11417.17ms]
+(pass) public renewal continuous retains failed evidence for dropSecondEnqueueReply [30890.29ms]
+(pass) public renewal continuous retains failed evidence for noFirstVideo [17221.82ms]
+(pass) public renewal continuous retains failed evidence for noSecondVideo [17198.30ms]
+(pass) public renewal continuous retains failed evidence for stallSecondBuild [40283.87ms]
+(pass) public renewal legacy interruption after allocation preserves the canonical lease report [236.03ms]
+(pass) public renewal legacy stalled close leaves a durable failed checkpoint after emergency termination [11246.12ms]
+(pass) public renewal continuous interruption after allocation preserves the canonical lease report [284.51ms]
+(pass) public renewal continuous stalled close leaves a durable failed checkpoint after emergency termination [11399.68ms]
+
+integration/test/hosted-gates.test.ts:
+(pass) paid use needs a check, the authorization flag, bounded budgets, a ledger and a network [0.58ms]
+(pass) an unknown argument refuses, so a misspelled budget is never ignored [0.04ms]
+(pass) session time bills by the minute, a started minute whole [0.02ms]
+(pass) the published rate must fit the whole capped session, billed by the minute [0.07ms]
+(pass) the scheduler check alone can authorize two capped sessions [0.09ms]
+(pass) the ledger admits a run only while every reserved worst case fits the total [0.03ms]
+(pass) a token that grants more than one capped session is refused [0.03ms]
+(pass) an unknown outcome or an unconfirmed termination stops the check [0.02ms]
+(pass) live video is BGRA, lit and changing [0.06ms]
+(pass) the relay check runs only while no earlier paid run selected a relay pair [0.04ms]
+(pass) the runner refuses without an explicit authorization, before any request [170.56ms]
+(pass) public scheduler renewal reserves two sessions under its own discriminator [0.31ms]
+(pass) public renewal refuses a different nominal cap and paid constructor overrides [0.18ms]
+
+integration/test/hosted-twin.test.ts:
+(pass) the vertical check runs end to end against the twin [6461.69ms]
+(pass) the twin mints recognisable credentials: an HS256 JWT the twin plainly signed [5.31ms]
+(fail) a reference image uploads through the twin before its clip is queued [30001.05ms]
+  ^ this test timed out after 30000ms.
+(pass) reference audio uploads through the twin and its clip reports it; audio alone is refused [513.30ms]
+(pass) a relay twin selects a relay candidate pair [229.75ms]
+(pass) a second client attaches with the persisted token, sees the queued clip and replaces the first connection [1461.02ms]
+(pass) another process takes the session over after its owner is killed [5759.72ms]
+(pass) a killed owner's session resumes through Orchestration, which only reads it and terminates it on close [5781.77ms]
+(pass) overgrant: a token for two sessions is refused before any allocation [5.52ms]
+(pass) slowDelete: the close cannot confirm, and a later read sees the session end [1747.05ms]
+(pass) ignoreDelete: the session runs on until the cap ends it [2013.27ms]
+(pass) the cap ends a connected session on its own, and its connection closes [2033.73ms]
+(pass) dropEnqueueReply: the enqueue arrives, is never answered, and its outcome is unknown [2486.81ms]
+(pass) blackFrames: a playing clip's frames are all black [1721.55ms]
+(pass) frozenFrames: a playing clip's frames never change [1725.45ms]
+(pass) noAudio: the session offers audio and sends none [2605.14ms]
+(pass) a wrong API key, a missing or foreign token and a spent grant are refused [53.93ms]
+
+integration/test/publication.test.ts:
+(pass) publication harness policy: receiver playback pixels/audio, explicit clocks, cloned tracks and idempotent cleanup [35.99ms]
+(pass) publication harness policy: packet-like progress/static pictures cannot pass changing decoded video [106.76ms]
+(pass) publication harness policy: silent decoded audio cannot pass despite changing video [108.44ms]
+(pass) publication harness policy: activation rejection releases partial owners without touching borrowed tracks [0.41ms]
+(pass) publication harness policy: activation deadline and late play cannot recreate graph/callbacks [28.71ms]
+(pass) publication harness policy: activation interruption releases both sinks and consumes late promises [12.83ms]
+(pass) publication harness policy: interrupted observation joins cleanup; late video callback cannot retain pixels [27.99ms]
+(pass) publication harness policy: partial graph failure stops owned clones and detaches elements [0.61ms]
+(pass) publication harness policy: absent native frame callbacks fails explicitly, not packet-only success [0.82ms]
+(pass) publication harness policy: failed decoded pixel readback immediately closes native owners [1.02ms]
+(pass) publication harness policy: regressing video timestamps cannot be relabelled as received presentation [1.78ms]
+(pass) publication harness policy: closed peer is not evidence of successful unpublication [0.92ms]
+(pass) publication harness policy: suspended context is not evidence of remote silence [0.43ms]
+(pass) publication harness policy: finite quiet window keeps receiver active and permits fresh decoded observations [377.95ms]
+(pass) publication harness policy: continuing native presentation cannot pass retirement [520.36ms]
+(pass) publication harness policy: non-silent audio alone prevents false retirement [507.63ms]
+(pass) publication harness policy: missing audio windows cannot count as silence [463.46ms]
+(pass) publication harness policy: slow observer retention overflow is explicit [169.66ms]
+(pass) publication harness policy: stopped borrowed lease without ended event is caught by liveness polling [0.57ms]
+
+1 tests failed:
+(fail) a reference image uploads through the twin before its clip is queued [30001.05ms]
+  ^ this test timed out after 30000ms.
+
+ 170 pass
+ 1 fail
+ 855 expect() calls
+Ran 171 tests across 10 files. [494.90s]
+error: script "test:portable" exited with code 1
+error: script "verify" exited with code 1
+real 631.62
+user 167.07
+sys 33.30

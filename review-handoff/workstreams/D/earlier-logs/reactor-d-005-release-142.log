@@ -1,0 +1,85 @@
+$ tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings release-tools && cd release-tools && bun --no-env-file test ./test
+bun test v1.4.2 (744846f84)
+
+test/Recovery.test.mjs:
+(pass) unauthorized execution and observation can record evidence but never dispatch [217.00ms]
+(pass) an ambiguous npm response to the client publish never replays, keeps the hosts unattempted and cannot escape through a new Plan [756.07ms]
+(pass) real npm receipts satisfy the client and then both hosts in one run while visibility waits for matching registry observations of every package [862.84ms]
+
+test/Provenance.test.mjs:
+(pass) signing is bound to the public main GitHub-hosted release invocation [0.88ms]
+(pass) preparation rejects another signing commit or workflow before invoking the signer [27.55ms]
+(pass) preparation signs exactly one statement per package, each naming that archive's sha512 [49.31ms]
+(pass) retained provenance binds each qualified archive and requires trust verification on restore before registry access [71.78ms]
+(pass) npm OIDC is requested only for an admitted package's authorized PUT and never for observations or foreign packages [69.06ms]
+
+test/Candidate.test.mjs:
+(pass) qualification stack metadata survives candidate retention as exact raw identity bytes while Effect remains range-valued [60.82ms]
+(pass) prepare and load retain the exact qualified archives, both native identities and three dependent npm operations [59.53ms]
+(pass) prereleases select next rather than latest for every package without changing their bytes [51.49ms]
+(pass) a candidate destination cannot be overwritten and unchanged preparation stays deterministic [78.97ms]
+(pass) preparation rejects a mismatched qualification source commit before creating a candidate [25.64ms]
+(pass) preparation rejects a mismatched qualification CI run before creating a candidate [71.24ms]
+(pass) preparation rejects a mismatched qualification CI attempt before creating a candidate [29.81ms]
+(pass) preparation rejects a mismatched qualification version before creating a candidate [28.71ms]
+(pass) preparation rejects a mismatched qualification repository before creating a candidate [25.15ms]
+(pass) preparation rejects a mismatched qualification format before creating a candidate [24.46ms]
+(pass) preparation rejects a mismatched qualification host archive digest before creating a candidate [24.55ms]
+(pass) preparation rejects a mismatched qualification client archive digest before creating a candidate [24.69ms]
+(pass) preparation rejects a mismatched qualification archive filename before creating a candidate [26.94ms]
+(pass) preparation rejects a mismatched qualification package name before creating a candidate [24.65ms]
+(pass) preparation rejects a mismatched qualification packages order before creating a candidate [26.60ms]
+(pass) preparation rejects a mismatched qualification packages list missing the native package before creating a candidate [32.79ms]
+(pass) preparation rejects a mismatched qualification packages list with a repeated entry before creating a candidate [25.59ms]
+(pass) preparation rejects a mismatched qualification packages list without any package before creating a candidate [26.48ms]
+(pass) preparation detects changed incoming reactor-effect-client bytes even at the same filename and length [30.99ms]
+(pass) preparation detects changed incoming reactor-effect-browser bytes even at the same filename and length [25.51ms]
+(pass) preparation detects changed incoming reactor-effect-native bytes even at the same filename and length [27.51ms]
+(pass) qualification admits the fixture identity and rejects incomplete inventories, export changes, mixed versions and inconsistent native identities [28.39ms]
+(pass) the real npm provider rejects a different npm name before a publishable candidate is retained [38.55ms]
+(pass) the real npm provider rejects a different npm name for the native package before a publishable candidate is retained [49.04ms]
+(pass) the real npm provider rejects a different version before a publishable candidate is retained [31.21ms]
+(pass) the real npm provider rejects a different version for the browser package before a publishable candidate is retained [33.31ms]
+(pass) the real npm provider rejects private publication before a publishable candidate is retained [32.01ms]
+(pass) the real npm provider rejects private publication of the native package before a publishable candidate is retained [32.13ms]
+(pass) the real npm provider rejects provenance disabled by the archive before a publishable candidate is retained [50.45ms]
+(pass) the real npm provider rejects provenance disabled by the browser archive before a publishable candidate is retained [40.56ms]
+(pass) the real npm provider rejects another registry before a publishable candidate is retained [42.18ms]
+(pass) the real npm provider rejects another registry for the native package before a publishable candidate is retained [59.26ms]
+(pass) loading detects bundle.json tampering without changing the original input [45.15ms]
+(pass) loading detects plan.json tampering without changing the original input [50.88ms]
+(pass) loading detects plan.json dependency edge tampering without changing the original input [68.02ms]
+(pass) loading detects identity.json tampering without changing the original input [56.72ms]
+(pass) loading refuses same-size owned byte corruption of any archive and symlink substitutions [69.37ms]
+(pass) a validly rehashed Plan cannot change the npm principal, the journal, the package set or the dependency edges [111.80ms]
+(pass) preparation refuses a qualified directory missing one host archive and creates no candidate [25.58ms]
+
+test/Policy.test.mjs:
+(pass) only successful main CI and manual release run identities are admitted [0.30ms]
+(pass) CI selection rejects fork source [0.06ms]
+(pass) CI selection rejects other repository [0.01ms]
+(pass) CI selection rejects pull request [0.06ms]
+(pass) CI selection rejects pull request target [0.01ms]
+(pass) CI selection rejects non-main branch
+(pass) CI selection rejects failed run
+(pass) CI selection rejects cancelled run
+(pass) CI selection rejects running job
+(pass) CI selection rejects other workflow
+(pass) CI selection rejects wrong ID
+(pass) CI selection rejects zero attempt
+(pass) CI selection rejects fractional attempt [0.03ms]
+(pass) CI selection rejects abbreviated source
+(pass) explicit confirmation of every package selects publication; observe cannot acquire publication authority [42.49ms]
+(pass) a prerelease confirmation names every package at the exact prerelease version [45.46ms]
+(pass) a newer dispatched main host admits the original candidate without changing its identities or bytes [65.14ms]
+(pass) retained selection binds both run attempts and the original preparation and source commits [45.34ms]
+(pass) execution authority is restricted to the exact manually dispatched main checkout [0.32ms]
+(pass) workflow selection uses the dispatched host while retaining the original CI and preparation source [1223.86ms]
+(pass) receipts, dispatch errors and other Plan or operation observations cannot prove visibility [0.14ms]
+(pass) visibility requires the latest registry observation of every package to be satisfied [0.09ms]
+(pass) one conflicting package fails visibility even while another package is unobserved [0.04ms]
+(pass) visibility of a Plan without npm publications is a failure, not a success [0.04ms]
+
+ 71 pass
+ 0 fail
+Ran 71 tests across 4 files. [5.53s]

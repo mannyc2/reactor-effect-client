@@ -1,0 +1,55 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts (5 tests | 3 failed) 237ms
+   × default unknown watchdog arms at observation with cap 1 and no later demand 58ms
+   × default unknown watchdog arms at observation with cap 3 and no later demand 68ms
+   × unknown timeout settles later accepted work without replay or invented rejection 52ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 1 and no later demand
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 3 and no later demand
+AssertionError: expected undefined to be defined
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:130:20
+    128|       yield* TestClock.adjust(1);
+    129|       const exit = stopped.pollUnsafe();
+    130|       expect(exit).toBeDefined();
+       |                    ^
+    131|       if (exit !== undefined && Exit.isSuccess(exit)) {
+    132|         expect(exit.value).toMatchObject({ reason: { _tag: "Timeout" }…
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1034:13
+ ❯ MixedSchedulerDispatcher.runTasks ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:240:17
+ ❯ Immediate.afterScheduled ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:229:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > unknown timeout settles later accepted work without replay or invented rejection
+AssertionError: expected undefined to be defined
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:151:34
+    149|     const stopped = yield* Effect.forkScoped(scheduler.failure);
+    150|     yield* TestClock.adjust(58_000);
+    151|     expect(stopped.pollUnsafe()).toBeDefined();
+       |                                  ^
+    152|     expect(yield* first.outcome).toEqual({ _tag: "Unknown", terminal: …
+    153|     expect(yield* later.outcome).toMatchObject({ _tag: "Failed", reaso…
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1034:13
+ ❯ MixedSchedulerDispatcher.runTasks ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:240:17
+ ❯ Immediate.afterScheduled ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:229:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 2 passed (5)
+   Start at  17:04:25
+   Duration  1.80s (import 51%, transform 34%, tests 15%)
+

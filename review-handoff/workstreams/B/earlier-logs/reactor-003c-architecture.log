@@ -1,0 +1,5 @@
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 73 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles

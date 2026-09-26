@@ -1,0 +1,1275 @@
+{
+  "format": "reactor-review-handoff/v1",
+  "sourceHead": "dec33ea21cd8c00311d3cb100cbd5a7184420c05",
+  "testedSource": "a68d072640a700b1763e3e3ed8910a18031f848a",
+  "files": [
+    {
+      "path": "original-plans/001-settle-before-scheduler-failure.md",
+      "origin": "planning-checkout/plans/001-settle-before-scheduler-failure.md",
+      "bytes": 18595,
+      "sha256": "d5124174989c13ddd22a650b9f7ccd8e5a2467b2240cc04ead67e17bf43379ed"
+    },
+    {
+      "path": "original-plans/002-bound-unknown-admission.md",
+      "origin": "planning-checkout/plans/002-bound-unknown-admission.md",
+      "bytes": 13829,
+      "sha256": "840215b4b71a18b824b19bd2fd7dbceb99ba23f6aea195b66d7727b8793b5718"
+    },
+    {
+      "path": "original-plans/002-unknown-capacity-decision.md",
+      "origin": "planning-checkout/plans/002-unknown-capacity-decision.md",
+      "bytes": 21878,
+      "sha256": "187e50ce462f5fd1161e0ef1505fe49680373c4cebdcbcb844fa6411bba7b18f"
+    },
+    {
+      "path": "original-plans/003-qualification-contract.md",
+      "origin": "planning-checkout/plans/003-qualification-contract.md",
+      "bytes": 20244,
+      "sha256": "b787c023e05af3b126392bc08112a3cbcb9dcc02c1ed182d9886864cd7337780"
+    },
+    {
+      "path": "original-plans/003-qualify-public-scheduler-renewal.md",
+      "origin": "planning-checkout/plans/003-qualify-public-scheduler-renewal.md",
+      "bytes": 13358,
+      "sha256": "0c872ded43331fc8d91f74b1a20f889715e4cc0b3c6bed3664313a8f0b2928d3"
+    },
+    {
+      "path": "original-plans/004-bound-live-renewal-state.md",
+      "origin": "planning-checkout/plans/004-bound-live-renewal-state.md",
+      "bytes": 13873,
+      "sha256": "946963c416080ec7ab3e70defabe48fbbc439a624f9bad66e0841273cae164fc"
+    },
+    {
+      "path": "original-plans/004-renewal-retention-decision.md",
+      "origin": "planning-checkout/plans/004-renewal-retention-decision.md",
+      "bytes": 31421,
+      "sha256": "4266b9f9e9a8257b3adcf5d6950ee1f21f63a1bbc84d0a9d3b0dd763ae3bce19"
+    },
+    {
+      "path": "original-plans/005-effect-stack-contract.md",
+      "origin": "planning-checkout/plans/005-effect-stack-contract.md",
+      "bytes": 13503,
+      "sha256": "b555b7651772f07ee41e8b6db9965f8d232c2380722c9bdba8dfddb1b070a509"
+    },
+    {
+      "path": "original-plans/005-reproducible-effect-qualification.md",
+      "origin": "planning-checkout/plans/005-reproducible-effect-qualification.md",
+      "bytes": 8714,
+      "sha256": "4ad6c958a2805de5a17f8e5a5e115ba4af69109f11ca3f816b335dcdcc98d239"
+    },
+    {
+      "path": "original-plans/PARALLEL-EXECUTION.md",
+      "origin": "planning-checkout/plans/PARALLEL-EXECUTION.md",
+      "bytes": 14444,
+      "sha256": "4cc6c203ab0e5c43e256a1b3f8b3fc7afef8fbcd98261d56e957dcf8887e55b1"
+    },
+    {
+      "path": "original-plans/README.md",
+      "origin": "planning-checkout/plans/README.md",
+      "bytes": 14094,
+      "sha256": "2f77fe830f1f8a297b34bdac5599571486f9e581b6cdb236367513e7fa62f98d"
+    },
+    {
+      "path": "original-plans/WORKSTREAM-TASKS.md",
+      "origin": "planning-checkout/plans/WORKSTREAM-TASKS.md",
+      "bytes": 6047,
+      "sha256": "1a5e4837d3c180308178cae26feab118d37bab14a1e2af58f05cc3c0302c98bf"
+    },
+    {
+      "path": "historical-local-prompt.md",
+      "origin": "planning-checkout/plans/REVIEW-FIX-MERGE-PROMPT.md",
+      "bytes": 20136,
+      "sha256": "d657b223cd5b3d454be8890f954de4ee722ee453f87979a49d28b1394d8b6eb2"
+    },
+    {
+      "path": "workstreams/A/combined-91720a6-portable-failure.log",
+      "origin": "A/.check/scheduler-stream-a/combined-91720a6-portable-failure.log",
+      "bytes": 7737,
+      "sha256": "164ab1656bfd375bbfc8ce7d6abe3bfcca786f22c4f06204792ff71a8983451b"
+    },
+    {
+      "path": "workstreams/A/handoff.md",
+      "origin": "A/.check/scheduler-stream-a/handoff.md",
+      "bytes": 11082,
+      "sha256": "471e04fa37463704fa49212beac85bf06054ae4edbf5c729f7be81d49d85e161"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/after.cpuprofile",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/after.cpuprofile",
+      "bytes": 460578,
+      "sha256": "2a08f21f60b453fe1911178b459e14b9e68fecba6a29f85b2b5ab129a9d9a84d"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/before.cpuprofile",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/before.cpuprofile",
+      "bytes": 692424,
+      "sha256": "c26dfd211d18b39c930646b34029a4d809ba7389e768441b6557347fbb18de11"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/reactor-d-final-portable-r3.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/reactor-d-final-portable-r3.log",
+      "bytes": 5909,
+      "sha256": "2aa6c273b0258c9c60c10670ef747b97f87d6f37f34a88573c95cee2161e6eee"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/scheduler-scan-before.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/scheduler-scan-before.log",
+      "bytes": 4898,
+      "sha256": "39c3c465f63f375602dd0607492a97806aae013df07a75dc28c918279067107c"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/scheduler-scan-full-bun.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/scheduler-scan-full-bun.log",
+      "bytes": 108064,
+      "sha256": "1166243f11520dde21a7767fbaa281ae189dc5e262b7e651adb7e4844b212c6e"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/scheduler-scan-full-node.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/scheduler-scan-full-node.log",
+      "bytes": 108114,
+      "sha256": "7f3a00e321d53afc69b5071f3680b56253606daed005a428700e4abb5c2eb4a7"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/scheduler-scan-projection.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/scheduler-scan-projection.log",
+      "bytes": 4894,
+      "sha256": "343c52f42d5c929bbcac06569f7bf13dc64d8f691d5f18080351e06e2ec09d35"
+    },
+    {
+      "path": "workstreams/A/scan-optimization/scheduler-scan-static.log",
+      "origin": "A/.check/scheduler-stream-a/scan-optimization/scheduler-scan-static.log",
+      "bytes": 856,
+      "sha256": "590c478219d83aac2702a7acee9682cb8c361c097f63498518e1fa9ff1549411"
+    },
+    {
+      "path": "workstreams/A/scheduler-001-before-bun.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-001-before-bun.log",
+      "bytes": 7208,
+      "sha256": "74d3e605bee638fcf342aa8cfbf05401f14ea37d1406127048da5ec23b2e14b5"
+    },
+    {
+      "path": "workstreams/A/scheduler-001-before-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-001-before-node.log",
+      "bytes": 7941,
+      "sha256": "e7c24e7d81a964c00ebf3fef91416035f8c1f3706d4fae07f5fdca4a9ba96339"
+    },
+    {
+      "path": "workstreams/A/scheduler-001-portable.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-001-portable.log",
+      "bytes": 11084,
+      "sha256": "08a3cba1880a9853783258176b27814e880062be68a31b65f92467defc50f779"
+    },
+    {
+      "path": "workstreams/A/scheduler-001-retirement-repro.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-001-retirement-repro.log",
+      "bytes": 254,
+      "sha256": "4f15ea95d8737816ef4624388bf8f9258438b3c83203202fafc4e5518de5f30e"
+    },
+    {
+      "path": "workstreams/A/scheduler-002-before.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-002-before.log",
+      "bytes": 3906,
+      "sha256": "401e94cd28343874f8655b0aef4d30e625f9b02a87c5f21379aa788e8404d12e"
+    },
+    {
+      "path": "workstreams/A/scheduler-002-bun.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-002-bun.log",
+      "bytes": 231,
+      "sha256": "4d8f734bca9bdef2f1961fb3f5711e594f866ab9a6631c9b1d62e750bcd8a1ae"
+    },
+    {
+      "path": "workstreams/A/scheduler-002-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-002-node.log",
+      "bytes": 230,
+      "sha256": "52a608565dd6860443c00ac460d37d63ed601423fcdb905e3269356ca54b940e"
+    },
+    {
+      "path": "workstreams/A/scheduler-002-portable-efea67a.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-002-portable-efea67a.log",
+      "bytes": 16150,
+      "sha256": "25e89ce16267558f95778f841d44298b4abda70bf33f60a530fad274fb70374c"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-before-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-before-node.log",
+      "bytes": 2040,
+      "sha256": "06c354a370b868e39398781fdb34a3a0b7d37ff7b7b596bcb86588b2963141a1"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-final-bun.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-final-bun.log",
+      "bytes": 231,
+      "sha256": "93b452566ed730042308eed543d7f01f0a7120657a0083fa126cfc0ef85481eb"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-final-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-final-node.log",
+      "bytes": 231,
+      "sha256": "57ab03b7983d4418762c3f52c348e05d134f5663c2a107d096000a4de203a25e"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-live-after-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-live-after-node.log",
+      "bytes": 1177,
+      "sha256": "7a31c1d985bcba67f10d01b9d8ae1feba74071e8071d8ff1c2ac56c8bbca581a"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-scan-after-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-scan-after-node.log",
+      "bytes": 1379,
+      "sha256": "e7938592fa932fce88bf6a48f777298c43108f1c64a147d963c3a45b29dd6521"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-scope-fixed-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-scope-fixed-node.log",
+      "bytes": 1379,
+      "sha256": "ec6efbe7949370aee8ae78b35d26b42cc56e47f08c4dbd384da4df8a62879882"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-source-order-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-source-order-node.log",
+      "bytes": 4893,
+      "sha256": "8e1167357dd5d9b2efd6f66ea61d13f318ba98caba0c539ed5a228f51954ce99"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-static-after.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-static-after.log",
+      "bytes": 671,
+      "sha256": "2bb3cb38e86f69cf24c333300026d3ac2b03599390ce12c06d0fe5cbb3554923"
+    },
+    {
+      "path": "workstreams/A/scheduler-combined-static.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-combined-static.log",
+      "bytes": 2674,
+      "sha256": "ef2b517fa9dbd62e871367d576c06943b25ef7bd9da5f4ee843686ff3787a24b"
+    },
+    {
+      "path": "workstreams/A/scheduler-final-pack.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-final-pack.log",
+      "bytes": 1161,
+      "sha256": "d75cd1e942f8f19ec7c3412a27ab5b4e1837e19e900c567e9ddcc114dce3d3fd"
+    },
+    {
+      "path": "workstreams/A/scheduler-final-portable.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-final-portable.log",
+      "bytes": 16152,
+      "sha256": "5532b9c3d138e0c2ebe424585083ef754b2f4849fa9f6398a3b4588e2de9e631"
+    },
+    {
+      "path": "workstreams/A/scheduler-final-review-after-bun.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-final-review-after-bun.log",
+      "bytes": 254,
+      "sha256": "691930895e4b0d11ddeb131e42e5180041d86a3d645150a7f57fe491ac979b37"
+    },
+    {
+      "path": "workstreams/A/scheduler-final-review-after-node.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-final-review-after-node.log",
+      "bytes": 253,
+      "sha256": "69c6408d8fb663db5f21d8cddb49a42e69c18a0fc6c4958c677389f49cc8c669"
+    },
+    {
+      "path": "workstreams/A/scheduler-final-review-before.log",
+      "origin": "A/.check/scheduler-stream-a/scheduler-final-review-before.log",
+      "bytes": 3498,
+      "sha256": "6e25950988f2db8b172cbf7a6196a97c1eda23408948fb3c32832b97f19d0370"
+    },
+    {
+      "path": "workstreams/B/final-local-identity.json",
+      "origin": "B/.check/qualification-stream-b/final-local-identity.json",
+      "bytes": 5621,
+      "sha256": "79daadf8b50409fe53077ab8dad5392d97a8bd3db12dd27df028462eda7ea11b"
+    },
+    {
+      "path": "workstreams/B/handoff.md",
+      "origin": "B/.check/qualification-stream-b/handoff.md",
+      "bytes": 10567,
+      "sha256": "be39e7a5536890f9d082fa7e4dcb4d00f88804d2532e8692b5ac20a87e58f3e0"
+    },
+    {
+      "path": "workstreams/B/hosted-readiness.md",
+      "origin": "B/.check/qualification-stream-b/hosted-readiness.md",
+      "bytes": 10684,
+      "sha256": "1b19559a1af71e496fab5080f4a455c5705a88d70f44f915d0d010c7e35fbbf8"
+    },
+    {
+      "path": "workstreams/B/nominal-ledgers.json",
+      "origin": "B/.check/qualification-stream-b/nominal-ledgers.json",
+      "bytes": 345,
+      "sha256": "0a859ae1ac3e6f9f033ce258371a262f7e4b68fedd8e7c8d8b6bcebcc88b6d2f"
+    },
+    {
+      "path": "workstreams/B/rehearsal-summary.md",
+      "origin": "B/.check/qualification-stream-b/rehearsal-summary.md",
+      "bytes": 4391,
+      "sha256": "c05b1eaf113651e75accd3993928cde77612704f1a806d250bfe34597888a705"
+    },
+    {
+      "path": "workstreams/C/bun-focused.log",
+      "origin": "C/.check/renewal-stream-c/bun-focused.log",
+      "bytes": 434,
+      "sha256": "43b44617713db744ae924d8e7a578cf213cd959942f4e14051df69f2309db947"
+    },
+    {
+      "path": "workstreams/C/final-pack.log",
+      "origin": "C/.check/renewal-stream-c/final-pack.log",
+      "bytes": 1092,
+      "sha256": "88f761f06d7999c90a7ee15faa4b3b8ed9302a467375485de10cc838134e1fad"
+    },
+    {
+      "path": "workstreams/C/final-portable.log",
+      "origin": "C/.check/renewal-stream-c/final-portable.log",
+      "bytes": 18729,
+      "sha256": "011c0449385475cf2a6d9fefd95ff9134b02d976b79ac21fa4f23c4d07f5185e"
+    },
+    {
+      "path": "workstreams/C/handoff.md",
+      "origin": "C/.check/renewal-stream-c/handoff.md",
+      "bytes": 9854,
+      "sha256": "0a9fbffff74e38ce51c5273f8ef4f45f475c699bc54727100c71e162e8feb46a"
+    },
+    {
+      "path": "workstreams/C/node-focused.log",
+      "origin": "C/.check/renewal-stream-c/node-focused.log",
+      "bytes": 435,
+      "sha256": "ea6d611567f75396232c0747846eef282f517b1630da0351cf7046e2d8ae04d9"
+    },
+    {
+      "path": "evidence/final-integration/b-matrix-first-failure.log",
+      "origin": "D/.check/final-integration/b-matrix-first-failure.log",
+      "bytes": 3393,
+      "sha256": "24878ec49ab1bc6788c22f99c2cb652e9e6ca57923fa63bdcb8561f096355105"
+    },
+    {
+      "path": "evidence/final-integration/b-refusal-rerun.log",
+      "origin": "D/.check/final-integration/b-refusal-rerun.log",
+      "bytes": 287,
+      "sha256": "0044162ec5389d853544b37ec9f04211d75a3100f4a0f914cd3e83b865856700"
+    },
+    {
+      "path": "evidence/final-integration/browser-native-passed.log",
+      "origin": "D/.check/final-integration/browser-native-passed.log",
+      "bytes": 3356,
+      "sha256": "26bb07a488a00a57f08e1908393d6a822a8bfe8a8b597bff31e9de10e48120e8"
+    },
+    {
+      "path": "evidence/final-integration/combined-static.log",
+      "origin": "D/.check/final-integration/combined-static.log",
+      "bytes": 4066,
+      "sha256": "c92992c70a977e2b9083ffc331be64274a708bc9fab5099eb2ead49335f83ca0"
+    },
+    {
+      "path": "evidence/final-integration/hosted-readiness/final-local-identity.json",
+      "origin": "D/.check/final-integration/hosted-readiness/final-local-identity.json",
+      "bytes": 5621,
+      "sha256": "79daadf8b50409fe53077ab8dad5392d97a8bd3db12dd27df028462eda7ea11b"
+    },
+    {
+      "path": "evidence/final-integration/hosted-readiness/handoff.md",
+      "origin": "D/.check/final-integration/hosted-readiness/handoff.md",
+      "bytes": 10567,
+      "sha256": "be39e7a5536890f9d082fa7e4dcb4d00f88804d2532e8692b5ac20a87e58f3e0"
+    },
+    {
+      "path": "evidence/final-integration/hosted-readiness/hosted-readiness.md",
+      "origin": "D/.check/final-integration/hosted-readiness/hosted-readiness.md",
+      "bytes": 10684,
+      "sha256": "1b19559a1af71e496fab5080f4a455c5705a88d70f44f915d0d010c7e35fbbf8"
+    },
+    {
+      "path": "evidence/final-integration/hosted-readiness/nominal-ledgers.json",
+      "origin": "D/.check/final-integration/hosted-readiness/nominal-ledgers.json",
+      "bytes": 345,
+      "sha256": "0a859ae1ac3e6f9f033ce258371a262f7e4b68fedd8e7c8d8b6bcebcc88b6d2f"
+    },
+    {
+      "path": "evidence/final-integration/hosted-readiness/rehearsal-summary.md",
+      "origin": "D/.check/final-integration/hosted-readiness/rehearsal-summary.md",
+      "bytes": 4391,
+      "sha256": "c05b1eaf113651e75accd3993928cde77612704f1a806d250bfe34597888a705"
+    },
+    {
+      "path": "evidence/final-integration/native-passed.log",
+      "origin": "D/.check/final-integration/native-passed.log",
+      "bytes": 17390,
+      "sha256": "1895e9ff9b8735a96dd19c4784c5cb0bde2f2fba35b5697e6650f47cd751e685"
+    },
+    {
+      "path": "evidence/final-integration/pack-passed.log",
+      "origin": "D/.check/final-integration/pack-passed.log",
+      "bytes": 1917,
+      "sha256": "88d7a2270d9ef3a4b315f5be19831c95572d71c47c7ee09a64eee3df4bb17636"
+    },
+    {
+      "path": "evidence/final-integration/portable-first-failure.log",
+      "origin": "D/.check/final-integration/portable-first-failure.log",
+      "bytes": 7737,
+      "sha256": "164ab1656bfd375bbfc8ce7d6abe3bfcca786f22c4f06204792ff71a8983451b"
+    },
+    {
+      "path": "evidence/final-integration/portable-passed.log",
+      "origin": "D/.check/final-integration/portable-passed.log",
+      "bytes": 22823,
+      "sha256": "0233f1f484c2ae2fd7dc3691edd44c4284fae3233cb22d6fb6a69047120dca6c"
+    },
+    {
+      "path": "evidence/final-integration/portable-second-failure.log",
+      "origin": "D/.check/final-integration/portable-second-failure.log",
+      "bytes": 22860,
+      "sha256": "cbaf91093000c5296406dfca4803f98c7fa5cba6a3b1e6e4a1a197fa3f21a846"
+    },
+    {
+      "path": "evidence/final-integration/portable-third-failure.log",
+      "origin": "D/.check/final-integration/portable-third-failure.log",
+      "bytes": 5909,
+      "sha256": "2aa6c273b0258c9c60c10670ef747b97f87d6f37f34a88573c95cee2161e6eee"
+    },
+    {
+      "path": "evidence/final-integration/receipt.json",
+      "origin": "D/.check/final-integration/receipt.json",
+      "bytes": 11255,
+      "sha256": "16aed3f4218de17fc3259c960888f80e1a555f5d117cb570bd4ec9cc03e12cc6"
+    },
+    {
+      "path": "evidence/final-integration/release-passed.log",
+      "origin": "D/.check/final-integration/release-passed.log",
+      "bytes": 7555,
+      "sha256": "390f9e8302102f38951372c511a2e74aeeef45679f1abf2c562b627daf82011b"
+    },
+    {
+      "path": "evidence/final-integration/twin-close-details.log",
+      "origin": "D/.check/final-integration/twin-close-details.log",
+      "bytes": 1880,
+      "sha256": "8ef130db76c678faed2bdf81e4cdcc2301c0222ab643fe46c6b99e65c41b54e6"
+    },
+    {
+      "path": "evidence/final-integration/twin-fixed.log",
+      "origin": "D/.check/final-integration/twin-fixed.log",
+      "bytes": 1723,
+      "sha256": "19d84331d1ee69c820d65d6e1cd9b9bb1c04dcfb20e1bd61900b15a6ead0202b"
+    },
+    {
+      "path": "evidence/final-integration/twin-image-phases.log",
+      "origin": "D/.check/final-integration/twin-image-phases.log",
+      "bytes": 1382,
+      "sha256": "b7a95c554802bcb66adab4bb1927339909d9f62efb45c26ca436966d9ebe1245"
+    },
+    {
+      "path": "evidence/final-integration/twin-socket-before.log",
+      "origin": "D/.check/final-integration/twin-socket-before.log",
+      "bytes": 259,
+      "sha256": "5cb0a4338410234305e425b9892776888da59211a43adb4b8cf84645e5a558e0"
+    },
+    {
+      "path": "evidence/final-integration/twin-socket-regressions.log",
+      "origin": "D/.check/final-integration/twin-socket-regressions.log",
+      "bytes": 21828,
+      "sha256": "8946b8f848e8f9cddadf46a0cfb402681bedea22a8eda22f2a41c1b2de5c45af"
+    },
+    {
+      "path": "evidence/pack/browser-dependencies.json",
+      "origin": "D/.check/pack-pcZuov/browser-dependencies.json",
+      "bytes": 509,
+      "sha256": "5bb40c32032e8859ac8c3841768f90e75a09fc74d2939c318b8f709258682499"
+    },
+    {
+      "path": "evidence/pack/install-browser.log",
+      "origin": "D/.check/pack-pcZuov/install-browser.log",
+      "bytes": 683,
+      "sha256": "e7c7ca4188bf0b0c7436200a98f0932d433b6b56a3e2efa6760ea46c5de2bde8"
+    },
+    {
+      "path": "evidence/pack/install-browser.manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-browser.manifest.json",
+      "bytes": 588,
+      "sha256": "2c1b5603b6d5749beb2aa1dc2688e6b0e6b06e012c1065fd030eb21209cf583e"
+    },
+    {
+      "path": "evidence/pack/install-browser.normalization.json",
+      "origin": "D/.check/pack-pcZuov/install-browser.normalization.json",
+      "bytes": 1128,
+      "sha256": "fe4e0743fc71619f43078465d843bb462d3c0a1c652a5fbb65c47a417a887220"
+    },
+    {
+      "path": "evidence/pack/install-browser.normalized-manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-browser.normalized-manifest.json",
+      "bytes": 252,
+      "sha256": "e553bb129c129db6e356fec45f19317bac10aa1a6ae6dd0000a55235d622bbec"
+    },
+    {
+      "path": "evidence/pack/install-native.log",
+      "origin": "D/.check/pack-pcZuov/install-native.log",
+      "bytes": 817,
+      "sha256": "2a19bb11b2c4474e3fa872da53fd25118480bca8db3d56599d029ac8b5f001ec"
+    },
+    {
+      "path": "evidence/pack/install-native.manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-native.manifest.json",
+      "bytes": 734,
+      "sha256": "95039fd5ee97663f136200924c196f41bac491a43e3c73dffcb88b5857263c4f"
+    },
+    {
+      "path": "evidence/pack/install-native.normalization.json",
+      "origin": "D/.check/pack-pcZuov/install-native.normalization.json",
+      "bytes": 1125,
+      "sha256": "6de50a2510235ef97d9cc87de4ea76700ea33f8937d79a99e173425fca4fee97"
+    },
+    {
+      "path": "evidence/pack/install-native.normalized-manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-native.normalized-manifest.json",
+      "bytes": 399,
+      "sha256": "3c7f807ef122ded04c04cf9e7ba455bd4374c7c92bfbef16051ca4765c3cbcf8"
+    },
+    {
+      "path": "evidence/pack/install-portable-node.log",
+      "origin": "D/.check/pack-pcZuov/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "4cf63f4b145250b8b3ad57b4a92cda393977990faec87389ee28b6c15cfba836"
+    },
+    {
+      "path": "evidence/pack/install-portable-node.manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-portable-node.manifest.json",
+      "bytes": 410,
+      "sha256": "19b22a67dfc43b7b991c9f2ebea4c36c9081f834f86573bb9dab1809cb6f8629"
+    },
+    {
+      "path": "evidence/pack/install-portable-node.normalization.json",
+      "origin": "D/.check/pack-pcZuov/install-portable-node.normalization.json",
+      "bytes": 748,
+      "sha256": "9b74ea8e47d7aa394289069056bc9166399c28ffa275445f481efc74dd71fe9d"
+    },
+    {
+      "path": "evidence/pack/install-portable-node.normalized-manifest.json",
+      "origin": "D/.check/pack-pcZuov/install-portable-node.normalized-manifest.json",
+      "bytes": 243,
+      "sha256": "1fd3df27f68c5e9c20f160891f34b90eb05271359b66b19432c385ae71991698"
+    },
+    {
+      "path": "evidence/pack/native-dependencies.json",
+      "origin": "D/.check/pack-pcZuov/native-dependencies.json",
+      "bytes": 1023,
+      "sha256": "738e7c1c8ebb870dd0ce719c8aaad308cc1a81cfc2e508b58a03c51dd8ef233c"
+    },
+    {
+      "path": "evidence/pack/package-identity.json",
+      "origin": "D/.check/pack-pcZuov/package-identity.json",
+      "bytes": 83131,
+      "sha256": "10f3adedf915f8876257132a155b9d447cdacf3862c55653b59b0a80f3cd8040"
+    },
+    {
+      "path": "evidence/pack/portable-dependencies.json",
+      "origin": "D/.check/pack-pcZuov/portable-dependencies.json",
+      "bytes": 325,
+      "sha256": "97ff8e8505331a2a5769aa59632a00636881328bea13e9dbe8ea62be904175fd"
+    },
+    {
+      "path": "evidence/pack/types-browser.trace.log",
+      "origin": "D/.check/pack-pcZuov/types-browser.trace.log",
+      "bytes": 3800607,
+      "sha256": "5e71c3ce6eeaeabd52b36a35267773ae081dd8d96870a8a841f51e73341bf5b4"
+    },
+    {
+      "path": "evidence/pack/types-native.trace.log",
+      "origin": "D/.check/pack-pcZuov/types-native.trace.log",
+      "bytes": 5478333,
+      "sha256": "ebfc05897d2b1750a7b0a572d4614dbc9096309cc93ae1548ed7abfcbaa31d30"
+    },
+    {
+      "path": "evidence/pack/types-portable-node.trace.log",
+      "origin": "D/.check/pack-pcZuov/types-portable-node.trace.log",
+      "bytes": 4225694,
+      "sha256": "ab1c2a1475ea565921d446e03554a157b6674ccba2f1ea0cc60a2122476c667b"
+    },
+    {
+      "path": "evidence/native-inputs/artifacts.json",
+      "origin": "D/.check/native-inputs/artifacts.json",
+      "bytes": 2142,
+      "sha256": "4d22807aa6f7588e1a60c945d55bcfcbc0d41a253fdfd9cd20c6ac2452b388b3"
+    },
+    {
+      "path": "evidence/native-inputs/darwin-arm64/native-identity.json",
+      "origin": "D/.check/native-inputs/darwin-arm64/native-identity.json",
+      "bytes": 693,
+      "sha256": "e33a187d53c1b4b5ea31380a3f71119ebb53e946fb5d6409c9be713a205decad"
+    },
+    {
+      "path": "evidence/native-inputs/linux-x64/native-identity.json",
+      "origin": "D/.check/native-inputs/linux-x64/native-identity.json",
+      "bytes": 814,
+      "sha256": "f4c648d2d6bf6b09c86e70372a5b0dd5a31dbf8b6989e7142d1c959a132996fe"
+    },
+    {
+      "path": "evidence/native-inputs/run.json",
+      "origin": "D/.check/native-inputs/run.json",
+      "bytes": 181,
+      "sha256": "b64f3246549d61d754884c6794cedb63fd35f64cbbbb8b576128fb02d4aee87b"
+    },
+    {
+      "path": "evidence/native-inputs/stage-darwin-arm64.json",
+      "origin": "D/.check/native-inputs/stage-darwin-arm64.json",
+      "bytes": 432,
+      "sha256": "bf17147969f18d87fd5c05232e5a1019aec77929ce8da479e789e4ffa29f170a"
+    },
+    {
+      "path": "evidence/native-inputs/stage-linux-x64.json",
+      "origin": "D/.check/native-inputs/stage-linux-x64.json",
+      "bytes": 423,
+      "sha256": "40bfeb47e2b5c765db512a8d7726d2adc93994978549274d4c69e916c0259d50"
+    },
+    {
+      "path": "guidance/effect-development/.dev-kit-origin.json",
+      "origin": "effect-development-skill/.dev-kit-origin.json",
+      "bytes": 243,
+      "sha256": "6eec340f6f391358fbcb97437a4f8fcf88c5ddd12b2297979f2835815c74b2d1"
+    },
+    {
+      "path": "guidance/effect-development/SKILL.md",
+      "origin": "effect-development-skill/SKILL.md",
+      "bytes": 1475,
+      "sha256": "477b81c51fc3e6215a984d392789d80b26478709f3201ab03d99265dfdb37032"
+    },
+    {
+      "path": "guidance/effect-development/agents/openai.yaml",
+      "origin": "effect-development-skill/agents/openai.yaml",
+      "bytes": 268,
+      "sha256": "508e5eb69e06740bc13445131873dfc12a8e94ab1d3e57812f6d01fd62b7f65a"
+    },
+    {
+      "path": "guidance/effect-development/references/api/cloudflare-workers.md",
+      "origin": "effect-development-skill/references/api/cloudflare-workers.md",
+      "bytes": 3062,
+      "sha256": "e7597ee9e2a3a3fc10f4e5c17b46701df900cc1b389f0375b938943658dd3242"
+    },
+    {
+      "path": "guidance/effect-development/references/api/index.md",
+      "origin": "effect-development-skill/references/api/index.md",
+      "bytes": 1587,
+      "sha256": "14429996156621ce2112a30ca689312736c266d8e437fa18eb7936373737e33b"
+    },
+    {
+      "path": "guidance/effect-development/references/api/runtime-assembly.md",
+      "origin": "effect-development-skill/references/api/runtime-assembly.md",
+      "bytes": 1966,
+      "sha256": "7771c6bcd8e86ddff6a7916d1c675ff5d2a2d5bb1b1332b27b4ad67f7e10c130"
+    },
+    {
+      "path": "guidance/effect-development/references/api/schema-codecs.md",
+      "origin": "effect-development-skill/references/api/schema-codecs.md",
+      "bytes": 773,
+      "sha256": "0a8c28ad981627a2e8ff991cab9869987b1b6e6194f5f37da0684f930595dc76"
+    },
+    {
+      "path": "guidance/effect-development/references/api/server-and-middleware.md",
+      "origin": "effect-development-skill/references/api/server-and-middleware.md",
+      "bytes": 6932,
+      "sha256": "c295983f26788f4bcfbca5e44ae43a81a80821e58202188bbf33a0dd34d9d9f6"
+    },
+    {
+      "path": "guidance/effect-development/references/api/shared-contracts.md",
+      "origin": "effect-development-skill/references/api/shared-contracts.md",
+      "bytes": 3873,
+      "sha256": "9618c1365872366de7d697de65c434b412b992a839741177da478668233c6ba8"
+    },
+    {
+      "path": "guidance/effect-development/references/api/verification.md",
+      "origin": "effect-development-skill/references/api/verification.md",
+      "bytes": 3893,
+      "sha256": "988da82d50a28260e7a5c3e98a946f1e61f5e3306ce1464fe3ea37d096a0cc6b"
+    },
+    {
+      "path": "guidance/effect-development/references/architecture/index.md",
+      "origin": "effect-development-skill/references/architecture/index.md",
+      "bytes": 1039,
+      "sha256": "4daf9e40006a81cecf6d85ba739600a21924fb2c13229ed49bb62834c276495c"
+    },
+    {
+      "path": "guidance/effect-development/references/architecture/service-and-boundary-audit.md",
+      "origin": "effect-development-skill/references/architecture/service-and-boundary-audit.md",
+      "bytes": 6772,
+      "sha256": "d0cbe2957cea9d42697c4a50bda495c23783ce3cf6997924eb956506089f0ee0"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/effect-atom-client.md",
+      "origin": "effect-development-skill/references/atom/effect-atom-client.md",
+      "bytes": 6431,
+      "sha256": "b7e88a9c8a232a2512abb03bfbad05283f76fbe7f3643bb356b534a88143e395"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/effect-atom-lifecycle.md",
+      "origin": "effect-development-skill/references/atom/effect-atom-lifecycle.md",
+      "bytes": 4567,
+      "sha256": "443eb3dd737af2b48b0788d21fea545f031c70ebfb6524e183abdb7d0627813a"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/effect-atom-testing.md",
+      "origin": "effect-development-skill/references/atom/effect-atom-testing.md",
+      "bytes": 3193,
+      "sha256": "208e0eaa47e3642f11f394afa777bd4de75fd3287e4026cd76331b92b277acc4"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/effect-atom-workflows.md",
+      "origin": "effect-development-skill/references/atom/effect-atom-workflows.md",
+      "bytes": 6515,
+      "sha256": "c666fb32ed18ac7cec79ac11c727d5f5ae1d80ad5549bd7e5bf9980a223cf951"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/index.md",
+      "origin": "effect-development-skill/references/atom/index.md",
+      "bytes": 2072,
+      "sha256": "188e1f7b2c9948adcc9e5d7c16d98499badb258f1da72c9f720c2f73bd317633"
+    },
+    {
+      "path": "guidance/effect-development/references/atom/tanstack-start.md",
+      "origin": "effect-development-skill/references/atom/tanstack-start.md",
+      "bytes": 2927,
+      "sha256": "284099d2a924711dc84842256968bef4ef8e1bb4e5052f84f4f0466051319c1c"
+    },
+    {
+      "path": "guidance/effect-development/references/cli/command-design.md",
+      "origin": "effect-development-skill/references/cli/command-design.md",
+      "bytes": 3613,
+      "sha256": "09f7ab41f5c3a5d32751d1d9a05d123cd5c232be15dff4074d55e0cfa8bfd8fc"
+    },
+    {
+      "path": "guidance/effect-development/references/cli/entrypoints-and-testing.md",
+      "origin": "effect-development-skill/references/cli/entrypoints-and-testing.md",
+      "bytes": 3138,
+      "sha256": "a094a3528ff700316c73c70672b9f48bd42d84fac5a4823c7f135f6a10a63d86"
+    },
+    {
+      "path": "guidance/effect-development/references/cli/index.md",
+      "origin": "effect-development-skill/references/cli/index.md",
+      "bytes": 2003,
+      "sha256": "fa6c2adc66f7a9576f1265f99bb378bf3bfa54fa3c94ed1fab0744f2ae37c24b"
+    },
+    {
+      "path": "guidance/effect-development/references/cli/processes-and-platform.md",
+      "origin": "effect-development-skill/references/cli/processes-and-platform.md",
+      "bytes": 2919,
+      "sha256": "2e298f1032b526850620b9009b261dfd18a632bc3ae2106d068368f576534696"
+    },
+    {
+      "path": "guidance/effect-development/references/setup.md",
+      "origin": "effect-development-skill/references/setup.md",
+      "bytes": 780,
+      "sha256": "6c86b6d305b31be27f0edc0babfe353ea44c7f756d585bd364de20edc1db4837"
+    },
+    {
+      "path": "workstreams/D/final-integration-handoff.md",
+      "origin": "D/plans/final-integration-handoff.md",
+      "bytes": 16742,
+      "sha256": "ba4409e21cbe104e036c529c528113a18b2d140073bb7426c4451a0919076a19"
+    },
+    {
+      "path": "workstreams/D/005-package-tooling-handoff.md",
+      "origin": "D/plans/005-package-tooling-handoff.md",
+      "bytes": 6569,
+      "sha256": "9782a7b73acf16f7945657a88eac3d56383bcfd17f90fb454926a5e7f38a3d81"
+    },
+    {
+      "path": "workstreams/D/shared-integration-handoffs.md",
+      "origin": "D/plans/shared-integration-handoffs.md",
+      "bytes": 7878,
+      "sha256": "4e0c5fd1d6f6b809456593a209b06f8b713aa001bce6f058e900b987e5f703d6"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003e-portable.log",
+      "origin": "B/local-temporary-logs/reactor-003e-portable.log",
+      "bytes": 7467,
+      "sha256": "b6725aae180252d9eaa43ff96fd00ddae63f02ba81084a8ba6fe5bd1278779d5"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003h-matrix.log",
+      "origin": "B/local-temporary-logs/reactor-003h-matrix.log",
+      "bytes": 1296,
+      "sha256": "113e8445133603563cd1360a5deab238fbf6520010380d6fdfeb3591799844e8"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-matrix.log",
+      "origin": "B/local-temporary-logs/reactor-003c-matrix.log",
+      "bytes": 3393,
+      "sha256": "24878ec49ab1bc6788c22f99c2cb652e9e6ca57923fa63bdcb8561f096355105"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-pure.log",
+      "origin": "B/local-temporary-logs/reactor-003c-pure.log",
+      "bytes": 4355,
+      "sha256": "2a2944a6fe46ff9b180427d558dcdda5d359ad458fdcee3b831eb57172dc5877"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-refusal-rerun.log",
+      "origin": "B/local-temporary-logs/reactor-003c-refusal-rerun.log",
+      "bytes": 287,
+      "sha256": "0044162ec5389d853544b37ec9f04211d75a3100f4a0f914cd3e83b865856700"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-b-socket-before.log",
+      "origin": "B/local-temporary-logs/reactor-b-socket-before.log",
+      "bytes": 259,
+      "sha256": "5cb0a4338410234305e425b9892776888da59211a43adb4b8cf84645e5a558e0"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-b-socket-regressions.log",
+      "origin": "B/local-temporary-logs/reactor-b-socket-regressions.log",
+      "bytes": 21828,
+      "sha256": "8946b8f848e8f9cddadf46a0cfb402681bedea22a8eda22f2a41c1b2de5c45af"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-b-twin-fixed.log",
+      "origin": "B/local-temporary-logs/reactor-b-twin-fixed.log",
+      "bytes": 1723,
+      "sha256": "19d84331d1ee69c820d65d6e1cd9b9bb1c04dcfb20e1bd61900b15a6ead0202b"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-d-final-portable-r2.log",
+      "origin": "B/local-temporary-logs/reactor-d-final-portable-r2.log",
+      "bytes": 22860,
+      "sha256": "cbaf91093000c5296406dfca4803f98c7fa5cba6a3b1e6e4a1a197fa3f21a846"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-build.log",
+      "origin": "B/local-temporary-logs/reactor-003c-build.log",
+      "bytes": 185,
+      "sha256": "719f518daaf0ef5d143545df974b0d4851cabaa527d0e093c33587f7b6c608f0"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-typecheck.log",
+      "origin": "B/local-temporary-logs/reactor-003c-typecheck.log",
+      "bytes": 590,
+      "sha256": "1a59ef86f730036237356896dbae2c1633648c66ae67c3c2a0da5601e21913fb"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-lint.log",
+      "origin": "B/local-temporary-logs/reactor-003c-lint.log",
+      "bytes": 81,
+      "sha256": "8eef7218af9281f6c1af3765e6bafb9ab92661b8eaafdd313868babf6a12262c"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-format.log",
+      "origin": "B/local-temporary-logs/reactor-003c-format.log",
+      "bytes": 133,
+      "sha256": "3fd2855e1537a0c4b377638a6bdaac4b45daf741a995fe3a1c3c43b4eaba981f"
+    },
+    {
+      "path": "workstreams/B/earlier-logs/reactor-003c-architecture.log",
+      "origin": "B/local-temporary-logs/reactor-003c-architecture.log",
+      "bytes": 293,
+      "sha256": "0d9d583d7dee1596f2c24dd6b1b84d20885192543245ea0fe5a3035feebf92f4"
+    },
+    {
+      "path": "workstreams/B/loopback-ledgers/20260926T215040Z-scheduler-renewal-rehearsal-6cef9a49.json",
+      "origin": "B/temporary-loopback-ledgers/20260926T215040Z-scheduler-renewal-rehearsal-6cef9a49.json",
+      "bytes": 100799,
+      "sha256": "a8f0b6e6751e8e7b1261a2bf0a2a369d6d33fe5de82a2661765e5dce3db96c5d"
+    },
+    {
+      "path": "workstreams/B/loopback-ledgers/20260926T215022Z-scheduler-renewal-rehearsal-3872bcc3.json",
+      "origin": "B/temporary-loopback-ledgers/20260926T215022Z-scheduler-renewal-rehearsal-3872bcc3.json",
+      "bytes": 93936,
+      "sha256": "951d0ffca3897ae7ba6210ee0483c42b4c5b0a39c02e5a72284e938776ec4ac2"
+    },
+    {
+      "path": "workstreams/A/earlier-pack-evidence/pack-2l4rkr/install-browser.log",
+      "origin": "A/.check/pack-2l4rkr/install-browser.log",
+      "bytes": 683,
+      "sha256": "06b6579dd290f380b5ba8a89dd6fdf93fa958755493909da48ead46702c04e17"
+    },
+    {
+      "path": "workstreams/A/earlier-pack-evidence/pack-2l4rkr/install-portable-node.log",
+      "origin": "A/.check/pack-2l4rkr/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "166484ab65f3a607cbf04ae7abbd721b1397220448138b006f281049a8624dfe"
+    },
+    {
+      "path": "workstreams/A/earlier-pack-evidence/pack-2l4rkr/package-identity.json",
+      "origin": "A/.check/pack-2l4rkr/package-identity.json",
+      "bytes": 49325,
+      "sha256": "d0c7d2dc2e2c2f749ba9bc86e57509130c2fcc833c84edad61279de643b099b4"
+    },
+    {
+      "path": "workstreams/A/earlier-pack-evidence/pack-2l4rkr/types-browser.trace.log",
+      "origin": "A/.check/pack-2l4rkr/types-browser.trace.log",
+      "bytes": 3798474,
+      "sha256": "64e7f16afa016ff180f7e875e382c9d816dee35ebc8e6d5cb93eeb5f7149d74e"
+    },
+    {
+      "path": "workstreams/A/earlier-pack-evidence/pack-2l4rkr/types-portable-node.trace.log",
+      "origin": "A/.check/pack-2l4rkr/types-portable-node.trace.log",
+      "bytes": 4223456,
+      "sha256": "41ca1f870b7a0ecfa614385b4f1459682a3d5b558f09109dd617fb3208d41fe7"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/browser-dependencies.json",
+      "origin": "C/.check/pack-gspy0t/browser-dependencies.json",
+      "bytes": 509,
+      "sha256": "5bb40c32032e8859ac8c3841768f90e75a09fc74d2939c318b8f709258682499"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-browser.log",
+      "origin": "C/.check/pack-gspy0t/install-browser.log",
+      "bytes": 683,
+      "sha256": "3f1a36232f494d5c7d3b1376f5ac782f5a73963f3d65e9401fcf712d79161e17"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-browser.manifest.json",
+      "origin": "C/.check/pack-gspy0t/install-browser.manifest.json",
+      "bytes": 588,
+      "sha256": "94713665c891cad8f4a578d6d1e2cf3b6d6fbb84e1a21ab70c10a4d18dacf7ea"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-browser.normalization.json",
+      "origin": "C/.check/pack-gspy0t/install-browser.normalization.json",
+      "bytes": 1128,
+      "sha256": "8b40ecc32606aacc86cdfe70406b3372d0ad2e86ff115e2d64ff86dda445aa9b"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-browser.normalized-manifest.json",
+      "origin": "C/.check/pack-gspy0t/install-browser.normalized-manifest.json",
+      "bytes": 252,
+      "sha256": "e553bb129c129db6e356fec45f19317bac10aa1a6ae6dd0000a55235d622bbec"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-portable-node.log",
+      "origin": "C/.check/pack-gspy0t/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "71a6cec8f4a7b00e3e58de3476dcd319ab656a1835ce4b75d48ff0aeb9a8d401"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-portable-node.manifest.json",
+      "origin": "C/.check/pack-gspy0t/install-portable-node.manifest.json",
+      "bytes": 410,
+      "sha256": "19c3e76118b9cd5c405e34497494b6e4bbfcf4e754050ef23bbdfe26ba53beec"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-portable-node.normalization.json",
+      "origin": "C/.check/pack-gspy0t/install-portable-node.normalization.json",
+      "bytes": 748,
+      "sha256": "9fa2fba9c32b17e9ddf0dea740d55483a73bffbb4ce7e2d508f377e691db7463"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/install-portable-node.normalized-manifest.json",
+      "origin": "C/.check/pack-gspy0t/install-portable-node.normalized-manifest.json",
+      "bytes": 243,
+      "sha256": "1fd3df27f68c5e9c20f160891f34b90eb05271359b66b19432c385ae71991698"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/package-identity.json",
+      "origin": "C/.check/pack-gspy0t/package-identity.json",
+      "bytes": 54108,
+      "sha256": "59aa76396dd3e734acac618bcdd99b523b09a192c2df618aa09dd92a2b56718d"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/portable-dependencies.json",
+      "origin": "C/.check/pack-gspy0t/portable-dependencies.json",
+      "bytes": 325,
+      "sha256": "97ff8e8505331a2a5769aa59632a00636881328bea13e9dbe8ea62be904175fd"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/types-browser.trace.log",
+      "origin": "C/.check/pack-gspy0t/types-browser.trace.log",
+      "bytes": 3800655,
+      "sha256": "49934bb96f35bb28231537759691f4b8b85c66b65f85fb96a4da3cdcc70d02cf"
+    },
+    {
+      "path": "workstreams/C/earlier-pack-evidence/pack-gspy0t/types-portable-node.trace.log",
+      "origin": "C/.check/pack-gspy0t/types-portable-node.trace.log",
+      "bytes": 4225670,
+      "sha256": "2e341c00cd1167f694b151c674c175400970c060e79ca7948f7868f88f35cb63"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/browser-dependencies.json",
+      "origin": "D/.check/pack-7jSJZq/browser-dependencies.json",
+      "bytes": 509,
+      "sha256": "5bb40c32032e8859ac8c3841768f90e75a09fc74d2939c318b8f709258682499"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-browser.log",
+      "origin": "D/.check/pack-7jSJZq/install-browser.log",
+      "bytes": 683,
+      "sha256": "9f06d2c151724d8dd9b75510c933fcb4adf8e3d95e81371b588dd2407cc72126"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-browser.manifest.json",
+      "origin": "D/.check/pack-7jSJZq/install-browser.manifest.json",
+      "bytes": 588,
+      "sha256": "8b72218e47e45471643f44264fbaf7efb96a8732f0a4e928b3f971803cba5e21"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-browser.normalization.json",
+      "origin": "D/.check/pack-7jSJZq/install-browser.normalization.json",
+      "bytes": 1128,
+      "sha256": "80fa72cce8b5e591689987381d0b0577b87d234ceadb147dc50a0b040e8abdcb"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-browser.normalized-manifest.json",
+      "origin": "D/.check/pack-7jSJZq/install-browser.normalized-manifest.json",
+      "bytes": 252,
+      "sha256": "e553bb129c129db6e356fec45f19317bac10aa1a6ae6dd0000a55235d622bbec"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-portable-node.log",
+      "origin": "D/.check/pack-7jSJZq/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "2d7a030b24e26a28acc07f9556254c128af716159198353dd023c7ce9143f714"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-portable-node.manifest.json",
+      "origin": "D/.check/pack-7jSJZq/install-portable-node.manifest.json",
+      "bytes": 410,
+      "sha256": "87ffa62799e3ab1f20755e507926393de7458cf77ffacb3b2ef9855fd9c63bba"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-portable-node.normalization.json",
+      "origin": "D/.check/pack-7jSJZq/install-portable-node.normalization.json",
+      "bytes": 748,
+      "sha256": "18d4c2fb7ed7b3443bf48bba6567f0343c236745be6f0786057a661affd7ccc8"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/install-portable-node.normalized-manifest.json",
+      "origin": "D/.check/pack-7jSJZq/install-portable-node.normalized-manifest.json",
+      "bytes": 243,
+      "sha256": "1fd3df27f68c5e9c20f160891f34b90eb05271359b66b19432c385ae71991698"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/package-identity.json",
+      "origin": "D/.check/pack-7jSJZq/package-identity.json",
+      "bytes": 53468,
+      "sha256": "03d5db177b6a42a4e1eec2565f86bfb5877eb89134b1ad89e49e2cfe9c8b7f2b"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/portable-dependencies.json",
+      "origin": "D/.check/pack-7jSJZq/portable-dependencies.json",
+      "bytes": 325,
+      "sha256": "97ff8e8505331a2a5769aa59632a00636881328bea13e9dbe8ea62be904175fd"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/types-browser.trace.log",
+      "origin": "D/.check/pack-7jSJZq/types-browser.trace.log",
+      "bytes": 3798450,
+      "sha256": "9fff3056c61c81a9e6f6c5e66205a88ed818aec0352fbe8eeaa2b26c4d9b48eb"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-7jSJZq/types-portable-node.trace.log",
+      "origin": "D/.check/pack-7jSJZq/types-portable-node.trace.log",
+      "bytes": 4223432,
+      "sha256": "70d8884b57f539631e9bb6fb06fece78ecf9caed8f16632f20d4cdce087412b4"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/browser-dependencies.json",
+      "origin": "D/.check/pack-Nw1rG5/browser-dependencies.json",
+      "bytes": 509,
+      "sha256": "5bb40c32032e8859ac8c3841768f90e75a09fc74d2939c318b8f709258682499"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-browser.log",
+      "origin": "D/.check/pack-Nw1rG5/install-browser.log",
+      "bytes": 683,
+      "sha256": "db6060f6e802d0b0ae579b9cefbd4a06956a3534db01e1fc89bb8f57ec1a14b2"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-browser.manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-browser.manifest.json",
+      "bytes": 588,
+      "sha256": "754c1a06b594fd30c95a4045246b63e786d8c644a4753de46498c56e4b52b41a"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-browser.normalization.json",
+      "origin": "D/.check/pack-Nw1rG5/install-browser.normalization.json",
+      "bytes": 1128,
+      "sha256": "9fe11d9938c4813fae74a47db329bb02aff799cfe2bc67370e4441fde21972aa"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-browser.normalized-manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-browser.normalized-manifest.json",
+      "bytes": 252,
+      "sha256": "e553bb129c129db6e356fec45f19317bac10aa1a6ae6dd0000a55235d622bbec"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-native.log",
+      "origin": "D/.check/pack-Nw1rG5/install-native.log",
+      "bytes": 819,
+      "sha256": "4d4b8528e2cadb9527ddba8f69e8c453adb9c3cbd00e55b5c82ae350062c11c0"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-native.manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-native.manifest.json",
+      "bytes": 734,
+      "sha256": "7af7b8f7fe2caeff11aec03237d2aa4a76f5fa3eb9674b9c6efa7e4dec219b9b"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-native.normalization.json",
+      "origin": "D/.check/pack-Nw1rG5/install-native.normalization.json",
+      "bytes": 1125,
+      "sha256": "b675aa1f03ad79fc173ce7c5bf15fc98b09e9a299683e31f69984ae48b988201"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-native.normalized-manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-native.normalized-manifest.json",
+      "bytes": 399,
+      "sha256": "3c7f807ef122ded04c04cf9e7ba455bd4374c7c92bfbef16051ca4765c3cbcf8"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-portable-node.log",
+      "origin": "D/.check/pack-Nw1rG5/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "ea6c9d5afddb3d7b0c124d08420fe1b2d55e060be8d98d8c2eb6cc94169eb349"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-portable-node.manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-portable-node.manifest.json",
+      "bytes": 410,
+      "sha256": "a94a02ef8e844aaa7f87c0ea993eeafb0666093c145d1d97adb9b2ef8bc08211"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-portable-node.normalization.json",
+      "origin": "D/.check/pack-Nw1rG5/install-portable-node.normalization.json",
+      "bytes": 748,
+      "sha256": "4b5668693b270db0574e2dbd05f6b4a431d2986b0e09339b990b5625aa72e0f3"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/install-portable-node.normalized-manifest.json",
+      "origin": "D/.check/pack-Nw1rG5/install-portable-node.normalized-manifest.json",
+      "bytes": 243,
+      "sha256": "1fd3df27f68c5e9c20f160891f34b90eb05271359b66b19432c385ae71991698"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/native-dependencies.json",
+      "origin": "D/.check/pack-Nw1rG5/native-dependencies.json",
+      "bytes": 1023,
+      "sha256": "738e7c1c8ebb870dd0ce719c8aaad308cc1a81cfc2e508b58a03c51dd8ef233c"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/package-identity.json",
+      "origin": "D/.check/pack-Nw1rG5/package-identity.json",
+      "bytes": 82491,
+      "sha256": "b3e202c127244af02d9f7965ebef9ce45f06424c734bdfff54aa80302625222e"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/portable-dependencies.json",
+      "origin": "D/.check/pack-Nw1rG5/portable-dependencies.json",
+      "bytes": 325,
+      "sha256": "97ff8e8505331a2a5769aa59632a00636881328bea13e9dbe8ea62be904175fd"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/types-browser.trace.log",
+      "origin": "D/.check/pack-Nw1rG5/types-browser.trace.log",
+      "bytes": 3798498,
+      "sha256": "286a21de47705add88fce2001c5434aaf0683987b2731e1e60c770f5d6843ba9"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/types-native.trace.log",
+      "origin": "D/.check/pack-Nw1rG5/types-native.trace.log",
+      "bytes": 5478309,
+      "sha256": "6f8bb361042725f26e5cf551d7246581c5b0e37527fe02954716ff63a3564acf"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-Nw1rG5/types-portable-node.trace.log",
+      "origin": "D/.check/pack-Nw1rG5/types-portable-node.trace.log",
+      "bytes": 4223432,
+      "sha256": "437a35cffaf4bd7cacbc1d1fa3a03eab9776e1c4fe40bd046c4d20432a17f8c7"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-wjmdDf/install-portable-node.log",
+      "origin": "D/.check/pack-wjmdDf/install-portable-node.log",
+      "bytes": 505,
+      "sha256": "d758bcc16ec137598c83351706c8b79c8e922e2728f2c70604313729f92402aa"
+    },
+    {
+      "path": "workstreams/D/earlier-pack-evidence/pack-wjmdDf/portable-dependencies.json",
+      "origin": "D/.check/pack-wjmdDf/portable-dependencies.json",
+      "bytes": 545,
+      "sha256": "0fc7f5b632ca3710fbc5fc2372a1a7a970f6fb1032907ca78109bee42ef166e3"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-portable.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-portable.log",
+      "bytes": 4426,
+      "sha256": "c3e51191d60527d767bc1ca033d55d5e10e5bda8aecd0cc6796c301e9a54edeb"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-portable-142.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-portable-142.log",
+      "bytes": 18810,
+      "sha256": "3e8a3702110bd6bd435c53ed0bf287b9796999479df700aee7074e0b8dbbece9"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-release-142.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-release-142.log",
+      "bytes": 7527,
+      "sha256": "cffc40382c8e4404550d806785fbc3fd7a7e7dccb9254487414da93bb241831b"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-static.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-static.log",
+      "bytes": 804,
+      "sha256": "0454d991614aa49e61a7f01056a93fc6c49b8b33a11c7892773dbbdc76e4b35a"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-pack-portable.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-pack-portable.log",
+      "bytes": 1218,
+      "sha256": "ce628396ddc2b679a784adf8e27e96a4d627a3463117ea5b131384bb2c9c9794"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-pack-portable-normalized.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-pack-portable-normalized.log",
+      "bytes": 1092,
+      "sha256": "1b4d5cb00ada00df141df0164e2dad2902b48f342aa2024d723d1f87ba6d8fdb"
+    },
+    {
+      "path": "workstreams/D/earlier-logs/reactor-d-005-pack-full.log",
+      "origin": "D/local-temporary-logs/reactor-d-005-pack-full.log",
+      "bytes": 1886,
+      "sha256": "ece8705fb26f23e7a6d801a84dd47408945c8bc9b13cbdc6420e215728e839c2"
+    }
+  ],
+  "omitted": [
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-browser-0.5.0.tgz",
+      "bytes": 31821,
+      "sha256": "252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-browser-252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8.tgz",
+      "bytes": 31821,
+      "sha256": "252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-client-0.5.0.tgz",
+      "bytes": 357057,
+      "sha256": "4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-client-4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5.tgz",
+      "bytes": 357057,
+      "sha256": "4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-native-0.5.0.tgz",
+      "bytes": 13743688,
+      "sha256": "c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/pack-pcZuov/reactor-effect-native-c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39.tgz",
+      "bytes": 13743688,
+      "sha256": "c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/native-inputs/darwin-arm64/libreactor_effect_native.dylib",
+      "bytes": 12899648,
+      "sha256": "54312e0a85ea827d7a6af239034a79fd010f686cd2a053a4cd61cbc0aff350b6",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    },
+    {
+      "origin": "D/.check/native-inputs/linux-x64/libreactor_effect_native.so",
+      "bytes": 18374936,
+      "sha256": "506f426b755f2baf52036555cbd07532a902bbf4806c9d89695cc5407b98288e",
+      "reason": "Generated npm archives and native libraries are excluded from Git by repository policy; see ARTIFACTS.md for remote native inputs and reconstruction."
+    }
+  ]
+}

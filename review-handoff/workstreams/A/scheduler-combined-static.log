@@ -1,0 +1,23 @@
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: test/orchestration/SchedulerUnknownRecovery.test.ts(552,31): error TS2379: Argument of type 'Failure<void, never> | Success<void, never> | Success<CleanupReport, never>' is not assignable to parameter of type 'Exit<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:   Type 'Success<CleanupReport, never>' is not assignable to type 'Exit<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:     Type 'Success<CleanupReport, never>' is not assignable to type 'Success<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:       Type 'CleanupReport' is not assignable to type 'void'.
+reactor-effect-client typecheck: test/orchestration/SchedulerUnknownRecovery.test.ts(553,28): error TS2379: Argument of type 'Failure<void, never> | Success<void, never> | Success<CleanupReport, never>' is not assignable to parameter of type 'Exit<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:   Type 'Success<CleanupReport, never>' is not assignable to type 'Exit<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:     Type 'Success<CleanupReport, never>' is not assignable to type 'Success<void, never>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+reactor-effect-client typecheck:       Type 'CleanupReport' is not assignable to type 'void'.
+reactor-effect-client typecheck: Exited with code 1
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+error: script "typecheck" exited with code 1

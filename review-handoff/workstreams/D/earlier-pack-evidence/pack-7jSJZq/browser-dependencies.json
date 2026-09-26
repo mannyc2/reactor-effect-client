@@ -1,0 +1,27 @@
+{
+  "name": "browser",
+  "dependencies": {
+    "effect": {
+      "version": "4.0.0-rc.117",
+      "overridden": false
+    },
+    "reactor-effect-browser": {
+      "version": "0.5.0",
+      "overridden": false,
+      "dependencies": {
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    },
+    "reactor-effect-client": {
+      "version": "0.5.0",
+      "overridden": false,
+      "dependencies": {
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    }
+  }
+}

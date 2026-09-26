@@ -1,0 +1,43 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical Renewal replaces unknown item and starts a distinct later line 44ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical Renewal replaces unknown filler and starts a distinct later line 12ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 1 and no later demand 46ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 3 and no later demand 46ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown timeout settles later accepted work without replay or invented rejection 37ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration 0 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration -1 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration Infinity 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration NaN 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration Infinity 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration 11 minutes 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery captures a finite ten-minute maximum without evaluating accessors 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain settles at the unknown deadline while stopRenewal waits (known result) 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain settles at the unknown deadline while stopRenewal waits (late result) 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain settles at the unknown deadline while stopRenewal waits (known result) 5ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain settles at the unknown deadline while stopRenewal waits (late result) 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > snapshot churn, duplicate submit and a second unknown cannot extend the first deadline 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Building proof cancels uncertainty without replay 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Ready proof cancels uncertainty without replay 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Started proof cancels uncertainty without replay 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > Ready replacement clears the old capacity episode and later drain reuses old uncertainty age 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > Ready replacement clears the old capacity episode and later uncertainty gets its own deadline 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical blocked source close preserves its cleanup owner while playing drain times out 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical blocked source close preserves its cleanup owner while accepted drain times out 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > a recovery-fiber defect stays a defect while the scheduler independently bounds service 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > wall clock corrections cannot extend or shorten the unknown deadline 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed proof after timeout cannot revive admission or replace terminal Unknown 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > overlapping uncertain filler identities reconcile independently and both hold drain 10ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity 1462ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > real H3 result hook forwards unknown item through Renewal to a usable replacement 43ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > real H3 result hook forwards unknown filler through Renewal to a usable replacement 37ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain uses an already acquired replacement without reopening allocation 19ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain uses an already acquired replacement without reopening allocation 20ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > an unrelated later outage does not revive an old source's resolved capacity episode 7ms
+
+ Test Files  1 passed (1)
+      Tests  34 passed (34)
+   Start at  18:46:16
+   Duration  2.77s (tests 70%, import 16%, transform 15%)
+

@@ -1,0 +1,17 @@
+bun add v1.4.2 (744846f84)
+
+installed effect@4.0.0-rc.117
+installed reactor-effect-client@/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-Nw1rG5/reactor-effect-client-d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c.tgz
+installed reactor-effect-native@/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-Nw1rG5/reactor-effect-native-c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39.tgz
+installed @effect/platform-node@4.0.0-rc.117
+installed typescript@7.0.2 with binaries:
+ - tsc
+installed @typescript/typescript-darwin-arm64@7.0.2
+installed @types/node@22.20.2
+
+21 packages installed [1152.00ms]
+
+Blocked 1 postinstall. Run `bun pm untrusted` for details.
+Resolving dependencies
+Resolved, downloaded and extracted [14]
+Saved lockfile

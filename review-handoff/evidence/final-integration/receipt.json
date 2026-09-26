@@ -1,0 +1,327 @@
+{
+  "kind": "local-integration-evidence",
+  "sourceCommit": "a68d072640a700b1763e3e3ed8910a18031f848a",
+  "sourceTree": "dcfed85061da895e6ad6324863a42d99e67480a7",
+  "baseline": "c47e50c784f6889b542cf8ee316067b688ca4737",
+  "branch": "codex/integrate-orchestration-packets",
+  "runtime": {
+    "bun": "1.4.2",
+    "node": "22.13.1",
+    "npmDiagnostic": "10.9.2",
+    "compiler": "7.0.2+effect-tsgo.0.45.0",
+    "python": "3.13.5",
+    "rust": "1.90.0",
+    "vitestMaxWorkers": 1
+  },
+  "gates": {
+    "portable": {
+      "exit": 0,
+      "command": "bun run verify --profile portable",
+      "seconds": 604.23,
+      "clientPerRuntime": 850,
+      "browserPerRuntime": 58,
+      "root": 172,
+      "rootSeconds": 465.77,
+      "renewalRehearsals": 26,
+      "log": "portable-passed.log"
+    },
+    "native": {
+      "exit": 0,
+      "command": "bun run native:test",
+      "seconds": 200.7,
+      "rustTests": 85,
+      "node": {
+        "passed": 37,
+        "platformSkipped": 1
+      },
+      "bun": {
+        "passed": 29,
+        "platformSkipped": 9
+      },
+      "rustFmtClippyRustdoc": true,
+      "log": "native-passed.log"
+    },
+    "browserNative": {
+      "exit": 0,
+      "command": "bun run test:integration",
+      "seconds": 11.63,
+      "tests": 1,
+      "forcedTurnRelay": false,
+      "log": "browser-native-passed.log"
+    },
+    "release": {
+      "exit": 0,
+      "command": "bun run check:release",
+      "seconds": 5.16,
+      "tests": 71,
+      "log": "release-passed.log"
+    },
+    "fullPack": {
+      "exit": 0,
+      "command": "PACK_INSTALLER=bun PACK_EXPECT_NATIVE_PLATFORMS=darwin-arm64,linux-x64 bun run test:pack",
+      "seconds": 17.1,
+      "log": "pack-passed.log"
+    }
+  },
+  "packageIdentity": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-pcZuov/package-identity.json",
+  "packageIdentitySha256": "10f3adedf915f8876257132a155b9d447cdacf3862c55653b59b0a80f3cd8040",
+  "archives": {
+    "reactor-effect-client": {
+      "path": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-pcZuov/reactor-effect-client-0.5.0.tgz",
+      "sha256": "4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5"
+    },
+    "reactor-effect-browser": {
+      "path": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-pcZuov/reactor-effect-browser-0.5.0.tgz",
+      "sha256": "252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8"
+    },
+    "reactor-effect-native": {
+      "path": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-pcZuov/reactor-effect-native-0.5.0.tgz",
+      "sha256": "c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39"
+    }
+  },
+  "qualificationStack": {
+    "format": "reactor-effect-qualification-stack/v1",
+    "selection": "frozen-workspace",
+    "lockfileVersion": 2,
+    "lockfileSha256": "69e84a1e6327962dd318a5067a0280b9f1ec2e30f2bdbcc0853ea86674096819",
+    "requirements": {
+      "effect": "^4.0.0-rc.117",
+      "nodePlatform": "^4.0.0-rc.117",
+      "nodeSharedOverride": "^4.0.0-rc.117"
+    },
+    "selected": {
+      "effect": "4.0.0-rc.117",
+      "nodePlatform": "4.0.0-rc.117",
+      "nodeShared": "4.0.0-rc.117"
+    },
+    "workspaceResolution": [
+      {
+        "owner": "packages/client",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/client",
+        "requested": "@effect/platform-node",
+        "name": "@effect/platform-node",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "@effect/platform-node@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/client -> @effect/platform-node",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/client -> @effect/platform-node",
+        "requested": "@effect/platform-node-shared",
+        "name": "@effect/platform-node-shared",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "@effect/platform-node-shared@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/client -> @effect/platform-node -> @effect/platform-node-shared",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/browser",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/native",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/native",
+        "requested": "@effect/platform-node",
+        "name": "@effect/platform-node",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "@effect/platform-node@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/native -> @effect/platform-node",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/native -> @effect/platform-node",
+        "requested": "@effect/platform-node-shared",
+        "name": "@effect/platform-node-shared",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "@effect/platform-node-shared@4.0.0-rc.117"
+      },
+      {
+        "owner": "packages/native -> @effect/platform-node -> @effect/platform-node-shared",
+        "requested": "effect",
+        "name": "effect",
+        "version": "4.0.0-rc.117",
+        "lockCoordinate": "effect@4.0.0-rc.117"
+      }
+    ],
+    "consumers": [
+      {
+        "name": "portable-node",
+        "installer": "bun",
+        "instances": [
+          {
+            "path": "./dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-client/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          }
+        ]
+      },
+      {
+        "name": "browser",
+        "installer": "bun",
+        "instances": [
+          {
+            "path": "./dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-browser/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-client/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          }
+        ]
+      },
+      {
+        "name": "native",
+        "installer": "bun",
+        "instances": [
+          {
+            "path": "./dependencies/@effect/platform-node",
+            "name": "@effect/platform-node",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/@effect/platform-node/dependencies/@effect/platform-node-shared",
+            "name": "@effect/platform-node-shared",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/@effect/platform-node/dependencies/@effect/platform-node-shared/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/@effect/platform-node/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-client/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-native/dependencies/@effect/platform-node",
+            "name": "@effect/platform-node",
+            "version": "4.0.0-rc.117"
+          },
+          {
+            "path": "./dependencies/reactor-effect-native/dependencies/effect",
+            "name": "effect",
+            "version": "4.0.0-rc.117"
+          }
+        ]
+      }
+    ]
+  },
+  "nativeInputs": {
+    "darwin-arm64": {
+      "schemaVersion": 1,
+      "platform": "darwin-arm64",
+      "library": "libreactor_effect_native.dylib",
+      "sha256": "54312e0a85ea827d7a6af239034a79fd010f686cd2a053a4cd61cbc0aff350b6",
+      "build": {
+        "schemaVersion": 1,
+        "abiVersion": 4,
+        "sourceSha256": "6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125",
+        "target": "aarch64-apple-darwin",
+        "profile": "release",
+        "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+        "cc": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+        "cxx": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+        "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9",
+        "CARGO_ENCODED_RUSTFLAGS": "",
+        "MACOSX_DEPLOYMENT_TARGET": "13.0"
+      }
+    },
+    "linux-x64": {
+      "schemaVersion": 1,
+      "platform": "linux-x64",
+      "library": "libreactor_effect_native.so",
+      "sha256": "506f426b755f2baf52036555cbd07532a902bbf4806c9d89695cc5407b98288e",
+      "build": {
+        "schemaVersion": 1,
+        "abiVersion": 4,
+        "sourceSha256": "6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125",
+        "target": "x86_64-unknown-linux-gnu",
+        "profile": "release",
+        "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+        "cc": "Ubuntu clang version 21.1.8 (++20251221032922+2078da43e25a-1~exp1~20251221153059.70)",
+        "cxx": "Ubuntu clang version 21.1.8 (++20251221032922+2078da43e25a-1~exp1~20251221153059.70)",
+        "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9",
+        "CC": "clang-21",
+        "CXX": "clang++-21",
+        "CARGO_ENCODED_RUSTFLAGS": "",
+        "MACOSX_DEPLOYMENT_TARGET": "13.0"
+      }
+    }
+  },
+  "nativeProvenance": {
+    "baselineCiRun": 36223885202,
+    "downloadedInputs": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/native-inputs",
+    "localSdkLibraryRebuilt": false,
+    "localFarPeerBuilt": true
+  },
+  "unrun": [
+    "final npm-installer CI",
+    "final OS/Node CI matrix",
+    "Linux native execution on combined revision",
+    "paid scheduler-renewal",
+    "hosted TURN and presented/encoded output qualification"
+  ],
+  "authorization": "Local commits, integration and offline verification only; no push, remote merge, CI dispatch, publication or paid session.",
+  "handoffDocumentationCommit": "dec33ea21cd8c00311d3cb100cbd5a7184420c05",
+  "handoffDocumentationTree": "b7f46a46aa73f38809fbe3f8d0c582a2e8f088da",
+  "documentationOnlyPaths": [
+    "plans/005-package-tooling-handoff.md",
+    "plans/README.md",
+    "plans/final-integration-handoff.md",
+    "plans/shared-integration-handoffs.md"
+  ],
+  "hostedReadinessCandidate": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/final-integration/hosted-readiness/hosted-readiness.md"
+}

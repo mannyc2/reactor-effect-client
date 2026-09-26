@@ -1,0 +1,119 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/SchedulerFates.test.ts (38 tests | 12 failed | 26 skipped) 3841ms
+   × failure-driven sequential scope close settles Accepted handles first 668ms
+   × failure-driven sequential scope close settles Building handles first 1076ms
+   × failure-driven sequential scope close settles Ready handles first 554ms
+   × failure-driven sequential scope close settles Started handles first 332ms
+   × failure-driven sequential scope close settles Unknown handles first 403ms
+   × worker defect retains its Cause through immediate sequential scope close 60ms
+   × failure-driven parallel scope close settles Accepted handles first 118ms
+   × failure-driven parallel scope close settles Building handles first 394ms
+   × failure-driven parallel scope close settles Ready handles first 95ms
+   × failure-driven parallel scope close settles Started handles first 37ms
+   × failure-driven parallel scope close settles Unknown handles first 84ms
+   × worker defect retains its Cause through immediate parallel scope close 5ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 12 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Accepted handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Building handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Ready handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Started handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Unknown handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Accepted handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Building handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Ready handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Started handles first
+ FAIL  test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Unknown handles first
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/orchestration/SchedulerFates.test.ts:990:56
+    988|           yield* advance(1);
+    989|           expect(notification.result).toEqual(Exit.succeed(cause));
+    990|           expect(notification.acceptingAtNotification).toBe(false);
+       |                                                        ^
+    991|           for (const [index, observer] of observers.entries()) {
+    992|             const observed = observer.pollUnsafe();
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1167:17
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:820:44
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:650:21
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1034:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/12]⎯
+
+ FAIL  test/orchestration/SchedulerFates.test.ts > worker defect retains its Cause through immediate sequential scope close
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/orchestration/SchedulerFates.test.ts:1050:40
+    1048|         const notification = yield* Fiber.join(supervisor);
+    1049|         expect(notification.result).toEqual(Exit.failCause(cause));
+    1050|         expect(notification.accepting).toBe(false);
+       |                                        ^
+    1051|         for (const wait of [item.started, item.outcome, item.firstDeci…
+    1052|           expect(yield* Effect.exit(wait)).toEqual(Exit.failCause(caus…
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1167:17
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:650:21
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1034:13
+ ❯ MixedSchedulerDispatcher.runTasks ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:240:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/12]⎯
+
+ FAIL  test/orchestration/SchedulerFates.test.ts > worker defect retains its Cause through immediate parallel scope close
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/orchestration/SchedulerFates.test.ts:1050:40
+    1048|         const notification = yield* Fiber.join(supervisor);
+    1049|         expect(notification.result).toEqual(Exit.failCause(cause));
+    1050|         expect(notification.accepting).toBe(false);
+       |                                        ^
+    1051|         for (const wait of [item.started, item.outcome, item.firstDeci…
+    1052|           expect(yield* Effect.exit(wait)).toEqual(Exit.failCause(caus…
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1167:17
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:650:21
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:5467:62
+ ❯ MixedSchedulerDispatcher.runTasks ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:240:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/12]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  12 failed | 26 skipped (38)
+   Start at  16:57:30
+   Duration  12.17s (transform 41%, tests 34%, import 25%)
+
+  Transform  transforming modules took 4.58s · 41% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+

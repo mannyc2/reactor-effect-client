@@ -1,0 +1,7 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-twin.test.ts: (run #1)
+(fail) twin close joins an owned socket with an unfinished HTTP request [5012.69ms]
+  ^ this test timed out after 5000ms.
+Ran 1 test across 1 file. [5.27s]
+Bailed out after 1 failure

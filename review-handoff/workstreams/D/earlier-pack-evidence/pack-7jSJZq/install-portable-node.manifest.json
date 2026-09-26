@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@types/node": "22.20.2",
+    "@typescript/typescript-darwin-arm64": "7.0.2",
+    "effect": "4.0.0-rc.117",
+    "reactor-effect-client": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-7jSJZq/reactor-effect-client-d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c.tgz",
+    "typescript": "7.0.2"
+  }
+}

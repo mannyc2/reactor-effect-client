@@ -1,0 +1,17 @@
+{
+  "format": "reactor-pack-archive-requirements/v1",
+  "installer": "bun",
+  "reason": "Bun omits npm local-tarball provenance metadata",
+  "originalManifest": "install-portable-node.manifest.json",
+  "normalizedManifest": "install-portable-node.normalized-manifest.json",
+  "verification": "complete-installed-archive-byte-identity",
+  "archives": [
+    {
+      "name": "reactor-effect-client",
+      "version": "0.5.0",
+      "installSpecifier": "/Users/chriscarroll/.codex/worktrees/437f/reactor-effect-client/.check/pack-gspy0t/reactor-effect-client-ece880d0deec8d195c633215239e883fac659d25be40281946298ef8018e8e75.tgz",
+      "sha256": "ece880d0deec8d195c633215239e883fac659d25be40281946298ef8018e8e75",
+      "filesChecked": 302
+    }
+  ]
+}

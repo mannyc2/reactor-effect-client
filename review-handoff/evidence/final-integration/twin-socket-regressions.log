@@ -1,0 +1,407 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-twin.test.ts: (run #1)
+(pass) twin close joins an owned socket with an unfinished HTTP request [24.79ms]
+(pass) a reference image uploads through the twin before its clip is queued [319.56ms]
+
+integration/test/hosted-twin.test.ts: (run #2)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.63ms]
+(pass) a reference image uploads through the twin before its clip is queued [277.93ms]
+
+integration/test/hosted-twin.test.ts: (run #3)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.67ms]
+(pass) a reference image uploads through the twin before its clip is queued [386.85ms]
+
+integration/test/hosted-twin.test.ts: (run #4)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.77ms]
+(pass) a reference image uploads through the twin before its clip is queued [262.86ms]
+
+integration/test/hosted-twin.test.ts: (run #5)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.30ms]
+(pass) a reference image uploads through the twin before its clip is queued [229.79ms]
+
+integration/test/hosted-twin.test.ts: (run #6)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.84ms]
+(pass) a reference image uploads through the twin before its clip is queued [235.44ms]
+
+integration/test/hosted-twin.test.ts: (run #7)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.01ms]
+(pass) a reference image uploads through the twin before its clip is queued [231.78ms]
+
+integration/test/hosted-twin.test.ts: (run #8)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.14ms]
+(pass) a reference image uploads through the twin before its clip is queued [232.50ms]
+
+integration/test/hosted-twin.test.ts: (run #9)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.03ms]
+(pass) a reference image uploads through the twin before its clip is queued [237.14ms]
+
+integration/test/hosted-twin.test.ts: (run #10)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.52ms]
+(pass) a reference image uploads through the twin before its clip is queued [420.96ms]
+
+integration/test/hosted-twin.test.ts: (run #11)
+(pass) twin close joins an owned socket with an unfinished HTTP request [10.77ms]
+(pass) a reference image uploads through the twin before its clip is queued [227.60ms]
+
+integration/test/hosted-twin.test.ts: (run #12)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.46ms]
+(pass) a reference image uploads through the twin before its clip is queued [273.65ms]
+
+integration/test/hosted-twin.test.ts: (run #13)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.85ms]
+(pass) a reference image uploads through the twin before its clip is queued [297.89ms]
+
+integration/test/hosted-twin.test.ts: (run #14)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.41ms]
+(pass) a reference image uploads through the twin before its clip is queued [236.60ms]
+
+integration/test/hosted-twin.test.ts: (run #15)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.97ms]
+(pass) a reference image uploads through the twin before its clip is queued [239.73ms]
+
+integration/test/hosted-twin.test.ts: (run #16)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.07ms]
+(pass) a reference image uploads through the twin before its clip is queued [271.69ms]
+
+integration/test/hosted-twin.test.ts: (run #17)
+(pass) twin close joins an owned socket with an unfinished HTTP request [9.37ms]
+(pass) a reference image uploads through the twin before its clip is queued [243.18ms]
+
+integration/test/hosted-twin.test.ts: (run #18)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.38ms]
+(pass) a reference image uploads through the twin before its clip is queued [338.94ms]
+
+integration/test/hosted-twin.test.ts: (run #19)
+(pass) twin close joins an owned socket with an unfinished HTTP request [8.43ms]
+(pass) a reference image uploads through the twin before its clip is queued [298.85ms]
+
+integration/test/hosted-twin.test.ts: (run #20)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.31ms]
+(pass) a reference image uploads through the twin before its clip is queued [223.95ms]
+
+integration/test/hosted-twin.test.ts: (run #21)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.46ms]
+(pass) a reference image uploads through the twin before its clip is queued [222.47ms]
+
+integration/test/hosted-twin.test.ts: (run #22)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.90ms]
+(pass) a reference image uploads through the twin before its clip is queued [225.41ms]
+
+integration/test/hosted-twin.test.ts: (run #23)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.23ms]
+(pass) a reference image uploads through the twin before its clip is queued [226.08ms]
+
+integration/test/hosted-twin.test.ts: (run #24)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.81ms]
+(pass) a reference image uploads through the twin before its clip is queued [234.69ms]
+
+integration/test/hosted-twin.test.ts: (run #25)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.87ms]
+(pass) a reference image uploads through the twin before its clip is queued [241.68ms]
+
+integration/test/hosted-twin.test.ts: (run #26)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.65ms]
+(pass) a reference image uploads through the twin before its clip is queued [234.51ms]
+
+integration/test/hosted-twin.test.ts: (run #27)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.84ms]
+(pass) a reference image uploads through the twin before its clip is queued [237.26ms]
+
+integration/test/hosted-twin.test.ts: (run #28)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.16ms]
+(pass) a reference image uploads through the twin before its clip is queued [239.99ms]
+
+integration/test/hosted-twin.test.ts: (run #29)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.54ms]
+(pass) a reference image uploads through the twin before its clip is queued [233.70ms]
+
+integration/test/hosted-twin.test.ts: (run #30)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.27ms]
+(pass) a reference image uploads through the twin before its clip is queued [232.30ms]
+
+integration/test/hosted-twin.test.ts: (run #31)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.64ms]
+(pass) a reference image uploads through the twin before its clip is queued [228.64ms]
+
+integration/test/hosted-twin.test.ts: (run #32)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.68ms]
+(pass) a reference image uploads through the twin before its clip is queued [242.03ms]
+
+integration/test/hosted-twin.test.ts: (run #33)
+(pass) twin close joins an owned socket with an unfinished HTTP request [9.50ms]
+(pass) a reference image uploads through the twin before its clip is queued [232.34ms]
+
+integration/test/hosted-twin.test.ts: (run #34)
+(pass) twin close joins an owned socket with an unfinished HTTP request [10.93ms]
+(pass) a reference image uploads through the twin before its clip is queued [346.67ms]
+
+integration/test/hosted-twin.test.ts: (run #35)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.54ms]
+(pass) a reference image uploads through the twin before its clip is queued [239.64ms]
+
+integration/test/hosted-twin.test.ts: (run #36)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.83ms]
+(pass) a reference image uploads through the twin before its clip is queued [242.90ms]
+
+integration/test/hosted-twin.test.ts: (run #37)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.32ms]
+(pass) a reference image uploads through the twin before its clip is queued [255.69ms]
+
+integration/test/hosted-twin.test.ts: (run #38)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.20ms]
+(pass) a reference image uploads through the twin before its clip is queued [224.84ms]
+
+integration/test/hosted-twin.test.ts: (run #39)
+(pass) twin close joins an owned socket with an unfinished HTTP request [6.20ms]
+(pass) a reference image uploads through the twin before its clip is queued [279.79ms]
+
+integration/test/hosted-twin.test.ts: (run #40)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.74ms]
+(pass) a reference image uploads through the twin before its clip is queued [224.32ms]
+
+integration/test/hosted-twin.test.ts: (run #41)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.56ms]
+(pass) a reference image uploads through the twin before its clip is queued [249.79ms]
+
+integration/test/hosted-twin.test.ts: (run #42)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.06ms]
+(pass) a reference image uploads through the twin before its clip is queued [240.29ms]
+
+integration/test/hosted-twin.test.ts: (run #43)
+(pass) twin close joins an owned socket with an unfinished HTTP request [13.83ms]
+(pass) a reference image uploads through the twin before its clip is queued [247.08ms]
+
+integration/test/hosted-twin.test.ts: (run #44)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.34ms]
+(pass) a reference image uploads through the twin before its clip is queued [234.21ms]
+
+integration/test/hosted-twin.test.ts: (run #45)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.47ms]
+(pass) a reference image uploads through the twin before its clip is queued [266.71ms]
+
+integration/test/hosted-twin.test.ts: (run #46)
+(pass) twin close joins an owned socket with an unfinished HTTP request [21.32ms]
+(pass) a reference image uploads through the twin before its clip is queued [2343.65ms]
+
+integration/test/hosted-twin.test.ts: (run #47)
+(pass) twin close joins an owned socket with an unfinished HTTP request [10.93ms]
+(pass) a reference image uploads through the twin before its clip is queued [260.57ms]
+
+integration/test/hosted-twin.test.ts: (run #48)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.89ms]
+(pass) a reference image uploads through the twin before its clip is queued [275.41ms]
+
+integration/test/hosted-twin.test.ts: (run #49)
+(pass) twin close joins an owned socket with an unfinished HTTP request [10.89ms]
+(pass) a reference image uploads through the twin before its clip is queued [441.46ms]
+
+integration/test/hosted-twin.test.ts: (run #50)
+(pass) twin close joins an owned socket with an unfinished HTTP request [6.70ms]
+(pass) a reference image uploads through the twin before its clip is queued [258.70ms]
+
+integration/test/hosted-twin.test.ts: (run #51)
+(pass) twin close joins an owned socket with an unfinished HTTP request [15.65ms]
+(pass) a reference image uploads through the twin before its clip is queued [275.46ms]
+
+integration/test/hosted-twin.test.ts: (run #52)
+(pass) twin close joins an owned socket with an unfinished HTTP request [11.40ms]
+(pass) a reference image uploads through the twin before its clip is queued [293.42ms]
+
+integration/test/hosted-twin.test.ts: (run #53)
+(pass) twin close joins an owned socket with an unfinished HTTP request [6.89ms]
+(pass) a reference image uploads through the twin before its clip is queued [339.54ms]
+
+integration/test/hosted-twin.test.ts: (run #54)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.68ms]
+(pass) a reference image uploads through the twin before its clip is queued [308.27ms]
+
+integration/test/hosted-twin.test.ts: (run #55)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.67ms]
+(pass) a reference image uploads through the twin before its clip is queued [295.79ms]
+
+integration/test/hosted-twin.test.ts: (run #56)
+(pass) twin close joins an owned socket with an unfinished HTTP request [6.33ms]
+(pass) a reference image uploads through the twin before its clip is queued [288.13ms]
+
+integration/test/hosted-twin.test.ts: (run #57)
+(pass) twin close joins an owned socket with an unfinished HTTP request [8.85ms]
+(pass) a reference image uploads through the twin before its clip is queued [228.01ms]
+
+integration/test/hosted-twin.test.ts: (run #58)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.95ms]
+(pass) a reference image uploads through the twin before its clip is queued [224.57ms]
+
+integration/test/hosted-twin.test.ts: (run #59)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.79ms]
+(pass) a reference image uploads through the twin before its clip is queued [225.55ms]
+
+integration/test/hosted-twin.test.ts: (run #60)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.71ms]
+(pass) a reference image uploads through the twin before its clip is queued [226.80ms]
+
+integration/test/hosted-twin.test.ts: (run #61)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.90ms]
+(pass) a reference image uploads through the twin before its clip is queued [235.81ms]
+
+integration/test/hosted-twin.test.ts: (run #62)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.66ms]
+(pass) a reference image uploads through the twin before its clip is queued [239.16ms]
+
+integration/test/hosted-twin.test.ts: (run #63)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.07ms]
+(pass) a reference image uploads through the twin before its clip is queued [227.58ms]
+
+integration/test/hosted-twin.test.ts: (run #64)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.05ms]
+(pass) a reference image uploads through the twin before its clip is queued [262.81ms]
+
+integration/test/hosted-twin.test.ts: (run #65)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.21ms]
+(pass) a reference image uploads through the twin before its clip is queued [225.97ms]
+
+integration/test/hosted-twin.test.ts: (run #66)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.32ms]
+(pass) a reference image uploads through the twin before its clip is queued [221.84ms]
+
+integration/test/hosted-twin.test.ts: (run #67)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.61ms]
+(pass) a reference image uploads through the twin before its clip is queued [241.61ms]
+
+integration/test/hosted-twin.test.ts: (run #68)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.67ms]
+(pass) a reference image uploads through the twin before its clip is queued [220.26ms]
+
+integration/test/hosted-twin.test.ts: (run #69)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.90ms]
+(pass) a reference image uploads through the twin before its clip is queued [269.89ms]
+
+integration/test/hosted-twin.test.ts: (run #70)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.98ms]
+(pass) a reference image uploads through the twin before its clip is queued [230.30ms]
+
+integration/test/hosted-twin.test.ts: (run #71)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.06ms]
+(pass) a reference image uploads through the twin before its clip is queued [226.79ms]
+
+integration/test/hosted-twin.test.ts: (run #72)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.07ms]
+(pass) a reference image uploads through the twin before its clip is queued [222.58ms]
+
+integration/test/hosted-twin.test.ts: (run #73)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.27ms]
+(pass) a reference image uploads through the twin before its clip is queued [227.69ms]
+
+integration/test/hosted-twin.test.ts: (run #74)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.63ms]
+(pass) a reference image uploads through the twin before its clip is queued [227.62ms]
+
+integration/test/hosted-twin.test.ts: (run #75)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.19ms]
+(pass) a reference image uploads through the twin before its clip is queued [234.07ms]
+
+integration/test/hosted-twin.test.ts: (run #76)
+(pass) twin close joins an owned socket with an unfinished HTTP request [21.08ms]
+(pass) a reference image uploads through the twin before its clip is queued [292.98ms]
+
+integration/test/hosted-twin.test.ts: (run #77)
+(pass) twin close joins an owned socket with an unfinished HTTP request [9.18ms]
+(pass) a reference image uploads through the twin before its clip is queued [232.84ms]
+
+integration/test/hosted-twin.test.ts: (run #78)
+(pass) twin close joins an owned socket with an unfinished HTTP request [2.98ms]
+(pass) a reference image uploads through the twin before its clip is queued [225.79ms]
+
+integration/test/hosted-twin.test.ts: (run #79)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.00ms]
+(pass) a reference image uploads through the twin before its clip is queued [241.94ms]
+
+integration/test/hosted-twin.test.ts: (run #80)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.84ms]
+(pass) a reference image uploads through the twin before its clip is queued [226.14ms]
+
+integration/test/hosted-twin.test.ts: (run #81)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.57ms]
+(pass) a reference image uploads through the twin before its clip is queued [229.06ms]
+
+integration/test/hosted-twin.test.ts: (run #82)
+(pass) twin close joins an owned socket with an unfinished HTTP request [8.93ms]
+(pass) a reference image uploads through the twin before its clip is queued [288.26ms]
+
+integration/test/hosted-twin.test.ts: (run #83)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.66ms]
+(pass) a reference image uploads through the twin before its clip is queued [250.83ms]
+
+integration/test/hosted-twin.test.ts: (run #84)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.31ms]
+(pass) a reference image uploads through the twin before its clip is queued [227.05ms]
+
+integration/test/hosted-twin.test.ts: (run #85)
+(pass) twin close joins an owned socket with an unfinished HTTP request [11.31ms]
+(pass) a reference image uploads through the twin before its clip is queued [256.18ms]
+
+integration/test/hosted-twin.test.ts: (run #86)
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.80ms]
+(pass) a reference image uploads through the twin before its clip is queued [223.04ms]
+
+integration/test/hosted-twin.test.ts: (run #87)
+(pass) twin close joins an owned socket with an unfinished HTTP request [2.88ms]
+(pass) a reference image uploads through the twin before its clip is queued [238.39ms]
+
+integration/test/hosted-twin.test.ts: (run #88)
+(pass) twin close joins an owned socket with an unfinished HTTP request [2.60ms]
+(pass) a reference image uploads through the twin before its clip is queued [256.36ms]
+
+integration/test/hosted-twin.test.ts: (run #89)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.22ms]
+(pass) a reference image uploads through the twin before its clip is queued [295.22ms]
+
+integration/test/hosted-twin.test.ts: (run #90)
+(pass) twin close joins an owned socket with an unfinished HTTP request [6.98ms]
+(pass) a reference image uploads through the twin before its clip is queued [225.91ms]
+
+integration/test/hosted-twin.test.ts: (run #91)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.12ms]
+(pass) a reference image uploads through the twin before its clip is queued [223.59ms]
+
+integration/test/hosted-twin.test.ts: (run #92)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.94ms]
+(pass) a reference image uploads through the twin before its clip is queued [224.85ms]
+
+integration/test/hosted-twin.test.ts: (run #93)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.42ms]
+(pass) a reference image uploads through the twin before its clip is queued [223.85ms]
+
+integration/test/hosted-twin.test.ts: (run #94)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.29ms]
+(pass) a reference image uploads through the twin before its clip is queued [231.40ms]
+
+integration/test/hosted-twin.test.ts: (run #95)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.27ms]
+(pass) a reference image uploads through the twin before its clip is queued [221.94ms]
+
+integration/test/hosted-twin.test.ts: (run #96)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.09ms]
+(pass) a reference image uploads through the twin before its clip is queued [224.68ms]
+
+integration/test/hosted-twin.test.ts: (run #97)
+(pass) twin close joins an owned socket with an unfinished HTTP request [3.74ms]
+(pass) a reference image uploads through the twin before its clip is queued [244.78ms]
+
+integration/test/hosted-twin.test.ts: (run #98)
+(pass) twin close joins an owned socket with an unfinished HTTP request [4.61ms]
+(pass) a reference image uploads through the twin before its clip is queued [229.92ms]
+
+integration/test/hosted-twin.test.ts: (run #99)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.99ms]
+(pass) a reference image uploads through the twin before its clip is queued [262.88ms]
+
+integration/test/hosted-twin.test.ts: (run #100)
+(pass) twin close joins an owned socket with an unfinished HTTP request [5.27ms]
+(pass) a reference image uploads through the twin before its clip is queued [804.95ms]
+
+ 200 pass
+ 1600 filtered out
+ 0 fail
+ 500 expect() calls
+Ran 200 tests across 1 file. [29.44s]

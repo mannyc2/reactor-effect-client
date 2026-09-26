@@ -1,0 +1,78 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts (34 tests | 1 failed | 33 skipped) 48ms
+   × overlapping uncertain filler identities reconcile independently and both hold drain 47ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > overlapping uncertain filler identities reconcile independently and both hold drain
+AssertionError: expected { _id: 'Exit', _tag: 'Success', …(1) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "~effect/Effect/args": reactor-effect-client/ReactorError {
+    "message": "Scheduler unknown recovery deadline elapsed",
+    "cause": reactor-effect-client/ReactorError/Failure {
+      "message": "Scheduler unknown recovery deadline elapsed",
+      "_tag": "Timeout",
+    },
+    "_tag": "ReactorError",
+    "reason": reactor-effect-client/ReactorError/Failure {
+      "message": "Scheduler unknown recovery deadline elapsed",
+      "_tag": "Timeout",
+    },
+    "context": {
+      "detail": [
+        reactor-effect-client/CommandFailure {
+          "message": "fixture outcome",
+          "cause": reactor-effect-client/ReactorError/Remote {
+            "message": "fixture outcome",
+            "_tag": "Remote",
+          },
+          "_tag": "CommandFailure",
+          "reason": reactor-effect-client/ReactorError/Remote {
+            "message": "fixture outcome",
+            "_tag": "Remote",
+          },
+          "context": {
+            "generation": 1n,
+            "operation": "enqueue",
+            "outcome": "unknown",
+            "requestId": "fixture-dispatch",
+          },
+          "~reactor-effect-client/ReactorFailure": "~reactor-effect-client/ReactorFailure",
+        },
+      ],
+      "operation": "scheduler.unknownRecovery",
+    },
+    "~reactor-effect-client/ReactorFailure": "~reactor-effect-client/ReactorFailure",
+  },
+}
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:629:36
+    627|       const stopped = yield* Effect.forkScoped(fixture.scheduler.failu…
+    628|       yield* TestClock.adjust(10_000);
+    629|       expect(stopped.pollUnsafe()).toBeUndefined();
+       |                                    ^
+    630|       expect(fixture.calls.map(schedulerKeyOf)).toEqual([fillerKey(0),…
+    631|     }),
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ Array.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1034:13
+ ❯ MixedSchedulerDispatcher.runTasks ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:240:17
+ ❯ Immediate.afterScheduled ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/Scheduler.ts:229:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 2 passed | 71 skipped (74)
+   Start at  17:35:32
+   Duration  934ms (import 48%, transform 46%, tests 5%)
+

@@ -1,0 +1,169 @@
+$ bun --no-env-file scripts/verify.ts --profile portable
+verify portable: bun run generate:check
+$ bun run --filter reactor-effect-client generate:check
+reactor-effect-client generate:check: wire-generation-ok format=reactor-wire-ts/1 python=3.13.5 sha256=b26b2740daec7913568e9c4a27cb73daf212e90e3e7e47f3068a1db08611f40f
+reactor-effect-client generate:check: Exited with code 0
+verify portable: bun run format:check
+$ oxfmt --check .
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 2977ms on 331 files using 8 threads.
+verify portable: bun run build
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+verify portable: Node and Bun portable runtime imports
+(node:95350) ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register()`:
+--import 'data:text/javascript,import { register } from "node:module"; import { pathToFileURL } from "node:url"; register("./scripts/pack/resolution-guard.mjs", pathToFileURL("./"));'
+(Use `node --trace-warnings ...` to show where the warning was created)
+portable-runtime-import-ok node v22.13.1
+portable-runtime-import-ok bun v26.3.0
+verify portable: bun run lint
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .
+verify portable: bun run typecheck
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+verify portable: bun run check:architecture
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 73 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles
+verify portable: bun run check:examples
+$ bun --no-env-file scripts/examples.ts
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  17:58:12
+   Duration  24.11s (tests 94%, import 4%, transform 2%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  17:58:36
+   Duration  23.69s (tests 95%, import 3%, transform 2%)
+
+examples-tested reactor-effect-example-livestream node bun
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:59:00
+   Duration  902ms (import 49%, transform 31%, tests 19%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:59:01
+   Duration  791ms (import 45%, transform 33%, tests 21%, worker 1%)
+
+examples-tested reactor-effect-native-examples node bun
+$ bun build src/app.ts --target=browser --outdir=dist
+Bundled 313 modules in 51ms
+
+  app.js  0.70 MB  (entry point)
+
+examples-bundled reactor-effect-browser-examples
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:59:02
+   Duration  1.13s (transform 49%, import 29%, tests 22%)
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:59:04
+   Duration  754ms (transform 58%, import 27%, tests 15%)
+
+examples-tested reactor-effect-client-examples node bun
+examples-ok 4 workspaces
+verify portable: bun run test:portable
+$ bun --no-env-file scripts/test.ts portable
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/packages/client
+
+stdout | test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity
+[17:59:10.975] WARN (#1152): A test is using time, but is not advancing the test clock, which may result in the test hanging. Use TestClock.adjust to manually advance the time.
+
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts (34 tests | 2 failed) 5543ms
+   × a recovery-fiber defect stays a defect while the scheduler independently bounds service 5ms
+   × uncertain filler ledger fails before dispatching a 4097th identity 5001ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > a recovery-fiber defect stays a defect while the scheduler independently bounds service
+Error: controlled recovery close defect
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:499:32
+    497|   runClock(
+    498|     Effect.gen(function* () {
+    499|       const defect = Cause.die(new Error("controlled recovery close de…
+       |                                ^
+    500|       const closeExit = yield* Deferred.make<Exit.Exit<void>>();
+    501|       const handle = yield* Renewal.make({
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ IteratorImpl.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1440:25
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:5612:9
+ ❯ ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:5690:19
+ ❯ Module.<anonymous> ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:5709:5
+ ❯ run test/orchestration/SourceFixture.ts:43:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/SchedulerUnknownRecovery.test.ts:634:1
+    632|   ));
+    633|
+    634| test("uncertain filler ledger fails before dispatching a 4097th identi…
+       | ^
+    635|   runClock(
+    636|     Effect.gen(function* () {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 63 passed (64)
+      Tests  2 failed | 847 passed (849)
+   Start at  17:59:05
+   Duration  55.26s (tests 60%, import 36%, transform 3%)
+
+     Import  189 modules were evaluated 257 times · 17.61s total, 36% of tracked time
+             ~4.66s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
+error: script "test:portable" exited with code 1
+error: script "verify" exited with code 1
+real 124.69
+user 88.07
+sys 18.70

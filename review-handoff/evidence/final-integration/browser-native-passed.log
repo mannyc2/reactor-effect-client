@@ -1,0 +1,32 @@
+$ bun --no-env-file scripts/test.ts integration
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/integration
+
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+Bundled 250 modules in 38ms
+
+  browser.js  0.52 MB  (entry point)
+
+browser-native-ok
+host darwin-arm64
+browser /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+native-artifact sha256=54312e0a85ea827d7a6af239034a79fd010f686cd2a053a4cd61cbc0aff350b6 sourceSha256=6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125 abi=4
+browser-public {"generation":"1","ack":"ack","reply":"message","sameAttributedObjects":true,"media":{"realTrackLease":true,"publicationBorrowedSourcePreserved":true,"leaseRetired":true,"retiredOperationRejected":true},"close":{"localClosed":true,"allocation":"known","ownership":"owned","sessionId":"sess_browser_local","remote":{"attempted":true,"responseReceived":true,"deleteStatus":202,"confirmed":true,"evidence":"terminal","state":"CLOSED"},"unpublishSubmitted":[],"unresolvedPublications":[],"localErrors":[]},"channels":["control","data"],"requests":[{"channel":"control","type":"publish_track","requestId":"ctrl_3d3edef1b2722b6268d5929381204d98_1","bytes":58},{"channel":"control","type":"request_schema","requestId":"ctrl_3d3edef1b2722b6268d5929381204d98_2","bytes":45},{"channel":"data","type":"ack","requestId":"data_3d3edef1b2722b6268d5929381204d98_1","bytes":52},{"channel":"data","type":"echo","requestId":"data_3d3edef1b2722b6268d5929381204d98_2","bytes":110}],"failureCleanup":{"localClosed":true,"remoteDeleteCount":1},"realPeerHandlesClosed":2}
+browser-native {"connectionState":"connected","channels":["control","data"],"requests":[{"channel":"control","type":"request_schema","requestId":"ctrl_afa76d39cdef355485de3e07626516ff_1","bytes":45},{"channel":"data","type":"ack","requestId":"data_afa76d39cdef355485de3e07626516ff_1","bytes":52},{"channel":"data","type":"echo","requestId":"data_afa76d39cdef355485de3e07626516ff_2","bytes":110}],"replies":{"control":"schema","data":["ack","echo"]},"orderedBinaryChannels":true,"relay":{"forced":false},"source":{"video":{"width":160,"height":96,"framesPerSecond":20},"audio":{"sampleRate":48000,"frequencyHz":440}}}
+native-public {"generation":"1","schema":"3.1.0","ack":"ack","reply":"message","sameAttributedObjects":true,"close":{"localClosed":true,"allocation":"known","ownership":"owned","sessionId":"sess_native_browser_fixture","remote":{"attempted":true,"responseReceived":true,"deleteStatus":202,"confirmed":true,"evidence":"terminal","state":"CLOSED"},"unpublishSubmitted":[],"unresolvedPublications":[],"localErrors":[]},"pressure":{"closed":false,"queuedControl":0,"queuedVideo":1,"queuedAudio":4,"queuedBytes":65280,"droppedVideo":"0","droppedAudio":"0","pendingRequests":0,"deliveredVideo":"12","deliveredAudio":"66","readerOverflows":"0"}}
+native-video frames=13 distinctHashes=13 metadataFrames=0 metadataBytes=0
+native-audio packets=67 maxRms=0.143703
+turn-relay disabled
+metadata-limit standards browser emitted no Reactor custom frame metadata; decoded A/V is real
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  19:07:19
+   Duration  10.96s (tests 100%)
+
+real 11.63
+user 4.35
+sys 1.68

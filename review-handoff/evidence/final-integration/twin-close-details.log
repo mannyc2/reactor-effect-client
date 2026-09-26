@@ -1,0 +1,61 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-twin.test.ts: (run #1)
+(pass) a reference image uploads through the twin before its clip is queued [350.63ms]
+
+integration/test/hosted-twin.test.ts: (run #2)
+(pass) a reference image uploads through the twin before its clip is queued [240.55ms]
+
+integration/test/hosted-twin.test.ts: (run #3)
+(pass) a reference image uploads through the twin before its clip is queued [250.55ms]
+
+integration/test/hosted-twin.test.ts: (run #4)
+(pass) a reference image uploads through the twin before its clip is queued [233.50ms]
+
+integration/test/hosted-twin.test.ts: (run #5)
+(pass) a reference image uploads through the twin before its clip is queued [235.55ms]
+
+integration/test/hosted-twin.test.ts: (run #6)
+(pass) a reference image uploads through the twin before its clip is queued [231.62ms]
+
+integration/test/hosted-twin.test.ts: (run #7)
+(pass) a reference image uploads through the twin before its clip is queued [233.33ms]
+
+integration/test/hosted-twin.test.ts: (run #8)
+(pass) a reference image uploads through the twin before its clip is queued [229.29ms]
+
+integration/test/hosted-twin.test.ts: (run #9)
+twin-close diagnostic {
+  error: undefined,
+  count: 1,
+  listening: false,
+  waiting: [],
+}
+reference-image phases [
+  {
+    name: "twin-start",
+    atMs: 0.05133299999988594,
+  }, {
+    name: "mint",
+    atMs: 2.8265409999999065,
+  }, {
+    name: "connect",
+    atMs: 4.067665999999917,
+  }, {
+    name: "prepare",
+    atMs: 232.44166600000017,
+  }, {
+    name: "submit",
+    atMs: 232.62641600000006,
+  }, {
+    name: "owner-close",
+    atMs: 240.42370800000026,
+  }, {
+    name: "twin-close",
+    atMs: 244.53037500000028,
+  }
+]
+(fail) a reference image uploads through the twin before its clip is queued [30003.14ms]
+  ^ this test timed out after 30000ms.
+Ran 9 tests across 1 file. [32.25s]
+Bailed out after 1 failure

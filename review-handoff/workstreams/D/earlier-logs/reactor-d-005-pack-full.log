@@ -1,0 +1,25 @@
+$ bun --no-env-file scripts/pack.ts
+consumer-installer bun profile full
+pack-created .check/pack-Nw1rG5/reactor-effect-client-0.5.0.tgz
+pack-created .check/pack-Nw1rG5/reactor-effect-browser-0.5.0.tgz
+pack-created .check/pack-Nw1rG5/reactor-effect-native-0.5.0.tgz
+installed-package-identity portable-node reactor-effect-client 298 files
+simulation-smoke-ok production-engine=joined decoded-media=owned admission=not-submitted
+effect-no-dom-exception TextDecoderOptions (effect@4.0.0-rc.117)
+installed-examples-compiled portable-node 1
+Node compiled-example-ok offline=simulation rundown=played,played
+Bun compiled-example-ok offline=simulation rundown=played,played
+installed-package-identity browser reactor-effect-client 298 files
+installed-package-identity browser reactor-effect-browser 33 files
+installed-examples-compiled browser 4
+installed-package-identity native reactor-effect-client 298 files
+installed-package-identity native reactor-effect-native 150 files
+installed-native-effect-stack 4.0.0-rc.117
+native-preflight-ok sha256=54312e0a85ea827d7a6af239034a79fd010f686cd2a053a4cd61cbc0aff350b6 sourceSha256=6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125 abi=4
+effect-no-dom-exception TextDecoderOptions (effect@4.0.0-rc.117)
+installed-examples-compiled native 17
+pack-smoke-ok reactor-effect-client@0.5.0 .check/pack-Nw1rG5/reactor-effect-client-0.5.0.tgz sha256=d5609fd719b8620f01733f36efacf38074ab06b95bcc0a31c660f391013c376c
+pack-smoke-ok reactor-effect-browser@0.5.0 .check/pack-Nw1rG5/reactor-effect-browser-0.5.0.tgz sha256=252fbf4d0c98c1e9bde2d359812c88bcba632f3ae0f2d0bf81c219ffcba00ce8
+pack-smoke-ok reactor-effect-native@0.5.0 .check/pack-Nw1rG5/reactor-effect-native-0.5.0.tgz sha256=c368603de20b1f5c1c978e7098d98d1132c29be11b28431728b02eb84129da39
+native-source 6b4ad6bf5c710345e46b3b375648b7981679a8570e2bf0b30cd073fccd984125
+isolated removed

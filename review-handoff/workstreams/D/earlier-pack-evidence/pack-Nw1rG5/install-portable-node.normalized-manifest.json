@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@types/node": "22.20.2",
+    "@typescript/typescript-darwin-arm64": "7.0.2",
+    "effect": "4.0.0-rc.117",
+    "reactor-effect-client": "0.5.0",
+    "typescript": "7.0.2"
+  }
+}

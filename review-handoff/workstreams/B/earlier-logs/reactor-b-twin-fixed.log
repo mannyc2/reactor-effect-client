@@ -1,0 +1,26 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-twin.test.ts:
+(pass) the vertical check runs end to end against the twin [6575.62ms]
+(pass) the twin mints recognisable credentials: an HS256 JWT the twin plainly signed [6.06ms]
+(pass) twin close joins an owned socket with an unfinished HTTP request [7.42ms]
+(pass) a reference image uploads through the twin before its clip is queued [247.94ms]
+(pass) reference audio uploads through the twin and its clip reports it; audio alone is refused [573.97ms]
+(pass) a relay twin selects a relay candidate pair [258.68ms]
+(pass) a second client attaches with the persisted token, sees the queued clip and replaces the first connection [1458.62ms]
+(pass) another process takes the session over after its owner is killed [7043.05ms]
+(pass) a killed owner's session resumes through Orchestration, which only reads it and terminates it on close [5812.04ms]
+(pass) overgrant: a token for two sessions is refused before any allocation [7.55ms]
+(pass) slowDelete: the close cannot confirm, and a later read sees the session end [2217.96ms]
+(pass) ignoreDelete: the session runs on until the cap ends it [2035.16ms]
+(pass) the cap ends a connected session on its own, and its connection closes [2635.51ms]
+(pass) dropEnqueueReply: the enqueue arrives, is never answered, and its outcome is unknown [2599.27ms]
+(pass) blackFrames: a playing clip's frames are all black [1725.86ms]
+(pass) frozenFrames: a playing clip's frames never change [1728.10ms]
+(pass) noAudio: the session offers audio and sends none [2492.43ms]
+(pass) a wrong API key, a missing or foreign token and a spent grant are refused [18.12ms]
+
+ 18 pass
+ 0 fail
+ 224 expect() calls
+Ran 18 tests across 1 file. [37.70s]

@@ -1,0 +1,59 @@
+bun test v1.4.2 (744846f84)
+
+integration/test/hosted-collect.test.ts:
+(pass) the video reader summarizes frames, their pacing and the recorder's gaps without keeping any [0.68ms]
+(pass) a clip is judged by the frames that arrived while it played [0.16ms]
+(pass) a late idle frame cannot make frozen output live, while sustained motion passes [0.14ms]
+(pass) the audio reader keeps rates, shapes, loudness and loss [0.66ms]
+(pass) a stats sample keeps the pair, RTT, rates, fps, jitter and loss in evidence units [0.07ms]
+(pass) stats are sampled every second and a failed read is skipped [8.79ms]
+(pass) the tally counts messages, unknown types, repeats, diagnostics and metadata echoes [0.47ms]
+(pass) the span recorder keeps the library's spans and only their reactor attributes [4.20ms]
+(pass) the termination trail follows the coordinator until the session is terminal or gone [6.30ms]
+(pass) a refused read is recorded by its status, and never taken for the session's end [2.94ms]
+
+integration/test/hosted-renewal.test.ts:
+(pass) renewal elapsed clock ignores wall corrections and injects the same origin into media readers [2.48ms]
+(pass) attribution preserves objects and resets recorder accounting at source and generation boundaries [1.16ms]
+(pass) complete legacy renewal evidence encodes, while absent milestone fields remain valid incomplete checkpoints [5.49ms]
+(pass) renewal refuses incomplete or contradictory evidence even when supplied criteria all pass [3.88ms]
+(pass) handoff codec rejects impossible count and grace claims [1.22ms]
+(pass) a partial new two-session paid run retains the full ceiling without a reservation [0.14ms]
+(pass) every committed historical ledger still decodes and preserves its reservation [6.23ms]
+(pass) canonical owned cleanup rejects contradictory confirmation and failed required evidence [0.24ms]
+(pass) continuous summary reconciles compaction with original source reports and gates paid qualification [3.42ms]
+(pass) continuous omissions cannot replace missing canonical cleanup or hide incomplete retained evidence [1.24ms]
+(pass) constructor schema requires its actual retention settings [0.26ms]
+
+integration/test/hosted-evidence.test.ts:
+(pass) a complete run encodes to JSON and decodes back unchanged [2.51ms]
+(pass) a run missing any required field fails as incomplete, whatever else passed [0.16ms]
+(pass) audio is required only when the session offered it, and takeover needs its own fields [0.05ms]
+(pass) the resume check needs the takeover's fields and the library's own close report [0.02ms]
+(pass) the audio check also needs the deployment's declaration and what the clip reports [1.42ms]
+(pass) a stop rule, a failed criterion, a failure and no criteria each fail the run [0.09ms]
+(pass) the writer claims a new file, replaces it atomically, and refuses a credential [1.68ms]
+(pass) the ledger reserves each paid run's worst case and refuses unreadable evidence [1.32ms]
+(pass) scheduler evidence requires a separately confirmed replacement close [0.31ms]
+(pass) one run at a time holds the ledger [1.21ms]
+(pass) the summary names every run and what each saw [0.12ms]
+
+integration/test/hosted-gates.test.ts:
+(pass) paid use needs a check, the authorization flag, bounded budgets, a ledger and a network [0.44ms]
+(pass) an unknown argument refuses, so a misspelled budget is never ignored [0.04ms]
+(pass) session time bills by the minute, a started minute whole [0.02ms]
+(pass) the published rate must fit the whole capped session, billed by the minute [0.21ms]
+(pass) the scheduler check alone can authorize two capped sessions [0.12ms]
+(pass) the ledger admits a run only while every reserved worst case fits the total [0.14ms]
+(pass) a token that grants more than one capped session is refused [0.04ms]
+(pass) an unknown outcome or an unconfirmed termination stops the check [0.02ms]
+(pass) live video is BGRA, lit and changing [0.03ms]
+(pass) the relay check runs only while no earlier paid run selected a relay pair [0.03ms]
+(pass) the runner refuses without an explicit authorization, before any request [1064.23ms]
+(pass) public scheduler renewal reserves two sessions under its own discriminator [0.19ms]
+(pass) public renewal refuses a different nominal cap and paid constructor overrides [0.18ms]
+
+ 45 pass
+ 0 fail
+ 191 expect() calls
+Ran 45 tests across 4 files. [1494.00ms]

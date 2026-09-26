@@ -1,0 +1,48 @@
+{
+  "name": "native",
+  "dependencies": {
+    "@effect/platform-node": {
+      "version": "4.0.0-rc.117",
+      "overridden": false,
+      "dependencies": {
+        "@effect/platform-node-shared": {
+          "version": "4.0.0-rc.117",
+          "overridden": true,
+          "dependencies": {
+            "effect": {
+              "version": "4.0.0-rc.117"
+            }
+          }
+        },
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    },
+    "effect": {
+      "version": "4.0.0-rc.117",
+      "overridden": false
+    },
+    "reactor-effect-client": {
+      "version": "0.5.0",
+      "overridden": false,
+      "dependencies": {
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    },
+    "reactor-effect-native": {
+      "version": "0.5.0",
+      "overridden": false,
+      "dependencies": {
+        "@effect/platform-node": {
+          "version": "4.0.0-rc.117"
+        },
+        "effect": {
+          "version": "4.0.0-rc.117"
+        }
+      }
+    }
+  }
+}

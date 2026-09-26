@@ -1,0 +1,230 @@
+$ bun --no-env-file scripts/verify.ts --profile portable
+verify portable: bun run generate:check
+$ bun run --filter reactor-effect-client generate:check
+reactor-effect-client generate:check: wire-generation-ok format=reactor-wire-ts/1 python=3.13.5 sha256=b26b2740daec7913568e9c4a27cb73daf212e90e3e7e47f3068a1db08611f40f
+reactor-effect-client generate:check: Exited with code 0
+verify portable: bun run format:check
+$ oxfmt --check .
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 3468ms on 321 files using 8 threads.
+verify portable: bun run build
+$ bun run --filter './packages/*' build
+reactor-effect-client build: Exited with code 0
+reactor-effect-browser build: Exited with code 0
+reactor-effect-native build: Exited with code 0
+verify portable: Node and Bun portable runtime imports
+(node:53467) ExperimentalWarning: `--experimental-loader` may be removed in the future; instead use `register()`:
+--import 'data:text/javascript,import { register } from "node:module"; import { pathToFileURL } from "node:url"; register("./scripts/pack/resolution-guard.mjs", pathToFileURL("./"));'
+(Use `node --trace-warnings ...` to show where the warning was created)
+portable-runtime-import-ok node v22.13.1
+portable-runtime-import-ok bun v26.3.0
+verify portable: bun run lint
+$ oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' .
+verify portable: bun run typecheck
+$ bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit
+reactor-effect-test-kit typecheck: Exited with code 0
+reactor-effect-client typecheck: Exited with code 0
+reactor-effect-client-examples typecheck: Exited with code 0
+reactor-effect-browser typecheck: Exited with code 0
+reactor-effect-native typecheck: Exited with code 0
+reactor-effect-browser-examples typecheck: Exited with code 0
+reactor-effect-native-examples typecheck: Exited with code 0
+reactor-effect-example-livestream typecheck: Exited with code 0
+reactor-effect-integration typecheck: Exited with code 0
+verify portable: bun run check:architecture
+$ node scripts/architecture.mjs
+architecture-ok Effect ^4.0.0-rc.117 via catalog
+reactor-effect-client: 72 source modules; 7 exports; no runtime cycles
+reactor-effect-browser: 7 source modules; 1 exports; no runtime cycles
+reactor-effect-native: 7 source modules; 1 exports; no runtime cycles
+verify portable: bun run check:examples
+$ bun --no-env-file scripts/examples.ts
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  16:58:54
+   Duration  50.19s (tests 47%, import 27%, transform 26%)
+
+  Transform  transforming modules took 20.68s · 26% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/examples/livestream
+
+
+ Test Files  3 passed (3)
+      Tests  4 passed (4)
+   Start at  16:59:46
+   Duration  26.47s (tests 60%, transform 27%, import 13%)
+
+  Transform  transforming modules took 10.57s · 27% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+examples-tested reactor-effect-example-livestream node bun
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:00:14
+   Duration  8.30s (transform 56%, import 38%, tests 6%)
+
+  Transform  transforming modules took 4.27s · 56% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/native/examples
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  17:00:24
+   Duration  3.01s (import 49%, transform 39%, tests 7%, worker 5%)
+
+examples-tested reactor-effect-native-examples node bun
+$ bun build src/app.ts --target=browser --outdir=dist
+Bundled 237 modules in 87ms
+
+  app.js  1.13 MB  (entry point)
+
+examples-bundled reactor-effect-browser-examples
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:00:28
+   Duration  10.15s (transform 72%, tests 20%, import 8%)
+
+  Transform  transforming modules took 7.12s · 72% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client/examples
+
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  17:00:38
+   Duration  1.71s (transform 60%, import 26%, tests 14%)
+
+examples-tested reactor-effect-client-examples node bun
+examples-ok 4 workspaces
+verify portable: bun run test:portable
+$ bun --no-env-file scripts/test.ts portable
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ❯ test/orchestration/H3Source.test.ts (38 tests | 1 failed) 5279ms
+   × foreign generation and failure remain visible with unknown timing and bounded continuation hints 169ms
+ ❯ test/SequenceModel.test.ts (1 test | 1 failed) 5327ms
+   × every operation applies whole or is refused with the state unchanged 5318ms
+ ❯ test/orchestration/SchedulerCore.test.ts (3 tests | 1 failed) 6817ms
+   × a higher lane plays before a lower lane while both are waiting 5425ms
+ ❯ test/orchestration/ElapsedTime.test.ts (3 tests | 1 failed) 9328ms
+   × a wall clock stepped back does not delay renewal: the next session is prepared at lifetime minus lead of elapsed time 5409ms
+ ❯ test/orchestration/SchedulerRenewal.test.ts (12 tests | 3 failed) 27966ms
+   × 40-second renewal overlap preserves output with old-line-building 5615ms
+   × 40-second renewal overlap preserves output with final-clip-frame-loss 5444ms
+   × 40-second renewal overlap preserves output with final-clip-frame-loss-no-line 5046ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/SequenceModel.test.ts > every operation applies whole or is refused with the state unchanged
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/SequenceModel.test.ts:65:11
+     63| };
+     64|
+     65| it.effect.prop(
+       |           ^
+     66|   "every operation applies whole or is refused with the state unchange…
+     67|   { operations: Schema.Array(Operation).check(Schema.isMaxLength(40)) …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  test/orchestration/ElapsedTime.test.ts > a wall clock stepped back does not delay renewal: the next session is prepared at lifetime minus lead of elapsed time
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/ElapsedTime.test.ts:46:1
+     44| });
+     45|
+     46| test("a wall clock stepped back does not delay renewal: the next sessi…
+       | ^
+     47|   runClock(
+     48|     Effect.gen(function* () {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  test/orchestration/H3Source.test.ts > foreign generation and failure remain visible with unknown timing and bounded continuation hints
+AssertionError: expected false to be 'content policy fixture' // Object.is equality
+
+- Expected:
+"content policy fixture"
+
++ Received:
+false
+
+ ❯ test/orchestration/H3Source.test.ts:461:58
+    459|       yield* emit("clip_failed", { clip: { ...clips[8]! }, reason: "co…
+    460|       const failed = events.find((event) => event._tag === "Failed");
+    461|       expect(failed?._tag === "Failed" && failed.reason).toBe("content…
+       |                                                          ^
+    462|       expect((yield* source.state).failed).toEqual([ClipId.make(clips[…
+    463|       expect((yield* source.state).continuable).not.toContain(clips[8]…
+ ❯ IteratorImpl.~effect/Effect/successCont ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1428:28
+ ❯ ExitPrimitive.~effect/Effect/evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/core.ts:523:30
+ ❯ FiberImpl.runLoop ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:685:39
+ ❯ FiberImpl.evaluate ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:628:23
+ ❯ ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:1167:17
+ ❯ Timeout._onTimeout ../../node_modules/.bun/effect@4.0.0-rc.117/node_modules/effect/src/internal/effect.ts:6255:39
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  test/orchestration/SchedulerCore.test.ts > a higher lane plays before a lower lane while both are waiting
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/SchedulerCore.test.ts:29:1
+     27| } satisfies SchedulerOptions;
+     28|
+     29| test("a higher lane plays before a lower lane while both are waiting",…
+       | ^
+     30|   runClock(
+     31|     Effect.gen(function* () {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with old-line-building
+ FAIL  test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with final-clip-frame-loss
+ FAIL  test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with final-clip-frame-loss-no-line
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/orchestration/SchedulerRenewal.test.ts:250:3
+    248|   "final-clip-frame-loss-no-line",
+    249| ] as const)
+    250|   test(`40-second renewal overlap preserves output with ${fault}`, () …
+       |   ^
+    251|     runClock(
+    252|       Effect.gen(function* () {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+
+ Test Files  5 failed | 56 passed (61)
+      Tests  7 failed | 768 passed (775)
+   Start at  17:00:40
+   Duration  81.70s (tests 48%, import 38%, transform 14%)
+
+error: script "test:portable" exited with code 1
+error: script "verify" exited with code 1

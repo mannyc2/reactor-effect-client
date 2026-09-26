@@ -1,0 +1,17 @@
+{
+  "format": "reactor-pack-archive-requirements/v1",
+  "installer": "bun",
+  "reason": "Bun omits npm local-tarball provenance metadata",
+  "originalManifest": "install-portable-node.manifest.json",
+  "normalizedManifest": "install-portable-node.normalized-manifest.json",
+  "verification": "complete-installed-archive-byte-identity",
+  "archives": [
+    {
+      "name": "reactor-effect-client",
+      "version": "0.5.0",
+      "installSpecifier": "/Users/chriscarroll/.codex/worktrees/0d44/reactor-effect-client/.check/pack-pcZuov/reactor-effect-client-4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5.tgz",
+      "sha256": "4bacfdf112fa88735d1a9340af9ccf1ce43ca9d9f3dbeca2cc660b708d64c4c5",
+      "filesChecked": 302
+    }
+  ]
+}

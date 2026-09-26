@@ -1,0 +1,863 @@
+
+ RUN  v5.0.0 /Users/chriscarroll/.codex/worktrees/1915/reactor-effect-client/packages/client
+
+ ✓ test/orchestration/SchedulerShow.test.ts > a 30-minute simulated show with jitter and build failures keeps ordered output on air 2518ms
+ ✓ test/orchestration/SchedulerShow.test.ts > a five-second filler runway exposes starvation under the same workload 1294ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical Renewal replaces unknown item and starts a distinct later line 57ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical Renewal replaces unknown filler and starts a distinct later line 10ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 1 and no later demand 45ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > default unknown watchdog arms at observation with cap 3 and no later demand 17ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown timeout settles later accepted work without replay or invented rejection 21ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration 0 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration -1 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration Infinity 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration NaN 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration Infinity 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery rejects invalid duration 11 minutes 1ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > unknown recovery captures a finite ten-minute maximum without evaluating accessors 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain settles at the unknown deadline while stopRenewal waits (known result) 14ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain settles at the unknown deadline while stopRenewal waits (late result) 3ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain settles at the unknown deadline while stopRenewal waits (known result) 7ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain settles at the unknown deadline while stopRenewal waits (late result) 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > snapshot churn, duplicate submit and a second unknown cannot extend the first deadline 9ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Building proof cancels uncertainty without replay 7ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Ready proof cancels uncertainty without replay 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed Started proof cancels uncertainty without replay 5ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > Ready replacement clears the old capacity episode and later drain reuses old uncertainty age 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > Ready replacement clears the old capacity episode and later uncertainty gets its own deadline 5ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical blocked source close preserves its cleanup owner while playing drain times out 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > canonical blocked source close preserves its cleanup owner while accepted drain times out 2ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > a recovery-fiber defect stays a defect while the scheduler independently bounds service 8ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > wall clock corrections cannot extend or shorten the unknown deadline 4ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > keyed proof after timeout cannot revive admission or replace terminal Unknown 5ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > overlapping uncertain filler identities reconcile independently and both hold drain 7ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > in-place source snapshots retire uncertainty without changing earlier public rows 6ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > uncertain filler ledger fails before dispatching a 4097th identity 1200ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > real H3 result hook forwards unknown item through Renewal to a usable replacement 51ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > real H3 result hook forwards unknown filler through Renewal to a usable replacement 34ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > playing drain uses an already acquired replacement without reopening allocation 20ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > accepted drain uses an already acquired replacement without reopening allocation 22ms
+ ✓ test/orchestration/SchedulerUnknownRecovery.test.ts > an unrelated later outage does not revive an old source's resolved capacity episode 6ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > model pricing preserves exact credit ratios and rejects ambiguous economics 8ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > prices a model from the pricing shape Reactor documents 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > prices H3 from Reactor's live pricing document 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > reads public pricing through the supplied client without applying spending policy 9ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > mints one model-scoped, server-capped token without exposing the credential 3ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > pricing requires a JSON document while preserving literal JSON null 4ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > rejects malformed responses, insufficient expiry and HTTP failure with sanitized errors 4ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > rejects unreadable tokens instead of treating missing grant information as a cap 4ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > requires one bounded grant for exactly the requested model and no additional authority 11ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > returns the actual validated cap while allowing unrelated JWT identity claims 2ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > keeps rejected issued grants out of the public error and tracing failure 7ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > uses the injected clock for token cleanup lifetime and inspection timestamps 5ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > redacts custom API keys and standard bearer headers when the supplied client inspects requests 2ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > does not retry token issuance or expose transport failure credentials through tracing 2ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > keeps credential-bearing response headers and token bodies out of successful traces 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > rejects invalid bounds before making a request 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > cancelling a request aborts its actual fetch signal 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection only reads the observed session and projects safe coordinator facts 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection distinguishes absent and null fields from partially published connection facts 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection rejects invalid input before any request 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection preserves HTTP status without exposing response bodies or retrying 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection rejects mismatched identity and malformed descriptions without exposing input 2ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > cancelling inspection aborts the in-flight request 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > pricing's Effect deadline includes stalled headers 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > pricing's Effect deadline includes stalled body 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > token's Effect deadline includes stalled headers 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > token's Effect deadline includes stalled body 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspect's Effect deadline includes stalled headers 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspect's Effect deadline includes stalled body 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > terminate's Effect deadline includes stalled headers 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > terminate's Effect deadline includes stalled body 0ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > termination bounds both requests and aborts them inside an uninterruptible finalizer 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > an interrupted owning scope still confirms termination after its DELETE times out 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection's one-second fetch bound includes stalled response headers 1012ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > inspection's one-second fetch bound includes stalled response body 1013ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > confirms terminal states and URL-encodes the observed session identity 4ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > still checks termination after losing the DELETE response 1ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > refuses to read an absent session as terminated when the DELETE was refused on authority 2ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > rejects a confirmation that names a different session, and reports the status that refused it 3ms
+ ✓ test/Sessions.test.ts > Reactor HTTP session contract (offline) > does not confuse accepted deletion with confirmed termination 2ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > accepted drain finishes queued lines and prevents an allocation at the renewal lead 88ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > accepted drain keeps filler playing past a building line 51ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > accepted drain keeps filler playing past a Ready line ahead of one still building 31ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > accepted drain keeps filler playing past a line whose build fails 25ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > accepted drain keeps filler under a Ready line held for an At anchor 30ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with earlier-frame-loss 62ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with old-line-building 47ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with final-clip-frame-loss 54ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > 40-second renewal overlap preserves output with final-clip-frame-loss-no-line 47ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > renewal drains old filler and preserves submission order on the replacement 39ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > uncertain filler on the retiring source does not hold replacement runway 7ms
+ ✓ test/orchestration/SchedulerRenewal.test.ts > a source-fenced enqueue refuses a route switch before dispatch 3ms
+ ✓ test/orchestration/RenewalRetention.test.ts > scope-finalizer defects preserve the canonical report and their original Cause on every close 15ms
+ ✓ test/orchestration/RenewalRetention.test.ts > continuous renewal exceeds 64 sources and preserves exact bounded cleanup evidence 386ms
+ ✓ test/orchestration/RenewalRetention.test.ts > continuous explicit maxSessions retains the successful-open lifetime cap 2ms
+ ✓ test/orchestration/RenewalRetention.test.ts > continuous close preserves its original defect while exposing incomplete factual cleanup 1ms
+ ✓ test/orchestration/RenewalRetention.test.ts > a stalled scope finalizer keeps close and its cleanup reservation pending 2ms
+ ✓ test/orchestration/RenewalRetention.test.ts > unknown submissions exhaust their reserved history even after confirmed termination 4ms
+ ✓ test/orchestration/RenewalRetention.test.ts > source-fenced enqueue captures the available incarnation before waiting on recovery 2ms
+ ✓ test/orchestration/RenewalRetention.test.ts > an unbound submission chooses current at first submit after earlier history is evicted 5ms
+ ✓ test/orchestration/RenewalRetention.test.ts > continuous identity validation closes an invalid acquired source before refusing it 5ms
+ ✓ test/orchestration/RenewalRetention.test.ts > source cleanup with unresolved publications stays detailed after continuous close 1ms
+ ✓ test/orchestration/RenewalRetention.test.ts > a selected preparation never rebinds to a reused physical ID after history eviction 10ms
+ ✓ test/orchestration/RenewalRetention.test.ts > simultaneously live duplicate physical IDs refuse and close the attempted replacement 8ms
+ ✓ test/orchestration/RenewalRetention.test.ts > unresolved ledger exhaustion refuses before open and still fits both remaining owners 24ms
+ ✓ test/orchestration/RenewalRetention.test.ts > unknown unsequenced outcomes remain factual after successful physical cleanup 3ms
+ ✓ test/orchestration/RenewalRetention.test.ts > unknown failed acquisitions reserve cleanup capacity before an attempted retry 76ms
+ ✓ test/orchestration/RenewalRetention.test.ts > accepted history reserves its final entry before dispatch and rejects further admissions 274ms
+ ✓ test/orchestration/RenewalRetention.test.ts > continuous Started history accepts duplicates at capacity and refuses one unseen identity 47ms
+ ✓ test/orchestration/RenewalRetention.test.ts > completed scopes and recovery fibers detach across repeated reconnects 16ms
+ ✓ test/orchestration/HandleObservation.test.ts > a renewal observer that never returns delays no enqueue 1035ms
+ ✓ test/orchestration/HandleObservation.test.ts > a replacement follows the failures of the clips it lost, in one stream 15ms
+ ✓ test/orchestration/HandleObservation.test.ts > a reconnect finishing after close never moves the media state from Closed to Ready 4ms
+ ✓ test/orchestration/H3Source.test.ts > sameSessionAs remains local scheduling metadata and never enters an H3 command 26ms
+ ✓ test/orchestration/H3Source.test.ts > a scheduler key reaches provider metadata while the application request stays intact 6ms
+ ✓ test/orchestration/H3Source.test.ts > H3 source has no implicit autoplay, flush, canvas, connect or reconnect policy 4ms
+ ✓ test/orchestration/H3Source.test.ts > explicit canvas and hold policy changes only the requested settings 4ms
+ ✓ test/orchestration/H3Source.test.ts > H3 source preserves exact foreign queue order and does not fabricate application annotations or build starts 4ms
+ ✓ test/orchestration/H3Source.test.ts > foreign startup playback may lack a record and never receives an invented start time 3ms
+ ✓ test/orchestration/H3Source.test.ts > source preparation snapshots metadata, preserves URI order and shares one provider submission owner 12ms
+ ✓ test/orchestration/H3Source.test.ts > a local clip's record holds the captured request itself, so a lineup knows its own clips 7ms
+ ✓ test/orchestration/H3Source.test.ts > source preparation loads audio URIs and sends them as reference_audios beside the images 14ms
+ ✓ test/orchestration/H3Source.test.ts > source commit refusal releases its annotation reservation and preserves not-submitted evidence 3ms
+ ✓ test/orchestration/H3Source.test.ts > cancelled source reference prework remains inert and does not leave a hidden committed submission 4ms
+ ✓ test/orchestration/H3Source.test.ts > admission-to-ready time is measured on elapsed time, so a wall-clock step leaves it unchanged 6ms
+ ✓ test/orchestration/H3Source.test.ts > duplicate lifecycle messages emit once, keep observed timing and never infer a Building event 17ms
+ ✓ test/orchestration/H3Source.test.ts > snapshot-only playback changes preserve unknown start time and do not emit synthetic lifecycle or starvation 12ms
+ ✓ test/orchestration/H3Source.test.ts > source stop is faithful and ends playback without autoplay changes, replay or starvation 13ms
+ ✓ test/orchestration/H3Source.test.ts > only an observed natural finish followed by an idle autoplay snapshot reports starvation once 17ms
+ ✓ test/orchestration/H3Source.test.ts > foreign generation and failure remain visible with unknown timing and bounded continuation hints 26ms
+ ✓ test/orchestration/H3Source.test.ts > real H3 removal reports only observed generation or playout membership and missing IDs are local failures 4ms
+ ✓ test/orchestration/H3Source.test.ts > named mutation acknowledgement without its payload remains unknown even when state changed 4ms
+ ✓ test/orchestration/H3Source.test.ts > attached cleanup preserves the exact canonical report and cannot reset even with an explicit reset option 2ms
+ ✓ test/orchestration/H3Source.test.ts > owned cleanup leaves reset absent by default and still closes the canonical session 1ms
+ ✓ test/orchestration/H3Source.test.ts > owned cleanup records bounded reset failure and still closes the canonical session 103ms
+ ✓ test/orchestration/H3Source.test.ts > source observation fails for malformed provider lifecycle without requiring enqueue or a control caller 3ms
+ ✓ test/orchestration/H3Source.test.ts > a session-bound source derives its provider and media from the one session 2ms
+ ✓ test/orchestration/H3Source.test.ts > a session-bound source checks its media before any provider command 0ms
+ ✓ test/orchestration/H3Source.test.ts > source refuses mismatched session identity before taking session ownership 1ms
+ ✓ test/orchestration/H3Source.test.ts > deployment duration limits are read live and invalid lengths never upload or dispatch 4ms
+ ✓ test/orchestration/H3Source.test.ts > pop ACK without a named model reply cannot claim removal or trigger a retry 3ms
+ ✓ test/orchestration/H3Source.test.ts > one stalled source observer fails with Overflow without blocking other observers or provider dispatch 24ms
+ ✓ test/orchestration/H3Source.test.ts > orchestration establishes autoplay before the first H3 admission without changing flush policy 9ms
+ ✓ test/orchestration/H3Source.test.ts > explicit autoplay setup replied fails acquisition and still returns attached cleanup evidence 3ms
+ ✓ test/orchestration/H3Source.test.ts > explicit autoplay setup unknown fails acquisition and still returns attached cleanup evidence 2ms
+ ✓ test/orchestration/H3Source.test.ts > explicit autoplay setup not-submitted fails acquisition and still returns attached cleanup evidence 1ms
+ ✓ test/orchestration/H3Source.test.ts > explicit autoplay setup ack fails acquisition and still returns attached cleanup evidence 2ms
+ ✓ test/orchestration/H3Source.test.ts > explicit autoplay setup timeout fails acquisition and still returns attached cleanup evidence 104ms
+ ✓ test/orchestration/H3Source.test.ts > explicit source reconnect calls the canonical session once and refreshes both provider snapshots 3ms
+ ✓ test/orchestration/H3Source.test.ts > early observed start and finish survive late enqueue acceptance without synthesized ready or build events 4ms
+ ✓ test/orchestration/H3Source.test.ts > orchestration timing retention fails at its own bound without unbounded foreign observations 6ms
+ ✓ test/orchestration/SchedulerFates.test.ts > scope closure settles pending and subsequent scheduler calls 30ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a terminal observation failure is available to the scheduler supervisor 3ms
+ ✓ test/orchestration/SchedulerFates.test.ts > Synchronizing Ready facts do not repeat an acknowledged move 15ms
+ ✓ test/orchestration/SchedulerFates.test.ts > terminal key history has an explicit bound and retained handles keep their fate 5ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a clip that starts and ends before its enqueue reply retains its observed fate 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > drain waits for the playing boundary, withdraws waiting work, and retains as-run evidence 11ms
+ ✓ test/orchestration/SchedulerFates.test.ts > drain removes Ready filler before the current playing clip ends 16ms
+ ✓ test/orchestration/SchedulerFates.test.ts > withdraw waits for the source removal result before publishing Dropped 8ms
+ ✓ test/orchestration/SchedulerFates.test.ts > withdraw and drain wait for an in-flight enqueue, then remove its clip 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a fresh snapshot settles Unobserved after both start and end were missed 6ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a playing recovery snapshot keeps its start evidence through the observed end 7ms
+ ✓ test/orchestration/SchedulerFates.test.ts > an unknown enqueue is not replayed after its source retires 58ms
+ ✓ test/orchestration/SchedulerFates.test.ts > an orchestration failure ends uncertainty without claiming the clip failed 8ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a submitted key adopts a queued clip found in a resumed session 3ms
+ ✓ test/orchestration/SchedulerFates.test.ts > withdraw of an unknown enqueue waits through an absent snapshot, then removes a keyed clip 8ms
+ ✓ test/orchestration/SchedulerFates.test.ts > the initial observation adopts resumed filler before planning a build 4ms
+ ✓ test/orchestration/SchedulerFates.test.ts > unknown filler is not replayed after an absent observation and holds drain 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a snapshot acquired before filler acceptance cannot erase its ownership 13ms
+ ✓ test/orchestration/SchedulerFates.test.ts > a fresh snapshot forgets filler that ended during an observation gap 17ms
+ ✓ test/orchestration/SchedulerFates.test.ts > an uncertain removal has no false Dropped status or tight replay 17ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Accepted handles first 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Building handles first 4ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Ready handles first 4ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Started handles first 4ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven sequential scope close settles Unknown handles first 8ms
+ ✓ test/orchestration/SchedulerFates.test.ts > worker defect retains its Cause through immediate sequential scope close 3ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Accepted handles first 13ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Building handles first 5ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Ready handles first 7ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Started handles first 11ms
+ ✓ test/orchestration/SchedulerFates.test.ts > failure-driven parallel scope close settles Unknown handles first 6ms
+ ✓ test/orchestration/SchedulerFates.test.ts > worker defect retains its Cause through immediate parallel scope close 6ms
+ ✓ test/orchestration/SchedulerFates.test.ts > terminal settlement releases controls and interrupts a stalled command with sequential ownership 5ms
+ ✓ test/orchestration/SchedulerFates.test.ts > terminal settlement releases controls and interrupts a stalled command with parallel ownership 4ms
+ ✓ test/orchestration/SchedulerFates.test.ts > startup typed releases the constructor with its original failure 7ms
+ ✓ test/orchestration/SchedulerFates.test.ts > startup defect releases the constructor with its original failure 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > startup interruption releases the constructor with its original failure 9ms
+ ✓ test/orchestration/SchedulerFates.test.ts > canceling a withdrawal wait leaves the owned command and scheduler alive 7ms
+ ✓ test/orchestration/SchedulerFates.test.ts > an external sequential close joins terminal settlement already in progress 7ms
+ ✓ test/orchestration/SchedulerFates.test.ts > an external parallel close joins terminal settlement already in progress 2ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > the same key and spec return one handle, while a changed spec is KeyMismatch 39ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > capture refuses nested scheduling accessors without running them 6ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > deadline admission counts the current boundary but lets a line overtake Ready filler 22ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > a retiring source does not consume the replacement's deadline or build slot 4ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > a firm window expires on elapsed time even after a wall-clock correction 41ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > a soft window stays eligible and records a late start 27ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > At holds a clip until its wall anchor, then late drop refuses an overdue anchor 12ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > At cannot autoplay before its anchor when filler builds fail 15ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > At follows a corrected wall clock while elapsed windows remain monotonic 13ms
+ ✓ test/orchestration/SchedulerWindows.test.ts > a backward wall correction retries a refused At deferral without closing the scheduler 70ms
+ ✓ test/h3/ProviderObserve.test.ts > H3 observe > never delivers an event its snapshot already covers, at any yield point 243ms
+ ✓ test/Recording.test.ts > parsePlaylist resolves an fMP4 media playlist's init and media segments 3ms
+ ✓ test/Recording.test.ts > parsePlaylist refuses what byte concatenation cannot assemble 2ms
+ ✓ test/Recording.test.ts > downloadClip waits for the playlist, then concatenates its segments in order 209ms
+ ✓ test/Recording.test.ts > downloadClip bounds the assembled bytes and its wall deadline 61ms
+ ✓ test/h3/Provider.test.ts > canonical H3 provider acquisition > uses only schema, state and queue reads and leaves connected Session ownership to its caller 21ms
+ ✓ test/h3/Provider.test.ts > canonical H3 provider acquisition > retains every required field and foreign generation, playout, history, and metadata 4ms
+ ✓ test/h3/Provider.test.ts > canonical H3 provider acquisition > retained history may also describe a clip waiting in playout 3ms
+ ✓ test/h3/Provider.test.ts > canonical H3 provider acquisition > failing acquisition immediately releases observation and cannot connect or close the Session 1ms
+ ✓ test/h3/Provider.test.ts > canonical H3 provider acquisition > interrupting acquisition joins its local reader and never resets someone else's Session 2ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects prose names only before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects wrong argument type before any command 2ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects integer-only duration input before any command 3ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects prompt-only input excluded before any command 5ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects missing successful response before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects reply without required position before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects queue fields are optional before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects clip fields are partial before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects nullable playing ID omitted before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects required unsupported audio before any command 2ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects wrong reply identity before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects external schema reference before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects cyclic schema reference before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects missing play command before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 structural deployment compatibility > rejects missing state seed before any command 1ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > allows prompt-only input and preserves optional defaults and opaque metadata 7ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > validates image bytes once, uploads distinct content once and preserves ordered duplicates 8ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > uploaded wire references require bigint sizes and avoid filesystem or repeat uploads 3ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > prepare is inert, captures detached bytes and sends exactly once after caller mutation 26ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > rejects invalid inputs, oversized metadata, audio and FastH3 fields before upload or dispatch 9ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > forwards valid continuation UUIDs without inventing a local retention requirement 3ms
+ ✓ test/h3/Provider.test.ts > H3 request capture and references > keeps the provider tokenizer authoritative and uses only an explicit SDK prompt byte bound 2ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > applies each returned model envelope only through Session.observe and retains duplicate visibility 6ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > replies before their broadcasts, as H3 sends them: commands settle on their own effects 7ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > an ACK followed by a body with the same request id is accepted exactly once 5ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > an ACK alone is unknown and never resubmitted by an inert submission 5ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > uses explicit command outcomes rather than guessing from failure codes 8ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > correlated rejection is replied while a delayed unrelated command_error cannot reject another request 7ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > late metadata evidence can prove acceptance after the command loses its result 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > the matched reply correlates an acceptance though a broadcast listed the clip first 6ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a broadcast that listed the clip proves it once the reply is lost, and its facts accrue meanwhile 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > an acknowledgement after a broadcast that listed the clip accepts it by that broadcast 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a new transport generation decides the evidence an unanswered enqueue held 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > evidence held for a reply that refuses the enqueue never becomes an acceptance 2ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > closing the provider records the evidence an unanswered enqueue held 1ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a provider failure records held evidence before it announces itself 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a waiter that held evidence resumes cannot send new work while the provider fails 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a waiter that held evidence resumes cannot send new work while the provider closes 2ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > an enqueue interrupted beneath an open provider records its evidence and leaves it open 3ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > an operation whose clip ended while its acceptance was held keeps its slot 2ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > two providers sharing one Session have different acceptance namespaces and retain each other's clips 4ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > foreign or changed acceptance metadata cannot settle a local enqueue 2ms
+ ✓ test/h3/Provider.test.ts > H3 command and observation authority > a command result never substitutes for a missing observation 1ms
+ ✓ test/h3/Provider.test.ts > H3 full-snapshot freshness and lifecycle > known acceptance makes stale empty snapshots Synchronizing until the explicit read barrier 3ms
+ ✓ test/h3/Provider.test.ts > H3 full-snapshot freshness and lifecycle > inconsistent full state and queue never claim readiness 7ms
+ ✓ test/h3/Provider.test.ts > H3 full-snapshot freshness and lifecycle > early starts and finishes cannot be reversed by a late queued/generated message 3ms
+ ✓ test/h3/Provider.test.ts > H3 full-snapshot freshness and lifecycle > foreign lifecycle and failures stay observable without an original request 2ms
+ ✓ test/h3/Provider.test.ts > H3 full-snapshot freshness and lifecycle > disconnect is visible without automatic reconnect; stale generations cannot change refreshed facts 2ms
+ ✓ test/h3/Provider.test.ts > H3 explicit commands > move sends only clip_id and position and accepts the reported clamped append position 3ms
+ ✓ test/h3/Provider.test.ts > H3 explicit commands > play and empty-argument stop preserve ACK versus later lifecycle facts without autoplay policy 2ms
+ ✓ test/h3/Provider.test.ts > H3 explicit commands > pop, settings and reset expose actual named replies and change nothing implicitly 4ms
+ ✓ test/h3/Provider.test.ts > H3 explicit commands > locally invalid command arguments are lazy not-submitted CommandFailure values 1ms
+ ✓ test/h3/Provider.test.ts > H3 explicit commands > named mutation ACKs do not fabricate payloads even when a subsequent refresh proves changed state 1ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > prepareFrom performs host work, validation, upload, commit and result under one submission 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > a failed result observer runs once and cannot replace a known acceptance 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > a stalled result observer is bounded and cannot replace the exact primary rejection 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > cancelling provisional host work releases its resources and permits a later clean attempt 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > cancelling upload prework never dispatches the clip later 1ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > a commit-hook refusal sends no command and leaves preparation retryable 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > caller cancellation after commit does not cancel or replay a late accepted enqueue 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > a known acceptance stays known when Session observation ends during reconciliation 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > pending acceptance and retained annotation counts are bounded without replay 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > malformed known payloads and missing clip duration fail observation with sanitized diagnostics 7ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > a malformed correlated acceptance stays unknown and does not create a clip or replay 1ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > foreign clip retention fails visibly at its bound instead of growing forever 1ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > retained provider bytes have a separate bound from clip counts 1ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > retained bytes are checked on every event, not only while acquiring 2ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > one slow observer fails with Overflow without blocking provider commands or new observers 3ms
+ ✓ test/h3/Provider.test.ts > H3 preparation, cancellation and bounds > closing the provider joins local resources while leaving the borrowed Session intact 1ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > cumulative JSON keys count toward the text budget with scalar values 6ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > JSON array accessors are rejected without executing them 0ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > a 100M-slot sparse array is charged against the node limit before any slot is read 0ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > a small sparse array is not JSON (JSON.stringify would invent null) 0ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > an array's non-index own keys are never read and are absent from the copy 1ms
+ ✓ test/JsonBounds.test.ts > json() structural bounds > control: dense arrays, cumulative string values and the node bound 35ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > coordinator limits: invalid requestTimeout is a typed, lazy InvalidInput 2ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: undefined value (control) is typed, not submitted, and sends nothing 18ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: non-finite number (control) is typed, not submitted, and sends nothing 7ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: sparse array is typed, not submitted, and sends nothing 3ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: million-slot sparse array is typed, not submitted, and sends nothing 3ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: cumulative key text over 4 MiB is typed, not submitted, and sends nothing 6ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > session.command input: an array index getter is never executed 4ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > H3 decode: unknown message with a non-finite number (control) fails observation with a typed Protocol error 12ms
+ ✓ test/JsonBounds.test.ts > public call sites: json() throws are typed failures, not defects > H3 decode: unknown message with cumulative key text over 4 MiB fails observation with a typed Protocol error 6ms
+ ✓ test/JsonBounds.test.ts > structFromObject (public ./wire) rejects sparse arrays synchronously 0ms
+ ✓ test/SequenceModel.test.ts > every operation applies whole or is refused with the state unchanged 170ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > expiry closes the remote lease while allowing bounded local accounting of an already known acceptance 24ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > a stalled reconnect is bounded by the source lifetime rather than the longer recovery budget 5ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > recovery waiting on a committed command closes its source at expiry and retains the unknown outcome 6ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > repeated pressure reads and reconnects count each retired generation's drops once 2ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > an unreadable retired generation prevents a later zero-drop sample from establishing complete pressure 1ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > a reconnect returning after explicit close cannot publish a ready handle or reopen readers 2ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > a switch completing autoplay after close cannot restore Ready 3ms
+ ✓ test/orchestration/LifetimeBoundary.test.ts > a replace completing autoplay after close cannot restore Ready 2ms
+ ✓ test/session.test.ts > session cleanup: a stalled publication release cannot prevent remote termination 35ms
+ ✓ test/session.test.ts > session cleanup: a publication release defect is reported and remote cleanup still runs 5ms
+ ✓ test/session.test.ts > session cleanup: a coordinator defect preserves an unconfirmed report and resolves repeated close 5ms
+ ✓ test/session.test.ts > session policy: source registration/ICE/SDP order, readiness and immediate correlated bodyless ACK 7ms
+ ✓ test/session.test.ts > session policy: 32 concurrent replies resolve by ID in reverse order, independent of observers 12ms
+ ✓ test/session.test.ts > session policy: absent model data, empty Struct, null fields and correlated remote errors stay distinct 5ms
+ ✓ test/session.test.ts > session policy: bodyless control does not ACK; schema validates its correlated payload 5ms
+ ✓ test/session.test.ts > session policy: readiness waits for connected peer AND BOTH channels, after HTTP answer 10ms
+ ✓ test/session.test.ts > session policy: failure during SDP HTTP exchange wins over answer/application errors 5ms
+ ✓ test/session.test.ts > session policy: failure DURING setRemoteDescription preserves the actual peer teardown cause 2ms
+ ✓ test/session.test.ts > session policy: a closed data channel fails the connection as ChannelClosed naming it 2ms
+ ✓ test/session.test.ts > session policy: missing readiness times out and releases the generation 7ms
+ ✓ test/session.test.ts > session policy: reconnect reuses connection with PUT, fails uncertain commands and fences retired callbacks 10ms
+ ✓ test/session.test.ts > session policy: late/duplicate model replies are observable, never settle a second command 9ms
+ ✓ test/session.test.ts > session policy: observation overflow fails only the slow subscriber, not correlated replies 4ms
+ ✓ test/session.test.ts > session policy: interrupted observer releases its registration while submitted command remains session-owned 7ms
+ ✓ test/session.test.ts > session policy: pending count overflow does not send an extra side effect 5ms
+ ✓ test/session.test.ts > session policy: allocation cancelled by close records unknown remote outcome, without retry 3ms
+ ✓ test/session.test.ts > session policy: concurrent connect/reconnect calls reject illegal state transitions 3ms
+ ✓ test/session.test.ts > session policy: owned close is idempotent; accepted deletion alone is not confirmed termination 4ms
+ ✓ test/session.test.ts > session policy: attached/pre-registered connection is never deleted and initially uses SDP POST 3ms
+ ✓ test/session.test.ts > session policy: an attached connection resumes its receive-only tracks, on connect and reconnect 4ms
+ ✓ test/session.test.ts > session policy: close has a bounded termination request even inside an uninterruptible finalizer 3ms
+ ✓ test/session.test.ts > session policy: heartbeat is immediate, generation-scoped, and stops after local close 4ms
+ ✓ test/session.test.ts > session policy: upload sequence allocates once, omits credentials on PUT, and reports notification submission only 3ms
+ ✓ test/session.test.ts > session policy: disconnect during upload aborts transfer and retains allocation/unknown-transfer recovery facts 5ms
+ ✓ test/session.test.ts > session policy: publisher slot, cloned outgoing/leased incoming track ownership, and cleanup 4ms
+ ✓ test/session.test.ts > session policy: pause tracks changes local direction before notification; failed send does not falsify local state 6ms
+ ✓ test/session.test.ts > session policy: recording/clip correlations and recorder-disabled error mapping 6ms
+ ✓ test/session.test.ts > publication session: replacement reuses a confirmed claim, owns clones, and unpublish is a notification 5ms
+ ✓ test/session.test.ts > publication session: rejected native replacement disposes candidate, preserves previous sender and confirmed remote claim 3ms
+ ✓ test/session.test.ts > publication session: rejected unpublish detach retains sender and sends no false retirement notification 2ms
+ ✓ test/session.test.ts > publication session: notification failure follows local sender retirement but does not confirm remote release 2ms
+ ✓ test/session.test.ts > publication session: interrupted in-flight native replacement retires the generation and stops both owned clones 17ms
+ ✓ test/session.test.ts > publication session: stalled native replacement has a deadline and cannot leave a live candidate outside ownership 4ms
+ ✓ test/session.test.ts > publication session: interruption while claiming sends no media and cannot replay a late accepted claim 2ms
+ ✓ test/session.test.ts > publication session: concurrent sender mutations are excluded; close releases an in-flight candidate 5ms
+ ✓ test/session.test.ts > publication session: interrupted native unpublish retires local generation without reporting remote release 14ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 cross-field rules > state_update: a nonpositive minimum fails at its path, naming no value 3ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 cross-field rules > state_update: a maximum below the minimum fails at its path, naming no value 0ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 cross-field rules > state_update: playback without a clip fails at its path, naming no value 0ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 cross-field rules > queue_update: a clip queued twice fails at the second position 0ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_queued requires the independent provider fields at both boundaries 8ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_moved requires the independent provider fields at both boundaries 2ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_popped requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_generated requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_failed requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_started requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_finished requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_stopped requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > queue_update requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > state_update requires the independent provider fields at both boundaries 5ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > command_error requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > seed_accepted requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > clip_length_accepted requires the independent provider fields at both boundaries 3ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > canvas_accepted requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > autoplay_accepted requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > flush_accepted requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > session_reset requires the independent provider fields at both boundaries 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > nested clip requirements stay shared while optional image and audio facts stay optional 2ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > deployment structure does not claim that payload values already passed the decoder 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 deployment and decoder contracts > prompt-only and omitted optional arguments remain compatible with non-null declarations 1ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > get_state keeps its arguments, named result, ACK and malformed outcomes 20ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > get_queue keeps its arguments, named result, ACK and malformed outcomes 8ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > pop keeps its arguments, named result, ACK and malformed outcomes 8ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > move keeps its arguments, named result, ACK and malformed outcomes 9ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > set_seed keeps its arguments, named result, ACK and malformed outcomes 7ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > set_clip_seconds keeps its arguments, named result, ACK and malformed outcomes 9ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > set_canvas keeps its arguments, named result, ACK and malformed outcomes 6ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > set_autoplay keeps its arguments, named result, ACK and malformed outcomes 5ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > set_flush_on_clip_end keeps its arguments, named result, ACK and malformed outcomes 10ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > reset keeps its arguments, named result, ACK and malformed outcomes 5ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > play accepts ACK or observed messages and preserves malformed/unknown uncertainty 6ms
+ ✓ test/h3/ProviderContracts.test.ts > H3 command consumers use the admitted reply identity > stop accepts ACK or observed messages and preserves malformed/unknown uncertainty 5ms
+ ✓ test/h3/ProviderContracts.test.ts > the shared profile's image MIME types are accepted while audio stays excluded 1ms
+ ✓ test/orchestration/Media.test.ts > sequence renewal waits for every old video frame, reports audio unverified, and forwards the new source 32ms
+ ✓ test/orchestration/Media.test.ts > planned handoff retains queued old video and audio instead of claiming the caller consumed them 10ms
+ ✓ test/orchestration/Media.test.ts > a short final clip switches once the default grace past its Ended has elapsed 14ms
+ ✓ test/orchestration/Media.test.ts > a final frame landing after Ended switches at once, inside the grace 19ms
+ ✓ test/orchestration/Media.test.ts > the handoff grace is validated when the orchestration is made 2ms
+ ✓ test/orchestration/Media.test.ts > a final clip whose Ended is lost switches once the grace past observed idle elapses 46ms
+ ✓ test/orchestration/Media.test.ts > a frame-only terminal failure fails media readers without requiring an engine-event reader 4ms
+ ✓ test/orchestration/Media.test.ts > unrecoverable media reports each lost clip with its source and replacement accepts fresh work 4ms
+ ✓ test/orchestration/Media.test.ts > reconnect reports clips missing from refreshed active state without inventing their lifecycle 5ms
+ ✓ test/orchestration/Media.test.ts > forwarded video and audio pressure counts held frames, samples and bytes exactly 2ms
+ ✓ test/orchestration/Media.test.ts > unconsumed video is bounded and overflow becomes a terminal typed failure 1ms
+ ✓ test/orchestration/Media.test.ts > unconsumed audio is bounded and overflow becomes a terminal typed failure 1ms
+ ✓ test/orchestration/Media.test.ts > the media tolerance is an orchestration option, validated when it is made 3ms
+ ✓ test/orchestration/Media.test.ts > a committed success result survives handle closure without a fresh dispatch 1ms
+ ✓ test/orchestration/Media.test.ts > a committed replied result survives handle closure without a fresh dispatch 4ms
+ ✓ test/orchestration/Media.test.ts > a committed unknown result survives handle closure without a fresh dispatch 3ms
+ ✓ test/orchestration/Media.test.ts > reconnect retains known drop evidence from retired media generations 2ms
+ ✓ test/orchestration/Media.test.ts > the output's loss totals carry a lost owner's losses into its replacement 3ms
+ ✓ test/orchestration/Media.test.ts > a prepared replacement's losses before it feeds the output are not the output's 8ms
+ ✓ test/orchestration/Media.test.ts > unavailable source pressure stays unknown in handoff evidence instead of becoming zero 3ms
+ ✓ test/orchestration/Media.test.ts > terminal media failure is published once and later source failures cannot overwrite it 3ms
+ ✓ test/orchestration/Media.test.ts > handoffReady stays false while an open sequence keeps the retiring source preferred 2ms
+ ✓ test/orchestration/Media.test.ts > source evidence preserves duplicate boundaries and uses monotonic grace after late Ended 6ms
+ ✓ test/orchestration/Media.test.ts > older session loss remains in the tail while a complete final clip permits handoff 26ms
+ ✓ test/orchestration/Media.test.ts > switch evidence is frozen before pressure and close wait while the aggregate tail keeps its accounting 20ms
+ ✓ test/orchestration/ElapsedTime.test.ts > a wall clock stepped back does not delay renewal: the next session is prepared at lifetime minus lead of elapsed time 75ms
+ ✓ test/orchestration/ElapsedTime.test.ts > a wall clock stepped forward does not bring renewal forward 24ms
+ ✓ test/orchestration/ElapsedTime.test.ts > a simulated build is measured on elapsed time, so a wall-clock step during it leaves its length unchanged 3ms
+ ✓ test/orchestration/Simulation.test.ts > simulation autoplay consumes clips in order while playout capacity keeps the next build queued 37ms
+ ✓ test/orchestration/Simulation.test.ts > removing a simulated ready clip immediately releases the next build without replaying playback 10ms
+ ✓ test/orchestration/Simulation.test.ts > failed simulated generation is skipped and closing the scope cancels unfinished playback 19ms
+ ✓ test/orchestration/Simulation.test.ts > actual simulation build ownership stays distinct from generation position and unknown timing is explicit 3ms
+ ✓ test/orchestration/Simulation.test.ts > simulation renderer hooks receive local annotations, extend duration, and release unpresented records once 2ms
+ ✓ test/orchestration/Simulation.test.ts > simulation media copies renderer buffers and explicit pauseAndStop joins the active presentation 4ms
+ ✓ test/orchestration/Simulation.test.ts > simulation session faults produce retained indeterminate sequence outcomes without committed replay 5ms
+ ✓ test/orchestration/Simulation.test.ts > simulation source rejects invalid options and layerSim provides one shared orchestration handle 1ms
+ ✓ test/orchestration/Simulation.test.ts > the simulation records a clip's audio references 2ms
+ ✓ test/orchestration/Simulation.test.ts > a simulation whose profile takes no audio refuses a clip with audio, not submitted 1ms
+ ✓ test/session/CommandSpan.test.ts > command span: a reply exports identity and outcome, never the input or the reply 33ms
+ ✓ test/session/CommandSpan.test.ts > command span: a remote error exports its code and outcome; only the caller reads provider text 10ms
+ ✓ test/session/CommandSpan.test.ts > control span: a remote control error is exported by code; the caller reads its text 4ms
+ ✓ test/session/CommandSpan.test.ts > control span: a failed clip is a replied request; its reason reaches only the caller 5ms
+ ✓ test/session/CommandSpan.test.ts > command span: after the caller stops waiting, the child span ends Timeout/unknown at the command's own deadline 58ms
+ ✓ test/session/CommandSpan.test.ts > command span: pre-dispatch rejections and notifications open no span 58ms
+ ✓ test/HttpPlatform.test.ts > coordinator exchanges use the supplied Effect HttpClient 7ms
+ ✓ test/HttpPlatform.test.ts > create resolves on the session id alone; describe fails with that id 9ms
+ ✓ test/HttpPlatform.test.ts > empty session ids and model names are lazy typed failures, never defects 1ms
+ ✓ test/HttpPlatform.test.ts > empty bodies differ from JSON null and actual response bytes are bounded 2ms
+ ✓ test/HttpPlatform.test.ts > request interruption aborts Fetch and releases an owned response reader 3ms
+ ✓ test/HttpPlatform.test.ts > a lost DELETE reply is followed by independent remote-termination confirmation 8ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, valid document 2ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, invalid UTF8 2ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, truncated JSON 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, bodyless HTTP error 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session create, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, absent body 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, error exceeds bytes 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, bodyless HTTP error 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session read, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, literal null 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, error exceeds bytes 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, bodyless HTTP error 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session ready, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, literal null 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, bodyless HTTP error 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session register, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, literal null 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, bodyless HTTP error 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session answer, empty chunks exceed count 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, bodyless HTTP error 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator pricing, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, valid document 5ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, absent body 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, whitespace body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, bodyless HTTP error 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator token, empty chunks exceed count 2ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, valid document 4ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, empty body 7ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, whitespace body 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, invalid UTF8 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, bodyless HTTP error 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator inspect, empty chunks exceed count 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, valid document 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, literal null 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, empty body 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, whitespace body 2ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, invalid UTF8 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, truncated JSON 2ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, success exceeds bytes 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, bodyless HTTP error 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: session terminate, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, valid document 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, literal null 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, absent body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, empty body 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, whitespace body 1ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, invalid UTF8 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, truncated JSON 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, success exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, error exceeds bytes 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, bodyless HTTP error 0ms
+ ✓ test/HttpPlatform.test.ts > shared response matrix: coordinator terminate, empty chunks exceed count 0ms
+ ✓ test/HttpPlatform.test.ts > termination evidence matrix through session client 5ms
+ ✓ test/HttpPlatform.test.ts > termination evidence matrix through coordinator client 2ms
+ ✓ test/HttpPlatform.test.ts > response bytes are owned even when a supplied client reuses its chunk buffer 1ms
+ ✓ test/HttpPlatform.test.ts > cross-origin uploads and public coordinator endpoints never receive the session credential 1ms
+ ✓ test/orchestration/SchedulerCore.test.ts > a higher lane plays before a lower lane while both are waiting 87ms
+ ✓ test/orchestration/SchedulerCore.test.ts > scheduler refuses a request that forces placement on another session 4ms
+ ✓ test/orchestration/SchedulerCore.test.ts > a persistent capacity refusal is retried at a bounded pace 6ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > the adapter's audio bounds are the ones the frozen schema states 2ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > a deployment that declares reference_audios admits audio; one that does not is still admitted 7ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > a deployment declaring reference_audios in another shape, or fewer than three, is refused 8ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > audio uploads with its container's MIME type and is sent as reference_audios, which the clip reports 40ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > a request without audio sends no reference_audios, as before 6ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > identical audio bytes upload once and a validated reference is reused without revalidation 19ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > an existing audio upload is forwarded without uploading, and its MIME type must be audio 11ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > each documented container is recognized, and WAV, FLAC and Ogg headers are read 17ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > audio outside the documented bounds is refused before anything is uploaded or sent 66ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > audio with only a continuation, two with a continuation and twelve references in all are sent 17ms
+ ✓ test/h3/ProviderAudio.test.ts > H3 reference audio against the frozen schema > a deployment without reference_audios refuses audio as UnsupportedCapability, uploading nothing 4ms
+ ✓ test/h3/ProviderReferences.test.ts > URI preparation rereads changed bytes at the same file path and uploads the new content 58ms
+ ✓ test/h3/ProviderReferences.test.ts > identical bytes at different URIs are reread but share a content-addressed upload 8ms
+ ✓ test/h3/ProviderReferences.test.ts > reference preparation succeeds without writable staging and preserves source files 11ms
+ ✓ test/h3/ProviderReferences.test.ts > corrupt source bytes fail validation before upload or enqueue and leave no staged files 4ms
+ ✓ test/h3/ProviderReferences.test.ts > interrupted reference IO closes its stream, never enqueues later, and creates no staging files 4ms
+ ✓ test/h3/ProviderReferences.test.ts > upload failure leaves a closed source reader and no staging files or generation dispatch 8ms
+ ✓ test/h3/ProviderReferences.test.ts > cancelling after file read while upload waits cannot leave temporary files or enqueue 4ms
+ ✓ test/h3/ProviderReferences.test.ts > the standalone URI loader retains typed malformed-URL and encoded-byte bounds 8ms
+ ✓ test/h3/ProviderReferences.test.ts > reference uploads run under H3's upload budget, not its one-second reply budget 5ms
+ ✓ test/h3/ProviderReferences.test.ts > concurrent submissions single-flight identical reference uploads without a URI cache 5ms
+ ✓ test/Spans.test.ts > create names the model and its session; close carries the termination verdict 17ms
+ ✓ test/Spans.test.ts > connect marks each phase in order and names its generation 19ms
+ ✓ test/Spans.test.ts > an upload names its MIME type and size, never its name or bytes 9ms
+ ✓ test/Spans.test.ts > heartbeats are not traced 17ms
+ ✓ test/Spans.test.ts > an H3 enqueue is traced on its own execution, with its acceptance wait 13ms
+ ✓ test/Spans.test.ts > renewal traces each opened source, and its tick traces nothing 8ms
+ ✓ test/Duration.test.ts > duration > a bare number is milliseconds and a unit string is decoded 1ms
+ ✓ test/Duration.test.ts > duration > NaN is rejected in every input shape, although Duration decodes it as zero 1ms
+ ✓ test/Duration.test.ts > duration > negative, zero, infinite, too long and fractional-second input follow the policy 1ms
+ ✓ test/Duration.test.ts > duration > input that is not a duration is rejected 1ms
+ ✓ test/Duration.test.ts > renewal lead: a bare 30 is 30 milliseconds, not 30 seconds 53ms
+ ✓ test/Duration.test.ts > renewal: a NaN lead fails make with InvalidInput 1ms
+ ✓ test/Duration.test.ts > session: a call's replyTimeout overrides the session's, as a Timeout of unknown outcome 55ms
+ ✓ test/Duration.test.ts > session: invalid time options fail with InvalidInput before any request 1ms
+ ✓ test/Duration.test.ts > removed unit-suffixed keys no longer compile, held or spread 0ms
+ ✓ test/Duration.test.ts > renewal: a lead as long as the source lifetime is refused when the source opens 1ms
+ ✓ test/orchestration/Renewal.test.ts > failed and interrupted acquisition immediately join their owned source scopes 16ms
+ ✓ test/orchestration/Renewal.test.ts > an AcquisitionFailure from open fails make unchanged, with its cleanup by reference 1ms
+ ✓ test/orchestration/Renewal.test.ts > a replacement's AcquisitionFailure is the terminal failure, and cleanup keeps its report 8ms
+ ✓ test/orchestration/Renewal.test.ts > logical preparation is inert and selects the live source only when submitted after renewal 14ms
+ ✓ test/orchestration/Renewal.test.ts > continuation and insertion remain on the old owner while independent requests use a warm replacement 3ms
+ ✓ test/orchestration/Renewal.test.ts > a sequence conflicting with a warm-source anchor or continuation sends nothing 3ms
+ ✓ test/orchestration/Renewal.test.ts > before position is revalidated after prework and a changed route never commits 3ms
+ ✓ test/orchestration/Renewal.test.ts > cancelling prework releases provisional resources and leaves no sequence or delayed dispatch 3ms
+ ✓ test/orchestration/Renewal.test.ts > caller cancellation after commit keeps one dispatch and records final acceptance before sealing 4ms
+ ✓ test/orchestration/Renewal.test.ts > concurrent sequence members share their owner and sealing waits for earlier pending work 2ms
+ ✓ test/orchestration/Renewal.test.ts > a definitive rejected final member seals the sequence and frees the renewal boundary 4ms
+ ✓ test/orchestration/Renewal.test.ts > unknown commit outcome remains indeterminate through retirement, late events and explicit release 7ms
+ ✓ test/orchestration/Renewal.test.ts > close joins pending commit accounting and preserves each canonical attached cleanup exactly once 3ms
+ ✓ test/orchestration/Renewal.test.ts > flattened queued, building, ready and playing records name their owning session 3ms
+ ✓ test/orchestration/Renewal.test.ts > an empty replacement is visible as the preferred session while the old queue drains 1ms
+ ✓ test/orchestration/Renewal.test.ts > pauseAndStop applies explicit policy and moves refuse ranks in another session 3ms
+ ✓ test/orchestration/Renewal.test.ts > foreign startup playback and incomplete snapshots prohibit canvas mutation 1ms
+ ✓ test/orchestration/Renewal.test.ts > frame failure exposes recovery without an application control reader and reconnect preserves queued work 5ms
+ ✓ test/orchestration/Renewal.test.ts > queued removal and committed work cannot deadlock recovery 3ms
+ ✓ test/orchestration/Renewal.test.ts > generation capacity is enforced before physical preparation and includes a true active build 1ms
+ ✓ test/session-media.test.ts > media generations: retirement preserves pressure evidence and fences queued old samples 34ms
+ ✓ test/session-media.test.ts > media generations: a failed frame source reaches a frame-only consumer 10ms
+ ✓ test/session-media.test.ts > media generations: reconnect retires a parked read without requiring a peer EOF 7ms
+ ✓ test/session-media.test.ts > browser generation projection: retired capabilities cannot publish into a replacement 6ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: cancel -> reply -> expire preserves the original committed outcome 25ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: cancel -> expire -> reply preserves the original committed outcome 6ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: reply -> cancel -> expire preserves the original committed outcome 4ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: reply -> expire -> cancel preserves the original committed outcome 3ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: expire -> cancel -> reply preserves the original committed outcome 4ms
+ ✓ test/orchestration/RenewalTrace.test.ts > accepted: expire -> reply -> cancel preserves the original committed outcome 2ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: cancel -> reply -> expire preserves the original committed outcome 2ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: cancel -> expire -> reply preserves the original committed outcome 2ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: reply -> cancel -> expire preserves the original committed outcome 2ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: reply -> expire -> cancel preserves the original committed outcome 3ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: expire -> cancel -> reply preserves the original committed outcome 2ms
+ ✓ test/orchestration/RenewalTrace.test.ts > rejected: expire -> reply -> cancel preserves the original committed outcome 3ms
+ ✓ test/CorrelatorModel.test.ts > a request is matched at most once, in its own generation, and completes only then 44ms
+ ✓ test/http.test.ts > HTTP source headers, cloud create shape, readiness 202/backoff and per-request credentials 22ms
+ ✓ test/http.test.ts > HTTP local start excludes model and auth; local signaling still uses auth 5ms
+ ✓ test/http.test.ts > HTTP descriptor readiness is capabilities+transport, not ACTIVE; terminal and unknown states 2ms
+ ✓ test/http.test.ts > HTTP 426/501 are nonretryable version mismatches that keep body/status for inspection 1ms
+ ✓ test/http.test.ts > HTTP refusals keep status, Retry-After and body in the Http reason, not the message 1ms
+ ✓ test/http.test.ts > HTTP deadlines cover response reads and cancel stalled readers 13ms
+ ✓ test/http.test.ts > HTTP response byte limit and strict UTF8/JSON decoding 2ms
+ ✓ test/http.test.ts > HTTP no unsafe retries of creation after a network/ack timeout 12ms
+ ✓ test/http.test.ts > token source contract: null, scoped restrictions, exact uint64, reject typo 2ms
+ ✓ test/http.test.ts > HTTP termination request response and terminal confirmation are separate facts 5ms
+ ✓ test/http.test.ts > Retry-After accepts only finite nonnegative delta seconds 0ms
+ ✓ test/http.test.ts > source ICE and SDP HTTP paths/bodies and registration full uint32 3ms
+ ✓ test/orchestration/ResumeH3.test.ts > a resume adopts the recorded session with its token and takes its lifetime from endsAt 21ms
+ ✓ test/orchestration/ResumeH3.test.ts > resuming a busy session only reads it: no canvas, reset or playback command is sent 6ms
+ ✓ test/orchestration/ResumeH3.test.ts > a record without endsAt, for another model, past its end, or with a canvas is refused before any attach 2ms
+ ✓ test/orchestration/ResumeH3.test.ts > a resume that fails after attaching terminates the adopted session and reports it 3ms
+ ✓ test/orchestration/ResumeH3.test.ts > renewal retires a resumed source by terminating its adopted session 47ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > each phase resolves once, with the transport generation of its evidence 34ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > a start observed before the reply resolves generated as well 5ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > a clip that fails before it starts fails started with ClipEnded 5ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > a queue snapshot after reconnect advances the facts, naming the new generation 8ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > an unknown enqueue is attributed by later evidence, and acceptances stay unchanged 8ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > a definite enqueue failure fails every fact with that failure 2ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > retirement resolves what evidence did not decide as Indeterminate 5ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > a table full of unresolved operations refuses a commit before sending it 3ms
+ ✓ test/h3/ProviderOperations.test.ts > H3 clip operations > releasing an operation's scope acknowledges it and frees its slot 3ms
+ ✓ test/session/Cleanup.test.ts > cleanup phases: independent publication, retirement, scope and remote failures all survive 8ms
+ ✓ test/session/Cleanup.test.ts > cleanup phases: publication deadline remains bounded under the close mask (25 ms reply budget) 4ms
+ ✓ test/session/Cleanup.test.ts > cleanup phases: publication deadline remains bounded under the close mask (5000 ms reply budget) 4ms
+ ✓ test/session/Cleanup.test.ts > cleanup phases: a host that throws while its generation retires is still reported, not a defect 1ms
+ ✓ test/session/Cleanup.test.ts > session lifecycle: interrupted concurrent close joins shutdown and publishes one report before callbacks 17ms
+ ✓ test/session/Cleanup.test.ts > session lifecycle: phase events retain their generation and order through reconnect and close 10ms
+ ✓ test/session/Cleanup.test.ts > session lifecycle: a retired generation's shutdown defect reaches reconnect without reviving its callbacks 4ms
+ ✓ test/session/Cleanup.test.ts > session lifecycle: close preserves an unresolved publication and fences its late claim response 5ms
+ ✓ test/h3/ProviderEvidence.test.ts > matching submission fields still require the exact captured prompt and metadata bytes 39ms
+ ✓ test/h3/ProviderEvidence.test.ts > expired acceptance tokens cannot be revived by late matching clips and release their pending capacity 9ms
+ ✓ test/h3/ProviderEvidence.test.ts > bounded reconciliation retains the exact unknown failure, original code and structured cause 4ms
+ ✓ test/stats.test.ts > stats policy: real counter rates use elapsed time and a minimum observation interval 3ms
+ ✓ test/stats.test.ts > stats policy: generation changes and decreasing counters reset the rate baseline 0ms
+ ✓ test/stats.test.ts > stats policy: unsafe numeric counters are flagged, never reconstructed as precise bigint 0ms
+ ✓ test/stats.test.ts > stats policy: signed packet-loss correction is preserved without a negative loss ratio 0ms
+ ✓ test/stats.test.ts > stats policy: missing nominated succeeded pair is explicit and bounded input is validated 4ms
+ ✓ test/stats.test.ts > stats policy: the pair carrying traffic is reported, not a nominated pair ICE moved off 0ms
+ ✓ test/stats.test.ts > stats policy: a pair keeps its identity when the native host renumbers its pairs 0ms
+ ✓ test/stats.test.ts > stats policy: a transport's selected pair is reported where the host names one 0ms
+ ✓ test/stats.test.ts > session stats use the injected monotonic clock across wall jumps and reconnect reset 70ms
+ ✓ test/orchestration/OpenH3.test.ts > the owner is registered after allocation, with the grant, before connect 19ms
+ ✓ test/orchestration/OpenH3.test.ts > a failed registration closes the allocated session before failing, and never connects 1ms
+ ✓ test/orchestration/OpenH3.test.ts > a failed mint allocates nothing 1ms
+ ✓ test/orchestration/OpenH3.test.ts > the opener is a renewal open 10ms
+ ✓ test/orchestration/OpenH3.test.ts > the orchestration layer provides one handle's three services 5ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs retains a ready clip's physical owner without inventing a generation position 6ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses missing identity before dispatch 1ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses ambiguous identity before dispatch 0ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses retired source before dispatch 0ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses recovering source before dispatch 0ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses conflicting continuation before dispatch 0ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs refuses conflicting insertion before dispatch 0ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > a ready-owner constraint binds a fresh sequence to the old source while renewal is warm 18ms
+ ✓ test/orchestration/OwnershipAnchor.test.ts > sameSessionAs is revalidated after prework and cannot move an already bound sequence 6ms
+ ✓ test/Client.test.ts > a shared Client allocates independent sessions without opening peers 20ms
+ ✓ test/Client.test.ts > owned allocation is cleaned up when the caller fails before connect 2ms
+ ✓ test/Client.test.ts > a create reply with a valid id and an unknown track kind still terminates the session it names 3ms
+ ✓ test/Client.test.ts > a create reply with a valid id and malformed capabilities still terminates the session it names 2ms
+ ✓ test/Client.test.ts > closing an attached session does not clear or terminate the remote owner 1ms
+ ✓ test/Client.test.ts > closing an adopted session terminates it: one DELETE, then a read that confirms the end 1ms
+ ✓ test/Client.test.ts > a failed connected adoption terminates the session it adopted and reports that 1ms
+ ✓ test/Client.test.ts > adopt is true or absent; anything else is refused before any request 1ms
+ ✓ test/Client.test.ts > a host check that fails refuses before remote allocation 0ms
+ ✓ test/Client.test.ts > invalid JS input fails through the typed channel before allocation 0ms
+ ✓ test/Client.test.ts > hybrid variables cannot change create into attach or attach into create 2ms
+ ✓ test/Client.test.ts > connected acquisition failure closes its allocated session while the outer scope remains open 3ms
+ ✓ test/Client.test.ts > failed attached connection never allocates or deletes its remote owner 1ms
+ ✓ test/Client.test.ts > close retains failed remote termination after successful local disposal 1ms
+ ✓ test/Client.test.ts > a failed connected acquisition exposes unconfirmed cleanup without retaining its local lease 1ms
+ ✓ test/orchestration/EngineObserve.test.ts > observeWith subscribes before reading, so an event emitted during the read is kept 6ms
+ ✓ test/orchestration/EngineObserve.test.ts > an engine observation pairs its state with later events and re-syncs after overflow 10ms
+ ✓ test/JsonProperties.test.ts > json() copies well-formed JSON exactly and refuses the rest as a protocol failure 16ms
+ ✓ test/JsonProperties.test.ts > a JSON object survives the wire Struct and its encoding 17ms
+ ✓ test/orchestration/Expiry.test.ts > expiry settles a committed pending member as unknown before sequence retirement and never replays it 28ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 1x1 pixels with valid checksums across stored-block boundaries 5ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 32x24 pixels with valid checksums across stored-block boundaries 2ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 1456x15 pixels with valid checksums across stored-block boundaries 8ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 21845x1 pixels with valid checksums across stored-block boundaries 8ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 160x160 pixels with valid checksums across stored-block boundaries 4ms
+ ✓ test/Png.test.ts > portable PNG fixtures > decodes 512x128 pixels with valid checksums across stored-block boundaries 11ms
+ ✓ test/Png.test.ts > portable PNG fixtures > base64 encodes a byte view without including its backing-buffer neighbors 1ms
+ ✓ test/orchestration/FromH3Session.test.ts > fromH3Session fails before any provider command on a host without decoded media 53ms
+ ✓ test/orchestration/FromH3Session.test.ts > fromH3Session fails before any provider command when the session is not connected 3ms
+ ✓ test/orchestration/FromH3Session.test.ts > fromH3Session derives its media from the session and takes no media option 0ms
+ ✓ test/wire.test.ts > malformed wire: zero tag 5ms
+ ✓ test/wire.test.ts > malformed wire: invalid wire 0ms
+ ✓ test/wire.test.ts > malformed wire: truncated tag varint 0ms
+ ✓ test/wire.test.ts > malformed wire: uint64 overflow 0ms
+ ✓ test/wire.test.ts > malformed wire: length overflow 0ms
+ ✓ test/wire.test.ts > malformed wire: invalid UTF8 0ms
+ ✓ test/wire.test.ts > malformed wire: known wrong wire type (intentional strictness) 0ms
+ ✓ test/wire.test.ts > malformed wire: unexpected end group 0ms
+ ✓ test/wire.test.ts > malformed wire: mismatched group 0ms
+ ✓ test/wire.test.ts > malformed wire: unterminated group 0ms
+ ✓ test/wire.test.ts > wire bounds: message bytes, depth and field count 1ms
+ ✓ test/wire.test.ts > wire UTF8: reject lone UTF16 surrogate instead of silently replacing it 0ms
+ ✓ test/wire.test.ts > wire int64: bounds reject wrapping 0ms
+ ✓ test/wire.test.ts > wire unsigned varint covers all 64 bits 0ms
+ ✓ test/wire.test.ts > wire canonical minimal bodyless ack bytes 0ms
+ ✓ test/wire.test.ts > JSON command validation: top object, finite numbers, cycles, prototypes and accessors 4ms
+ ✓ test/wire.test.ts > JSON object boundary retains owned frozen output and original validation bounds 28ms
+ ✓ test/wire.test.ts > Struct conversion preserves object/null/absence differences and resists prototype pollution 0ms
+ ✓ test/wire.test.ts > Struct helper source semantics: unset Value/nonfinite numbers normalize to JSON null only at conversion 0ms
+ ✓ test/ErrorPrivacy.test.ts > native backend text stays Redacted: absent from Cause.pretty and the OTLP export 18ms
+ ✓ test/ErrorPrivacy.test.ts > a JSON SyntaxError quoting the body stays in detail: absent from Cause.pretty and OTLP 7ms
+ ✓ test/orchestration/SimulationFrames.test.ts > simulation media gives each frame its own exact buffer when the renderer passes views into one slab 24ms
+ ✓ test/orchestration/RenewalState.test.ts > expiry outranks replacement preparation and every warm-source state 2ms
+ ✓ test/orchestration/RenewalState.test.ts > preparation observes the lead boundary and backoff without allocating twice 0ms
+ ✓ test/orchestration/RenewalState.test.ts > a closing handle and an independently recovering source do not receive a second lifecycle operation 0ms
+ ✓ test/orchestration/RenewalState.test.ts > a handoff requires complete independent queue, sequence and media evidence 0ms
+ ✓ test/orchestration/RenewalState.test.ts > a short final clip hands off once its grace past Ended has elapsed 0ms
+ ✓ test/orchestration/RenewalState.test.ts > recovery uses remaining lifetime while cleanup can retain its full independent budget 0ms
+ ✓ test/orchestration/RenewalState.test.ts > all lifecycle traces through five events preserve closure and recovery escalation 2ms
+ ✓ test/orchestration/RenewalState.test.ts > handoff evidence preserves every policy decision at and around the grace boundary 6ms
+ ✓ test/orchestration/Retention.test.ts > reserve before opening, including a closing source whose report already arrived 8ms
+ ✓ test/orchestration/Retention.test.ts > failure budget reserves room for both current and replacement cleanup 2ms
+ ✓ test/orchestration/Retention.test.ts > newest complete rows survive eviction with exact separate omitted counters 4ms
+ ✓ test/orchestration/Retention.test.ts > failed acquisitions sharing one no-allocation lease each count once 3ms
+ ✓ test/orchestration/Retention.test.ts > unknown, erroneous and contradictory cleanup is never compacted 2ms
+ ✓ test/orchestration/Retention.test.ts > local retirement failures retain clean canonical evidence by reference 1ms
+ ✓ test/orchestration/Retention.test.ts > a close defect with no report remains explicit; conflicting reports stop further admission 1ms
+ ✓ test/orchestration/Retention.test.ts > retirement order is independent of acquisition order and retained incompletes 1ms
+ ✓ test/orchestration/Retention.test.ts > retention limits reject invalid inputs before reservations exist 1ms
+ ✓ test/orchestration/Retention.test.ts > identified acquisition failures have no invented accounting or affinity obligation 0ms
+ ✓ test/orchestration/Retention.test.ts > physical identity is bounded and cannot change within an ownership attempt 1ms
+ ✓ test/orchestration/Retention.test.ts > contradictory DELETE facts and a different physical lease identity remain incomplete 1ms
+ ✓ test/errors.test.ts > ReactorError > its reason carries the code and the message 2ms
+ ✓ test/errors.test.ts > ReactorError > fromCode builds the reason each code names 1ms
+ ✓ test/errors.test.ts > ReactorError > diagnostic JSON leaves out response bodies, backend text and details 1ms
+ ✓ test/errors.test.ts > ReactorError > decodes through its schema 1ms
+ ✓ test/errors.test.ts > ReactorError > catchReason and catchReasons route on the reason's tag 2ms
+ ✓ test/errors.test.ts > CommandFailure > keeps the reason and replaces the context with the dispatch evidence 2ms
+ ✓ test/errors.test.ts > CommandFailure > its schema requires the evidence that each outcome implies 1ms
+ ✓ test/errors.test.ts > CommandFailure > its schema tells a command failure from any other ReactorError 0ms
+ ✓ test/errors.test.ts > AcquisitionFailure > keeps the reason, the context and the very report its partial lease produced 0ms
+ ✓ test/errors.test.ts > PolicyFailure > a refusal names its reason and was never dispatched 0ms
+ ✓ test/errors.test.ts > PolicyFailure > an invalid request keeps its cause for inspection 0ms
+ ✓ test/errors.test.ts > PolicyFailure > an unowned clip names its request field; a sequence refusal carries its code 1ms
+ ✓ test/errors.test.ts > PolicyFailure > catchTag and catchReasons route a refusal by class and by reason 0ms
+ ✓ test/errors.test.ts > the four failure classes > one guard recognizes every class and each class guard only its own 0ms
+ ✓ test/errors.test.ts > the four failure classes > a Schema union round-trip keeps each class and its reason 4ms
+ ✓ test/errors.test.ts > the four failure classes > a policy refusal's outcome is the literal not-submitted 0ms
+ ✓ test/errors.test.ts > the four failure classes > the root drops ProviderFailure and nativeError, and exports ErrorContext as a type 0ms
+ ✓ test/errors.test.ts > the four failure classes > caller-owned prework keeps a refusal and a not-submitted command failure unchanged 0ms
+ ✓ test/errors.test.ts > classification > isRetryable is never true for an unknown outcome 0ms
+ ✓ test/errors.test.ts > classification > backpressure and a connection lost before dispatch are retryable 1ms
+ ✓ test/errors.test.ts > classification > a refusal from the provider and a local bug are not retryable 0ms
+ ✓ test/errors.test.ts > classification > retryAfter surfaces the delay an Http reason named 0ms
+ ✓ test/errors.test.ts > parsers > a parser's ReactorError is a typed failure; anything else it throws stays a defect 0ms
+ ✓ test/errors.test.ts > parsers > caller input chooses InvalidInput and not-submitted whatever the parser's category 1ms
+ ✓ test/Evidence.test.ts > evidence codecs > continuous summaries preserve exact bigint counts and cannot decode as complete legacy history 6ms
+ ✓ test/Evidence.test.ts > evidence codecs > encodes every reason as the failure's diagnostic JSON, and decodes it back 1ms
+ ✓ test/Evidence.test.ts > evidence codecs > round-trips a close report through JSON, keeping its failures as failures 1ms
+ ✓ test/Evidence.test.ts > evidence codecs > keeps each policy cleanup result of an orchestration report 4ms
+ ✓ test/Evidence.test.ts > evidence codecs > refuses JSON that is not a failure's diagnostic form 0ms
+ ✓ test/Evidence.test.ts > evidence codecs > encodes an allocation record, which has no token field 0ms
+ ✓ test/orchestration/RequestQueries.test.ts > capture detaches and freezes nested input without changing the caller's objects 4ms
+ ✓ test/orchestration/RequestQueries.test.ts > malformed request objects, accessors and unsupported provider fields fail without invoking getters 6ms
+ ✓ test/orchestration/RequestQueries.test.ts > audio is captured with an image or a continuation, detached from the caller 1ms
+ ✓ test/orchestration/RequestQueries.test.ts > prompt-only input is valid and request prework cannot borrow a command's unknown dispatch outcome 1ms
+ ✓ test/orchestration/RequestQueries.test.ts > startup idle and playback horizon require observed availability, record and start time 1ms
+ ✓ test/orchestration/MediaBuffer.test.ts > cancelling a video reader retains unconsumed frames and their byte accounting 10ms
+ ✓ test/orchestration/MediaBuffer.test.ts > a second concurrent reader fails with AlreadyReading instead of splitting the output 4ms
+ ✓ test/orchestration/MediaBuffer.test.ts > cancelling an audio reader preserves the next packet and exact sample counts 4ms
+ ✓ test/orchestration/MediaBuffer.test.ts > queue admission refuses overflow without changing accounting or accepting late output 2ms
+ ✓ test/session/Remote.test.ts > remote lifecycle: interrupted allocation cannot be retried or claimed by a late response 5ms
+ ✓ test/session/Remote.test.ts > remote lifecycle: closing an allocation retains unknown ownership without swallowing its failure 2ms
+ ✓ test/session/Remote.test.ts > remote lifecycle: owned evidence survives reconnect facts, attached identity never allocates 2ms
+ ✓ test/session/Remote.test.ts > remote lifecycle: a reply that names its session but cannot describe it is still owned 2ms
+ ✓ test/Recorder.test.ts > a gap in admission sequences becomes a Lost run at its position 3ms
+ ✓ test/Recorder.test.ts > frames before the first one received are not loss, and a restart is a new run 0ms
+ ✓ test/Contract.test.ts > a descriptor keeps raw, decodes null as absent, and is frozen 7ms
+ ✓ test/Contract.test.ts > the exported schemas describe the decoded shapes 1ms
+ ✓ test/Contract.test.ts > a malformed reply is Protocol, with its SchemaError path and without its values 6ms
+ ✓ test/Contract.test.ts > a create reply names its session even when the rest of it is malformed 0ms
+ ✓ test/Contract.test.ts > ICE servers and the SDP answer decode null credentials and connection ids as absent 1ms
+ ✓ test/session/Lifecycle.test.ts > lifecycle: replacing a generation fences callbacks before retiring the old peer 5ms
+ ✓ test/session/Lifecycle.test.ts > lifecycle: readiness requires all three signals in any order and cannot revive a failed peer 1ms
+ ✓ test/session/Lifecycle.test.ts > lifecycle: missing negotiated state stays a defect, while close refuses new work 1ms
+ ✓ test/MediaStream.test.ts > a cancel that never settles holds the finalizer for its bound, then the lock is released 13ms
+ ✓ test/orchestration/Routing.test.ts > joint sequence, before and continuation ownership stays old while replacement is warm 2ms
+ ✓ test/orchestration/Routing.test.ts > rejects sequence versus before conflict before choosing a dispatch 1ms
+ ✓ test/orchestration/Routing.test.ts > rejects sequence versus continuation conflict before choosing a dispatch 0ms
+ ✓ test/orchestration/Routing.test.ts > rejects before versus continuation conflict before choosing a dispatch 0ms
+ ✓ test/orchestration/Routing.test.ts > rejects all three owners conflict before choosing a dispatch 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects missing anchor as a local policy failure 1ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects missing continuation as a local policy failure 1ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects duplicate foreign identity as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects retired owner as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects missing bound owner as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects recovering owner as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects incomplete snapshot as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects anchor already left generation as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects expired continuation as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > routing rejects position disagrees with anchor as a local policy failure 0ms
+ ✓ test/orchestration/Routing.test.ts > a sealed sequence cannot migrate to the warm source 0ms
+ ✓ test/orchestration/Routing.test.ts > a retired sequence cannot migrate to the warm source 0ms
+ ✓ test/orchestration/Routing.test.ts > a indeterminate sequence cannot migrate to the warm source 0ms
+ ✓ test/orchestration/Routing.test.ts > an explicitly sealing sequence rejects new members 0ms
+ ✓ test/orchestration/Routing.test.ts > explicit positions including past end are unchanged and omitted append remains absent 0ms
+ ✓ test/orchestration/Routing.test.ts > generation order preserves the provider's non-head build position and enforces its capacity 0ms
+ ✓ test/orchestration/Routing.test.ts > unknown foreign playback contributes ownership without inventing a record 0ms
+ ✓ test/orchestration/Routing.test.ts > a generation order naming a missing clip is a broken invariant: a defect, not a refusal 0ms
+ ✓ test/Sequence.test.ts > sequence affinity exposes accepted identities, partial outcomes and explicit sealing 4ms
+ ✓ test/Sequence.test.ts > explicit seal closes zero-member sequences and waits for already-started members 1ms
+ ✓ test/Sequence.test.ts > indeterminate sequences never migrate or evict and require explicit accounting before release 1ms
+ ✓ test/Sequence.test.ts > member and sequence bounds are explicit and invalid configuration is typed 0ms
+ ✓ test/Sequence.test.ts > retiring a session turns pending members into retained unknown evidence 0ms
+ ✓ test/Sequence.test.ts > indeterminate status is absorbing when a later final member is accepted 0ms
+ ✓ test/Sequence.test.ts > retiring an already-indeterminate sequence resolves its remaining pending members as unknown 0ms
+ ✓ test/Sequence.test.ts > a rejected final member seals only after earlier pending members settle 0ms
+ ✓ test/Submission.test.ts > preparation is inert and repeated/concurrent submit commits once 6ms
+ ✓ test/Submission.test.ts > interruption before commit releases preparation resources and sends nothing 1ms
+ ✓ test/Submission.test.ts > commit registration is atomic with dispatch and a failed hook stays Prepared and retryable 1ms
+ ✓ test/Submission.test.ts > interruption after commit abandons only the caller and retains eventual completion 1ms
+ ✓ test/Submission.test.ts > session scope termination joins committed work and releases its resources 0ms
+ ✓ test/Submission.test.ts > a defective execution is recorded and is never retried 0ms
+ ✓ test/PublicTypes.test.ts > continuous public types > names continuous renewal and keeps its summary distinct from legacy history 1ms
+ ✓ test/PublicTypes.test.ts > public types > accepts an optional duration for the scheduler's unknown recovery deadline 0ms
+ ✓ test/PublicTypes.test.ts > public types > names the session's observation, readiness and attribution 0ms
+ ✓ test/PublicTypes.test.ts > public types > names an H3 clip operation and its facts 0ms
+ ✓ test/PublicTypes.test.ts > public types > names an engine's observation and a source's routed request 0ms
+ ✓ test/PublicTypes.test.ts > public types > keeps historical switch events assignable and exposes handoff evidence through Renewal 0ms
+ ✓ test/h3/Retained.test.ts > retained-byte accounting > an object held by several entries counts once, until its last holder drops it 1ms
+ ✓ test/h3/Retained.test.ts > retained-byte accounting > the total bounds the size of everything held from above 0ms
+ ✓ test/h3/Retained.test.ts > retained-byte accounting > swapping to the same object keeps its size, and swapping away releases it 0ms
+
+ Test Files  64 passed (64)
+      Tests  850 passed (850)
+   Start at  18:49:58
+   Duration  26.23s (tests 66%, import 30%, transform 4%, worker 1%)
+
+     Import  189 modules were evaluated 251 times · 6.91s total, 30% of tracked time
+             ~1.71s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+
