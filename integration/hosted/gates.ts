@@ -39,9 +39,19 @@ export const workSeconds = sessionSeconds - 10;
  * and a reference audio clip, and `resume`, the takeover through
  * `Orchestration.resumeH3`.
  */
-export const checks = ["vertical", "takeover", "turn", "audio", "resume", "scheduler"] as const;
+export const checks = [
+  "vertical",
+  "takeover",
+  "turn",
+  "audio",
+  "resume",
+  "scheduler",
+  "scheduler-renewal",
+] as const;
 export type Check = (typeof checks)[number];
-export const sessionsFor = (check: Check): number => (check === "scheduler" ? 2 : 1);
+export const sessionsFor = (check: Check): number =>
+  check === "scheduler" || check === "scheduler-renewal" ? 2 : 1;
+export const ceilingFor = (check: Check): number => sessionsFor(check) * maxCheckUsd;
 
 export interface Authorization {
   readonly check: Check;
@@ -106,11 +116,7 @@ export const authorize = (args: readonly string[]): Authorization => {
   );
   if (!given.has("--i-authorize-paid-sessions"))
     return refuse("paid use needs --i-authorize-paid-sessions from the authorizing maintainer");
-  const budgetUsd = usd(
-    given.get("budget-usd"),
-    "budget-usd",
-    check === "scheduler" ? maxSchedulerUsd : maxCheckUsd,
-  );
+  const budgetUsd = usd(given.get("budget-usd"), "budget-usd", ceilingFor(check as Check));
   const totalBudgetUsd = usd(given.get("total-budget-usd"), "total-budget-usd", maxTotalUsd);
   if (budgetUsd > totalBudgetUsd) return refuse("--budget-usd cannot exceed --total-budget-usd");
   const ledger = given.get("ledger") ?? "";
@@ -173,6 +179,13 @@ export interface Granted {
 export const acceptGrant = (granted: Granted): void => {
   if (granted.maxSessions !== 1 || granted.maxSessionSeconds > sessionSeconds)
     return refuse("the token grants more than one session of at most the capped length");
+};
+
+/** This scenario's timing depends on two full 50-second grants; shorter grants cannot qualify it. */
+export const acceptRenewalGrant = (granted: Granted): void => {
+  acceptGrant(granted);
+  if (granted.maxSessionSeconds !== sessionSeconds)
+    return refuse("scheduler-renewal requires the full 50-second granted cap");
 };
 
 /** A remote outcome the check observed. */

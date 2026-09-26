@@ -19,7 +19,7 @@ export const Media = Schema.Struct({
   hold: Schema.NullOr(Schema.Struct({ id: Schema.String, frame: Schema.Int })),
   /** Receive tracks the client paused. */
   paused: Schema.Array(Schema.String),
-  video: Schema.Literals(["live", "black", "frozen"]),
+  video: Schema.Literals(["live", "black", "frozen", "absent"]),
   audio: Schema.Boolean,
 });
 export interface Media extends Schema.Schema.Type<typeof Media> {}
