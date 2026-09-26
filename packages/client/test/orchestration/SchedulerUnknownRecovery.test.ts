@@ -624,6 +624,9 @@ test("overlapping uncertain filler identities reconcile independently and both h
       yield* fixture.refresh;
       yield* TestClock.adjust(100);
       expect(draining.pollUnsafe()).toBeDefined();
+      const stopped = yield* Effect.forkScoped(fixture.scheduler.failure);
+      yield* TestClock.adjust(10_000);
+      expect(stopped.pollUnsafe()).toBeUndefined();
       expect(fixture.calls.map(schedulerKeyOf)).toEqual([fillerKey(0), fillerKey(1)]);
     }),
   ));

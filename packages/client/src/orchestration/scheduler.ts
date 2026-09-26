@@ -1833,6 +1833,10 @@ export const makeScheduler = (
         const after = yield* engine.state;
         if (Option.isNone(after.playing) && !activeIds(after).some((clipId) => owned.has(clipId))) {
           drained = true;
+          // A truthful completed drain no longer needs a replacement to resume
+          // service, even when retirement left a capacity episode behind.
+          capacityRecovery = undefined;
+          updateRecovery(after);
           const replies = drainReplies.splice(0);
           for (const reply of replies) yield* Deferred.succeed(reply, undefined);
         }
