@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
 import type { JsonObject, Mapping } from "reactor-effect-client";
@@ -236,6 +236,7 @@ class TwinServer implements Twin {
   private deleted = 0;
   private enqueued = 0;
   private closing: Promise<void> | undefined;
+  private readonly sockets = new Set<Socket>();
 
   constructor(
     private readonly server: Server,
@@ -244,6 +245,13 @@ class TwinServer implements Twin {
     this.port = (server.address() as AddressInfo).port;
     this.url = `http://127.0.0.1:${this.port}`;
     this.apiKey = options.apiKey ?? `twin-api-key-${randomBytes(16).toString("hex")}`;
+    server.on("connection", (socket: Socket) => {
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+      // A connection accepted just before close can be delivered after shutdown
+      // begins. It belongs to this twin and must not outlive the server join.
+      if (this.closing !== undefined) socket.destroy();
+    });
     server.on("request", (request: IncomingMessage, response: ServerResponse) =>
       this.handle(request, response),
     );
@@ -280,7 +288,10 @@ class TwinServer implements Twin {
     }
     for (const link of this.links.values()) clearTimeout(link.hold);
     this.closing = new Promise((resolve) => this.server.close(() => resolve()));
-    this.server.closeAllConnections();
+    // Own raw sockets as well as HTTP requests: closeAllConnections left an
+    // accepted socket open in repeated Bun rehearsals.
+    // The server callback still joins their actual closure; no timer declares success.
+    for (const socket of this.sockets) socket.destroy();
     return this.closing;
   }
 
