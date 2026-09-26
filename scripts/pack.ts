@@ -19,6 +19,16 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { rules } from "./architecture.mjs";
+import {
+  completeQualification,
+  inspectConsumerTree,
+  resolveStackPackage,
+  resolveWorkspaceStack,
+  selectStack,
+  verifiedArchiveRequirements,
+  verifyInstalledArchive,
+  type ConsumerResolution,
+} from "./pack-effect-stack.js";
 
 /**
  * Installed-package qualification for the public workspace packages.
@@ -130,14 +140,11 @@ const run = (
 
 const typescriptVersion = catalog.typescript ?? fail("catalog must pin typescript");
 const nodeTypesVersion = catalog["@types/node"] ?? fail("catalog must pin @types/node");
-const effectVersion = catalog.effect ?? fail("catalog must pin effect");
-const nodePlatformVersion =
-  catalog["@effect/platform-node"] ?? fail("catalog must pin @effect/platform-node");
-const nodeSharedVersion =
-  workspace.overrides?.["@effect/platform-node-shared"] ??
-  fail("workspace must retain the shared Node platform override");
-if (nodeSharedVersion !== effectVersion)
-  fail("the shared-platform override must match the Effect catalog pin");
+// Release qualification selects frozen bytes; archive peers keep their ranges.
+const stack = selectStack(workspace, readFileSync(join(root, "bun.lock")));
+const { requirements, selected } = stack;
+const workspaceResolution = resolveWorkspaceStack(root, stack);
+const consumers: ConsumerResolution[] = [];
 
 // TypeScript 7 ships its compiler as an optional platform package. Install that
 // exact tool explicitly so --omit=optional can still prove the SDK works without
@@ -163,7 +170,8 @@ const node = realpathSync(
 );
 const bun = process.env.BUN_BINARY ?? process.execPath;
 const installer = process.env.PACK_INSTALLER ?? "npm";
-if (installer !== "npm" && installer !== "bun") fail("PACK_INSTALLER must be npm or bun");
+if (installer !== "npm" && installer !== "bun")
+  throw new Error("PACK_INSTALLER must be npm or bun");
 const keep = process.env.KEEP_PACK_TMP === "1";
 console.log(`consumer-installer ${installer} profile ${portableOnly ? "portable" : "full"}`);
 run(bun, ["--no-env-file", "run", "build"], root);
@@ -278,8 +286,8 @@ const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): voi
       if (/^(?:workspace|catalog):/.test(version))
         fail(`${manifest.name}: ${name} uses unpublished dependency protocol ${version}`);
     }
-  if (manifest.peerDependencies?.effect !== effectVersion)
-    fail(`${manifest.name} must declare the exact Effect peer ${effectVersion}`);
+  if (manifest.peerDependencies?.effect !== requirements.effect)
+    fail(`${manifest.name} must declare the Effect peer range ${requirements.effect}`);
   for (const [name, value] of Object.entries(manifest.exports)) {
     if (name.includes("*")) fail(`package export is not explicit: ${name}`);
     const conditions =
@@ -477,7 +485,7 @@ const install = (
     command,
     [
       ...args,
-      `effect@${effectVersion}`,
+      `effect@${selected.effect}`,
       ...installed.map((archive) => archive.installTarball),
       ...packages,
     ],
@@ -490,14 +498,49 @@ const install = (
   if (result.error !== undefined) throw result.error;
   if (result.status !== 0)
     fail(`${installer} install failed in ${directory}\n${result.stdout}${result.stderr}`);
-  for (const archive of installed) {
-    for (const [path, expected] of Object.entries(archive.fileSha256)) {
-      const installedPath = join(directory, "node_modules", archive.manifest.name, path);
-      if (!existsSync(installedPath) || sha256(readFileSync(installedPath)) !== expected)
-        fail(`installed ${archive.manifest.name} differs from the exact archive: ${path}`);
-    }
+  const verifiedArchives = installed.map((archive) => {
+    const verified = verifyInstalledArchive(directory, {
+      name: archive.manifest.name,
+      version: archive.manifest.version,
+      specifier: archive.installTarball,
+      fileSha256: archive.fileSha256,
+    });
     console.log(
       `installed-package-identity ${relative(isolated, directory)} ${archive.manifest.name} ${archive.files.size} files`,
+    );
+    return verified;
+  });
+  if (installer === "bun") {
+    const manifestPath = join(directory, "package.json");
+    const original = readFileSync(manifestPath, "utf8");
+    const evidencePrefix = `install-${relative(isolated, directory)}`;
+    writeFileSync(join(packDirectory, `${evidencePrefix}.manifest.json`), original);
+    const normalized =
+      JSON.stringify(verifiedArchiveRequirements(JSON.parse(original), verifiedArchives), null, 2) +
+      "\n";
+    writeFileSync(manifestPath, normalized);
+    writeFileSync(join(packDirectory, `${evidencePrefix}.normalized-manifest.json`), normalized);
+    writeFileSync(
+      join(packDirectory, `${evidencePrefix}.normalization.json`),
+      JSON.stringify(
+        {
+          format: "reactor-pack-archive-requirements/v1",
+          installer,
+          reason: "Bun omits npm local-tarball provenance metadata",
+          originalManifest: `${evidencePrefix}.manifest.json`,
+          normalizedManifest: `${evidencePrefix}.normalized-manifest.json`,
+          verification: "complete-installed-archive-byte-identity",
+          archives: installed.map((archive) => ({
+            name: archive.manifest.name,
+            version: archive.manifest.version,
+            installSpecifier: archive.installTarball,
+            sha256: archive.sha256,
+            filesChecked: archive.files.size,
+          })),
+        },
+        null,
+        2,
+      ) + "\n",
     );
   }
   if (!existsSync(join(directory, "node_modules", compilerPlatform, "package.json")))
@@ -567,7 +610,7 @@ const typecheck = (
     );
     include = [...include, "effect-node-globals.d.mts"];
     writeConfig();
-    console.log(`effect-no-dom-exception TextDecoderOptions (effect@${effectVersion})`);
+    console.log(`effect-no-dom-exception TextDecoderOptions (effect@${selected.effect})`);
   }
 
   run(node, ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"], directory);
@@ -658,11 +701,33 @@ const guarded = (directory: string, denyNative: boolean): NodeJS.ProcessEnv => (
   NODE_PATH: "",
 });
 
+const checkConsumerStack = (
+  directory: string,
+  name: ConsumerResolution["name"],
+): ConsumerResolution => {
+  const effect = resolveStackPackage(join(directory, "package.json"), "effect", stack);
+  const resolved = relative(realpathSync(directory), effect.path);
+  if (isAbsolute(resolved) || resolved === ".." || resolved.startsWith(`..${sep}`))
+    fail(`${name}: Effect resolved outside the isolated consumer`);
+  // Keep npm's invalid-peer diagnostics even when Bun performed the install.
+  const dependencies = run(
+    "npm",
+    ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
+    directory,
+  );
+  writeFileSync(
+    join(packDirectory, `${name === "portable-node" ? "portable" : name}-dependencies.json`),
+    dependencies,
+  );
+  return inspectConsumerTree(name, installer, JSON.parse(dependencies), stack);
+};
+
 try {
   const browserArchive = archives.get("browser") ?? fail("browser archive was not produced");
 
   const portable = initConsumer("portable-node");
   install(portable, [client], [...compilerPackages, `@types/node@${nodeTypesVersion}`], true);
+  const portableStack = checkConsumerStack(portable, "portable-node");
   copyFileSync(fixture("portable-import.mjs"), join(portable, "portable-import.mjs"));
   const portableOutput = run(
     node,
@@ -716,10 +781,12 @@ try {
   checkRuntimeFixtures(portable, ["example-smoke.mjs"]);
   copyFileSync(fixture("browser-bundle-smoke.mjs"), join(portable, "browser-bundle-smoke.mjs"));
   checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"]);
+  consumers.push(portableStack);
   releaseConsumer(portable);
 
   const browser = initConsumer("browser");
   install(browser, [client, browserArchive], compilerPackages, true);
+  const browserStack = checkConsumerStack(browser, "browser");
   copyFileSync(fixture("browser-import.mjs"), join(browser, "browser-import.mjs"));
   const browserOutput = run(
     node,
@@ -769,53 +836,26 @@ try {
     false,
     stageExamples(browser, "browser"),
   );
+  consumers.push(browserStack);
   releaseConsumer(browser);
 
   const nativeArchive = archives.get("native");
   if (nativeArchive !== undefined) {
     // npm applies overrides only at the consumer root. The platform's prerelease
     // caret range otherwise admits a later shared platform and a second Effect.
-    const native = initConsumer("native", { "@effect/platform-node-shared": nodeSharedVersion });
+    const native = initConsumer("native", { "@effect/platform-node-shared": selected.nodeShared });
     install(
       native,
       [client, nativeArchive],
       [
-        `@effect/platform-node@${nodePlatformVersion}`,
+        `@effect/platform-node@${selected.nodePlatform}`,
         ...compilerPackages,
         `@types/node@${nodeTypesVersion}`,
       ],
       false,
     );
-    const nativeDependencies = run(
-      "npm",
-      ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
-      native,
-    );
-    writeFileSync(join(packDirectory, "native-dependencies.json"), nativeDependencies);
-    interface DependencyTree {
-      readonly version?: string;
-      readonly dependencies?: Readonly<Record<string, DependencyTree>>;
-    }
-    // The catalog and override may carry a caret range (^4.0.0-rc.117); the
-    // resolved versions are always exact.  Compare resolved versions against
-    // each other so a caret range in the catalog does not fail this check.
-    const resolvedEffectVersion = nodeSharedVersion.replace(/^[\^~>=<]+/, "");
-    const checkEffectVersions = (tree: DependencyTree): void => {
-      for (const [name, dependency] of Object.entries(tree.dependencies ?? {})) {
-        if (
-          (name === "effect" ||
-            name === "@effect/platform-node" ||
-            name === "@effect/platform-node-shared") &&
-          dependency.version !== resolvedEffectVersion
-        )
-          fail(
-            `isolated native fixture resolved ${name}@${dependency.version}, expected ${resolvedEffectVersion}`,
-          );
-        checkEffectVersions(dependency);
-      }
-    };
-    checkEffectVersions(JSON.parse(nativeDependencies) as DependencyTree);
-    console.log(`installed-native-effect-stack ${resolvedEffectVersion}`);
+    const nativeStack = checkConsumerStack(native, "native");
+    console.log(`installed-native-effect-stack ${selected.effect}`);
     copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
     const nativeOutput = run(
       node,
@@ -837,6 +877,7 @@ try {
       true,
       stageExamples(native, "node"),
     );
+    consumers.push(nativeStack);
     releaseConsumer(native);
   }
 
@@ -847,7 +888,13 @@ try {
       {
         profile: portableOnly ? "portable" : "full",
         installer,
-        effect: effectVersion,
+        effect: requirements.effect,
+        qualificationStack: completeQualification(
+          stack,
+          workspaceResolution,
+          consumers,
+          portableOnly ? "portable" : "full",
+        ),
         packages: Object.fromEntries(
           [...archives.values()].map((archive) => [
             archive.manifest.name,
