@@ -5,11 +5,17 @@
  */
 import { describe, expectTypeOf, it } from "vitest";
 import type * as Effect from "effect/Effect";
+import type * as Duration from "effect/Duration";
 import type * as Reactor from "../src/index.js";
 import type * as H3 from "../src/h3/index.js";
 import type * as Orchestration from "../src/orchestration/index.js";
 
 describe("public types", () => {
+  it("accepts an optional duration for the scheduler's unknown recovery deadline", () => {
+    expectTypeOf<
+      Parameters<typeof Orchestration.makeScheduler>[0]["unknownRecoveryTimeout"]
+    >().toEqualTypeOf<Duration.Input | undefined>();
+  });
   it("names the session's observation, readiness and attribution", () => {
     expectTypeOf<Reactor.Session["observe"]>().toEqualTypeOf<Reactor.Observe>();
     expectTypeOf<

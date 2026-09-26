@@ -63,8 +63,8 @@ const scheduler: Effect.Effect<
   Orchestration.SchedulerShape,
   Root.ReactorError | Orchestration.PolicyFailure,
   Orchestration.Engine | Scope.Scope
-> = Orchestration.makeScheduler(
-  Orchestration.lineup({
+> = Orchestration.makeScheduler({
+  ...Orchestration.lineup({
     runway: { floor: "5 seconds", target: "15 seconds" },
     clip: ({ index }) =>
       new Orchestration.ClipRequest({
@@ -74,7 +74,8 @@ const scheduler: Effect.Effect<
         metadata: {},
       }),
   }),
-);
+  unknownRecoveryTimeout: "10 minutes",
+});
 const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
 declare const queued: Orchestration.ItemHandle;
 const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
