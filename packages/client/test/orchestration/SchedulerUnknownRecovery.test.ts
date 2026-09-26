@@ -657,6 +657,49 @@ test("overlapping uncertain filler identities reconcile independently and both h
     }),
   ));
 
+test("in-place source snapshots retire uncertainty without changing earlier public rows", () =>
+  runClock(
+    Effect.gen(function* () {
+      const fixture = yield* scripted({ fenced: true });
+      const initial = yield* fixture.engine.state;
+      const originalId = initial.sessions[0]!.sessionId;
+      const sessions = initial.sessions.map((source) => ({ ...source }));
+      const ready: EngineState["ready"][number][] = [];
+      const mutable = { ...initial, sessions, ready };
+      yield* fixture.setState(mutable);
+      yield* fixture.refresh;
+      const item = yield* submit(fixture.scheduler, "mutable-source");
+      yield* fixture.unknown(item.key);
+      const before = yield* fixture.scheduler.state;
+
+      sessions[0]!.sessionId = "replacement";
+      mutable.preferredSessionId = Option.some("replacement");
+      yield* fixture.refresh;
+      expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
+      expect((yield* fixture.scheduler.state).sessions).toEqual([
+        { sessionId: "replacement", ready: [] },
+      ]);
+      expect(before.sessions).toEqual([{ sessionId: originalId, ready: [] }]);
+
+      sessions.push({ sessionId: "next", availability: "Ready" });
+      yield* fixture.refresh;
+      const overlap = yield* fixture.scheduler.state;
+      sessions.splice(0, 2, { sessionId: originalId, availability: "Ready" });
+      mutable.preferredSessionId = Option.some(originalId);
+      ready.push({ ...record("foreign"), sessionId: originalId });
+      yield* fixture.refresh;
+      expect((yield* fixture.scheduler.state).sessions).toEqual([
+        { sessionId: originalId, ready: ["other"] },
+      ]);
+      expect(overlap.sessions.map((source) => source.sessionId)).toEqual(["replacement", "next"]);
+      ready.length = 0;
+      yield* fixture.refresh;
+      expect((yield* fixture.scheduler.state).sessions).toEqual([
+        { sessionId: originalId, ready: [] },
+      ]);
+    }),
+  ));
+
 test("uncertain filler ledger fails before dispatching a 4097th identity", () =>
   // This is an operation bound: no deadline is advanced or awaited. The live
   // clock avoids sorting thousands of canceled virtual watchdog sleeps.
