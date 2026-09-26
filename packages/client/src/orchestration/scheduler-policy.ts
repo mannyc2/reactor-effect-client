@@ -39,8 +39,8 @@ export interface PolicySnapshot {
   readonly accepting: boolean;
   readonly fillerEnabled: boolean;
   readonly fillerRetryAtMs: number;
-  readonly fillerUnknown: boolean;
-  readonly fillerUnknownSessionId: string | undefined;
+  /** Uncertain filler reservations on the preferred source, including unfenced sends. */
+  readonly unknownFillerCount: number;
   /** A refused move is retried only after the Ready snapshot changes. */
   readonly blockedMove: string | undefined;
 }
@@ -149,12 +149,13 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
 
   // Physical sources are independent queues. A move never ranks across them.
   let offset = 0;
-  for (const session of engine.sessions) {
+  for (const session of engine.ready.length === 0 ? [] : engine.sessions) {
     const actual = engine.ready.filter((clip) => clip.sessionId === session.sessionId);
     if (session.availability !== "Ready") {
       offset += actual.length;
       continue;
     }
+    if (actual.length === 0) continue;
     const rank = (clipId: ClipId): readonly [number, number] => {
       const clip = owned.get(clipId);
       if (clip === undefined) return [-1, 0];
@@ -259,10 +260,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         (item.sessionId ?? item.unknownSessionId ?? preferred) === preferred,
     ).length +
     activeFiller +
-    (snapshot.fillerUnknown &&
-    (snapshot.fillerUnknownSessionId === undefined || snapshot.fillerUnknownSessionId === preferred)
-      ? 1
-      : 0);
+    snapshot.unknownFillerCount;
   if (inflight >= snapshot.maxBuildsInFlight) return base;
   const eligible = items
     .filter(
@@ -286,11 +284,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     snapshot.fillerEnabled &&
     filling &&
     runway < fillTarget &&
-    !(
-      snapshot.fillerUnknown &&
-      (snapshot.fillerUnknownSessionId === undefined ||
-        snapshot.fillerUnknownSessionId === preferred)
-    ) &&
+    snapshot.unknownFillerCount === 0 &&
     nowMs >= snapshot.fillerRetryAtMs
   )
     return {
