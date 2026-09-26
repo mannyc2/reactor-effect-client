@@ -154,6 +154,47 @@ const section = (evidence: Evidence): string => {
       "Takeover",
       `attached ${seconds(takeover.attachMs)} after the kill; clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; metadata ${takeover.metadataPreserved === true ? "preserved" : "not preserved"}; ${takeover.enqueuesAfterAttach ?? "?"} enqueue(s) after attach; first fresh frame ${takeover.firstFreshFrameMs === undefined ? "none" : `+${seconds(takeover.firstFreshFrameMs - takeover.killedMs - (takeover.attachMs ?? 0))} after attach`}`,
     );
+  const renewal = evidence.schedulerRenewal;
+  if (renewal !== undefined) {
+    add(
+      "Public scheduler renewal",
+      `${renewal.configuration.constructor} constructor; ${renewal.openAttempts} open attempts; monotonic clock; ${renewal.fillerRequests} filler requests and ${renewal.fillerEvents.length} filler observations`,
+    );
+    add(
+      "Keyed playback",
+      renewal.items
+        .map(
+          (item) =>
+            `${item.key} on ${item.sessionId ?? "unknown source"}: ${item.statuses.map((status) => `${status._tag}@${seconds(status.atMs)}`).join(" → ")}`,
+        )
+        .join("; "),
+    );
+    for (const switched of renewal.switches) {
+      const handoff = switched.handoff;
+      add(
+        "Planned switch",
+        `${switched.retiringSessionId} → ${handoff?.replacementSessionId ?? "unknown"}: ${handoff?.decision ?? "missing evidence"}; ${handoff?.finalClip._tag === "Observed" ? `${handoff.finalClip.receivedVideoFrames}/${handoff.finalClip.expectedVideoFrames} local final-clip frames` : "no observed start"}; ${handoff?.grace._tag === "Observed" ? `${handoff.grace.origin} grace ${handoff.grace.elapsedMs}/${handoff.grace.limitMs} ms` : "grace not observed"}`,
+      );
+    }
+    const boundary = renewal.media.decodedBoundary;
+    add(
+      "Logical decoded media",
+      `${renewal.media.video.frames} video frames; attribution ${renewal.media.attributionComplete ? "complete" : "INCOMPLETE"}; ${boundary === undefined ? "no decoded boundary" : `boundary gap ${boundary.gapMs} ms`}; audio completeness unverified; no encoded or viewer-output claim`,
+    );
+    add(
+      "Accepted drain",
+      `${renewal.drain?.outcome ?? "not requested"}; allocated sources ${renewal.drain?.allocationsWhenRequested ?? "?"} → ${renewal.drain?.allocationsWhenCompleted ?? "?"}`,
+    );
+    add(
+      "Renewal cleanup",
+      `${renewal.cleanup?._tag ?? "missing"}; ${renewal.cleanup?.report?.sessions.length ?? 0} canonical source reports; ${renewal.cleanup?.incomplete.length === 0 ? "complete" : (renewal.cleanup?.incomplete.join(", ") ?? "not recorded")}`,
+    );
+    for (const slot of renewal.allocations)
+      add(
+        `Source ${slot.slot}`,
+        `${slot.sessionId ?? "not allocated"}; canonical owned termination ${slot.cleanup?.lease.remote.confirmed === true ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
+      );
+  }
   const termination = evidence.termination;
   if (termination !== undefined)
     add(
