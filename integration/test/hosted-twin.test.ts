@@ -7,6 +7,8 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
@@ -348,10 +350,41 @@ test("the twin mints recognisable credentials: an HS256 JWT the twin plainly sig
     expect(grant.expiresAt * 1000 - Date.now()).toBeGreaterThan(90_000);
   }));
 
-test(
-  "a reference image uploads through the twin before its clip is queued",
-  () =>
-    withTwin(async (twin) => {
+test("twin close joins an owned socket with an unfinished HTTP request", async () => {
+  const twin = await startTwin();
+  const socket = connect({ host: "127.0.0.1", port: Number(new URL(twin.url).port) });
+  try {
+    await once(socket, "connect");
+    const continued: Promise<readonly unknown[]> = once(socket, "data");
+    // The server acknowledges the headers, but the client deliberately holds
+    // the body so shutdown must close a real unfinished request.
+    socket.write(
+      "POST /tokens HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n",
+    );
+    const [reply]: readonly unknown[] = await continued;
+    expect(Buffer.isBuffer(reply)).toBe(true);
+    expect(String(reply)).toContain("100 Continue");
+    const closed: Promise<unknown> = once(socket, "close");
+    const closing = twin.close();
+    expect(twin.close()).toBe(closing);
+    await Promise.all([closing, closed]);
+    expect(socket.destroyed).toBe(true);
+  } finally {
+    socket.destroy();
+    await twin.close();
+  }
+});
+
+test("a reference image uploads through the twin before its clip is queued", async () => {
+  const origin = performance.now();
+  const phases: { name: string; atMs: number }[] = [];
+  const phase = (name: string) => phases.push({ name, atMs: performance.now() - origin });
+  phase("twin-start");
+  // A rare timeout otherwise hides whether upload or either owner is waiting.
+  // Emit only phase names/times before the unchanged test deadline, never payloads.
+  const diagnostic = setTimeout(() => console.error("reference-image phases", phases), 25_000);
+  try {
+    await withTwin(async (twin) => {
       // The smallest complete PNG: one pixel.
       const png = Uint8Array.from(
         Buffer.from(
@@ -362,21 +395,31 @@ test(
       const acceptance = await run(
         twin,
         Effect.gen(function* () {
-          const { provider } = yield* open(yield* mint(twin));
+          phase("mint");
+          const grant = yield* mint(twin);
+          phase("connect");
+          const { provider } = yield* open(grant);
+          phase("prepare");
           const submission = yield* provider.prepare({
             prompt,
             references: [{ _tag: "Bytes", bytes: png }],
           });
-          return yield* submission.submit;
+          phase("submit");
+          const accepted = yield* submission.submit;
+          phase("owner-close");
+          return accepted;
         }),
       );
       expect(acceptance.clip).toMatchObject({
         has_reference_image: true,
         reference_image_count: 1,
       });
-    }),
-  30_000,
-);
+      phase("twin-close");
+    });
+  } finally {
+    clearTimeout(diagnostic);
+  }
+}, 30_000);
 
 test("reference audio uploads through the twin and its clip reports it; audio alone is refused", () =>
   withTwin(async (twin) => {
