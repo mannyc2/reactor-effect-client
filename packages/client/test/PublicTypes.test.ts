@@ -9,6 +9,33 @@ import type * as Reactor from "../src/index.js";
 import type * as H3 from "../src/h3/index.js";
 import type * as Orchestration from "../src/orchestration/index.js";
 
+describe("continuous public types", () => {
+  it("names continuous renewal and keeps its summary distinct from legacy history", () => {
+    expectTypeOf<
+      Effect.Success<ReturnType<typeof Orchestration.makeContinuous<never>>>
+    >().toEqualTypeOf<Orchestration.ContinuousHandleShape>();
+    expectTypeOf<
+      Effect.Error<ReturnType<typeof Orchestration.makeContinuous<never>>>
+    >().toEqualTypeOf<Reactor.ReactorError | Reactor.AcquisitionFailure>();
+    expectTypeOf<
+      Effect.Success<Orchestration.ContinuousHandleShape["close"]>
+    >().toEqualTypeOf<Orchestration.CleanupSummary>();
+    expectTypeOf<
+      Orchestration.ContinuousHandleShape["engine"]
+    >().toEqualTypeOf<Orchestration.EngineShape>();
+    expectTypeOf<Orchestration.ContinuousHandleShape["sequences"]>().toEqualTypeOf<
+      Orchestration.HandleShape["sequences"]
+    >();
+    expectTypeOf<
+      Effect.Success<Orchestration.HandleShape["close"]>
+    >().toEqualTypeOf<Orchestration.CleanupReport>();
+    expectTypeOf<
+      Orchestration.CleanupSummary["retained"][number]["retirement"]["unknownSubmissions"]
+    >().toEqualTypeOf<bigint>();
+    expectTypeOf<Extract<keyof Orchestration.CleanupSummary, "sessions">>().toEqualTypeOf<never>();
+  });
+});
+
 describe("public types", () => {
   it("names the session's observation, readiness and attribution", () => {
     expectTypeOf<Reactor.Session["observe"]>().toEqualTypeOf<Reactor.Observe>();
