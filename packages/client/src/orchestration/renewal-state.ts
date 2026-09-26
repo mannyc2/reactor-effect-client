@@ -1,3 +1,6 @@
+import type { ClipId } from "./request.js";
+import type { Renewal } from "./types.js";
+
 /** Pure renewal policy. Inputs are observations, never resource handles or effects. */
 export type RecoveryMode = "reconnect" | "replace";
 
@@ -91,8 +94,12 @@ export const decideRenewal = (facts: RenewalFacts): RenewalDecision => {
 /** The retiring source's last started clip, as its owner has observed it. */
 export interface FinalClip {
   readonly video: "not-started" | "count-complete" | "incomplete";
-  /** Monotonic milliseconds since that clip's Ended was observed; undefined while it plays. */
+  readonly clipId: ClipId | undefined;
+  readonly expectedVideoFrames: number;
+  readonly receivedVideoFrames: number;
+  /** Monotonic milliseconds since Ended or the idle fallback; undefined while it plays. */
   readonly endedAgoMs: number | undefined;
+  readonly graceOrigin: "Ended" | "Idle" | undefined;
 }
 
 export interface HandoffFacts {
@@ -110,14 +117,56 @@ export interface HandoffFacts {
  * instead left the retiring source idle until expiry. The shortfall is still
  * reported, with any earlier loss, on the retirement's tail.
  */
-export const finalClipSettled = (clip: FinalClip, graceMs: number): boolean =>
+export const finalClipSettled = (
+  clip: Pick<FinalClip, "video" | "endedAgoMs">,
+  graceMs: number,
+): boolean =>
   clip.video !== "incomplete" || (clip.endedAgoMs !== undefined && clip.endedAgoMs >= graceMs);
 
-export const canHandoff = (facts: HandoffFacts): boolean =>
-  !facts.sequenceOpen &&
-  facts.currentIdle &&
-  facts.replacementReady &&
-  finalClipSettled(facts.finalClip, facts.graceMs);
+type Handoff = NonNullable<Extract<Renewal, { readonly _tag: "Switched" }>["handoff"]>;
+
+/** One decision owns both admission and evidence, so the two cannot disagree at a grace boundary. */
+export const handoffEvidence = (
+  facts: HandoffFacts,
+): Omit<Handoff, "replacementSessionId"> | undefined => {
+  if (
+    facts.sequenceOpen ||
+    !facts.currentIdle ||
+    !facts.replacementReady ||
+    !finalClipSettled(facts.finalClip, facts.graceMs)
+  )
+    return undefined;
+  const clip = facts.finalClip;
+  return Object.freeze({
+    decision:
+      clip.clipId === undefined
+        ? "no-observed-start"
+        : clip.video === "incomplete"
+          ? "grace-elapsed"
+          : "count-complete",
+    finalClip:
+      clip.clipId === undefined
+        ? Object.freeze({ _tag: "NoObservedStart" })
+        : Object.freeze({
+            _tag: "Observed",
+            clipId: clip.clipId,
+            expectedVideoFrames: clip.expectedVideoFrames,
+            receivedVideoFrames: clip.receivedVideoFrames,
+            videoStatus: clip.video === "incomplete" ? "incomplete" : "count-complete",
+          }),
+    grace:
+      clip.endedAgoMs === undefined || clip.graceOrigin === undefined
+        ? Object.freeze({ _tag: "NotObserved" })
+        : Object.freeze({
+            _tag: "Observed",
+            origin: clip.graceOrigin,
+            elapsedMs: clip.endedAgoMs,
+            limitMs: facts.graceMs,
+          }),
+  });
+};
+
+export const canHandoff = (facts: HandoffFacts): boolean => handoffEvidence(facts) !== undefined;
 
 export const needsReplacement = (
   phase: SourcePhase,

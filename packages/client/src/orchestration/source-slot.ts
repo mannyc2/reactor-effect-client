@@ -84,7 +84,9 @@ export const make = (options: Options) =>
     let finalClipFrames = 0;
     let finalClipReceived = 0;
     let framesAtBoundary = 0;
+    let finalClipId: ClipId | undefined;
     let finalClipEndedAt: number | undefined;
+    let finalClipGraceOrigin: "Ended" | "Idle" | undefined;
     let receivedAudioSamples = 0;
     let retiredDrops: Loss = noLoss;
 
@@ -162,6 +164,9 @@ export const make = (options: Options) =>
         return media;
       },
       finalClip: (): Lifecycle.FinalClip => ({
+        clipId: finalClipId,
+        expectedVideoFrames: finalClipFrames,
+        receivedVideoFrames: finalClipReceived,
         video:
           finalClipFrames === 0
             ? "not-started"
@@ -170,11 +175,14 @@ export const make = (options: Options) =>
               : "incomplete",
         endedAgoMs:
           finalClipEndedAt === undefined ? undefined : monotonicMillis(clock) - finalClipEndedAt,
+        graceOrigin: finalClipGraceOrigin,
       }),
       /** The source reports nothing playing; starts the grace if no Ended was seen. */
       observedIdle: (): void => {
-        if (finalClipFrames > 0 && finalClipEndedAt === undefined)
+        if (finalClipFrames > 0 && finalClipEndedAt === undefined) {
           finalClipEndedAt = monotonicMillis(clock);
+          finalClipGraceOrigin = "Idle";
+        }
       },
       get accepted(): ReadonlySet<ClipId> {
         return accepted;
@@ -244,9 +252,13 @@ export const make = (options: Options) =>
                 Effect.suspend(() => {
                   if (closed()) return Effect.void;
                   // A repeated Started, as after a reconnect, is still playing.
-                  if (event._tag === "Started") finalClipEndedAt = undefined;
+                  if (event._tag === "Started") {
+                    finalClipEndedAt = undefined;
+                    finalClipGraceOrigin = undefined;
+                  }
                   if (event._tag === "Started" && !started.has(event.clipId)) {
                     started.add(event.clipId);
+                    finalClipId = event.clipId;
                     finalClipFrames = Math.round(
                       event.durationSeconds * media.videoFramesPerSecond,
                     );
@@ -258,6 +270,7 @@ export const make = (options: Options) =>
                   if (event._tag === "Ended") {
                     framesAtBoundary = receivedFrames;
                     finalClipEndedAt = monotonicMillis(clock);
+                    finalClipGraceOrigin = "Ended";
                   }
                   return receive(event);
                 }),

@@ -1,8 +1,12 @@
 import { expect, test } from "vitest";
-import { Clock, Effect, Fiber, Option, Result, Stream } from "effect";
+import { Clock, Effect, Fiber, Option, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
 import type { EngineEvent, HandleShape } from "../../src/orchestration/types.js";
+import * as SourceSlot from "../../src/orchestration/source-slot.js";
+import { handoffEvidence } from "../../src/orchestration/renewal-state.js";
+import { ClipId } from "../../src/orchestration/request.js";
+import { steppableWall } from "./WallClock.js";
 import { renewalFixture } from "./RenewalFixture.js";
 import {
   audioFrame,
@@ -15,6 +19,7 @@ import {
   request,
   run,
   runClock,
+  sourceFixture,
   until,
   untilEffect,
   videoFrame,
@@ -175,6 +180,21 @@ test("a short final clip switches once the default grace past its Ended has elap
         receivedFrames: 23,
         status: "incomplete",
       });
+      expect(switched.sessionId).toBe(sources[0]!.source.id);
+      expect(switched.handoff).toMatchObject({
+        replacementSessionId: sources[1]!.source.id,
+        decision: "grace-elapsed",
+        finalClip: {
+          _tag: "Observed",
+          clipId: old,
+          expectedVideoFrames: 24,
+          receivedVideoFrames: 23,
+          videoStatus: "incomplete",
+        },
+        grace: { _tag: "Observed", origin: "Ended", limitMs: 250 },
+      });
+      if (switched.handoff?.grace._tag !== "Observed") throw new Error("Expected grace evidence");
+      expect(switched.handoff.grace.elapsedMs).toBeGreaterThanOrEqual(250);
     }),
   ));
 
@@ -216,6 +236,18 @@ test("a final frame landing after Ended switches at once, inside the grace", () 
       const switched = renewals.find((event) => event._tag === "Switched");
       if (switched?._tag !== "Switched") throw new Error("Expected a planned switch");
       expect(switched.tail.video.status).toBe("count-complete");
+      expect(switched.handoff).toMatchObject({
+        replacementSessionId: sources[1]!.source.id,
+        decision: "count-complete",
+        finalClip: {
+          _tag: "Observed",
+          clipId: old,
+          expectedVideoFrames: 24,
+          receivedVideoFrames: 24,
+          videoStatus: "count-complete",
+        },
+        grace: { _tag: "Observed", origin: "Ended", limitMs: 5000 },
+      });
       yield* until(() => received.length === 24);
       expect(received.at(-1)).toBe(2);
     }),
@@ -276,6 +308,12 @@ test("a final clip whose Ended is lost switches once the grace past observed idl
       expect(renewals.some((event) => event._tag === "Replaced")).toBe(false);
       const switched = renewals.find((event) => event._tag === "Switched");
       if (switched?._tag !== "Switched") throw new Error("Expected a planned switch");
+      expect(switched.handoff?.decision).toBe("grace-elapsed");
+      expect(switched.handoff?.grace).toMatchObject({
+        _tag: "Observed",
+        origin: "Idle",
+        limitMs: 150,
+      });
       expect(switched.tail.video.receivedFrames).toBe(expectedReceived);
       expect(switched.tail.video.status).toBe("incomplete");
       expect(switched.tail.audio.status).toBe("unverified");
@@ -621,5 +659,212 @@ test("handoffReady stays false while an open sequence keeps the retiring source 
       const sealed = yield* handle.engine.state;
       expect(Option.getOrUndefined(sealed.preferredSessionId)).toBe(sources[1]!.source.id);
       expect(sealed.handoffReady).toBe(true);
+    }),
+  ));
+
+test("source evidence preserves duplicate boundaries and uses monotonic grace after late Ended", () =>
+  runClock(
+    Effect.gen(function* () {
+      const testClock = yield* TestClock.testClockWith(Effect.succeed);
+      const wall = yield* steppableWall;
+      yield* Effect.gen(function* () {
+        const fixture = yield* sourceFixture("observed");
+        const slot = yield* SourceSlot.make({
+          source: fixture.source,
+          media: yield* fixture.source.media,
+          scope: yield* Scope.fork(yield* Effect.scope),
+          openedAt: 0,
+          maxSeconds: 60,
+          cleanupBudgetMs: 1000,
+          recordCleanup: () => {},
+          retireSequences: Effect.void,
+        });
+        let events = 0;
+        yield* slot.observe(
+          () =>
+            Effect.sync(() => {
+              events++;
+            }),
+          Effect.die,
+        );
+        const evidence = () =>
+          handoffEvidence({
+            sequenceOpen: false,
+            currentIdle: true,
+            replacementReady: true,
+            finalClip: slot.finalClip(),
+            graceMs: 250,
+          });
+        expect(evidence()).toEqual({
+          decision: "no-observed-start",
+          finalClip: { _tag: "NoObservedStart" },
+          grace: { _tag: "NotObserved" },
+        });
+        const clipId = ClipId.make("final");
+        const emit = (event: EngineEvent) =>
+          Effect.gen(function* () {
+            const target = events + 1;
+            yield* fixture.emit(event);
+            yield* until(() => events === target);
+          });
+        yield* emit({ _tag: "Started", clipId, durationSeconds: 0.125, at: 0 });
+        slot.recordVideo();
+        slot.recordVideo();
+        slot.observedIdle();
+        yield* testClock.adjust(100);
+        yield* wall.step(60_000);
+        expect(slot.finalClip().endedAgoMs).toBe(100);
+        expect(slot.finalClip().graceOrigin).toBe("Idle");
+        yield* emit({ _tag: "Ended", clipId, termination: "finished" });
+        expect(slot.finalClip().endedAgoMs).toBe(0);
+        expect(slot.finalClip().graceOrigin).toBe("Ended");
+        yield* testClock.adjust(249);
+        yield* wall.step(-120_000);
+        expect(evidence()).toBeUndefined();
+        yield* testClock.adjust(1);
+        expect(evidence()?.grace).toEqual({
+          _tag: "Observed",
+          origin: "Ended",
+          elapsedMs: 250,
+          limitMs: 250,
+        });
+        // Replayed Ended retains the existing timestamp-reset policy.
+        yield* emit({ _tag: "Ended", clipId, termination: "finished" });
+        expect(evidence()).toBeUndefined();
+        yield* emit({ _tag: "Started", clipId, durationSeconds: 0.125, at: 0 });
+        expect(slot.finalClip()).toMatchObject({
+          clipId,
+          expectedVideoFrames: 3,
+          receivedVideoFrames: 2,
+          endedAgoMs: undefined,
+          graceOrigin: undefined,
+        });
+        slot.recordVideo();
+        const captured = evidence();
+        expect(captured).toEqual({
+          decision: "count-complete",
+          finalClip: {
+            _tag: "Observed",
+            clipId,
+            expectedVideoFrames: 3,
+            receivedVideoFrames: 3,
+            videoStatus: "count-complete",
+          },
+          grace: { _tag: "NotObserved" },
+        });
+        slot.recordVideo();
+        expect(captured?.finalClip).toMatchObject({ receivedVideoFrames: 3 });
+      }).pipe(Effect.provideService(Clock.Clock, wall.clock));
+    }),
+  ));
+
+test("older session loss remains in the tail while a complete final clip permits handoff", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { handle, sources, renewals, warm } = yield* renewalFixture();
+      const observed = yield* collectEngineEvents(handle);
+      const first = yield* handle.engine.enqueue(member("old", false));
+      const last = yield* handle.engine.enqueue(member("old", true));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: first, durationSeconds: 0.125, at: 0 });
+      yield* until(() => observed.filter((tag) => tag === "Started").length === 1);
+      yield* sources[0]!.video(videoFrame());
+      yield* untilEffect(handle.media.pressure.pipe(Effect.map((p) => p.queuedVideo === 1)));
+      yield* sources[0]!.emit({ _tag: "Ended", clipId: first, termination: "finished" });
+      yield* until(() => observed.includes("Ended"));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: last, durationSeconds: 0.125, at: 0 });
+      yield* until(() => observed.filter((tag) => tag === "Started").length === 2);
+      for (let n = 0; n < 3; n++) yield* sources[0]!.video(videoFrame());
+      yield* untilEffect(handle.media.pressure.pipe(Effect.map((p) => p.queuedVideo === 4)));
+      yield* sources[0]!.emit({ _tag: "Ended", clipId: last, termination: "finished" });
+      yield* until(() => observed.filter((tag) => tag === "Ended").length === 2);
+      yield* sources[0]!.setState(readyState());
+      yield* until(() => renewals.some((event) => event._tag === "Switched"), TestClock.adjust(10));
+      const switched = renewals.find((event) => event._tag === "Switched");
+      if (switched?._tag !== "Switched") throw new Error("Expected switch");
+      expect(switched.tail.video).toMatchObject({
+        expectedFrames: 6,
+        receivedFrames: 4,
+        status: "incomplete",
+      });
+      expect(switched.handoff?.decision).toBe("count-complete");
+      expect(switched.handoff?.finalClip).toEqual({
+        _tag: "Observed",
+        clipId: last,
+        expectedVideoFrames: 3,
+        receivedVideoFrames: 3,
+        videoStatus: "count-complete",
+      });
+    }),
+  ));
+
+test("switch evidence is frozen before pressure and close wait while the aggregate tail keeps its accounting", () =>
+  runClock(
+    Effect.gen(function* () {
+      const pressureGate = yield* gate;
+      const closeGate = yield* gate;
+      let armed = false,
+        pressureEntered = false,
+        closeEntered = false;
+      const { handle, sources, renewals, warm } = yield* renewalFixture((index) =>
+        index === 0
+          ? {
+              pressure: () =>
+                Effect.gen(function* () {
+                  if (armed) {
+                    pressureEntered = true;
+                    yield* pressureGate.wait;
+                  }
+                  return cleanPressure;
+                }),
+              close: Effect.gen(function* () {
+                closeEntered = true;
+                yield* closeGate.wait;
+              }),
+            }
+          : {},
+      );
+      const observed = yield* collectEngineEvents(handle);
+      let received = 0;
+      yield* handle.media.video.pipe(
+        Stream.runForEach(() =>
+          Effect.sync(() => {
+            received++;
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      const old = yield* handle.engine.enqueue(member("old"));
+      yield* warm;
+      const next = yield* handle.engine.enqueue(member("next"));
+      yield* sources[1]!.setState(readyState({ ready: [record(next)] }));
+      yield* sources[0]!.emit({ _tag: "Started", clipId: old, durationSeconds: 0.125, at: 0 });
+      yield* until(() => observed.includes("Started"));
+      for (let n = 0; n < 3; n++) yield* sources[0]!.video(videoFrame());
+      yield* until(() => received === 3);
+      armed = true;
+      yield* sources[0]!.setState(readyState());
+      yield* until(() => pressureEntered, TestClock.adjust(10));
+      yield* sources[0]!.video(videoFrame());
+      yield* until(() => received === 4);
+      yield* TestClock.adjust(20);
+      yield* pressureGate.release;
+      yield* until(() => closeEntered);
+      yield* TestClock.adjust(100);
+      yield* closeGate.release;
+      yield* until(() => renewals.some((event) => event._tag === "Switched"));
+      const switched = renewals.find((event) => event._tag === "Switched");
+      if (switched?._tag !== "Switched") throw new Error("Expected switch");
+      expect(switched.handoff?.finalClip).toMatchObject({ receivedVideoFrames: 3 });
+      expect(switched.handoff?.grace).toEqual({
+        _tag: "Observed",
+        origin: "Idle",
+        elapsedMs: 0,
+        limitMs: 250,
+      });
+      expect(switched.tail.video.receivedFrames).toBe(4);
+      expect(Object.isFrozen(switched.handoff)).toBe(true);
     }),
   ));
