@@ -32,7 +32,7 @@ import * as MediaBuffer from "./media-buffer.js";
 import * as SourceSlot from "./source-slot.js";
 import type { SourceSlot as Slot } from "./source-slot.js";
 import { monotonicMillis } from "./elapsed.js";
-import { canHandoff, decideRenewal } from "./renewal-state.js";
+import { handoffEvidence, decideRenewal } from "./renewal-state.js";
 import { PolicyFailure, captureRequest } from "./request.js";
 import type { ClipId } from "./request.js";
 import { emptyState, isIdle } from "./queries.js";
@@ -1097,16 +1097,15 @@ export const make = <R>(
           // The provider reports nothing playing: a lost Ended must not hold
           // the switch until expiry, so the grace also starts here.
           current.observedIdle();
-          if (
-            !canHandoff({
-              sequenceOpen: false,
-              currentIdle: isIdle(oldState),
-              replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
-              finalClip: current.finalClip(),
-              graceMs: handoffGraceMs,
-            })
-          )
-            return;
+          const evidence = handoffEvidence({
+            sequenceOpen: false,
+            currentIdle: isIdle(oldState),
+            replacementReady: nextState.availability === "Ready" && nextState.ready.length > 0,
+            finalClip: current.finalClip(),
+            graceMs: handoffGraceMs,
+          });
+          if (evidence === undefined) return;
+          const handoff = Object.freeze({ ...evidence, replacementSessionId: next.source.id });
           // Read only for a switch that happens: it can wait on source pressure.
           const tail = yield* retired(current);
           const old = current;
@@ -1120,7 +1119,7 @@ export const make = <R>(
             const activated = publishReady(next);
             yield* closeSlot(old);
             if (!activated) return;
-            yield* announce({ _tag: "Switched", ...tail });
+            yield* announce({ _tag: "Switched", ...tail, handoff });
             yield* log("Switched prepared sessions at a sequence boundary");
           }).pipe(
             Effect.withSpan(

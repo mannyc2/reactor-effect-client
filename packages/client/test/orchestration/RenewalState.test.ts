@@ -2,6 +2,8 @@ import { expect, test } from "vitest";
 import {
   canHandoff,
   finalClipSettled,
+  handoffEvidence,
+  type FinalClip,
   decideRenewal,
   isClosed,
   needsReplacement,
@@ -11,6 +13,18 @@ import {
   type SourcePhase,
   type SourceTransition,
 } from "../../src/orchestration/renewal-state.js";
+
+import { ClipId } from "../../src/orchestration/request.js";
+
+const clip = (fields: Partial<FinalClip> = {}): FinalClip => ({
+  video: "count-complete",
+  clipId: ClipId.make("last"),
+  expectedVideoFrames: 24,
+  receivedVideoFrames: 24,
+  endedAgoMs: undefined,
+  graceOrigin: undefined,
+  ...fields,
+});
 
 const active: SourcePhase = { _tag: "Active" };
 const facts: RenewalFacts = {
@@ -70,19 +84,19 @@ test("a handoff requires complete independent queue, sequence and media evidence
     sequenceOpen: false,
     currentIdle: true,
     replacementReady: true,
-    finalClip: { video: "count-complete" as const, endedAgoMs: undefined },
+    finalClip: clip(),
     graceMs: 250,
   };
   expect(canHandoff(ready)).toBe(true);
-  expect(canHandoff({ ...ready, finalClip: { video: "not-started", endedAgoMs: undefined } })).toBe(
-    true,
-  );
+  expect(
+    canHandoff({ ...ready, finalClip: clip({ video: "not-started", clipId: undefined }) }),
+  ).toBe(true);
   for (const missing of [
     { sequenceOpen: true },
     { currentIdle: false },
     { replacementReady: false },
-    { finalClip: { video: "incomplete" as const, endedAgoMs: undefined } },
-    { finalClip: { video: "incomplete" as const, endedAgoMs: 249 } },
+    { finalClip: clip({ video: "incomplete", endedAgoMs: undefined }) },
+    { finalClip: clip({ video: "incomplete", endedAgoMs: 249, graceOrigin: "Ended" }) },
   ])
     expect(canHandoff({ ...ready, ...missing })).toBe(false);
 });
@@ -158,4 +172,61 @@ test("all lifecycle traces through five events preserve closure and recovery esc
     }
     traces = traces.flatMap((trace) => alphabet.map((event) => [...trace, event]));
   }
+});
+
+test("handoff evidence preserves every policy decision at and around the grace boundary", () => {
+  for (const video of ["not-started", "count-complete", "incomplete"] as const)
+    for (const endedAgoMs of [undefined, 0, 249, 250, 251])
+      for (const sequenceOpen of [false, true])
+        for (const currentIdle of [false, true])
+          for (const replacementReady of [false, true]) {
+            const facts = {
+              sequenceOpen,
+              currentIdle,
+              replacementReady,
+              graceMs: 250,
+              finalClip: clip({
+                video,
+                endedAgoMs,
+                clipId: video === "not-started" ? undefined : ClipId.make("last"),
+                receivedVideoFrames: video === "incomplete" ? 23 : 24,
+                graceOrigin: endedAgoMs === undefined ? undefined : "Ended",
+              }),
+            };
+            const expected =
+              !sequenceOpen &&
+              currentIdle &&
+              replacementReady &&
+              (video !== "incomplete" || (endedAgoMs !== undefined && endedAgoMs >= 250));
+            expect(canHandoff(facts)).toBe(expected);
+            const evidence = handoffEvidence(facts);
+            expect(evidence !== undefined).toBe(expected);
+            if (evidence === undefined) continue;
+            expect(evidence.decision).toBe(
+              video === "not-started"
+                ? "no-observed-start"
+                : video === "incomplete"
+                  ? "grace-elapsed"
+                  : "count-complete",
+            );
+            expect(evidence.finalClip).toEqual(
+              video === "not-started"
+                ? { _tag: "NoObservedStart" }
+                : {
+                    _tag: "Observed",
+                    clipId: "last",
+                    expectedVideoFrames: 24,
+                    receivedVideoFrames: video === "incomplete" ? 23 : 24,
+                    videoStatus: video,
+                  },
+            );
+            expect(evidence.grace).toEqual(
+              endedAgoMs === undefined
+                ? { _tag: "NotObserved" }
+                : { _tag: "Observed", origin: "Ended", elapsedMs: endedAgoMs, limitMs: 250 },
+            );
+            expect(Object.isFrozen(evidence)).toBe(true);
+            expect(Object.isFrozen(evidence.finalClip)).toBe(true);
+            expect(Object.isFrozen(evidence.grace)).toBe(true);
+          }
 });
