@@ -298,7 +298,9 @@ export const make = (options: Options) =>
           if (Result.isSuccess(result)) {
             if (
               options.boundedHistory &&
-              (result.success.length === 0 || result.success.length > 1024)
+              (typeof result.success !== "string" ||
+                result.success.length === 0 ||
+                result.success.length > 1024)
             ) {
               indeterminate = true;
               contractFailure ??= ReactorError.fromCode(
@@ -341,7 +343,9 @@ export const make = (options: Options) =>
                   if (event._tag === "Started" && !started.has(event.clipId)) {
                     if (
                       options.boundedHistory &&
-                      (event.clipId.length === 0 || event.clipId.length > 1024)
+                      (typeof event.clipId !== "string" ||
+                        event.clipId.length === 0 ||
+                        event.clipId.length > 1024)
                     ) {
                       contractFailure ??= ReactorError.fromCode(
                         "Protocol",

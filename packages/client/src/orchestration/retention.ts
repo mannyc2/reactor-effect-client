@@ -57,6 +57,16 @@ const completeKind = (attempt: Attempt, retirement: Retirement): CompleteKind | 
   // A failed acquisition may already have a physical ID without ever creating
   // accounting or affinity owners. Its caller explicitly records not-applicable.
   const lease = cleanup.lease;
+  // Confirmation can prove termination without a successful DELETE, but cannot
+  // make contradictory response facts or another session's lease compactable.
+  if (
+    lease.remote.responseReceived !== (lease.remote.deleteStatus !== null) ||
+    (lease.remote.responseReceived && !lease.remote.attempted) ||
+    (attempt.source !== undefined &&
+      lease.sessionId !== undefined &&
+      attempt.source.sessionId !== lease.sessionId)
+  )
+    return undefined;
   switch (lease.allocation) {
     case "none":
       return noTermination(lease.remote) ? "noAllocation" : undefined;
@@ -128,7 +138,7 @@ export const make = (options: Options = {}) =>
     });
     const identify = (reservation: Reservation, sessionId: string) =>
       parsed(() => {
-        if (sessionId.length === 0 || sessionId.length > 1024)
+        if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.length > 1024)
           throw ReactorError.fromCode(
             "InvalidInput",
             "Source identity must contain 1..1024 UTF-16 code units",
