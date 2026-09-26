@@ -21,7 +21,7 @@ for (const name of Object.keys(env)) {
 }
 const node = process.env.NODE_BINARY ?? "node";
 const bun = process.env.BUN_BINARY ?? process.execPath;
-type Run = readonly [string, readonly string[], string];
+type Run = readonly [string, readonly string[], string, number?];
 const vitest = (directory: string) => join(directory, "node_modules/vitest/vitest.mjs");
 /** A Vitest project runs on Node, which the engines declare, and then on Bun. */
 const nodeAndBun = (directory: string): readonly Run[] => [
@@ -34,13 +34,15 @@ const runs: readonly Run[] =
     ? [
         ...nodeAndBun(join(packages, "client")),
         ...nodeAndBun(join(packages, "browser")),
-        [bun, ["--no-env-file", "test"], root],
+        // Both renewal constructors run the bounded fault matrix; this aggregate
+        // budget covers their measured wall time without extending any scenario.
+        [bun, ["--no-env-file", "test"], root, 600_000],
       ]
     : project === "native"
       ? nodeAndBun(join(packages, "native"))
       : [[node, [vitest(join(root, "integration")), "run"], join(root, "integration")]];
-for (const [command, args, cwd] of runs) {
-  const result = spawnSync(command, args, { cwd, env, stdio: "inherit", timeout: 180_000 });
+for (const [command, args, cwd, timeout = 180_000] of runs) {
+  const result = spawnSync(command, args, { cwd, env, stdio: "inherit", timeout });
   if (result.error !== undefined) throw result.error;
   process.exitCode = result.status ?? 1;
   if (process.exitCode !== 0) break;
