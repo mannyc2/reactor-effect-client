@@ -255,6 +255,29 @@ export type Renewal =
       readonly sessionId: string;
       readonly ageSeconds: number;
       readonly tail: MediaTail;
+      /** Eligibility facts captured before retirement waits; absent on historical event values. */
+      readonly handoff?: {
+        readonly replacementSessionId: string;
+        readonly decision: "no-observed-start" | "count-complete" | "grace-elapsed";
+        /** Local decoded-frame accounting, not presentation or audio completeness. */
+        readonly finalClip:
+          | { readonly _tag: "NoObservedStart" }
+          | {
+              readonly _tag: "Observed";
+              readonly clipId: ClipId;
+              readonly expectedVideoFrames: number;
+              readonly receivedVideoFrames: number;
+              readonly videoStatus: "count-complete" | "incomplete";
+            };
+        readonly grace:
+          | { readonly _tag: "NotObserved" }
+          | {
+              readonly _tag: "Observed";
+              readonly origin: "Ended" | "Idle";
+              readonly elapsedMs: number;
+              readonly limitMs: number;
+            };
+      };
     }
   | {
       readonly _tag: "Replaced";
