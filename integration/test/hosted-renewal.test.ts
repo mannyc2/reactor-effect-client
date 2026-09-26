@@ -319,6 +319,14 @@ test("renewal refuses incomplete or contradictory evidence even when supplied cr
       ),
     },
     { ...original, media: { ...original.media, attributionComplete: false } },
+    {
+      ...original,
+      media: { ...original.media, video: { ...original.media.video, arrivalsMs: [0, 1] } },
+    },
+    {
+      ...original,
+      allocations: original.allocations.map((slot) => ({ ...slot, slot: slot.slot === 1 ? 2 : 1 })),
+    },
     { ...original, media: { ...original.media, sources: original.media.sources.slice(0, 1) } },
     {
       ...original,
@@ -327,7 +335,15 @@ test("renewal refuses incomplete or contradictory evidence even when supplied cr
       ),
     },
     { ...original, drain: { ...original.drain!, allocationsWhenCompleted: 3 } },
-    { ...original, cleanup: { ...original.cleanup!, report: { sessions: [canonical("a")] } } },
+    {
+      ...original,
+      cleanup: {
+        _tag: "Legacy",
+        requestedMs: 16001,
+        report: { sessions: [canonical("a")] },
+        incomplete: [],
+      },
+    },
   ];
   for (const evidence of invalid) {
     const run = draft(evidence);
@@ -397,8 +413,117 @@ test("canonical owned cleanup rejects contradictory confirmation and failed requ
     { ...original.lease.remote, error: Reactor.ReactorError.fromCode("Shutdown", "failed") },
     { ...original.lease.remote, evidence: null },
     { ...original.lease.remote, confirmed: false },
+    { ...original.lease.remote, attempted: false },
+    { ...original.lease.remote, responseReceived: false },
   ])
     expect(confirmedOwnedCleanup({ ...original, lease: { ...original.lease, remote } }, "a")).toBe(
       false,
     );
+});
+
+const continuous = (): SchedulerRenewal => ({
+  ...renewal(),
+  configuration: {
+    ...renewal().configuration,
+    constructor: "continuous",
+    retainedSuccessfulCleanups: 1,
+    maxUnresolvedCleanups: 2,
+  },
+  cleanup: {
+    _tag: "Continuous",
+    requestedMs: 16001,
+    completedMs: 16002,
+    incomplete: [],
+    summary: {
+      format: "reactor-orchestration-cleanup-summary/v1",
+      totalRetirements: 2n,
+      omittedComplete: { ownedTerminated: 1n, noAllocation: 0n, attachedDetached: 0n },
+      retained: [
+        {
+          ordinal: 2n,
+          source: { sessionId: "b", incarnation: 2n },
+          cleanup: canonical("b"),
+          retirement: {
+            accounting: "settled",
+            scope: "closed",
+            affinity: "retired",
+            unknownSubmissions: 0n,
+            errors: [],
+          },
+          disposition: "complete",
+        },
+      ],
+      exhausted: false,
+    },
+  },
+});
+
+test("continuous summary reconciles compaction with original source reports and gates paid qualification", () => {
+  const evidence = draft(continuous());
+  evidence.mode = "paid";
+  conclude(evidence, undefined);
+  expect(evidence.verdict).toBe("pass");
+  const encoded = Schema.encodeSync(Evidence)(evidence);
+  expect(Schema.decodeSync(Evidence)(encoded)).toEqual(evidence);
+  expect(JSON.stringify(encoded)).toContain('"totalRetirements":"2"');
+  const legacy = draft();
+  legacy.mode = "paid";
+  conclude(legacy, undefined);
+  expect(legacy.verdict).toBe("fail");
+  expect(legacy.reasons.join(" ")).toContain("requires the continuous constructor");
+});
+
+test("continuous omissions cannot replace missing canonical cleanup or hide incomplete retained evidence", () => {
+  const original = continuous();
+  if (original.cleanup?._tag !== "Continuous" || original.cleanup.summary === undefined)
+    throw new Error("Missing fixture summary");
+  const cleanup = original.cleanup,
+    summary = cleanup.summary!,
+    row = summary.retained[0]!;
+  const summaries: readonly Orchestration.CleanupSummary[] = [
+    { ...summary, exhausted: true },
+    { ...summary, totalRetirements: 3n },
+    {
+      ...summary,
+      omittedComplete: { ...summary.omittedComplete, ownedTerminated: 0n, noAllocation: 1n },
+    },
+    { ...summary, retained: [{ ...row, source: { sessionId: "a", incarnation: 1n } }] },
+    { ...summary, retained: [{ ...row, cleanup: canonical("wrong") }] },
+    { ...summary, retained: [{ ...row, conflictingCleanup: canonical("b") }] },
+    { ...summary, retained: [{ ...row, disposition: "incomplete" }] },
+    {
+      ...summary,
+      retained: [{ ...row, retirement: { ...row.retirement, accounting: "timed-out" } }],
+    },
+    {
+      ...summary,
+      retained: [{ ...row, retirement: { ...row.retirement, unknownSubmissions: 1n } }],
+    },
+  ];
+  for (const candidate of summaries) {
+    const evidence = draft({ ...original, cleanup: { ...cleanup, summary: candidate } });
+    conclude(evidence, undefined);
+    expect(evidence.verdict).toBe("fail");
+  }
+  const missing = draft({
+    ...original,
+    allocations: original.allocations.map(({ cleanup: _cleanup, ...slot }) => slot),
+  });
+  conclude(missing, undefined);
+  expect(missing.verdict).toBe("fail");
+  const wrongKind = draft({ ...original, cleanup: renewal().cleanup! });
+  conclude(wrongKind, undefined);
+  expect(wrongKind.verdict).toBe("fail");
+});
+
+test("constructor schema requires its actual retention settings", () => {
+  const original = continuous();
+  for (const configuration of [
+    { ...original.configuration, retainedSuccessfulCleanups: 2 },
+    { ...original.configuration, maxUnresolvedCleanups: undefined },
+    { ...original.configuration, constructor: "legacy" },
+  ])
+    expect(() =>
+      Schema.decodeUnknownSync(SchedulerRenewal)({ ...original, configuration }),
+    ).toThrow();
 });

@@ -14,7 +14,11 @@ import { Evidence } from "../hosted/evidence.js";
 
 const script = fileURLToPath(new URL("../hosted/qualify.ts", import.meta.url));
 
-const rehearse = (check: string, faults: readonly string[] = []) => {
+const rehearse = (
+  check: string,
+  faults: readonly string[] = [],
+  constructor?: "legacy" | "continuous",
+) => {
   const ledger = mkdtempSync(join(tmpdir(), "hosted-rehearsal-"));
   const result = spawnSync(
     process.execPath,
@@ -23,6 +27,7 @@ const rehearse = (check: string, faults: readonly string[] = []) => {
       "rehearse",
       check,
       `--ledger=${ledger}`,
+      ...(constructor === undefined ? [] : [`--constructor=${constructor}`]),
       ...(faults.length === 0 ? [] : [`--faults=${faults.join(",")}`]),
     ],
     { encoding: "utf8", timeout: 150_000, env: { PATH: process.env.PATH ?? "" } },
@@ -242,63 +247,93 @@ test("a token that grants more than asked is refused before any session exists",
   expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
 }, 180_000);
 
-test("public renewal uses the real scheduler, planned switch and accepted drain", () => {
-  const run = rehearse("scheduler-renewal");
-  expect(run.status, run.output).toBe(0);
-  const renewal = run.evidence.schedulerRenewal!;
-  expect(renewal.configuration.constructor).toBe("legacy");
-  expect(renewal.openAttempts).toBe(2);
-  expect(renewal.switches).toHaveLength(1);
-  expect(renewal.drain?.outcome).toBe("completed");
-  expect(renewal.media.attributionComplete).toBe(true);
-  expect(renewal.media.decodedBoundary?.gapMs).toBeGreaterThanOrEqual(0);
-  expect(renewal.allocations.every((slot) => slot.cleanup?.lease.remote.confirmed === true)).toBe(
-    true,
-  );
-  expect(run.evidence.scheduler).toBeUndefined();
-  credentialFree(run.text);
-}, 180_000);
-
-for (const fault of [
-  "refuseFirstAllocation",
-  "refuseSecondAllocation",
-  "failConnect",
-  "overgrantSecondToken",
-  "slowDelete",
-  "ignoreDelete",
-  "dropSecondEnqueueReply",
-  "noFirstVideo",
-  "noSecondVideo",
-  "stallSecondBuild",
-])
-  test(`public renewal retains failed evidence for ${fault}`, () => {
-    const run = rehearse("scheduler-renewal", [fault]);
-    expect(run.status, run.output).toBe(1);
-    expect(run.evidence.verdict).toBe("fail");
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`public renewal ${constructor} uses the real scheduler, planned switch and accepted drain`, () => {
+    const run = rehearse("scheduler-renewal", [], constructor);
+    expect(run.status, run.output).toBe(0);
     const renewal = run.evidence.schedulerRenewal!;
-    expect(
-      renewal.allocations.filter((slot) => slot.sessionId !== undefined).length,
-    ).toBeLessThanOrEqual(2);
-    expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
-    if (fault === "overgrantSecondToken" || fault === "refuseFirstAllocation")
-      expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
-    if (fault === "refuseSecondAllocation") {
-      expect(renewal.openAttempts).toBe(3);
-      expect(renewal.allocations.filter((slot) => slot.sessionId !== undefined)).toHaveLength(1);
+    expect(renewal.configuration.constructor).toBe(constructor);
+    if (constructor === "continuous") {
+      expect(renewal.cleanup?._tag).toBe("Continuous");
+      if (renewal.cleanup?._tag !== "Continuous") throw new Error("Missing continuous cleanup");
+      expect(renewal.cleanup.summary).toMatchObject({
+        totalRetirements: 2n,
+        omittedComplete: { ownedTerminated: 1n, noAllocation: 0n, attachedDetached: 0n },
+        exhausted: false,
+      });
+      expect(renewal.cleanup.summary?.retained).toHaveLength(1);
+      expect(renewal.cleanup.summary?.retained[0]).toMatchObject({
+        source: { sessionId: renewal.allocations[1]!.sessionId },
+        disposition: "complete",
+        retirement: { unknownSubmissions: 0n },
+      });
     }
-    if (fault === "failConnect")
-      expect(renewal.allocations[0]?.leaseCleanup?.remote.confirmed).toBe(true);
-    if (fault === "dropSecondEnqueueReply") {
-      expect(run.evidence.outcomes).toContain("unknown");
-      expect(renewal.items[1]?.sessionId).toBe(renewal.allocations[1]?.sessionId);
-      expect(renewal.items[1]?.statuses.some((status) => status._tag === "Unknown")).toBe(true);
-    }
-    if (fault === "stallSecondBuild") expect(renewal.switches).toEqual([]);
+    expect(renewal.openAttempts).toBe(2);
+    expect(renewal.switches).toHaveLength(1);
+    expect(renewal.drain?.outcome).toBe("completed");
+    expect(renewal.media.attributionComplete).toBe(true);
+    expect(renewal.media.decodedBoundary?.gapMs).toBeGreaterThanOrEqual(0);
+    expect(renewal.allocations.every((slot) => slot.cleanup?.lease.remote.confirmed === true)).toBe(
+      true,
+    );
+    expect(run.evidence.scheduler).toBeUndefined();
     credentialFree(run.text);
   }, 180_000);
 
+for (const constructor of ["legacy", "continuous"] as const)
+  for (const fault of [
+    "refuseFirstAllocation",
+    "refuseSecondAllocation",
+    "failConnect",
+    "overgrantSecondToken",
+    "slowDelete",
+    "ignoreDelete",
+    "dropSecondEnqueueReply",
+    "noFirstVideo",
+    "noSecondVideo",
+    "stallSecondBuild",
+  ])
+    test(`public renewal ${constructor} retains failed evidence for ${fault}`, () => {
+      const run = rehearse("scheduler-renewal", [fault], constructor);
+      expect(run.status, run.output).toBe(1);
+      expect(run.evidence.verdict).toBe("fail");
+      const renewal = run.evidence.schedulerRenewal!;
+      expect(
+        renewal.allocations.filter((slot) => slot.sessionId !== undefined).length,
+      ).toBeLessThanOrEqual(2);
+      expect(run.evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+      if (fault === "overgrantSecondToken" || fault === "refuseFirstAllocation")
+        expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
+      if (fault === "refuseSecondAllocation") {
+        expect(renewal.openAttempts).toBe(3);
+        expect(renewal.allocations.filter((slot) => slot.sessionId !== undefined)).toHaveLength(1);
+      }
+      if (fault === "failConnect")
+        expect(renewal.allocations[0]?.leaseCleanup?.remote.confirmed).toBe(true);
+      if (fault === "dropSecondEnqueueReply") {
+        expect(run.evidence.outcomes).toContain("unknown");
+        expect(renewal.items[1]?.sessionId).toBe(renewal.allocations[1]?.sessionId);
+        expect(renewal.items[1]?.statuses.some((status) => status._tag === "Unknown")).toBe(true);
+        if (constructor === "continuous") {
+          expect(renewal.cleanup?._tag).toBe("Continuous");
+          if (renewal.cleanup?._tag !== "Continuous") throw new Error("Missing continuous cleanup");
+          const unresolved = renewal.cleanup.summary?.retained.find(
+            (row) => row.source?.sessionId === renewal.items[1]?.sessionId,
+          );
+          expect(unresolved?.disposition).toBe("incomplete");
+          expect(unresolved?.retirement.unknownSubmissions).toBeGreaterThan(0n);
+        }
+      }
+      if (fault === "stallSecondBuild") expect(renewal.switches).toEqual([]);
+      credentialFree(run.text);
+    }, 180_000);
+
 /** The parent process is the explicit external emergency owner for these two interruption fixtures. */
-const stopAtCheckpoint = async (fault: string | undefined, signal: NodeJS.Signals) => {
+const stopAtCheckpoint = async (
+  constructor: "legacy" | "continuous",
+  fault: string | undefined,
+  signal: NodeJS.Signals,
+) => {
   const ledger = mkdtempSync(join(tmpdir(), "hosted-renewal-interrupt-"));
   const child = spawn(
     process.execPath,
@@ -306,6 +341,7 @@ const stopAtCheckpoint = async (fault: string | undefined, signal: NodeJS.Signal
       script,
       "rehearse",
       "scheduler-renewal",
+      `--constructor=${constructor}`,
       `--ledger=${ledger}`,
       ...(fault === undefined ? [] : [`--faults=${fault}`]),
     ],
@@ -349,22 +385,24 @@ const stopAtCheckpoint = async (fault: string | undefined, signal: NodeJS.Signal
   }
 };
 
-test("public renewal interruption after allocation preserves the canonical lease report", async () => {
-  const evidence = await stopAtCheckpoint(undefined, "SIGINT");
-  expect(evidence.verdict).toBe("fail");
-  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
-  const source = evidence.schedulerRenewal!.allocations[0]!;
-  expect(source.cleanup?.lease.remote.confirmed ?? source.leaseCleanup?.remote.confirmed).toBe(
-    true,
-  );
-}, 180_000);
+for (const constructor of ["legacy", "continuous"] as const) {
+  test(`public renewal ${constructor} interruption after allocation preserves the canonical lease report`, async () => {
+    const evidence = await stopAtCheckpoint(constructor, undefined, "SIGINT");
+    expect(evidence.verdict).toBe("fail");
+    expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+    const source = evidence.schedulerRenewal!.allocations[0]!;
+    expect(source.cleanup?.lease.remote.confirmed ?? source.leaseCleanup?.remote.confirmed).toBe(
+      true,
+    );
+  }, 180_000);
 
-test("public renewal stalled close leaves a durable failed checkpoint after emergency termination", async () => {
-  const evidence = await stopAtCheckpoint("stallClose", "SIGKILL");
-  expect(evidence.verdict).toBe("fail");
-  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
-  const source = evidence.schedulerRenewal!.allocations[0]!;
-  expect(source.closeRequestedMs).toBeDefined();
-  expect(source.cleanup).toBeUndefined();
-  expect(source.leaseCleanup).toBeUndefined();
-}, 180_000);
+  test(`public renewal ${constructor} stalled close leaves a durable failed checkpoint after emergency termination`, async () => {
+    const evidence = await stopAtCheckpoint(constructor, "stallClose", "SIGKILL");
+    expect(evidence.verdict).toBe("fail");
+    expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+    const source = evidence.schedulerRenewal!.allocations[0]!;
+    expect(source.closeRequestedMs).toBeDefined();
+    expect(source.cleanup).toBeUndefined();
+    expect(source.leaseCleanup).toBeUndefined();
+  }, 180_000);
+}
