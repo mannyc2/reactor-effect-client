@@ -90,7 +90,9 @@ export interface Options<R = never> {
    * so the switch then proceeds and `Switched.tail` reports the shortfall. The
    * grace also starts when the source reports nothing playing, in case Ended
    * was lost. At most 5 seconds, since the retiring source running dry within
-   * it is not reported as `Starved`. A bare number is milliseconds.
+   * it is not reported as `Starved`. Renewal checks every 100 milliseconds, so
+   * the switch can come up to one check after the grace. A bare number is
+   * milliseconds.
    */
   readonly handoffGrace?: Duration.Input | undefined;
   /**
@@ -845,9 +847,10 @@ export const make = <R>(
             ? Option.some(current.source.id)
             : Option.none(),
         // No media condition: a short final clip holds the switch only for the
-        // grace past its Ended, or past the source first reported idle. Gating on the playing clip's frames instead
-        // could hold only in the instant between its last frame and Ended, so
-        // a lossy clip let the retiring source roll into its next filler.
+        // grace past its Ended, or past the source first reported idle. Gating
+        // on the playing clip's frames instead could hold only in the instant
+        // between its last frame and Ended, so a lossy clip let the retiring
+        // source roll into its next filler.
         handoffReady:
           next !== undefined &&
           preferred === next &&
