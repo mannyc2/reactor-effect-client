@@ -17,6 +17,38 @@ import {
   videoFrame,
 } from "./SourceFixture.js";
 import type { SourceFixture } from "./SourceFixture.js";
+import type { SourceCleanup } from "../../src/orchestration/types.js";
+
+test("scope-finalizer defects preserve the canonical report and their original Cause on every close", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const defect = new Error("retiring scope failed");
+      let canonical: SourceCleanup | undefined;
+      const handle = yield* Renewal.makeContinuous({
+        retainedSuccessfulCleanups: 0,
+        open: Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => Effect.die(defect));
+          const fixture = yield* sourceFixture("scope-defect");
+          canonical = fixture.cleanup;
+          return { source: fixture.source, lifetime: "Infinity" };
+        }),
+      }).pipe(Scope.provide(scope));
+      const first = yield* Effect.exit(handle.close);
+      const repeated = yield* Effect.exit(handle.close);
+      expect(first._tag).toBe("Failure");
+      if (Exit.isFailure(first) && Exit.isFailure(repeated)) {
+        expect(Cause.findDefect(first.cause)).toMatchObject({ _tag: "Success", success: defect });
+        expect(repeated.cause).toBe(first.cause);
+      }
+      const summary = Option.getOrThrow(yield* handle.cleanup);
+      expect(summary.retained[0]?.cleanup).toBe(canonical);
+      expect(summary.retained[0]?.retirement.scope).toBe("failed");
+      expect(summary.retained[0]?.disposition).toBe("incomplete");
+      expect(summary.omittedComplete.attachedDetached).toBe(0n);
+      yield* Effect.exit(Scope.close(scope, Exit.void));
+    }),
+  ));
 
 test("continuous renewal exceeds 64 sources and preserves exact bounded cleanup evidence", () =>
   runClock(

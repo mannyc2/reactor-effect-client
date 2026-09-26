@@ -246,7 +246,7 @@ test("retirement order is independent of acquisition order and retained incomple
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 1 });
       const first = yield* retention.reserve;
       const second = yield* retention.reserve;
-      yield* retention.identify(first, "first");
+      yield* retention.identify(first, "owned");
       yield* retention.identify(second, "second");
       yield* retention.record(second, cleanup({ allocation: "unknown" }));
       yield* retention.finish(second, complete);
@@ -313,7 +313,7 @@ test("physical identity is bounded and cannot change within an ownership attempt
     Effect.gen(function* () {
       const retention = yield* Retention.make();
       const owner = yield* retention.reserve;
-      for (const id of ["", "s".repeat(1025)]) {
+      for (const id of ["", "s".repeat(1025), 42 as unknown as string]) {
         expect(yield* Effect.result(retention.identify(owner, id))).toMatchObject({
           _tag: "Failure",
           failure: { reason: { _tag: "InvalidInput" } },
@@ -322,6 +322,31 @@ test("physical identity is bounded and cannot change within an ownership attempt
       yield* retention.identify(owner, "s".repeat(1024));
       const changed = yield* Effect.exit(retention.identify(owner, "other"));
       expect(changed._tag).toBe("Failure");
+    }),
+    { signal },
+  );
+});
+
+test("contradictory DELETE facts and a different physical lease identity remain incomplete", async ({
+  signal,
+}) => {
+  await run(
+    Effect.gen(function* () {
+      const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
+      for (const remote of [
+        { ...owned.lease.remote, deleteStatus: 204 },
+        { ...owned.lease.remote, responseReceived: true },
+        { ...owned.lease.remote, attempted: false, responseReceived: true, deleteStatus: 204 },
+      ]) {
+        const owner = yield* retention.reserve;
+        yield* retention.record(owner, cleanup({ ...owned.lease, remote }));
+        expect((yield* retention.finish(owner, complete)).disposition).toBe("incomplete");
+      }
+      const mismatched = yield* retention.reserve;
+      yield* retention.identify(mismatched, "different-physical-session");
+      yield* retention.record(mismatched, owned);
+      expect((yield* retention.finish(mismatched, complete)).disposition).toBe("incomplete");
+      expect((yield* retention.summary).omittedComplete.ownedTerminated).toBe(0n);
     }),
     { signal },
   );
