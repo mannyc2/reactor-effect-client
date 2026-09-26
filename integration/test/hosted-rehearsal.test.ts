@@ -305,8 +305,30 @@ for (const constructor of ["legacy", "continuous"] as const)
       if (fault === "overgrantSecondToken" || fault === "refuseFirstAllocation")
         expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
       if (fault === "refuseSecondAllocation") {
-        expect(renewal.openAttempts).toBe(3);
         expect(renewal.allocations.filter((slot) => slot.sessionId !== undefined)).toHaveLength(1);
+        if (constructor === "legacy") expect(renewal.openAttempts).toBe(3);
+        else {
+          // The failed acquisition keeps its reserved incomplete record. Together
+          // with the live source it fills continuous capacity before the open guard.
+          expect(renewal.openAttempts).toBe(2);
+          if (renewal.cleanup?._tag !== "Continuous") throw new Error("Missing continuous cleanup");
+          expect(renewal.cleanup.summary).toMatchObject({
+            totalRetirements: 2n,
+            exhausted: true,
+            omittedComplete: { noAllocation: 0n, ownedTerminated: 0n, attachedDetached: 0n },
+          });
+          expect(renewal.cleanup.summary?.retained).toHaveLength(2);
+          expect(
+            renewal.cleanup.summary?.retained.find((row) => row.disposition === "incomplete"),
+          ).toMatchObject({
+            cleanup: { lease: { allocation: "unknown" } },
+            retirement: {
+              accounting: "not-applicable",
+              scope: "closed",
+              affinity: "not-applicable",
+            },
+          });
+        }
       }
       if (fault === "failConnect")
         expect(renewal.allocations[0]?.leaseCleanup?.remote.confirmed).toBe(true);
