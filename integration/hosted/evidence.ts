@@ -177,7 +177,9 @@ export const SchedulerRenewal = Schema.Struct({
   clock: Schema.Literal("effect-monotonic"),
   scenario: Schema.Literal("two-source-accepted-drain"),
   configuration: Schema.Struct({
-    constructor: Schema.Literal("legacy"),
+    constructor: Schema.Literals(["legacy", "continuous"]),
+    retainedSuccessfulCleanups: Schema.optionalKey(Schema.Literal(1)),
+    maxUnresolvedCleanups: Schema.optionalKey(Schema.Literal(2)),
     setupLimitMs: Schema.Literal(20000),
     workLimitMs: Schema.Literal(40000),
     cleanupLimitMs: Schema.Literal(20000),
@@ -186,7 +188,17 @@ export const SchedulerRenewal = Schema.Struct({
     clipSeconds: Schema.Literal(5),
     maxSessions: Schema.Literal(2),
     maxOpenAttempts: Schema.Literal(2),
-  }),
+  }).check(
+    Schema.makeFilter(
+      (configuration) =>
+        configuration.constructor === "continuous"
+          ? configuration.retainedSuccessfulCleanups === 1 &&
+            configuration.maxUnresolvedCleanups === 2
+          : configuration.retainedSuccessfulCleanups === undefined &&
+            configuration.maxUnresolvedCleanups === undefined,
+      { message: "retention settings must match the selected constructor" },
+    ),
+  ),
   openAttempts: Schema.Natural,
   allocations: Schema.Array(
     Schema.Struct({
@@ -280,12 +292,20 @@ export const SchedulerRenewal = Schema.Struct({
     }),
   ),
   cleanup: Schema.optionalKey(
-    Schema.TaggedStruct("Legacy", {
-      report: Schema.optionalKey(Schema.toCodecJson(Orchestration.CleanupReport)),
-      requestedMs: ElapsedMs,
-      completedMs: Schema.optionalKey(ElapsedMs),
-      incomplete: Schema.Array(Schema.String),
-    }),
+    Schema.Union([
+      Schema.TaggedStruct("Legacy", {
+        report: Schema.optionalKey(Schema.toCodecJson(Orchestration.CleanupReport)),
+        requestedMs: ElapsedMs,
+        completedMs: Schema.optionalKey(ElapsedMs),
+        incomplete: Schema.Array(Schema.String),
+      }),
+      Schema.TaggedStruct("Continuous", {
+        summary: Schema.optionalKey(Schema.toCodecJson(Orchestration.CleanupSummary)),
+        requestedMs: ElapsedMs,
+        completedMs: Schema.optionalKey(ElapsedMs),
+        incomplete: Schema.Array(Schema.String),
+      }),
+    ]),
   ),
 });
 export type SchedulerRenewal = typeof SchedulerRenewal.Type;
@@ -578,7 +598,9 @@ export const required = (evidence: Evidence): readonly string[] => {
       "schedulerRenewal.switches.0.handoff",
       "schedulerRenewal.media.decodedBoundary",
       "schedulerRenewal.drain.completedMs",
-      "schedulerRenewal.cleanup.report",
+      evidence.schedulerRenewal?.configuration.constructor === "continuous"
+        ? "schedulerRenewal.cleanup.summary"
+        : "schedulerRenewal.cleanup.report",
     ];
   const common = [
     "budget.worstCaseUsd",
@@ -672,6 +694,8 @@ export const confirmedOwnedCleanup = (
     lease.localClosed &&
     lease.remote.confirmed &&
     lease.remote.error === undefined &&
+    lease.remote.responseReceived === (lease.remote.deleteStatus !== null) &&
+    (!lease.remote.responseReceived || lease.remote.attempted) &&
     (lease.remote.evidence === "terminal" || lease.remote.evidence === "absent") &&
     lease.localErrors.length === 0 &&
     lease.unresolvedPublications.length === 0 &&
@@ -689,7 +713,7 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
       detail: "missing schedulerRenewal evidence",
     }));
   const problems: { name: (typeof renewalCriteria)[number]; reason: string }[] = [];
-  const require = (
+  const requireEvidence = (
     condition: boolean | undefined,
     reason: string,
     name: (typeof renewalCriteria)[number],
@@ -698,110 +722,176 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
   };
   const budget = evidence.budget;
   const rate = budget.rate;
-  require(rate !== undefined &&
-    rate.creditsPerSecond > 0 &&
-    rate.creditsPerDollar > 0 &&
-    budget.worstCaseUsd !== undefined &&
-    billedUsd(rate, 50) * 2 <= budget.worstCaseUsd + 1e-9 &&
-    budget.worstCaseUsd <= budget.checkUsd &&
-    budget.checkUsd <= 1.5 &&
-    budget.totalUsd <= 3.75 &&
-    budget.reservedBeforeUsd + budget.worstCaseUsd <=
-      budget.totalUsd +
-        1e-9, "the two capped sessions must fit their reservation and ledger ceilings", "bounded allocation");
+  requireEvidence(
+    rate !== undefined &&
+      rate.creditsPerSecond > 0 &&
+      rate.creditsPerDollar > 0 &&
+      budget.worstCaseUsd !== undefined &&
+      billedUsd(rate, 50) * 2 <= budget.worstCaseUsd + 1e-9 &&
+      budget.worstCaseUsd <= budget.checkUsd &&
+      budget.checkUsd <= 1.5 &&
+      budget.totalUsd <= 3.75 &&
+      budget.reservedBeforeUsd + budget.worstCaseUsd <= budget.totalUsd + 1e-9,
+    "the two capped sessions must fit their reservation and ledger ceilings",
+    "bounded allocation",
+  );
   const allocations = run.allocations.filter((slot) => slot.sessionId !== undefined);
   const ids = allocations.map((slot) => slot.sessionId!);
-  require(allocations.length === 2 &&
-    new Set(ids).size === 2 &&
-    new Set(allocations.map((slot) => slot.slot)).size === 2 &&
-    run.openAttempts ===
-      2, "bounded allocation requires exactly two distinct sources and two attempts", "bounded allocation");
+  requireEvidence(
+    allocations.length === 2 &&
+      new Set(ids).size === 2 &&
+      allocations[0]?.slot === 1 &&
+      allocations[1]?.slot === 2 &&
+      run.openAttempts === 2,
+    "bounded allocation requires exactly two distinct sources and two attempts",
+    "bounded allocation",
+  );
   for (const slot of allocations) {
-    require(slot.grant?.maxSessions === 1 &&
-      slot.grant.maxSessionSeconds === 50 &&
-      slot.allocatedMs !== undefined &&
-      slot.allocatedAt !== undefined &&
-      slot.capEndsAt !==
-        undefined, "each allocated source needs its granted cap and allocation timing", "bounded allocation");
-    require(slot.cleanup !== undefined &&
-      confirmedOwnedCleanup(
-        slot.cleanup,
-        slot.sessionId!,
-      ), "each allocated source needs confirmed canonical owned cleanup", "owned lease cleanup");
-    require(slot.closedMs !== undefined &&
-      slot.closeRequestedMs !== undefined &&
-      slot.allocatedMs !== undefined &&
-      slot.allocatedMs <= slot.closeRequestedMs &&
-      slot.closeRequestedMs <=
-        slot.closedMs, "source cleanup timestamps must follow allocation", "owned lease cleanup");
+    requireEvidence(
+      slot.grant?.maxSessions === 1 &&
+        slot.grant.maxSessionSeconds === 50 &&
+        slot.allocatedMs !== undefined &&
+        slot.allocatedAt !== undefined &&
+        slot.capEndsAt !== undefined,
+      "each allocated source needs its granted cap and allocation timing",
+      "bounded allocation",
+    );
+    requireEvidence(
+      slot.cleanup !== undefined && confirmedOwnedCleanup(slot.cleanup, slot.sessionId!),
+      "each allocated source needs confirmed canonical owned cleanup",
+      "owned lease cleanup",
+    );
+    requireEvidence(
+      slot.closedMs !== undefined &&
+        slot.closeRequestedMs !== undefined &&
+        slot.allocatedMs !== undefined &&
+        slot.allocatedMs <= slot.closeRequestedMs &&
+        slot.closeRequestedMs <= slot.closedMs,
+      "source cleanup timestamps must follow allocation",
+      "owned lease cleanup",
+    );
   }
   const a = run.items.find((item) => item.key === "qualification-A");
   const b = run.items.find((item) => item.key === "qualification-B");
-  require(run.items.length === 2 &&
-    a !== undefined &&
-    b !== undefined, "both keyed items must be present", "keyed playback order");
+  requireEvidence(
+    run.items.length === 2 && a !== undefined && b !== undefined,
+    "both keyed items must be present",
+    "keyed playback order",
+  );
   const startedA = a?.statuses.find((status) => status._tag === "Started");
   const startedB = b?.statuses.find((status) => status._tag === "Started");
   const endedA = a?.statuses.find((status) => status._tag === "Ended");
   const endedB = b?.statuses.find((status) => status._tag === "Ended");
-  require(startedA !== undefined &&
-    startedB !== undefined &&
-    endedA !== undefined &&
-    endedB !== undefined &&
-    startedA.atMs <= endedA.atMs &&
-    endedA.atMs <= startedB.atMs &&
-    startedB.atMs <= endedB.atMs &&
-    endedA.termination === "finished" &&
-    endedB.termination ===
-      "finished", "keyed playback must start and finish A then B", "keyed playback order");
+  requireEvidence(
+    startedA !== undefined &&
+      startedB !== undefined &&
+      endedA !== undefined &&
+      endedB !== undefined &&
+      startedA.atMs <= endedA.atMs &&
+      endedA.atMs <= startedB.atMs &&
+      startedB.atMs <= endedB.atMs &&
+      endedA.termination === "finished" &&
+      endedB.termination === "finished",
+    "keyed playback must start and finish A then B",
+    "keyed playback order",
+  );
   for (const item of run.items) {
-    require(item.clipId !== undefined &&
-      item.sessionId !== undefined &&
-      ids.includes(
-        item.sessionId,
-      ), "item clip and allocated source identity are required", "keyed playback order");
-    require(!item.statuses.some((status) =>
-      ["Unknown", "Failed", "Dropped", "Unobserved"].includes(status._tag),
-    ), "an unknown or failed item cannot qualify playback", "keyed playback order");
-    require(item.statuses.filter((status) => status._tag === "Started").length === 1 &&
-      item.statuses.filter((status) => status._tag === "Ended").length ===
-        1, "each keyed item needs exactly one observed start and end", "keyed playback order");
-    require(item.statuses.every(
-      (status, index) => index === 0 || item.statuses[index - 1]!.atMs <= status.atMs,
-    ), "item observations must be in monotonic order", "keyed playback order");
+    requireEvidence(
+      item.clipId !== undefined && item.sessionId !== undefined && ids.includes(item.sessionId),
+      "item clip and allocated source identity are required",
+      "keyed playback order",
+    );
+    requireEvidence(
+      !item.statuses.some((status) =>
+        ["Unknown", "Failed", "Dropped", "Unobserved"].includes(status._tag),
+      ),
+      "an unknown or failed item cannot qualify playback",
+      "keyed playback order",
+    );
+    requireEvidence(
+      item.statuses.filter((status) => status._tag === "Started").length === 1 &&
+        item.statuses.filter((status) => status._tag === "Ended").length === 1,
+      "each keyed item needs exactly one observed start and end",
+      "keyed playback order",
+    );
+    requireEvidence(
+      item.statuses.every(
+        (status, index) => index === 0 || item.statuses[index - 1]!.atMs <= status.atMs,
+      ),
+      "item observations must be in monotonic order",
+      "keyed playback order",
+    );
   }
-  require(a?.sessionId === ids[0] &&
-    b?.sessionId === ids[1] &&
-    a?.clipId !== b?.clipId &&
-    startedA?.sessionId === ids[0] &&
-    startedB?.sessionId ===
-      ids[1], "keyed items must play on the retiring and replacement sources respectively", "keyed playback order");
-  require(run.prepared !== undefined &&
-    run.prepared.preferredSessionId === ids[1] &&
-    b?.statuses.some(
-      (status) =>
-        status._tag === "Ready" && status.sessionId === ids[1] && status.atMs >= run.prepared!.atMs,
-    ), "B must be routed to the observed prepared preferred source", "public renewal preparation");
+  requireEvidence(
+    a?.sessionId === ids[0] &&
+      b?.sessionId === ids[1] &&
+      a?.clipId !== b?.clipId &&
+      startedA?.sessionId === ids[0] &&
+      startedB?.sessionId === ids[1],
+    "keyed items must play on the retiring and replacement sources respectively",
+    "keyed playback order",
+  );
+  requireEvidence(
+    run.prepared !== undefined &&
+      run.prepared.preferredSessionId === ids[1] &&
+      b?.statuses.some(
+        (status) =>
+          status._tag === "Ready" &&
+          status.sessionId === ids[1] &&
+          status.atMs >= run.prepared!.atMs,
+      ),
+    "B must be routed to the observed prepared preferred source",
+    "public renewal preparation",
+  );
   const switched = run.switches[0];
-  require(run.switches.length === 1 &&
-    switched !== undefined &&
-    switched.retiringSessionId === ids[0] &&
-    switched.handoff !== undefined &&
-    switched.handoff.replacementSessionId === ids[1] &&
-    switched.handoff.finalClip._tag === "Observed" &&
-    switched.handoff.finalClip.clipId ===
-      a?.clipId, "exactly one matching planned switch with final-clip evidence is required", "planned switch");
-  require(run.media.sources.every(
-    (source) =>
-      ids.includes(source.sessionId) &&
-      source.video.frames === source.video.arrivalsMs?.length &&
-      source.audio.blocks === source.audio.arrivalsMs?.length,
-  ) &&
-    run.media.video.frames === run.media.video.arrivalsMs?.length &&
-    run.media.audio.blocks === run.media.audio.arrivalsMs?.length &&
-    new Set(run.media.sources.map((source) => `${source.sessionId}/${source.generation}`)).size ===
-      run.media.sources
-        .length, "media counts and unique source generations must match their retained arrivals", "attributed logical media");
+  requireEvidence(
+    run.switches.length === 1 &&
+      switched !== undefined &&
+      switched.retiringSessionId === ids[0] &&
+      switched.handoff !== undefined &&
+      switched.handoff.replacementSessionId === ids[1] &&
+      switched.handoff.finalClip._tag === "Observed" &&
+      switched.handoff.finalClip.clipId === a?.clipId,
+    "exactly one matching planned switch with final-clip evidence is required",
+    "planned switch",
+  );
+  requireEvidence(
+    run.media.sources.every(
+      (source) =>
+        ids.includes(source.sessionId) &&
+        source.video.frames === source.video.arrivalsMs?.length &&
+        source.audio.blocks === source.audio.arrivalsMs?.length,
+    ) &&
+      run.media.video.frames === run.media.video.arrivalsMs?.length &&
+      run.media.audio.blocks === run.media.audio.arrivalsMs?.length &&
+      new Set(run.media.sources.map((source) => `${source.sessionId}/${source.generation}`))
+        .size === run.media.sources.length,
+    "media counts and unique source generations must match their retained arrivals",
+    "attributed logical media",
+  );
+  const arrivalsMatch = (
+    logical: readonly number[] | undefined,
+    parts: readonly (readonly number[] | undefined)[],
+  ) => {
+    if (logical === undefined) return false;
+    const attributed = parts.flatMap((part) => part ?? []).sort((left, right) => left - right);
+    return (
+      logical.length === attributed.length &&
+      logical.every((at, index) => at >= 0 && at === attributed[index])
+    );
+  };
+  requireEvidence(
+    arrivalsMatch(
+      run.media.video.arrivalsMs,
+      run.media.sources.map((source) => source.video.arrivalsMs),
+    ) &&
+      arrivalsMatch(
+        run.media.audio.arrivalsMs,
+        run.media.sources.map((source) => source.audio.arrivalsMs),
+      ),
+    "source-attributed arrivals must reconcile exactly with logical monotonic arrivals",
+    "attributed logical media",
+  );
   const boundary = run.media.decodedBoundary;
   const sourceVideo = (id: string | undefined) =>
     run.media.sources
@@ -809,78 +899,130 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
       .flatMap((source) => source.video.arrivalsMs ?? []);
   const oldVideo = sourceVideo(ids[0]),
     newVideo = sourceVideo(ids[1]);
-  require(run.media.attributionComplete &&
-    oldVideo.length > 0 &&
-    newVideo.length > 0 &&
-    run.media.video.frames ===
-      run.media.sources.reduce((sum, source) => sum + source.video.frames, 0) &&
-    run.media.audio.blocks ===
-      run.media.sources.reduce(
-        (sum, source) => sum + source.audio.blocks,
-        0,
-      ), "logical video from both sources and complete frame attribution are required", "attributed logical media");
-  require(boundary !== undefined &&
-    boundary.retiringSessionId === ids[0] &&
-    boundary.replacementSessionId === ids[1] &&
-    boundary.lastRetiringFrameMs === Math.max(...oldVideo) &&
-    boundary.firstReplacementFrameMs === Math.min(...newVideo) &&
-    boundary.gapMs === boundary.firstReplacementFrameMs - boundary.lastRetiringFrameMs &&
-    boundary.gapMs >=
-      0, "decoded boundary must match the source-attributed logical arrivals", "attributed logical media");
+  requireEvidence(
+    run.media.attributionComplete &&
+      oldVideo.length > 0 &&
+      newVideo.length > 0 &&
+      run.media.video.frames ===
+        run.media.sources.reduce((sum, source) => sum + source.video.frames, 0) &&
+      run.media.audio.blocks ===
+        run.media.sources.reduce((sum, source) => sum + source.audio.blocks, 0),
+    "logical video from both sources and complete frame attribution are required",
+    "attributed logical media",
+  );
+  requireEvidence(
+    boundary !== undefined &&
+      boundary.retiringSessionId === ids[0] &&
+      boundary.replacementSessionId === ids[1] &&
+      boundary.lastRetiringFrameMs === Math.max(...oldVideo) &&
+      boundary.firstReplacementFrameMs === Math.min(...newVideo) &&
+      boundary.gapMs === boundary.firstReplacementFrameMs - boundary.lastRetiringFrameMs &&
+      boundary.gapMs >= 0,
+    "decoded boundary must match the source-attributed logical arrivals",
+    "attributed logical media",
+  );
   const drain = run.drain;
-  require(drain?.outcome === "completed" &&
-    drain.completedMs !== undefined &&
-    drain.completedMs >= drain.requestedMs &&
-    endedB !== undefined &&
-    drain.completedMs >= endedB.atMs &&
-    drain.acceptedKeys.length === 2 &&
-    new Set(drain.acceptedKeys).size === 2 &&
-    drain.acceptedKeys.includes("qualification-A") &&
-    drain.acceptedKeys.includes("qualification-B") &&
-    drain.allocationsWhenRequested === 2 &&
-    drain.allocationsWhenCompleted === 2 &&
-    allocations.every(
-      (slot) => slot.allocatedMs !== undefined && slot.allocatedMs <= drain.requestedMs,
-    ), "accepted drain must finish both keys without a later allocation", "accepted drain");
-  require(drain !== undefined &&
-    run.prepared !== undefined &&
-    drain.requestedMs >= run.prepared.atMs &&
-    b?.statuses.some(
-      (status) =>
-        (status._tag === "Building" || status._tag === "Ready") && status.atMs <= drain.requestedMs,
-    ), "drain must follow replacement preparation and B admission", "accepted drain");
-  const first = allocations[0]?.allocatedMs;
-  require(first !== undefined &&
-    first <= run.configuration.setupLimitMs &&
-    drain?.completedMs !== undefined &&
-    drain.completedMs <=
-      first +
-        run.configuration
-          .workLimitMs, "scenario exceeded its shared setup or work deadline", "bounded allocation");
-  const cleanup = run.cleanup;
-  require(cleanup?.report !== undefined &&
-    cleanup.completedMs !== undefined &&
-    cleanup.incomplete.length === 0 &&
-    cleanup.completedMs >= cleanup.requestedMs &&
-    cleanup.completedMs <=
-      cleanup.requestedMs +
-        run.configuration
-          .cleanupLimitMs, "canonical cleanup must complete within its observation budget", "owned lease cleanup");
-  const reports = cleanup?.report?.sessions ?? [];
-  require(reports.length === 2 &&
-    allocations.every((slot) =>
-      reports.some(
-        (report) =>
-          confirmedOwnedCleanup(report, slot.sessionId!) &&
-          slot.cleanup !== undefined &&
-          JSON.stringify(
-            Schema.encodeSync(Schema.toCodecJson(Orchestration.SourceCleanup))(report),
-          ) ===
-            JSON.stringify(
-              Schema.encodeSync(Schema.toCodecJson(Orchestration.SourceCleanup))(slot.cleanup),
-            ),
+  requireEvidence(
+    drain?.outcome === "completed" &&
+      drain.completedMs !== undefined &&
+      drain.completedMs >= drain.requestedMs &&
+      endedB !== undefined &&
+      drain.completedMs >= endedB.atMs &&
+      drain.acceptedKeys.length === 2 &&
+      new Set(drain.acceptedKeys).size === 2 &&
+      drain.acceptedKeys.includes("qualification-A") &&
+      drain.acceptedKeys.includes("qualification-B") &&
+      drain.allocationsWhenRequested === 2 &&
+      drain.allocationsWhenCompleted === 2 &&
+      allocations.every(
+        (slot) => slot.allocatedMs !== undefined && slot.allocatedMs <= drain.requestedMs,
       ),
-    ), "legacy cleanup must agree with both recorded source-close reports", "owned lease cleanup");
+    "accepted drain must finish both keys without a later allocation",
+    "accepted drain",
+  );
+  requireEvidence(
+    drain !== undefined &&
+      run.prepared !== undefined &&
+      drain.requestedMs >= run.prepared.atMs &&
+      b?.statuses.some(
+        (status) =>
+          (status._tag === "Building" || status._tag === "Ready") &&
+          status.atMs <= drain.requestedMs,
+      ),
+    "drain must follow replacement preparation and B admission",
+    "accepted drain",
+  );
+  const first = allocations[0]?.allocatedMs;
+  requireEvidence(
+    first !== undefined &&
+      first <= run.configuration.setupLimitMs &&
+      drain?.completedMs !== undefined &&
+      drain.completedMs <= first + run.configuration.workLimitMs,
+    "scenario exceeded its shared setup or work deadline",
+    "bounded allocation",
+  );
+  const cleanup = run.cleanup;
+  requireEvidence(
+    cleanup?.completedMs !== undefined &&
+      cleanup.incomplete.length === 0 &&
+      cleanup.completedMs >= cleanup.requestedMs &&
+      cleanup.completedMs <= cleanup.requestedMs + run.configuration.cleanupLimitMs,
+    "canonical cleanup must complete within its observation budget",
+    "owned lease cleanup",
+  );
+  const sameCleanup = (left: Orchestration.SourceCleanup, right: Orchestration.SourceCleanup) =>
+    JSON.stringify(Schema.encodeSync(Schema.toCodecJson(Orchestration.SourceCleanup))(left)) ===
+    JSON.stringify(Schema.encodeSync(Schema.toCodecJson(Orchestration.SourceCleanup))(right));
+  if (run.configuration.constructor === "legacy") {
+    const reports = cleanup?._tag === "Legacy" ? (cleanup.report?.sessions ?? []) : [];
+    requireEvidence(
+      reports.length === 2 &&
+        allocations.every((slot) =>
+          reports.some(
+            (report) =>
+              confirmedOwnedCleanup(report, slot.sessionId!) &&
+              slot.cleanup !== undefined &&
+              sameCleanup(report, slot.cleanup),
+          ),
+        ),
+      "legacy cleanup must agree with both recorded source-close reports",
+      "owned lease cleanup",
+    );
+    requireEvidence(
+      evidence.mode !== "paid",
+      "hosted qualification requires the continuous constructor",
+      "owned lease cleanup",
+    );
+  } else {
+    const summary = cleanup?._tag === "Continuous" ? cleanup.summary : undefined;
+    const retained = summary?.retained[0];
+    // The summary intentionally compacts A. Its omission count is meaningful only
+    // alongside the independent, canonical reports retained for both actual leases.
+    requireEvidence(
+      summary?.totalRetirements === 2n &&
+        summary.omittedComplete.ownedTerminated === 1n &&
+        summary.omittedComplete.noAllocation === 0n &&
+        summary.omittedComplete.attachedDetached === 0n &&
+        !summary.exhausted &&
+        summary.retained.length === 1 &&
+        retained?.ordinal === 2n &&
+        retained.source?.incarnation === 2n &&
+        retained.source.sessionId === ids[1] &&
+        retained.disposition === "complete" &&
+        retained.conflictingCleanup === undefined &&
+        retained.retirement.accounting === "settled" &&
+        retained.retirement.scope === "closed" &&
+        retained.retirement.affinity === "retired" &&
+        retained.retirement.unknownSubmissions === 0n &&
+        retained.retirement.errors.length === 0 &&
+        retained.cleanup !== undefined &&
+        allocations[1]?.cleanup !== undefined &&
+        confirmedOwnedCleanup(retained.cleanup, ids[1]) &&
+        sameCleanup(retained.cleanup, allocations[1].cleanup),
+      "continuous cleanup must reconcile one omitted and one retained complete owned termination with both source reports",
+      "owned lease cleanup",
+    );
+  }
   return renewalCriteria.map((name) => {
     const failures = problems.filter((problem) => problem.name === name);
     return {

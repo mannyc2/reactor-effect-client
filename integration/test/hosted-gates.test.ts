@@ -5,6 +5,7 @@ import { expect, test } from "bun:test";
 import {
   Refused,
   acceptGrant,
+  acceptRenewalGrant,
   admit,
   admitRelayCheck,
   admitTotal,
@@ -186,4 +187,17 @@ test("public scheduler renewal reserves two sessions under its own discriminator
   const auth = authorize(["scheduler-renewal", ...without("--budget-usd"), "--budget-usd=1.50"]);
   expect(auth.check).toBe("scheduler-renewal");
   expect(auth.budgetUsd).toBe(1.5);
+});
+
+test("public renewal refuses a different nominal cap and paid constructor overrides", () => {
+  expect(() => acceptRenewalGrant({ maxSessions: 1, maxSessionSeconds: 50 })).not.toThrow();
+  for (const grant of [
+    { maxSessions: 1, maxSessionSeconds: 49 },
+    { maxSessions: 1, maxSessionSeconds: 51 },
+    { maxSessions: 2, maxSessionSeconds: 50 },
+  ])
+    expect(() => acceptRenewalGrant(grant)).toThrow(Refused);
+  expect(() => authorize(["scheduler-renewal", ...authorized, "--constructor=legacy"])).toThrow(
+    Refused,
+  );
 });

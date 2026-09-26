@@ -187,8 +187,20 @@ const section = (evidence: Evidence): string => {
     );
     add(
       "Renewal cleanup",
-      `${renewal.cleanup?._tag ?? "missing"}; ${renewal.cleanup?.report?.sessions.length ?? 0} canonical source reports; ${renewal.cleanup?.incomplete.length === 0 ? "complete" : (renewal.cleanup?.incomplete.join(", ") ?? "not recorded")}`,
+      `${renewal.cleanup?._tag ?? "missing"}; ${renewal.allocations.filter((slot) => slot.cleanup !== undefined).length} canonical source reports; ${renewal.cleanup?.incomplete.length === 0 ? "complete" : (renewal.cleanup?.incomplete.join(", ") ?? "not recorded")}`,
     );
+    if (renewal.configuration.constructor === "continuous")
+      add(
+        "Continuous retention",
+        `keep ${renewal.configuration.retainedSuccessfulCleanups} successes; unresolved limit ${renewal.configuration.maxUnresolvedCleanups}`,
+      );
+    if (renewal.cleanup?._tag === "Continuous" && renewal.cleanup.summary !== undefined) {
+      const summary = renewal.cleanup.summary;
+      add(
+        "Cleanup summary",
+        `${summary.totalRetirements} retirements; ${summary.retained.length} retained (${summary.retained.filter((row) => row.disposition === "incomplete").length} incomplete); ${summary.omittedComplete.ownedTerminated} omitted complete owned terminations; exhausted ${summary.exhausted}`,
+      );
+    }
     for (const slot of renewal.allocations)
       add(
         `Source ${slot.slot}`,
