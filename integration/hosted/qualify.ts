@@ -1243,6 +1243,18 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
         };
         snapshot();
       };
+      // Checked after each checkpoint that precedes a spend or a command. Once a
+      // write has failed, nothing more is minted, opened or submitted: the SDK's
+      // renewal fiber, which the failure race does not interrupt, opens sources too.
+      const recordable = Effect.suspend(() =>
+        checkpointFailure === undefined
+          ? Effect.void
+          : Reactor.ReactorError.fromCode(
+              "InvalidState",
+              "an evidence checkpoint failed, so nothing more is opened or submitted",
+              { outcome: "not-submitted" },
+            ),
+      );
       // Every intermediate file remains failed until conclude validates complete evidence.
       run.evidence.verdict = "fail";
       run.evidence.reasons = ["scheduler renewal is incomplete"];
@@ -1305,6 +1317,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
         }
       });
       const body = Effect.gen(function* () {
+        yield* recordable;
         const admittedRun = yield* admitted(target, run, budget, sessionsFor("scheduler-renewal"));
         rate = admittedRun.rate;
         yield* gate(() => acceptRenewalGrant(admittedRun.grant.granted));
@@ -1318,6 +1331,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           ],
         };
         snapshot();
+        yield* recordable;
         const coordinator = yield* Reactor.Coordinator.make({ apiUrl: target.apiUrl });
         const second = yield* coordinator.mintToken({
           apiKey: target.apiKey,
@@ -1340,6 +1354,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           const index = evidence.openAttempts;
           evidence = { ...evidence, openAttempts: index + 1 };
           snapshot();
+          yield* recordable;
           if (index >= grants.length) {
             const refused = Reactor.ReactorError.fromCode(
               "InvalidState",
@@ -1635,6 +1650,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
               items: [...evidence.items, { key, requestedSeconds: 5, statuses: [] }],
             };
             snapshot();
+            yield* recordable;
             return yield* recorded(
               run,
               scheduler.submit({
@@ -1682,6 +1698,7 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           },
         };
         snapshot();
+        yield* recordable;
         yield* recorded(run, scheduler.drain({ finish: "accepted" })).pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
@@ -2167,14 +2184,29 @@ const takeover = (target: Target, run: Run, budget: Budget, check: "takeover" | 
 
 const stamp = (at: number) => new Date(at).toISOString().replaceAll(/[-:]|\.\d+/g, "");
 
-/** Rehearsal only: every save from the renewal cleanup checkpoint on fails, as on a full disk. */
-class CleanupWriteFault extends Writer {
+/** Rehearsal only: from the first save `from` matches on, every save fails, as on a full disk. */
+class WriteFault extends Writer {
+  private failing = false;
+  constructor(
+    path: string,
+    secrets: () => readonly string[],
+    private readonly from: (evidence: Draft) => boolean,
+  ) {
+    super(path, secrets);
+  }
+
   override save(evidence: Draft): void {
-    if (evidence.schedulerRenewal?.cleanup !== undefined)
-      throw new Error("fixture: the evidence file could not be written");
+    this.failing ||= this.from(evidence);
+    if (this.failing) throw new Error("fixture: the evidence file could not be written");
     super.save(evidence);
   }
 }
+
+/** The rehearsal faults that fail evidence writes, by the checkpoint they start at. */
+const writeFaults = new Map<string, (evidence: Draft) => boolean>([
+  ["failCleanupWrites", (evidence) => evidence.schedulerRenewal?.cleanup !== undefined],
+  ["failSecondOpenWrites", (evidence) => (evidence.schedulerRenewal?.openAttempts ?? 0) >= 2],
+]);
 
 /** Run one check against `target`, saving its evidence in `ledger`; the exit code. */
 const execute = async (
@@ -2187,6 +2219,9 @@ const execute = async (
   const runId = randomUUID();
   const file = join(ledger, `${stamp(origin)}-${check}-${target.mode}-${runId.slice(0, 8)}.json`);
   const secrets = [Redacted.value(target.apiKey)];
+  const failsFrom = target.faults
+    ?.map((fault) => writeFaults.get(fault))
+    .find((from) => from !== undefined);
   const run: Run = {
     origin,
     evidence: {
@@ -2212,9 +2247,9 @@ const execute = async (
     spans: spanRecorder(origin),
     secrets,
     writer:
-      target.faults?.includes("failCleanupWrites") === true
-        ? new CleanupWriteFault(file, () => secrets)
-        : new Writer(file, () => secrets),
+      failsFrom === undefined
+        ? new Writer(file, () => secrets)
+        : new WriteFault(file, () => secrets, failsFrom),
   };
   save(run);
   type CheckProgram = ReturnType<typeof schedulerRenewal> | ReturnType<typeof scheduler>;
@@ -2381,6 +2416,9 @@ const rehearse = async (args: readonly string[]): Promise<number> => {
       ledger,
     );
   } finally {
+    // What the stand-in coordinator allocated: evidence that could not be written cannot say.
+    const open = [...twin.sessions.values()].filter((session) => session.state !== "CLOSED");
+    console.log(`rehearsal twin: ${twin.sessionsCreated} created, ${open.length} not closed`);
     await twin.close();
   }
 };

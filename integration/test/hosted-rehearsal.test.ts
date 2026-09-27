@@ -489,3 +489,15 @@ test("public renewal continuous still closes its source and exits 1 when evidenc
   expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
   expect(evidence.schedulerRenewal?.cleanup).toBeUndefined();
 }, 180_000);
+
+// Every write fails from the second open's own checkpoint on. That open runs in the
+// SDK's renewal fiber, which the scenario's failure race does not interrupt, so only
+// the harness can keep it from allocating a session no durable record would name.
+test("public renewal continuous opens no second source once an evidence write fails", () => {
+  const run = rehearse("scheduler-renewal", ["failSecondOpenWrites"], "continuous");
+  expect(run.status, run.output).toBe(1);
+  // The stand-in coordinator allocated the first session only, and it was closed.
+  expect(run.output).toContain("rehearsal twin: 1 created, 0 not closed");
+  expect(run.output).not.toContain("was not confirmed ended");
+  expect(run.output).not.toContain("allocation outcome is unknown");
+}, 180_000);
