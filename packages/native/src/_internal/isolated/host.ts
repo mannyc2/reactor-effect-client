@@ -77,6 +77,17 @@ class Dispatch extends Context.Service<Dispatch, { sent: boolean }>()(
 type Client = RpcClient.FromGroup<typeof IsolatedRpcs, RpcClientError>;
 type CallError = WireFailure | RpcClientError;
 
+/**
+ * A track stream's chunks, taken with the client's queue compatibility read.
+ * RpcClient's own stream takes with rc.117's `Queue.takeAll`, and with one
+ * chunk of credit its full queue wakes no reader, so a lost wakeup there
+ * stalls the track until the stream ends.
+ */
+const chunks = <A, E>(
+  queue: Effect.Effect<Queue.Dequeue<A, E>, never, Scope.Scope>,
+): Stream.Stream<A, Exclude<E, Cause.Done>> =>
+  Stream.unwrap(Effect.map(queue, (items) => Stream.fromPull(Effect.succeed(takeAllQueue(items)))));
+
 const isClientError = (u: unknown): u is RpcClientError => Predicate.isTagged(u, "RpcClientError");
 
 /**
@@ -338,7 +349,7 @@ export class IsolatedPeer implements Peer {
       video: (name: string) =>
         this.track(name, "video", this.video, (client) =>
           Stream.map(
-            client.Video({ name }, { streamBufferSize: FRAME_BUFFER }),
+            chunks(client.Video({ name }, { streamBufferSize: FRAME_BUFFER, asQueue: true })),
             (frame): readonly [VideoFrame, number] => {
               const owned = videoFrame(name, frame);
               return [owned, owned.data.byteLength + owned.metadata.byteLength + name.length * 2];
@@ -348,7 +359,7 @@ export class IsolatedPeer implements Peer {
       audio: (name: string) =>
         this.track(name, "audio", this.audio, (client) =>
           Stream.map(
-            client.Audio({ name }, { streamBufferSize: FRAME_BUFFER }),
+            chunks(client.Audio({ name }, { streamBufferSize: FRAME_BUFFER, asQueue: true })),
             (frame): readonly [AudioFrame, number] => {
               const owned = audioFrame(name, frame);
               return [owned, owned.samples.byteLength + name.length * 2];
