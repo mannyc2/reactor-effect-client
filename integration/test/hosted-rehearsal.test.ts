@@ -350,11 +350,12 @@ for (const constructor of ["legacy", "continuous"] as const)
       credentialFree(run.text);
     }, 180_000);
 
-/** The parent process is the explicit external emergency owner for these two interruption fixtures. */
+/** The parent process is the explicit external emergency owner for these interruption fixtures. */
 const stopAtCheckpoint = async (
   constructor: "legacy" | "continuous",
   fault: string | undefined,
   signal: NodeJS.Signals,
+  reached: (renewal: NonNullable<Evidence["schedulerRenewal"]>) => boolean,
 ) => {
   const ledger = mkdtempSync(join(tmpdir(), "hosted-renewal-interrupt-"));
   const child = spawn(
@@ -367,10 +368,13 @@ const stopAtCheckpoint = async (
       `--ledger=${ledger}`,
       ...(fault === undefined ? [] : [`--faults=${fault}`]),
     ],
-    { env: { PATH: process.env.PATH ?? "" }, stdio: "ignore" },
+    { env: { PATH: process.env.PATH ?? "" }, stdio: ["ignore", "pipe", "pipe"] },
   );
+  let output = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
   const exited = new Promise<number | null>((resolve, reject) => {
-    child.once("exit", resolve);
+    child.once("close", resolve);
     child.once("error", reject);
   });
   const deadline = Date.now() + 90_000;
@@ -382,13 +386,8 @@ const stopAtCheckpoint = async (
       if (name !== undefined) {
         file = join(ledger, name);
         checkpoint = Schema.decodeUnknownSync(Evidence)(JSON.parse(readFileSync(file, "utf8")));
-        const source = checkpoint.schedulerRenewal?.allocations[0];
-        if (
-          fault === undefined
-            ? source?.sessionId !== undefined
-            : source?.closeRequestedMs !== undefined
-        )
-          break;
+        const renewal = checkpoint.schedulerRenewal;
+        if (renewal !== undefined && reached(renewal)) break;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
@@ -396,12 +395,17 @@ const stopAtCheckpoint = async (
     expect(checkpoint?.schedulerRenewal?.allocations[0]?.sessionId).toBeDefined();
     child.kill(signal);
     const emergency = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    let status: number | null;
     try {
-      await exited;
+      status = await exited;
     } finally {
       clearTimeout(emergency);
     }
-    return Schema.decodeUnknownSync(Evidence)(JSON.parse(readFileSync(file!, "utf8")));
+    return {
+      evidence: Schema.decodeUnknownSync(Evidence)(JSON.parse(readFileSync(file!, "utf8"))),
+      status,
+      output,
+    };
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
@@ -409,7 +413,12 @@ const stopAtCheckpoint = async (
 
 for (const constructor of ["legacy", "continuous"] as const) {
   test(`public renewal ${constructor} interruption after allocation preserves the canonical lease report`, async () => {
-    const evidence = await stopAtCheckpoint(constructor, undefined, "SIGINT");
+    const { evidence } = await stopAtCheckpoint(
+      constructor,
+      undefined,
+      "SIGINT",
+      (renewal) => renewal.allocations[0]?.sessionId !== undefined,
+    );
     expect(evidence.verdict).toBe("fail");
     expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
     const source = evidence.schedulerRenewal!.allocations[0]!;
@@ -419,7 +428,12 @@ for (const constructor of ["legacy", "continuous"] as const) {
   }, 180_000);
 
   test(`public renewal ${constructor} stalled close leaves a durable failed checkpoint after emergency termination`, async () => {
-    const evidence = await stopAtCheckpoint(constructor, "stallClose", "SIGKILL");
+    const { evidence } = await stopAtCheckpoint(
+      constructor,
+      "stallClose",
+      "SIGKILL",
+      (renewal) => renewal.allocations[0]?.closeRequestedMs !== undefined,
+    );
     expect(evidence.verdict).toBe("fail");
     expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
     const source = evidence.schedulerRenewal!.allocations[0]!;
@@ -428,3 +442,22 @@ for (const constructor of ["legacy", "continuous"] as const) {
     expect(source.leaseCleanup).toBeUndefined();
   }, 180_000);
 }
+
+// Every evidence write fails from the cleanup checkpoint on, as on a full disk, once
+// A's submission shows the owner exists. The paid path shares execute's exit code.
+test("public renewal continuous still closes its source and exits 1 when evidence writes fail during cleanup", async () => {
+  const { evidence, status, output } = await stopAtCheckpoint(
+    "continuous",
+    "failCleanupWrites",
+    "SIGINT",
+    (renewal) => renewal.items.length > 0,
+  );
+  expect(status, output).toBe(1);
+  expect(output).toContain("hosted-qualification-fail scheduler-renewal");
+  expect(output).toContain("the final evidence was not saved");
+  // The owner still closed the allocated source: no dashboard instruction names it.
+  expect(output).not.toContain("was not confirmed ended");
+  // The durable file keeps the admission's reservation and the last checkpoint before cleanup.
+  expect(evidence.budget.worstCaseUsd).toBeGreaterThan(0);
+  expect(evidence.schedulerRenewal?.cleanup).toBeUndefined();
+}, 180_000);

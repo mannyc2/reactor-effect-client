@@ -1177,6 +1177,10 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           audioCompleteness: "unverified",
         },
       };
+      const failure = yield* Deferred.make<never, Reactor.ReactorFailure>();
+      // The first failed write stops the scenario; every checkpoint is otherwise
+      // best effort, so a lost write never skips a close. Cleanup re-raises it.
+      let checkpointFailure: { readonly cause: unknown } | undefined;
       const snapshot = () => {
         const summaries = sources.map((source) => ({
           ...source,
@@ -1216,7 +1220,13 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
           },
         };
         run.evidence.schedulerRenewal = evidence;
-        save(run);
+        try {
+          save(run);
+        } catch (cause) {
+          if (checkpointFailure !== undefined) return;
+          checkpointFailure = { cause };
+          Deferred.doneUnsafe(failure, Effect.die(cause));
+        }
       };
       const allocation = (
         slot: 1 | 2,
@@ -1234,9 +1244,10 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
       run.evidence.verdict = "fail";
       run.evidence.reasons = ["scheduler renewal is incomplete"];
       snapshot();
-      const failure = yield* Deferred.make<never, Reactor.ReactorFailure>();
-      const ownerScope = yield* Scope.make();
       const observationScope = yield* Effect.scope;
+      // A child scope: an owner the cleanup below never reaches still closes,
+      // with its sources, when the scenario's own scope does.
+      const ownerScope = yield* Scope.fork(observationScope);
       let handle:
         | { readonly _tag: "Legacy"; readonly owner: Orchestration.HandleShape }
         | { readonly _tag: "Continuous"; readonly owner: Orchestration.ContinuousHandleShape }
@@ -1708,8 +1719,9 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
               },
             };
             snapshot();
-            // A durable failed checkpoint precedes SDK finalizers. An uninterruptible
-            // source close still needs the separately documented external emergency bound.
+            // A failed checkpoint is written, best effort, before SDK finalizers. An
+            // uninterruptible source close still needs the separately documented
+            // external emergency bound.
             let overdue = false;
             const closing = yield* Effect.gen(function* () {
               if (handle !== undefined) {
@@ -1777,7 +1789,14 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
                 ),
               );
             snapshot();
-          }),
+          }).pipe(
+            // Only once every close above has run does a failed checkpoint fail the run.
+            Effect.ensuring(
+              Effect.suspend(() =>
+                checkpointFailure === undefined ? Effect.void : Effect.die(checkpointFailure.cause),
+              ),
+            ),
+          ),
         ),
       );
       run.evidence.criteria.push(...renewalJudgments(run.evidence));
@@ -2139,6 +2158,15 @@ const takeover = (target: Target, run: Run, budget: Budget, check: "takeover" | 
 
 const stamp = (at: number) => new Date(at).toISOString().replaceAll(/[-:]|\.\d+/g, "");
 
+/** Rehearsal only: every save from the renewal cleanup checkpoint on fails, as on a full disk. */
+class CleanupWriteFault extends Writer {
+  override save(evidence: Draft): void {
+    if (evidence.schedulerRenewal?.cleanup !== undefined)
+      throw new Error("fixture: the evidence file could not be written");
+    super.save(evidence);
+  }
+}
+
 /** Run one check against `target`, saving its evidence in `ledger`; the exit code. */
 const execute = async (
   target: Target,
@@ -2174,7 +2202,10 @@ const execute = async (
     },
     spans: spanRecorder(origin),
     secrets,
-    writer: new Writer(file, () => secrets),
+    writer:
+      target.faults?.includes("failCleanupWrites") === true
+        ? new CleanupWriteFault(file, () => secrets)
+        : new Writer(file, () => secrets),
   };
   save(run);
   type CheckProgram = ReturnType<typeof schedulerRenewal> | ReturnType<typeof scheduler>;
@@ -2216,7 +2247,17 @@ const execute = async (
     )
       run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Session ${slot.sessionId} was not confirmed ended. Its recorded cap expiry is ${slot.capEndsAt ?? "unknown"}; confirm termination and cost in the Reactor dashboard.`;
   }
-  save(run);
+  try {
+    save(run);
+  } catch (cause) {
+    // The check ran, so its file already holds whatever it reserved. A record
+    // that could not be completed fails the run; only a refusal exits 2.
+    run.evidence.verdict = "fail";
+    run.evidence.reasons = [
+      ...run.evidence.reasons,
+      `the final evidence was not saved: ${String(cause).slice(0, 300)}`,
+    ];
+  }
   console.log(`hosted-qualification-${run.evidence.verdict} ${check} ${file}`);
   for (const reason of run.evidence.reasons) console.log(`  - ${reason}`);
   if (run.evidence.cleanup !== undefined) console.error(run.evidence.cleanup);
