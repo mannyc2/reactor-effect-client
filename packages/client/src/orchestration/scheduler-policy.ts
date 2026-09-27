@@ -35,7 +35,14 @@ export interface PlannedItem {
   readonly seconds?: number;
   /** When its build command was sent, until the clip is Ready. */
   readonly dispatchedAtMs?: number;
+  /** A `Manual` item not yet released: it waits behind everything and is not runway. */
+  readonly held?: boolean;
+  /** An `Asap` or released item: it airs ahead of everything waiting in every lane. */
+  readonly asap?: boolean;
 }
+
+/** A held clip that would be next within this many seconds is removed and rebuilt. */
+const exposureMarginSeconds = 1.5;
 
 /** What the scheduler has measured of its provider, from its own builds. */
 export interface Estimates {
@@ -197,7 +204,7 @@ export const runwaySeconds = (
         const owner = owned.get(clip.clipId);
         if (owner?._tag !== "Item") return true;
         const item = items.find((candidate) => candidate.key === owner.key);
-        return item?.atMs === undefined || item.atMs <= nowMs;
+        return item?.held !== true && (item?.atMs === undefined || item.atMs <= nowMs);
       })
       .reduce((seconds, clip) => seconds + clip.durationSeconds, 0)
   );
@@ -252,11 +259,14 @@ const ordering = (
     item:
       | (Pick<PlannedItem, "lane" | "admission" | "group" | "atMs" | "generation"> & {
           readonly key?: ItemKey;
+          readonly held?: boolean;
+          readonly asap?: boolean;
         })
       | undefined,
   ): Rank => {
-    if (item?.atMs !== undefined && nowMs < item.atMs)
+    if (item?.held === true || (item?.atMs !== undefined && nowMs < item.atMs))
       return [lanes.length + 1, 1, item.admission, item.generation ?? 0];
+    if (item?.asap === true) return [-0.5, 0, item.admission, item.generation ?? 0];
     return [
       Math.max(0, lanes.indexOf(item?.lane ?? "")),
       item?.key !== undefined && superseded.has(item.key) ? 2 : begun(item) ? 0 : 1,
@@ -606,11 +616,11 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       ? 0
       : Math.max(0, playingRecord.durationSeconds - (nowMs - playingStarted) / 1000);
   const exposedAnchor = items.find((item) => {
+    const held = item.held === true;
     if (
       item.phase !== "Ready" ||
       item.clipId === undefined ||
-      item.atMs === undefined ||
-      item.atMs <= nowMs
+      (!held && (item.atMs === undefined || item.atMs <= nowMs))
     )
       return false;
     const index = engine.ready.findIndex((clip) => clip.clipId === item.clipId);
@@ -623,10 +633,12 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         const owner = owned.get(clip.clipId);
         if (owner?._tag !== "Item") return true;
         const prior = items.find((candidate) => candidate.key === owner.key);
-        return prior?.atMs === undefined || prior.atMs <= nowMs;
+        return prior?.held !== true && (prior?.atMs === undefined || prior.atMs <= nowMs);
       })
       .reduce((seconds, clip) => seconds + clip.durationSeconds, 0);
-    return playingRest + ahead < (item.atMs - nowMs) / 1000;
+    return held
+      ? ahead === 0 && playingRest < exposureMarginSeconds
+      : playingRest + ahead < (item.atMs! - nowMs) / 1000;
   });
   if (exposedAnchor?.clipId !== undefined)
     return {
@@ -667,9 +679,15 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         (item.notBeforeMs === undefined || nowMs >= item.notBeforeMs) &&
         // Autoplay cannot hold a Ready clip. Admit a future anchor only once
         // known material ahead of it covers the time until that anchor.
-        (item.atMs === undefined || item.atMs <= nowMs || runway >= (item.atMs - nowMs) / 1000),
+        (item.atMs === undefined || item.atMs <= nowMs || runway >= (item.atMs - nowMs) / 1000) &&
+        // A held item is built ahead only while filler keeps the runway at its floor.
+        (item.held !== true || (floorSeconds > 0 && runway >= floorSeconds)),
     )
     .sort((a, b) => {
+      // Asap goes first, and a held item after everything that will air before it.
+      const asap = Number(b.asap === true) - Number(a.asap === true);
+      const held = Number(a.held === true) - Number(b.held === true);
+      if (asap !== 0 || held !== 0) return asap || held;
       const lane = snapshot.lanes.indexOf(a.lane) - snapshot.lanes.indexOf(b.lane);
       // A replacement races the clip it replaces, so it builds first in its lane.
       const replacing = Number(b.replaces !== undefined) - Number(a.replaces !== undefined);
