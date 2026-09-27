@@ -1,7 +1,9 @@
 import * as Option from "effect/Option";
 import type { ClipId } from "./request.js";
 import type { EngineState } from "./types.js";
-import type { ItemKey } from "./scheduler.js";
+import type { AsRunStatus, ItemKey } from "./scheduler.js";
+
+export type DropReason = Extract<AsRunStatus, { readonly _tag: "Dropped" }>["reason"];
 
 /** The actor's immutable projection of one caller item. */
 export interface PlannedItem {
@@ -44,26 +46,42 @@ export interface PolicySnapshot {
   readonly targetSeconds: number;
   readonly refillActive: boolean;
   readonly maxBuildsInFlight: number;
+  /** New admissions are open: the scheduler is neither draining nor closed. */
   readonly accepting: boolean;
-  readonly fillerEnabled: boolean;
+  /** How a requested drain finishes, once one is requested. */
+  readonly drain: "playing" | "accepted" | undefined;
   readonly fillerRetryAtMs: number;
   /** Uncertain filler reservations on the preferred source, including unfenced sends. */
   readonly unknownFillerCount: number;
   /** A refused move is retried only after the Ready snapshot changes. */
   readonly blockedMove: string | undefined;
+  /** Items with a withdrawal already requested. */
+  readonly withdrawing: ReadonlySet<ItemKey>;
+  /** Items whose build command has been sent and has not returned. */
+  readonly dispatched: ReadonlySet<ItemKey>;
+  /** The first failed or dropped part of each broken group. */
+  readonly brokenGroups: ReadonlyMap<ItemKey, number>;
 }
 
 export type PolicyAction =
-  | { readonly _tag: "Withdraw"; readonly key: ItemKey; readonly reason: "late" }
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
-  | { readonly _tag: "WithdrawFiller"; readonly clipIds: ReadonlyArray<ClipId> }
   | { readonly _tag: "Build"; readonly key: ItemKey }
   | { readonly _tag: "BuildFiller"; readonly targetSeconds: number }
   | { readonly _tag: "Order"; readonly clipId: ClipId; readonly position: number };
 
+export interface PolicyWithdrawal {
+  readonly key: ItemKey;
+  readonly reason: DropReason;
+}
+
 export interface PolicyDecision {
   readonly runwaySeconds: number;
   readonly refillActive: boolean;
+  /** Every item the plan no longer wants, with the reason as-run records; the first reason wins. */
+  readonly withdraw: ReadonlyArray<PolicyWithdrawal>;
+  /** Filler clips the plan no longer wants. */
+  readonly withdrawFiller: ReadonlyArray<ClipId>;
+  /** The one provider command to send when none is in flight. */
   readonly action?: PolicyAction;
 }
 
@@ -100,7 +118,61 @@ export const runwaySeconds = (
   );
 };
 
-/** A pure, single-action policy. The actor re-reads Engine after each applied action. */
+/**
+ * An accepted drain still owes air to every line not yet Ready, and to a Ready line held
+ * for a future At anchor, which runway must reach. Filler is the only material that can
+ * cover either, so it keeps playing and refilling until nothing accepted can still leave
+ * the host frozen. An Unknown item does not count: without a fenced source it can stay
+ * open until the scheduler closes, and filler for it would never stop.
+ */
+const fillerHeldFor = (snapshot: PolicySnapshot): boolean =>
+  snapshot.drain === "accepted" &&
+  snapshot.items.some(
+    (item) =>
+      item.phase === "Accepted" ||
+      item.phase === "Building" ||
+      (item.phase === "Ready" && item.atMs !== undefined && item.atMs > snapshot.nowMs),
+  );
+
+/**
+ * When an item submitted now to `lane` could start at the earliest: after the rest of the
+ * playing clip and every Ready clip on the preferred source that it cannot pass.
+ */
+export const projectedStartMs = (
+  engine: EngineState,
+  items: ReadonlyArray<PlannedItem>,
+  owned: ReadonlyMap<ClipId, OwnedClip>,
+  lanes: ReadonlyArray<string>,
+  playingStartedMs: ReadonlyMap<ClipId, number>,
+  lane: string,
+  nowMs: number,
+): number => {
+  const playing = Option.getOrUndefined(engine.playing);
+  const playingRecord = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
+  const started = playing === undefined ? undefined : playingStartedMs.get(playing.clipId);
+  const restMs =
+    playingRecord === undefined || started === undefined
+      ? 0
+      : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
+  const laneRank = lanes.indexOf(lane);
+  const preferred = preferredSession(engine);
+  const aheadMs = engine.ready.reduce((total, record) => {
+    if (record.sessionId !== preferred) return total;
+    const owner = owned.get(record.clipId);
+    if (owner?._tag === "Filler") return total;
+    if (owner?._tag === "Item") {
+      const prior = items.find((item) => item.key === owner.key);
+      if (prior !== undefined && lanes.indexOf(prior.lane) > laneRank) return total;
+    }
+    return total + record.durationSeconds * 1000;
+  }, 0);
+  return nowMs + restMs + aheadMs;
+};
+
+/**
+ * The pure policy: every withdrawal the plan wants now, and at most one serialized provider
+ * command. The actor re-reads Engine after each applied command.
+ */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
   // A group's parts in order. A part already pruned has settled, so it counts as admitted.
@@ -136,8 +208,21 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const filling =
     anchorGapSeconds > runway ||
     (snapshot.refillActive ? runway < snapshot.targetSeconds : runway < snapshot.floorSeconds);
-  const base = { runwaySeconds: runway, refillActive: filling };
+  const playingId = Option.getOrUndefined(engine.playing)?.clipId;
+  const fillerHeld = fillerHeldFor(snapshot);
 
+  const withdraw: PolicyWithdrawal[] = [];
+  const listed = new Set<ItemKey>();
+  const drop = (item: PlannedItem, reason: DropReason): void => {
+    if (snapshot.withdrawing.has(item.key) || listed.has(item.key)) return;
+    listed.add(item.key);
+    withdraw.push({ key: item.key, reason });
+  };
+  const waiting = (item: PlannedItem): boolean =>
+    item.phase === "Accepted" ||
+    item.phase === "Building" ||
+    item.phase === "Ready" ||
+    item.phase === "Unknown";
   // Sweep every status; expiry behind a nonexpired head must not be stranded.
   for (const item of items) {
     if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
@@ -149,9 +234,37 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
           ? lateBy > 0
           : lateBy > item.late.skipIfLaterThanMs;
     if ((item.firm && item.startByMs !== undefined && nowMs > item.startByMs) || atExpired)
-      return { ...base, action: { _tag: "Withdraw", key: item.key, reason: "late" } };
+      drop(item, "late");
   }
+  // A part that failed or was dropped withdraws the parts after it.
+  for (const item of items) {
+    const brokenAt =
+      item.group === undefined ? undefined : snapshot.brokenGroups.get(item.group.key);
+    if (brokenAt !== undefined && item.group!.index > brokenAt && waiting(item))
+      drop(item, "withdrawn");
+  }
+  // A replacement takes the place once Ready, or at once if nothing was built for the item it
+  // replaces. If the replaced item starts first, the replacement goes.
+  for (const item of items) {
+    if (item.replaces === undefined) continue;
+    const old = items.find((candidate) => candidate.key === item.replaces);
+    if (old === undefined || old.phase === "Terminal") continue;
+    if (old.phase === "Started") {
+      if (item.phase !== "Started" && item.phase !== "Terminal") drop(item, "withdrawn");
+    } else if (
+      item.phase === "Ready" ||
+      item.phase === "Started" ||
+      (old.phase === "Accepted" && !snapshot.dispatched.has(old.key))
+    )
+      drop(old, "replaced");
+  }
+  // A drain that finishes only the playing clip withdraws everything waiting.
+  if (snapshot.drain === "playing")
+    for (const item of items)
+      if (waiting(item) && (item.clipId === undefined || item.clipId !== playingId))
+        drop(item, "withdrawn");
 
+  const withdrawFiller: ClipId[] = [];
   const preferred = preferredSession(engine);
   const retiring = Option.getOrUndefined(engine.retiringSessionId);
   if (
@@ -168,16 +281,16 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     engine.ready.some(
       (clip) => clip.sessionId === preferred && owned.get(clip.clipId)?._tag === "Item",
     )
-  ) {
-    const staleFiller = engine.ready.filter(
-      (clip) => clip.sessionId === retiring && owned.get(clip.clipId)?._tag === "Filler",
-    );
-    if (staleFiller.length > 0)
-      return {
-        ...base,
-        action: { _tag: "WithdrawFiller", clipIds: staleFiller.map((clip) => clip.clipId) },
-      };
-  }
+  )
+    for (const clip of engine.ready)
+      if (clip.sessionId === retiring && owned.get(clip.clipId)?._tag === "Filler")
+        withdrawFiller.push(clip.clipId);
+  // A drain withdraws filler once nothing accepted still needs it to cover the wait.
+  if (snapshot.drain !== undefined && !fillerHeld)
+    for (const [clipId, owner] of owned)
+      if (owner._tag === "Filler" && clipId !== playingId && !withdrawFiller.includes(clipId))
+        withdrawFiller.push(clipId);
+  const base = { runwaySeconds: runway, refillActive: filling, withdraw, withdrawFiller };
 
   // Physical sources are independent queues. A move never ranks across them.
   let offset = 0;
@@ -281,7 +394,8 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const preferredAvailability = engine.sessions.find(
     (session) => session.sessionId === preferred,
   )?.availability;
-  if (!snapshot.accepting || preferredAvailability !== "Ready") return base;
+  if (!(snapshot.accepting || snapshot.drain === "accepted") || preferredAvailability !== "Ready")
+    return base;
   const activeFiller = [...owned.entries()].filter(
     ([clipId, owner]) =>
       owner._tag === "Filler" &&
@@ -303,6 +417,8 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     .filter(
       (item) =>
         item.phase === "Accepted" &&
+        !listed.has(item.key) &&
+        !snapshot.withdrawing.has(item.key) &&
         previousAdmitted(item) &&
         (item.retryAtMs === undefined || nowMs >= item.retryAtMs) &&
         (item.notBeforeMs === undefined || nowMs >= item.notBeforeMs) &&
@@ -329,7 +445,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   if (eligible[0] !== undefined)
     return { ...base, action: { _tag: "Build", key: eligible[0].key } };
   if (
-    snapshot.fillerEnabled &&
+    (snapshot.drain === undefined || fillerHeld) &&
     filling &&
     runway < fillTarget &&
     snapshot.unknownFillerCount === 0 &&
