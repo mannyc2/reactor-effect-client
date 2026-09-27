@@ -2,8 +2,8 @@
  * The evidence as a person reads it: one table of runs, then what each run
  * saw. It is what a pull request, the changelog or an upstream report quotes.
  */
-import { rejudged } from "./evidence.js";
-import type { Evidence, SpanRecord } from "./evidence.js";
+import { confirmedOwnedCleanup, rejudged } from "./evidence.js";
+import type { Evidence, SchedulerRenewal, SpanRecord } from "./evidence.js";
 
 const seconds = (ms: number | undefined): string =>
   ms === undefined ? "?" : `${(ms / 1000).toFixed(2)} s`;
@@ -17,6 +17,21 @@ const median = (values: readonly number[]): number | undefined => {
   if (values.length === 0) return undefined;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
+};
+
+/**
+ * The canonical owned-termination proof the renewal verdict requires, over the
+ * source's close report or, after a failed open, its lease's own report.
+ */
+const ownedTermination = (slot: SchedulerRenewal["allocations"][number]): boolean => {
+  const cleanup =
+    slot.cleanup ??
+    (slot.leaseCleanup === undefined ? undefined : { lease: slot.leaseCleanup, policy: [] });
+  return (
+    slot.sessionId !== undefined &&
+    cleanup !== undefined &&
+    confirmedOwnedCleanup(cleanup, slot.sessionId)
+  );
 };
 
 /** The connect span's phases, each as the time since the one before. */
@@ -186,26 +201,43 @@ const section = (evidence: Evidence): string => {
       "Accepted drain",
       `${renewal.drain?.outcome ?? "not requested"}; allocated sources ${renewal.drain?.allocationsWhenRequested ?? "?"} → ${renewal.drain?.allocationsWhenCompleted ?? "?"}`,
     );
+    const cleanup = renewal.cleanup;
+    const summary = cleanup?._tag === "Continuous" ? cleanup.summary : undefined;
+    // Complete only when nothing is left open: the observation's own list, a
+    // close that never returned, any allocated lease without canonical
+    // confirmation, and incomplete or exhausted retained cleanup.
+    const open =
+      cleanup === undefined
+        ? ["not recorded"]
+        : [
+            ...cleanup.incomplete,
+            ...(cleanup.completedMs === undefined ? ["close did not return"] : []),
+            ...renewal.allocations
+              .filter((slot) => slot.sessionId !== undefined && !ownedTermination(slot))
+              .map((slot) => `source ${slot.slot} lease unconfirmed`),
+            ...(summary?.retained.some((row) => row.disposition === "incomplete") === true
+              ? ["incomplete retained cleanup"]
+              : []),
+            ...(summary?.exhausted === true ? ["retention exhausted"] : []),
+          ];
     add(
       "Renewal cleanup",
-      `${renewal.cleanup?._tag ?? "missing"}; ${renewal.allocations.filter((slot) => slot.cleanup !== undefined).length} canonical source reports; ${renewal.cleanup?.incomplete.length === 0 ? "complete" : (renewal.cleanup?.incomplete.join(", ") ?? "not recorded")}`,
+      `${cleanup?._tag ?? "missing"}; ${renewal.allocations.filter((slot) => slot.cleanup !== undefined).length} canonical source reports; ${open.length === 0 ? "complete" : open.join(", ")}`,
     );
     if (renewal.configuration.constructor === "continuous")
       add(
         "Continuous retention",
         `keep ${renewal.configuration.retainedSuccessfulCleanups} successes; unresolved limit ${renewal.configuration.maxUnresolvedCleanups}`,
       );
-    if (renewal.cleanup?._tag === "Continuous" && renewal.cleanup.summary !== undefined) {
-      const summary = renewal.cleanup.summary;
+    if (summary !== undefined)
       add(
         "Cleanup summary",
         `${summary.totalRetirements} retirements; ${summary.retained.length} retained (${summary.retained.filter((row) => row.disposition === "incomplete").length} incomplete); ${summary.omittedComplete.ownedTerminated} omitted complete owned terminations; exhausted ${summary.exhausted}`,
       );
-    }
     for (const slot of renewal.allocations)
       add(
         `Source ${slot.slot}`,
-        `${slot.sessionId ?? "not allocated"}; canonical owned termination ${slot.cleanup?.lease.remote.confirmed === true ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
+        `${slot.sessionId ?? "not allocated"}; canonical owned termination ${ownedTermination(slot) ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
       );
   }
   const termination = evidence.termination;

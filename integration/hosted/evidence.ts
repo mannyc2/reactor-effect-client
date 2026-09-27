@@ -961,13 +961,19 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
     "drain must follow replacement preparation and B admission",
     "accepted drain",
   );
+  // A missing allocation or an unfinished drain fails its own requirement above;
+  // these name a deadline only when the recorded times show it elapsed.
   const first = allocations[0]?.allocatedMs;
   requireEvidence(
-    first !== undefined &&
-      first <= run.configuration.setupLimitMs &&
-      drain?.completedMs !== undefined &&
+    first === undefined || first <= run.configuration.setupLimitMs,
+    "the first allocation came after the shared setup deadline",
+    "bounded allocation",
+  );
+  requireEvidence(
+    first === undefined ||
+      drain?.completedMs === undefined ||
       drain.completedMs <= first + run.configuration.workLimitMs,
-    "scenario exceeded its shared setup or work deadline",
+    "the accepted drain completed after the shared work deadline",
     "bounded allocation",
   );
   const cleanup = run.cleanup;

@@ -361,13 +361,40 @@ test("renewal refuses incomplete or contradictory evidence even when supplied cr
   noCriterion.criteria.pop();
   conclude(noCriterion, undefined);
   expect(noCriterion.reasons.join(" ")).toContain("missing required criterion");
+  // A drain that never completed says so; no deadline elapsed here.
+  const { completedMs: _completed, ...requested } = original.drain!;
+  const pending = draft({ ...original, drain: { ...requested, outcome: "pending" } });
+  conclude(pending, undefined);
+  expect(pending.reasons.join(" ")).toContain("accepted drain must finish");
+  expect(pending.reasons.join(" ")).not.toContain("deadline");
 });
 
-test("a stored renewal pass without the evidence to support it does not summarize as a pass", () => {
+test("a renewal summary claims no pass or confirmed cleanup its evidence does not prove", () => {
   const { schedulerRenewal: _omitted, ...bare } = draft();
   const text = summarize([{ ...bare, verdict: "pass", criteria: [] }]);
   expect(text).toContain("| fixture | scheduler-renewal | rehearsal | fail |");
   expect(text).toContain("### scheduler-renewal: fail");
+  // A confirmed flag without canonical terminal evidence is not a confirmed owned termination.
+  const original = renewal(),
+    lease = canonical("a").lease;
+  const weak = draft({
+    ...original,
+    allocations: original.allocations.map((slot) =>
+      slot.slot === 1
+        ? {
+            ...slot,
+            cleanup: {
+              lease: { ...lease, remote: { ...lease.remote, evidence: null } },
+              policy: [],
+            },
+          }
+        : slot,
+    ),
+  });
+  conclude(weak, undefined);
+  const weakText = summarize([weak]);
+  expect(weakText).toContain("**Source 1:** a; canonical owned termination UNCONFIRMED");
+  expect(weakText).not.toContain("canonical source reports; complete");
 });
 
 test("handoff codec rejects impossible count and grace claims", () => {
