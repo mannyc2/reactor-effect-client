@@ -149,8 +149,8 @@ export class Broadcast extends Context.Service<
       const firstFrame = yield* Deferred.make<void>();
       const offAir = yield* Deferred.make<never, BroadcastError>();
       const pcm = new Pcm();
-      const ended = (kind: string) => (failure: { readonly message: string }) =>
-        Effect.logWarning(`channel ${kind} ended`, { reason: failure.message }).pipe(
+      const ended = (kind: string) => (cause: Cause.Cause<unknown>) =>
+        Effect.logWarning(`channel ${kind} ended`, cause).pipe(
           Effect.andThen(
             Deferred.fail(offAir, new BroadcastError({ message: "the channel is off air" })),
           ),
@@ -159,18 +159,20 @@ export class Broadcast extends Context.Service<
       // Consumption is mandatory: the orchestration fails with Overflow once
       // its output holds four seconds nobody took. So both outputs are drained
       // for the channel's whole life, watched or not, each by its one reader.
+      // A renewal worker's defect ends them with its Cause rather than a
+      // failure, so each drain handles the whole Cause.
       yield* media.video.pipe(
         Stream.runForEach((frame) =>
           Ref.set(latest, Option.some(frame)).pipe(
             Effect.andThen(Deferred.succeed(firstFrame, undefined)),
           ),
         ),
-        Effect.catch(ended("video")),
+        Effect.catchCause(ended("video")),
         Effect.forkScoped,
       );
       yield* media.audio.pipe(
         Stream.runForEach((frame) => Effect.sync(() => pcm.push(frame))),
-        Effect.catch(ended("audio")),
+        Effect.catchCause(ended("audio")),
         Effect.forkScoped,
       );
 

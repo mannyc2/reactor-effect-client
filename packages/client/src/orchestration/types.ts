@@ -175,6 +175,10 @@ export interface EngineShape {
   readonly enqueueOnSource?:
     | ((request: ClipRequest, expectedSessionId: string) => Effect.Effect<ClipId, EngineError>)
     | undefined;
+  /**
+   * The current state. After an owned renewal worker's defect or unexpected
+   * interruption, it fails with that worker's Cause until close begins.
+   */
   readonly state: Effect.Effect<EngineState>;
   /** Later events only, subscribed when the stream runs; use `observe` to pair them with a state. */
   readonly events: Stream.Stream<EngineEvent, ReactorError>;
@@ -182,6 +186,10 @@ export interface EngineShape {
   /**
    * The terminal failure, as it was raised: a session's `ReactorError`, a
    * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
+   * An owned renewal worker's defect or unexpected interruption fails this
+   * effect and observations with the original Cause instead of a typed error.
+   * A waiter that must act on either, such as one that closes the handle,
+   * handles the whole Cause (`Effect.catchCause`), not only this value.
    */
   readonly failure: Effect.Effect<ReactorFailure>;
   /** Permanently stop new renewal allocations; already acquired sources may finish. */
@@ -517,6 +525,7 @@ export interface Source {
 export interface HandleShape {
   readonly engine: EngineShape;
   readonly media: MediaShape;
+  /** The current media state; like `engine.state`, it fails with a renewal worker's Cause until close begins. */
   readonly mediaState: Effect.Effect<MediaState>;
   /** Engine, renewal and media changes in one ordered stream, after the current state. */
   readonly observe: (

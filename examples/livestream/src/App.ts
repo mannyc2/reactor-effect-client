@@ -18,7 +18,10 @@ import { Settings } from "./Settings.ts";
  *
  * It also closes the orchestration as soon as it fails for good (a renewal
  * it could not open, past `CHANNEL_MAX_SESSIONS` for one): its last session
- * would otherwise keep running, and billing, off air until it expired.
+ * would otherwise keep running, and billing, off air until it expired. A
+ * renewal worker's defect ends the wait with its Cause instead of a failure,
+ * so the wait handles the whole Cause; its own interruption at shutdown skips
+ * the handler, and the finalizer closes then.
  */
 const CloseFirst = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -29,6 +32,7 @@ const CloseFirst = Layer.effectDiscard(
       Effect.flatMap((failure) =>
         Effect.logWarning("channel off air; closing its sessions", { reason: failure.message }),
       ),
+      Effect.catchCause((cause) => Effect.logError("channel off air; closing its sessions", cause)),
       Effect.andThen(close),
       Effect.forkScoped,
     );

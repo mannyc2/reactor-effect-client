@@ -307,7 +307,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     // begins, so an application finalizer can still issue its last commands.
     const stopping = () => closing || scope.state._tag === "Closed";
     let mediaState: MediaState = { _tag: "Closed" };
-    let terminalFailure: ReactorFailure | undefined;
+    let terminal: Exit.Exit<ReactorFailure> | undefined;
     let submissionSequence = 0n;
 
     const announce = (event: Renewal): Effect.Effect<void> =>
@@ -348,20 +348,39 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           );
     const fail = (cause: ReactorFailure): Effect.Effect<void> =>
       Effect.suspend(() => {
-        if (terminalFailure !== undefined) return Effect.void;
-        terminalFailure = cause;
+        if (terminal !== undefined) return Effect.void;
+        terminal = Exit.succeed(cause);
         // Publish the failed state and queues before waking a failure waiter.
         setMedia({ _tag: "Failed", cause });
         emit({ _tag: "SessionFailed", failure: cause });
-        buffer.fail(cause);
+        buffer.failCause(Cause.fail(cause));
         Deferred.doneUnsafe(fatal, Effect.succeed(cause));
         return announce({ _tag: "Failed", reason: cause.message });
       });
+    // A failed worker must wake observers as well as failure waiters: the
+    // scheduler consumes observations, and cannot recover a vanished worker.
+    // Claim and publish synchronously before a waiter can close this owner.
+    const supervise = (effect: Effect.Effect<void>): Effect.Effect<void> =>
+      effect.pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (
+              Exit.isSuccess(exit) ||
+              terminal !== undefined ||
+              (stopping() && Cause.hasInterruptsOnly(exit.cause))
+            )
+              return;
+            terminal = Exit.failCause(exit.cause);
+            buffer.failCause(exit.cause);
+            observations.failCause(exit.cause);
+            Deferred.doneUnsafe(fatal, terminal);
+          }),
+        ),
+      );
     // Every asynchronous activation uses this final fence. Closed/failed state
     // cannot be replaced by a reconnect or autoplay operation that finished late.
     const publishReady = (slot: Slot): boolean => {
-      if (stopping() || slot.closed || slot !== current || terminalFailure !== undefined)
-        return false;
+      if (stopping() || slot.closed || slot !== current || terminal !== undefined) return false;
       setMedia({ _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation });
       return true;
     };
@@ -415,7 +434,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
 
     const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         const state = yield* slot.source.state;
         const lost = activeIds(state);
         const tail = yield* retired(slot);
@@ -450,7 +469,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
                 ? Effect.uninterruptibleMask((restore) => joinAcquisition(pending.fiber, restore))
                 : acquire;
         replacement = { _tag: "Absent" };
-        if (stopping() || terminalFailure !== undefined) {
+        if (stopping() || terminal !== undefined) {
           yield* closeSlot(selected);
           return;
         }
@@ -470,11 +489,11 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         if (slot === current) setMedia({ _tag: "Recovering", sessionId: slot.source.id, cause });
         yield* announce({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
         yield* slot.joinCommitted(recoveryBudget(slot));
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         if (slot.needsReplacement()) {
           yield* replace(slot, cause);
           return;
@@ -494,7 +513,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           return;
         }
         yield* slot.closeMedia;
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         const connected = yield* Effect.result(
           slot.source.reconnect.pipe(
             Effect.timeoutOrElse({
@@ -506,7 +525,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             }),
           ),
         );
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         if (Result.isFailure(connected)) {
           yield* replace(slot, connected.failure);
           return;
@@ -531,7 +550,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             return yield* startMedia(slot);
           }),
         );
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         if (Result.isFailure(restarted)) {
           yield* replace(slot, restarted.failure);
           return;
@@ -560,23 +579,23 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       mode: "reconnect" | "replace",
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || stopping() || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminal !== undefined) return;
         if (!slot.beginRecovery(mode)) return;
-        yield* recover(slot, cause).pipe(commands.withPermits(1), Effect.forkIn(scope));
+        yield* recover(slot, cause).pipe(commands.withPermits(1), supervise, Effect.forkIn(scope));
       });
 
     const startMedia = (slot: Slot): Effect.Effect<void> =>
       slot.startMedia({
         video: (frame) =>
           Effect.suspend(() => {
-            if (slot !== current || terminalFailure !== undefined) return Effect.void;
+            if (slot !== current || terminal !== undefined) return Effect.void;
             if (slot.recordVideo() && replacement._tag === "Ready")
               emit({ _tag: "HandoffReady", sessionId: slot.source.id });
             return buffer.offerVideo(frame).pipe(Effect.catch(fail));
           }),
         audio: (frame) =>
           Effect.suspend(() => {
-            if (slot !== current || terminalFailure !== undefined) return Effect.void;
+            if (slot !== current || terminal !== undefined) return Effect.void;
             return buffer.offerAudio(frame).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -598,7 +617,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             "Overflow",
             "Orchestration session and cleanup-history bound reached",
           );
-        if (stopping() || (continuous && (terminalFailure !== undefined || !renewing)))
+        if (stopping() || (continuous && (terminal !== undefined || !renewing)))
           return yield* admissionClosed();
         // Registered in the same synchronous step as the stopping check, so
         // either close sees this attempt or this attempt sees close.
@@ -1137,6 +1156,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       });
 
     const state: Effect.Effect<EngineState> = Effect.gen(function* () {
+      if (!closing && terminal !== undefined && Exit.isFailure(terminal))
+        return yield* Effect.failCause(terminal.cause);
       const live = [...slots.values()].filter((slot) => !slot.closed);
       const values = (yield* Effect.forEach(live, (slot) => slot.source.state)).map(
         (value, index) => withSessionId(value, live[index]!.source.id),
@@ -1390,7 +1411,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             }
           }
           const decision = decideRenewal({
-            running: !stopping() && terminalFailure === undefined,
+            running: !stopping() && terminal === undefined,
             now: monotonicMillis(clock),
             current,
             replacement: replacement._tag === "Ready" ? replacement.slot.phase : replacement._tag,
@@ -1468,7 +1489,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       .pipe(Effect.catch(fail));
     // Spaced polling, not a fixed rate: each tick runs 100 ms after the previous one
     // finished, so a slow tick delays the next instead of overlapping it.
-    yield* Effect.forever(Effect.sleep(100).pipe(Effect.andThen(tick))).pipe(Effect.forkIn(scope));
+    yield* Effect.forever(Effect.sleep(100).pipe(Effect.andThen(tick))).pipe(
+      supervise,
+      Effect.forkIn(scope),
+    );
 
     const pressure: Effect.Effect<MediaPressure, ReactorError> = Effect.suspend(() => {
       if (current === undefined)
@@ -1514,7 +1538,11 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         pressure,
         videoFramesPerSecond: current.media.videoFramesPerSecond,
       },
-      mediaState: Effect.sync(() => mediaState),
+      mediaState: Effect.suspend(() =>
+        !closing && terminal !== undefined && Exit.isFailure(terminal)
+          ? Effect.failCause(terminal.cause)
+          : Effect.succeed(mediaState),
+      ),
       observe: (options) =>
         observations.observeWith(
           Effect.map(state, (engine) => ({ engine, media: mediaState })),
