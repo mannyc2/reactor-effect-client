@@ -27,6 +27,7 @@ import {
   type Draft,
 } from "../hosted/evidence.js";
 import { admit } from "../hosted/gates.js";
+import { summarize } from "../hosted/report.js";
 
 const frame = (sequence: bigint): VideoFrame => ({
   _tag: "VideoFrame",
@@ -360,6 +361,13 @@ test("renewal refuses incomplete or contradictory evidence even when supplied cr
   noCriterion.criteria.pop();
   conclude(noCriterion, undefined);
   expect(noCriterion.reasons.join(" ")).toContain("missing required criterion");
+});
+
+test("a stored renewal pass without the evidence to support it does not summarize as a pass", () => {
+  const { schedulerRenewal: _omitted, ...bare } = draft();
+  const text = summarize([{ ...bare, verdict: "pass", criteria: [] }]);
+  expect(text).toContain("| fixture | scheduler-renewal | rehearsal | fail |");
+  expect(text).toContain("### scheduler-renewal: fail");
 });
 
 test("handoff codec rejects impossible count and grace claims", () => {

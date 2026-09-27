@@ -2,6 +2,7 @@
  * The evidence as a person reads it: one table of runs, then what each run
  * saw. It is what a pull request, the changelog or an upstream report quotes.
  */
+import { rejudged } from "./evidence.js";
 import type { Evidence, SpanRecord } from "./evidence.js";
 
 const seconds = (ms: number | undefined): string =>
@@ -228,7 +229,9 @@ const section = (evidence: Evidence): string => {
   ].join("\n");
 };
 
-export const summarize = (runs: readonly Evidence[]): string => {
+export const summarize = (evidence: readonly Evidence[]): string => {
+  // A stored renewal pass renders only while its own evidence still supports it.
+  const runs = evidence.map(rejudged);
   const table = [
     "| Run | Check | Mode | Verdict | Started | Worst case | Estimated |",
     "|---|---|---|---|---|---|---|",

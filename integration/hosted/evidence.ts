@@ -1058,7 +1058,7 @@ export const renewalProblems = (evidence: Evidence): readonly string[] => [
  * nothing required is missing, no stop rule fired and the check itself
  * completed. `failure` is why the check did not complete, if it did not.
  */
-export const conclude = (evidence: Draft, failure: string | undefined): void => {
+const verdictOf = (evidence: Evidence, failure: string | undefined) => {
   const reasons: string[] = [];
   const stop = stopFor({
     outcomes: evidence.outcomes,
@@ -1081,12 +1081,41 @@ export const conclude = (evidence: Draft, failure: string | undefined): void => 
       reasons.push(
         `${criterion.name}${criterion.detail === undefined ? "" : `: ${criterion.detail}`}`,
       );
-  evidence.missing = [...missing(evidence)];
-  if (evidence.missing.length > 0)
-    reasons.push(`incomplete evidence: ${evidence.missing.join(", ")}`);
+  const absent = missing(evidence);
+  if (absent.length > 0) reasons.push(`incomplete evidence: ${absent.join(", ")}`);
   if (evidence.criteria.length === 0) reasons.push("no criterion was evaluated");
-  evidence.reasons = reasons;
-  evidence.verdict = reasons.length === 0 ? "pass" : "fail";
+  return {
+    missing: absent,
+    reasons,
+    verdict: reasons.length === 0 ? ("pass" as const) : ("fail" as const),
+  };
+};
+
+/** Records the run's verdict, its reasons and what it is missing. */
+export const conclude = (evidence: Draft, failure: string | undefined): void => {
+  const judged = verdictOf(evidence, failure);
+  evidence.missing = [...judged.missing];
+  evidence.reasons = judged.reasons;
+  evidence.verdict = judged.verdict;
+};
+
+/**
+ * A ledger entry as it is judged today. A stored scheduler-renewal pass is
+ * recomputed from its own evidence, since the verdict field alone cannot
+ * qualify the check; every other stored verdict is a historical record and
+ * stays as written.
+ */
+export const rejudged = (evidence: Evidence): Evidence => {
+  if (evidence.check !== "scheduler-renewal" || evidence.verdict !== "pass") return evidence;
+  const judged = verdictOf(evidence, undefined);
+  return judged.verdict === "pass"
+    ? evidence
+    : {
+        ...evidence,
+        missing: judged.missing,
+        reasons: ["the stored pass is not supported by its evidence", ...judged.reasons],
+        verdict: "fail",
+      };
 };
 
 const encode = Schema.encodeSync(Evidence);

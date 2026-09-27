@@ -81,6 +81,7 @@ import {
   format,
   lockLedger,
   readLedger,
+  rejudged,
   reservedUsd,
   renewalJudgments,
   confirmedOwnedCleanup,
@@ -2415,7 +2416,7 @@ const preflight = async (args: readonly string[]): Promise<number> => {
     console.log(`native library ${native === undefined ? "loaded" : JSON.stringify(native)}`);
     const passed = new Set(
       earlier
-        .filter(({ evidence }) => evidence.verdict === "pass")
+        .filter(({ evidence }) => rejudged(evidence).verdict === "pass")
         .map(({ evidence }) => evidence.check),
     );
     const order = (["vertical", "takeover"] as const).filter((check) => !passed.has(check));
