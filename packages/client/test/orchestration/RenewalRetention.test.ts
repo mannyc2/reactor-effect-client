@@ -472,6 +472,33 @@ for (const constructor of ["legacy", "continuous"] as const)
       }),
     ));
 
+// A typed open failure remains the construction's failure beside a defect that
+// its cleanup raised; close must not replace it with that defect alone.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} construction keeps its typed open failure beside a cleanup defect`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const defect = new Error("open cleanup defect");
+        const refused = ReactorError.fromCode("Remote", "allocation refused");
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            yield* Effect.addFinalizer(() => Effect.die(defect));
+            return yield* refused;
+          }),
+        };
+        const exit: Exit.Exit<unknown, unknown> =
+          constructor === "legacy"
+            ? yield* Effect.exit(Renewal.make(options).pipe(Scope.provide(owner)))
+            : yield* Effect.exit(Renewal.makeContinuous(options).pipe(Scope.provide(owner)));
+        expect(reasons(exit)).toEqual(["Fail", defect]);
+        expect(
+          Exit.isFailure(exit) && Option.getOrUndefined(Cause.findErrorOption(exit.cause)),
+        ).toBe(refused);
+        expect(reasons(yield* Effect.exit(Scope.close(owner, Exit.void)))).toEqual([defect]);
+      }),
+    ));
+
 test("unknown submissions exhaust their reserved history even after confirmed termination", () =>
   runClock(
     Effect.gen(function* () {

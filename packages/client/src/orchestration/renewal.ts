@@ -875,16 +875,20 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     current = yield* acquire.pipe(
       Effect.tap((slot) => slot.source.setAutoplay(true)),
       Effect.catch((cause) =>
-        close.pipe(
-          Effect.flatMap(() => {
+        Effect.exit(close).pipe(
+          Effect.flatMap((closed) => {
             // An AcquisitionFailure from `open` already carries the lease it
             // recorded, by reference; any later failure takes the recorded lease.
             const lease = firstCleanup?.lease;
-            return Effect.fail(
+            const failure =
               AcquisitionFailure.is(cause) || (lease === undefined && ReactorError.is(cause))
                 ? cause
-                : AcquisitionFailure.from(cause, lease ?? noAcquisition),
-            );
+                : AcquisitionFailure.from(cause, lease ?? noAcquisition);
+            // A defect of the close that retired the attempt stays beside the
+            // typed failure, which the caller still handles.
+            return Exit.isSuccess(closed)
+              ? Effect.fail(failure)
+              : Effect.failCause(Cause.combine(Cause.fail(failure), closed.cause));
           }),
         ),
       ),
