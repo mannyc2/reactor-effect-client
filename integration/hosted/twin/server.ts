@@ -11,7 +11,7 @@ import { Buffer } from "node:buffer";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
 import type { JsonObject, Mapping } from "reactor-effect-client";
@@ -42,6 +42,16 @@ export interface TwinRate {
 }
 
 export interface TwinFaults {
+  readonly refuseFirstAllocation?: boolean;
+  readonly refuseSecondAllocation?: boolean;
+  readonly failConnect?: boolean;
+  /** The second session is allocated with its id, then its connect is refused. */
+  readonly failSecondConnect?: boolean;
+  readonly overgrantSecondToken?: boolean;
+  readonly noFirstVideo?: boolean;
+  readonly noSecondVideo?: boolean;
+  readonly dropSecondEnqueueReply?: boolean;
+  readonly stallSecondBuild?: boolean;
   /** Tokens grant two sessions instead of the one asked for. */
   readonly overgrant?: boolean;
   /**
@@ -99,6 +109,8 @@ export interface Twin extends AsyncDisposable {
   readonly enqueues: number;
   /** Every session, by id. */
   readonly sessions: ReadonlyMap<string, TwinSession>;
+  /** The server has closed: its listener and every connection it accepted are gone. */
+  readonly closed: boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -204,6 +216,8 @@ interface Connection {
 
 interface Session {
   readonly id: string;
+  /** Its place in creation order, from 1. */
+  readonly ordinal: number;
   readonly grant: Grant;
   state: "ACTIVE" | "STOPPING" | "CLOSED";
   readonly model: H3Model;
@@ -228,6 +242,8 @@ class TwinServer implements Twin {
   private deleted = 0;
   private enqueued = 0;
   private closing: Promise<void> | undefined;
+  private finished = false;
+  private readonly sockets = new Set<Socket>();
 
   constructor(
     private readonly server: Server,
@@ -236,6 +252,13 @@ class TwinServer implements Twin {
     this.port = (server.address() as AddressInfo).port;
     this.url = `http://127.0.0.1:${this.port}`;
     this.apiKey = options.apiKey ?? `twin-api-key-${randomBytes(16).toString("hex")}`;
+    server.on("connection", (socket: Socket) => {
+      this.sockets.add(socket);
+      socket.once("close", () => this.sockets.delete(socket));
+      // A connection accepted just before close can be delivered after shutdown
+      // begins. It belongs to this twin and must not outlive the server join.
+      if (this.closing !== undefined) socket.destroy();
+    });
     server.on("request", (request: IncomingMessage, response: ServerResponse) =>
       this.handle(request, response),
     );
@@ -252,6 +275,10 @@ class TwinServer implements Twin {
 
   get enqueues(): number {
     return this.enqueued;
+  }
+
+  get closed(): boolean {
+    return this.finished;
   }
 
   get sessions(): ReadonlyMap<string, TwinSession> {
@@ -271,8 +298,16 @@ class TwinServer implements Twin {
       for (const timer of session.timers) clearTimeout(timer);
     }
     for (const link of this.links.values()) clearTimeout(link.hold);
-    this.closing = new Promise((resolve) => this.server.close(() => resolve()));
-    this.server.closeAllConnections();
+    this.closing = new Promise((resolve) =>
+      this.server.close(() => {
+        this.finished = true;
+        resolve();
+      }),
+    );
+    // Own raw sockets as well as HTTP requests: closeAllConnections left an
+    // accepted socket open in repeated Bun rehearsals.
+    // The server callback still joins their actual closure; no timer declares success.
+    for (const socket of this.sockets) socket.destroy();
     return this.closing;
   }
 
@@ -348,7 +383,11 @@ class TwinServer implements Twin {
     const grant: Grant = {
       id: `twin-jwt-${randomUUID()}`,
       model,
-      maxSessions: this.options.faults?.overgrant === true ? 2 : sessions,
+      maxSessions:
+        this.options.faults?.overgrant === true ||
+        (this.options.faults?.overgrantSecondToken === true && this.grants.size === 1)
+          ? 2
+          : sessions,
       maxSessionSeconds: seconds,
       expiresAt: issuedAt + expiresAfter,
       sessions: 0,
@@ -432,6 +471,11 @@ class TwinServer implements Twin {
     if (resource !== "connections") throw refuse(404, "not_found", "no such route");
     if (session.state !== "ACTIVE") throw refuse(409, "session_ended", "the session has ended");
     if (cid === undefined) {
+      if (
+        this.options.faults?.failConnect === true ||
+        (this.options.faults?.failSecondConnect === true && session.ordinal === 2)
+      )
+        throw refuse(403, "fixture_connect_refused", "fixture connect refusal");
       if (method !== "POST") throw refuse(405, "method_not_allowed", method);
       await read(request);
       const connection: Connection = {
@@ -482,11 +526,17 @@ class TwinServer implements Twin {
       throw refuse(400, "unsupported_transport", "the twin speaks WebRTC 1.0 only");
     if (grant.sessions >= grant.maxSessions)
       throw refuse(403, "session_limit", "the token's sessions are used");
+    if (
+      (this.created === 0 && this.options.faults?.refuseFirstAllocation === true) ||
+      (this.created === 1 && this.options.faults?.refuseSecondAllocation === true)
+    )
+      throw refuse(403, "fixture_allocation_refused", "fixture allocation refusal");
     grant.sessions++;
     this.created++;
     const faults = this.options.faults ?? {};
     const session: Session = {
       id: `sess_${randomUUID()}`,
+      ordinal: this.created,
       grant,
       state: "ACTIVE",
       model: new H3Model(
@@ -497,7 +547,15 @@ class TwinServer implements Twin {
             this.enqueued++;
           },
         },
-        faults,
+        {
+          ...faults,
+          noVideo:
+            this.created === 1 ? faults.noFirstVideo === true : faults.noSecondVideo === true,
+          dropEnqueueReply:
+            faults.dropEnqueueReply === true ||
+            (this.created === 2 && faults.dropSecondEnqueueReply === true),
+          stallBuild: this.created === 2 && faults.stallSecondBuild === true,
+        },
       ),
       connections: new Map(),
       peer: undefined,

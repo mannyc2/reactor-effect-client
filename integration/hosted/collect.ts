@@ -10,9 +10,10 @@ import * as Exit from "effect/Exit";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
-import type { Recorded, SessionEvent, Statistics } from "reactor-effect-client";
+import { recorder, type Recorded, type SessionEvent, type Statistics } from "reactor-effect-client";
 import type * as Reactor from "reactor-effect-client";
 import type * as H3 from "reactor-effect-client/h3";
+import type * as Orchestration from "reactor-effect-client/orchestration";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
 import { terminal } from "reactor-effect-client/host";
 import type { AudioSummary, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
@@ -20,6 +21,93 @@ import { liveVideoMotionFrames, type ClipVideoSeen } from "./gates.js";
 
 /** Milliseconds since `origin`, a `Date.now()` reading. */
 export const since = (origin: number): number => Date.now() - origin;
+
+/** A single monotonic origin for the renewal subtree; legacy wall offsets stay separate. */
+export const elapsedClock = Effect.gen(function* () {
+  const clock = yield* Clock.Clock;
+  const origin = clock.monotonicTimeNanosUnsafe();
+  const now = () => Number((clock.monotonicTimeNanosUnsafe() - origin) / 1_000_000n);
+  return { now, elapsed: Effect.sync(now) };
+});
+
+interface FrameSource {
+  readonly sessionId: string;
+  readonly generation: bigint;
+}
+
+/** Tags the original objects at the public source boundary, including queued retiring frames. */
+export class FrameAttribution {
+  private readonly frames = new WeakMap<VideoFrame | AudioFrame, FrameSource | "ambiguous">();
+
+  get(frame: VideoFrame | AudioFrame): FrameSource | undefined {
+    const source = this.frames.get(frame);
+    return source === "ambiguous" ? undefined : source;
+  }
+
+  tag<F extends VideoFrame | AudioFrame, E, R>(
+    stream: Stream.Stream<F, E, R>,
+    source: FrameSource,
+  ) {
+    return stream.pipe(
+      Stream.tap((frame) =>
+        Effect.sync(() => {
+          // An object a second source re-emits has no single source; relabelling
+          // it would credit one source with another's frame, so it stays untagged.
+          const previous = this.frames.get(frame);
+          this.frames.set(
+            frame,
+            previous === undefined ||
+              (previous !== "ambiguous" &&
+                previous.sessionId === source.sessionId &&
+                previous.generation === source.generation)
+              ? source
+              : "ambiguous",
+          );
+        }),
+      ),
+    );
+  }
+
+  source(source: Orchestration.Source): Orchestration.Source {
+    return {
+      ...source,
+      media: source.media.pipe(
+        Effect.map((media) => {
+          const tag = { sessionId: source.id, generation: media.generation };
+          return { ...media, video: this.tag(media.video, tag), audio: this.tag(media.audio, tag) };
+        }),
+      ),
+    };
+  }
+
+  /** Reset the existing recorder on every attributed boundary, even if the new sequence increases. */
+  recorded<F extends VideoFrame | AudioFrame, E, R>(stream: Stream.Stream<F, E, R>) {
+    type Boundary = { readonly source: FrameSource | undefined; readonly offset: bigint };
+    return recorder(
+      stream.pipe(
+        Stream.mapAccum(
+          (): Boundary | undefined => undefined,
+          (
+            previous,
+            frame,
+          ): readonly [Boundary, readonly { readonly sequence: bigint; readonly frame: F }[]] => {
+            const source = this.get(frame);
+            const same =
+              source !== undefined &&
+              previous?.source?.sessionId === source.sessionId &&
+              previous.source.generation === source.generation;
+            const offset = same ? previous.offset : frame.sequence;
+            return [{ source, offset }, [{ sequence: frame.sequence - offset, frame }]];
+          },
+        ),
+      ),
+    ).pipe(
+      Stream.map((element): Recorded<F> =>
+        element._tag === "Frame" ? { _tag: "Frame", frame: element.frame.frame } : element,
+      ),
+    );
+  }
+}
 
 const round = (value: number, places = 1): number => {
   const scale = 10 ** places;
@@ -284,14 +372,16 @@ export class AudioReader {
 }
 
 /** Reads `stream` into `reader` until it ends, fails or is interrupted. */
-export const readInto = <F extends { readonly sequence: bigint }>(
-  stream: Stream.Stream<Recorded<F>, Reactor.ReactorError>,
+export const readInto = <F extends { readonly sequence: bigint }, E>(
+  stream: Stream.Stream<Recorded<F>, E>,
   reader: { add(element: Recorded<F>, atMs: number): void },
-  origin: number,
+  time: number | Effect.Effect<number>,
 ) =>
   stream.pipe(
     Stream.runForEach((element) =>
-      Effect.map(elapsed(origin), (atMs) => reader.add(element, atMs)),
+      Effect.map(typeof time === "number" ? elapsed(time) : time, (atMs) =>
+        reader.add(element, atMs),
+      ),
     ),
   );
 

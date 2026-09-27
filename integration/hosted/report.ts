@@ -2,7 +2,8 @@
  * The evidence as a person reads it: one table of runs, then what each run
  * saw. It is what a pull request, the changelog or an upstream report quotes.
  */
-import type { Evidence, SpanRecord } from "./evidence.js";
+import { confirmedOwnedCleanup, rejudged } from "./evidence.js";
+import type { Evidence, SchedulerRenewal, SpanRecord } from "./evidence.js";
 
 const seconds = (ms: number | undefined): string =>
   ms === undefined ? "?" : `${(ms / 1000).toFixed(2)} s`;
@@ -16,6 +17,21 @@ const median = (values: readonly number[]): number | undefined => {
   if (values.length === 0) return undefined;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
+};
+
+/**
+ * The canonical owned-termination proof the renewal verdict requires, over the
+ * source's close report or, after a failed open, its lease's own report.
+ */
+const ownedTermination = (slot: SchedulerRenewal["allocations"][number]): boolean => {
+  const cleanup =
+    slot.cleanup ??
+    (slot.leaseCleanup === undefined ? undefined : { lease: slot.leaseCleanup, policy: [] });
+  return (
+    slot.sessionId !== undefined &&
+    cleanup !== undefined &&
+    confirmedOwnedCleanup(cleanup, slot.sessionId)
+  );
 };
 
 /** The connect span's phases, each as the time since the one before. */
@@ -154,6 +170,80 @@ const section = (evidence: Evidence): string => {
       "Takeover",
       `attached ${seconds(takeover.attachMs)} after the kill; clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; metadata ${takeover.metadataPreserved === true ? "preserved" : "not preserved"}; ${takeover.enqueuesAfterAttach ?? "?"} enqueue(s) after attach; first fresh frame ${takeover.firstFreshFrameMs === undefined ? "none" : `+${seconds(takeover.firstFreshFrameMs - takeover.killedMs - (takeover.attachMs ?? 0))} after attach`}`,
     );
+  const renewal = evidence.schedulerRenewal;
+  if (renewal !== undefined) {
+    add(
+      "Public scheduler renewal",
+      `${renewal.configuration.constructor} constructor; ${renewal.openAttempts} open attempts; monotonic clock; ${renewal.fillerRequests} filler requests and ${renewal.fillerEvents.length} filler observations`,
+    );
+    add(
+      "Keyed playback",
+      renewal.items
+        .map(
+          (item) =>
+            `${item.key} on ${item.sessionId ?? "unknown source"}: ${item.statuses.map((status) => `${status._tag}@${seconds(status.atMs)}`).join(" → ")}`,
+        )
+        .join("; "),
+    );
+    for (const switched of renewal.switches) {
+      const handoff = switched.handoff;
+      add(
+        "Planned switch",
+        `${switched.retiringSessionId} → ${handoff?.replacementSessionId ?? "unknown"}: ${handoff?.decision ?? "missing evidence"}; ${handoff?.finalClip._tag === "Observed" ? `${handoff.finalClip.receivedVideoFrames}/${handoff.finalClip.expectedVideoFrames} local final-clip frames` : "no observed start"}; ${handoff?.grace._tag === "Observed" ? `${handoff.grace.origin} grace ${handoff.grace.elapsedMs}/${handoff.grace.limitMs} ms` : "grace not observed"}`,
+      );
+    }
+    const boundary = renewal.media.decodedBoundary;
+    add(
+      "Logical decoded media",
+      `${renewal.media.video.frames} video frames; attribution ${renewal.media.attributionComplete ? "complete" : "INCOMPLETE"}; ${boundary === undefined ? "no decoded boundary" : `boundary gap ${boundary.gapMs} ms`}; audio completeness unverified; no encoded or viewer-output claim`,
+    );
+    add(
+      "Accepted drain",
+      `${renewal.drain?.outcome ?? "not requested"}; allocated sources ${renewal.drain?.allocationsWhenRequested ?? "?"} → ${renewal.drain?.allocationsWhenCompleted ?? "?"}`,
+    );
+    const cleanup = renewal.cleanup;
+    const summary = cleanup?._tag === "Continuous" ? cleanup.summary : undefined;
+    // Complete only when nothing is left open: the observation's own list, a
+    // close that never returned, any allocated lease without canonical
+    // confirmation, any unknown allocation, and incomplete or exhausted
+    // retained cleanup.
+    const open =
+      cleanup === undefined
+        ? ["not recorded"]
+        : [
+            ...cleanup.incomplete,
+            ...(cleanup.completedMs === undefined ? ["close did not return"] : []),
+            ...renewal.allocations
+              .filter((slot) => slot.sessionId !== undefined && !ownedTermination(slot))
+              .map((slot) => `source ${slot.slot} lease unconfirmed`),
+            ...renewal.allocations
+              .filter((slot) => slot.allocation === "unknown")
+              .map((slot) => `source ${slot.slot} allocation unknown`),
+            ...(summary?.retained.some((row) => row.disposition === "incomplete") === true
+              ? ["incomplete retained cleanup"]
+              : []),
+            ...(summary?.exhausted === true ? ["retention exhausted"] : []),
+          ];
+    add(
+      "Renewal cleanup",
+      `${cleanup?._tag ?? "missing"}; ${renewal.allocations.filter((slot) => slot.cleanup !== undefined).length} canonical source reports; ${open.length === 0 ? "complete" : open.join(", ")}`,
+    );
+    if (renewal.configuration.constructor === "continuous")
+      add(
+        "Continuous retention",
+        `keep ${renewal.configuration.retainedSuccessfulCleanups} successes; unresolved limit ${renewal.configuration.maxUnresolvedCleanups}`,
+      );
+    if (summary !== undefined)
+      add(
+        "Cleanup summary",
+        `${summary.totalRetirements} retirements; ${summary.retained.length} retained (${summary.retained.filter((row) => row.disposition === "incomplete").length} incomplete); ${summary.omittedComplete.ownedTerminated} omitted complete owned terminations; exhausted ${summary.exhausted}`,
+      );
+    for (const slot of renewal.allocations)
+      add(
+        `Source ${slot.slot}`,
+        `${slot.sessionId ?? (slot.allocation === "unknown" ? "allocation outcome unknown" : "not allocated")}; canonical owned termination ${ownedTermination(slot) ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
+      );
+  }
   const termination = evidence.termination;
   if (termination !== undefined)
     add(
@@ -175,7 +265,9 @@ const section = (evidence: Evidence): string => {
   ].join("\n");
 };
 
-export const summarize = (runs: readonly Evidence[]): string => {
+export const summarize = (evidence: readonly Evidence[]): string => {
+  // A stored renewal pass renders only while its own evidence still supports it.
+  const runs = evidence.map(rejudged);
   const table = [
     "| Run | Check | Mode | Verdict | Started | Worst case | Estimated |",
     "|---|---|---|---|---|---|---|",

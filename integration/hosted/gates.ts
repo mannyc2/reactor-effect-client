@@ -6,13 +6,11 @@ import * as Data from "effect/Data";
 
 /**
  * One-session checks may reserve one billed minute at the published rate
- * ($0.75 on September 24, 2026). The scheduler check reserves two. All paid
+ * ($0.75 on September 24, 2026). The two-session checks reserve two. All paid
  * runs still share the total ceiling, and the operator's command-line limit
  * may only be lower.
  */
 export const maxCheckUsd = 0.75;
-/** Two independently capped sessions in the scheduler qualification. */
-export const maxSchedulerUsd = 1.5;
 export const maxTotalUsd = 3.75;
 /**
  * Reactor bills a session by the minute, from `ready` until it ends. Its
@@ -39,9 +37,19 @@ export const workSeconds = sessionSeconds - 10;
  * and a reference audio clip, and `resume`, the takeover through
  * `Orchestration.resumeH3`.
  */
-export const checks = ["vertical", "takeover", "turn", "audio", "resume", "scheduler"] as const;
+export const checks = [
+  "vertical",
+  "takeover",
+  "turn",
+  "audio",
+  "resume",
+  "scheduler",
+  "scheduler-renewal",
+] as const;
 export type Check = (typeof checks)[number];
-export const sessionsFor = (check: Check): number => (check === "scheduler" ? 2 : 1);
+export const sessionsFor = (check: Check): number =>
+  check === "scheduler" || check === "scheduler-renewal" ? 2 : 1;
+export const ceilingFor = (check: Check): number => sessionsFor(check) * maxCheckUsd;
 
 export interface Authorization {
   readonly check: Check;
@@ -106,11 +114,7 @@ export const authorize = (args: readonly string[]): Authorization => {
   );
   if (!given.has("--i-authorize-paid-sessions"))
     return refuse("paid use needs --i-authorize-paid-sessions from the authorizing maintainer");
-  const budgetUsd = usd(
-    given.get("budget-usd"),
-    "budget-usd",
-    check === "scheduler" ? maxSchedulerUsd : maxCheckUsd,
-  );
+  const budgetUsd = usd(given.get("budget-usd"), "budget-usd", ceilingFor(check as Check));
   const totalBudgetUsd = usd(given.get("total-budget-usd"), "total-budget-usd", maxTotalUsd);
   if (budgetUsd > totalBudgetUsd) return refuse("--budget-usd cannot exceed --total-budget-usd");
   const ledger = given.get("ledger") ?? "";
@@ -134,9 +138,17 @@ export const billedUsd = (rate: Rate, seconds: number): number =>
 /** The worst case of one session at `rate`: the whole server-enforced cap, billed by the minute. */
 export const worstCaseUsd = (rate: Rate): number => billedUsd(rate, sessionSeconds);
 
-/** Refuse unless every capped session fits the budget at the published rate. */
+/**
+ * What the ledger reserves for `amount`: rounded up to the four decimals it
+ * keeps, so a reservation never falls below the worst case it stands for. The
+ * slack keeps a float a hair above a grid point, such as 0.75 computed as
+ * 0.7500000000000001, at that point.
+ */
+export const reservationUsd = (amount: number): number => Math.ceil(amount * 1e4 - 1e-6) / 1e4;
+
+/** Refuse unless every capped session fits the budget at the published rate; returns the reservation. */
 export const admit = (rate: Rate, budgetUsd: number, sessions = 1): number => {
-  const cost = worstCaseUsd(rate) * sessions;
+  const cost = reservationUsd(worstCaseUsd(rate) * sessions);
   if (!(cost <= budgetUsd + 1e-9))
     return refuse(
       `${sessions} capped ${sessionSeconds} s session(s) bill up to $${cost.toFixed(4)}, over the $${budgetUsd} budget`,
@@ -173,6 +185,13 @@ export interface Granted {
 export const acceptGrant = (granted: Granted): void => {
   if (granted.maxSessions !== 1 || granted.maxSessionSeconds > sessionSeconds)
     return refuse("the token grants more than one session of at most the capped length");
+};
+
+/** This scenario's timing depends on two full 50-second grants; shorter grants cannot qualify it. */
+export const acceptRenewalGrant = (granted: Granted): void => {
+  acceptGrant(granted);
+  if (granted.maxSessionSeconds !== sessionSeconds)
+    return refuse("scheduler-renewal requires the full 50-second granted cap");
 };
 
 /** A remote outcome the check observed. */

@@ -7,6 +7,8 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { connect } from "node:net";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
@@ -347,6 +349,44 @@ test("the twin mints recognisable credentials: an HS256 JWT the twin plainly sig
     expect(decode(payload)).toMatchObject({ iss: "reactor-twin", sub: "reactor-twin-account" });
     expect(grant.expiresAt * 1000 - Date.now()).toBeGreaterThan(90_000);
   }));
+
+test("twin close joins an owned socket with an unfinished HTTP request", async () => {
+  const twin = await startTwin();
+  const port = Number(new URL(twin.url).port);
+  const socket = connect({ host: "127.0.0.1", port });
+  try {
+    await once(socket, "connect");
+    const continued: Promise<readonly unknown[]> = once(socket, "data");
+    // The server acknowledges the headers, but the client deliberately holds
+    // the body so shutdown must close a real unfinished request.
+    socket.write(
+      "POST /tokens HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n",
+    );
+    const [reply]: readonly unknown[] = await continued;
+    expect(Buffer.isBuffer(reply)).toBe(true);
+    expect(String(reply)).toContain("100 Continue");
+    const closed: Promise<unknown> = once(socket, "close");
+    const closing = twin.close();
+    expect(twin.close()).toBe(closing);
+    // Read the moment close resolves: the server's own close must already have completed.
+    const joined = closing.then(() => twin.closed);
+    await Promise.all([joined, closed]);
+    expect(await joined).toBe(true);
+    expect(socket.destroyed).toBe(true);
+    // Destroying sockets alone would leave the listener accepting; a refused
+    // connection shows shutdown closed the listener itself.
+    const probe = connect({ host: "127.0.0.1", port });
+    const answer = await new Promise<string | undefined>((resolve) => {
+      probe.once("connect", () => resolve("connected"));
+      probe.once("error", (error: NodeJS.ErrnoException) => resolve(error.code));
+    });
+    probe.destroy();
+    expect(answer).toBe("ECONNREFUSED");
+  } finally {
+    socket.destroy();
+    await twin.close();
+  }
+});
 
 test(
   "a reference image uploads through the twin before its clip is queued",
