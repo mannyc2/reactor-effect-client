@@ -10,6 +10,7 @@ import {
   Queue,
   Result,
   Scheduler,
+  Scope,
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
@@ -610,6 +611,12 @@ test("a recovery-fiber defect stays a defect while the scheduler independently b
     Effect.gen(function* () {
       const defect = Cause.die(new Error("controlled recovery close defect"));
       const closeExit = yield* Deferred.make<Exit.Exit<void>>();
+      const owner = yield* Scope.make();
+      // The close owner retains its original defect. Own that scope here
+      // so the test can assert the final Exit as well as the source hook.
+      yield* Effect.addFinalizer(() =>
+        Scope.close(owner, Exit.void).pipe(Effect.exit, Effect.asVoid),
+      );
       const handle = yield* Renewal.make({
         open: sourceFixture("defective", {
           execute: () => Effect.fail(failure("unknown")),
@@ -617,7 +624,7 @@ test("a recovery-fiber defect stays a defect while the scheduler independently b
             Effect.onExit((exit) => Deferred.succeed(closeExit, exit)),
           ),
         }).pipe(Effect.map((fixture) => ({ source: fixture.source, lifetime: "10 minutes" }))),
-      });
+      }).pipe(Effect.provideService(Scope.Scope, owner));
       const scheduler = yield* makeScheduler({
         ...options,
         unknownRecoveryTimeout: "1 second",
@@ -638,6 +645,13 @@ test("a recovery-fiber defect stays a defect while the scheduler independently b
       expect(stopped.pollUnsafe()).toBeDefined();
       expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
       expect((yield* Fiber.join(stopped)).reason._tag).toBe("Timeout");
+      for (const exit of [
+        yield* Effect.exit(handle.close.pipe(Effect.asVoid)),
+        yield* Effect.exit(Scope.close(owner, Exit.void)),
+      ]) {
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(Cause.squash(defect));
+      }
     }),
   ));
 
