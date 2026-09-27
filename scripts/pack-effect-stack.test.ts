@@ -238,7 +238,13 @@ test("a scoped package named effect is not an Effect instance unless its coordin
     expect(withEntry("@acme/effect@1.0.0").selected.effect).toBe(baseline);
     expect(() => withEntry(`effect@${later}`)).toThrow(/conflicting.*effect/);
   }
-  // A nested scoped instance of a stack package is still inspected by its key.
+  // A key that names a stack package is inspected even when its coordinate names
+  // another package: an alias there would give that package the stack's import.
+  const alias = lock().replace(
+    '"packages": {',
+    `"packages": { "foo/effect": ["@acme/other@1.0.0", "", {}, "sha512-fixture"],`,
+  );
+  expect(() => selectStack(manifest, alias)).toThrow(/wrong package coordinate @acme\/other/);
   const nested = lock().replace(
     '"packages": {',
     `"packages": { "foo/@effect/platform-node": ["@effect/platform-node@${later}", "", {}, "sha512-fixture"],`,
