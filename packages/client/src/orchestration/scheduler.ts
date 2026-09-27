@@ -695,7 +695,19 @@ export const makeScheduler = (
               yield* Deferred.failCause(item.startedWaiter, terminal.cause);
               yield* Deferred.failCause(item.outcomeWaiter, terminal.cause);
               yield* Deferred.failCause(item.firstDecisiveWaiter, terminal.cause);
-            } else if (item.phase !== "Terminal") {
+              continue;
+            }
+            // emit records a status before completing its waits, and each
+            // completion can resume an observer that closes the owner. Finish
+            // those waits from the record rather than from the closing claim.
+            const recorded = item.status;
+            if (item.phase === "Started" || item.phase === "Terminal") {
+              if (isFirstDecisive(recorded))
+                yield* Deferred.succeed(item.firstDecisiveWaiter, recorded);
+              yield* Deferred.succeed(item.startedWaiter, recorded);
+            }
+            if (item.phase === "Terminal") yield* Deferred.succeed(item.outcomeWaiter, recorded);
+            else
               yield* emit(
                 item,
                 item.phase === "Unknown" ||
@@ -704,13 +716,18 @@ export const makeScheduler = (
                   : { _tag: "Failed", reason: { _tag: "Scheduler", cause: terminal.value } },
                 true,
               );
-            }
           }
           const closed = Exit.isSuccess(terminal)
             ? Exit.fail(PolicyFailure.refuse("SessionClosed", terminal.value.message))
             : Exit.failCause(terminal.cause);
-          for (const pending of pendingWithdrawals.values())
-            for (const reply of pending.replies) yield* Deferred.done(reply, closed);
+          for (const [key, pending] of pendingWithdrawals) {
+            // A drop recorded before the claim is the withdrawal's actual result.
+            const reply =
+              Exit.isSuccess(terminal) && items.get(key)?.status._tag === "Dropped"
+                ? Exit.succeed("withdrawn" as const)
+                : closed;
+            for (const waiter of pending.replies) yield* Deferred.done(waiter, reply);
+          }
           pendingWithdrawals.clear();
           for (const reply of drainReplies.splice(0)) yield* Deferred.done(reply, closed);
           yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));

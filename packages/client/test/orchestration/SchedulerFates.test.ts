@@ -1233,3 +1233,71 @@ for (const strategy of ["sequential", "parallel"] as const) {
       }),
     ));
 }
+
+// #36: completing a handle wait or publishing as-run evidence resumes its
+// observers synchronously, inside emit. An observer that closes the owner there
+// must find that item's recorded evidence settled, neither stranded nor replaced.
+for (const observer of ["firstDecisive", "asRun"] as const) {
+  for (const evidence of ["Started", "Dropped"] as const) {
+    test(`an owner closed from ${observer} ${evidence} evidence keeps that evidence`, () =>
+      runClock(
+        Effect.gen(function* () {
+          const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const scheduler = yield* makeScheduler(options).pipe(
+            Effect.provideService(Engine, simulation.engine),
+            Scope.provide(scope),
+          );
+          const item = yield* scheduler.submit({
+            key: ItemKey.make("closing-evidence"),
+            lane: "line",
+            request: clip("closing evidence"),
+            ...(evidence === "Dropped" ? { window: { notBefore: "1 hour", firm: false } } : {}),
+          });
+          const observed: Effect.Effect<AsRunStatus> =
+            observer === "firstDecisive"
+              ? item.firstDecisive
+              : scheduler.asRun.pipe(
+                  Stream.filter(
+                    (event) => event.key === item.key && event.status._tag === evidence,
+                  ),
+                  Stream.take(1),
+                  Stream.runCollect,
+                  Effect.map((events) => events[0]!.status),
+                );
+          const closer = yield* Effect.forkScoped(
+            Effect.gen(function* () {
+              const status = yield* observed;
+              yield* Scope.close(scope, Exit.void);
+              return status;
+            }),
+          );
+          yield* Effect.yieldNow;
+          const withdrawal =
+            evidence === "Dropped"
+              ? yield* Effect.forkScoped(scheduler.withdraw(item.key))
+              : undefined;
+          if (evidence === "Started") yield* advance(1_000);
+          const status = yield* Fiber.join(closer);
+          const failure = yield* scheduler.failure;
+          const waits = yield* Effect.forEach(
+            [item.firstDecisive, item.started, item.outcome],
+            (wait) => Effect.forkScoped(Effect.exit(wait)),
+          );
+          yield* Effect.yieldNow;
+          expect(status._tag).toBe(evidence);
+          expect(waits.map((wait) => wait.pollUnsafe())).toEqual(
+            [
+              status,
+              status,
+              evidence === "Started"
+                ? { _tag: "Failed", reason: { _tag: "Scheduler", cause: failure } }
+                : status,
+            ].map((value) => Exit.succeed(Exit.succeed(value))),
+          );
+          if (withdrawal !== undefined) expect(yield* Fiber.join(withdrawal)).toBe("withdrawn");
+        }),
+      ));
+  }
+}
