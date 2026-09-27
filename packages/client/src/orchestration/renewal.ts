@@ -30,7 +30,7 @@ import * as Submission from "../Submission.js";
 import type { MediaPressure } from "../session/media.js";
 import * as MediaBuffer from "./media-buffer.js";
 import * as SourceSlot from "./source-slot.js";
-import type { SourceSlot as Slot } from "./source-slot.js";
+import * as Retention from "./retention.js";
 import { monotonicMillis } from "./elapsed.js";
 import { handoffEvidence, decideRenewal } from "./renewal-state.js";
 import { PolicyFailure, captureRequest } from "./request.js";
@@ -41,6 +41,8 @@ import type { Candidate } from "./routing.js";
 import type {
   ClipRecord,
   CleanupReport,
+  CleanupSummary,
+  ContinuousHandleShape,
   EngineError,
   EngineEvent,
   EngineShape,
@@ -117,6 +119,35 @@ export interface Options<R = never> {
   readonly onRenewal?: (event: Renewal) => Effect.Effect<void>;
 }
 
+/**
+ * Each open must supply a globally unique physical source ID; clip IDs must
+ * never be reassigned during this handle's lifetime. Continuous mode checks live
+ * collisions, but cannot detect historical reuse after eviction with bounded memory.
+ * Source/clip IDs are limited to 1024 UTF-16 code units; each source admits at most
+ * 4096 accepted IDs and 4096 distinct Started IDs. Sequence history still requires
+ * explicit acknowledgement/release and keeps its independent bounds.
+ */
+export interface ContinuousOptions<R = never> extends Options<R> {
+  /** Supply globally unique source IDs and never reassign clip IDs; historical reuse cannot be checked after eviction. */
+  readonly open: Options<R>["open"];
+  /** No cumulative successful-open cap when omitted; explicit values retain legacy semantics. */
+  readonly maxSessions?: number;
+  /** Newest complete cleanup details retained, 0..4096; defaults to 64. */
+  readonly retainedSuccessfulCleanups?: number;
+  /**
+   * Incomplete cleanup or unknown-submission records plus outstanding reservations,
+   * 2..4096; defaults to 16. Unknown outcomes can exhaust it despite confirmed termination.
+   */
+  readonly maxUnresolvedCleanups?: number;
+}
+
+interface Owner {
+  readonly namespace: string;
+  readonly incarnation: bigint;
+  readonly sessionId: string;
+}
+type Slot = SourceSlot.SourceSlot & { readonly owner: Owner };
+
 const engineOnly = (event: HandleEvent): Result.Result<EngineEvent, HandleEvent> =>
   event._tag === "Engine" ? Result.succeed(event.event) : Result.fail(event);
 const renewalsOnly = (event: HandleEvent): Result.Result<Renewal, HandleEvent> =>
@@ -137,6 +168,42 @@ const withSessionId = (state: EngineState, sessionId: string): EngineState => {
   });
 };
 
+/** A completed caller handle keeps only its Exit, not the routing or source closures. */
+const logicalSubmission = (id: string) => {
+  let execute: Effect.Effect<ClipId, EngineError> | undefined;
+  let inspect: Effect.Effect<Submission.State<ClipId, EngineError>> | undefined;
+  let outcome: Exit.Exit<ClipId, EngineError> | undefined;
+  return {
+    attach: (
+      submit: Effect.Effect<ClipId, EngineError>,
+      state: Effect.Effect<Submission.State<ClipId, EngineError>>,
+    ) => {
+      execute = submit;
+      inspect = state;
+    },
+    complete: (exit: Exit.Exit<ClipId, EngineError>) => {
+      outcome ??= exit;
+      execute = undefined;
+      inspect = undefined;
+    },
+    outcome: () => outcome,
+    submission: {
+      id,
+      submit: Effect.suspend(
+        () => outcome ?? execute ?? Effect.die(new Error("Logical submission has no execution")),
+      ),
+      state: Effect.suspend(() =>
+        outcome === undefined
+          ? (inspect ?? Effect.succeed<Submission.State<ClipId, EngineError>>({ _tag: "Prepared" }))
+          : Effect.succeed<Submission.State<ClipId, EngineError>>({
+              _tag: "Completed",
+              exit: outcome,
+            }),
+      ),
+    } satisfies Submission.Submission<ClipId, EngineError>,
+  };
+};
+
 type Replacement =
   | { readonly _tag: "Absent" }
   | { readonly _tag: "Opening"; readonly fiber: Fiber.Fiber<Slot, ReactorFailure> }
@@ -146,9 +213,7 @@ type Replacement =
  * Explicit application policy for renewal, sequence affinity and continuous
  * recovering media. A physical source still owns each connection generation.
  */
-export const make = <R>(
-  options: Options<R>,
-): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto | R> =>
+const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const context = yield* Effect.context<R>();
@@ -158,8 +223,7 @@ export const make = <R>(
       .pipe(Effect.mapError((cause) => errorOf(cause, "InvalidState")));
     const namespace = Array.from(random, (byte) => byte.toString(16).padStart(2, "0")).join("");
     const commands = yield* Semaphore.make(1);
-    const closeGate = yield* Semaphore.make(1);
-    const affinity = yield* Sequence.makeAffinity<string>().pipe(
+    const affinity = yield* Sequence.makeAffinity<Owner>().pipe(
       Effect.mapError((cause) => errorOf(cause, "InvalidInput")),
     );
     // One ordered stream: engine events, renewals and media transitions.
@@ -178,11 +242,17 @@ export const make = <R>(
     );
     const fatal = yield* Deferred.make<ReactorFailure>();
     let renewing = true;
-    const slots = new Map<string, Slot>();
+    const slots = new Map<Owner, Slot>();
+    const physicalOwners = new Map<string, Owner>();
+    const retention = continuous ? yield* Retention.make(options) : undefined;
+    let incarnation = 0n;
     const cleanups: SourceCleanup[] = [];
     const seenCleanups = new Set<SourceCleanup["lease"]>();
-    const maxSessions = options.maxSessions ?? 64;
-    if (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 4096) {
+    const maxSessions = options.maxSessions ?? (continuous ? Infinity : 64);
+    if (
+      (options.maxSessions !== undefined || !continuous) &&
+      (!Number.isSafeInteger(maxSessions) || maxSessions < 1 || maxSessions > 4096)
+    ) {
       return yield* ReactorError.fromCode("InvalidInput", "Invalid orchestration bounds");
     }
     const reconnectTimeout = Duration.toMillis(
@@ -206,12 +276,36 @@ export const make = <R>(
     );
     let current: Slot | undefined;
     let replacement: Replacement = { _tag: "Absent" };
-    let opened = 0;
+    let opened = 0n;
     let openFailures = 0;
     let retryAt = 0;
     let autoplay = true;
     let closing = false;
     let finalReport: CleanupReport | undefined;
+    let finalSummary: CleanupSummary | undefined;
+    let firstCleanup: SourceCleanup | undefined;
+    let initializing = true;
+    // Close reports each ownership attempt's failures once. They are recorded
+    // where the attempt and its retirement end: every waiter of a cached close
+    // sees its own Cause object, and cancellation by close is not a failure.
+    const attemptFailures = new Map<object, Cause.Reason<never>[]>();
+    const recordFailure = (attempt: object, reasons: readonly Cause.Reason<never>[]): void => {
+      const failed = reasons.filter((reason) => !Cause.isInterruptReason(reason));
+      if (failed.length > 0)
+        attemptFailures.set(attempt, [...(attemptFailures.get(attempt) ?? []), ...failed]);
+    };
+    // Every acquisition runs on a fiber this owner forks into its scope, never
+    // on a caller's fiber. Close interrupts and joins the registered ones before
+    // retiring owned slots, so no source opens after close and every attempt's
+    // cleanup is reported, without waiting on a fiber that may be waiting on it.
+    const acquisitions = new Set<Fiber.Fiber<unknown, unknown>>();
+    const admissionClosed = () =>
+      ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
+    // The owner stops renewing when close begins or its scope starts closing,
+    // whichever is first: that scope's finalizers can stop an attempt, or wait
+    // on an application, before close runs. Commands stay admitted until close
+    // begins, so an application finalizer can still issue its last commands.
+    const stopping = () => closing || scope.state._tag === "Closed";
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
@@ -266,7 +360,8 @@ export const make = <R>(
     // Every asynchronous activation uses this final fence. Closed/failed state
     // cannot be replaced by a reconnect or autoplay operation that finished late.
     const publishReady = (slot: Slot): boolean => {
-      if (closing || slot.closed || slot !== current || terminalFailure !== undefined) return false;
+      if (stopping() || slot.closed || slot !== current || terminalFailure !== undefined)
+        return false;
       setMedia({ _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation });
       return true;
     };
@@ -278,7 +373,7 @@ export const make = <R>(
     const openSequences = (slot: Slot) =>
       affinity.snapshots.pipe(
         Effect.map((entries) =>
-          entries.some((entry) => entry.owner === slot.source.id && entry.status === "open"),
+          entries.some((entry) => entry.owner === slot.owner && entry.status === "open"),
         ),
       );
     const expired = (slot: Slot) => slot.expired();
@@ -288,6 +383,7 @@ export const make = <R>(
     // replacement's loss before it fed the output is not the output's.
     let outputLoss: SourceSlot.Loss = SourceSlot.noLoss;
     let ownerBaseline: SourceSlot.Loss = SourceSlot.noLoss;
+    let outputOwner: Owner | undefined;
     const ownerLoss = (slot: Slot) =>
       Effect.result(slot.pressure.pipe(Effect.timeout(recoveryBudget(slot)))).pipe(
         Effect.map(SourceSlot.lossOf),
@@ -296,21 +392,30 @@ export const make = <R>(
       ownerLoss(slot).pipe(
         Effect.map((loss) => {
           ownerBaseline = loss;
+          outputOwner = slot.owner;
         }),
       );
-    const retireOwner = (slot: Slot) =>
-      ownerLoss(slot).pipe(
-        Effect.map((loss) => {
-          outputLoss = SourceSlot.addLoss(outputLoss, SourceSlot.subtractLoss(loss, ownerBaseline));
-          ownerBaseline = SourceSlot.noLoss;
-        }),
+    const retireOwner = (slot: Slot): Effect.Effect<void> =>
+      Effect.suspend(() =>
+        outputOwner !== slot.owner
+          ? Effect.void
+          : ownerLoss(slot).pipe(
+              Effect.map((loss) => {
+                outputLoss = SourceSlot.addLoss(
+                  outputLoss,
+                  SourceSlot.subtractLoss(loss, ownerBaseline),
+                );
+                ownerBaseline = SourceSlot.noLoss;
+                outputOwner = undefined;
+              }),
+            ),
       );
     const retired = (slot: Slot) => slot.retired(buffer.forwarded);
     const closeSlot = (slot: Slot) => slot.close;
 
     const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         const state = yield* slot.source.state;
         const lost = activeIds(state);
         const tail = yield* retired(slot);
@@ -331,7 +436,8 @@ export const make = <R>(
         });
         if (replacement._tag === "Ready" && replacement.slot === slot)
           replacement = { _tag: "Absent" };
-        if (slot !== current) return;
+        // Close retires what remains; a replacement it refuses is no failure.
+        if (slot !== current || stopping()) return;
         const pending = replacement;
         if (!renewing && pending._tag === "Absent") {
           yield* fail(cause);
@@ -340,10 +446,12 @@ export const make = <R>(
         const selected =
           pending._tag === "Ready"
             ? pending.slot
-            : yield* pending._tag === "Opening" ? Fiber.join(pending.fiber) : acquire;
+            : yield* pending._tag === "Opening"
+                ? Effect.uninterruptibleMask((restore) => joinAcquisition(pending.fiber, restore))
+                : acquire;
         replacement = { _tag: "Absent" };
-        if (closing || terminalFailure !== undefined) {
-          yield* selected.close;
+        if (stopping() || terminalFailure !== undefined) {
+          yield* closeSlot(selected);
           return;
         }
         current = selected;
@@ -357,16 +465,16 @@ export const make = <R>(
           { attributes: { "reactor.session.id": slot.source.id } },
           { captureStackTrace: false },
         ),
-        Effect.catch(fail),
+        Effect.catch((cause) => (stopping() ? Effect.void : fail(cause))),
       );
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (slot === current) setMedia({ _tag: "Recovering", sessionId: slot.source.id, cause });
         yield* announce({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
         yield* slot.joinCommitted(recoveryBudget(slot));
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (slot.needsReplacement()) {
           yield* replace(slot, cause);
           return;
@@ -386,7 +494,7 @@ export const make = <R>(
           return;
         }
         yield* slot.closeMedia;
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         const connected = yield* Effect.result(
           slot.source.reconnect.pipe(
             Effect.timeoutOrElse({
@@ -398,7 +506,7 @@ export const make = <R>(
             }),
           ),
         );
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (Result.isFailure(connected)) {
           yield* replace(slot, connected.failure);
           return;
@@ -423,7 +531,7 @@ export const make = <R>(
             return yield* startMedia(slot);
           }),
         );
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (Result.isFailure(restarted)) {
           yield* replace(slot, restarted.failure);
           return;
@@ -452,7 +560,7 @@ export const make = <R>(
       mode: "reconnect" | "replace",
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (!slot.beginRecovery(mode)) return;
         yield* recover(slot, cause).pipe(commands.withPermits(1), Effect.forkIn(scope));
       });
@@ -478,19 +586,37 @@ export const make = <R>(
               Effect.catch(fail),
             );
           }),
-        lost: (cause) => (closing ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
+        lost: (cause) => (stopping() ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
       });
 
-    const acquire: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
+    // Runs only on a fiber of its own, forked into the owner's scope.
+    const acquisition: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        const fiber = yield* Effect.fiber;
         if (opened >= maxSessions)
           return yield* ReactorError.fromCode(
             "Overflow",
             "Orchestration session and cleanup-history bound reached",
           );
+        if (stopping() || (continuous && (terminalFailure !== undefined || !renewing)))
+          return yield* admissionClosed();
+        // Registered in the same synchronous step as the stopping check, so
+        // either close sees this attempt or this attempt sees close.
+        acquisitions.add(fiber);
+        const reservation = retention === undefined ? undefined : yield* retention.reserve;
+        const attemptIncarnation = reservation?.incarnation ?? ++incarnation;
+        const recordAttempt = (cleanup: SourceCleanup): Effect.Effect<void> => {
+          if (initializing && firstCleanup === undefined) firstCleanup = cleanup;
+          return retention !== undefined && reservation !== undefined
+            ? retention.record(reservation, cleanup)
+            : Effect.sync(() => recordCleanup(cleanup));
+        };
         const owned = yield* Scope.make();
+        const attempt = {};
         let acquired: Slot | undefined;
         let acquiredSource: Source | undefined;
+        let acquisitionCleanup: SourceCleanup | undefined;
+        let acquisitionDefect: ReactorError | undefined;
         return yield* restore(
           Effect.gen(function* () {
             // Replace the captured Scope explicitly in one context operation.
@@ -506,6 +632,13 @@ export const make = <R>(
               }),
             );
             acquiredSource = value.source;
+            if (retention !== undefined && reservation !== undefined)
+              yield* retention.identify(reservation, value.source.id);
+            const owner: Owner = Object.freeze({
+              namespace,
+              incarnation: attemptIncarnation,
+              sessionId: value.source.id,
+            });
             const lifetime = yield* parsed(() =>
               duration(value.lifetime, "source lifetime", { allowInfinite: true }),
             );
@@ -517,24 +650,59 @@ export const make = <R>(
                 "renewal lead must be shorter than the source lifetime",
                 { operation: "renewal", outcome: "not-submitted" },
               );
-            if (slots.has(value.source.id))
+            if (physicalOwners.has(value.source.id))
               return yield* ReactorError.fromCode(
                 "InvalidInput",
                 "Orchestration sources must have distinct session identities",
               );
             const media = yield* value.source.media;
-            const slot = yield* SourceSlot.make({
+            const local = yield* SourceSlot.make({
               source: value.source,
               scope: owned,
               media,
               openedAt: monotonicMillis(clock),
               maxSeconds: Duration.toSeconds(lifetime),
               cleanupBudgetMs: reconnectTimeout,
-              recordCleanup,
-              retireSequences: affinity.retire(value.source.id).pipe(Effect.asVoid),
+              recordCleanup: recordAttempt,
+              boundedHistory: continuous,
+              retired: (facts, retirementExit) =>
+                Effect.gen(function* () {
+                  const bookkeeping = yield* Effect.exit(
+                    Effect.gen(function* () {
+                      if (acquisitionCleanup !== undefined)
+                        yield* recordAttempt(acquisitionCleanup);
+                      if (retention === undefined || reservation === undefined) return;
+                      const lossExit =
+                        acquired === undefined
+                          ? Exit.void
+                          : yield* Effect.exit(retireOwner(acquired));
+                      yield* retention.finish(reservation, {
+                        ...facts,
+                        errors: [
+                          ...facts.errors,
+                          ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
+                          ...(Exit.isFailure(lossExit)
+                            ? [errorOf(lossExit.cause, "InvalidState", "media loss accounting")]
+                            : []),
+                        ],
+                      });
+                      slots.delete(owner);
+                      if (physicalOwners.get(owner.sessionId) === owner)
+                        physicalOwners.delete(owner.sessionId);
+                      return yield* lossExit;
+                    }),
+                  );
+                  // The slot calls this once, however many callers wait on its close.
+                  const exit = Exit.asVoidAll([retirementExit, bookkeeping]);
+                  if (Exit.isFailure(exit)) recordFailure(attempt, exit.cause.reasons);
+                  return yield* bookkeeping;
+                }),
+              retireSequences: affinity.retire(owner).pipe(Effect.asVoid),
             });
+            const slot: Slot = Object.assign(local, { owner });
             acquired = slot;
-            slots.set(slot.source.id, slot);
+            slots.set(owner, slot);
+            physicalOwners.set(owner.sessionId, owner);
             opened++;
             yield* slot.source.setAutoplay(false);
             yield* slot.observe(
@@ -579,66 +747,168 @@ export const make = <R>(
             Exit.isSuccess(exit)
               ? Effect.void
               : Effect.gen(function* () {
+                  // Capture an acquisition failure even if the source also
+                  // returns cleanup. Conflicting reports belong to this attempt.
+                  // A typed failure is the attempt's result, and cancellation
+                  // is not a defect: only a Die is a failure close must report.
+                  const defects = exit.cause.reasons.filter(Cause.isDieReason);
+                  if (defects.length > 0) {
+                    recordFailure(attempt, defects);
+                    acquisitionDefect = errorOf(
+                      Cause.fromReasons(defects),
+                      "InvalidState",
+                      "source acquisition",
+                    );
+                  }
+                  const failure = Cause.findErrorOption(exit.cause);
+                  if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
+                    acquisitionCleanup = { lease: failure.value.cleanup, policy: [] };
                   if (acquired !== undefined) yield* closeSlot(acquired);
                   else {
-                    if (acquiredSource !== undefined) recordCleanup(yield* acquiredSource.close);
-                    yield* Scope.close(owned, exit);
-                    if (Exit.isFailure(exit)) {
-                      const failure = Cause.findErrorOption(exit.cause);
-                      if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
-                        recordCleanup({ lease: failure.value.cleanup, policy: [] });
+                    const sourceExit =
+                      acquiredSource === undefined
+                        ? Exit.void
+                        : yield* Effect.exit(
+                            acquiredSource.close.pipe(Effect.flatMap(recordAttempt)),
+                          );
+                    const scopeExit = yield* Effect.exit(Scope.close(owned, exit));
+                    if (acquisitionCleanup !== undefined) yield* recordAttempt(acquisitionCleanup);
+                    if (retention !== undefined && reservation !== undefined) {
+                      yield* retention.finish(reservation, {
+                        accounting: "not-applicable",
+                        unknownSubmissions: 0n,
+                        affinity: "not-applicable",
+                        scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
+                        errors: [
+                          ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
+                          ...[sourceExit, scopeExit].flatMap((result) =>
+                            Exit.isFailure(result)
+                              ? [errorOf(result.cause, "InvalidState", "acquisition retirement")]
+                              : [],
+                          ),
+                        ],
+                      });
                     }
+                    const retirementExit = Exit.asVoidAll([sourceExit, scopeExit]);
+                    if (Exit.isFailure(retirementExit))
+                      recordFailure(attempt, retirementExit.cause.reasons);
+                    yield* retirementExit;
                   }
                 }),
           ),
         );
       }),
     ).pipe(
+      // The attempt leaves the registry only after its own cleanup has run.
+      Effect.onExit(() =>
+        Effect.withFiber((fiber) => Effect.sync(() => void acquisitions.delete(fiber))),
+      ),
       Effect.tap((slot) => Effect.annotateCurrentSpan("reactor.session.id", slot.source.id)),
       Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
+    // A forked attempt is interruptible whatever its caller is, so close and
+    // the owner's scope can stop an open that an uninterruptible caller waits on.
+    // A prepared replacement opens on its own after the tick that forks it.
+    const forkAcquisition = Effect.forkIn(acquisition, scope);
+    // To its caller, an attempt that close, stopRenewal or the owner's scope
+    // stopped is refused, not failed. Interrupted while the owner still admits
+    // sources, as by its own open, the attempt failed. A caller interrupted
+    // while it waits stops the attempt too: the handler is in place before the
+    // wait is restored, so an interruption that arrives first still reaches it.
+    const joinAcquisition = (
+      fiber: Fiber.Fiber<Slot, ReactorFailure>,
+      restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<Slot, ReactorFailure> =>
+      restore(Fiber.await(fiber)).pipe(
+        Effect.onInterrupt(() => Fiber.interrupt(fiber)),
+        Effect.flatMap((exit): Effect.Effect<Slot, ReactorFailure> => {
+          if (Exit.isSuccess(exit)) return exit;
+          const failures = exit.cause.reasons.filter((reason) => !Cause.isInterruptReason(reason));
+          if (failures.length > 0) return Effect.failCause(Cause.fromReasons(failures));
+          return stopping()
+            ? admissionClosed()
+            : ReactorError.fromCode("InvalidState", "Source acquisition was interrupted");
+        }),
+      );
+    // The constructor and a replacement start their attempt at once, so an open
+    // that completes without waiting is published in the same turn.
+    const acquire = Effect.uninterruptibleMask((restore) =>
+      Effect.forkIn(acquisition, scope, { startImmediately: true }).pipe(
+        Effect.flatMap((fiber) => joinAcquisition(fiber, restore)),
+      ),
+    );
 
-    const close: Effect.Effect<CleanupReport> = closeGate.withPermit(
+    const close = yield* SourceSlot.once(
       Effect.uninterruptible(
         Effect.gen(function* () {
-          if (finalReport !== undefined) return finalReport;
           closing = true;
-          if (replacement._tag === "Opening") yield* Fiber.interrupt(replacement.fiber);
-          yield* Effect.forEach([...slots.values()], closeSlot, { discard: true });
+          // Every registered fiber is an attempt this owner forked, never a
+          // caller's. Interrupting joins each attempt's cleanup, which records
+          // its own defects; cancelling it is not a close failure, and an
+          // Opening fiber that has not started never runs. Close does not wait
+          // for an attempt it runs on, but one issued from inside `open` cannot
+          // finish: `open` runs on a race fiber that stopping its attempt awaits.
+          const pending = new Set(acquisitions);
+          if (replacement._tag === "Opening") pending.add(replacement.fiber);
+          yield* Effect.withFiber((self) => {
+            pending.delete(self);
+            return Fiber.interruptAll(pending);
+          });
+          for (const slot of [...slots.values()]) yield* Effect.exit(closeSlot(slot));
+          const exits = [...attemptFailures.values()].map((reasons) =>
+            Exit.failCause(Cause.fromReasons(reasons)),
+          );
           buffer.end();
           setMedia({ _tag: "Closed" });
           observations.end();
-          // The reader delivers what was announced before close, within a bound.
           if (renewalReader !== undefined)
             yield* Fiber.await(renewalReader).pipe(
               Effect.interruptible,
               Effect.timeout("1 second"),
               Effect.ignore,
             );
-          finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
-          return finalReport;
+          if (retention === undefined)
+            finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
+          else finalSummary = yield* retention.conclude;
+          // The closed owner stays current, so final loss totals remain readable.
+          replacement = { _tag: "Absent" };
+          return yield* Exit.asVoidAll(exits);
         }),
       ),
     );
     yield* Effect.addFinalizer(() => close);
     current = yield* acquire.pipe(
       Effect.tap((slot) => slot.source.setAutoplay(true)),
+      // Fenced as publishReady is: construction returns no handle whose owner
+      // stopped while its first source was activated, and close retires it.
+      Effect.tap(() =>
+        Effect.gen(function* () {
+          if (stopping()) return yield* admissionClosed();
+        }),
+      ),
       Effect.catch((cause) =>
-        close.pipe(
-          Effect.flatMap((report) => {
+        Effect.exit(close).pipe(
+          Effect.flatMap((closed) => {
             // An AcquisitionFailure from `open` already carries the lease it
             // recorded, by reference; any later failure takes the recorded lease.
-            const lease = report.sessions[0]?.lease;
-            return Effect.fail(
+            const lease = firstCleanup?.lease;
+            const failure =
               AcquisitionFailure.is(cause) || (lease === undefined && ReactorError.is(cause))
                 ? cause
-                : AcquisitionFailure.from(cause, lease ?? noAcquisition),
-            );
+                : AcquisitionFailure.from(cause, lease ?? noAcquisition);
+            // A defect of the close that retired the attempt stays beside the
+            // typed failure, which the caller still handles.
+            return Exit.isSuccess(closed)
+              ? Effect.fail(failure)
+              : Effect.failCause(Cause.combine(Cause.fail(failure), closed.cause));
           }),
         ),
       ),
     );
+    initializing = false;
+    firstCleanup = undefined;
     // The first owner's loss from its start is the output's: no baseline.
+    outputOwner = current.owner;
     setMedia({
       _tag: "Ready",
       sessionId: current.source.id,
@@ -664,8 +934,8 @@ export const make = <R>(
       Effect.gen(function* () {
         const values = yield* Effect.suspend(() =>
           Effect.forEach([...slots.values()], (slot) =>
-            Effect.map(slot.source.state, (state): Candidate<string> => ({
-              owner: slot.source.id,
+            Effect.map(slot.source.state, (state): Candidate<Owner> => ({
+              owner: slot.owner,
               state,
               accepted: slot.accepted,
               closed: slot.closed,
@@ -682,34 +952,56 @@ export const make = <R>(
             : current;
         if (preferred === undefined)
           return yield* PolicyFailure.refuse("SessionRecovering", "No source is ready");
-        return yield* resolve(request, values, preferred.source.id, binding);
+        return yield* resolve(request, values, preferred.owner, binding);
       });
     const sequenceError = (error: Sequence.SequenceError) =>
       PolicyFailure.sequence(error.sequenceId, error.code);
 
     const prepare = (input: Parameters<EngineShape["prepare"]>[0], expectedSessionId?: string) =>
       Effect.gen(function* () {
+        const expectedOwner =
+          expectedSessionId === undefined ? undefined : physicalOwners.get(expectedSessionId);
         const request = yield* captureRequest(input);
         const id = `${namespace}:${++submissionSequence}`;
         const gate = yield* Semaphore.make(1);
+        const logical = logicalSubmission(id);
+        let selectedOwner: Owner | undefined;
         let active: Submission.Submission<ClipId, EngineError> | undefined;
         let activeOwner: Slot | undefined;
         const submit = gate.withPermit(
           Effect.gen(function* () {
+            const completed = logical.outcome();
+            if (completed !== undefined) return yield* completed;
             if (active === undefined) {
               // A committed submission remains a readable outcome after the handle
               // closes. Only selecting or committing fresh work needs a live owner.
               yield* guard("enqueue", Effect.void);
               const decision = yield* route(request).pipe(commands.withPermits(1));
-              if (expectedSessionId !== undefined && decision.owner !== expectedSessionId)
+              if (expectedSessionId !== undefined && decision.owner !== expectedOwner)
                 return yield* PolicyFailure.refuse(
                   "RouteChanged",
                   "The selected source changed before dispatch",
                 );
+              if (continuous && selectedOwner !== undefined && selectedOwner !== decision.owner) {
+                // The selection stays fenced to its incarnation. While that
+                // source is live, only the route moved; it has not retired.
+                const selected = slots.get(selectedOwner);
+                return yield* selected !== undefined && !selected.closed
+                  ? PolicyFailure.refuse(
+                      "RouteChanged",
+                      "The selected source changed before dispatch",
+                    )
+                  : PolicyFailure.refuse(
+                      "SessionRetired",
+                      "Selected source incarnation was retired",
+                    );
+              }
+              selectedOwner = decision.owner;
               const target = slots.get(decision.owner);
               if (target === undefined)
                 return yield* PolicyFailure.refuse("SessionRetired", "Selected source was retired");
               const sequence = request.sequence;
+              let resultAccounted = false;
               active = yield* target.source.prepareRouted(
                 { request, position: decision.position },
                 {
@@ -736,37 +1028,55 @@ export const make = <R>(
                             active,
                             Effect.gen(function* () {
                               if (sequence !== undefined) {
-                                yield* affinity.bind(sequence.id, target.source.id);
+                                yield* affinity.bind(sequence.id, target.owner);
                                 yield* affinity.begin(
                                   sequence.id,
                                   sequence.memberId ?? submissionId,
                                 );
                               }
                             }).pipe(Effect.mapError(sequenceError)),
+                            (exit) => {
+                              logical.complete(exit);
+                              active = undefined;
+                              activeOwner = undefined;
+                            },
                           );
                         }),
                       ),
                     ),
                   result: (submissionId, result) =>
                     Effect.gen(function* () {
-                      target.recordResult(result);
+                      if (resultAccounted) return;
+                      resultAccounted = true;
+                      // An accepted identity past the continuous bound is a
+                      // source-contract failure, as for Started: it is never
+                      // retained, its member cannot be attributed and the source
+                      // is replaced.
+                      const recorded = yield* Effect.result(target.recordResult(result));
                       if (sequence !== undefined) {
                         const memberId = sequence.memberId ?? submissionId;
-                        const account = Result.isSuccess(result)
-                          ? affinity.accepted(sequence.id, memberId, result.success, sequence.final)
-                          : result.failure.context.outcome === "unknown"
-                            ? affinity.uncertain(sequence.id, memberId, result.failure.message)
-                            : affinity.rejected(
+                        const account = Result.isFailure(recorded)
+                          ? affinity.uncertain(sequence.id, memberId, recorded.failure.message)
+                          : Result.isSuccess(result)
+                            ? affinity.accepted(
                                 sequence.id,
                                 memberId,
-                                result.failure.message,
+                                result.success,
                                 sequence.final,
-                              );
+                              )
+                            : result.failure.context.outcome === "unknown"
+                              ? affinity.uncertain(sequence.id, memberId, result.failure.message)
+                              : affinity.rejected(
+                                  sequence.id,
+                                  memberId,
+                                  result.failure.message,
+                                  sequence.final,
+                                );
                         yield* account.pipe(
                           Effect.catch((cause) =>
                             Effect.gen(function* () {
                               target.markIndeterminate();
-                              yield* affinity.retire(target.source.id);
+                              yield* affinity.retire(target.owner);
                               yield* fail(
                                 ReactorError.fromCode(
                                   "InvalidState",
@@ -779,7 +1089,9 @@ export const make = <R>(
                         );
                       }
                       target.finishAccounting();
-                      if (
+                      if (Result.isFailure(recorded))
+                        yield* scheduleRecovery(target, recorded.failure, "replace");
+                      else if (
                         Result.isFailure(result) &&
                         result.failure.context.outcome === "unknown"
                       ) {
@@ -796,7 +1108,12 @@ export const make = <R>(
                 selected.state.pipe(
                   Effect.flatMap((state) =>
                     Effect.sync(() => {
-                      if (state._tag === "Completed") activeOwner?.forgetCompleted(selected);
+                      if (state._tag === "Completed") {
+                        logical.complete(state.exit);
+                        activeOwner?.forgetCompleted(selected);
+                        active = undefined;
+                        activeOwner = undefined;
+                      }
                       if (state._tag === "Prepared" && active === selected) {
                         active = undefined;
                         activeOwner = undefined;
@@ -808,15 +1125,15 @@ export const make = <R>(
             );
           }),
         );
-        return {
-          id,
+        logical.attach(
           submit,
-          state: Effect.suspend(() =>
+          Effect.suspend(() =>
             active === undefined
               ? Effect.succeed<Submission.State<ClipId, EngineError>>({ _tag: "Prepared" })
               : active.state,
           ),
-        };
+        );
+        return logical.submission;
       });
 
     const state: Effect.Effect<EngineState> = Effect.gen(function* () {
@@ -930,10 +1247,12 @@ export const make = <R>(
           Effect.gen(function* () {
             if (replacement._tag !== "Opening") return;
             const pending = replacement.fiber;
-            replacement = { _tag: "Absent" };
+            // It stays Opening until joined, so a concurrent close joins it too.
             yield* Fiber.interrupt(pending);
             const result = yield* Fiber.await(pending);
-            if (Exit.isSuccess(result)) yield* result.value.close;
+            if (replacement._tag === "Opening" && replacement.fiber === pending)
+              replacement = { _tag: "Absent" };
+            if (Exit.isSuccess(result)) yield* closeSlot(result.value);
           }),
         );
       }),
@@ -1024,7 +1343,7 @@ export const make = <R>(
       .withPermit(
         Effect.gen(function* () {
           if (
-            closing ||
+            stopping() ||
             current === undefined ||
             current.closed ||
             current.recovering ||
@@ -1035,12 +1354,24 @@ export const make = <R>(
             const result = replacement.fiber.pollUnsafe();
             if (result !== undefined) {
               replacement = { _tag: "Absent" };
+              // Close or the owner's scope stopped this attempt, and close
+              // retires whatever it opened: that is no failed setup.
+              if (stopping()) return;
               if (Exit.isSuccess(result)) {
                 replacement = { _tag: "Ready", slot: result.value };
                 openFailures = 0;
                 yield* log("Prepared the next session for renewal");
                 yield* announce({ _tag: "Prepared" });
               } else {
+                if (continuous) {
+                  const error = Cause.findErrorOption(result.cause);
+                  if (
+                    Option.isSome(error) &&
+                    ReactorError.is(error.value) &&
+                    error.value.reason._tag === "Overflow"
+                  )
+                    return yield* fail(error.value);
+                }
                 openFailures++;
                 retryAt = monotonicMillis(clock) + 5000;
                 yield* announce({
@@ -1059,7 +1390,7 @@ export const make = <R>(
             }
           }
           const decision = decideRenewal({
-            running: !closing && terminalFailure === undefined,
+            running: !stopping() && terminalFailure === undefined,
             now: monotonicMillis(clock),
             current,
             replacement: replacement._tag === "Ready" ? replacement.slot.phase : replacement._tag,
@@ -1078,8 +1409,7 @@ export const make = <R>(
               );
               return;
             case "Prepare":
-              if (renewing)
-                replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
+              if (renewing) replacement = { _tag: "Opening", fiber: yield* forkAcquisition };
               return;
             case "InspectHandoff":
               break;
@@ -1147,10 +1477,15 @@ export const make = <R>(
       return owner.pressure.pipe(
         Effect.flatMap((source) => {
           const queued = buffer.pressure();
-          const loss = SourceSlot.addLoss(
-            outputLoss,
-            SourceSlot.subtractLoss(SourceSlot.lossOf(Result.succeed(source)), ownerBaseline),
-          );
+          // A retired owner's loss is already in the output's totals, as the
+          // closed continuous owner's is once its retirement completes.
+          const loss =
+            outputOwner === owner.owner
+              ? SourceSlot.addLoss(
+                  outputLoss,
+                  SourceSlot.subtractLoss(SourceSlot.lossOf(Result.succeed(source)), ownerBaseline),
+                )
+              : outputLoss;
           if (loss.video === null || loss.audio === null || loss.readers === null)
             return Effect.fail(
               ReactorError.fromCode(
@@ -1171,7 +1506,7 @@ export const make = <R>(
         }),
       );
     });
-    return {
+    const facets = {
       engine,
       media: {
         video: buffer.video,
@@ -1188,19 +1523,75 @@ export const make = <R>(
       sessionId: Effect.sync(() =>
         current === undefined || current.closed ? Option.none() : Option.some(current.source.id),
       ),
-      close,
-      cleanup: Effect.sync(() =>
-        finalReport === undefined ? Option.none() : Option.some(finalReport),
-      ),
       sequences: {
-        get: affinity.get,
-        snapshots: affinity.snapshots,
+        get: (id: string) =>
+          affinity
+            .get(id)
+            .pipe(
+              Effect.map((entry) =>
+                entry === undefined
+                  ? undefined
+                  : Object.freeze({ ...entry, owner: entry.owner.sessionId }),
+              ),
+            ),
+        snapshots: affinity.snapshots.pipe(
+          Effect.map((entries) =>
+            Object.freeze(
+              entries.map((entry) => Object.freeze({ ...entry, owner: entry.owner.sessionId })),
+            ),
+          ),
+        ),
         seal: affinity.seal,
         acknowledgeIndeterminate: affinity.acknowledgeIndeterminate,
         release: affinity.release,
       },
-    } satisfies HandleShape;
+    } satisfies Omit<HandleShape, "close" | "cleanup">;
+    return {
+      legacy: {
+        ...facets,
+        close: close.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (finalReport === undefined) throw new Error("Missing legacy cleanup report");
+              return finalReport;
+            }),
+          ),
+        ),
+        cleanup: Effect.sync(() => Option.fromUndefinedOr(finalReport)),
+      } satisfies HandleShape,
+      continuous: {
+        ...facets,
+        close: close.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (finalSummary === undefined) throw new Error("Missing continuous cleanup summary");
+              return finalSummary;
+            }),
+          ),
+        ),
+        cleanup: Effect.sync(() => Option.fromUndefinedOr(finalSummary)),
+      } satisfies ContinuousHandleShape,
+    };
   });
+
+/** Legacy renewal retains complete cleanup history and defaults to 64 successful opens. */
+export const make = <R>(
+  options: Options<R>,
+): Effect.Effect<HandleShape, ReactorError | AcquisitionFailure, Scope.Scope | Crypto.Crypto | R> =>
+  makeOwner(options, false).pipe(Effect.map((owner) => owner.legacy));
+
+/**
+ * Bounded continuous renewal. Adapters must meet ContinuousOptions' unique-ID
+ * precondition. Retired anchors no longer retained can refuse as missing rather
+ * than SessionRetired; captured operations remain fenced to their exact incarnation.
+ */
+export const makeContinuous = <R>(
+  options: ContinuousOptions<R>,
+): Effect.Effect<
+  ContinuousHandleShape,
+  ReactorError | AcquisitionFailure,
+  Scope.Scope | Crypto.Crypto | R
+> => makeOwner(options, true).pipe(Effect.map((owner) => owner.continuous));
 
 /**
  * The handle's `Engine`, `Media` and `Handle` services from one orchestration,

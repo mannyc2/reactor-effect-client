@@ -558,6 +558,14 @@ test("the output's loss totals carry a lost owner's losses into its replacement"
       });
       yield* sources[1]!.setPressure({ droppedVideo: 2n });
       expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 6n, droppedAudio: 1n });
+      // Close keeps its last owner, so the final totals stay readable.
+      yield* handle.close;
+      expect(yield* handle.media.pressure).toMatchObject({
+        closed: true,
+        droppedVideo: 6n,
+        droppedAudio: 1n,
+        readerOverflows: 1n,
+      });
     }),
   ));
 
@@ -676,7 +684,9 @@ test("source evidence preserves duplicate boundaries and uses monotonic grace af
           openedAt: 0,
           maxSeconds: 60,
           cleanupBudgetMs: 1000,
-          recordCleanup: () => {},
+          recordCleanup: () => Effect.void,
+          retired: () => Effect.void,
+          boundedHistory: false,
           retireSequences: Effect.void,
         });
         let events = 0;

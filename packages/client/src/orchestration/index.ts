@@ -18,6 +18,7 @@ export {
   PolicyCleanup,
   SourceCleanup,
   CleanupReport,
+  CleanupSummary,
 } from "./types.js";
 export type {
   ClipRecord,
@@ -30,6 +31,7 @@ export type {
   MediaSource,
   Source,
   HandleShape,
+  ContinuousHandleShape,
   HandleEvent,
   HandleObservation,
   EngineObservation,
@@ -42,8 +44,8 @@ export type {
 export { emptyState, isIdle, isLive, committedMs, securedMs, pendingCount } from "./queries.js";
 export { fromH3Session, isLocalClip } from "./h3-source.js";
 export type { H3Source, SessionSourceOptions } from "./h3-source.js";
-export { layer, make } from "./renewal.js";
-export type { Options, Opened, Renewal, MediaTail } from "./renewal.js";
+export { layer, make, makeContinuous } from "./renewal.js";
+export type { Options, ContinuousOptions, Opened, Renewal, MediaTail } from "./renewal.js";
 export { Allocation, openH3, resumeH3 } from "./open-h3.js";
 export {
   Scheduler,
