@@ -64,6 +64,23 @@ export const dueCues = (
     .sort((a, b) => a.atMs - b.atMs)
     .map(({ index }) => index);
 
+/**
+ * The requested length for the next filler clip. Before an anchor, equal clips that tile the
+ * uncovered gap within the provider's lengths, so filler ends on the anchor; otherwise the
+ * shortest clip, which keeps boundaries, and so reactions, frequent. `ratio` is a built
+ * clip's actual over requested length.
+ */
+export const fillLength = (
+  uncoveredSeconds: number,
+  lengths: { readonly min: number; readonly max: number },
+  ratio: number,
+): number => {
+  const clamp = (requested: number) => Math.min(lengths.max, Math.max(lengths.min, requested));
+  if (!(uncoveredSeconds > 0)) return lengths.min;
+  const pieces = Math.max(1, Math.ceil(uncoveredSeconds / (lengths.max * ratio)));
+  return clamp(uncoveredSeconds / pieces / ratio);
+};
+
 /** A held clip that would be next within this many seconds is removed and rebuilt. */
 const exposureMarginSeconds = 1.5;
 
@@ -156,6 +173,8 @@ export interface PolicySnapshot {
   readonly fillerSeconds: number | undefined;
   /** Lanes whose Ready items cut a playing clip that ranks below them. */
   readonly cutLanes: ReadonlySet<string>;
+  /** The requested clip lengths filler may take, in seconds. */
+  readonly fillLengths: { readonly min: number; readonly max: number };
   /** A playing clip whose cut was refused is not cut again. */
   readonly blockedCut: ClipId | undefined;
 }
@@ -167,7 +186,12 @@ export type PolicyAction =
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
   | { readonly _tag: "Build"; readonly key: ItemKey }
   | { readonly _tag: "Cut"; readonly clipId: ClipId }
-  | { readonly _tag: "BuildFiller"; readonly targetSeconds: number }
+  | {
+      readonly _tag: "BuildFiller";
+      readonly targetSeconds: number;
+      /** The requested length suggested for this filler clip. */
+      readonly durationSeconds: number;
+    }
   | { readonly _tag: "Order"; readonly clipId: ClipId; readonly position: number };
 
 export interface PolicyWithdrawal {
@@ -737,7 +761,15 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   )
     return {
       ...base,
-      action: { _tag: "BuildFiller", targetSeconds: fillTarget - runway },
+      action: {
+        _tag: "BuildFiller",
+        targetSeconds: fillTarget - runway,
+        durationSeconds: fillLength(
+          anchorGapSeconds - runway,
+          snapshot.fillLengths,
+          snapshot.estimates.length,
+        ),
+      },
     };
   return base;
 };

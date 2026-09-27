@@ -18,6 +18,7 @@ import { duration } from "../duration.js";
 import { parsedInput, ReactorError } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
 import { monotonicMillis } from "./elapsed.js";
+import { requestSeconds as h3RequestSeconds } from "../h3/profile.js";
 import { captureRequest, PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
 import { activeIds } from "./routing.js";
@@ -119,6 +120,13 @@ export interface FillContext {
   readonly runwaySeconds: number;
   /** For an `At` anchor, the uncovered gap that filler should approach. */
   readonly targetSeconds?: number;
+  /**
+   * A requested length for this clip, within `filler.lengths`: before an `At` anchor, one of
+   * equal clips that tile the uncovered gap, following the measured actual over requested
+   * length, so filler ends on the anchor; otherwise the shortest, which keeps boundaries,
+   * and so reactions, frequent. Using it is the application's choice.
+   */
+  readonly durationSeconds: number;
 }
 
 export interface SchedulerOptions {
@@ -128,6 +136,11 @@ export interface SchedulerOptions {
     readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
     /** Pure callback; each admitted index is requested once. */
     readonly clip: (context: FillContext) => ClipRequest;
+    /**
+     * The requested lengths filler may take, for `FillContext.durationSeconds`. Defaults to
+     * H3's request range, 5 to 15.084 seconds.
+     */
+    readonly lengths?: { readonly min: Duration.Input; readonly max: Duration.Input };
   };
   /** Provider build admissions in flight on the preferred source, independent of runway. Defaults to one. */
   readonly maxBuildsInFlight?: number;
@@ -1039,39 +1052,66 @@ export const makeScheduler = (
     const cutLanes: ReadonlySet<string> = new Set(
       options.lanes.filter((lane) => lane.cut === true).map((lane) => lane.name),
     );
-    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
-      yield* parsedInput(() => {
-        const floorSeconds =
-          Duration.toMillis(
-            duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
-          ) / 1000;
-        const targetSeconds =
-          Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
-        const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
-        const maxHistory = options.maxHistory ?? 4096;
-        const unknownRecoveryMs = Duration.toMillis(
-          duration(
-            optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
-              "60 seconds",
-            "unknown recovery timeout",
-            { maximum: "10 minutes" },
-          ),
-        );
-        if (
-          floorSeconds > targetSeconds ||
-          !Number.isSafeInteger(maxBuildsInFlight) ||
-          maxBuildsInFlight < 1 ||
-          maxBuildsInFlight > 1024 ||
-          !Number.isSafeInteger(maxHistory) ||
-          maxHistory < 0 ||
-          maxHistory > 65_536
-        )
-          throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
-        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs };
-      }, "makeScheduler");
+    const {
+      floorSeconds,
+      targetSeconds,
+      maxBuildsInFlight,
+      maxHistory,
+      unknownRecoveryMs,
+      fillLengths,
+    } = yield* parsedInput(() => {
+      const floorSeconds =
+        Duration.toMillis(
+          duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
+        ) / 1000;
+      const targetSeconds =
+        Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
+      const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
+      const maxHistory = options.maxHistory ?? 4096;
+      const unknownRecoveryMs = Duration.toMillis(
+        duration(
+          optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
+            "60 seconds",
+          "unknown recovery timeout",
+          { maximum: "10 minutes" },
+        ),
+      );
+      if (
+        floorSeconds > targetSeconds ||
+        !Number.isSafeInteger(maxBuildsInFlight) ||
+        maxBuildsInFlight < 1 ||
+        maxBuildsInFlight > 1024 ||
+        !Number.isSafeInteger(maxHistory) ||
+        maxHistory < 0 ||
+        maxHistory > 65_536
+      )
+        throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
+      const lengths = options.filler.lengths;
+      const fillLengths = {
+        min:
+          lengths === undefined
+            ? h3RequestSeconds.min
+            : Duration.toMillis(duration(lengths.min, "filler minimum length")) / 1000,
+        max:
+          lengths === undefined
+            ? h3RequestSeconds.max
+            : Duration.toMillis(duration(lengths.max, "filler maximum length")) / 1000,
+      };
+      if (fillLengths.min > fillLengths.max)
+        throw ReactorError.fromCode("InvalidInput", "Filler lengths are inconsistent");
+      return {
+        floorSeconds,
+        targetSeconds,
+        maxBuildsInFlight,
+        maxHistory,
+        unknownRecoveryMs,
+        fillLengths,
+      };
+    }, "makeScheduler");
     const captureFiller = (
       index: number,
       runway: number,
+      durationSeconds: number,
       targetSeconds?: number,
     ): Effect.Effect<ClipRequest, PolicyFailure> =>
       Effect.gen(function* () {
@@ -1079,6 +1119,7 @@ export const makeScheduler = (
           options.filler.clip({
             index,
             runwaySeconds: runway,
+            durationSeconds,
             ...(targetSeconds === undefined ? {} : { targetSeconds }),
           }),
         );
@@ -1099,7 +1140,7 @@ export const makeScheduler = (
     let fillerRetryAtMs = 0;
     const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
     const maxUnknownFillers = 4096;
-    let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
+    let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0, fillLengths.min);
     const actorScope = yield* Effect.scope;
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
@@ -2125,6 +2166,7 @@ export const makeScheduler = (
                       runwaySeconds(state, monotonicMillis(clock), playingStartedMs, owned, [
                         ...items.values(),
                       ]),
+                      action.durationSeconds,
                       action.targetSeconds,
                     ),
                   )
@@ -2498,6 +2540,7 @@ export const makeScheduler = (
           estimates: estimatesFrom(buildSamples, lengthSamples),
           ...fillerView(),
           cutLanes,
+          fillLengths,
           blockedCut,
         });
       let decision = decide();
