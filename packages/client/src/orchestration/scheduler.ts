@@ -1814,7 +1814,6 @@ export const makeScheduler = (
         yield* publishState(state, sources.sessions);
         return;
       }
-      updateRecovery(state);
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
           uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
@@ -1845,6 +1844,9 @@ export const makeScheduler = (
           !sources.has(item.unknownSessionId)
         )
           yield* resolveRetiredUnknown(item);
+      // After retirement, so a deadline no longer outlives the uncertainty that
+      // set it until the next message.
+      updateRecovery(state);
       if (draining) yield* drainPending(state);
       const preferred = Option.getOrUndefined(state.preferredSessionId);
       let unknownFillerCount = 0;
