@@ -196,6 +196,31 @@ export interface InsertSpec {
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
 
+/** One edit in a batch applied together. */
+export type Edit =
+  | { readonly _tag: "Submit"; readonly item: ItemSpec }
+  | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec }
+  | { readonly _tag: "Insert"; readonly insert: InsertSpec }
+  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: ReplacementSpec }
+  | { readonly _tag: "Withdraw"; readonly key: ItemKey };
+
+/** What one edit of a batch did: the handle of what it added, or its withdrawal's outcome. */
+export type EditResult =
+  | { readonly _tag: "Added"; readonly handle: ItemHandle }
+  | { readonly _tag: "AddedGroup"; readonly handle: GroupHandle }
+  | { readonly _tag: "Withdrawal"; readonly outcome: Effect.Effect<WithdrawOutcome, EngineError> };
+
+export interface EditHandle {
+  /** One result per edit, in the order given. */
+  readonly results: ReadonlyArray<EditResult>;
+  /**
+   * Resolves when the batch takes effect together: every clip it adds is Ready or has
+   * settled, and its withdrawals and replacements are requested at once. Fails with the
+   * scheduler's closing refusal if it closes first.
+   */
+  readonly committed: Effect.Effect<void, EngineError>;
+}
+
 export interface DrainOptions {
   /** Finish only current playback, or every item already accepted. Defaults to playing. */
   readonly finish?: "playing" | "accepted";
@@ -319,6 +344,14 @@ type EarlyClipEvent = Extract<EngineEvent, { readonly _tag: "Started" | "Ended" 
 
 const maxEarlyClipIds = 4096;
 
+interface Batch {
+  readonly id: number;
+  readonly waitFor: ReadonlyArray<ItemKey>;
+  /** Items the batch withdraws, each with the reply its withdrawal settles. */
+  readonly targets: Map<ItemKey, Deferred.Deferred<WithdrawOutcome, EngineError>>;
+  readonly committed: Deferred.Deferred<void, EngineError>;
+}
+
 interface PendingWithdrawal {
   readonly reason: DropReason;
   readonly replies: Deferred.Deferred<WithdrawOutcome, EngineError>[];
@@ -326,25 +359,11 @@ interface PendingWithdrawal {
 
 type Message =
   | {
-      readonly _tag: "Submit";
-      readonly item: CapturedItem;
-      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
-    }
-  | {
-      readonly _tag: "SubmitGroup";
-      readonly group: CapturedGroup;
-      readonly reply: Deferred.Deferred<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
-    }
-  | {
-      readonly _tag: "Replace";
-      readonly key: ItemKey;
-      readonly next: CapturedReplacement;
-      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | EngineError>;
-    }
-  | {
-      readonly _tag: "Insert";
-      readonly insert: CapturedInsert;
-      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+      readonly _tag: "Edit";
+      readonly edits: ReadonlyArray<CapturedEdit>;
+      /** A batch holds what it adds until it commits; a single call does not. */
+      readonly batched: boolean;
+      readonly reply: Deferred.Deferred<EditHandle, KeyMismatch | WouldMissDeadline | EngineError>;
     }
   | {
       readonly _tag: "Withdraw";
@@ -698,6 +717,79 @@ const captureInsert = (input: InsertSpec) =>
     };
   });
 
+type CapturedEdit =
+  | { readonly _tag: "Submit"; readonly item: CapturedItem }
+  | { readonly _tag: "SubmitGroup"; readonly group: CapturedGroup }
+  | { readonly _tag: "Insert"; readonly insert: CapturedInsert }
+  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: CapturedReplacement }
+  | { readonly _tag: "Withdraw"; readonly key: ItemKey };
+
+/** A bound on one batch's work, generous for a spoken plan of several lines. */
+const maxEdits = 256;
+
+const editKey = (input: unknown, name: string) =>
+  Schema.decodeUnknownEffect(ItemKey)(input).pipe(
+    Effect.mapError(() => invalid(`${name} must be a nonempty key`)),
+  );
+
+const captureEdits = (input: ReadonlyArray<Edit>, lanes: ReadonlySet<string>) =>
+  Effect.gen(function* (): Effect.fn.Return<ReadonlyArray<CapturedEdit>, PolicyFailure> {
+    if (!Array.isArray(input)) return yield* invalid("Edits must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(input as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length < 1 || length > maxEdits)
+      return yield* invalid(`An edit batch needs 1 to ${maxEdits} edits`);
+    const edits: CapturedEdit[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Edits must be data");
+      const raw: unknown = descriptor.value;
+      const tag: unknown =
+        raw !== null && typeof raw === "object"
+          ? Object.getOwnPropertyDescriptor(raw, "_tag")?.value
+          : undefined;
+      switch (tag) {
+        case "Submit": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "item"], "Edit"));
+          edits.push({ _tag: "Submit", item: yield* captureItem(edit.item as ItemSpec, lanes) });
+          break;
+        }
+        case "SubmitGroup": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "group"], "Edit"));
+          edits.push({
+            _tag: "SubmitGroup",
+            group: yield* captureGroup(edit.group as GroupSpec, lanes),
+          });
+          break;
+        }
+        case "Insert": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "insert"], "Edit"));
+          edits.push({ _tag: "Insert", insert: yield* captureInsert(edit.insert as InsertSpec) });
+          break;
+        }
+        case "Replace": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "key", "next"], "Edit"));
+          edits.push({
+            _tag: "Replace",
+            key: yield* editKey(edit.key, "A replaced key"),
+            next: yield* captureReplacement(edit.next as ReplacementSpec),
+          });
+          break;
+        }
+        case "Withdraw": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "key"], "Edit"));
+          edits.push({ _tag: "Withdraw", key: yield* editKey(edit.key, "A withdrawn key") });
+          break;
+        }
+        default:
+          return yield* invalid("An edit's _tag is not one the scheduler knows");
+      }
+    }
+    return edits;
+  });
+
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
@@ -721,6 +813,17 @@ export interface SchedulerShape {
   readonly insert: (
     spec: InsertSpec,
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  /**
+   * Applies several edits as one change, make-before-break: every edit is checked before any
+   * takes effect, and a refused edit fails the whole batch. What the batch withdraws or
+   * replaces keeps its place, and may still air, until every clip the batch adds is Ready or
+   * has settled; the withdrawals and replacements then happen together, and the added clips
+   * take their places. A withdrawn item that nothing was built for yet goes at once. Clips the
+   * batch adds wait behind everything else on air until then. Each key may appear once.
+   */
+  readonly edit: (
+    edits: ReadonlyArray<Edit>,
+  ) => Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError>;
   /**
    * A group key withdraws every unstarted part; a part key, that part and every part after it.
    * An inserted part withdraws only itself.
@@ -875,6 +978,9 @@ export const makeScheduler = (
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
+    /** Edit batches that have not taken effect yet. */
+    const batches = new Map<number, Batch>();
+    let batchCount = 0;
     const pendingBuilds = new Set<ItemKey>();
     // A Build whose enqueue has started and whose result the worker has not
     // yet seen. The provider may still accept it after the scheduler ends.
@@ -995,6 +1101,11 @@ export const makeScheduler = (
             for (const waiter of pending.replies) yield* Deferred.done(waiter, reply);
           }
           pendingWithdrawals.clear();
+          for (const batch of batches.values()) {
+            for (const reply of batch.targets.values()) yield* Deferred.done(reply, closed);
+            yield* Deferred.done(batch.committed, closed);
+          }
+          batches.clear();
           for (const reply of drainReplies.splice(0)) yield* Deferred.done(reply, closed);
           yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
           yield* Deferred.done(
@@ -1974,6 +2085,40 @@ export const makeScheduler = (
         }
       });
 
+    const pendingBatches = () =>
+      [...batches.values()].map((batch) => ({
+        id: batch.id,
+        waitFor: batch.waitFor,
+        targets: [...batch.targets.keys()],
+      }));
+
+    /** The reply a batch keeps for its withdrawal of `key`, taken once. */
+    const takeBatchReply = (
+      key: ItemKey,
+    ): Deferred.Deferred<WithdrawOutcome, EngineError> | undefined => {
+      for (const batch of batches.values()) {
+        const reply = batch.targets.get(key);
+        if (reply === undefined) continue;
+        batch.targets.delete(key);
+        return reply;
+      }
+      return undefined;
+    };
+
+    /** A batch takes effect: what it withdraws goes at once, and its replacements take over. */
+    const commitBatch = (id: number): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const batch = batches.get(id);
+        if (batch === undefined) return;
+        batches.delete(id);
+        for (const [key, reply] of batch.targets) {
+          const item = items.get(key);
+          if (item === undefined) yield* Deferred.succeed(reply, "not-found");
+          else yield* requestWithdrawal(item, "withdrawn", reply);
+        }
+        yield* Deferred.succeed(batch.committed, undefined);
+      });
+
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
       if (ended !== undefined) return;
@@ -2037,30 +2182,38 @@ export const makeScheduler = (
       const brokenGroups = new Map<ItemKey, number>();
       for (const [key, group] of groups)
         if (group.brokenAt !== undefined) brokenGroups.set(key, group.brokenAt);
-      const decision = plan({
-        engine: state,
-        items: [...items.values()],
-        owned,
-        lanes,
-        nowMs: monotonicMillis(clock),
-        playingStartedMs,
-        floorSeconds,
-        targetSeconds,
-        refillActive,
-        maxBuildsInFlight,
-        accepting,
-        drain: draining ? (finishAccepted ? "accepted" : "playing") : undefined,
-        fillerRetryAtMs,
-        unknownFillerCount,
-        blockedMove,
-        withdrawing: new Set(pendingWithdrawals.keys()),
-        dispatched: pendingBuilds,
-        brokenGroups,
-      });
+      const decide = () =>
+        plan({
+          engine: state,
+          items: [...items.values()],
+          owned,
+          lanes,
+          nowMs: monotonicMillis(clock),
+          playingStartedMs,
+          floorSeconds,
+          targetSeconds,
+          refillActive,
+          maxBuildsInFlight,
+          accepting,
+          drain: draining ? (finishAccepted ? "accepted" : "playing") : undefined,
+          fillerRetryAtMs,
+          unknownFillerCount,
+          blockedMove,
+          withdrawing: new Set(pendingWithdrawals.keys()),
+          dispatched: pendingBuilds,
+          brokenGroups,
+          batches: pendingBatches(),
+        });
+      let decision = decide();
+      // A commit changes what is withdrawn and what takes over, so the plan is read again.
+      if (decision.commit.length > 0) {
+        for (const id of decision.commit) yield* commitBatch(id);
+        decision = decide();
+      }
       refillActive = decision.refillActive;
       for (const { key, reason } of decision.withdraw) {
         const item = items.get(key);
-        if (item !== undefined) yield* requestWithdrawal(item, reason);
+        if (item !== undefined) yield* requestWithdrawal(item, reason, takeBatchReply(key));
       }
       for (const clipId of decision.withdrawFiller)
         if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
@@ -2101,7 +2254,7 @@ export const makeScheduler = (
       }
     });
 
-    /** Admits a captured item and publishes its Accepted evidence, without yielding. */
+    /** Registers a captured item, without yielding; its caller publishes the Accepted evidence. */
     const accept = (
       captured: CapturedItem,
       nowMs: number,
@@ -2162,11 +2315,6 @@ export const makeScheduler = (
         firstDecisiveWaiter,
       };
       items.set(item.key, item);
-      PubSub.publishUnsafe(events, {
-        key: item.key,
-        at: clock.currentTimeMillisUnsafe(),
-        status: item.status,
-      });
       return item;
     };
 
@@ -2275,110 +2423,168 @@ export const makeScheduler = (
         : { lane: anchor.lane, admission, group };
     };
 
-    const actor = Effect.gen(function* () {
-      for (;;) {
-        const message = yield* takeQueue(inbox);
-        // Queued public calls observe the same terminal result through closedCall.
-        if (ended !== undefined && message._tag !== "CommandDone") continue;
-        switch (message._tag) {
-          case "Submit": {
-            if (!accepting) {
-              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
-              break;
-            }
-            if (groups.has(message.item.key)) {
-              yield* Deferred.fail(message.reply, KeyMismatch.of(message.item.key));
-              break;
-            }
-            const existing = items.get(message.item.key) ?? history.get(message.item.key);
-            if (existing !== undefined) {
-              if (existing.fingerprint === message.item.fingerprint)
-                yield* Deferred.succeed(message.reply, existing.handle);
-              else yield* Deferred.fail(message.reply, KeyMismatch.of(message.item.key));
-              break;
-            }
-            const nowMs = monotonicMillis(clock);
-            const state = yield* engine.state;
-            if (ended !== undefined) continue;
-            const startByMs =
-              message.item.startByOffsetMs === undefined
-                ? undefined
-                : nowMs + message.item.startByOffsetMs;
-            const projectedMs = projectedStartMs(
-              state,
-              [...items.values()],
-              owned,
-              lanes,
-              playingStartedMs,
-              { lane: message.item.lane, admission: Infinity },
-              nowMs,
+    /** The items a withdrawal of `key` names: a group's parts, a part and those after it, or one item. */
+    const withdrawalTargets = (key: ItemKey): ReadonlyArray<Entry> => {
+      const item = items.get(key);
+      const named = groups.get(key);
+      const group = named ?? (item?.group === undefined ? undefined : groups.get(item.group.key));
+      if (group === undefined || (named === undefined && item?.inserted === true))
+        return item === undefined ? [] : [item];
+      const from = named === undefined ? item!.group!.index : 0;
+      const targets = group.parts
+        .map((part) => items.get(part))
+        .filter((part): part is Entry => part?.group !== undefined && part.group.index >= from);
+      // A part key's reply is that part's own outcome, so it goes first.
+      if (named === undefined) targets.sort((a, b) => Number(b === item) - Number(a === item));
+      return targets;
+    };
+
+    type StagedResult =
+      | { readonly _tag: "Added"; readonly handle: ItemHandle }
+      | { readonly _tag: "AddedGroup"; readonly handle: GroupHandle }
+      | { readonly _tag: "Withdrawal"; readonly key: ItemKey };
+
+    interface Staged {
+      readonly results: ReadonlyArray<StagedResult>;
+      /** Items this call admitted, in order; their Accepted evidence is still unpublished. */
+      readonly added: ReadonlyArray<Entry>;
+      /** Items the batch waits for: those it added and any it repeats that another batch holds. */
+      readonly waitFor: ReadonlyArray<ItemKey>;
+    }
+
+    /**
+     * Checks and admits a call's edits in order, without yielding. A refused edit undoes the
+     * edits before it, so nothing of a refused batch is admitted or published.
+     */
+    const stageEdits = (
+      edits: ReadonlyArray<CapturedEdit>,
+      batched: boolean,
+      state: EngineState,
+      nowMs: number,
+    ): Result.Result<Staged, KeyMismatch | WouldMissDeadline | PolicyFailure> => {
+      const undo: Array<() => void> = [];
+      const added: Entry[] = [];
+      const waitFor: ItemKey[] = [];
+      const results: StagedResult[] = [];
+      const refuse = (error: KeyMismatch | WouldMissDeadline | PolicyFailure) => {
+        for (const step of undo.reverse()) step();
+        return Result.fail(error);
+      };
+      // Clips a batch withdraws or replaces do not count ahead of the clips it adds.
+      const excluding = new Set<ItemKey>();
+      const named: ItemKey[] = [];
+      for (const edit of edits)
+        switch (edit._tag) {
+          case "Submit":
+            named.push(edit.item.key);
+            break;
+          case "SubmitGroup":
+            named.push(edit.group.key, ...edit.group.parts.map((part) => part.key));
+            break;
+          case "Insert":
+            named.push(edit.insert.key);
+            break;
+          case "Replace":
+            named.push(edit.key, edit.next.key);
+            excluding.add(edit.key);
+            break;
+          case "Withdraw": {
+            const targets = withdrawalTargets(edit.key);
+            named.push(
+              edit.key,
+              ...targets.map((target) => target.key).filter((key) => key !== edit.key),
             );
-            if (startByMs !== undefined && projectedMs > startByMs) {
-              yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
+            for (const target of targets) excluding.add(target.key);
+            break;
+          }
+        }
+      if (new Set(named).size !== named.length)
+        return refuse(invalid("An edit batch names each key once"));
+      for (const edit of edits)
+        if (edit._tag === "Insert" && excluding.has(edit.insert.anchor))
+          return refuse(invalid("An insert's anchor is withdrawn or replaced in the same batch"));
+      const view = (place: Parameters<typeof projectedStartMs>[1]) =>
+        projectedStartMs(
+          {
+            engine: state,
+            items: [...items.values()].filter((item) => !excluding.has(item.key)),
+            owned,
+            lanes,
+            playingStartedMs,
+            nowMs,
+            batches: pendingBatches(),
+          },
+          place,
+        );
+      const admitted = (entry: Entry) => {
+        added.push(entry);
+        waitFor.push(entry.key);
+        undo.push(() => items.delete(entry.key));
+      };
+      /** An existing key: the same spec returns its handle, and the batch waits for it too. */
+      const repeated = (
+        key: ItemKey,
+        fingerprint: string,
+      ): Result.Result<ItemHandle | undefined, KeyMismatch> => {
+        const existing = items.get(key) ?? history.get(key);
+        if (existing === undefined && !groups.has(key)) return Result.succeed(undefined);
+        if (existing?.fingerprint !== fingerprint) return Result.fail(KeyMismatch.of(key));
+        waitFor.push(key);
+        return Result.succeed(existing.handle);
+      };
+      for (const edit of edits) {
+        switch (edit._tag) {
+          case "Submit": {
+            const { item } = edit;
+            const known = repeated(item.key, item.fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
               break;
             }
-            // No yield from the terminal check above through admission and its
-            // publication below: a claim either precedes the item or settles it
-            // after its Accepted evidence.
-            const item = accept(message.item, nowMs, startByMs, undefined);
-            yield* observed(state);
-            // Submit returns its committed view; other messages publish once
-            // through reconciliation after all their evidence is adopted.
-            yield* publishState(state);
-            yield* Deferred.succeed(message.reply, item.handle);
+            const startByMs =
+              item.startByOffsetMs === undefined ? undefined : nowMs + item.startByOffsetMs;
+            if (
+              startByMs !== undefined &&
+              view({ lane: item.lane, admission: Infinity }) > startByMs
+            )
+              return refuse(WouldMissDeadline.of(item.key));
+            const entry = accept(item, nowMs, startByMs, undefined);
+            admitted(entry);
+            results.push({ _tag: "Added", handle: entry.handle });
             break;
           }
           case "SubmitGroup": {
-            if (!accepting) {
-              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
-              break;
-            }
-            const { group } = message;
+            const { group } = edit;
             const known = groups.get(group.key);
             if (known !== undefined) {
-              if (known.fingerprint === group.fingerprint)
-                yield* Deferred.succeed(message.reply, known.handle);
-              else yield* Deferred.fail(message.reply, KeyMismatch.of(group.key));
+              if (known.fingerprint !== group.fingerprint) return refuse(KeyMismatch.of(group.key));
+              waitFor.push(...known.parts);
+              results.push({ _tag: "AddedGroup", handle: known.handle });
               break;
             }
             const taken = [group.key, ...group.parts.map((part) => part.key)].find(
               (key) => items.has(key) || history.has(key) || groups.has(key),
             );
-            if (taken !== undefined) {
-              yield* Deferred.fail(message.reply, KeyMismatch.of(taken));
-              break;
-            }
-            const nowMs = monotonicMillis(clock);
-            const state = yield* engine.state;
-            if (ended !== undefined) continue;
+            if (taken !== undefined) return refuse(KeyMismatch.of(taken));
             const [first, ...rest] = group.parts;
             const startByMs =
               first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
             if (
               startByMs !== undefined &&
-              projectedStartMs(
-                state,
-                [...items.values()],
-                owned,
-                lanes,
-                playingStartedMs,
-                { lane: first.lane, admission: Infinity },
-                nowMs,
-              ) > startByMs
-            ) {
-              yield* Deferred.fail(message.reply, WouldMissDeadline.of(group.key));
-              break;
-            }
-            // As for one item, no yield from the terminal check through admission.
+              view({ lane: first.lane, admission: Infinity }) > startByMs
+            )
+              return refuse(WouldMissDeadline.of(group.key));
+            const parts = [
+              accept(first, nowMs, startByMs, { key: group.key, index: 0 }),
+              ...rest.map((part, index) =>
+                accept(part, nowMs, undefined, { key: group.key, index: index + 1 }),
+              ),
+            ] as const;
+            for (const part of parts) admitted(part);
             const handle: GroupHandle = {
               key: group.key,
-              parts: [
-                accept(first, nowMs, startByMs, { key: group.key, index: 0 }).handle,
-                ...rest.map(
-                  (part, index) =>
-                    accept(part, nowMs, undefined, { key: group.key, index: index + 1 }).handle,
-                ),
-              ],
+              parts: [parts[0].handle, ...parts.slice(1).map((part) => part.handle)],
             };
             groups.set(group.key, {
               fingerprint: group.fingerprint,
@@ -2386,110 +2592,25 @@ export const makeScheduler = (
               parts: group.parts.map((part) => part.key),
               brokenAt: undefined,
             });
-            yield* observed(state);
-            yield* publishState(state);
-            yield* Deferred.succeed(message.reply, handle);
-            break;
-          }
-          case "Replace": {
-            if (!accepting) {
-              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
-              break;
-            }
-            const { next } = message;
-            const fingerprint = JSON.stringify({ replaces: message.key, request: next.request });
-            const existing = items.get(next.key) ?? history.get(next.key);
-            if (existing !== undefined || groups.has(next.key)) {
-              if (existing?.fingerprint === fingerprint)
-                yield* Deferred.succeed(message.reply, existing.handle);
-              else yield* Deferred.fail(message.reply, KeyMismatch.of(next.key));
-              break;
-            }
-            const old = items.get(message.key);
-            if (
-              old === undefined ||
-              old.replacedBy !== undefined ||
-              (old.phase !== "Accepted" && old.phase !== "Building" && old.phase !== "Ready")
-            ) {
-              yield* Deferred.fail(
-                message.reply,
-                invalid("Nothing queued to replace under that key"),
-              );
-              break;
-            }
-            const nowMs = monotonicMillis(clock);
-            const state = yield* engine.state;
-            if (ended !== undefined) continue;
-            const replacement = accept(
-              {
-                key: next.key,
-                lane: old.lane,
-                request: next.request,
-                fingerprint,
-                notBeforeOffsetMs: undefined,
-                startByOffsetMs: undefined,
-                firm: old.firm,
-                atWallMs: old.atWallMs,
-                late: old.late,
-              },
-              nowMs,
-              old.startByMs,
-              old.group,
-              {
-                admission: old.admission,
-                replaces: old.key,
-                generation: (old.generation ?? 0) + 1,
-                inserted: old.inserted === true,
-                notBeforeMs: old.notBeforeMs,
-              },
-            );
-            old.replacedBy = replacement.key;
-            if (old.group !== undefined) groups.get(old.group.key)?.parts.push(replacement.key);
-            yield* observed(state);
-            yield* publishState(state);
-            yield* Deferred.succeed(message.reply, replacement.handle);
+            undo.push(() => groups.delete(group.key));
+            results.push({ _tag: "AddedGroup", handle });
             break;
           }
           case "Insert": {
-            if (!accepting) {
-              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
-              break;
-            }
-            const { insert } = message;
-            const existing = items.get(insert.key) ?? history.get(insert.key);
-            if (existing !== undefined || groups.has(insert.key)) {
-              if (existing?.fingerprint === insert.fingerprint)
-                yield* Deferred.succeed(message.reply, existing.handle);
-              else yield* Deferred.fail(message.reply, KeyMismatch.of(insert.key));
+            const { insert } = edit;
+            const known = repeated(insert.key, insert.fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
               break;
             }
             const placed = placeInsert(insert);
-            if (typeof placed === "string") {
-              yield* Deferred.fail(message.reply, invalid(placed));
-              break;
-            }
-            const nowMs = monotonicMillis(clock);
-            const state = yield* engine.state;
-            if (ended !== undefined) continue;
+            if (typeof placed === "string") return refuse(invalid(placed));
             const startByMs =
               insert.startByOffsetMs === undefined ? undefined : nowMs + insert.startByOffsetMs;
-            if (
-              startByMs !== undefined &&
-              projectedStartMs(
-                state,
-                [...items.values()],
-                owned,
-                lanes,
-                playingStartedMs,
-                placed,
-                nowMs,
-              ) > startByMs
-            ) {
-              yield* Deferred.fail(message.reply, WouldMissDeadline.of(insert.key));
-              break;
-            }
-            // As for a submission, no yield from the terminal check through admission.
-            const inserted = accept(
+            if (startByMs !== undefined && view(placed) > startByMs)
+              return refuse(WouldMissDeadline.of(insert.key));
+            const entry = accept(
               {
                 key: insert.key,
                 lane: placed.lane,
@@ -2513,37 +2634,165 @@ export const makeScheduler = (
                     : nowMs + insert.notBeforeOffsetMs,
               },
             );
-            if (placed.group !== undefined) groups.get(placed.group.key)?.parts.push(inserted.key);
+            admitted(entry);
+            if (placed.group !== undefined) {
+              const parts = groups.get(placed.group.key)?.parts;
+              parts?.push(entry.key);
+              undo.push(() => parts?.pop());
+            }
+            results.push({ _tag: "Added", handle: entry.handle });
+            break;
+          }
+          case "Replace": {
+            const { next } = edit;
+            const fingerprint = JSON.stringify({ replaces: edit.key, request: next.request });
+            const known = repeated(next.key, fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
+              break;
+            }
+            const old = items.get(edit.key);
+            if (
+              old === undefined ||
+              old.replacedBy !== undefined ||
+              (old.phase !== "Accepted" && old.phase !== "Building" && old.phase !== "Ready")
+            )
+              return refuse(invalid("Nothing queued to replace under that key"));
+            const entry = accept(
+              {
+                key: next.key,
+                lane: old.lane,
+                request: next.request,
+                fingerprint,
+                notBeforeOffsetMs: undefined,
+                startByOffsetMs: undefined,
+                firm: old.firm,
+                atWallMs: old.atWallMs,
+                late: old.late,
+              },
+              nowMs,
+              old.startByMs,
+              old.group,
+              {
+                admission: old.admission,
+                replaces: old.key,
+                generation: (old.generation ?? 0) + 1,
+                inserted: old.inserted === true,
+                notBeforeMs: old.notBeforeMs,
+              },
+            );
+            admitted(entry);
+            old.replacedBy = entry.key;
+            undo.push(() => delete old.replacedBy);
+            if (old.group !== undefined) {
+              const parts = groups.get(old.group.key)?.parts;
+              parts?.push(entry.key);
+              undo.push(() => parts?.pop());
+            }
+            results.push({ _tag: "Added", handle: entry.handle });
+            break;
+          }
+          case "Withdraw":
+            results.push({ _tag: "Withdrawal", key: edit.key });
+            break;
+        }
+      }
+      return Result.succeed({ results, added, waitFor: batched ? waitFor : [] });
+    };
+
+    /**
+     * Makes a staged call's handle. A batch keeps what it withdraws as cover until it commits;
+     * a single call adds one item or group and takes effect at once.
+     */
+    const openBatch = (
+      staged: Staged,
+      batched: boolean,
+    ): { readonly handle: EditHandle; readonly settle: ReadonlyArray<Effect.Effect<void>> } => {
+      // A single call adds one item or group and never withdraws.
+      if (!batched)
+        return {
+          handle: {
+            results: staged.results.filter((result) => result._tag !== "Withdrawal"),
+            committed: Effect.void,
+          },
+          settle: [],
+        };
+      const settle: Effect.Effect<void>[] = [];
+      const batch: Batch = {
+        id: ++batchCount,
+        waitFor: staged.waitFor,
+        targets: new Map(),
+        committed: Deferred.makeUnsafe<void, EngineError>(),
+      };
+      const results = staged.results.map((result): EditResult => {
+        if (result._tag !== "Withdrawal") return result;
+        const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
+        for (const target of withdrawalTargets(result.key)) {
+          const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+          replies.push(reply);
+          batch.targets.set(target.key, reply);
+        }
+        const outcome = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+        settle.push(settleWithdrawals(replies, outcome, groups.has(result.key)));
+        return { _tag: "Withdrawal", outcome: Deferred.await(outcome) };
+      });
+      batches.set(batch.id, batch);
+      return { handle: { results, committed: Deferred.await(batch.committed) }, settle };
+    };
+
+    const actor = Effect.gen(function* () {
+      for (;;) {
+        const message = yield* takeQueue(inbox);
+        // Queued public calls observe the same terminal result through closedCall.
+        if (ended !== undefined && message._tag !== "CommandDone") continue;
+        switch (message._tag) {
+          case "Edit": {
+            if (!accepting) {
+              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
+              break;
+            }
+            const nowMs = monotonicMillis(clock);
+            const state = yield* engine.state;
+            if (ended !== undefined) continue;
+            // No yield from the terminal check above through admission and its
+            // publication below: a claim either precedes the items or settles them
+            // after their Accepted evidence.
+            const staged = stageEdits(message.edits, message.batched, state, nowMs);
+            if (Result.isFailure(staged)) {
+              yield* Deferred.fail(message.reply, staged.failure);
+              break;
+            }
+            for (const entry of staged.success.added)
+              PubSub.publishUnsafe(events, {
+                key: entry.key,
+                at: clock.currentTimeMillisUnsafe(),
+                status: entry.status,
+              });
+            const opened = openBatch(staged.success, message.batched);
+            for (const effect of opened.settle) yield* Effect.forkIn(effect, actorScope);
             yield* observed(state);
+            // An edit returns its committed view; other messages publish once
+            // through reconciliation after all their evidence is adopted.
             yield* publishState(state);
-            yield* Deferred.succeed(message.reply, inserted.handle);
+            yield* Deferred.succeed(message.reply, opened.handle);
             break;
           }
           case "Withdraw": {
-            const item = items.get(message.key);
-            const named = groups.get(message.key);
-            const group =
-              named ?? (item?.group === undefined ? undefined : groups.get(item.group.key));
-            if (group === undefined || (named === undefined && item?.inserted === true)) {
-              if (item === undefined) yield* Deferred.succeed(message.reply, "not-found");
-              else yield* requestWithdrawal(item, "withdrawn", message.reply);
+            const targets = withdrawalTargets(message.key);
+            if (targets.length <= 1 && !groups.has(message.key)) {
+              if (targets[0] === undefined) yield* Deferred.succeed(message.reply, "not-found");
+              else yield* requestWithdrawal(targets[0], "withdrawn", message.reply);
               break;
             }
-            const from = named === undefined ? item!.group!.index : 0;
-            const targets = group.parts
-              .map((key) => items.get(key))
-              .filter((part) => part?.group !== undefined && part.group.index >= from);
-            // A part key's reply is that part's own outcome, so it goes first.
-            if (named === undefined)
-              targets.sort((a, b) => Number(b === item) - Number(a === item));
             const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
             for (const part of targets) {
               const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
               replies.push(reply);
-              yield* requestWithdrawal(part!, "withdrawn", reply);
+              yield* requestWithdrawal(part, "withdrawn", reply);
             }
             yield* Effect.forkIn(
-              settleWithdrawals(replies, message.reply, named !== undefined),
+              settleWithdrawals(replies, message.reply, groups.has(message.key)),
               actorScope,
             );
             break;
@@ -2672,43 +2921,59 @@ export const makeScheduler = (
     );
     yield* Deferred.await(initialized);
 
+    const laneSet = new Set(lanes);
+    const send = (
+      edits: ReadonlyArray<CapturedEdit>,
+      batched: boolean,
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<
+          EditHandle,
+          KeyMismatch | WouldMissDeadline | EngineError
+        >();
+        if (!(yield* Queue.offer(inbox, { _tag: "Edit", edits, batched, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      });
+    /** The one result of a single call. */
+    const only = (handle: EditHandle): EditResult | undefined => handle.results[0];
     const submit: SchedulerShape["submit"] = (
       input,
     ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
-        const item = yield* captureItem(input, new Set(lanes));
+        const item = yield* captureItem(input, laneSet);
         yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", item.key);
-        const reply = yield* Deferred.make<
-          ItemHandle,
-          KeyMismatch | WouldMissDeadline | EngineError
-        >();
-        if (!(yield* Queue.offer(inbox, { _tag: "Submit", item, reply }))) return yield* closedCall;
-        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+        const result = only(yield* send([{ _tag: "Submit", item }], false));
+        if (result?._tag !== "Added") return yield* Effect.die("A submission returned no item");
+        return result.handle;
       }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
     const submitGroup: SchedulerShape["submitGroup"] = (
       input,
     ): Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
-        const group = yield* captureGroup(input, new Set(lanes));
+        const group = yield* captureGroup(input, laneSet);
         yield* Effect.annotateCurrentSpan("reactor.scheduler.group.key", group.key);
-        const reply = yield* Deferred.make<
-          GroupHandle,
-          KeyMismatch | WouldMissDeadline | EngineError
-        >();
-        if (!(yield* Queue.offer(inbox, { _tag: "SubmitGroup", group, reply })))
-          return yield* closedCall;
-        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+        const result = only(yield* send([{ _tag: "SubmitGroup", group }], false));
+        if (result?._tag !== "AddedGroup") return yield* Effect.die("A group returned no handle");
+        return result.handle;
       }).pipe(Effect.withSpan("Scheduler.submitGroup", {}, { captureStackTrace: false }));
-    const replace: SchedulerShape["replace"] = (key, input) =>
+    const replace: SchedulerShape["replace"] = (
+      key,
+      input,
+    ): Effect.Effect<ItemHandle, KeyMismatch | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const next = yield* captureReplacement(input);
-        const reply = yield* Deferred.make<ItemHandle, KeyMismatch | EngineError>();
-        if (!(yield* Queue.offer(inbox, { _tag: "Replace", key, next, reply })))
-          return yield* closedCall;
-        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+        const result = only(
+          yield* send([{ _tag: "Replace", key, next }], false).pipe(
+            // A replacement keeps the replaced item's place, so no deadline is checked for it.
+            Effect.catchTag("WouldMissDeadline", (error) => Effect.die(error)),
+          ),
+        );
+        if (result?._tag !== "Added") return yield* Effect.die("A replacement returned no item");
+        return result.handle;
       }).pipe(
         Effect.withSpan("Scheduler.replace", { attributes: { key } }, { captureStackTrace: false }),
       );
@@ -2719,14 +2984,19 @@ export const makeScheduler = (
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const captured = yield* captureInsert(input);
         yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", captured.key);
-        const reply = yield* Deferred.make<
-          ItemHandle,
-          KeyMismatch | WouldMissDeadline | EngineError
-        >();
-        if (!(yield* Queue.offer(inbox, { _tag: "Insert", insert: captured, reply })))
-          return yield* closedCall;
-        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+        const result = only(yield* send([{ _tag: "Insert", insert: captured }], false));
+        if (result?._tag !== "Added") return yield* Effect.die("An insert returned no item");
+        return result.handle;
       }).pipe(Effect.withSpan("Scheduler.insert", {}, { captureStackTrace: false }));
+    const edit: SchedulerShape["edit"] = (
+      input,
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const edits = yield* captureEdits(input, laneSet);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.edits", edits.length);
+        return yield* send(edits, true);
+      }).pipe(Effect.withSpan("Scheduler.edit", {}, { captureStackTrace: false }));
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -2757,6 +3027,7 @@ export const makeScheduler = (
       submitGroup,
       replace,
       insert,
+      edit,
       withdraw,
       drain,
       failure: Deferred.await(stopped),

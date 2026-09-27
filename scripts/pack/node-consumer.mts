@@ -121,6 +121,14 @@ const inserted: Effect.Effect<
   Orchestration.ItemHandle,
   Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
 > = schedulerHandle.insert(acknowledgement);
+const edits: ReadonlyArray<Orchestration.Edit> = [
+  { _tag: "Withdraw", key: Orchestration.ItemKey.make("wrong") },
+  { _tag: "Insert", insert: acknowledgement },
+];
+const edited: Effect.Effect<
+  Orchestration.EditHandle,
+  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+> = schedulerHandle.edit(edits);
 const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
@@ -169,6 +177,7 @@ void [
   line,
   amended,
   inserted,
+  edited,
   terminalFailure,
   stoppedRenewal,
   historicalSwitched,
