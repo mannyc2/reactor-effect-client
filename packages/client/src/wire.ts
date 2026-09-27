@@ -1,6 +1,8 @@
-export * from "./wire.generated.js";
-export { structFromObject, objectFromStruct } from "./json.js";
-export type { Json, JsonObject } from "./json.js";
-export { wireLimits } from "./protobuf.js";
-export type { WireLimits } from "./protobuf.js";
-export const WIRE_VERSION = "1.20260722.6";
+/**
+ * The Reactor wire protocol: the generated protobuf messages and the Struct
+ * conversion around them. It is published for this repository's own real-host
+ * and hosted checks, which speak the protocol directly; an application uses
+ * `Session` and `H3` instead.
+ */
+export * from "./internal/wire.generated.js";
+export { objectFromStruct, structFromObject } from "./json.js";

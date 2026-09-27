@@ -5,14 +5,16 @@ import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { errorOf, ReactorError } from "../errors.js";
+import { errorOf } from "../internal/validation.js";
+import { ReactorError } from "../ReactorError.js";
 import type { Submission } from "../Submission.js";
-import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
+import type { AudioFrame, VideoFrame, MediaPressure } from "../Media.js";
 import { PolicyFailure, type ClipId } from "./request.js";
 import { monotonicMillis } from "./elapsed.js";
 import * as Lifecycle from "./renewal-state.js";
 import type { Retirement } from "./retention.js";
 import type { EngineError, EngineEvent, MediaSource, Source, SourceCleanup } from "./types.js";
+import { summarize } from "../ReactorError.js";
 
 interface Options extends Lifecycle.Lifetime {
   readonly source: Source;
@@ -204,10 +206,12 @@ export const make = (options: Options) =>
             completionExit,
           ];
           const errors = stages.flatMap((exit) =>
-            Exit.isFailure(exit) ? [errorOf(exit.cause, "InvalidState", "source retirement")] : [],
+            Exit.isFailure(exit)
+              ? [summarize(errorOf(exit.cause, "InvalidState", "source retirement"))]
+              : [],
           );
           submissions.clear();
-          if (contractFailure !== undefined) errors.push(contractFailure);
+          if (contractFailure !== undefined) errors.push(summarize(contractFailure));
           phase = Lifecycle.transitionSource(phase, { _tag: "Closed" });
           const exit = Exit.asVoidAll(stages);
           // Completion bookkeeping cannot hide a stage's failure, or its own.

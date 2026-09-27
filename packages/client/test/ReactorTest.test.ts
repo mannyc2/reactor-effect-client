@@ -3,22 +3,21 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, layer } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Layer, Path, Ref, Stream } from "effect";
 import * as H3 from "../src/h3/index.js";
-import type { VideoFrame } from "../src/host.js";
-import { mediaGeneration } from "../src/host.js";
-import * as Reactor from "../src/index.js";
+import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
+import type { VideoFrame } from "../src/Media.js";
 import * as Orchestration from "../src/orchestration/index.js";
-import { ReactorTest } from "../src/testing/index.js";
 
 /** Each block gets its own simulated Reactor, so no session or bill carries over. */
 const environment = (options?: Parameters<typeof ReactorTest.layer>[0]) =>
   Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
     Layer.provideMerge(ReactorTest.layer(options)),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   );
 
 const mint = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
-  const coordinator = yield* Reactor.Coordinator.make();
+  const coordinator = yield* Coordinator.Coordinator;
   return yield* coordinator.mintToken({
     apiKey: test.apiKey,
     modelName: H3.modelName,
@@ -29,8 +28,8 @@ const mint = Effect.gen(function* () {
 
 const connect = Effect.gen(function* () {
   const grant = yield* mint;
-  const client = yield* Reactor.Client;
-  return yield* client.createConnected({ model: H3.modelName, jwt: grant.jwt });
+  const reactor = yield* Reactor.Reactor;
+  return yield* reactor.create({ model: H3.modelName, jwt: grant.jwt });
 });
 
 layer(environment())("playback", (it) => {
@@ -39,7 +38,7 @@ layer(environment())("playback", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow());
       const session = yield* connect;
       const provider = yield* H3.make(session);
-      const media = yield* mediaGeneration(session);
+      const media = yield* session.decoded;
       const frames = yield* Ref.make<ReadonlyArray<VideoFrame>>([]);
       yield* media.video(H3.h3ReferenceTurboRealtime.tracks.video).pipe(
         Stream.runForEach((frame) => Ref.update(frames, (all) => [...all, frame])),

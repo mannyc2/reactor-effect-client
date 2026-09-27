@@ -28,24 +28,18 @@ import { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type { FromClientEncoded, FromServerEncoded } from "effect/unstable/rpc/RpcMessage";
 import * as Worker from "effect/unstable/workers/Worker";
 import { WorkerReceiveError, WorkerSendError } from "effect/unstable/workers/WorkerError";
-import { PeerFactory, ReactorError } from "reactor-effect-client";
-import type { PeerFactoryShape, Track } from "reactor-effect-client";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { Track } from "reactor-effect-client/Coordinator";
 import { Observations, parsed, takeQueue, takeAllQueue } from "reactor-effect-client/host";
-import type {
-  AudioFrame,
-  Channel,
-  IceServer,
-  MediaPressure,
-  MediaTrack,
-  Peer,
-  PeerEvent,
-  Prepared,
-  RawMedia,
-  VideoFrame,
-} from "reactor-effect-client/host";
+import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
+import type { Channel, PeerEvent, Prepared } from "reactor-effect-client/Peer";
+import type { IceServer } from "reactor-effect-client/Coordinator";
 import { iceServers, validateNativeTracks } from "../peer.js";
 import { eventFromWire, exact, fromWire, IsolatedRpcs } from "./protocol.js";
 import type { PrepareItem, WireAudio, WireEvent, WireFailure, WireVideo } from "./protocol.js";
+import { acquirePeer } from "../port.js";
+import type { RawMedia } from "../port.js";
 
 /**
  * The compiled child entry. The path climbs to the package root, so it
@@ -324,8 +318,7 @@ const audioFrame = (track: string, frame: WireAudio): AudioFrame =>
  * made, so the child starts while the session allocates; every call waits for
  * the child to open its native peer.
  */
-export class IsolatedPeer implements Peer {
-  readonly nativeTracks = false;
+export class IsolatedPeer {
   readonly rawMedia: RawMedia;
   readonly link: Link;
   private readonly scope = Scope.makeUnsafe();
@@ -652,29 +645,6 @@ export class IsolatedPeer implements Peer {
     );
   }
 
-  lease(): MediaTrack {
-    throw ReactorError.fromCode(
-      "UnsupportedCapability",
-      "native WebRTC exposes owned decoded samples, not browser MediaStreamTrack leases",
-      { outcome: "not-submitted" },
-    );
-  }
-  release(): void {
-    /* lease never succeeds on this host. */
-  }
-  /** Only the absence of a track crosses the process boundary. */
-  replace(name: string, track: MediaTrack | null): Effect.Effect<void, ReactorError> {
-    if (track !== null)
-      return Effect.fail(
-        ReactorError.fromCode(
-          "UnsupportedCapability",
-          "native WebRTC does not accept browser MediaStreamTrack publication",
-          { outcome: "not-submitted" },
-        ),
-      );
-    return this.call("replace native track", (client) => client.Replace({ name }));
-  }
-
   /**
    * Retire the peer in this process at once: no later event or frame reaches
    * the session, and every later call fails before dispatch. The child's
@@ -785,20 +755,34 @@ export class IsolatedPeer implements Peer {
  * The isolated factory: preflight by spawning a probe child that loads and
  * verifies the library and opens a native peer, then shuts it down.
  */
+/** One host's shared environment: the platform, the library and the shutdown bound. */
+export const environmentFor = Effect.fnUntraced(function* (options: {
+  readonly libraryPath: string | undefined;
+  readonly shutdownTimeout: Duration.Duration;
+}) {
+  const platform = yield* Layer.build(NodeWorker.layerPlatform);
+  const live = new Set<IsolatedPeer>();
+  const environment: Environment = {
+    platform,
+    libraryPath: options.libraryPath,
+    shutdownTimeout: options.shutdownTimeout,
+    entry: childEntry,
+    release: (peer) => live.delete(peer),
+  };
+  return { environment, live };
+});
+
+/**
+ * The isolated factory. Building it forks a probe child that loads and
+ * verifies the library and opens a native peer, then shuts it down, so an
+ * unsupported host fails before any session is allocated.
+ */
 export const factory = (options: {
   readonly libraryPath: string | undefined;
   readonly shutdownTimeout: Duration.Duration;
-}): Effect.Effect<PeerFactoryShape, ReactorError, Scope.Scope> =>
+}): Effect.Effect<PeerFactory["Service"], ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
-    const platform = yield* Layer.build(NodeWorker.layerPlatform);
-    const live = new Set<IsolatedPeer>();
-    const environment: Environment = {
-      platform,
-      libraryPath: options.libraryPath,
-      shutdownTimeout: options.shutdownTimeout,
-      entry: childEntry,
-      release: (peer) => live.delete(peer),
-    };
+    const { environment, live } = yield* environmentFor(options);
     const probe = new IsolatedPeer(environment);
     const opened = yield* Effect.exit(probe.opened);
     yield* probe.shutdown;
@@ -811,10 +795,11 @@ export const factory = (options: {
       }),
     );
     return PeerFactory.of({
-      make: () => {
+      check: Effect.void,
+      make: acquirePeer(() => {
         const peer = new IsolatedPeer(environment);
         live.add(peer);
         return peer;
-      },
+      }),
     });
   });

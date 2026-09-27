@@ -1,5 +1,6 @@
 /** Controlled native-host contracts; these do not establish browser AudioData support. */
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import * as Fiber from "effect/Fiber";
 import { audioSamples } from "../src/_internal/media.js";
@@ -290,7 +291,8 @@ test("native AudioData: a cleanup error does not replace the primary copy failur
     });
     equal(error.context.operation, "audioSamples.copy");
     equal(block.closes, 1);
-    const detail = error.context.detail;
+    const detail =
+      error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
     assert(typeof detail === "object" && detail !== null && "cleanupFailures" in detail);
     equal(detail.cleanupFailures, [{ phase: "close-sample", message: "cleanup cause" }]);
   });

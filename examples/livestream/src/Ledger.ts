@@ -1,5 +1,5 @@
 import { Config, Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
-import { ReactorError } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as Orchestration from "reactor-effect-client/orchestration";
 
 /**

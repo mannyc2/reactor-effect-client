@@ -1,7 +1,7 @@
 /** Clip operations: a committed submission's retained facts, bounded and scope-released. */
 import { describe, expect, test } from "vitest";
 import { Effect, Exit, Result, Scope } from "effect";
-import { CommandFailure, ReactorError } from "../../src/errors.js";
+import { CommandFailure, ReactorError } from "../../src/ReactorError.js";
 import * as H3 from "../../src/h3/index.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 import type { Fixture, Script } from "./ProviderSession.js";

@@ -1,10 +1,14 @@
 import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import * as Reactor from "reactor-effect-client";
+import * as Reactor from "reactor-effect-client/Reactor";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Session from "reactor-effect-client/Session";
+import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import * as H3 from "reactor-effect-client/h3";
 import * as Browser from "reactor-effect-browser";
 import { Api } from "./Api.ts";
 import { WebCrypto } from "./WebCrypto.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
  * One runtime for the page, built once: the SDK's Client over the browser's
@@ -15,7 +19,8 @@ import { WebCrypto } from "./WebCrypto.ts";
  */
 const runtime = ManagedRuntime.make(
   Reactor.layer().pipe(
-    Layer.provideMerge(Layer.mergeAll(Reactor.FetchHttp.layer, WebCrypto, Browser.layer)),
+    Layer.provide(Coordinator.layer({ apiUrl: window.location.origin })),
+    Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, Browser.layer)),
   ),
 );
 
@@ -32,13 +37,13 @@ const log = (line: string) => {
 };
 /** What a failure says about itself: its reason and, for a command, whether it may have applied. */
 const describe = (error: unknown) =>
-  Reactor.isReactorFailure(error)
+  isReactorFailure(error)
     ? `${error._tag}: ${error.reason._tag}${"outcome" in error.context ? ` (${error.context.outcome})` : ""}`
     : String(error);
 
 interface Live {
   readonly scope: Scope.Closeable;
-  readonly session: Reactor.Session;
+  readonly session: Session.Session;
   readonly provider: H3.Provider;
   readonly media: Browser.MediaGeneration;
 }
@@ -66,8 +71,8 @@ const start = Effect.gen(function* () {
   const token = yield* (yield* HttpApiClient.make(Api)).token();
   const scope = yield* Scope.make();
   return yield* Effect.gen(function* () {
-    const client = yield* Reactor.Client;
-    const session = yield* client.createConnected({
+    const client = yield* Reactor.Reactor;
+    const session = yield* client.create({
       model: H3.modelName,
       jwt: Redacted.make(token.jwt),
     });

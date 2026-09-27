@@ -8,10 +8,10 @@ import { keyedRequest, keyFromProviderMetadata } from "../../src/orchestration/s
 import { isIdle } from "../../src/orchestration/queries.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import type { EngineEvent } from "../../src/orchestration/types.js";
-import type { CloseReport, Session } from "../../src/session/index.js";
-import type { MediaGeneration } from "../../src/session/media.js";
+import type { CloseReport, Session } from "../../src/Session.js";
+import type { DecodedMedia } from "../../src/Media.js";
 import type { JsonObject } from "../../src/json.js";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import { wavBytes } from "../../src/testing/Wav.js";
 import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
@@ -29,13 +29,13 @@ import {
 } from "./SourceFixture.js";
 import { steppableWall } from "./WallClock.js";
 
-const media: MediaGeneration = {
+const media: DecodedMedia = {
   generation: 1n,
   tracks: [],
   retired: Effect.never,
   video: () => Stream.never,
   audio: () => Stream.never,
-  snapshot: Effect.succeed(cleanPressure),
+  pressure: Effect.succeed(cleanPressure),
 };
 const setup = (
   script: Script = {},
@@ -534,7 +534,7 @@ for (const reset of [false, true] as const)
         if (reset) {
           expect(report.policy[0]!.operation).toBe("reset");
           const result = report.policy[0]!.result;
-          expect(Result.isFailure(result) && result.failure.context.outcome).toBe("unknown");
+          expect(Result.isFailure(result) && result.failure.outcome).toBe("unknown");
         }
       }),
     ));

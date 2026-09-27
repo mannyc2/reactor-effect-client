@@ -9,7 +9,10 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Native from "reactor-effect-native";
-import { FetchHttp, ReactorError, make as makeClient } from "reactor-effect-client";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = resolve(process.argv[2] ?? join(root, "../.check/browser-native/browser.js"));
@@ -90,9 +93,9 @@ const tracks = [
 ];
 /** @typedef {{localCandidateType?: string, remoteCandidateType?: string}} SelectedPair */
 /** @typedef {{ok: true, localPeer: object, native: {relay?: {selected?: SelectedPair}}} | {ok: false, error: string}} BrowserReport */
-/** @typedef {{sdp_offer: string, track_mapping: import("reactor-effect-client").Mapping[]}} OfferRequest */
-/** @typedef {{candidates: import("reactor-effect-client/host").IceCandidate[], is_final?: boolean}} IceRequest */
-/** @typedef {{sdp: string, mapping: import("reactor-effect-client").Mapping[], fixture: typeof browserFixture}} Prepared */
+/** @typedef {{sdp_offer: string, track_mapping: import("reactor-effect-client/Coordinator").Mapping[]}} OfferRequest */
+/** @typedef {{candidates: import("reactor-effect-client/Coordinator").IceCandidate[], is_final?: boolean}} IceRequest */
+/** @typedef {{sdp: string, mapping: import("reactor-effect-client/Coordinator").Mapping[], fixture: typeof browserFixture}} Prepared */
 /** @type {Prepared | undefined} */
 let prepared;
 /** @type {string | undefined} */
@@ -384,20 +387,18 @@ try {
   const result = await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const peers = yield* Layer.build(Native.layer());
-        const factory = yield* makeClient({
-          apiUrl: url,
-          sdpPoll: { attempts: 200, initialDelay: 50, maxDelay: 200 },
-          session: {
-            connectTimeout: "45 seconds",
-            readyTimeout: "45 seconds",
-            replyTimeout: "5 seconds",
-          },
-        }).pipe(Effect.provide(peers));
-        const session = yield* factory.createConnected({ model: "fixture/native-browser" });
+        const services = yield* Layer.build(
+          Layer.merge(Native.layer(), Coordinator.layer({ apiUrl: url })),
+        );
+        const factory = yield* Reactor.make({
+          connectTimeout: "45 seconds",
+          readyTimeout: "45 seconds",
+          replyTimeout: "5 seconds",
+        }).pipe(Effect.provide(services));
+        const session = yield* factory.create({ model: "fixture/native-browser" });
         const ready = yield* session.ready;
         assert(ready.remote.ownership === "owned", "native public session lost ownership");
-        /** @type {import("reactor-effect-client").CommandReply[]} */
+        /** @type {import("reactor-effect-client/Session").CommandReply[]} */
         const events = [];
         yield* Effect.forkScoped(
           session.events().pipe(
@@ -411,7 +412,7 @@ try {
             ),
           ),
         );
-        const media = yield* Native.media(session);
+        const media = yield* session.decoded;
         assert(
           media.generation === ready.generation,
           "native public media did not capture ready generation",
@@ -520,7 +521,7 @@ try {
             writableProof: "bidirectional SCTP plus decoded RTP",
           };
         }
-        const pressure = yield* media.snapshot;
+        const pressure = yield* media.pressure;
         stopping = true;
         const close = yield* session.close;
         assert(
@@ -555,7 +556,7 @@ try {
           relay,
         };
       }),
-    ).pipe(Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer))),
+    ).pipe(Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer))),
   );
   const identity = JSON.parse(
     readFileSync(

@@ -1,6 +1,6 @@
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
-import { ReactorError } from "./errors.js";
+import { ReactorError } from "./ReactorError.js";
 
 /**
  * What one time option admits beyond a positive, finite duration no longer

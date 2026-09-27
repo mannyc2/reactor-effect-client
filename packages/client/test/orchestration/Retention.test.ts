@@ -1,11 +1,11 @@
 import { expect, test } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import { ReactorError, PolicyFailure } from "../../src/errors.js";
-import type { CloseReport } from "../../src/SessionTypes.js";
+import { ReactorError, summarize } from "../../src/ReactorError.js";
+import { PolicyFailure } from "../../src/orchestration/policy.js";
+import type { CloseReport } from "../../src/Session.js";
 import * as Retention from "../../src/orchestration/retention.js";
 import type { SourceCleanup } from "../../src/orchestration/types.js";
-import { run } from "../harness.js";
 
 const complete: Retention.Retirement = {
   accounting: "settled",
@@ -50,7 +50,7 @@ const attached = cleanup({ allocation: "known", ownership: "attached", sessionId
 test("reserve before opening, including a closing source whose report already arrived", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make();
       const first = yield* retention.reserve;
@@ -71,7 +71,7 @@ test("reserve before opening, including a closing source whose report already ar
 test("failure budget reserves room for both current and replacement cleanup", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ maxUnresolvedCleanups: 3 });
       const failedOpen = yield* retention.reserve;
@@ -97,7 +97,7 @@ test("failure budget reserves room for both current and replacement cleanup", as
 test("newest complete rows survive eviction with exact separate omitted counters", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 1 });
       const reports = [cleanup({ sessionId: "simulation" }), owned, attached, owned];
@@ -124,7 +124,7 @@ test("newest complete rows survive eviction with exact separate omitted counters
 });
 
 test("failed acquisitions sharing one no-allocation lease each count once", async ({ signal }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       const report = cleanup();
@@ -149,9 +149,9 @@ test("unknown, erroneous and contradictory cleanup is never compacted", async ({
   const reports: SourceCleanup[] = [
     cleanup({ allocation: "unknown" }),
     cleanup({ localClosed: false }),
-    cleanup({ localErrors: [error] }),
+    cleanup({ localErrors: [summarize(error)] }),
     cleanup({ unresolvedPublications: ["pending"] }),
-    cleanup({ remote: { ...noRemote, error } }),
+    cleanup({ remote: { ...noRemote, error: summarize(error) } }),
     cleanup({ remote: { ...noRemote, attempted: true } }),
     cleanup({ allocation: "known", sessionId: "missing-ownership" }),
     cleanup({ allocation: "known", ownership: "owned", sessionId: "unconfirmed" }),
@@ -162,12 +162,12 @@ test("unknown, erroneous and contradictory cleanup is never compacted", async ({
       policy: [
         {
           operation: "stop",
-          result: Result.fail(PolicyFailure.refuse("SessionRetired", "fixture")),
+          result: Result.fail(summarize(PolicyFailure.refuse("SessionRetired", "fixture"))),
         },
       ],
     },
   ];
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       for (const report of reports) {
@@ -191,7 +191,7 @@ test("unknown, erroneous and contradictory cleanup is never compacted", async ({
 test("local retirement failures retain clean canonical evidence by reference", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       for (const retirement of [
@@ -199,7 +199,10 @@ test("local retirement failures retain clean canonical evidence by reference", a
         { ...complete, scope: "failed" as const },
         { ...complete, affinity: "failed" as const },
         { ...complete, unknownSubmissions: 1n },
-        { ...complete, errors: [ReactorError.fromCode("InvalidState", "retirement failed")] },
+        {
+          ...complete,
+          errors: [summarize(ReactorError.fromCode("InvalidState", "retirement failed"))],
+        },
       ]) {
         const owner = yield* retention.reserve;
         yield* retention.record(owner, owned);
@@ -216,7 +219,7 @@ test("local retirement failures retain clean canonical evidence by reference", a
 test("a close defect with no report remains explicit; conflicting reports stop further admission", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make();
       const failedClose = yield* retention.reserve;
@@ -241,7 +244,7 @@ test("a close defect with no report remains explicit; conflicting reports stop f
 test("retirement order is independent of acquisition order and retained incompletes", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 1 });
       const first = yield* retention.reserve;
@@ -271,7 +274,7 @@ test("retirement order is independent of acquisition order and retained incomple
 });
 
 test("retention limits reject invalid inputs before reservations exist", async ({ signal }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       for (const options of [
         { retainedSuccessfulCleanups: -1 },
@@ -293,7 +296,7 @@ test("retention limits reject invalid inputs before reservations exist", async (
 test("identified acquisition failures have no invented accounting or affinity obligation", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       const owner = yield* retention.reserve;
@@ -310,7 +313,7 @@ test("identified acquisition failures have no invented accounting or affinity ob
 test("a final summary reports an attempt whose retirement has not finished as incomplete", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       const finished = yield* retention.reserve;
@@ -335,7 +338,7 @@ test("a final summary reports an attempt whose retirement has not finished as in
 test("physical identity is bounded and cannot change within an ownership attempt", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make();
       const owner = yield* retention.reserve;
@@ -356,7 +359,7 @@ test("physical identity is bounded and cannot change within an ownership attempt
 test("contradictory DELETE facts and a different physical lease identity remain incomplete", async ({
   signal,
 }) => {
-  await run(
+  await Effect.runPromise(
     Effect.gen(function* () {
       const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
       for (const remote of [

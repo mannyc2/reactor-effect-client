@@ -2,27 +2,28 @@
 import { expect, test } from "vitest";
 import { Clock, Duration, Effect, Layer, Redacted, Result, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { AcquisitionFailure } from "../../src/errors.js";
+import { AcquisitionFailure } from "../../src/ReactorError.js";
 import * as H3 from "../../src/h3/index.js";
 import { bindSession } from "../../src/orchestration/h3-source.js";
 import { openH3With, resumeH3With } from "../../src/orchestration/open-h3.js";
 import type { Allocation } from "../../src/orchestration/open-h3.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
-import { Client } from "../../src/session/index.js";
-import type { AttachOptions, CloseReport, Factory, Session } from "../../src/session/index.js";
-import type { MediaGeneration } from "../../src/session/media.js";
+import { Reactor } from "../../src/Reactor.js";
+import type { AttachOptions } from "../../src/Reactor.js";
+import type { CloseReport, Session } from "../../src/Session.js";
+import type { DecodedMedia } from "../../src/Media.js";
 import { fixture, fixtureClip } from "../h3/ProviderSession.js";
 import type { Fixture } from "../h3/ProviderSession.js";
 import { signals } from "./Signals.js";
 import { cleanPressure, run, runClock, until } from "./SourceFixture.js";
 
-const media: MediaGeneration = {
+const media: DecodedMedia = {
   generation: 1n,
   tracks: [],
   retired: Effect.never,
   video: () => Stream.never,
   audio: () => Stream.never,
-  snapshot: Effect.succeed(cleanPressure),
+  pressure: Effect.succeed(cleanPressure),
 };
 const bind = bindSession(() => Effect.succeed(media));
 const resumeH3 = resumeH3With(bind);
@@ -58,27 +59,25 @@ const allocation = (fields: Partial<Allocation> = {}): Allocation => ({
   ...fields,
 });
 
-/** A Client whose attach returns `resumed` and whose create returns `created`. */
-const clientOf = (
+/** A Reactor whose attach returns `resumed` and whose create returns `created`. */
+const reactorOf = (
   attaches: AttachOptions[],
   resumed: Session,
   created: Session = resumed,
   creates: { count: number } = { count: 0 },
 ) =>
-  Layer.succeed(Client, {
+  Layer.succeed(Reactor, {
     create: () =>
       Effect.sync(() => {
         creates.count++;
         return created;
       }),
-    attach: () => Effect.die("attach is not used"),
-    createConnected: () => Effect.die("createConnected is not used"),
-    attachConnected: (options) =>
+    attach: (options) =>
       Effect.sync(() => {
         attaches.push(options);
         return resumed;
       }),
-  } satisfies Factory);
+  });
 
 test("a resume adopts the recorded session with its token and takes its lifetime from endsAt", () =>
   runClock(
@@ -90,7 +89,7 @@ test("a resume adopts the recorded session with its token and takes its lifetime
         allocation: allocation({ endsAt: 130 }),
         jwt,
         source: { provider },
-      }).pipe(Effect.provide(clientOf(attaches, adopted(fake))));
+      }).pipe(Effect.provide(reactorOf(attaches, adopted(fake))));
       expect(attaches).toEqual([{ sessionId: "h3-offline-session", jwt, adopt: true }]);
       expect(opened.source.provider.sessionId).toBe("h3-offline-session");
       expect(Duration.toMillis(Duration.fromInputUnsafe(opened.lifetime))).toBe(30_000);
@@ -120,7 +119,7 @@ test("resuming a busy session only reads it: no canvas, reset or playback comman
         allocation: allocation({ endsAt: (yield* Clock.currentTimeMillis) / 1000 + 60 }),
         jwt,
         source: { provider, holdLastFrame: true },
-      }).pipe(Effect.provide(clientOf([], adopted(fake))));
+      }).pipe(Effect.provide(reactorOf([], adopted(fake))));
       // Reads, and the one setting H3 accepts while it plays.
       expect(fake.calls.map((call) => call.command)).toEqual([
         "get_state",
@@ -151,7 +150,7 @@ test("a record without endsAt, for another model, past its end, or with a canvas
         { allocation: allocation({ endsAt: 200 }), jwt, source: { canvas: "1:1" } as never },
       ]) {
         const result = yield* Effect.result(
-          resumeH3(input).pipe(Effect.provide(clientOf(attaches, adopted(fake)))),
+          resumeH3(input).pipe(Effect.provide(reactorOf(attaches, adopted(fake)))),
         );
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result)) {
@@ -173,7 +172,7 @@ test("a resume that fails after attaching terminates the adopted session and rep
         resumeH3({
           allocation: allocation({ endsAt: (yield* Clock.currentTimeMillis) / 1000 + 60 }),
           jwt,
-        }).pipe(Effect.provide(clientOf([], adopted(fake)))),
+        }).pipe(Effect.provide(reactorOf([], adopted(fake)))),
       );
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
@@ -194,7 +193,7 @@ test("renewal retires a resumed source by terminating its adopted session", () =
       const creates = { count: 0 };
       const recorded = signals<Renewal.Renewal>();
       let opens = 0;
-      const client = clientOf([], adopted(resumedFake), fresh, creates);
+      const client = reactorOf([], adopted(resumedFake), fresh, creates);
       const handle = yield* Renewal.make({
         lead: "500 millis",
         open: Effect.suspend(() =>

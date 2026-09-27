@@ -13,8 +13,9 @@ import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import type { IceServers, Registered, SdpAnswer, SessionDescriptor } from "../../contract.js";
-import type { SessionAuthorization } from "../../coordinator/_internal/schemas.js";
+import type { IceServersReply, Registered, SdpAnswer } from "../../Coordinator.js";
+import type { Descriptor } from "../../Coordinator.js";
+import type { SessionAuthorization } from "../../Coordinator.js";
 import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
 import { structFromObject } from "../../json.js";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
@@ -80,7 +81,7 @@ const descriptor = (id: string, phase: Phase) =>
           selected_transport: { protocol: "webrtc", version: "1.0" },
         }
       : {}),
-  }) satisfies (typeof SessionDescriptor)["Encoded"];
+  }) satisfies (typeof Descriptor)["Encoded"];
 
 export const make = Effect.fnUntraced(function* (options: Options) {
   const scope = yield* Effect.scope;
@@ -326,7 +327,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     iceServers: (jwt: string | undefined, id: string) =>
       Effect.as(owned(jwt, id), {
         ice_servers: [{ uris: ["stun:stun.reactor.test:3478"], credentials: null }],
-      } satisfies (typeof IceServers)["Encoded"]),
+      } satisfies (typeof IceServersReply)["Encoded"]),
     register: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, true);

@@ -14,7 +14,7 @@ import {
 } from "effect";
 import { HttpClient } from "effect/unstable/http";
 import * as H3 from "../../src/h3/index.js";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { loadReferenceBytes } from "../../src/orchestration/references.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import * as TestPlatform from "../Platform.js";

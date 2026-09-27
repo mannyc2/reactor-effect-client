@@ -21,8 +21,8 @@ import {
   DataClientMessage,
   DataServerMessage,
   MessageKind,
-} from "../../wire.generated.js";
-import type { Google_Struct } from "../../wire.generated.js";
+} from "../wire.generated.js";
+import type { Google_Struct } from "../wire.generated.js";
 import type { Faults } from "./faults.js";
 import * as H3 from "./h3.js";
 import * as Media from "./media.js";

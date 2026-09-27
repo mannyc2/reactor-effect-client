@@ -14,8 +14,8 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import { PeerFactory, ReactorError } from "reactor-effect-client";
-import type { PeerFactoryShape } from "reactor-effect-client";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import { duration, parsed } from "reactor-effect-client/host";
 import { defaultShutdownTimeout } from "./_internal/peer.js";
 
@@ -34,7 +34,7 @@ export interface IsolatedOptions {
 
 const acquire = (
   options: IsolatedOptions,
-): Effect.Effect<PeerFactoryShape, ReactorError, Scope.Scope> =>
+): Effect.Effect<PeerFactory["Service"], ReactorError, Scope.Scope> =>
   Effect.gen(function* () {
     const shutdownTimeout = yield* parsed(() =>
       duration(options.shutdownTimeout ?? defaultShutdownTimeout, "native shutdownTimeout", {

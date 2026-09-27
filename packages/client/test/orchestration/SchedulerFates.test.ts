@@ -13,7 +13,7 @@ import {
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import { fillerKey, schedulerKeyOf } from "../../src/orchestration/scheduler-key.js";

@@ -1,12 +1,12 @@
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { PeerFactory, ReactorError } from "reactor-effect-client";
-import type { PeerFactoryShape, Session } from "reactor-effect-client";
-import { duration, mediaGeneration, parsed } from "reactor-effect-client/host";
-import type { MediaGeneration } from "reactor-effect-client/host";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import { ReactorError } from "reactor-effect-client/ReactorError";
+import { duration, parsed } from "reactor-effect-client/host";
 import { NativeBridge, resolveNativeBridge } from "./_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "./_internal/peer.js";
+import { acquirePeer } from "./_internal/port.js";
 
 export interface NativeOptions {
   /** Override the reactor-effect-native shared library path. */
@@ -33,7 +33,7 @@ const preflightError = (cause: unknown): ReactorError =>
  * Resolve, load and verify the native library once, as the layer is built;
  * every peer the factory makes then uses that library.
  */
-const acquire = (options: NativeOptions): Effect.Effect<PeerFactoryShape, ReactorError> =>
+const acquire = (options: NativeOptions): Effect.Effect<PeerFactory["Service"], ReactorError> =>
   Effect.gen(function* () {
     const shutdownTimeout = yield* parsed(() =>
       duration(options.shutdownTimeout ?? defaultShutdownTimeout, "native shutdownTimeout", {
@@ -48,7 +48,7 @@ const acquire = (options: NativeOptions): Effect.Effect<PeerFactoryShape, Reacto
       // The library stays loaded, but an owner join that outlived its deadline
       // may have wedged its shared libwebrtc factory: refuse before allocation.
       check: parsed(() => NativeBridge.requireUsable(resolved)),
-      make: () => new NativePeer(resolved, shutdownTimeout),
+      make: acquirePeer(() => new NativePeer(resolved, shutdownTimeout)),
     });
   });
 
@@ -65,16 +65,9 @@ export const layer = (options: NativeOptions = {}): Layer.Layer<PeerFactory, Rea
 
 export * as Isolated from "./isolated.js";
 
-/** Acquire the current decoded-media generation after session.connect succeeds. */
-export const media = (session: Session): Effect.Effect<MediaGeneration, ReactorError> =>
-  mediaGeneration(session);
-
 export type {
+  AudioFrame,
+  MediaPressure,
   VideoFormat,
   VideoFrame,
-  AudioFrame,
-  MediaGeneration,
-  MediaPressure,
-} from "reactor-effect-client/host";
-export { uploadFile } from "reactor-effect-client/host";
-export type { FileUploadOptions } from "reactor-effect-client/host";
+} from "reactor-effect-client/Media";

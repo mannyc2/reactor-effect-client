@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { Effect, Result } from "effect";
 import * as H3 from "../../src/h3/index.js";
 import { validateDeployment } from "../../src/h3/_internal/deployment.js";
-import { CommandFailure } from "../../src/session/commands.js";
+import { CommandFailure } from "../../src/ReactorError.js";
 import type { JsonObject } from "../../src/json.js";
 import { pngBytes } from "../../src/testing/Png.js";
 import { wavBytes } from "../../src/testing/Wav.js";

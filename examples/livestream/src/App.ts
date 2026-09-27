@@ -1,6 +1,5 @@
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/unstable/http";
-import * as Reactor from "reactor-effect-client";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import { Broadcast } from "./Broadcast.ts";
 import * as Channel from "./Channel.ts";
@@ -8,6 +7,7 @@ import { Routes } from "./Http.ts";
 import { Ledger } from "./Ledger.ts";
 import { Programme } from "./Programme.ts";
 import { Settings } from "./Settings.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
  * Closes the orchestration first on shutdown. This layer is built after the
@@ -49,7 +49,7 @@ export const App = CloseFirst.pipe(
   Layer.provideMerge(Layer.mergeAll(Programme.layer, Broadcast.layer)),
   Layer.provideMerge(Channel.layer),
   Layer.provideMerge(Layer.mergeAll(Ledger.layer, Settings.layer, Broadcast.preflight)),
-  Layer.provide(Reactor.FetchHttp.layer),
+  Layer.provide(FetchHttpClient.layer),
 );
 
 /** The routes served over the app. The HTTP server itself is provided by the caller. */

@@ -1,4 +1,4 @@
-import { ReactorError } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import { record, finite } from "reactor-effect-client/host";
 /** A Web Audio rendering-clock block, not an RTP or capture timestamp. */
 export interface WebAudioSample {

@@ -2,13 +2,9 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { jsonObject } from "../json.js";
-import {
-  AcquisitionFailure,
-  CommandFailure,
-  parse,
-  PolicyFailure,
-  ReactorError,
-} from "../errors.js";
+import { AcquisitionFailure, CommandFailure, ReactorError } from "../ReactorError.js";
+import { parse } from "../internal/validation.js";
+import { PolicyFailure } from "./policy.js";
 
 export { PolicyFailure };
 

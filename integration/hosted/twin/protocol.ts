@@ -7,7 +7,7 @@
  * bearer credential: the peer id is random and known only to the two ends.
  */
 import * as Schema from "effect/Schema";
-import type { Mapping } from "reactor-effect-client";
+import type { Mapping } from "reactor-effect-client/Coordinator";
 
 export type ChannelName = "control" | "data";
 

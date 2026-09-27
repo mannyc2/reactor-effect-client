@@ -5,13 +5,13 @@
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { take } from "../../_internal/queue.js";
-import type { Mapping } from "../../contract.js";
-import { ReactorError } from "../../errors.js";
+import { take } from "../queue.js";
+import type { Mapping } from "../../Coordinator.js";
+import { ReactorError } from "../../ReactorError.js";
 import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
 import { Observations } from "../../observation.js";
-import type { Channel, Peer, PeerEvent } from "../../PeerTypes.js";
-import type { AudioFrame, VideoFrame } from "../../session/media.js";
+import type { Channel, Peer, PeerEvent } from "../../Peer.js";
+import type { AudioFrame, VideoFrame } from "../../Media.js";
 import { monotonic, until } from "./playout.js";
 import type { Sessions } from "./sessions.js";
 
@@ -55,8 +55,8 @@ const unsupported = (message: string) =>
   ReactorError.fromCode("UnsupportedCapability", message, { outcome: "not-submitted" });
 
 /**
- * The host contract's `make` and `close` are synchronous, so the connection's
- * state lives in local variables; everything that waits is an Effect.
+ * One test peer. Its connection state is local to it; everything that waits
+ * is an Effect.
  */
 export const make = (sessions: Sessions): Peer => {
   let emit: ((event: PeerEvent) => void) | undefined;
@@ -170,12 +170,11 @@ export const make = (sessions: Sessions): Peer => {
     );
 
   return {
-    nativeTracks: false,
-    mediaSupported: true,
-    rawMedia: {
-      video: (name) => stream("video", video, name),
-      audio: (name) => stream("audio", audio, name),
-      snapshot: Effect.sync(() => ({
+    media: {
+      _tag: "Decoded",
+      video: (name: string) => stream("video", video, name),
+      audio: (name: string) => stream("audio", audio, name),
+      pressure: Effect.sync(() => ({
         closed,
         queuedControl: 0,
         queuedVideo: 0,
@@ -236,14 +235,8 @@ export const make = (sessions: Sessions): Peer => {
           }),
         ).pipe(Effect.asVoid);
       }),
-    close,
-    shutdown: Effect.sync(close),
-    lease: () => {
-      throw unsupported("ReactorTest peers expose decoded frames, not browser tracks");
-    },
-    release: () => undefined,
+    close: Effect.sync(close),
     direction: () => Effect.void,
-    replace: () => Effect.fail(unsupported("ReactorTest peers publish no tracks")),
     maxBitrate: () => Effect.void,
     stats: Effect.succeed([]),
   };

@@ -1,6 +1,6 @@
 import { Cause, Context, Effect, Exit, Fiber, Queue, Scheduler } from "effect";
 import { expect, onTestFinished, test } from "vitest";
-import { take, takeAll } from "../src/_internal/queue.js";
+import { take, takeAll } from "../src/internal/queue.js";
 
 class PreemptionScheduler implements Scheduler.Scheduler {
   readonly executionMode = "sync";

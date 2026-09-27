@@ -1,20 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { Deferred, Effect } from "effect";
-import { ReactorError } from "../../src/errors.js";
-import type { MessageCode } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
+import type { MessageCode } from "../../src/ReactorError.js";
 import { jsonObject, structFromObject } from "../../src/json.js";
 import type { JsonObject } from "../../src/json.js";
 import { Observations } from "../../src/observation.js";
-import { CommandFailure } from "../../src/session/commands.js";
+import { CommandFailure } from "../../src/ReactorError.js";
 import type {
   CommandReply,
+  ReadyState,
   Session,
   SessionEvent,
   Snapshot,
-  ReadyState,
   Uploaded,
-  UploadTimeoutOptions,
-} from "../../src/session/index.js";
+  UploadOptions,
+} from "../../src/Session.js";
+import * as Stream from "effect/Stream";
 import { providerSchema } from "./ProviderSchema.js";
 
 export interface FixtureClip {
@@ -110,7 +111,7 @@ export interface Fixture {
     readonly name: string;
     readonly mimeType: string;
     readonly bytes: Uint8Array;
-    readonly options: UploadTimeoutOptions | undefined;
+    readonly options: UploadOptions | undefined;
   }[];
   readonly accepted: FixtureClip[];
   readonly returns: CommandReply[];
@@ -154,7 +155,7 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
       name: string;
       mimeType: string;
       bytes: Uint8Array;
-      options: UploadTimeoutOptions | undefined;
+      options: UploadOptions | undefined;
     }[] = [];
     const lifecycleCalls = { connect: 0, reconnect: 0, close: 0 };
     const ready = (): ReadyState => ({
@@ -169,7 +170,6 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           state: "ACTIVE",
           capabilities: { protocol_version: "1.0", tracks: [] },
           selected_transport: { protocol: "webrtc", version: "1.0" },
-          raw: { session_id: id, state: "ACTIVE" },
         },
       },
     });
@@ -396,9 +396,6 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
     const session: Session = {
       id,
       ownership: "attached",
-      connect: Effect.sync(() => {
-        lifecycleCalls.connect++;
-      }),
       reconnect: Effect.sync(() => {
         lifecycleCalls.reconnect++;
       }),
@@ -407,17 +404,27 @@ export const fixture = (script: Script = {}): Effect.Effect<Fixture> =>
           ? Effect.succeed(ready())
           : Effect.fail(ReactorError.fromCode("InvalidState", "Fixture session is not ready")),
       ),
-      current: Effect.sync(current),
-      events: (bounds) => observers.stream(bounds),
+      snapshot: Effect.sync(current),
+      changes: Stream.fromEffect(Effect.sync(current)),
+      events: (bounds) =>
+        observers.stream(bounds?.capacity === undefined ? {} : { capacity: bounds.capacity }),
       observe: (bounds) =>
         Effect.gen(function* () {
-          const events = yield* observers.subscribe(bounds);
+          const events = yield* observers.subscribe(
+            bounds?.capacity === undefined ? {} : { capacity: bounds.capacity },
+          );
           return { initial: current(), revision, events };
         }),
       schema: Effect.sync(() => {
         reads.push("schema");
-        return { openapi: script.schema ?? providerSchema() };
+        return { openapi: script.schema ?? providerSchema(), raw: {} };
       }),
+      decoded: Effect.fail(
+        ReactorError.fromCode("UnsupportedCapability", "the H3 fixture carries no media"),
+      ),
+      tracks: Effect.fail(
+        ReactorError.fromCode("UnsupportedCapability", "the H3 fixture carries no media"),
+      ),
       command: (command, input, options = {}) =>
         Effect.gen(function* () {
           if (status !== "ready")

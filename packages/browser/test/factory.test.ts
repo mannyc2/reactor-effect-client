@@ -23,19 +23,20 @@ test("absent built-in peer fails when the layer is built, before any Client can 
     calls++;
     return Promise.reject(new Error("no coordinator request is expected"));
   }) as unknown as typeof globalThis.fetch;
-  const client = Reactor.layer({ apiUrl: "https://coordinator.fixture" }).pipe(
+  const client = Reactor.Reactor.layer().pipe(
     Layer.provide(Browser.layer),
+    Layer.provide(Reactor.Coordinator.layer({ apiUrl: "https://coordinator.fixture" })),
   );
   const result = await Effect.runPromise(
     Effect.result(
       Effect.scoped(
         Effect.gen(function* () {
-          const factory = yield* Reactor.Client;
-          return yield* factory.createConnected({ model: "owner/model" });
+          const reactor = yield* Reactor.Reactor.Reactor;
+          return yield* reactor.create({ model: "owner/model" });
         }).pipe(Effect.provide(client)),
       ),
     ).pipe(
-      Effect.provide(Reactor.FetchHttp.layer),
+      Effect.provide(FetchHttpClient.layer),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
       Effect.provideService(Crypto.Crypto, webCrypto),
     ),

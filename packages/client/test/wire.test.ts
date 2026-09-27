@@ -1,5 +1,29 @@
-import { test, equal, throws, hex, unhex, assert } from "./harness.js";
-import * as W from "../src/wire.generated.js";
+import { assert, it as test } from "@effect/vitest";
+import { Encoding } from "effect";
+import { ReactorError } from "../src/ReactorError.js";
+
+const hex = (bytes: Uint8Array): string => Encoding.encodeHex(bytes);
+const unhex = (text: string): Uint8Array<ArrayBuffer> => {
+  const decoded = Encoding.decodeHex(text);
+  assert.isTrue(decoded._tag === "Success", "invalid hexadecimal fixture");
+  return decoded._tag === "Success"
+    ? (decoded.success as Uint8Array<ArrayBuffer>)
+    : new Uint8Array(0);
+};
+const equal = (actual: unknown, expected: unknown): void => {
+  assert.deepStrictEqual(actual, expected);
+};
+/** A decoder rejects malformed bytes by throwing a ReactorError with this reason. */
+const throws = (body: () => unknown, reason: string): void => {
+  try {
+    body();
+  } catch (error) {
+    assert.isTrue(ReactorError.is(error) && error.reason._tag === reason, `expected ${reason}`);
+    return;
+  }
+  assert.fail("expected a throw");
+};
+import * as W from "../src/internal/wire.generated.js";
 import {
   array,
   record,
@@ -9,7 +33,7 @@ import {
   json,
   jsonObject,
 } from "../src/json.js";
-import { Reader, Writer } from "../src/protobuf.js";
+import { Reader, Writer } from "../src/internal/protobuf.js";
 export const oracleOutputs: { readonly name: string; readonly hex: string }[] = [];
 const transcode = (
   type: string,
@@ -138,9 +162,9 @@ test("JSON object boundary retains owned frozen output and original validation b
   const copy = jsonObject(input);
   const nested = record(copy.nested);
   const values = array(nested.values, "nested.values");
-  assert(copy !== input && nested !== input.nested && values !== input.nested.values);
+  assert.isTrue(copy !== input && nested !== input.nested && values !== input.nested.values);
   for (const value of [copy, nested, values, values[2]]) {
-    assert(Object.isFrozen(value), "validated output must stay recursively frozen");
+    assert.isTrue(Object.isFrozen(value), "validated output must stay recursively frozen");
   }
   input.nested.text = "after";
   input.nested.values.push(2);
@@ -157,11 +181,12 @@ test("Struct conversion preserves object/null/absence differences and resists pr
   const input: unknown = JSON.parse('{"__proto__":{"polluted":true},"x":null,"array":[{},[]]}');
   const back = objectFromStruct(structFromObject(input));
   equal(back, input);
-  assert(Object.prototype.hasOwnProperty.call(back, "__proto__"));
+  assert.isTrue(Object.prototype.hasOwnProperty.call(back, "__proto__"));
   const empty = W.ModelMessage.decode(unhex("1200"));
-  assert(empty.data !== undefined);
-  equal(objectFromStruct(empty.data), {});
-  assert(W.ModelMessage.decode(new Uint8Array()).data === undefined);
+  const data = empty.data;
+  assert.isTrue(data !== undefined);
+  equal(data === undefined ? undefined : objectFromStruct(data), {});
+  assert.isTrue(W.ModelMessage.decode(new Uint8Array()).data === undefined);
 });
 test("Struct helper source semantics: unset Value/nonfinite numbers normalize to JSON null only at conversion", () => {
   equal(

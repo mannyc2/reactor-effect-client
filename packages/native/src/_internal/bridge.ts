@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import * as Redacted from "effect/Redacted";
-import { Native, ReactorError } from "reactor-effect-client";
-import type { ErrorContext, FailureCode } from "reactor-effect-client";
+import { Native, ReactorError } from "reactor-effect-client/ReactorError";
+import type { ErrorContext, FailureCode } from "reactor-effect-client/ReactorError";
 
 const ABI_VERSION = 4;
 const CALL_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -65,7 +65,10 @@ export const nativeFailure = (
   return code === "Native"
     ? new ReactorError({
         reason: new Native({ message: message(code), status, backendMessage }),
-        context: Object.keys(detail).length === 0 ? context : { ...context, detail },
+        context:
+          Object.keys(detail).length === 0
+            ? context
+            : { ...context, detail: Redacted.make(detail) },
       })
     : ReactorError.fromCode(code, message(code), {
         ...context,

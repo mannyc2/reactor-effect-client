@@ -14,11 +14,12 @@ import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } fro
 import type { AddressInfo, Socket } from "node:net";
 import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
-import type { JsonObject, Mapping } from "reactor-effect-client";
+import type { Mapping } from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/h3";
 import { H3Model, tracks } from "./h3.js";
 import { answer, parseCandidate, peerOf } from "./protocol.js";
 import type { Candidate, ChannelName, EncodedEvent } from "./protocol.js";
+import * as Schema from "effect/Schema";
 
 /** With `slowDelete`, a session reads STOPPING for this long after DELETE, then CLOSED. */
 const stoppingMs = 1500;
@@ -341,7 +342,7 @@ class TwinServer implements Twin {
   }
 
   /** Shaped as the live `GET /pricing`, which lists a model by its bare name. */
-  private pricing(): JsonObject {
+  private pricing(): Schema.JsonObject {
     const rate = this.options.rate ?? { creditsPerSecond: 5, creditsPerDollar: 3000 };
     return {
       settings: { currency_code: "USD", credits_per_dollar: rate.creditsPerDollar },
@@ -355,7 +356,7 @@ class TwinServer implements Twin {
   }
 
   /** `POST /tokens`: the API key buys one bounded session scope, signed HS256. */
-  private token(headers: IncomingHttpHeaders, body: unknown): JsonObject {
+  private token(headers: IncomingHttpHeaders, body: unknown): Schema.JsonObject {
     const key = headers["reactor-api-key"];
     const expected = Buffer.from(this.apiKey);
     if (
@@ -398,7 +399,8 @@ class TwinServer implements Twin {
 
   /** The claims say plainly that the twin made the token, for anyone who decodes one. */
   private sign(grant: Grant, issuedAt: number): string {
-    const encode = (value: JsonObject) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const encode = (value: Schema.JsonObject) =>
+      Buffer.from(JSON.stringify(value)).toString("base64url");
     const signed = `${encode({ alg: "HS256", typ: "JWT", kid: "reactor-twin" })}.${encode({
       iss: "reactor-twin",
       aud: this.url,
@@ -510,7 +512,7 @@ class TwinServer implements Twin {
     return [204];
   }
 
-  private create(grant: Grant, body: unknown): JsonObject {
+  private create(grant: Grant, body: unknown): Schema.JsonObject {
     const model = field(body, "model", "name");
     const transports = field(body, "supported_transports");
     if (typeof model !== "string" || !Array.isArray(transports))
@@ -568,7 +570,7 @@ class TwinServer implements Twin {
     return this.describe(session);
   }
 
-  private describe(session: Session): JsonObject {
+  private describe(session: Session): Schema.JsonObject {
     return {
       session_id: session.id,
       state: session.state,
@@ -607,7 +609,7 @@ class TwinServer implements Twin {
     if (session.peer !== undefined) this.closeLink(session.peer, "ended");
   }
 
-  private iceServers(): JsonObject {
+  private iceServers(): Schema.JsonObject {
     return {
       ice_servers: [
         { uris: [`stun:127.0.0.1:${this.port}`], credentials: null },
@@ -619,7 +621,7 @@ class TwinServer implements Twin {
     };
   }
 
-  private allocate(body: unknown): JsonObject {
+  private allocate(body: unknown): Schema.JsonObject {
     const name = field(body, "name");
     const size = field(body, "size");
     if (typeof name !== "string" || typeof field(body, "mime_type") !== "string")

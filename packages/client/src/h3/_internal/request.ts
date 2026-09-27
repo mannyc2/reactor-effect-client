@@ -1,6 +1,6 @@
-import { ReactorError } from "../../errors.js";
-import { checkedString } from "../../protobuf.js";
-import type { UploadReference } from "../../wire.generated.js";
+import { ReactorError } from "../../ReactorError.js";
+import { checkedString } from "../../internal/protobuf.js";
+import type { UploadReference } from "../../internal/wire.generated.js";
 import {
   audioReferenceLimits,
   metadataMaxChars,

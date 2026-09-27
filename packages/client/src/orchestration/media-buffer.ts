@@ -2,10 +2,11 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { take as takeQueue } from "../_internal/queue.js";
-import { ReactorError } from "../errors.js";
-import type { ReactorFailure } from "../errors.js";
-import type { AudioFrame, VideoFrame } from "../session/media.js";
+import { take as takeQueue } from "../internal/queue.js";
+import { ReactorError } from "../ReactorError.js";
+
+import type { AudioFrame, VideoFrame } from "../Media.js";
+import type { OrchestrationFailure } from "./policy.js";
 
 /**
  * One reader at a time drains a queue. A second concurrent reader fails with
@@ -66,8 +67,8 @@ export const defaultLimits: Limits = { videoFrames: 96, audioSamples: 48_000 * 4
 /** The output queue owns admission and accounting together; source readers cannot bypass its bounds. */
 export const make = (limits: Limits = defaultLimits) =>
   Effect.gen(function* () {
-    const video = yield* Queue.unbounded<VideoFrame, ReactorFailure | Cause.Done>();
-    const audio = yield* Queue.unbounded<AudioFrame, ReactorFailure | Cause.Done>();
+    const video = yield* Queue.unbounded<VideoFrame, OrchestrationFailure | Cause.Done>();
+    const audio = yield* Queue.unbounded<AudioFrame, OrchestrationFailure | Cause.Done>();
     let ended = false;
     let queuedFrames = 0;
     let queuedSamples = 0;
@@ -119,7 +120,7 @@ export const make = (limits: Limits = defaultLimits) =>
         queuedBytes: queuedVideoBytes + queuedSamples * 2,
       }),
       forwarded: () => ({ queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples }),
-      failCause: (cause: Cause.Cause<ReactorFailure>): void => {
+      failCause: (cause: Cause.Cause<OrchestrationFailure>): void => {
         if (ended) return;
         ended = true;
         Queue.failCauseUnsafe(video, cause);

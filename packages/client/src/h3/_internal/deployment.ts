@@ -1,5 +1,5 @@
 import * as Predicate from "effect/Predicate";
-import { ReactorError } from "../../errors.js";
+import { ReactorError } from "../../ReactorError.js";
 import { jsonObject } from "../../json.js";
 import {
   audioReferenceLimits,

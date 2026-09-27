@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import { Effect, Result } from "effect";
-import { ReactorError } from "../../src/errors.js";
+import { Effect, Redacted, Result } from "effect";
+import { ReactorError } from "../../src/ReactorError.js";
 import * as H3 from "../../src/h3/index.js";
-import { CommandFailure } from "../../src/session/commands.js";
+import { CommandFailure } from "../../src/ReactorError.js";
 import { fixture, fixtureClip, textArg } from "./ProviderSession.js";
 import { runFlowing } from "./Clock.js";
 
@@ -125,7 +125,9 @@ test("bounded reconciliation retains the exact unknown failure, original code an
       const error = failure(yield* Effect.result(prepared.submit));
       expect(error).toBe(original!);
       expect(error.reason._tag).toBe("Native");
-      expect(error.context.detail).toBe(cause);
+      expect(
+        error.context.detail === undefined ? undefined : Redacted.value(error.context.detail),
+      ).toBe(cause);
       expect(error.context).toMatchObject({
         operation: "enqueue",
         outcome: "unknown",

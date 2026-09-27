@@ -13,7 +13,7 @@ import {
 } from "effect";
 import { HttpClient } from "effect/unstable/http";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { Observations } from "../../src/observation.js";
 import { ClipId, ClipRequest, PolicyFailure } from "../../src/orchestration/request.js";
 import { emptyState } from "../../src/orchestration/queries.js";
@@ -26,8 +26,8 @@ import type {
   Source,
   SourceCleanup,
 } from "../../src/orchestration/types.js";
-import { CommandFailure } from "../../src/session/commands.js";
-import type { AudioFrame, MediaPressure, VideoFrame } from "../../src/session/media.js";
+import { CommandFailure } from "../../src/ReactorError.js";
+import type { AudioFrame, MediaPressure, VideoFrame } from "../../src/Media.js";
 import * as Submission from "../../src/Submission.js";
 import * as TestPlatform from "../Platform.js";
 import { fixtureClip } from "../h3/ProviderSession.js";

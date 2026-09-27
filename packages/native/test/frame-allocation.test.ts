@@ -12,12 +12,10 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
-import { FetchHttp } from "reactor-effect-client";
-import type { ReactorFailure } from "reactor-effect-client";
+import type { ReactorFailure } from "reactor-effect-client/ReactorError";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge, NativeBridge } from "../src/_internal/bridge.js";
 import type { NativeVideo } from "../src/_internal/bridge.js";
-import * as Native from "../src/index.js";
 import { compileFrameFixture, expectedPixel } from "./frame-fixture.js";
 import { compileFixture, nativeClient } from "./support.js";
 
@@ -206,12 +204,11 @@ describe("decoded video allocation budget", () => {
               model: "fixture/native-session",
               jwt: Redacted.make("fixture-token"),
             });
-            yield* client.connect;
-            const media = yield* Native.media(client);
+            const media = yield* client.decoded;
             const reader = yield* Effect.forkChild(media.video("main_video").pipe(Stream.runHead));
             yield* Effect.yieldNow;
             // The session fixture releases media only after this snapshot call.
-            yield* media.snapshot;
+            yield* media.pressure;
             const frame = Option.getOrThrow(yield* Fiber.join(reader));
             yield* client.close;
             return frame;
@@ -284,6 +281,6 @@ const withCoordinator = <A, E extends ReactorFailure>(
   effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
 ): Effect.Effect<A, E> =>
   effect.pipe(
-    Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
+    Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer)),
     Effect.provideService(FetchHttpClient.Fetch, coordinatorFetch),
   );

@@ -7,16 +7,18 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { ReactorError, ReactorFailure } from "../errors.js";
+import type { ReactorError } from "../ReactorError.js";
 import type { ObservationOptions } from "../observation.js";
 import type { Clip } from "../h3/messages.js";
-import type { CommandFailure, PolicyFailure } from "../errors.js";
-import { CommandFailureFromJson, PolicyFailureFromJson, ReactorErrorFromJson } from "../errors.js";
-import { CloseReport } from "../SessionTypes.js";
-import type { AudioFrame, VideoFrame, MediaPressure } from "../session/media.js";
+import type { CommandFailure } from "../ReactorError.js";
+import type { PolicyFailure } from "./policy.js";
+import { FailureSummary } from "../ReactorError.js";
+import { CloseReport } from "../Session.js";
+import type { AudioFrame, VideoFrame, MediaPressure } from "../Media.js";
 import type { Submission } from "../Submission.js";
 import type { Affinity } from "../Sequence.js";
 import type { Canvas, ClipId, ClipRequest } from "./request.js";
+import type { OrchestrationFailure } from "./policy.js";
 
 /**
  * How long a clip took to become Ready, measured on the monotonic clock, so a
@@ -140,7 +142,7 @@ export type EngineEvent =
    * past Ended elapses, without this event.
    */
   | { readonly _tag: "HandoffReady"; readonly sessionId: string }
-  | { readonly _tag: "SessionFailed"; readonly failure: ReactorFailure };
+  | { readonly _tag: "SessionFailed"; readonly failure: OrchestrationFailure };
 export const EngineEvent = Data.taggedEnum<EngineEvent>();
 
 export type RemoveOutcome = "unstarted" | "in_flight" | "generation" | "ready";
@@ -191,7 +193,7 @@ export interface EngineShape {
    * A waiter that must act on either, such as one that closes the handle,
    * handles the whole Cause (`Effect.catchCause`), not only this value.
    */
-  readonly failure: Effect.Effect<ReactorFailure>;
+  readonly failure: Effect.Effect<OrchestrationFailure>;
   /** Permanently stop new renewal allocations; already acquired sources may finish. */
   readonly stopRenewal: Effect.Effect<void, EngineError>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
@@ -233,16 +235,20 @@ export interface EngineShape {
  *   rather than reporting zero.
  */
 export interface MediaShape {
-  readonly video: Stream.Stream<VideoFrame, ReactorFailure>;
-  readonly audio: Stream.Stream<AudioFrame, ReactorFailure>;
+  readonly video: Stream.Stream<VideoFrame, OrchestrationFailure>;
+  readonly audio: Stream.Stream<AudioFrame, OrchestrationFailure>;
   readonly pressure: Effect.Effect<MediaPressure, ReactorError>;
   readonly videoFramesPerSecond: number;
 }
 
 export type MediaState =
   | { readonly _tag: "Ready"; readonly sessionId: string; readonly generation: bigint }
-  | { readonly _tag: "Recovering"; readonly sessionId: string; readonly cause: ReactorFailure }
-  | { readonly _tag: "Failed"; readonly cause: ReactorFailure }
+  | {
+      readonly _tag: "Recovering";
+      readonly sessionId: string;
+      readonly cause: OrchestrationFailure;
+    }
+  | { readonly _tag: "Failed"; readonly cause: OrchestrationFailure }
   | { readonly _tag: "Closed" };
 
 export interface MediaTail {
@@ -333,7 +339,7 @@ export interface MediaSource {
 
 export const PolicyCleanup = Schema.Struct({
   operation: Schema.String,
-  result: Schema.Result(Schema.Void, Schema.Union([CommandFailureFromJson, PolicyFailureFromJson])),
+  result: Schema.Result(Schema.Void, FailureSummary),
 });
 export interface PolicyCleanup extends Schema.Schema.Type<typeof PolicyCleanup> {}
 
@@ -457,7 +463,7 @@ export const CleanupSummary = Schema.Struct({
         accounting: Schema.Literals(["settled", "timed-out", "not-applicable"]),
         scope: Schema.Literals(["closed", "failed"]),
         affinity: Schema.Literals(["retired", "failed", "not-applicable"]),
-        errors: Schema.Array(ReactorErrorFromJson),
+        errors: Schema.Array(FailureSummary),
         /** Settled bookkeeping can still record an unknown dispatch outcome. */
         unknownSubmissions: cleanupCount,
       }),

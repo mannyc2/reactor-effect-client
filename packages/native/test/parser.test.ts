@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Redacted from "effect/Redacted";
-import { ReactorError } from "reactor-effect-client";
-import type { Track } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { Track } from "reactor-effect-client/Coordinator";
 import { failureCode, type NativeAudio, type NativeVideo } from "../src/_internal/bridge.js";
 import { nativePeerTesting } from "../src/_internal/peer.js";
 

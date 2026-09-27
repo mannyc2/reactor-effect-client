@@ -4,9 +4,10 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, FileSystem, Layer, Path, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import * as Reactor from "reactor-effect-client";
+import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/h3";
 import { Api, TokenUnavailable } from "./Api.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
  * Mints one short session token per request. The token caps the session it
@@ -23,7 +24,7 @@ const SessionHandlers = HttpApiBuilder.group(
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
       Config.withDefault("https://api.reactor.inc"),
     );
-    const coordinator = yield* Reactor.Coordinator.make({ apiUrl });
+    const coordinator = yield* Coordinator.make({ apiUrl });
     return handlers.handleAll({
       token: () =>
         coordinator
@@ -76,7 +77,7 @@ const Page = HttpRouter.use(
 HttpRouter.serve(
   Layer.mergeAll(HttpApiBuilder.layer(Api).pipe(Layer.provide(SessionHandlers)), Page),
 ).pipe(
-  Layer.provide(Reactor.FetchHttp.layer),
+  Layer.provide(FetchHttpClient.layer),
   // Local only: anyone who can reach this server can start paid sessions.
   Layer.provide(
     NodeHttpServer.layerConfig(createServer, {

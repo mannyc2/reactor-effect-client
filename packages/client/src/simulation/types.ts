@@ -2,7 +2,7 @@ import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type { ModelProfile } from "../h3/profile.js";
 import type { LocalClipRecord } from "../orchestration/types.js";
-import type { AudioFrame, VideoFrame } from "../session/media.js";
+import type { AudioFrame, VideoFrame } from "../Media.js";
 
 export interface SimulatedFaults {
   readonly buildFails?: (sequence: number) => boolean;

@@ -12,10 +12,12 @@ import {
   Stream,
 } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
-import * as Reactor from "reactor-effect-client";
+import * as Reactor from "reactor-effect-client/Reactor";
+import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/h3";
 import * as Native from "reactor-effect-native";
 import { toMp4 } from "./Recording.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /** The session's cap: a token for 90 seconds bounds what one capture can cost. */
 const sessionSeconds = 90;
@@ -32,14 +34,14 @@ const billedSeconds = Math.ceil(sessionSeconds / 60) * 60;
  * it terminates the paid session and reports whether that was confirmed.
  */
 const record = Effect.fn("record")(function* (options: {
-  readonly grant: Reactor.Coordinator.TokenGrant;
+  readonly grant: Coordinator.TokenGrant;
   readonly prompt: string;
   readonly seconds: number;
   readonly references: ReadonlyArray<H3.Reference>;
   readonly out: string;
 }) {
-  const client = yield* Reactor.Client;
-  const session = yield* client.createConnected({ model: H3.modelName, jwt: options.grant.jwt });
+  const reactor = yield* Reactor.Reactor;
+  const session = yield* reactor.create({ model: H3.modelName, jwt: options.grant.jwt });
   yield* Console.log(`session ${session.id} connected`);
   // However the capture ends (done, failed or interrupted), close the session
   // and say whether its termination was confirmed. The scope's own release
@@ -58,7 +60,7 @@ const record = Effect.fn("record")(function* (options: {
   const provider = yield* H3.make(session);
   // H3 changes no playback policy on its own: ask it to play the clip when it is ready.
   yield* provider.setAutoplay(true);
-  const media = yield* Native.media(session);
+  const media = yield* session.decoded;
   const withAudio = media.tracks.some(
     (track) => track.name === "main_audio" && track.direction === "recvonly",
   );
@@ -95,7 +97,7 @@ const record = Effect.fn("record")(function* (options: {
   yield* Deferred.succeed(ended, undefined);
 
   const written = yield* Fiber.join(writing);
-  const pressure = yield* media.snapshot;
+  const pressure = yield* media.pressure;
   yield* Console.log(
     `wrote ${options.out}: ${written.frames} frames, ${written.filledFrames} filled from ` +
       `dropped ones, ${written.filledBlocks} audio blocks filled with silence ` +
@@ -129,8 +131,8 @@ const capture = Command.make(
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
       Config.withDefault("https://api.reactor.inc"),
     );
-    const coordinator = yield* Reactor.Coordinator.make({ apiUrl });
-    const rate = yield* Reactor.Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
+    const coordinator = yield* Coordinator.make({ apiUrl });
+    const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
     yield* Console.log(
       `at most ${((billedSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
         `the session is capped at ${sessionSeconds} seconds, billed as ${billedSeconds / 60} minutes`,
@@ -150,7 +152,8 @@ const capture = Command.make(
     });
     yield* record({ grant, prompt, seconds, references, out }).pipe(
       Effect.provide(
-        Reactor.layer({ apiUrl }).pipe(
+        Reactor.layer().pipe(
+          Layer.provide(Coordinator.layer({ apiUrl })),
           Layer.provide(isolated ? Native.Isolated.layer() : Native.layer()),
         ),
       ),
@@ -160,6 +163,6 @@ const capture = Command.make(
 
 capture.pipe(
   Command.run({ version: "0.6.0" }),
-  Effect.provide(Layer.mergeAll(NodeServices.layer, Reactor.FetchHttp.layer)),
+  Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
   NodeRuntime.runMain,
 );

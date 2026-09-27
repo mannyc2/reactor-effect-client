@@ -4,16 +4,17 @@ import * as Crypto from "effect/Crypto";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import type * as PlatformHttp from "effect/unstable/http/HttpClient";
-import { FetchHttp, make as makeClient } from "reactor-effect-client";
-import type { Configuration, ReactorFailure } from "reactor-effect-client";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import type { ReactorFailure } from "reactor-effect-client/ReactorError";
 import * as Browser from "reactor-effect-browser";
 import * as W from "reactor-effect-client/wire";
 import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
 
 /** The canonical factory over the browser peer, its host layer built in the caller's scope. */
-const browserClient = (configuration: Configuration) =>
-  Layer.build(Browser.layer).pipe(
-    Effect.flatMap((peers) => makeClient(configuration).pipe(Effect.provide(peers))),
+const browserClient = (settings: Coordinator.Options & Reactor.Options) =>
+  Layer.build(Layer.merge(Browser.layer, Coordinator.layer(settings))).pipe(
+    Effect.flatMap((services) => Reactor.make(settings).pipe(Effect.provide(services))),
   );
 
 type Mapping = {
@@ -254,7 +255,7 @@ const runBrowser = <A, E extends ReactorFailure>(
 ): Promise<A> =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(FetchHttp.layer),
+      Effect.provide(FetchHttpClient.layer),
       Effect.provideService(FetchHttpClient.Fetch, fetchImpl),
       Effect.provideService(Crypto.Crypto, browserCrypto),
     ),
@@ -371,9 +372,9 @@ const localBrowserPeerCheck = async (): Promise<object> => {
         Effect.gen(function* () {
           const factory = yield* browserClient({
             apiUrl: "http://browser.fixture",
-            session: { replyTimeout: "5 seconds" },
+            replyTimeout: "5 seconds",
           });
-          const session = yield* factory.createConnected({ model: "fixture/browser" });
+          const session = yield* factory.create({ model: "fixture/browser" });
           const ready = yield* session.ready;
           assert(ready.remote.ownership === "owned", "browser acquisition lost remote ownership");
           const media = yield* Browser.media(session);
@@ -478,9 +479,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
       Effect.scoped(
         Effect.gen(function* () {
           const factory = yield* browserClient({ apiUrl: "http://browser.fixture/failure" });
-          const failed = yield* Effect.result(
-            factory.createConnected({ model: "fixture/browser-failure" }),
-          );
+          const failed = yield* Effect.result(factory.create({ model: "fixture/browser-failure" }));
           assert(failed._tag === "Failure", "invalid browser answer unexpectedly connected");
           assert(
             failedDeletes === 1 && failedClosed,

@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { renewalFixture } from "./RenewalFixture.js";
 import { cleanPressure, gate, member, readyState, record, run, runClock } from "./SourceFixture.js";
 

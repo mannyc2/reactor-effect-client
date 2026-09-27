@@ -1,24 +1,20 @@
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import {
-  CommandFailure,
-  parsed,
-  PolicyFailure,
-  positiveLimit,
-  ReactorError,
-  Remote,
-} from "../../errors.js";
+import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
+import { parsed, positiveLimit } from "../../internal/validation.js";
+import { PolicyFailure } from "../../orchestration/policy.js";
 import { duration } from "../../duration.js";
 import { Observations } from "../../observation.js";
-import type { CommandReply, Session, SessionEvent } from "../../session/index.js";
+import type { CommandReply, Session, SessionEvent } from "../../Session.js";
 import * as Submission from "../../Submission.js";
-import type { UploadReference } from "../../wire.generated.js";
+import type { UploadReference } from "../../internal/wire.generated.js";
 import { decodeMessage } from "../messages.js";
 import { Operations } from "./operations.js";
 import type { Clip, DecodedMessage, Payload } from "../messages.js";
@@ -77,7 +73,11 @@ const uncertain = (
 /** The refusal reason is provider free text with no stable codes: kept for diagnosis only. */
 const rejected = (operation: string, source: CommandReply, reason: string): CommandFailure =>
   new CommandFailure({
-    reason: new Remote({ _tag: "Remote", message: `H3 ${operation} was refused`, body: reason }),
+    reason: new Remote({
+      _tag: "Remote",
+      message: `H3 ${operation} was refused`,
+      body: Redacted.make(reason),
+    }),
     context: {
       operation,
       outcome: "replied",

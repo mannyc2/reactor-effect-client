@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Clock, Effect, Option, Result, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { ClipRequest, PolicyFailure } from "../../src/orchestration/request.js";
 import { ItemKey, makeScheduler } from "../../src/orchestration/scheduler.js";
 import type { AsRunEvent, ItemSpec, SchedulerOptions } from "../../src/orchestration/scheduler.js";

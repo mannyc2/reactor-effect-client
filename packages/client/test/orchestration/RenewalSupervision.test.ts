@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Cause, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import {
   gate,

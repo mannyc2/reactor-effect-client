@@ -8,9 +8,9 @@ import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { make as makeClient } from "reactor-effect-client";
-import type { Configuration } from "reactor-effect-client";
-import type { IceCandidate } from "reactor-effect-client/host";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import type { IceCandidate } from "reactor-effect-client/Coordinator";
 import * as Native from "../src/index.js";
 
 export const libraryName =
@@ -70,11 +70,11 @@ export const until = async (
  * does for an application.
  */
 export const nativeClient = (
-  configuration: Configuration = {},
+  settings: Coordinator.Options & Reactor.Options = {},
   options: Native.NativeOptions = {},
 ) =>
-  Layer.build(Native.layer(options)).pipe(
-    Effect.flatMap((peers) => makeClient(configuration).pipe(Effect.provide(peers))),
+  Layer.build(Layer.merge(Native.layer(options), Coordinator.layer(settings))).pipe(
+    Effect.flatMap((services) => Reactor.make(settings).pipe(Effect.provide(services))),
   );
 
 /** The test far peer that `bun run native:test` builds, or `REACTOR_NATIVE_FAR_PEER`. */

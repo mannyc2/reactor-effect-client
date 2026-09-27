@@ -1,6 +1,6 @@
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { ReactorError } from "../errors.js";
+import { ReactorError } from "../ReactorError.js";
 import { jsonObject } from "../json.js";
 import type { JsonObject } from "../json.js";
 

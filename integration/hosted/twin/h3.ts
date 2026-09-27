@@ -15,7 +15,6 @@
  * Reactor.
  */
 import { randomUUID } from "node:crypto";
-import type { Json, JsonObject } from "reactor-effect-client";
 import {
   ControlClientMessage,
   ControlServerMessage,
@@ -26,6 +25,7 @@ import {
   structFromObject,
 } from "reactor-effect-client/wire";
 import type { ChannelName, Media } from "./protocol.js";
+import * as Schema from "effect/Schema";
 
 /** A clip builds for this long before it is ready to play. */
 const buildMs = 500;
@@ -93,14 +93,17 @@ export interface ModelHost {
   readonly enqueued: () => void;
 }
 
-const isCount = (value: Json | undefined): value is number =>
+const isCount = (value: Schema.Json | undefined): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-const isRequestable = (value: Json | undefined): value is number =>
+const isRequestable = (value: Schema.Json | undefined): value is number =>
   typeof value === "number" && value >= requestSeconds.min && value <= requestSeconds.max;
-const absent = (value: Json | undefined): value is null | undefined =>
+const absent = (value: Schema.Json | undefined): value is null | undefined =>
   value === undefined || value === null;
 /** How many references one-or-a-list names; undefined when both are given, or either is malformed. */
-const references = (single: Json | undefined, list: Json | undefined): number | undefined => {
+const references = (
+  single: Schema.Json | undefined,
+  list: Schema.Json | undefined,
+): number | undefined => {
   if (!absent(single))
     return absent(list) && typeof single === "object" && !Array.isArray(single) ? 1 : undefined;
   if (absent(list)) return 0;
@@ -233,7 +236,7 @@ export class H3Model {
     this.timers.delete(timer);
   }
 
-  private data(requestId: string, kind: number, type: string, data: JsonObject): void {
+  private data(requestId: string, kind: number, type: string, data: Schema.JsonObject): void {
     this.host.send(
       "data",
       DataServerMessage.encode({
@@ -244,11 +247,11 @@ export class H3Model {
     );
   }
 
-  private reply(requestId: string, type: string, data: JsonObject): void {
+  private reply(requestId: string, type: string, data: Schema.JsonObject): void {
     this.data(requestId, MessageKind.MESSAGE_KIND_RESPONSE, type, data);
   }
 
-  private broadcast(type: string, data: JsonObject): void {
+  private broadcast(type: string, data: Schema.JsonObject): void {
     this.data("", MessageKind.MESSAGE_KIND_NOTIFICATION, type, data);
   }
 
@@ -263,7 +266,7 @@ export class H3Model {
     this.reply(requestId, "command_error", { command, reason });
   }
 
-  private queue(): JsonObject {
+  private queue(): Schema.JsonObject {
     return {
       generation: this.generation.map((clip) => ({ ...clip })),
       playout: this.playout.map((clip) => ({ ...clip })),
@@ -275,7 +278,7 @@ export class H3Model {
     return this.playing === undefined ? 0 : (now - this.playing.startedAt) / 1000;
   }
 
-  private state(): JsonObject {
+  private state(): Schema.JsonObject {
     const canvas = canvases[this.aspect]!;
     const queued = this.generation.length + this.playout.length;
     const valid = [
@@ -319,7 +322,7 @@ export class H3Model {
     if (state) this.broadcast("state_update", this.state());
   }
 
-  private command(id: string, type: string, args: JsonObject): void {
+  private command(id: string, type: string, args: Schema.JsonObject): void {
     switch (type) {
       case "enqueue":
         this.host.enqueued();
@@ -399,7 +402,7 @@ export class H3Model {
     }
   }
 
-  private enqueue(id: string, args: JsonObject): void {
+  private enqueue(id: string, args: Schema.JsonObject): void {
     const refuse = (reason: string) => this.refuse(id, "enqueue", reason);
     const { prompt, seconds, seed, position, metadata } = args;
     if (typeof prompt !== "string" || prompt.trim().length === 0)
@@ -450,7 +453,7 @@ export class H3Model {
     this.build();
   }
 
-  private move(id: string, args: JsonObject): void {
+  private move(id: string, args: Schema.JsonObject): void {
     const { clip_id: wanted, position: requested } = args;
     const target = this.generation.some((clip) => clip.clip_id === wanted)
       ? "generation"
@@ -469,7 +472,7 @@ export class H3Model {
     this.changedQueues(false);
   }
 
-  private pop(id: string, args: JsonObject): void {
+  private pop(id: string, args: Schema.JsonObject): void {
     const clip = [...this.generation, ...this.playout].find(
       (entry) => entry.clip_id === args.clip_id,
     );
@@ -483,7 +486,7 @@ export class H3Model {
     this.build();
   }
 
-  private play(id: string, args: JsonObject): void {
+  private play(id: string, args: Schema.JsonObject): void {
     const wanted = args.clip_id;
     const clip =
       absent(wanted) || wanted === ""
@@ -611,19 +614,22 @@ export class H3Model {
  * 0.5.5 documentation and pinned reactor-runtime's ModelSchema.to_openapi
  * layout), with this twin's title.
  */
-const schema = (): JsonObject => {
+const schema = (): Schema.JsonObject => {
   const str = { type: "string" },
     int = { type: "integer" },
     num = { type: "number" },
     bool = { type: "boolean" };
-  const obj = (properties: JsonObject, required = Object.keys(properties)): JsonObject => ({
+  const obj = (
+    properties: Schema.JsonObject,
+    required = Object.keys(properties),
+  ): Schema.JsonObject => ({
     type: "object",
     properties,
     required,
   });
-  const list = (items: JsonObject): JsonObject => ({ type: "array", items });
-  const ref = (name: string): JsonObject => ({ $ref: `#/components/schemas/${name}` });
-  const optional = (schema: JsonObject): JsonObject => ({
+  const list = (items: Schema.JsonObject): Schema.JsonObject => ({ type: "array", items });
+  const ref = (name: string): Schema.JsonObject => ({ $ref: `#/components/schemas/${name}` });
+  const optional = (schema: Schema.JsonObject): Schema.JsonObject => ({
     anyOf: [schema, { type: "null" }],
     default: null,
   });
@@ -643,7 +649,7 @@ const schema = (): JsonObject => {
     },
     ["clip_id", "prompt", "metadata", "frames", "seconds", "seed", "ready"],
   );
-  const components: JsonObject = {
+  const components: Schema.JsonObject = {
     ReactorUploadReference: obj({
       upload_id: { type: "string", format: "uuid" },
       name: str,
@@ -692,7 +698,11 @@ const schema = (): JsonObject => {
     FlushAccepted: obj({ enabled: bool }),
     SessionReset: obj({ cleared_clips: int, was_playing: bool }),
   };
-  const path = (name: string, properties: JsonObject, reply: string | null): JsonObject => ({
+  const path = (
+    name: string,
+    properties: Schema.JsonObject,
+    reply: string | null,
+  ): Schema.JsonObject => ({
     post: {
       operationId: name,
       requestBody: {

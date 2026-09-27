@@ -1,9 +1,8 @@
 import * as Effect from "effect/Effect";
-import { ReactorError } from "reactor-effect-client";
-import type { Track } from "reactor-effect-client";
+import type { IceServer, Track } from "reactor-effect-client/Coordinator";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import { errorOf } from "reactor-effect-client/host";
-import type { Peer, PeerEvent, Prepared, Channel } from "reactor-effect-client/host";
-export type { Peer, PeerEvent, Prepared, Channel } from "reactor-effect-client/host";
+import type { Channel, Peer, PeerEvent, Prepared } from "reactor-effect-client/Peer";
 const attempt = <A>(body: () => A): Effect.Effect<A, ReactorError> =>
   Effect.try({ try: body, catch: (e) => errorOf(e, "InvalidState") });
 export const requireBrowserPeer = (): void => {
@@ -14,8 +13,7 @@ export const requireBrowserPeer = (): void => {
       { outcome: "not-submitted" },
     );
 };
-export class BrowserPeer implements Peer {
-  readonly nativeTracks = true;
+export class BrowserPeer {
   private pc: RTCPeerConnection | undefined;
   private channels: { control: RTCDataChannel; data: RTCDataChannel } | undefined;
   private readonly transceivers = new Map<
@@ -312,3 +310,32 @@ export class BrowserPeer implements Peer {
     this.messageLimit = 262_144;
   }
 }
+
+/** The browser peer as the client's `Peer` port: platform tracks, leased per scope. */
+export const toPeer = (peer: BrowserPeer): Peer => ({
+  media: {
+    _tag: "Tracks",
+    lease: (name) =>
+      Effect.acquireRelease(
+        Effect.try({
+          try: () => peer.lease(name),
+          catch: (e) => errorOf(e, "InvalidState", "lease track"),
+        }),
+        (track) => Effect.sync(() => peer.release(track)),
+      ),
+    // The session hands over clones of the caller's MediaStreamTracks.
+    replace: (name, track) => peer.replace(name, track as MediaStreamTrack | null),
+  },
+  prepare: (servers: ReadonlyArray<IceServer>, tracks, emit) =>
+    peer.prepare(
+      servers.map((server) => ({ ...server, urls: [...server.urls] })),
+      tracks,
+      emit,
+    ),
+  answer: (sdp) => peer.answer(sdp),
+  send: (channel, bytes) => peer.send(channel, bytes),
+  direction: (name, active) => peer.direction(name, active),
+  maxBitrate: (name, bits) => peer.maxBitrate(name, bits),
+  stats: Effect.suspend(() => peer.stats),
+  close: Effect.sync(() => peer.close()),
+});

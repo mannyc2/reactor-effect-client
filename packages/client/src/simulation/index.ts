@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
-import type { AcquisitionFailure, ReactorError } from "../errors.js";
+import type { AcquisitionFailure, ReactorError } from "../ReactorError.js";
 import { make as orchestrate } from "../orchestration/renewal.js";
 import { handleContext } from "../orchestration/types.js";
 import type { Engine, Handle, HandleShape, Media } from "../orchestration/types.js";

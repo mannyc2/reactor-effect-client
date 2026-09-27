@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
-import { parsedInput, ReactorError } from "../../errors.js";
-import type { UploadReference } from "../../wire.generated.js";
+import { parsedInput } from "../../internal/validation.js";
+import { ReactorError } from "../../ReactorError.js";
+import type { UploadReference } from "../../internal/wire.generated.js";
 import {
   audioMimeTypes,
   audioReferenceLimits,

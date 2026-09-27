@@ -5,7 +5,7 @@ import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { ClipRequest } from "../../src/orchestration/request.js";
-import type { AudioFrame, VideoFrame } from "../../src/session/media.js";
+import type { AudioFrame, VideoFrame } from "../../src/Media.js";
 import * as Simulation from "../../src/simulation/index.js";
 
 test("simulation media gives each frame its own exact buffer when the renderer passes views into one slab", ({

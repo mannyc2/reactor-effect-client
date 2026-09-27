@@ -3,15 +3,11 @@ import type * as Effect from "effect/Effect";
 import type * as Result from "effect/Result";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { CommandFailure, PolicyFailure, ReactorError } from "../errors.js";
-import type {
-  CommandReply,
-  ReplyTimeoutOptions,
-  SessionEvent,
-  UploadTimeoutOptions,
-} from "../session/index.js";
+import type { CommandFailure, ReactorError } from "../ReactorError.js";
+import type { PolicyFailure } from "../orchestration/policy.js";
+import type { CommandOptions, CommandReply, SessionEvent, UploadOptions } from "../Session.js";
 import type { Submission } from "../Submission.js";
-import type { UploadReference } from "../wire.generated.js";
+import type { UploadReference } from "../internal/wire.generated.js";
 import type {
   Clip,
   DecodedMessage,
@@ -226,7 +222,7 @@ export interface PrepareHooks<E extends PolicyFailure = never> {
  * provider does not), and after its reply for the broadcasts the reply implies,
  * so its caller reads its own effects. `getState` and `getQueue` never wait.
  */
-export interface Options extends ReplyTimeoutOptions, UploadTimeoutOptions {
+export interface Options extends Pick<CommandOptions, "replyTimeout">, UploadOptions {
   /**
    * How long reading the deployment schema, and then the initial state and
    * queue, may each take; 60 seconds by default and at most 10 minutes. A bare

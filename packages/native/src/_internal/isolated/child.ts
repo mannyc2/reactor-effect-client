@@ -17,17 +17,12 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import { ReactorError } from "reactor-effect-client";
-import type { Track } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { Track } from "reactor-effect-client/Coordinator";
 import { parsed, takeQueue, takeAllQueue } from "reactor-effect-client/host";
-import type {
-  AudioFrame,
-  IceServer,
-  MediaPressure,
-  Peer,
-  PeerEvent,
-  VideoFrame,
-} from "reactor-effect-client/host";
+import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
+import type { IceServer } from "reactor-effect-client/Coordinator";
+import type { PeerEvent } from "reactor-effect-client/Peer";
 import { resolveNativeBridge } from "../bridge.js";
 import { NativePeer } from "../peer.js";
 import { eventToWire, IsolatedRpcs, toWire } from "./protocol.js";
@@ -220,8 +215,6 @@ const handlers = IsolatedRpcs.toLayer(
       Direction: ({ name, active }) =>
         Rpc.uninterruptible(withPeer((target) => target.direction(name, active))),
       // Through the peer contract: only the absence of a track crosses processes.
-      Replace: ({ name }) =>
-        Rpc.uninterruptible(withPeer((target: Peer) => target.replace(name, null))),
       MaxBitrate: ({ name, bitsPerSecond }) =>
         Rpc.uninterruptible(withPeer((target) => target.maxBitrate(name, bitsPerSecond))),
       Stats: () => withPeer((target) => target.stats),

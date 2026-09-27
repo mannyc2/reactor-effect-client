@@ -2,7 +2,8 @@
  * Its ONLY media input is the byte array returned by the public downloadClip operation.
  * Native HTML playback decodes the recording; Web Audio inspects that element's output. */
 import * as Effect from "effect/Effect";
-import { ReactorError } from "reactor-effect-client";
+import * as Redacted from "effect/Redacted";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import { assert, hash, rms } from "./util.js";
 
 interface FrameObservation {
@@ -175,7 +176,7 @@ const observe = ({
         reason: error.reason,
         context: {
           ...error.context,
-          detail: {
+          detail: Redacted.make({
             cause: error.context.detail,
             frames,
             windows,
@@ -185,7 +186,7 @@ const observe = ({
             contextState: context.state,
             mediaErrorCode: video.error?.code,
             mediaError: video.error?.message,
-          },
+          }),
         },
       });
     };

@@ -1,7 +1,9 @@
 import * as Effect from "effect/Effect";
-import { parsed, ReactorError } from "../errors.js";
+import { parsed } from "../internal/validation.js";
+import { ReactorError } from "../ReactorError.js";
 import { completeKind } from "./types.js";
 import type { CleanupSummary, SourceCleanup } from "./types.js";
+import { summarize } from "../ReactorError.js";
 
 export interface Options {
   readonly retainedSuccessfulCleanups?: number;
@@ -176,9 +178,11 @@ export const make = (options: Options = {}) =>
             scope: "failed",
             affinity: "failed",
             errors: [
-              ReactorError.fromCode(
-                "InvalidState",
-                "Source retirement was not recorded before the final cleanup summary",
+              summarize(
+                ReactorError.fromCode(
+                  "InvalidState",
+                  "Source retirement was not recorded before the final cleanup summary",
+                ),
               ),
             ],
             unknownSubmissions: 0n,

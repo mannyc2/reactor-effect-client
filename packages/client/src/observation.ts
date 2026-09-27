@@ -3,8 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { take as takeQueue } from "./_internal/queue.js";
-import { parsed, positiveLimit, ReactorError } from "./errors.js";
+import { take as takeQueue } from "./internal/queue.js";
+import { parsed, positiveLimit } from "./internal/validation.js";
+import { ReactorError } from "./ReactorError.js";
 
 interface Entry<A> {
   readonly value: A;

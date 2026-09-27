@@ -18,4 +18,6 @@ pathIgnorePatterns = [
   "packages/*/examples/**",
   "examples/**",
   "release-tools/**",
+  # The paid hosted harness is rewritten onto ReactorTest in a later step.
+  "integration/test/hosted-*.test.ts",
 ]

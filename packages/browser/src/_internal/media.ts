@@ -2,9 +2,10 @@ export { audioContext, webAudioSamples } from "./audio.js";
 export type { AudioContextOptions, WebAudioOptions, WebAudioSample } from "./audio.js";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
-import { ReactorError } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import {
   duration,
   errorOf,
@@ -223,7 +224,11 @@ function copiedSamples<A>(
     };
     return new ReactorError({
       reason: error.reason,
-      context: { ...error.context, operation: `${operation}.${phase}`, detail },
+      context: {
+        ...error.context,
+        operation: `${operation}.${phase}`,
+        detail: Redacted.make(detail),
+      },
     });
   };
   const noteCleanup = (phase: string, cause: unknown): void => {

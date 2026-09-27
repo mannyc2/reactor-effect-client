@@ -2,7 +2,7 @@
 import { expect, test } from "vitest";
 import { Effect, Fiber, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../src/errors.js";
+import { ReactorError } from "../src/ReactorError.js";
 import { fromOwnedReadableStream } from "../src/media-stream.js";
 
 test("a cancel that never settles holds the finalizer for its bound, then the lock is released", () =>

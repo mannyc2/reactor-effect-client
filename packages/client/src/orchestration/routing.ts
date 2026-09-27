@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { SequenceSnapshot } from "../Sequence.js";
-import type { Missing } from "../errors.js";
+import type { Missing } from "./policy.js";
 import { PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
 import type { ClipRecord, EngineState } from "./types.js";

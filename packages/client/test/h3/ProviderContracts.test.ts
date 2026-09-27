@@ -1,15 +1,22 @@
 import { describe, expect, test } from "vitest";
-import { Effect, Result, Schema } from "effect";
-import { ReactorError } from "../../src/errors.js";
+import { Effect, Redacted, Result, Schema } from "effect";
+import { ReactorError } from "../../src/ReactorError.js";
 import * as H3 from "../../src/h3/index.js";
 import { decodeMessage } from "../../src/h3/messages.js";
 import { validateDeployment } from "../../src/h3/_internal/deployment.js";
 import type { JsonObject } from "../../src/json.js";
-import type { CommandFailure, CommandReply } from "../../src/session/index.js";
+import type { CommandFailure } from "../../src/ReactorError.js";
+import type { CommandReply } from "../../src/Session.js";
 import { at, providerSchema } from "./ProviderSchema.js";
 import { fixture, fixtureClip } from "./ProviderSession.js";
 import type { Fixture, WireMessage } from "./ProviderSession.js";
 import { run, runFlowing } from "./Clock.js";
+
+/** Diagnostic detail is Redacted: inspection is explicit. */
+const detailOf = (error: {
+  readonly context: { readonly detail?: Redacted.Redacted<unknown> };
+}): unknown =>
+  error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
 
 const options: H3.Options = { replyTimeout: 100, setupTimeout: 1000, reconcileWindow: 20 };
 
@@ -68,8 +75,9 @@ describe("H3 cross-field rules", () => {
         reason: { _tag: "Protocol" },
         message: "H3 state_update payload is malformed",
       });
-      expect(Schema.isSchemaError(error.context.detail)).toBe(true);
-      expect(String(error.context.detail)).toContain(path);
+      const detail = detailOf(error);
+      expect(Schema.isSchemaError(detail)).toBe(true);
+      expect(String(detail)).toContain(path);
     });
 
   test("queue_update: a clip queued twice fails at the second position", () => {
@@ -78,8 +86,8 @@ describe("H3 cross-field rules", () => {
       playout: [clip],
       history: [],
     });
-    expect(String(error.context.detail)).toContain('["playout"][0]["clip_id"]');
-    expect(String(error.context.detail)).not.toContain(clip.clip_id);
+    expect(String(detailOf(error))).toContain('["playout"][0]["clip_id"]');
+    expect(String(detailOf(error))).not.toContain(clip.clip_id);
     // A retained history entry may still describe a clip in playout.
     expect(
       decodeMessage("queue_update", { generation: [], playout: [clip], history: [clip] }),

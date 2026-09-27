@@ -11,9 +11,10 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import { take as takeQueue, takeAll as takeAllQueue } from "../../_internal/queue.js";
+import { take as takeQueue, takeAll as takeAllQueue } from "../../internal/queue.js";
 import { duration } from "../../duration.js";
-import { ReactorError, errorOf, parsed } from "../../errors.js";
+import { ReactorError } from "../../ReactorError.js";
+import { errorOf, parsed } from "../../internal/validation.js";
 import {
   alignFrames,
   alignSecondsTo,
@@ -31,10 +32,11 @@ import type {
   Source,
   SourceCleanup,
 } from "../../orchestration/types.js";
-import { CommandFailure } from "../../session/commands.js";
-import type { AudioFrame, MediaPressure, VideoFrame } from "../../session/media.js";
+import { CommandFailure } from "../../ReactorError.js";
+import type { AudioFrame, MediaPressure, VideoFrame } from "../../Media.js";
 import * as Submission from "../../Submission.js";
 import type { SimOptions, SimulatedMediaSink } from "../types.js";
+import { summarize } from "../../ReactorError.js";
 
 interface Clip {
   record: LocalClipRecord;
@@ -558,7 +560,7 @@ export const source = (
               }),
               unpublishSubmitted: Object.freeze([]),
               unresolvedPublications: Object.freeze([]),
-              localErrors: Object.freeze(errors),
+              localErrors: errors.map(summarize),
             }),
             policy: Object.freeze([]),
           });

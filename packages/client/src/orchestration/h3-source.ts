@@ -10,7 +10,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Crypto from "effect/Crypto";
 import type * as Http from "effect/unstable/http/HttpClient";
-import { CommandFailure, ReactorError } from "../errors.js";
+import { CommandFailure, ReactorError } from "../ReactorError.js";
 import type { Clip as ProviderClip } from "../h3/messages.js";
 import { make as makeProvider } from "../h3/_internal/client.js";
 import { audioReferenceLimits, h3ReferenceTurboRealtime } from "../h3/profile.js";
@@ -22,9 +22,8 @@ import type {
   Request as ProviderRequest,
 } from "../h3/types.js";
 import { Observations } from "../observation.js";
-import { mediaGeneration } from "../session/_internal/acquire.js";
-import type { Session } from "../session/index.js";
-import type { MediaGeneration } from "../session/media.js";
+import type { Session } from "../Session.js";
+import type { DecodedMedia } from "../Media.js";
 import * as Submission from "../Submission.js";
 import { PolicyFailure, captureRequest, preworkFailure } from "./request.js";
 import type { Canvas, ClipId, ClipRequest } from "./request.js";
@@ -43,6 +42,7 @@ import type {
   Source,
   SourceCleanup,
 } from "./types.js";
+import { summarize } from "../ReactorError.js";
 
 interface Annotation {
   readonly request: ClipRequest;
@@ -59,7 +59,7 @@ interface Times {
 }
 
 export interface H3SourceOptions {
-  readonly media: Effect.Effect<MediaGeneration, ReactorError>;
+  readonly media: Effect.Effect<DecodedMedia, ReactorError>;
   /** Explicit broadcast policy; absent settings leave the provider unchanged. */
   readonly canvas?: Canvas;
   readonly holdLastFrame?: boolean;
@@ -179,7 +179,7 @@ export interface H3Source extends Source {
  * constructor binds the session's own decoded-media generation.
  */
 export const bindSession =
-  (media: (session: Session) => Effect.Effect<MediaGeneration, ReactorError>) =>
+  (media: (session: Session) => Effect.Effect<DecodedMedia, ReactorError>) =>
   (
     session: Session,
     options: SessionSourceOptions = {},
@@ -212,7 +212,7 @@ export const bindSession =
  * is connected, it fails before any provider observation or policy command.
  * Closing the source closes the session.
  */
-export const fromH3Session = bindSession(mediaGeneration);
+export const fromH3Session = bindSession((session) => session.decoded);
 
 /**
  * Bind explicit broadcast policy and host reference loading to an H3 view.
@@ -477,7 +477,7 @@ export const fromH3 = (
           const policy: PolicyCleanup[] = [];
           if (session.ownership === "owned" && options.resetOnClose === true) {
             const result = yield* Effect.result(provider.reset.pipe(Effect.asVoid));
-            policy.push(Object.freeze({ operation: "reset", result }));
+            policy.push({ operation: "reset", result: Result.mapError(result, summarize) });
           }
           closed = true;
           const lease = yield* session.close;
@@ -509,7 +509,7 @@ export const fromH3 = (
         generation: generation.generation,
         video: generation.video(h3ReferenceTurboRealtime.tracks.video),
         audio: generation.audio(h3ReferenceTurboRealtime.tracks.audio),
-        pressure: generation.snapshot,
+        pressure: generation.pressure,
         videoFramesPerSecond: h3ReferenceTurboRealtime.fps,
       })),
     );

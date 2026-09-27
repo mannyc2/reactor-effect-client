@@ -8,6 +8,7 @@ import {
   Fiber,
   Option,
   Queue,
+  Redacted,
   Result,
   Scheduler,
   Scope,
@@ -17,7 +18,7 @@ import { TestClock } from "effect/testing";
 import * as H3 from "../../src/h3/index.js";
 import { fromH3 } from "../../src/orchestration/h3-source.js";
 import { fixture as providerFixture } from "../h3/ProviderSession.js";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import { fillerKey, schedulerKeyOf } from "../../src/orchestration/scheduler-key.js";
@@ -248,7 +249,11 @@ for (const cap of [1, 3]) {
             reason: { _tag: "Timeout" },
             context: { operation: "scheduler.unknownRecovery" },
           });
-          expect(exit.value.context.detail).toContain(uncertain);
+          expect(
+            exit.value.context.detail === undefined
+              ? []
+              : Redacted.value(exit.value.context.detail),
+          ).toContain(uncertain);
         }
         expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
         expect(calls).toHaveLength(1);
@@ -1018,7 +1023,7 @@ for (const kind of ["item", "filler"] as const) {
             retired: Effect.never,
             video: () => Stream.never,
             audio: () => Stream.never,
-            snapshot: Effect.succeed(cleanPressure),
+            pressure: Effect.succeed(cleanPressure),
           }),
         });
         let opened = false;

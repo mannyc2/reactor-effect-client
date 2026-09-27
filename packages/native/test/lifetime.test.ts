@@ -4,7 +4,7 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import koffi from "koffi";
-import type { ReactorError } from "reactor-effect-client";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { describe, expect, test, vi } from "vitest";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";

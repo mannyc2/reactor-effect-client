@@ -1,5 +1,5 @@
-import { ReactorError } from "../../errors.js";
-import type { CommandReply } from "../../session/index.js";
+import { ReactorError } from "../../ReactorError.js";
+import type { CommandReply } from "../../Session.js";
 import type { Clip } from "../messages.js";
 import { metadataMaxChars } from "../profile.js";
 import type { Acceptance } from "../types.js";

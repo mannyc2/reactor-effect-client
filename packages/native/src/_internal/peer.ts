@@ -6,23 +6,13 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { IceFailed, Mapping, ReactorError, TransportFailed } from "reactor-effect-client";
-import type { Track } from "reactor-effect-client";
+import { IceFailed, ReactorError, TransportFailed } from "reactor-effect-client/ReactorError";
+import { Mapping } from "reactor-effect-client/Coordinator";
+import type { Track } from "reactor-effect-client/Coordinator";
 import { Observations, errorOf, takeQueue } from "reactor-effect-client/host";
-import type {
-  AudioFrame,
-  Channel,
-  IceCandidate,
-  IceServer,
-  MediaPressure,
-  MediaTrack,
-  Peer,
-  PeerEvent,
-  PeerState,
-  Prepared,
-  RawMedia,
-  VideoFrame,
-} from "reactor-effect-client/host";
+import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
+import type { Channel, PeerEvent, PeerState, Prepared } from "reactor-effect-client/Peer";
+import type { IceCandidate, IceServer } from "reactor-effect-client/Coordinator";
 import {
   encodeNativeJson,
   encodeNativeText,
@@ -34,6 +24,7 @@ import {
   type NativePacket,
   type NativeVideo,
 } from "./bridge.js";
+import type { RawMedia } from "./port.js";
 
 const stateValues = new Set<PeerState>([
   "new",
@@ -343,8 +334,7 @@ const connectionFailure = (stats: readonly unknown[]): ReactorError => {
 const drain = <A>(step: () => A): Effect.Effect<A, ReactorError> =>
   Effect.try({ try: step, catch: (cause) => nativeError(cause, "drain native WebRTC") });
 
-export class NativePeer implements Peer {
-  readonly nativeTracks = false;
+export class NativePeer {
   readonly rawMedia: RawMedia;
   private readonly bridge: NativeBridge;
   private readonly video = new Map<string, Observations<VideoFrame>>();
@@ -631,26 +621,6 @@ export class NativePeer implements Peer {
             Object.freeze({ ...parseSnapshot(value), readerOverflows: this.readerOverflows() }),
           catch: (cause) => nativeError(cause, "decode native media snapshot"),
         }),
-      ),
-    );
-  }
-
-  lease(): MediaTrack {
-    throw ReactorError.fromCode(
-      "UnsupportedCapability",
-      "native WebRTC exposes owned decoded samples, not browser MediaStreamTrack leases",
-      { outcome: "not-submitted" },
-    );
-  }
-  release(): void {
-    /* lease never succeeds on this host. */
-  }
-  replace(): Effect.Effect<void, ReactorError> {
-    return Effect.fail(
-      ReactorError.fromCode(
-        "UnsupportedCapability",
-        "native WebRTC does not accept browser MediaStreamTrack publication",
-        { outcome: "not-submitted" },
       ),
     );
   }

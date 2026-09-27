@@ -11,7 +11,7 @@ import {
   nextPresentation,
 } from "../src/_internal/media.js";
 import { decodeAudioPacket } from "../src/_internal/audio-packet.js";
-import { ReactorError } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import { errorOf, fromOwnedReadableStream } from "reactor-effect-client/host";
 import { FakeTrack } from "reactor-effect-test-kit";
 import {

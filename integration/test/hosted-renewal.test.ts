@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
 import { Clock, Effect, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import type { VideoFrame } from "reactor-effect-client/host";
+import type { VideoFrame } from "reactor-effect-client/Media";
 import {
   elapsedClock,
   readInto,

@@ -61,7 +61,7 @@ import type { Mutable } from "effect/Types";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
 import * as H3 from "reactor-effect-client/h3";
-import type { AudioFrame, VideoFrame, MediaGeneration } from "reactor-effect-client/host";
+import type { AudioFrame, VideoFrame, DecodedMedia } from "reactor-effect-client/Media";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Testing from "reactor-effect-client/testing";
 import * as Native from "reactor-effect-native";
@@ -582,7 +582,7 @@ const vertical = (target: Target, run: Run, budget: Budget, check: "vertical" | 
               : `${inspection.selectedTransport.protocol}/${inspection.selectedTransport.version}`,
           additional: inspection.additional,
         };
-        const generation = yield* Native.media(session);
+        const generation = yield* session;
         media = generation;
         const audioOffered = generation.tracks.some(
           (track) => track.kind === "audio" && track.direction === "recvonly",
@@ -820,7 +820,7 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           ),
           Effect.forkScoped,
         );
-        const media = yield* Native.media(session!);
+        const media = yield* session!;
         run.evidence.session = {
           ...run.evidence.session!,
           tracks: media.tracks.map(({ name, kind, direction }) => ({ name, kind, direction })),
@@ -1877,7 +1877,7 @@ const owner = (target: Target, grantFile: string, recordFile: string, marker: st
         const second = yield* queued.submit;
         const operation = yield* provider.operation(playing);
         yield* operation.reached("started").pipe(Effect.timeout(yield* until(deadline)));
-        const media = yield* Native.media(allocated!);
+        const media = yield* allocated!;
         yield* media
           .video(tracks.video)
           .pipe(Stream.take(24), Stream.runDrain, Effect.timeout(yield* until(deadline)));
@@ -1986,12 +1986,12 @@ const takeover = (target: Target, run: Run, budget: Budget, check: "takeover" | 
         /** The attached or resumed session's provider, its video, and how it ends. */
         const attach = Effect.gen(function* () {
           if (check === "takeover") {
-            const client = yield* Reactor.Client;
-            const session = yield* client.attachConnected({
+            const client = yield* Reactor.Reactor.Reactor;
+            const session = yield* client.attach({
               sessionId: record.sessionId,
               jwt: Redacted.make(record.jwt),
             });
-            const media = yield* Native.media(session);
+            const media = yield* session;
             return {
               provider: yield* H3.make(session),
               tracks: media.tracks,

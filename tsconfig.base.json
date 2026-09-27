@@ -277,8 +277,20 @@
           },
           {
             "include": [
+              "**/packages/client/src/Coordinator.ts",
+              "**/packages/client/src/Media.ts",
+              "**/packages/client/src/Peer.ts",
+              "**/packages/client/src/Reactor.ts",
+              "**/packages/client/src/ReactorError.ts",
               "**/packages/client/src/ReactorTest.ts",
-              "**/packages/client/src/internal/**/*.ts",
+              "**/packages/client/src/Session.ts",
+              "**/packages/client/src/index.ts",
+              "**/packages/client/src/internal/correlator.ts",
+              "**/packages/client/src/internal/hub.ts",
+              "**/packages/client/src/internal/reactorTest/*.ts",
+              "**/packages/client/src/internal/recording.ts",
+              "**/packages/client/src/internal/session.ts",
+              "**/packages/client/src/internal/stats.ts",
               "**/packages/client/test/ReactorTest.test.ts"
             ],
             "options": {

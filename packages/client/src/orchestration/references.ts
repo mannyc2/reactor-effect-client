@@ -6,9 +6,36 @@ import * as Schema from "effect/Schema";
 import * as Http from "effect/unstable/http/HttpClient";
 import * as Result from "effect/Result";
 import { duration } from "../duration.js";
-import { parse, ReactorError } from "../errors.js";
+import { parse } from "../internal/validation.js";
+import { ReactorError } from "../ReactorError.js";
 import { collectBytes } from "../bytes.js";
-import { readFileBytes } from "../session/files.js";
+
+/** A file's bytes, read within `maxBytes` through the host's FileSystem. */
+const readFileBytes = (
+  file: string,
+  maxBytes: number,
+): Effect.Effect<Uint8Array, ReactorError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    if (file.length === 0 || !Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+      return yield* ReactorError.fromCode(
+        "InvalidInput",
+        "A file and positive byte bound are required",
+        {
+          outcome: "not-submitted",
+        },
+      );
+    const fs = yield* FileSystem.FileSystem;
+    return yield* collectBytes(fs.stream(file, { bytesToRead: maxBytes + 1 }), maxBytes).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.is(cause)
+          ? cause
+          : ReactorError.fromCode("Upload", "Source file could not be read", {
+              outcome: "not-submitted",
+              detail: cause,
+            }),
+      ),
+    );
+  });
 
 export interface LoadLimits {
   readonly maxBytes: number;

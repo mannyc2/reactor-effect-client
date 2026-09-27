@@ -8,16 +8,18 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import type * as Http from "effect/unstable/http/HttpClient";
 import type * as Redacted from "effect/Redacted";
-import type { TokenGrant } from "../coordinator/_internal/schemas.js";
-import { AcquisitionFailure, isReactorFailure, ReactorError } from "../errors.js";
-import type { CommandFailure, PolicyFailure } from "../errors.js";
+import type { TokenGrant } from "../Coordinator.js";
+import { AcquisitionFailure, ReactorError } from "../ReactorError.js";
+import type { CommandFailure } from "../ReactorError.js";
+import type { PolicyFailure } from "./policy.js";
 import { modelName } from "../h3/profile.js";
-import { noAcquisition } from "../session/_internal/acquire.js";
-import { Client } from "../session/index.js";
-import type { CreateOptions, Session } from "../session/index.js";
+import { noAcquisition, Reactor } from "../Reactor.js";
+import type { CreateOptions } from "../Reactor.js";
+import type { Session } from "../Session.js";
 import { fromH3Session } from "./h3-source.js";
 import type { H3Source, SessionSourceOptions } from "./h3-source.js";
 import type { Opened } from "./renewal.js";
+import { asReactorFailure } from "./policy.js";
 
 /**
  * A durable owner record of an allocated session, without its token: enough to
@@ -86,10 +88,10 @@ export const openH3With =
   ): Effect.Effect<
     OpenedH3,
     AcquisitionFailure | E,
-    R | Client | Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
+    R | Reactor | Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
   > =>
     Effect.gen(function* () {
-      const client = yield* Client;
+      const reactor = yield* Reactor;
       const grant = yield* options.mint.pipe(
         Effect.mapError((error) => AcquisitionFailure.from(error, noAcquisition)),
       );
@@ -98,41 +100,46 @@ export const openH3With =
       const scope = yield* Scope.fork(yield* Effect.scope);
       // The server starts the granted length no earlier than the request.
       const requested = yield* Clock.currentTimeMillis;
-      const session = yield* client
-        .create({ ...options.create, model: modelName, jwt: grant.jwt })
-        .pipe(Scope.provide(scope));
-      const open = Effect.gen(function* () {
-        if (options.onAllocated !== undefined)
-          yield* options.onAllocated({
-            session,
-            grant,
-            allocation: {
-              sessionId: session.id,
-              ownership: session.ownership,
-              model: modelName,
-              expiresAt: grant.expiresAt,
-              endsAt: requested / 1000 + grant.granted.maxSessionSeconds,
-            },
-          });
-        yield* session.connect;
-        const source = yield* bind(session, options.source);
-        const opened: OpenedH3 = {
-          source,
-          // A unit, never a bare number: a bare number is milliseconds.
-          lifetime: `${grant.granted.maxSessionSeconds} seconds`,
-        };
-        return opened;
-      }).pipe(Scope.provide(scope));
-      return yield* open.pipe(
-        // A failure after allocation reports the session's cleanup, as a failed
-        // `createConnected` does; an application error from onAllocated stays as it was.
-        Effect.catch((error) =>
-          session.close.pipe(
-            Effect.flatMap((report) =>
-              Effect.fail(isReactorFailure(error) ? AcquisitionFailure.from(error, report) : error),
+      const onAllocated = options.onAllocated;
+      const opened = Effect.gen(function* () {
+        const session = yield* reactor.create({
+          ...options.create,
+          model: modelName,
+          jwt: grant.jwt,
+          ...(onAllocated === undefined
+            ? {}
+            : {
+                onAllocated: (session: Session) =>
+                  onAllocated({
+                    session,
+                    grant,
+                    allocation: {
+                      sessionId: session.id,
+                      ownership: session.ownership,
+                      model: modelName,
+                      expiresAt: grant.expiresAt,
+                      endsAt: requested / 1000 + grant.granted.maxSessionSeconds,
+                    },
+                  }),
+              }),
+        });
+        return yield* bind(session, options.source).pipe(
+          Effect.map((source): OpenedH3 => ({
+            source,
+            // A unit, never a bare number: a bare number is milliseconds.
+            lifetime: `${grant.granted.maxSessionSeconds} seconds`,
+          })),
+          // A failure after connecting reports the session's cleanup.
+          Effect.catch((error) =>
+            session.close.pipe(
+              Effect.flatMap((report) =>
+                Effect.fail(AcquisitionFailure.from(asReactorFailure(error), report)),
+              ),
             ),
           ),
-        ),
+        );
+      }).pipe(Scope.provide(scope));
+      return yield* opened.pipe(
         Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
       );
     });
@@ -166,7 +173,7 @@ export const resumeH3With =
   ): Effect.Effect<
     OpenedH3,
     AcquisitionFailure,
-    Client | Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
+    Reactor | Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Http.HttpClient
   > =>
     Effect.gen(function* () {
       const refuse = (message: string) =>
@@ -187,13 +194,13 @@ export const resumeH3With =
         return yield* refuse("the allocation's granted length has ended");
       if (options.source !== undefined && "canvas" in options.source)
         return yield* refuse("a resumed session keeps its canvas");
-      const client = yield* Client;
+      const reactor = yield* Reactor;
       // As in openH3, a child scope owns the adopted session, so a failed
       // resume terminates it now rather than when the caller's scope closes.
       const scope = yield* Scope.fork(yield* Effect.scope);
       const resumed = Effect.gen(function* () {
         // A failed connected attach has already terminated what it adopted.
-        const session = yield* client.attachConnected({
+        const session = yield* reactor.attach({
           sessionId: allocation.sessionId,
           jwt: options.jwt,
           adopt: true,
@@ -210,7 +217,9 @@ export const resumeH3With =
           ),
           Effect.catch((error) =>
             session.close.pipe(
-              Effect.flatMap((report) => Effect.fail(AcquisitionFailure.from(error, report))),
+              Effect.flatMap((report) =>
+                Effect.fail(AcquisitionFailure.from(asReactorFailure(error), report)),
+              ),
             ),
           ),
         );

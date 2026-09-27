@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { Cause, Effect, Exit, Fiber, Result, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Result, Scope, Stream, Redacted } from "effect";
 import * as H3 from "../../src/h3/index.js";
-import { ReactorError } from "../../src/errors.js";
-import { CommandFailure } from "../../src/session/commands.js";
+import { ReactorError } from "../../src/ReactorError.js";
+import { CommandFailure } from "../../src/ReactorError.js";
 import type { JsonObject } from "../../src/json.js";
 import { pngBytes } from "../../src/testing/Png.js";
 import { fixture, fixtureClip, gate, metadataOf, textArg } from "./ProviderSession.js";
@@ -702,14 +702,16 @@ describe("H3 command and observation authority", () => {
         expect(
           Result.isFailure(rejected) &&
             rejected.failure.reason._tag === "Remote" &&
-            rejected.failure.reason.body,
+            rejected.failure.reason.body !== undefined &&
+            Redacted.value(rejected.failure.reason.body),
         ).toBe("full");
         const refused = yield* Effect.result(direct.provider.stop);
         expect(Result.isFailure(refused) && refused.failure.message).toBe("H3 stop was refused");
         expect(
           Result.isFailure(refused) &&
             refused.failure.reason._tag === "Remote" &&
-            refused.failure.reason.body,
+            refused.failure.reason.body !== undefined &&
+            Redacted.value(refused.failure.reason.body),
         ).toBe("Fixture refused the requested operation");
         const unrelated = yield* setup({
           command: {

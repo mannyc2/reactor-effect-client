@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import type { ReactorError } from "reactor-effect-client";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { assert } from "reactor-effect-test-kit";
 
 export { test } from "vitest";

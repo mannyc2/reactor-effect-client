@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Cause, Effect, Fiber, Result, Stream } from "effect";
-import { ReactorError } from "../../src/errors.js";
-import type { ReactorFailure } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
+import { isOrchestrationFailure } from "../../src/orchestration/policy.js";
 import * as MediaBuffer from "../../src/orchestration/media-buffer.js";
 import { audioFrame, gate, runClock, videoFrame } from "./SourceFixture.js";
 
@@ -27,8 +27,8 @@ test("cancelling a video reader retains unconsumed frames and their byte account
   ));
 
 /** Two retained elements; a second concurrent reader is refused, and a later one resumes. */
-const exclusive = <A>(
-  output: Stream.Stream<A, ReactorFailure>,
+const exclusive = <A, E>(
+  output: Stream.Stream<A, E>,
   offerTwo: Effect.Effect<void, ReactorError>,
 ) =>
   Effect.gen(function* () {
@@ -40,7 +40,11 @@ const exclusive = <A>(
     );
     yield* received.wait;
     const second = yield* Effect.result(output.pipe(Stream.take(1), Stream.runCollect));
-    expect(Result.isFailure(second) && second.failure.reason._tag).toBe("AlreadyReading");
+    expect(
+      Result.isFailure(second) &&
+        isOrchestrationFailure(second.failure) &&
+        second.failure.reason._tag,
+    ).toBe("AlreadyReading");
     // The first reader's end releases the output to a later reader, which
     // resumes from the retained second element.
     yield* Fiber.interrupt(first);

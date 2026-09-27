@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import { ReactorError } from "./errors.js";
+import { ReactorError } from "./ReactorError.js";
 
 /** Copy borrowed chunks once, enforcing both memory and chunk-admission bounds. */
 export const collectBytes = <E, R>(

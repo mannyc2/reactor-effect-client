@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { Cause, Crypto, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import * as Renewal from "../../src/orchestration/renewal.js";
-import { AcquisitionFailure, ReactorError } from "../../src/errors.js";
+import { AcquisitionFailure, ReactorError, summarize } from "../../src/ReactorError.js";
 import { ClipId } from "../../src/orchestration/request.js";
 import {
   cleanPressure,
@@ -768,7 +768,7 @@ test("source cleanup with unresolved publications stays detailed after continuou
                   lease: {
                     ...cleanup.lease,
                     unresolvedPublications: ["publication"],
-                    localErrors: [ReactorError.fromCode("InvalidState", "unresolved")],
+                    localErrors: [summarize(ReactorError.fromCode("InvalidState", "unresolved"))],
                   },
                 })),
               ),
@@ -1109,7 +1109,7 @@ test("an oversized accepted identity replaces its source and is never retained",
       const summary = yield* handle.close;
       const retired = summary.retained.find((row) => row.source?.sessionId === "oversized-0");
       expect(retired?.disposition).toBe("incomplete");
-      expect(retired?.retirement.errors.map((error) => error.reason._tag)).toEqual(["Protocol"]);
+      expect(retired?.retirement.errors.map((error) => error.reason)).toEqual(["Protocol"]);
     }),
   ));
 
@@ -1160,7 +1160,7 @@ test("continuous Started history accepts duplicates at capacity and refuses one 
       });
       expect((yield* handle.engine.failure).reason._tag).toBe("Overflow");
       const summary = yield* handle.close;
-      expect(summary.retained[0]?.retirement.errors[0]?.reason._tag).toBe("Overflow");
+      expect(summary.retained[0]?.retirement.errors[0]?.reason).toBe("Overflow");
     }),
   ));
 

@@ -2,7 +2,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import { ReactorError } from "reactor-effect-client";
+import { ReactorError } from "reactor-effect-client/ReactorError";
 import {
   duration,
   errorOf,

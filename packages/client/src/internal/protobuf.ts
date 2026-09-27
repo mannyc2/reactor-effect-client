@@ -1,4 +1,5 @@
-import { ReactorError, positiveLimit } from "./errors.js";
+import { ReactorError } from "../ReactorError.js";
+import { positiveLimit } from "./validation.js";
 export interface WireLimits {
   readonly bytes: number;
   readonly depth: number;

@@ -19,8 +19,8 @@ import { clipId } from "./internal/reactorTest/h3.js";
 import * as Media from "./internal/reactorTest/media.js";
 import * as Peer from "./internal/reactorTest/peer.js";
 import * as Sessions from "./internal/reactorTest/sessions.js";
-import { PeerFactory } from "./PeerFactory.js";
-import type { VideoFrame } from "./session/media.js";
+import type { VideoFrame } from "./Media.js";
+import { PeerFactory } from "./Peer.js";
 
 const Count = Schema.Int.check(Schema.isGreaterThan(0));
 const nth = { nth: Schema.optionalKey(Count) };
@@ -166,7 +166,16 @@ export const layer = (
         }),
       ).pipe(
         Context.add(HttpClient.HttpClient, Coordinator.client(sessions)),
-        Context.add(PeerFactory, PeerFactory.of({ make: () => Peer.make(sessions) })),
+        Context.add(
+          PeerFactory,
+          PeerFactory.of({
+            check: Effect.void,
+            make: Effect.acquireRelease(
+              Effect.sync(() => Peer.make(sessions)),
+              (peer) => peer.close,
+            ),
+          }),
+        ),
       );
     }),
   );

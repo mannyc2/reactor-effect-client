@@ -409,7 +409,7 @@ def generate() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="regenerate in memory and fail on any byte difference")
-    parser.add_argument("--output", type=Path, default=ROOT / "src/wire.generated.ts")
+    parser.add_argument("--output", type=Path, default=ROOT / "src/internal/wire.generated.ts")
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 13):
         raise SystemExit("wire generation requires CPython 3.13; CI is pinned to 3.13.5")

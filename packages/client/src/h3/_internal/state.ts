@@ -1,5 +1,5 @@
-import { ReactorError } from "../../errors.js";
-import type { CommandReply, SessionEvent } from "../../session/index.js";
+import { ReactorError } from "../../ReactorError.js";
+import type { CommandReply, SessionEvent } from "../../Session.js";
 import type { Clip, DecodedMessage, MessageType, Queue, State } from "../messages.js";
 import type { ClipObservation, Facts, ProviderSnapshot } from "../types.js";
 import { Retained } from "./retained.js";

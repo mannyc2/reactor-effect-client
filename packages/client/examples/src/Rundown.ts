@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Result, Schedule, Schema, Stream } from "effect";
-import type { ReactorError } from "reactor-effect-client";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import * as Orchestration from "reactor-effect-client/orchestration";
 
 /** One item of a rundown: what to show, and for how long. */

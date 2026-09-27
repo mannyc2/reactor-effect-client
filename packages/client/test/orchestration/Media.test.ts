@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Clock, Effect, Fiber, Option, Result, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import type { EngineEvent, HandleShape } from "../../src/orchestration/types.js";
 import * as SourceSlot from "../../src/orchestration/source-slot.js";
 import { handoffEvidence } from "../../src/orchestration/renewal-state.js";

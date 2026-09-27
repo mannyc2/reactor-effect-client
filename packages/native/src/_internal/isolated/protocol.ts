@@ -17,14 +17,13 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import {
   ErrorCode,
   IceFailed,
-  Mapping,
   Native,
   ReactorError,
-  Track,
   TransportFailed,
-} from "reactor-effect-client";
-import type { ErrorContext } from "reactor-effect-client";
-import type { PeerEvent } from "reactor-effect-client/host";
+} from "reactor-effect-client/ReactorError";
+import { Mapping, Track } from "reactor-effect-client/Coordinator";
+import type { ErrorContext } from "reactor-effect-client/ReactorError";
+import type { PeerEvent } from "reactor-effect-client/Peer";
 
 /** A value structured clone carries unchanged, checked by its guard on each side. */
 const cloned = <T>(is: (u: unknown) => u is T, expected: string) =>
@@ -156,7 +155,6 @@ export class IsolatedRpcs extends RpcGroup.make(
     payload: { name: Schema.String, active: Schema.Boolean },
     error: WireFailure,
   }),
-  Rpc.make("Replace", { payload: { name: Schema.String }, error: WireFailure }),
   Rpc.make("MaxBitrate", {
     // The child's peer rejects a value out of range, a non-finite one
     // included, as the in-process host does, so it must reach the child.
@@ -214,7 +212,7 @@ export const toWire = (error: ReactorError): WireFailure => {
     case "Native":
       return {
         ...base,
-        ...nativeDetail(context.detail),
+        ...nativeDetail(context.detail === undefined ? undefined : Redacted.value(context.detail)),
         ...(reason.status === undefined ? {} : { status: reason.status }),
         ...(reason.backendMessage === undefined
           ? {}
@@ -225,7 +223,10 @@ export const toWire = (error: ReactorError): WireFailure => {
     case "TransportFailed":
       return { ...base, pairs: reason.pairs };
     default:
-      return { ...base, ...nativeDetail(context.detail) };
+      return {
+        ...base,
+        ...nativeDetail(context.detail === undefined ? undefined : Redacted.value(context.detail)),
+      };
   }
 };
 
@@ -246,7 +247,8 @@ export const fromWire = (wire: WireFailure): ReactorError => {
           ...(wire.status === undefined ? {} : { status: wire.status }),
           ...(backendMessage === undefined ? {} : { backendMessage }),
         }),
-        context: wire.channel === undefined ? context : { ...context, detail: channel },
+        context:
+          wire.channel === undefined ? context : { ...context, detail: Redacted.make(channel) },
       });
     case "IceFailed":
       return new ReactorError({

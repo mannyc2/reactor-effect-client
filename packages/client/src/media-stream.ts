@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import type { ReactorError } from "./errors.js";
+import type { ReactorError } from "./ReactorError.js";
 
 const cancelBound = "1 second";
 /** Catch acquisition failures in the typed channel and own both cancel AND releaseLock.

@@ -13,10 +13,11 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { take as takeQueue } from "../_internal/queue.js";
+import { take as takeQueue } from "../internal/queue.js";
 import { duration } from "../duration.js";
-import { parsedInput, ReactorError } from "../errors.js";
-import type { ReactorFailure } from "../errors.js";
+import { parsedInput } from "../internal/validation.js";
+import { ReactorError } from "../ReactorError.js";
+
 import { monotonicMillis } from "./elapsed.js";
 import { captureRequest, PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
@@ -32,6 +33,7 @@ import { estimatesFrom, plan, projectedStartMs, runwaySeconds } from "./schedule
 import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
+import type { OrchestrationFailure } from "./policy.js";
 
 /** Stable caller identity for a scheduled item. */
 export const ItemKey = Schema.NonEmptyString.pipe(Schema.brand("ItemKey"));
@@ -113,7 +115,7 @@ export interface SchedulerOptions {
 }
 
 export type ItemFailureReason =
-  | { readonly _tag: "Scheduler"; readonly cause: ReactorFailure }
+  | { readonly _tag: "Scheduler"; readonly cause: OrchestrationFailure }
   | { readonly _tag: "Command"; readonly cause: EngineError }
   | { readonly _tag: "Clip"; readonly message: string };
 
@@ -442,7 +444,7 @@ type Message =
       readonly command: Command;
       readonly result: Result.Result<CommandValue, EngineError>;
     }
-  | { readonly _tag: "Closed"; readonly cause: ReactorFailure };
+  | { readonly _tag: "Closed"; readonly cause: OrchestrationFailure };
 
 const invalid = (message: string): PolicyFailure =>
   PolicyFailure.refuse("InvalidRequest", message, "submit");
@@ -898,7 +900,7 @@ export interface SchedulerShape {
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
   /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
-  readonly failure: Effect.Effect<ReactorFailure>;
+  readonly failure: Effect.Effect<OrchestrationFailure>;
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
   readonly asRun: Stream.Stream<AsRunEvent>;
@@ -1025,7 +1027,7 @@ export const makeScheduler = (
       estimates: { build: undefined, length: 1 },
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
-    const stopped = yield* Deferred.make<ReactorFailure>();
+    const stopped = yield* Deferred.make<OrchestrationFailure>();
     const settled = yield* Deferred.make<void>();
     const closedCall = Deferred.await(stopped).pipe(
       Effect.flatMap((cause) => PolicyFailure.refuse("SessionClosed", cause.message)),
@@ -1055,7 +1057,7 @@ export const makeScheduler = (
     let accepting = true;
     let starved = 0;
     let refillActive = false;
-    let ended: Exit.Exit<ReactorFailure> | undefined;
+    let ended: Exit.Exit<OrchestrationFailure> | undefined;
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
@@ -1153,7 +1155,7 @@ export const makeScheduler = (
     // The claim is synchronous; interruption masking alone would still allow
     // two closers to publish conflicting results. Join only local bookkeeping,
     // never the worker scope (a worker can itself own terminal settlement).
-    const terminate = (terminal: Exit.Exit<ReactorFailure>): Effect.Effect<void> =>
+    const terminate = (terminal: Exit.Exit<OrchestrationFailure>): Effect.Effect<void> =>
       Effect.suspend(() => {
         if (ended !== undefined) return Deferred.await(settled);
         ended = terminal;
@@ -1234,7 +1236,7 @@ export const makeScheduler = (
         );
       }).pipe(Effect.uninterruptible);
 
-    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
+    const closeActor = (cause: OrchestrationFailure): Effect.Effect<void> =>
       terminate(Exit.succeed(cause));
 
     interface RecoveryDeadline {

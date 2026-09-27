@@ -12,13 +12,14 @@ import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { FetchHttp, recorder } from "reactor-effect-client";
-import type { ReactorError } from "reactor-effect-client";
-import type { IceCandidate, MediaPressure, PeerEvent } from "reactor-effect-client/host";
+import { recorder } from "reactor-effect-client/Media";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
+import type { IceCandidate } from "reactor-effect-client/Coordinator";
+import type { MediaPressure } from "reactor-effect-client/Media";
+import type { PeerEvent } from "reactor-effect-client/Peer";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
-import * as Native from "../src/index.js";
 import { FarPeer, libraryPath, nativeClient, record, until } from "./support.js";
 
 /*
@@ -640,15 +641,14 @@ describe("native media under load", () => {
               model: "far-peer",
               jwt: Redacted.make("far-peer-token"),
             });
-            yield* client.connect;
-            const media = yield* Native.media(client);
+            const media = yield* client.decoded;
             const frames = yield* media.video("main_video").pipe(Stream.take(8), Stream.runCollect);
             const started = performance.now();
             const report = yield* client.close;
             return { frames, report, closeMs: performance.now() - started };
           }),
         ).pipe(
-          Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
+          Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer)),
           Effect.provideService(FetchHttpClient.Fetch, coordinator),
         ),
       );

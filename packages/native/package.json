@@ -35,6 +35,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./isolated-host": {
+      "types": "./dist/_internal/isolated/host.d.ts",
+      "import": "./dist/_internal/isolated/host.js"
     }
   },
   "engines": {

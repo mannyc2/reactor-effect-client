@@ -1,5 +1,6 @@
 import { Config, Duration, Effect, Layer } from "effect";
-import * as Reactor from "reactor-effect-client";
+import * as Reactor from "reactor-effect-client/Reactor";
+import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/h3";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Simulation from "reactor-effect-client/simulation";
@@ -39,8 +40,8 @@ const live = ({ sessionLength, lead }: Settings["Service"]) =>
         Config.withDefault("https://api.reactor.inc"),
       );
       const maxSessions = yield* Config.Int("CHANNEL_MAX_SESSIONS").pipe(Config.withDefault(3));
-      const coordinator = yield* Reactor.Coordinator.make({ apiUrl });
-      const rate = yield* Reactor.Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
+      const coordinator = yield* Coordinator.make({ apiUrl });
+      const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
       yield* Effect.logInfo("live channel", {
         creditsPerSecond: rate.creditsPerSecond,
         creditsPerDollar: rate.creditsPerDollar,
@@ -62,7 +63,7 @@ const live = ({ sessionLength, lead }: Settings["Service"]) =>
         lead,
         maxSessions,
       }).pipe(
-        Layer.provide(Reactor.layer({ apiUrl })),
+        Layer.provide(Reactor.layer().pipe(Layer.provide(Coordinator.layer({ apiUrl })))),
         // Each connection's native peer runs in a child process of its own, so a
         // crash in libwebrtc ends that connection, not the server (Node only).
         Layer.provide(Native.Isolated.layer()),

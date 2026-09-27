@@ -17,21 +17,14 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import { FetchHttp, IceFailed, PeerFactory, ReactorError } from "reactor-effect-client";
-import type { Mapping, Track } from "reactor-effect-client";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import { IceFailed, ReactorError } from "reactor-effect-client/ReactorError";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import type { Mapping, Track } from "reactor-effect-client/Coordinator";
 import { Observations } from "reactor-effect-client/host";
-import type {
-  AudioFrame,
-  Channel,
-  IceServer,
-  MediaPressure,
-  MediaTrack,
-  Peer,
-  PeerEvent,
-  Prepared,
-  RawMedia,
-  VideoFrame,
-} from "reactor-effect-client/host";
+import type { AudioFrame, MediaPressure, RawMedia, VideoFrame } from "reactor-effect-client/Media";
+import type { Channel, MediaTrack, Peer, PeerEvent, Prepared } from "reactor-effect-client/Peer";
+import type { IceServer } from "reactor-effect-client/Coordinator";
 import { Events, candidateLine, offer, pairPriority, peerOf } from "./protocol.js";
 import type { Candidate, Media, ServerEvent } from "./protocol.js";
 
@@ -717,4 +710,4 @@ export const twinPeers = (apiUrl: string): Layer.Layer<PeerFactory> =>
       const http = yield* HttpClient.HttpClient;
       return PeerFactory.of({ make: () => new TwinPeer(apiUrl, http) });
     }),
-  ).pipe(Layer.provide(FetchHttp.layer));
+  ).pipe(Layer.provide(FetchHttpClient.layer));

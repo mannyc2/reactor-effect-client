@@ -1,5 +1,4 @@
 import { rmSync } from "node:fs";
-import * as Cause from "effect/Cause";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -13,10 +12,8 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
-import { FetchHttp } from "reactor-effect-client";
-import type { ReactorFailure } from "reactor-effect-client";
-import * as Native from "../src/index.js";
-import type { UploadReference } from "reactor-effect-client/wire";
+import type { ReactorFailure } from "reactor-effect-client/ReactorError";
+import type { UploadReference } from "reactor-effect-client/Session";
 import { compileFixture, nativeClient, until } from "./support.js";
 
 const sessionId = "sess_native_fixture";
@@ -75,7 +72,7 @@ const runClient = <A, E extends ReactorFailure>(
 ): Promise<A> =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(Layer.merge(FetchHttp.layer, NodeServices.layer)),
+      Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer)),
       Effect.provideService(FetchHttpClient.Fetch, fetch),
     ),
   );
@@ -91,7 +88,7 @@ describe("native canonical session boundary", () => {
             const factory = yield* nativeClient(
               {
                 apiUrl: "https://coordinator.fixture",
-                session: { maxPending: 32 },
+                maxPending: 32,
               },
               { libraryPath: compiled.path },
             );
@@ -99,7 +96,6 @@ describe("native canonical session boundary", () => {
               model: "fixture/native-session",
               jwt: Redacted.make("fixture-token"),
             });
-            yield* client.connect;
             const ready = yield* client.ready;
             expect(ready.remote.ownership).toBe("owned");
 
@@ -122,11 +118,11 @@ describe("native canonical session boundary", () => {
                   context: expect.objectContaining({ outcome: "not-submitted" }),
                 });
             }
-            expect((yield* client.current).pending.data).toBe(0);
+            expect((yield* client.snapshot).pending.data).toBe(0);
 
             // The fixture uses the snapshot call as an explicit test-only gate so
             // both generation readers subscribe before native media is released.
-            const media = yield* Native.media(client);
+            const media = yield* client.decoded;
             expect(media.generation).toBe(ready.generation);
             const videoReader = yield* Effect.forkChild(
               media.video("main_video").pipe(Stream.runHead),
@@ -135,7 +131,7 @@ describe("native canonical session boundary", () => {
               media.audio("main_audio").pipe(Stream.runHead),
             );
             yield* Effect.yieldNow;
-            yield* media.snapshot;
+            yield* media.pressure;
             const video = Option.getOrThrow(yield* Fiber.join(videoReader));
             const audio = Option.getOrThrow(yield* Fiber.join(audioReader));
 
@@ -145,11 +141,11 @@ describe("native canonical session boundary", () => {
               yield* Fiber.interrupt(fiber);
             }
 
-            const pressure = yield* client.current;
+            const pressure = yield* client.snapshot;
             const overflow = yield* Effect.result(client.command("echo", { index: 32 }));
             const closeReport = yield* client.close;
             const afterClose = yield* Effect.result(client.command("echo", {}));
-            const closed = yield* client.current;
+            const closed = yield* client.snapshot;
             return { video, audio, pressure, overflow, afterClose, closed, closeReport };
           }),
         ),
@@ -216,7 +212,6 @@ describe("native canonical session boundary", () => {
           Effect.gen(function* () {
             const factory = yield* nativeClient({ apiUrl: "https://coordinator.fixture" }, options);
             const client = yield* factory.create(create);
-            yield* client.connect;
             hold(1);
             const started = performance.now();
             const report = yield* client.close;
@@ -235,7 +230,6 @@ describe("native canonical session boundary", () => {
               until(() => stat(9) === 1, "the released join never destroyed its handle"),
             );
             const recovered = yield* factory.create(create);
-            yield* recovered.connect;
             const recoveredReport = yield* recovered.close;
             return { report, closeMs, retained, degraded, allocatedWhileDegraded, recoveredReport };
           }),
@@ -248,13 +242,10 @@ describe("native canonical session boundary", () => {
       expect(result.report.localClosed).toBe(false);
       expect(result.report.localErrors).toHaveLength(1);
       const [shutdown] = result.report.localErrors;
-      expect(shutdown?.reason._tag).toBe("Shutdown");
+      expect(shutdown?.reason).toBe("Shutdown");
       // The connection finalizer dies with the typed deadline failure, which
       // cleanup records before it goes on to terminate the owned session.
-      expect(Cause.squash(shutdown?.context.detail as Cause.Cause<unknown>)).toMatchObject({
-        reason: { _tag: "Shutdown" },
-        message: "native owner join exceeded its deadline; handle retained",
-      });
+      expect(shutdown?.message).toBe("native owner join exceeded its deadline; handle retained");
       expect(result.report.remote).toMatchObject({
         attempted: true,
         confirmed: true,

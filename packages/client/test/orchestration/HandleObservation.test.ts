@@ -2,7 +2,7 @@
 import { expect, test } from "vitest";
 import { Effect, Fiber, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { ReactorError } from "../../src/errors.js";
+import { ReactorError } from "../../src/ReactorError.js";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import type { HandleEvent, HandleShape } from "../../src/orchestration/types.js";
 import { renewalFixture } from "./RenewalFixture.js";

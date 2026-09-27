@@ -12,8 +12,8 @@ import * as Headers from "effect/unstable/http/Headers";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { Mapping } from "../../contract.js";
-import { SessionAuthorization } from "../../coordinator/_internal/schemas.js";
+import { Mapping } from "../../Coordinator.js";
+import { SessionAuthorization } from "../../Coordinator.js";
 import { Refusal } from "./sessions.js";
 import type { Sessions } from "./sessions.js";
 
