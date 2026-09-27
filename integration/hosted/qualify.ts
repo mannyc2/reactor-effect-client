@@ -107,6 +107,7 @@ import {
   maxCheckUsd,
   maxTotalUsd,
   options,
+  reservationUsd,
   sessionSeconds,
   sessionsFor,
   tokenSeconds,
@@ -2517,7 +2518,8 @@ const preflight = async (args: readonly string[]): Promise<number> => {
       Effect.gen(function* () {
         const coordinator = yield* Reactor.Coordinator.make({ apiUrl: target.apiUrl });
         const rate = yield* Reactor.Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
-        const worst = worstCaseUsd(rate);
+        // Each session counts at what admission would reserve for it, rounded up.
+        const worst = reservationUsd(worstCaseUsd(rate));
         const granted = given.has("--no-mint")
           ? undefined
           : yield* coordinator
