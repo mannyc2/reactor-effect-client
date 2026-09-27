@@ -215,5 +215,29 @@ export const make = (options: Options = {}) =>
         exhausted,
       }),
     );
-    return { reserve, identify, record, finish, summary };
+    /**
+     * The final summary. Its owner joins every attempt first; one still
+     * outstanding would otherwise be absent, so it is reported as unfinished
+     * without claiming any of its local stages.
+     */
+    const conclude = Effect.suspend(() =>
+      Effect.forEach(
+        [...outstanding],
+        (reservation) =>
+          finish(reservation, {
+            accounting: "timed-out",
+            scope: "failed",
+            affinity: "failed",
+            errors: [
+              ReactorError.fromCode(
+                "InvalidState",
+                "Source retirement had not finished when its cleanup was summarized",
+              ),
+            ],
+            unknownSubmissions: 0n,
+          }),
+        { discard: true },
+      ),
+    ).pipe(Effect.andThen(summary));
+    return { reserve, identify, record, finish, summary, conclude };
   });

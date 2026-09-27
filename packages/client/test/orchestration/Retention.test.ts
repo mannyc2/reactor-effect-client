@@ -306,6 +306,32 @@ test("identified acquisition failures have no invented accounting or affinity ob
   );
 });
 
+// Review of 23d03f8: an attempt still outstanding at summary time was absent.
+test("a final summary reports an attempt whose retirement has not finished as incomplete", async ({
+  signal,
+}) => {
+  await run(
+    Effect.gen(function* () {
+      const retention = yield* Retention.make({ retainedSuccessfulCleanups: 0 });
+      const finished = yield* retention.reserve;
+      yield* retention.record(finished, owned);
+      yield* retention.finish(finished, complete);
+      const unfinished = yield* retention.reserve;
+      yield* retention.identify(unfinished, "unfinished");
+      const summary = yield* retention.conclude;
+      expect(summary.totalRetirements).toBe(2n);
+      expect(summary.retained).toHaveLength(1);
+      expect(summary.retained[0]).toMatchObject({
+        ordinal: 2n,
+        source: { sessionId: "unfinished" },
+        disposition: "incomplete",
+      });
+      expect(summary.retained[0]?.retirement.errors).toHaveLength(1);
+    }),
+    { signal },
+  );
+});
+
 test("physical identity is bounded and cannot change within an ownership attempt", async ({
   signal,
 }) => {

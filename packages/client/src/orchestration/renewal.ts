@@ -294,6 +294,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       if (failed.length > 0)
         attemptFailures.set(attempt, [...(attemptFailures.get(attempt) ?? []), ...failed]);
     };
+    // Fibers running an acquisition, whether forked as Opening or inline in a
+    // replacement. Close interrupts and joins them before retiring owned slots,
+    // so no source opens after close and every attempt's cleanup is reported.
+    const acquisitions = new Set<Fiber.Fiber<unknown, unknown>>();
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
@@ -423,7 +427,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         });
         if (replacement._tag === "Ready" && replacement.slot === slot)
           replacement = { _tag: "Absent" };
-        if (slot !== current) return;
+        // Close retires what remains; a replacement it refuses is no failure.
+        if (slot !== current || closing) return;
         const pending = replacement;
         if (!renewing && pending._tag === "Absent") {
           yield* fail(cause);
@@ -449,7 +454,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           { attributes: { "reactor.session.id": slot.source.id } },
           { captureStackTrace: false },
         ),
-        Effect.catch(fail),
+        Effect.catch((cause) => (closing ? Effect.void : fail(cause))),
       );
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
@@ -575,13 +580,17 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
 
     const acquire: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        const fiber = yield* Effect.fiber;
         if (opened >= maxSessions)
           return yield* ReactorError.fromCode(
             "Overflow",
             "Orchestration session and cleanup-history bound reached",
           );
-        if (continuous && (closing || terminalFailure !== undefined || !renewing))
+        if (closing || (continuous && (terminalFailure !== undefined || !renewing)))
           return yield* ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
+        // Registered in the same synchronous step as the closing check, so
+        // either close sees this attempt or this attempt sees close.
+        acquisitions.add(fiber);
         const reservation = retention === undefined ? undefined : yield* retention.reserve;
         const attemptIncarnation = reservation?.incarnation ?? ++incarnation;
         const recordAttempt = (cleanup: SourceCleanup): Effect.Effect<void> => {
@@ -778,6 +787,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         );
       }),
     ).pipe(
+      // The attempt leaves the registry only after its own cleanup has run.
+      Effect.onExit(() =>
+        Effect.withFiber((fiber) => Effect.sync(() => void acquisitions.delete(fiber))),
+      ),
       Effect.tap((slot) => Effect.annotateCurrentSpan("reactor.session.id", slot.source.id)),
       Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
@@ -786,13 +799,16 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
           closing = true;
-          if (replacement._tag === "Opening") {
-            const pending = replacement.fiber;
-            replacement = { _tag: "Absent" };
-            // Interrupt joins acquisition cleanup, which records the attempt's
-            // own defects; cancelling it is not a close failure.
-            yield* Fiber.interrupt(pending);
-          }
+          // Interrupting joins each attempt's cleanup, which records its own
+          // defects; cancelling an attempt is not a close failure. An Opening
+          // fiber that has not started would refuse, but never runs at all.
+          // A close invoked from inside an acquisition cannot join itself.
+          const pending = new Set(acquisitions);
+          if (replacement._tag === "Opening") pending.add(replacement.fiber);
+          yield* Effect.withFiber((self) => {
+            pending.delete(self);
+            return Fiber.interruptAll(pending);
+          });
           for (const slot of [...slots.values()]) yield* Effect.exit(closeSlot(slot));
           const exits = [...attemptFailures.values()].map((reasons) =>
             Exit.failCause(Cause.fromReasons(reasons)),
@@ -808,7 +824,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             );
           if (retention === undefined)
             finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
-          else finalSummary = yield* retention.summary;
+          else finalSummary = yield* retention.conclude;
           // The closed owner stays current, so final loss totals remain readable.
           replacement = { _tag: "Absent" };
           return yield* Exit.asVoidAll(exits);
@@ -1153,9 +1169,11 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           Effect.gen(function* () {
             if (replacement._tag !== "Opening") return;
             const pending = replacement.fiber;
-            replacement = { _tag: "Absent" };
+            // It stays Opening until joined, so a concurrent close joins it too.
             yield* Fiber.interrupt(pending);
             const result = yield* Fiber.await(pending);
+            if (replacement._tag === "Opening" && replacement.fiber === pending)
+              replacement = { _tag: "Absent" };
             if (Exit.isSuccess(result)) yield* closeSlot(result.value);
           }),
         );
@@ -1258,6 +1276,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             const result = replacement.fiber.pollUnsafe();
             if (result !== undefined) {
               replacement = { _tag: "Absent" };
+              // Close interrupts this attempt and retires whatever it opened.
+              if (closing) return;
               if (Exit.isSuccess(result)) {
                 replacement = { _tag: "Ready", slot: result.value };
                 openFailures = 0;

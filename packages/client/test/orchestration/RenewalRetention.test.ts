@@ -239,6 +239,108 @@ test("a stalled scope finalizer keeps close and its cleanup reservation pending"
     }),
   ));
 
+// Review of 4443f80: close froze its summary around acquisitions it did not
+// track, so a source could open after close returned without being reported.
+test("close cancels an inline replacement acquisition and reports its reservation", () =>
+  runClock(
+    Effect.gen(function* () {
+      const opening = yield* gate;
+      const sources: SourceFixture[] = [];
+      let attempts = 0;
+      const handle = yield* Renewal.makeContinuous({
+        retainedSuccessfulCleanups: 0,
+        open: Effect.gen(function* () {
+          if (++attempts === 2) yield* opening.wait;
+          const fixture = yield* sourceFixture(`inline-${attempts}`);
+          sources.push(fixture);
+          return { source: fixture.source, lifetime: "Infinity" };
+        }),
+      });
+      // Replacing the lost source acquires on the recovery fiber, not as Opening.
+      yield* sources[0]!.failEvents(ReactorError.fromCode("Disconnected", "lost"));
+      yield* until(() => attempts === 2);
+      const summary = yield* handle.close;
+      yield* opening.release;
+      yield* Effect.yieldNow;
+      expect(sources).toHaveLength(1);
+      expect(summary.totalRetirements).toBe(2n);
+      expect(summary.omittedComplete.attachedDetached).toBe(1n);
+      expect(summary.retained).toHaveLength(1);
+      expect(summary.retained[0]).toMatchObject({ ordinal: 2n, disposition: "incomplete" });
+      expect(summary.retained[0]?.cleanup).toBeUndefined();
+    }),
+  ));
+
+test("close joins an opening replacement that stopRenewal is still cancelling", () =>
+  runClock(
+    Effect.gen(function* () {
+      const opening = yield* gate;
+      let attempts = 0;
+      const handle = yield* Renewal.makeContinuous({
+        lead: 500,
+        retainedSuccessfulCleanups: 0,
+        open: Effect.gen(function* () {
+          // An allocation request that cannot be abandoned midway.
+          if (++attempts === 2) yield* Effect.uninterruptible(opening.wait);
+          const fixture = yield* sourceFixture(`stopping-${attempts}`);
+          return { source: fixture.source, lifetime: 1000 };
+        }),
+      });
+      yield* until(() => attempts === 2, TestClock.adjust(100));
+      const stopping = yield* Effect.forkScoped(handle.engine.stopRenewal);
+      yield* Effect.yieldNow;
+      const closing = yield* Effect.forkScoped(handle.close);
+      yield* Effect.yieldNow;
+      yield* opening.release;
+      const summary = yield* Fiber.join(closing);
+      yield* Fiber.join(stopping);
+      // The cancelled attempt retires before close retires the current source.
+      expect(summary.totalRetirements).toBe(2n);
+      expect(summary.retained).toHaveLength(1);
+      expect(summary.retained[0]).toMatchObject({ ordinal: 1n, disposition: "incomplete" });
+      expect(summary.retained[0]?.cleanup).toBeUndefined();
+    }),
+  ));
+
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} replacement due after close begins is refused without failing the handle`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const retiring = yield* gate;
+        const sources: SourceFixture[] = [];
+        let attempts = 0;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            attempts++;
+            const fixture = yield* sourceFixture(
+              `refused-${attempts}`,
+              attempts === 1 ? { close: retiring.wait } : {},
+            );
+            sources.push(fixture);
+            return { source: fixture.source, lifetime: "Infinity" };
+          }),
+        };
+        const handle =
+          constructor === "legacy"
+            ? yield* Renewal.make(options).pipe(Scope.provide(owner))
+            : yield* Renewal.makeContinuous(options).pipe(Scope.provide(owner));
+        // The lost source's retirement is still running when close begins, so
+        // the replacement it leads to is due only after close has started.
+        yield* sources[0]!.failEvents(ReactorError.fromCode("Disconnected", "lost"));
+        yield* until(() => sources[0]!.status().closed);
+        const closing = yield* Effect.forkScoped(handle.close);
+        yield* Effect.yieldNow;
+        yield* retiring.release;
+        yield* Fiber.join(closing);
+        // Closing the owner joins the recovery fiber that retired the source.
+        yield* Scope.close(owner, Exit.void);
+        // No source opens after close, and its refusal publishes no failure.
+        expect(attempts).toBe(1);
+        expect((yield* handle.mediaState)._tag).toBe("Closed");
+      }),
+    ));
+
 test("unknown submissions exhaust their reserved history even after confirmed termination", () =>
   runClock(
     Effect.gen(function* () {
