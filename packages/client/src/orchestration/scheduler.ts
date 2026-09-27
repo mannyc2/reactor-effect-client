@@ -933,8 +933,9 @@ export const makeScheduler = (
 
     // Capture membership and public rows in one pass. A fresh token reads every
     // source on every observation, including in-place changes to Engine arrays;
-    // immutable empty rows can be reused without treating array identity as proof.
-    const noReady: SchedulerState["sessions"][number]["ready"] = [];
+    // frozen empty rows can be shared by every published state without treating
+    // array identity as proof.
+    const noReady: SchedulerState["sessions"][number]["ready"] = Object.freeze([]);
     const sourceRows = new Map<
       string,
       { readonly empty: SchedulerState["sessions"][number]; seen: symbol }
@@ -944,7 +945,7 @@ export const makeScheduler = (
       const sessions = state.sessions.map<SchedulerState["sessions"][number]>(({ sessionId }) => {
         let cached = sourceRows.get(sessionId);
         if (cached === undefined) {
-          cached = { empty: { sessionId, ready: noReady }, seen };
+          cached = { empty: Object.freeze({ sessionId, ready: noReady }), seen };
           sourceRows.set(sessionId, cached);
         } else cached.seen = seen;
         if (state.ready.length === 0) return cached.empty;
