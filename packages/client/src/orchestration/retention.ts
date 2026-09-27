@@ -161,9 +161,11 @@ export const make = (options: Options = {}) =>
       }),
     );
     /**
-     * The final summary. Its owner joins every attempt first; one still
-     * outstanding would otherwise be absent, so it is reported as unfinished
-     * without claiming any of its local stages.
+     * The final summary. Its owner joins every attempt first, so an attempt
+     * without a retirement record here is still retiring or lost the record to
+     * a failure in its bookkeeping. Rather than being omitted, it is recorded
+     * as incomplete, with timed-out accounting and failed scope and affinity so
+     * that no local stage is reported as completed.
      */
     const conclude = Effect.suspend(() =>
       Effect.forEach(
@@ -176,7 +178,7 @@ export const make = (options: Options = {}) =>
             errors: [
               ReactorError.fromCode(
                 "InvalidState",
-                "Source retirement had not finished when its cleanup was summarized",
+                "Source retirement was not recorded before the final cleanup summary",
               ),
             ],
             unknownSubmissions: 0n,
