@@ -795,7 +795,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
 
-    const close = yield* Effect.cached(
+    const close = yield* SourceSlot.once(
       Effect.uninterruptible(
         Effect.gen(function* () {
           closing = true;

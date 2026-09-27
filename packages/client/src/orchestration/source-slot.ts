@@ -63,6 +63,38 @@ export const subtractLoss = (a: Loss, b: Loss): Loss => ({
 });
 
 /**
+ * Runs a close at most once and gives every caller its Exit. Unlike
+ * `Effect.cached`, the first caller claims the run and enters it in one
+ * uninterruptible step: an interruption between the two would otherwise be
+ * cached as the close's result, or strand later callers on a run never
+ * entered. Later callers still wait interruptibly.
+ */
+export const once = <A, E>(self: Effect.Effect<A, E>) =>
+  Effect.sync(() => {
+    const done = Deferred.makeUnsafe<void>();
+    let exit: Exit.Exit<A, E> | undefined;
+    let started = false;
+    return Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        if (exit !== undefined) return exit;
+        if (started)
+          return restore(Deferred.await(done)).pipe(
+            Effect.andThen(
+              Effect.suspend(() => exit ?? Effect.die(new Error("Joined close has no Exit"))),
+            ),
+          );
+        started = true;
+        return Effect.onExit(self, (result) =>
+          Effect.sync(() => {
+            exit = result;
+            Deferred.doneUnsafe(done, Effect.void);
+          }),
+        );
+      }),
+    );
+  });
+
+/**
  * One physical source's local owner. The source closes its remote lease; this
  * owner then joins its registered committed executions before closing their scope.
  * Logical preparation is never registered here, and this module never dispatches it.
@@ -144,7 +176,7 @@ export const make = (options: Options) =>
         }),
       );
 
-    const close = yield* Effect.cached(
+    const close = yield* once(
       Effect.uninterruptible(
         Effect.gen(function* () {
           phase = Lifecycle.transitionSource(phase, { _tag: "Close" });
