@@ -1934,9 +1934,11 @@ export const makeScheduler = (
               yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
               break;
             }
-            const startedWaiter = yield* Deferred.make<AsRunStatus>();
-            const outcomeWaiter = yield* Deferred.make<AsRunStatus>();
-            const firstDecisiveWaiter = yield* Deferred.make<FirstDecisiveStatus>();
+            // No yield between the terminal check above and items.set below: a
+            // claim either precedes admission or settles the admitted item.
+            const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
+            const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
+            const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
             const handle: ItemHandle = {
               key: message.item.key,
               started: Deferred.await(startedWaiter),
