@@ -650,7 +650,11 @@ test("a recovery-fiber defect stays a defect while the scheduler independently b
         yield* Effect.exit(Scope.close(owner, Exit.void)),
       ]) {
         expect(Exit.isFailure(exit)).toBe(true);
-        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(Cause.squash(defect));
+        if (Exit.isFailure(exit)) {
+          // One retirement failed once: the defect is reported exactly once.
+          expect(exit.cause.reasons).toHaveLength(1);
+          expect(Cause.squash(exit.cause)).toBe(Cause.squash(defect));
+        }
       }
     }),
   ));
