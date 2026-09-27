@@ -111,6 +111,25 @@ test("continuous renewal exceeds 64 sources and preserves exact bounded cleanup 
     }),
   ));
 
+test("legacy renewal keeps its default lifetime cap of 64 successful opens", () =>
+  runClock(
+    Effect.gen(function* () {
+      let opened = 0;
+      const handle = yield* Renewal.make({
+        lead: 0,
+        open: Effect.gen(function* () {
+          const fixture = yield* sourceFixture(`legacy-cap-${++opened}`);
+          return { source: fixture.source, lifetime: 200 };
+        }),
+      });
+      const failed = yield* handle.engine.failure.pipe(Effect.forkScoped);
+      yield* until(() => failed.pollUnsafe() !== undefined, TestClock.adjust(100));
+      expect((yield* Fiber.join(failed)).reason._tag).toBe("Overflow");
+      expect(opened).toBe(64);
+      expect((yield* handle.close).sessions).toHaveLength(64);
+    }),
+  ));
+
 test("continuous explicit maxSessions retains the successful-open lifetime cap", () =>
   runClock(
     Effect.gen(function* () {
