@@ -29,7 +29,7 @@
     }
   },
   "devDependencies": {
-    "@effect/tsgo": "0.45.0",
+    "@effect/tsgo": "0.46.1",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "oxfmt": "0.70.0",

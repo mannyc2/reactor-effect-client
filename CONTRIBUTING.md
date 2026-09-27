@@ -39,11 +39,11 @@ file does not repeat them.
 bun install --frozen-lockfile
 ```
 
-The `prepare` script patches the installed `typescript` with `@effect/tsgo`, so `tsc` reports the
-Effect language service's diagnostics as errors. `tsc --version` ends in `+effect-tsgo` when the
-patch is in place; an install that skipped lifecycle scripts needs `bunx effect-tsgo patch
---typescript`. Native prerequisites are in [packages/native/README.md](packages/native/README.md);
-ordinary builds never install system packages.
+The `prepare` script patches the installed `typescript` with `@effect/tsgo`, and every rule of its
+Effect language service is an error in `tsconfig.base.json`, so `tsc` fails on any finding.
+`tsc --version` ends in `+effect-tsgo` when the patch is in place; an install that skipped lifecycle
+scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
+[packages/native/README.md](packages/native/README.md); ordinary builds never install system packages.
 
 ## Architecture
 
@@ -110,9 +110,9 @@ Read `packages/client/node_modules/effect/AGENTS.md` completely before writing E
 the root. Use the installed version's APIs; snippets from elsewhere may target another prerelease.
 
 - **Services.** A service is a `Context.Service` with a static `layer` built with `Service.of`, one
-  concern each. Its key names the package and module (`reactor-effect-client/Coordinator`).
-  Constructors are `make`, `layer` and `layerConfig`; a test double is `layerTest`. A service with
-  one implementation, one caller and no seam folds into its caller.
+  concern each. Its key is the one the `deterministicKeys` rule computes from the package, module
+  and class. Constructors are `make`, `layer` and `layerConfig`; a test double is `layerTest`. A
+  service with one implementation, one caller and no seam folds into its caller.
 - **Functions.** Service methods and reusable operations that are a tracing boundary are
   `Effect.fn("Module.operation")`; library internals and hot paths use `Effect.fnUntraced`; inline
   code uses `Effect.gen`. No function exists only to return `Effect.gen`. An operation without
@@ -143,6 +143,8 @@ the root. Use the installed version's APIs; snippets from elsewhere may target a
   inputs, replies, provider text or credentials, and pass `captureStackTrace: false`.
 - **Background work is a Layer or a scoped fiber.** A loop that must not stop handles each
   iteration's failure.
+- **Layers are composed, then provided once.** `Effect.provide` with a layer belongs at an
+  application's entry point; library code composes layers, and tests use `@effect/vitest`'s `layer`.
 - **Configuration is read by the layer that uses it.** `layerConfig` reads `Config`, and the API key
   is `Config.Redacted`. Tuning with a default is a `Context.Reference` or an option with a
   documented default.
