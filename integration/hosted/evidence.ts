@@ -16,6 +16,7 @@ import {
   checks,
   ceilingFor,
   reservationUsd,
+  sessionSeconds,
   sessionsFor,
   stopFor,
   worstCaseUsd,
@@ -1170,6 +1171,45 @@ export const rejudged = (evidence: Evidence): Evidence => {
         reasons: ["the stored pass is not supported by its evidence", ...judged.reasons],
         verdict: "fail",
       };
+};
+
+/** An instant as ISO text, or a phrase when the recorded value cannot be one. */
+const instant = (ms: number): string => {
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? "an unrepresentable time" : date.toISOString();
+};
+
+/**
+ * What a person must do when the run could not confirm that a session ended,
+ * or could not tell whether one was allocated: the Reactor dashboard is then
+ * the only remaining record.
+ */
+export const cleanupInstructions = (evidence: Evidence): string | undefined => {
+  const origin = Date.parse(evidence.startedAt);
+  const lines: string[] = [];
+  const session = evidence.session;
+  if (session !== undefined && evidence.termination?.confirmed !== true)
+    lines.push(
+      `Session ${session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s, so the server ends it by ${instant(origin + session.allocatedMs + sessionSeconds * 1000)}; confirm in the Reactor dashboard that it ended, and what it cost.`,
+    );
+  const replacement = evidence.scheduler?.replacement;
+  if (replacement?.session !== undefined && replacement.termination?.confirmed !== true)
+    lines.push(
+      `Replacement session ${replacement.session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s; confirm its termination and cost in the Reactor dashboard.`,
+    );
+  for (const slot of evidence.schedulerRenewal?.allocations ?? [])
+    if (
+      slot.sessionId !== undefined &&
+      (slot.cleanup?.lease ?? slot.leaseCleanup)?.remote.confirmed !== true
+    )
+      lines.push(
+        `Session ${slot.sessionId} was not confirmed ended. Its recorded cap expiry is ${slot.capEndsAt ?? "unknown"}; confirm termination and cost in the Reactor dashboard.`,
+      );
+    else if (slot.allocation === "unknown")
+      lines.push(
+        `Source ${slot.slot}'s allocation outcome is unknown. A session its grant allocated runs at most ${sessionSeconds} s, and the grant expires at ${slot.grant === undefined ? "an unrecorded time" : instant(slot.grant.expiresAt * 1000)}; check the Reactor dashboard for a session under it, and confirm its termination and cost.`,
+      );
+  return lines.length === 0 ? undefined : lines.join("\n");
 };
 
 const encode = Schema.encodeSync(Evidence);

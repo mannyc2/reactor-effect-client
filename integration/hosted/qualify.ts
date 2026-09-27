@@ -80,6 +80,7 @@ import {
 import type { Pressure, StatsSample, SchedulerRenewal } from "./evidence.js";
 import {
   Writer,
+  cleanupInstructions,
   conclude,
   format,
   lockLedger,
@@ -2262,6 +2263,42 @@ const execute = async (
         : new WriteFault(file, () => secrets, failsFrom),
   };
   save(run);
+  try {
+    return await runClaimed(target, check, budget, run, file);
+  } catch (cause) {
+    // The file exists and may hold this run's reservation, so whatever broke,
+    // the run failed: only a refusal before the file existed exits 2.
+    const reason = `the run could not be concluded: ${describe(cause)}`;
+    try {
+      run.evidence.verdict = "fail";
+      run.evidence.reasons = [...run.evidence.reasons, reason];
+      save(run);
+    } catch {
+      // The file keeps its last checkpoint; the reason is printed below.
+    }
+    console.log(`hosted-qualification-fail ${check} ${file}`);
+    console.log(`  - ${reason}`);
+    return 1;
+  }
+};
+
+/** A thrown value as bounded text, even one that cannot print itself. */
+const describe = (cause: unknown): string => {
+  try {
+    return String(cause).slice(0, 300);
+  } catch {
+    return "a value that could not be printed";
+  }
+};
+
+/** Runs the check whose file `execute` claimed and concludes its evidence; the exit code. */
+const runClaimed = async (
+  target: Target,
+  check: Check,
+  budget: Budget,
+  run: Run,
+  file: string,
+): Promise<number> => {
   type CheckProgram = ReturnType<typeof schedulerRenewal> | ReturnType<typeof scheduler>;
   const selected: Effect.Effect<
     void,
@@ -2288,21 +2325,8 @@ const execute = async (
   process.off("SIGTERM", interrupt);
   run.evidence.finishedAt = new Date().toISOString();
   conclude(run.evidence, exit._tag === "Failure" ? failureText(exit.cause) : undefined);
-  const session = run.evidence.session;
-  if (session !== undefined && run.evidence.termination?.confirmed !== true)
-    run.evidence.cleanup = `Session ${session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s, so the server ends it by ${new Date(origin + session.allocatedMs + sessionSeconds * 1000).toISOString()}; confirm in the Reactor dashboard that it ended, and what it cost.`;
-  const replacement = run.evidence.scheduler?.replacement;
-  if (replacement?.session !== undefined && replacement.termination?.confirmed !== true)
-    run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Replacement session ${replacement.session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s; confirm its termination and cost in the Reactor dashboard.`;
-  for (const slot of run.evidence.schedulerRenewal?.allocations ?? []) {
-    if (
-      slot.sessionId !== undefined &&
-      (slot.cleanup?.lease ?? slot.leaseCleanup)?.remote.confirmed !== true
-    )
-      run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Session ${slot.sessionId} was not confirmed ended. Its recorded cap expiry is ${slot.capEndsAt ?? "unknown"}; confirm termination and cost in the Reactor dashboard.`;
-    else if (slot.allocation === "unknown")
-      run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Source ${slot.slot}'s allocation outcome is unknown. A session its grant allocated runs at most ${sessionSeconds} s, and the grant expires at ${slot.grant === undefined ? "an unrecorded time" : new Date(slot.grant.expiresAt * 1000).toISOString()}; check the Reactor dashboard for a session under it, and confirm its termination and cost.`;
-  }
+  const instructions = cleanupInstructions(run.evidence);
+  if (instructions !== undefined) run.evidence.cleanup = instructions;
   try {
     save(run);
   } catch (cause) {
@@ -2311,7 +2335,7 @@ const execute = async (
     run.evidence.verdict = "fail";
     run.evidence.reasons = [
       ...run.evidence.reasons,
-      `the final evidence was not saved: ${String(cause).slice(0, 300)}`,
+      `the final evidence was not saved: ${describe(cause)}`,
     ];
   }
   console.log(`hosted-qualification-${run.evidence.verdict} ${check} ${file}`);

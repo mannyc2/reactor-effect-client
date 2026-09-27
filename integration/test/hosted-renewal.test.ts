@@ -19,6 +19,7 @@ import type * as Orchestration from "reactor-effect-client/orchestration";
 import {
   Evidence,
   SchedulerRenewal,
+  cleanupInstructions,
   conclude,
   format,
   renewalCriteria,
@@ -513,6 +514,23 @@ test("admission reserves the two-session worst case rounded up to the ledger's p
   run.budget = { ...run.budget, rate, worstCaseUsd: reserved };
   conclude(run, undefined);
   expect(run.verdict).toBe("pass");
+});
+
+test("cleanup instructions stay printable when a recorded grant expiry is out of range", () => {
+  // Token expiry is only bounded below; formatting it must not throw after a run has spent.
+  const original = renewal();
+  const run = draft({
+    ...original,
+    allocations: [
+      original.allocations[0]!,
+      {
+        slot: 2,
+        allocation: "unknown",
+        grant: { maxSessions: 1, maxSessionSeconds: 50, expiresAt: 1e20 },
+      },
+    ],
+  });
+  expect(cleanupInstructions(run)).toContain("Source 2's allocation outcome is unknown");
 });
 
 test("a partial new two-session paid run retains the full ceiling without a reservation", () => {
