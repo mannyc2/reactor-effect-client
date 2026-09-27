@@ -182,6 +182,8 @@ export interface EngineShape {
   /**
    * The terminal failure, as it was raised: a session's `ReactorError`, a
    * replacement's `AcquisitionFailure` with its cleanup, or the failed command.
+   * An owned renewal worker's defect or unexpected interruption fails this
+   * effect and observations with the original Cause instead of a typed error.
    */
   readonly failure: Effect.Effect<ReactorFailure>;
   /** Permanently stop new renewal allocations; already acquired sources may finish. */

@@ -1,6 +1,6 @@
 /** A state paired with every later event, with no gap between them. */
 import { expect, test } from "vitest";
-import { Effect, Result, Stream } from "effect";
+import { Cause, Effect, Exit, Result, Stream } from "effect";
 import { Observations } from "../../src/observation.js";
 import { ClipId } from "../../src/orchestration/request.js";
 import type { EngineEvent } from "../../src/orchestration/types.js";
@@ -57,3 +57,34 @@ test("an engine observation pairs its state with later events and re-syncs after
       expect(next.map((event) => event._tag)).toEqual(["Queued"]);
     }),
   ));
+
+for (const failure of ["defect", "interruption"] as const)
+  test(`observation ${failure} reaches active and later subscribers with its original Cause`, () =>
+    run(
+      Effect.gen(function* () {
+        const observations = new Observations<string>();
+        const active = yield* observations.subscribe();
+        const cause =
+          failure === "defect"
+            ? Cause.die(new Error("controlled observation defect"))
+            : Cause.interrupt();
+        observations.emit("before-failure");
+        observations.failCause(cause);
+        observations.failCause(Cause.die(new Error("later failure")));
+        observations.end();
+        observations.emit("after-failure");
+        const seen: string[] = [];
+        expect(
+          yield* Effect.exit(
+            Stream.runForEach(active, (value) =>
+              Effect.sync(() => {
+                seen.push(value);
+              }),
+            ),
+          ),
+        ).toEqual(Exit.failCause(cause));
+        expect(seen).toEqual(["before-failure"]);
+        const later = yield* observations.subscribe();
+        expect(yield* Effect.exit(Stream.runCollect(later))).toEqual(Exit.failCause(cause));
+      }),
+    ));

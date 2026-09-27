@@ -606,7 +606,7 @@ for (const finish of ["playing", "accepted"] as const) {
     ));
 }
 
-test("a recovery-fiber defect stays a defect while the scheduler independently bounds service", () =>
+test("a recovery-fiber defect reaches engine and scheduler waiters before the watchdog", () =>
   runClock(
     Effect.gen(function* () {
       const defect = Cause.die(new Error("controlled recovery close defect"));
@@ -635,16 +635,22 @@ test("a recovery-fiber defect stays a defect while the scheduler independently b
       if (Exit.isFailure(closeResult))
         expect(Cause.squash(closeResult.cause)).toBe(Cause.squash(defect));
       const engineFailure = yield* Effect.forkScoped(Effect.exit(handle.engine.failure));
-      const stopped = yield* Effect.forkScoped(scheduler.failure);
-      yield* TestClock.adjust(999);
-      // Existing Renewal recovery has no all-cause supervisor. Its original
-      // defect is observed above; the later service Timeout is a separate event.
-      expect(engineFailure.pollUnsafe()).toBeUndefined();
-      expect(stopped.pollUnsafe()).toBeUndefined();
-      yield* TestClock.adjust(1);
-      expect(stopped.pollUnsafe()).toBeDefined();
-      expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
-      expect((yield* Fiber.join(stopped)).reason._tag).toBe("Timeout");
+      const stopped = yield* Effect.forkScoped(Effect.exit(scheduler.failure));
+      // Keep the TestClock stationary: renewal must notify its consumers itself,
+      // without waiting for the scheduler's independent one-second watchdog.
+      yield* until(() => engineFailure.pollUnsafe() !== undefined);
+      yield* until(() => stopped.pollUnsafe() !== undefined);
+      const engineResult = yield* Fiber.join(engineFailure);
+      expect(Exit.isFailure(engineResult)).toBe(true);
+      if (Exit.isFailure(engineResult)) {
+        expect(engineResult.cause.reasons).toHaveLength(1);
+        expect(Cause.squash(engineResult.cause)).toBe(Cause.squash(defect));
+      }
+      expect(yield* Fiber.join(stopped)).toEqual(engineResult);
+      for (const wait of [item.started, item.firstDecisive, item.outcome])
+        expect(yield* Effect.exit(wait)).toEqual(engineResult);
+      yield* TestClock.adjust(1000);
+      expect(yield* Effect.exit(scheduler.failure)).toEqual(engineResult);
       for (const exit of [
         yield* Effect.exit(handle.close.pipe(Effect.asVoid)),
         yield* Effect.exit(Scope.close(owner, Exit.void)),
