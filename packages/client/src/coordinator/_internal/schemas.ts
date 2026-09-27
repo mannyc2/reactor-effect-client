@@ -157,7 +157,7 @@ const Token = Schema.Struct({
 const TokenClaims = Schema.StringFromBase64Url.pipe(
   Schema.decodeTo(Schema.fromJsonString(Schema.Struct({ authorization_details: Schema.Unknown }))),
 );
-const SessionAuthorization = Schema.Tuple([
+export const SessionAuthorization = Schema.Tuple([
   Schema.Struct({
     type: Schema.Literal("session"),
     resources: Schema.Struct({
