@@ -33,3 +33,5 @@ bun run test test/h3/Provider.test.ts test/h3/ProviderReferences.test.ts test/Su
 ```
 
 These tests use local fixtures and test clocks. They do not establish hosted generation or transport interoperability.
+
+The separate `integration/test/hosted-renewal.test.ts` pure evidence checks and `hosted-rehearsal.test.ts` loopback matrix exercise the real public scheduler-renewal path for legacy `make` and `makeContinuous`, including allocation refusal, whose unknown outcome stops the run before any retry; a refused second connect, which the SDK retries so that the harness's guard refuses the third open (continuous cleanup capacity is not exhausted); uncertain commands, media failure, a stalled close stopped at its first close request (the 20-second cleanup-observation expiry is not exercised), and failed evidence writes from the second open, after which no further session is opened, or during cleanup. They preserve the two canonical source reports while checking continuous compaction. These offline checks do not qualify hosted timing, audio completeness or presented output.
