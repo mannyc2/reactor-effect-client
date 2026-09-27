@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Planned `Switched` renewal events include immutable `handoff` evidence captured before retirement waits: the replacement session, eligibility decision, final clip's local decoded-frame counts and observed grace origin. `sessionId` still identifies the retiring source and aggregate `tail` accounting is unchanged. The field is optional in the public type so historical event values remain assignable. Audio and output presentation completeness remain unverified; hosted qualification of this change has not run.
+
 ### Changed
 
 - Scheduler uncertainty now has a service deadline: `unknownRecoveryTimeout` defaults to 60 seconds and accepts a positive finite duration up to 10 minutes. It starts at the original unknown observation while a preferred-source reservation or drain is blocked, including with spare capacity and no waiting demand. A usable replacement or keyed proof can restore service; an overdue drain retains the original uncertainty age. Expiry fails scheduler service with `Timeout`, settles waiters and closes admission without releasing uncertain remote capacity, replaying a key or asserting cleanup completed; an enqueue still in flight settles as terminal `Unknown`. At most 4,096 uncertain filler identities are retained, and the scheduler fails with `Overflow` before dispatching another. The option is captured as caller data: `null` or an accessor fails as invalid input without running. Applications that relied on longer waits must select a larger finite budget or revise their policy.
