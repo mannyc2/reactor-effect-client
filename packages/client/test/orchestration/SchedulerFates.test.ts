@@ -991,7 +991,8 @@ for (const strategy of ["sequential", "parallel"] as const) {
           for (const [index, observer] of observers.entries()) {
             const observed = observer.pollUnsafe();
             expect(observed).toBeDefined();
-            if (observed === undefined || Exit.isFailure(observed)) continue;
+            if (observed === undefined || Exit.isFailure(observed))
+              throw new Error("Expected the handle observer to finish with its wait's Exit");
             expect(Exit.isSuccess(observed.value)).toBe(true);
             if (Exit.isFailure(observed.value)) continue;
             if (phase === "Unknown")

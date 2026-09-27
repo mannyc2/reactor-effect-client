@@ -43,6 +43,11 @@ const advance = (millis: number) =>
     for (let elapsed = 0; elapsed < millis; elapsed += 100)
       yield* TestClock.adjust(Math.min(100, millis - elapsed));
   });
+/** Moves the clock by `step` each time the other ready fibers have had a turn, until `barrier`. */
+const flowUntil = <A>(barrier: Effect.Effect<A>, step: number) =>
+  barrier.pipe(
+    Effect.raceFirst(Effect.forever(Effect.andThen(Effect.yieldNow, TestClock.adjust(step)))),
+  );
 
 for (const unknownKind of ["item", "filler"] as const) {
   test(`canonical Renewal replaces unknown ${unknownKind} and starts a distinct later line`, () =>
@@ -528,7 +533,7 @@ for (const nextUnknown of [false, true]) {
           expect(stopped.pollUnsafe()).toBeUndefined();
           yield* Effect.forkScoped(Effect.result(fixture.scheduler.drain({ finish: "accepted" })));
           yield* TestClock.adjust(0);
-          yield* until(() => stopped.pollUnsafe() !== undefined);
+          yield* Fiber.join(stopped);
         }
         expect(stopped.pollUnsafe()).toBeDefined();
         expect(yield* first.outcome).toEqual({ _tag: "Unknown", terminal: true });
@@ -880,10 +885,12 @@ for (const kind of ["item", "filler"] as const) {
         });
         let opened = false;
         let replacement: SourceFixture | undefined;
+        const replaced = yield* gate;
         const handle = yield* Renewal.make({
           open: Effect.gen(function* () {
             if (opened) {
               replacement = yield* sourceFixture("h3-replacement");
+              yield* replaced.release;
               return { source: replacement.source, lifetime: "10 minutes" };
             }
             opened = true;
@@ -902,7 +909,7 @@ for (const kind of ["item", "filler"] as const) {
               },
         ).pipe(Effect.provideService(Engine, handle.engine));
         const first = kind === "item" ? yield* submit(scheduler, "h3-unknown") : undefined;
-        yield* until(() => replacement !== undefined, TestClock.adjust(1));
+        yield* flowUntil(replaced.wait, 1);
         yield* advance(2_000);
         const next = replacement!;
         if (kind === "filler") {
@@ -975,8 +982,7 @@ for (const finish of ["playing", "accepted"] as const) {
         }).pipe(Effect.provideService(Engine, handle.engine));
         yield* Effect.addFinalizer(() => releaseClose.release);
         const unknown = yield* submit(scheduler, "prewarmed-unknown");
-        const preparing = yield* Effect.forkScoped(prepared.wait);
-        yield* until(() => preparing.pollUnsafe() !== undefined, TestClock.adjust(100));
+        yield* flowUntil(prepared.wait, 100);
         expect(sources).toHaveLength(2);
         yield* releaseUnknown.release;
         yield* closing.wait;
@@ -1037,7 +1043,7 @@ test("an unrelated later outage does not revive an old source's resolved capacit
         Effect.result(fixture.scheduler.drain({ finish: "accepted" })),
       );
       yield* TestClock.adjust(0);
-      yield* until(() => stopped.pollUnsafe() !== undefined);
+      yield* Fiber.join(stopped);
       expect(stopped.pollUnsafe()).toBeDefined();
       expect(Result.isFailure(yield* Fiber.join(draining))).toBe(true);
     }),
