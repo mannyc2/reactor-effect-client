@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The hosted `scheduler` and `scheduler-renewal` checks' first paid runs, against published 0.6.0, are committed in `integration/hosted/evidence/0.6.0/`. `scheduler-renewal` passed; `scheduler` failed only its position-zero criterion, an ordering fault in the check itself, and showed moves and pops deciding the next clip down to 160 ms before `clip_finished` with no pause at the seams.
 - `WouldMissDeadline` now counts only the Ready clips that rank ahead of the new item's place, so a Ready clip held for a future `At` anchor no longer counts against a submission.
 - `Scheduler.withdraw` no longer fails when the provider refuses a removal or the removal is not sent, for example while a source recovers. The scheduler keeps the withdrawal and retries it a second after each refusal, until the clip is removed, starts or settles another way, so an application no longer retries withdrawals itself. A withdrawal whose item fails while it is being retried replies `not-found`. An unknown removal outcome still fails the call, because the removal may already have taken effect.
 - Every removal the scheduler decides for itself (a firm deadline or `At` anchor missed, a broken group, a replacement taking over or losing its race, a drain, and filler at a renewal handoff or a drain) now comes from its pure policy, beside build admission and Ready ordering. Several late items are withdrawn in one pass rather than one per pass.
