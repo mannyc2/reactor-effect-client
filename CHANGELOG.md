@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `Scheduler.submitGroup` submits a group of parts that build in order and air back to back, such as the beats of one line, with a handle per part. A deadline can move a whole group ahead in its lane but never split one, and a group that has started keeps its remaining parts ahead of the rest of its lane; a higher lane can still go in between parts. `withdraw` takes a group key for every unstarted part, or a part key for that part and the parts after it, and a part that fails or is dropped withdraws the parts after it. `GroupSpec`, `GroupPart` and `GroupHandle` are exported. `SchedulerShape` gains `submitGroup`, so a hand-written implementation of it needs one.
+- `Scheduler.replace(key, { key, request })` amends a queued item or group part make-before-break. The new clip takes the old one's place and builds first in its lane; once it is Ready the old one is withdrawn as `Dropped` with the new reason `replaced`. If the old one starts first, the replacement is withdrawn instead. `ReplacementSpec` is exported. `SchedulerShape` gains `replace`, and `AsRunStatus`'s `Dropped` reason gains `replaced`, which a switch written to be exhaustive must handle.
 
 ## [0.6.0] - 2026-09-27
 

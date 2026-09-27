@@ -61,6 +61,7 @@ export type {
   GroupPart,
   GroupSpec,
   GroupHandle,
+  ReplacementSpec,
   StartMode,
   FillContext,
   LaneSpec,

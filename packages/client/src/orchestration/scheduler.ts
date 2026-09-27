@@ -112,7 +112,7 @@ export type AsRunStatus =
       readonly termination: "finished" | "stopped";
       readonly airedSeconds: number;
     }
-  | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" }
+  | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" | "replaced" }
   | { readonly _tag: "Failed"; readonly reason: ItemFailureReason }
   | { readonly _tag: "Unobserved" }
   | {
@@ -173,6 +173,12 @@ export interface GroupHandle {
   readonly key: ItemKey;
   /** One handle per part, in order. */
   readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+}
+
+/** The clip that takes a queued item's place, under a key of its own. */
+export interface ReplacementSpec {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
@@ -241,6 +247,8 @@ interface Entry extends PlannedItem {
   readonly firstDecisiveWaiter: Deferred.Deferred<FirstDecisiveStatus>;
   readonly atWallMs?: number;
   phase: PlannedItem["phase"];
+  /** Set once another item was submitted to take this one's place. */
+  replacedBy?: ItemKey;
   retryAtMs?: number;
   atMs?: number;
   clipId?: ClipId;
@@ -279,7 +287,7 @@ type Command =
       readonly _tag: "RemoveItem";
       readonly key: ItemKey;
       readonly clipId: ClipId;
-      readonly reason: "late" | "withdrawn";
+      readonly reason: DropReason;
     }
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
   | { readonly _tag: "RemoveFiller"; readonly clipId: ClipId }
@@ -294,12 +302,14 @@ type Command =
 
 type CommandValue = ClipId | RemoveOutcome | void;
 
+type DropReason = Extract<AsRunStatus, { readonly _tag: "Dropped" }>["reason"];
+
 type EarlyClipEvent = Extract<EngineEvent, { readonly _tag: "Started" | "Ended" | "Failed" }>;
 
 const maxEarlyClipIds = 4096;
 
 interface PendingWithdrawal {
-  readonly reason: "late" | "withdrawn";
+  readonly reason: DropReason;
   readonly replies: Deferred.Deferred<WithdrawOutcome, EngineError>[];
 }
 
@@ -313,6 +323,12 @@ type Message =
       readonly _tag: "SubmitGroup";
       readonly group: CapturedGroup;
       readonly reply: Deferred.Deferred<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+    }
+  | {
+      readonly _tag: "Replace";
+      readonly key: ItemKey;
+      readonly next: CapturedReplacement;
+      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | EngineError>;
     }
   | {
       readonly _tag: "Withdraw";
@@ -434,6 +450,21 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
   });
 
 /** Capture scheduling fields before reading the request's placement fields. */
+/** A caller's clip request, without the placement and source fields the scheduler owns. */
+const captureClip = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<ClipRequest, PolicyFailure> {
+    const request = yield* captureRequest(input as ClipRequest);
+    if (
+      request.position !== undefined ||
+      request.before !== undefined ||
+      request.sameSessionAs !== undefined ||
+      request.continueFrom !== undefined ||
+      request.sequence !== undefined
+    )
+      return yield* invalid("Scheduler owns placement and source selection");
+    return request;
+  });
+
 const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedItem, PolicyFailure> {
     if (input === null || typeof input !== "object" || Array.isArray(input))
@@ -455,16 +486,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     const lane: unknown = descriptors.lane?.value;
     if (typeof lane !== "string" || !lanes.has(lane))
       return yield* invalid("Scheduled item lane is not configured");
-    const rawRequest: unknown = descriptors.request?.value;
-    const request = yield* captureRequest(rawRequest as ClipRequest);
-    if (
-      request.position !== undefined ||
-      request.before !== undefined ||
-      request.sameSessionAs !== undefined ||
-      request.continueFrom !== undefined ||
-      request.sequence !== undefined
-    )
-      return yield* invalid("Scheduler owns placement and source selection");
+    const request = yield* captureClip(descriptors.request?.value);
     const rawWindow: unknown = descriptors.window?.value;
     const window =
       rawWindow === undefined
@@ -592,6 +614,21 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
     };
   });
 
+interface CapturedReplacement {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+}
+
+const captureReplacement = (input: ReplacementSpec) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedReplacement, PolicyFailure> {
+    const next = yield* Effect.fromResult(ownedData(input, ["key", "request"], "Replacement"));
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(next.key).pipe(
+      Effect.mapError(() => invalid("Replacement key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Replacement key is reserved");
+    return { key, request: yield* captureClip(next.request) };
+  });
+
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
@@ -599,6 +636,14 @@ export interface SchedulerShape {
   readonly submitGroup: (
     group: GroupSpec,
   ) => Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  /**
+   * Builds `next` to take the queued item's place, lane and group position. Once `next` is
+   * Ready the item is withdrawn as `replaced`; if the item starts first, `next` is withdrawn.
+   */
+  readonly replace: (
+    key: ItemKey,
+    next: ReplacementSpec,
+  ) => Effect.Effect<ItemHandle, KeyMismatch | EngineError>;
   /** A group key withdraws every unstarted part; a part key, that part and every part after it. */
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
@@ -729,7 +774,8 @@ export const makeScheduler = (
       {
         readonly fingerprint: string;
         readonly handle: GroupHandle;
-        readonly parts: ReadonlyArray<ItemKey>;
+        /** Every part's key, replacements included; a part's place is its group index. */
+        readonly parts: ItemKey[];
         /** The first part that failed or was dropped: the parts after it are withdrawn. */
         brokenAt: number | undefined;
       }
@@ -782,7 +828,13 @@ export const makeScheduler = (
             : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
-        if (entry.group !== undefined && (status._tag === "Failed" || status._tag === "Dropped")) {
+        const replaced = entry.replaces === undefined ? undefined : items.get(entry.replaces);
+        if (
+          entry.group !== undefined &&
+          (status._tag === "Failed" || status._tag === "Dropped") &&
+          !(status._tag === "Dropped" && status.reason === "replaced") &&
+          (replaced === undefined || replaced.phase === "Terminal")
+        ) {
           const group = groups.get(entry.group.key);
           if (group !== undefined)
             group.brokenAt = Math.min(group.brokenAt ?? entry.group.index, entry.group.index);
@@ -1495,7 +1547,7 @@ export const makeScheduler = (
           else yield* Deferred.fail(reply, result.failure);
       });
 
-    const sendItemRemoval = (item: Entry, reason: "late" | "withdrawn"): Effect.Effect<void> =>
+    const sendItemRemoval = (item: Entry, reason: DropReason): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (
           item.clipId === undefined ||
@@ -1509,7 +1561,7 @@ export const makeScheduler = (
 
     const requestWithdrawal = (
       item: Entry,
-      reason: "late" | "withdrawn",
+      reason: DropReason,
       reply?: Deferred.Deferred<WithdrawOutcome, EngineError>,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1925,13 +1977,37 @@ export const makeScheduler = (
         return;
       }
       // A part that failed or was dropped withdraws the parts after it.
-      for (const group of groups.values())
-        if (group.brokenAt !== undefined)
-          for (const key of group.parts.slice(group.brokenAt + 1)) {
-            const part = items.get(key);
-            if (part !== undefined && !pendingWithdrawals.has(key))
-              yield* requestWithdrawal(part, "withdrawn");
-          }
+      for (const group of groups.values()) {
+        const brokenAt = group.brokenAt;
+        if (brokenAt === undefined) continue;
+        for (const key of group.parts) {
+          const part = items.get(key);
+          if (
+            part?.group !== undefined &&
+            part.group.index > brokenAt &&
+            !pendingWithdrawals.has(key)
+          )
+            yield* requestWithdrawal(part, "withdrawn");
+        }
+      }
+      // A replacement takes the place once Ready; if the replaced item starts first, it goes.
+      for (const item of items.values()) {
+        if (item.replaces === undefined) continue;
+        const old = items.get(item.replaces);
+        if (old === undefined || old.phase === "Terminal") continue;
+        if (old.phase === "Started") {
+          if (
+            item.phase !== "Started" &&
+            item.phase !== "Terminal" &&
+            !pendingWithdrawals.has(item.key)
+          )
+            yield* requestWithdrawal(item, "withdrawn");
+        } else if (
+          (item.phase === "Ready" || item.phase === "Started") &&
+          !pendingWithdrawals.has(old.key)
+        )
+          yield* requestWithdrawal(old, "replaced");
+      }
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
           uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
@@ -2028,6 +2104,12 @@ export const makeScheduler = (
       nowMs: number,
       startByMs: number | undefined,
       group: Entry["group"],
+      place?: {
+        readonly admission: number;
+        readonly replaces: ItemKey;
+        readonly generation: number;
+        readonly notBeforeMs: number | undefined;
+      },
     ): Entry => {
       const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
       const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
@@ -2037,12 +2119,17 @@ export const makeScheduler = (
         lane: captured.lane,
         request: captured.request,
         fingerprint: captured.fingerprint,
-        admission: ++admission,
+        admission: place === undefined ? ++admission : place.admission,
         phase: "Accepted",
         status: { _tag: "Accepted" },
-        ...(captured.notBeforeOffsetMs === undefined
-          ? {}
-          : { notBeforeMs: nowMs + captured.notBeforeOffsetMs }),
+        ...(place === undefined
+          ? captured.notBeforeOffsetMs === undefined
+            ? {}
+            : { notBeforeMs: nowMs + captured.notBeforeOffsetMs }
+          : place.notBeforeMs === undefined
+            ? {}
+            : { notBeforeMs: place.notBeforeMs }),
+        ...(place === undefined ? {} : { replaces: place.replaces, generation: place.generation }),
         ...(startByMs === undefined ? {} : { startByMs }),
         firm: captured.firm,
         ...(captured.atWallMs === undefined
@@ -2199,6 +2286,67 @@ export const makeScheduler = (
             yield* Deferred.succeed(message.reply, handle);
             break;
           }
+          case "Replace": {
+            if (!accepting) {
+              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
+              break;
+            }
+            const { next } = message;
+            const fingerprint = JSON.stringify({ replaces: message.key, request: next.request });
+            const existing = items.get(next.key) ?? history.get(next.key);
+            if (existing !== undefined || groups.has(next.key)) {
+              if (existing?.fingerprint === fingerprint)
+                yield* Deferred.succeed(message.reply, existing.handle);
+              else yield* Deferred.fail(message.reply, KeyMismatch.of(next.key));
+              break;
+            }
+            const old = items.get(message.key);
+            if (
+              old === undefined ||
+              old.replacedBy !== undefined ||
+              (old.phase !== "Accepted" && old.phase !== "Building" && old.phase !== "Ready")
+            ) {
+              yield* Deferred.fail(
+                message.reply,
+                invalid("Nothing queued to replace under that key"),
+              );
+              break;
+            }
+            const nowMs = monotonicMillis(clock);
+            const state = yield* engine.state;
+            if (ended !== undefined) continue;
+            const replacement = accept(
+              {
+                key: next.key,
+                lane: old.lane,
+                request: next.request,
+                fingerprint,
+                notBeforeOffsetMs: undefined,
+                startByOffsetMs: undefined,
+                firm: old.firm,
+                atWallMs: old.atWallMs,
+                late: old.late,
+              },
+              nowMs,
+              old.startByMs,
+              old.group,
+              {
+                admission: old.admission,
+                replaces: old.key,
+                generation: (old.generation ?? 0) + 1,
+                notBeforeMs: old.notBeforeMs,
+              },
+            );
+            old.replacedBy = replacement.key;
+            if (old.group !== undefined) groups.get(old.group.key)?.parts.push(replacement.key);
+            // Nothing was built for the old item yet, so the replacement takes over at once.
+            if (old.phase === "Accepted" && !pendingBuilds.has(old.key))
+              yield* requestWithdrawal(old, "replaced");
+            yield* observed(state);
+            yield* publishState(state);
+            yield* Deferred.succeed(message.reply, replacement.handle);
+            break;
+          }
           case "Withdraw": {
             const item = items.get(message.key);
             const named = groups.get(message.key);
@@ -2209,13 +2357,18 @@ export const makeScheduler = (
               else yield* requestWithdrawal(item, "withdrawn", message.reply);
               break;
             }
+            const from = named === undefined ? item!.group!.index : 0;
+            const targets = group.parts
+              .map((key) => items.get(key))
+              .filter((part) => part?.group !== undefined && part.group.index >= from);
+            // A part key's reply is that part's own outcome, so it goes first.
+            if (named === undefined)
+              targets.sort((a, b) => Number(b === item) - Number(a === item));
             const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
-            for (const key of group.parts.slice(named === undefined ? item!.group!.index : 0)) {
-              const part = items.get(key);
-              if (part === undefined) continue;
+            for (const part of targets) {
               const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
               replies.push(reply);
-              yield* requestWithdrawal(part, "withdrawn", reply);
+              yield* requestWithdrawal(part!, "withdrawn", reply);
             }
             yield* Effect.forkIn(
               settleWithdrawals(replies, message.reply, named !== undefined),
@@ -2377,6 +2530,17 @@ export const makeScheduler = (
           return yield* closedCall;
         return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
       }).pipe(Effect.withSpan("Scheduler.submitGroup", {}, { captureStackTrace: false }));
+    const replace: SchedulerShape["replace"] = (key, input) =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const next = yield* captureReplacement(input);
+        const reply = yield* Deferred.make<ItemHandle, KeyMismatch | EngineError>();
+        if (!(yield* Queue.offer(inbox, { _tag: "Replace", key, next, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      }).pipe(
+        Effect.withSpan("Scheduler.replace", { attributes: { key } }, { captureStackTrace: false }),
+      );
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -2405,6 +2569,7 @@ export const makeScheduler = (
     return {
       submit,
       submitGroup,
+      replace,
       withdraw,
       drain,
       failure: Deferred.await(stopped),

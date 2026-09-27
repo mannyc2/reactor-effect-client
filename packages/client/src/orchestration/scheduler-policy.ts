@@ -23,6 +23,10 @@ export interface PlannedItem {
   readonly group?: { readonly key: ItemKey; readonly index: number };
   /** Set once the item's start was observed. */
   readonly startedAtMonoMs?: number;
+  /** The item this one replaces; it keeps that item's place and builds first in its lane. */
+  readonly replaces?: ItemKey;
+  /** How many replacements this item is in its place: the tiebreak behind the one it replaces. */
+  readonly generation?: number;
 }
 
 export type OwnedClip =
@@ -107,8 +111,10 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const previousAdmitted = (item: PlannedItem): boolean => {
     if (item.group === undefined || item.group.index === 0) return true;
     const index = item.group.index;
-    const previous = groups.get(item.group.key)?.find((part) => part.group?.index === index - 1);
-    return previous?.phase !== "Accepted";
+    // The previous place may hold a part and its replacement; either one unadmitted holds this part.
+    return !(groups.get(item.group.key) ?? []).some(
+      (part) => part.group?.index === index - 1 && part.phase === "Accepted",
+    );
   };
   // Once a group airs, its remaining parts stay ahead of the rest of their lane. A group
   // whose first part was pruned has settled it, and a settled first part that did not
@@ -182,23 +188,24 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       continue;
     }
     if (actual.length === 0) continue;
-    const rank = (clipId: ClipId): readonly [number, number, number] => {
+    const rank = (clipId: ClipId): readonly [number, number, number, number] => {
       const clip = owned.get(clipId);
-      if (clip === undefined) return [-1, 0, 0];
-      if (clip._tag === "Filler") return [snapshot.lanes.length, 1, clip.index];
+      if (clip === undefined) return [-1, 0, 0, 0];
+      if (clip._tag === "Filler") return [snapshot.lanes.length, 1, clip.index, 0];
       const item = items.find((value) => value.key === clip.key);
       if (item?.atMs !== undefined && nowMs < item.atMs)
-        return [snapshot.lanes.length + 1, 1, item.admission];
+        return [snapshot.lanes.length + 1, 1, item.admission, item.generation ?? 0];
       return [
         Math.max(0, snapshot.lanes.indexOf(item?.lane ?? "")),
         begun(item) ? 0 : 1,
         item?.admission ?? 0,
+        item?.generation ?? 0,
       ];
     };
     const desired = [...actual].sort((a, b) => {
       const left = rank(a.clipId);
       const right = rank(b.clipId);
-      return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+      return left[0] - right[0] || left[1] - right[1] || left[2] - right[2] || left[3] - right[3];
     });
     for (let index = 0; index < actual.length; index++) {
       if (actual[index]?.clipId === desired[index]?.clipId) continue;
@@ -305,12 +312,15 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     )
     .sort((a, b) => {
       const lane = snapshot.lanes.indexOf(a.lane) - snapshot.lanes.indexOf(b.lane);
+      // A replacement races the clip it replaces, so it builds first in its lane.
+      const replacing = Number(b.replaces !== undefined) - Number(a.replaces !== undefined);
       // A deadline may move a whole group ahead in its lane, never into one being built.
       const open =
         Number(b.group !== undefined && b.group.index > 0) -
         Number(a.group !== undefined && a.group.index > 0);
       return (
         lane ||
+        replacing ||
         open ||
         (a.startByMs ?? Infinity) - (b.startByMs ?? Infinity) ||
         a.admission - b.admission
