@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-27
+
+The orchestration scheduler becomes a queue a live show can edit. Beats of a line air back to back as a group. A queued beat can be replaced, and a clip inserted before or after any beat. Drops, amendments and inserts apply together as one make-before-break batch, where the old beats cover until the new ones are Ready. Lanes can replace or skip, or cut lower lanes. Items can start as soon as possible or be held until released. Cues fire at offsets from a clip's start or end. Clips lost with a session are rebuilt from the plan, filler lengths tile the gap to an anchor, and a clip can continue from the one before it. Deadlines and the runway floor now use build times the scheduler measures itself, and refused withdrawals are retried by the scheduler. `SchedulerShape`, `EngineShape`, `StartMode`, `AsRunStatus`, `SchedulerState` and the submission errors gain members, so a `^0.6.0` range does not include it. The native Rust sources are unchanged.
+
+Upgrading from 0.6.0:
+
+- A hand-written `EngineShape` needs `cut(clipId)`, and a hand-written `SchedulerShape` needs `submitGroup`, `replace`, `insert`, `edit`, `release` and `cues`.
+- An exhaustive switch over `AsRunStatus` must handle `Dropped` with reason `replaced`, and over `StartMode`, `Asap` and `Manual`. `Accepted` may carry `carried`.
+- `submit`, `submitGroup` and `edit` can fail with `LaneBusy`, but only for a lane configured with `conflict: "skip"`.
+- `withdraw` no longer fails on a provider refusal, so an application's own retry of refused withdrawals can go. An unknown removal still fails the call.
+- Filler now refills when the runway falls below its floor. Before, it refilled at every clip boundary, whatever the floor, because the runway briefly read zero. A nonzero floor is also raised to one measured p95 filler build plus a second. A floor tuned around the old behaviour may deserve a second look.
+- Once three builds are measured, `WouldMissDeadline` also counts build time, and a firm item that can no longer make its deadline is dropped as `late` before it is built, rather than at its deadline.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, and the pack/install smoke of all three archives. The scheduler changes have run only against the simulation and scripted engines, including a regression test for each of the 15 defects an independent review found in them. On hosted H3, `move` and `pop` of a waiting clip, the queue edits all of this builds on, decided the next clip down to 160 ms before `clip_finished`, with no pause at the seams, in 0.6.0's paid `scheduler` run. Inserted clips' pose joins, continuity, a cut's seam and a batch landing at one boundary are unqualified there. A provider `Started` event is not proof of encoded output.
+
 ### Added
 
 - `Scheduler.submitGroup` submits a group of parts that build in order and air back to back, such as the beats of one line, with a handle per part. A deadline can move a whole group ahead in its lane but never split one, and a group that has started keeps its remaining parts ahead of the rest of its lane; a higher lane can still go in between parts. `withdraw` takes a group key for every unstarted part, or a part key for that part and the parts after it, and a part that fails or is dropped withdraws the parts after it. `GroupSpec`, `GroupPart` and `GroupHandle` are exported. `SchedulerShape` gains `submitGroup`, so a hand-written implementation of it needs one.
@@ -293,7 +308,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/8d74e94504519ba351118c8a7a2441a157774bec...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/f6d00b23d69a325f834514be5ef033801faf86c4...main
+[0.7.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.0
 [0.6.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.6.0
 [0.5.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.5.0
 [0.4.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.4.0
