@@ -2509,7 +2509,7 @@ const preflight = async (args: readonly string[]): Promise<number> => {
     const reserved = earlier.reduce((sum, { evidence }) => sum + reservedUsd(evidence), 0);
     for (const { file, evidence } of earlier)
       console.log(
-        `ledger ${file}: ${evidence.check} ${evidence.verdict ?? "unfinished"}, reserved $${reservedUsd(evidence).toFixed(4)}`,
+        `ledger ${file}: ${evidence.check} ${rejudged(evidence).verdict ?? "unfinished"}, reserved $${reservedUsd(evidence).toFixed(4)}`,
       );
     // Pricing needs no credential; only minting does.
     const target = paidTarget("preflight", given.has("--no-mint") ? Redacted.make("") : apiKey());

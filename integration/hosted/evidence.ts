@@ -1169,9 +1169,9 @@ export const conclude = (evidence: Draft, failure: string | undefined): void => 
 
 /**
  * A ledger entry as it is judged today. A stored scheduler-renewal pass is
- * recomputed from its own evidence, since the verdict field alone cannot
- * qualify the check; every other stored verdict is a historical record and
- * stays as written.
+ * recomputed from its own evidence, criteria included, since the stored
+ * verdict and criteria alone cannot qualify the check; every other stored
+ * verdict is a historical record and stays as written.
  */
 export const rejudged = (evidence: Evidence): Evidence => {
   if (evidence.check !== "scheduler-renewal" || evidence.verdict !== "pass") return evidence;
@@ -1180,6 +1180,7 @@ export const rejudged = (evidence: Evidence): Evidence => {
     ? evidence
     : {
         ...evidence,
+        criteria: renewalJudgments(evidence),
         missing: judged.missing,
         reasons: ["the stored pass is not supported by its evidence", ...judged.reasons],
         verdict: "fail",

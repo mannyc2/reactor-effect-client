@@ -376,6 +376,10 @@ test("a renewal summary claims no pass or confirmed cleanup its evidence does no
   const text = summarize([{ ...bare, verdict: "pass", criteria: [] }]);
   expect(text).toContain("| fixture | scheduler-renewal | rehearsal | fail |");
   expect(text).toContain("### scheduler-renewal: fail");
+  // Stored passing criteria print as the evidence judges them, not as written.
+  const forged = summarize([{ ...bare, verdict: "pass" }]);
+  expect(forged).toContain("✗ owned lease cleanup");
+  expect(forged).not.toContain("✓");
   // A confirmed flag without canonical terminal evidence is not a confirmed owned termination.
   const original = renewal(),
     lease = canonical("a").lease;
