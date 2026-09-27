@@ -294,10 +294,16 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       if (failed.length > 0)
         attemptFailures.set(attempt, [...(attemptFailures.get(attempt) ?? []), ...failed]);
     };
-    // Fibers running an acquisition, whether forked as Opening or inline in a
-    // replacement. Close interrupts and joins them before retiring owned slots,
-    // so no source opens after close and every attempt's cleanup is reported.
+    // Every acquisition runs on a fiber this owner forks into its scope, never
+    // on a caller's fiber. Close interrupts and joins the registered ones before
+    // retiring owned slots, so no source opens after close and every attempt's
+    // cleanup is reported, without waiting on a fiber that may be waiting on it.
     const acquisitions = new Set<Fiber.Fiber<unknown, unknown>>();
+    const admissionClosed = () =>
+      ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
+    // The owner stops admitting sources when close begins, or its scope closes
+    // before close has run, as when that scope's finalizers stop an attempt first.
+    const stopping = () => closing || scope.state._tag === "Closed";
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
@@ -428,7 +434,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         if (replacement._tag === "Ready" && replacement.slot === slot)
           replacement = { _tag: "Absent" };
         // Close retires what remains; a replacement it refuses is no failure.
-        if (slot !== current || closing) return;
+        if (slot !== current || stopping()) return;
         const pending = replacement;
         if (!renewing && pending._tag === "Absent") {
           yield* fail(cause);
@@ -437,9 +443,11 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         const selected =
           pending._tag === "Ready"
             ? pending.slot
-            : yield* pending._tag === "Opening" ? Fiber.join(pending.fiber) : acquire;
+            : yield* pending._tag === "Opening"
+                ? Effect.uninterruptibleMask((restore) => joinAcquisition(pending.fiber, restore))
+                : acquire;
         replacement = { _tag: "Absent" };
-        if (closing || terminalFailure !== undefined) {
+        if (stopping() || terminalFailure !== undefined) {
           yield* closeSlot(selected);
           return;
         }
@@ -454,7 +462,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           { attributes: { "reactor.session.id": slot.source.id } },
           { captureStackTrace: false },
         ),
-        Effect.catch((cause) => (closing ? Effect.void : fail(cause))),
+        Effect.catch((cause) => (stopping() ? Effect.void : fail(cause))),
       );
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
@@ -578,7 +586,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         lost: (cause) => (closing ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
       });
 
-    const acquire: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
+    // Runs only on a fiber of its own, forked into the owner's scope.
+    const acquisition: Effect.Effect<Slot, ReactorFailure> = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const fiber = yield* Effect.fiber;
         if (opened >= maxSessions)
@@ -586,8 +595,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             "Overflow",
             "Orchestration session and cleanup-history bound reached",
           );
-        if (closing || (continuous && (terminalFailure !== undefined || !renewing)))
-          return yield* ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
+        if (stopping() || (continuous && (terminalFailure !== undefined || !renewing)))
+          return yield* admissionClosed();
         // Registered in the same synchronous step as the closing check, so
         // either close sees this attempt or this attempt sees close.
         acquisitions.add(fiber);
@@ -794,15 +803,46 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       Effect.tap((slot) => Effect.annotateCurrentSpan("reactor.session.id", slot.source.id)),
       Effect.withSpan("reactor.orchestration.renewal.open", {}, { captureStackTrace: false }),
     );
+    // A forked attempt is interruptible whatever its caller is, so close and
+    // the owner's scope can stop an open that an uninterruptible caller waits on.
+    // A prepared replacement opens on its own after the tick that forks it.
+    const forkAcquisition = Effect.forkIn(acquisition, scope);
+    // To its caller, an attempt that close, stopRenewal or the owner's scope
+    // stopped is refused, not failed. A caller interrupted while it waits stops
+    // the attempt too: the handler is in place before the wait is restored, so
+    // an interruption that arrives first still reaches it.
+    const joinAcquisition = (
+      fiber: Fiber.Fiber<Slot, ReactorFailure>,
+      restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<Slot, ReactorFailure> =>
+      restore(Fiber.await(fiber)).pipe(
+        Effect.onInterrupt(() => Fiber.interrupt(fiber)),
+        Effect.flatMap((exit): Effect.Effect<Slot, ReactorFailure> => {
+          if (Exit.isSuccess(exit)) return exit;
+          const failures = exit.cause.reasons.filter((reason) => !Cause.isInterruptReason(reason));
+          return failures.length === 0
+            ? admissionClosed()
+            : Effect.failCause(Cause.fromReasons(failures));
+        }),
+      );
+    // The constructor and a replacement start their attempt at once, so an open
+    // that completes without waiting is published in the same turn.
+    const acquire = Effect.uninterruptibleMask((restore) =>
+      Effect.forkIn(acquisition, scope, { startImmediately: true }).pipe(
+        Effect.flatMap((fiber) => joinAcquisition(fiber, restore)),
+      ),
+    );
 
     const close = yield* SourceSlot.once(
       Effect.uninterruptible(
         Effect.gen(function* () {
           closing = true;
-          // Interrupting joins each attempt's cleanup, which records its own
-          // defects; cancelling an attempt is not a close failure. An Opening
-          // fiber that has not started would refuse, but never runs at all.
-          // A close invoked from inside an acquisition cannot join itself.
+          // Every registered fiber is an attempt this owner forked, never a
+          // caller's. Interrupting joins each attempt's cleanup, which records
+          // its own defects; cancelling it is not a close failure, and an
+          // Opening fiber that has not started never runs. Close does not wait
+          // for an attempt it runs on, but one issued from inside `open` cannot
+          // finish: `open` runs on a race fiber that stopping its attempt awaits.
           const pending = new Set(acquisitions);
           if (replacement._tag === "Opening") pending.add(replacement.fiber);
           yield* Effect.withFiber((self) => {
@@ -1352,8 +1392,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
               );
               return;
             case "Prepare":
-              if (renewing)
-                replacement = { _tag: "Opening", fiber: yield* acquire.pipe(Effect.forkIn(scope)) };
+              if (renewing) replacement = { _tag: "Opening", fiber: yield* forkAcquisition };
               return;
             case "InspectHandoff":
               break;

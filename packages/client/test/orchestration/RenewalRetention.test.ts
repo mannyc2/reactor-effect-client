@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Cause, Effect, Exit, Fiber, Option, Scope, Stream } from "effect";
+import { Cause, Crypto, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import * as Renewal from "../../src/orchestration/renewal.js";
 import { AcquisitionFailure, ReactorError } from "../../src/errors.js";
@@ -358,6 +358,117 @@ for (const constructor of ["legacy", "continuous"] as const)
         // No source opens after close, and its refusal publishes no failure.
         expect(attempts).toBe(1);
         expect((yield* handle.mediaState)._tag).toBe("Closed");
+      }),
+    ));
+
+/** The typed failure of a construction that failed without a defect. */
+const constructionFailure = (exit: Exit.Exit<unknown, unknown>): unknown =>
+  Exit.isFailure(exit) && !Cause.hasDies(exit.cause)
+    ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+    : undefined;
+const closedRefusal = (exit: Exit.Exit<unknown, unknown>) => {
+  const failure = constructionFailure(exit);
+  return ReactorError.is(failure) ? failure.reason._tag : undefined;
+};
+
+// Close joins only the fibers an owner forks for its acquisitions. A closer that
+// descends from the constructing fiber cannot wait for that fiber to exit.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} construction closed by its own descendant fails as closed and releases its open`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const opening = yield* gate;
+        let fixture: SourceFixture | undefined;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            fixture = yield* sourceFixture(`descendant-${constructor}`);
+            yield* opening.release;
+            return yield* Effect.never;
+          }),
+        };
+        const constructing = yield* Effect.gen(function* () {
+          yield* Effect.forkChild(opening.wait.pipe(Effect.andThen(Scope.close(owner, Exit.void))));
+          return constructor === "legacy"
+            ? yield* Renewal.make(options).pipe(Scope.provide(owner))
+            : yield* Renewal.makeContinuous(options).pipe(Scope.provide(owner));
+        }).pipe(Effect.exit, Effect.forkScoped);
+        expect(closedRefusal(yield* Fiber.join(constructing))).toBe("Closed");
+        expect(fixture?.status().finalized).toBe(true);
+      }),
+    ));
+
+// Interrupting a construction stops its open at once, even when the interrupt
+// arrives while the attempt is starting, before its caller begins to wait.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`interrupting a ${constructor} construction releases its open before the constructor exits`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const opening = yield* gate;
+        let fixture: SourceFixture | undefined;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            fixture = yield* sourceFixture(`interrupted-${constructor}`);
+            yield* opening.release;
+            return yield* Effect.never;
+          }),
+        };
+        const constructing = yield* (
+          constructor === "legacy"
+            ? Renewal.make(options).pipe(Scope.provide(owner), Effect.asVoid)
+            : Renewal.makeContinuous(options).pipe(Scope.provide(owner), Effect.asVoid)
+        ).pipe(Effect.forkScoped);
+        yield* opening.wait;
+        yield* Fiber.interrupt(constructing);
+        expect(fixture?.status().finalized).toBe(true);
+        yield* Scope.close(owner, Exit.void);
+      }),
+    ));
+
+// A layer resource constructs its handle uninterruptibly. Disposing the layer
+// during that construction still stops the open and releases what it allocated,
+// even when the allocation completes after disposal has begun.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} handle layer disposed during startup fails construction and releases its open`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const outer = yield* Scope.make();
+        const opening = yield* gate;
+        const allocated = yield* gate;
+        let fixture: SourceFixture | undefined;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            yield* opening.release;
+            fixture = yield* Effect.uninterruptible(
+              allocated.wait.pipe(Effect.andThen(sourceFixture(`disposed-${constructor}`))),
+            );
+            return { source: fixture.source, lifetime: "Infinity" };
+          }),
+        };
+        const closeOf: Effect.Effect<
+          Effect.Effect<unknown>,
+          ReactorError | AcquisitionFailure,
+          Scope.Scope | Crypto.Crypto
+        > = constructor === "legacy"
+          ? Renewal.make(options).pipe(Effect.map((handle) => handle.close))
+          : Renewal.makeContinuous(options).pipe(Effect.map((handle) => handle.close));
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(closeOf, (close) => close.pipe(Effect.ignore)),
+        );
+        const building = yield* Layer.buildWithScope(layer, outer).pipe(
+          Effect.exit,
+          Effect.forkScoped,
+        );
+        yield* opening.wait;
+        // Disposal starts, and reaches its first wait, before the allocation completes.
+        const disposing = yield* Scope.close(outer, Exit.void).pipe(
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* allocated.release;
+        expect(closedRefusal(yield* Fiber.join(building))).toBe("Closed");
+        yield* Fiber.join(disposing);
+        expect(fixture?.status().finalized).toBe(true);
       }),
     ));
 
