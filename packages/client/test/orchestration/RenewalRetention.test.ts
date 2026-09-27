@@ -542,6 +542,55 @@ for (const constructor of ["legacy", "continuous"] as const)
       }),
     ));
 
+// Teardown of the owner's scope stops renewal before close runs. A slow
+// application finalizer, ordered between the opening attempt's finalizer and
+// the tick's, must not let the tick report the stopped attempt as failed setup.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} owner's scope teardown is not reported as failed renewal setup`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const preparing = yield* gate;
+        const slow = yield* gate;
+        const renewals: string[] = [];
+        let attempts = 0;
+        const options: Renewal.Options = {
+          lead: "55 seconds",
+          onRenewal: (event) =>
+            Effect.sync(() => {
+              renewals.push(event._tag);
+            }),
+          open: Effect.gen(function* () {
+            if (++attempts === 2) {
+              yield* preparing.release;
+              return yield* Effect.never;
+            }
+            const fixture = yield* sourceFixture(`teardown-${constructor}`);
+            return { source: fixture.source, lifetime: "60 seconds" };
+          }),
+        };
+        const handle =
+          constructor === "legacy"
+            ? yield* Renewal.make(options).pipe(Scope.provide(owner))
+            : yield* Renewal.makeContinuous(options).pipe(Scope.provide(owner));
+        yield* Scope.addFinalizer(owner, slow.wait);
+        const failed = yield* handle.engine.failure.pipe(Effect.forkScoped);
+        yield* TestClock.adjust("5100 millis");
+        yield* preparing.wait;
+        const closing = yield* Scope.close(owner, Exit.void).pipe(
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        // Teardown waits on the slow finalizer for longer than three failed
+        // setups, five seconds apart, would take.
+        for (let step = 0; step < 160; step++) yield* TestClock.adjust(100);
+        expect(renewals).not.toContain("SetupFailed");
+        expect(failed.pollUnsafe()).toBeUndefined();
+        expect((yield* handle.mediaState)._tag).not.toBe("Failed");
+        yield* slow.release;
+        yield* Fiber.join(closing);
+      }),
+    ));
+
 test("unknown submissions exhaust their reserved history even after confirmed termination", () =>
   runClock(
     Effect.gen(function* () {

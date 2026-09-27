@@ -301,8 +301,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     const acquisitions = new Set<Fiber.Fiber<unknown, unknown>>();
     const admissionClosed = () =>
       ReactorError.fromCode("Closed", "Orchestration no longer admits sources");
-    // The owner stops admitting sources when close begins, or its scope closes
-    // before close has run, as when that scope's finalizers stop an attempt first.
+    // The owner stops renewing when close begins or its scope starts closing,
+    // whichever is first: that scope's finalizers can stop an attempt, or wait
+    // on an application, before close runs. Commands stay admitted until close
+    // begins, so an application finalizer can still issue its last commands.
     const stopping = () => closing || scope.state._tag === "Closed";
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
@@ -358,7 +360,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     // Every asynchronous activation uses this final fence. Closed/failed state
     // cannot be replaced by a reconnect or autoplay operation that finished late.
     const publishReady = (slot: Slot): boolean => {
-      if (closing || slot.closed || slot !== current || terminalFailure !== undefined) return false;
+      if (stopping() || slot.closed || slot !== current || terminalFailure !== undefined)
+        return false;
       setMedia({ _tag: "Ready", sessionId: slot.source.id, generation: slot.media.generation });
       return true;
     };
@@ -412,7 +415,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
 
     const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         const state = yield* slot.source.state;
         const lost = activeIds(state);
         const tail = yield* retired(slot);
@@ -467,11 +470,11 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
 
     const recover = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (slot === current) setMedia({ _tag: "Recovering", sessionId: slot.source.id, cause });
         yield* announce({ _tag: "Recovering", sessionId: slot.source.id, reason: cause.message });
         yield* slot.joinCommitted(recoveryBudget(slot));
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (slot.needsReplacement()) {
           yield* replace(slot, cause);
           return;
@@ -491,7 +494,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           return;
         }
         yield* slot.closeMedia;
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         const connected = yield* Effect.result(
           slot.source.reconnect.pipe(
             Effect.timeoutOrElse({
@@ -503,7 +506,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             }),
           ),
         );
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (Result.isFailure(connected)) {
           yield* replace(slot, connected.failure);
           return;
@@ -528,7 +531,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             return yield* startMedia(slot);
           }),
         );
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (Result.isFailure(restarted)) {
           yield* replace(slot, restarted.failure);
           return;
@@ -557,7 +560,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       mode: "reconnect" | "replace",
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (slot.closed || closing || terminalFailure !== undefined) return;
+        if (slot.closed || stopping() || terminalFailure !== undefined) return;
         if (!slot.beginRecovery(mode)) return;
         yield* recover(slot, cause).pipe(commands.withPermits(1), Effect.forkIn(scope));
       });
@@ -583,7 +586,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
               Effect.catch(fail),
             );
           }),
-        lost: (cause) => (closing ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
+        lost: (cause) => (stopping() ? Effect.void : scheduleRecovery(slot, cause, "reconnect")),
       });
 
     // Runs only on a fiber of its own, forked into the owner's scope.
@@ -597,7 +600,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           );
         if (stopping() || (continuous && (terminalFailure !== undefined || !renewing)))
           return yield* admissionClosed();
-        // Registered in the same synchronous step as the closing check, so
+        // Registered in the same synchronous step as the stopping check, so
         // either close sees this attempt or this attempt sees close.
         acquisitions.add(fiber);
         const reservation = retention === undefined ? undefined : yield* retention.reserve;
@@ -1333,7 +1336,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       .withPermit(
         Effect.gen(function* () {
           if (
-            closing ||
+            stopping() ||
             current === undefined ||
             current.closed ||
             current.recovering ||
@@ -1344,8 +1347,9 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             const result = replacement.fiber.pollUnsafe();
             if (result !== undefined) {
               replacement = { _tag: "Absent" };
-              // Close interrupts this attempt and retires whatever it opened.
-              if (closing) return;
+              // Close or the owner's scope stopped this attempt, and close
+              // retires whatever it opened: that is no failed setup.
+              if (stopping()) return;
               if (Exit.isSuccess(result)) {
                 replacement = { _tag: "Ready", slot: result.value };
                 openFailures = 0;
@@ -1379,7 +1383,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             }
           }
           const decision = decideRenewal({
-            running: !closing && terminalFailure === undefined,
+            running: !stopping() && terminalFailure === undefined,
             now: monotonicMillis(clock),
             current,
             replacement: replacement._tag === "Ready" ? replacement.slot.phase : replacement._tag,
