@@ -33,6 +33,22 @@ export interface PlannedItem {
   readonly inserted?: boolean;
 }
 
+/**
+ * An edit batch that has not taken effect yet. Until it does, what it withdraws is only
+ * cover: it airs after everything else in its lane, so any clip the batch adds goes first.
+ */
+export interface PendingBatch {
+  readonly id: number;
+  /** The batch takes effect once each of these is Ready, started or settled. */
+  readonly waitFor: ReadonlyArray<ItemKey>;
+  /** The items it withdraws once it takes effect. */
+  readonly targets: ReadonlyArray<ItemKey>;
+}
+
+/** Items that pending batches withdraw. */
+export const supersededBy = (batches: ReadonlyArray<PendingBatch>): ReadonlySet<ItemKey> =>
+  new Set(batches.flatMap((batch) => batch.targets));
+
 export type OwnedClip =
   | { readonly _tag: "Item"; readonly key: ItemKey }
   | { readonly _tag: "Filler"; readonly index: number; readonly sessionId: string | undefined };
@@ -63,6 +79,7 @@ export interface PolicySnapshot {
   readonly dispatched: ReadonlySet<ItemKey>;
   /** The first failed or dropped part of each broken group. */
   readonly brokenGroups: ReadonlyMap<ItemKey, number>;
+  readonly batches: ReadonlyArray<PendingBatch>;
 }
 
 export type PolicyAction =
@@ -83,6 +100,8 @@ export interface PolicyDecision {
   readonly withdraw: ReadonlyArray<PolicyWithdrawal>;
   /** Filler clips the plan no longer wants. */
   readonly withdrawFiller: ReadonlyArray<ClipId>;
+  /** Edit batches to take effect now; the plan is read again once they have. */
+  readonly commit: ReadonlyArray<number>;
   /** The one provider command to send when none is in flight. */
   readonly action?: PolicyAction;
 }
@@ -131,6 +150,7 @@ const ordering = (
   items: ReadonlyArray<PlannedItem>,
   lanes: ReadonlyArray<string>,
   nowMs: number,
+  superseded: ReadonlySet<ItemKey>,
 ) => {
   // A group's parts in order. A part already pruned has settled, so it counts as admitted.
   const groups = new Map<ItemKey, PlannedItem[]>();
@@ -158,16 +178,26 @@ const ordering = (
       Math.min(...parts.map((part) => part.group?.index ?? 0)) > 0
     );
   };
+  // Within its place, a Ready replacement airs ahead of the item it replaces.
+  const replacedReady = new Set(
+    items.flatMap((item) =>
+      item.replaces !== undefined && item.phase === "Ready" ? [item.replaces] : [],
+    ),
+  );
   const rankItem = (
-    item: Pick<PlannedItem, "lane" | "admission" | "group" | "atMs" | "generation"> | undefined,
+    item:
+      | (Pick<PlannedItem, "lane" | "admission" | "group" | "atMs" | "generation"> & {
+          readonly key?: ItemKey;
+        })
+      | undefined,
   ): Rank => {
     if (item?.atMs !== undefined && nowMs < item.atMs)
       return [lanes.length + 1, 1, item.admission, item.generation ?? 0];
     return [
       Math.max(0, lanes.indexOf(item?.lane ?? "")),
-      begun(item) ? 0 : 1,
+      item?.key !== undefined && superseded.has(item.key) ? 2 : begun(item) ? 0 : 1,
       item?.admission ?? 0,
-      item?.generation ?? 0,
+      item?.key !== undefined && replacedReady.has(item.key) ? Infinity : (item?.generation ?? 0),
     ];
   };
   const rankClip = (clipId: ClipId, owned: ReadonlyMap<ClipId, OwnedClip>): Rank => {
@@ -200,23 +230,34 @@ const fillerHeldFor = (snapshot: PolicySnapshot): boolean =>
  * clip and every Ready clip on the preferred source that ranks ahead of that place. A new
  * submission's place is the end of its lane.
  */
+export interface ProjectionView {
+  readonly engine: EngineState;
+  readonly items: ReadonlyArray<PlannedItem>;
+  readonly owned: ReadonlyMap<ClipId, OwnedClip>;
+  readonly lanes: ReadonlyArray<string>;
+  readonly playingStartedMs: ReadonlyMap<ClipId, number>;
+  readonly nowMs: number;
+  readonly batches: ReadonlyArray<PendingBatch>;
+}
+
 export const projectedStartMs = (
-  engine: EngineState,
-  items: ReadonlyArray<PlannedItem>,
-  owned: ReadonlyMap<ClipId, OwnedClip>,
-  lanes: ReadonlyArray<string>,
-  playingStartedMs: ReadonlyMap<ClipId, number>,
+  view: ProjectionView,
   place: Pick<PlannedItem, "lane" | "admission" | "group">,
-  nowMs: number,
 ): number => {
+  const { engine, owned, nowMs } = view;
   const playing = Option.getOrUndefined(engine.playing);
   const playingRecord = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-  const started = playing === undefined ? undefined : playingStartedMs.get(playing.clipId);
+  const started = playing === undefined ? undefined : view.playingStartedMs.get(playing.clipId);
   const restMs =
     playingRecord === undefined || started === undefined
       ? 0
       : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
-  const { rankItem, rankClip } = ordering(items, lanes, nowMs);
+  const { rankItem, rankClip } = ordering(
+    view.items,
+    view.lanes,
+    nowMs,
+    supersededBy(view.batches),
+  );
   const rank = rankItem(place);
   const preferred = preferredSession(engine);
   const aheadMs = engine.ready.reduce(
@@ -235,7 +276,12 @@ export const projectedStartMs = (
  */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
-  const { previousAdmitted, rankClip } = ordering(items, snapshot.lanes, nowMs);
+  const { previousAdmitted, rankClip } = ordering(
+    items,
+    snapshot.lanes,
+    nowMs,
+    supersededBy(snapshot.batches),
+  );
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
@@ -281,7 +327,9 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       drop(item, "withdrawn");
   }
   // A replacement takes the place once Ready, or at once if nothing was built for the item it
-  // replaces. If the replaced item starts first, the replacement goes.
+  // replaces; a batch's replacement waits for its batch. If the replaced item starts first,
+  // the replacement goes.
+  const pendingReplacements = new Set(snapshot.batches.flatMap((batch) => batch.waitFor));
   for (const item of items) {
     if (item.replaces === undefined) continue;
     const old = items.find((candidate) => candidate.key === item.replaces);
@@ -289,11 +337,32 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     if (old.phase === "Started") {
       if (item.phase !== "Started" && item.phase !== "Terminal") drop(item, "withdrawn");
     } else if (
-      item.phase === "Ready" ||
-      item.phase === "Started" ||
+      ((item.phase === "Ready" || item.phase === "Started") &&
+        !pendingReplacements.has(item.key)) ||
       (old.phase === "Accepted" && !snapshot.dispatched.has(old.key))
     )
       drop(old, "replaced");
+  }
+  // A batch takes effect once everything it adds is Ready or has settled. Until then what it
+  // withdraws keeps its place, except an item nothing was built for, which covers nothing.
+  const commit: number[] = [];
+  for (const batch of snapshot.batches) {
+    const find = (key: ItemKey) => items.find((item) => item.key === key);
+    if (
+      batch.waitFor.every((key) => {
+        const phase = find(key)?.phase;
+        return (
+          phase === undefined || phase === "Ready" || phase === "Started" || phase === "Terminal"
+        );
+      })
+    )
+      commit.push(batch.id);
+    else
+      for (const key of batch.targets) {
+        const target = find(key);
+        if (target?.phase === "Accepted" && !snapshot.dispatched.has(key))
+          drop(target, "withdrawn");
+      }
   }
   // A drain that finishes only the playing clip withdraws everything waiting.
   if (snapshot.drain === "playing")
@@ -327,7 +396,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     for (const [clipId, owner] of owned)
       if (owner._tag === "Filler" && clipId !== playingId && !withdrawFiller.includes(clipId))
         withdrawFiller.push(clipId);
-  const base = { runwaySeconds: runway, refillActive: filling, withdraw, withdrawFiller };
+  const base = { runwaySeconds: runway, refillActive: filling, withdraw, withdrawFiller, commit };
 
   // Physical sources are independent queues. A move never ranks across them.
   let offset = 0;
