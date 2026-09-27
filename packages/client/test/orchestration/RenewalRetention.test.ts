@@ -19,6 +19,12 @@ import {
 import type { SourceFixture } from "./SourceFixture.js";
 import type { SourceCleanup } from "../../src/orchestration/types.js";
 
+/** A close Exit's reasons, each defect by identity, so a duplicate or an Interrupt shows. */
+const reasons = (exit: Exit.Exit<unknown, unknown>): unknown[] =>
+  Exit.isSuccess(exit)
+    ? []
+    : exit.cause.reasons.map((reason) => (Cause.isDieReason(reason) ? reason.defect : reason._tag));
+
 test("scope-finalizer defects preserve the canonical report and their original Cause on every close", () =>
   runClock(
     Effect.gen(function* () {
@@ -144,6 +150,55 @@ test("continuous close preserves its original defect while exposing incomplete f
       expect(summary.retained[0]?.disposition).toBe("incomplete");
       expect(summary.retained[0]?.retirement.errors.length).toBeGreaterThan(0);
       expect((yield* Effect.exit(Scope.close(owned, Exit.void)))._tag).toBe("Failure");
+    }),
+  ));
+
+// Review of ed88be7/4443f80: every waiter recorded its own Cause object for one
+// cached retirement, and close added its own cancellation of an opening attempt.
+test("a legacy recovery retirement defect is reported once by close and by its owner scope", () =>
+  runClock(
+    Effect.gen(function* () {
+      const owner = yield* Scope.make();
+      const defect = new Error("retiring source close defect");
+      const sources: SourceFixture[] = [];
+      const handle = yield* Renewal.make({
+        open: Effect.gen(function* () {
+          const fixture = yield* sourceFixture(
+            `retiring-${sources.length}`,
+            sources.length === 0 ? { close: Effect.die(defect) } : {},
+          );
+          sources.push(fixture);
+          return { source: fixture.source, lifetime: "Infinity" };
+        }),
+      }).pipe(Scope.provide(owner));
+      yield* sources[0]!.failEvents(ReactorError.fromCode("Disconnected", "lost"));
+      yield* until(() => sources[0]!.status().finalized);
+      expect(reasons(yield* Effect.exit(handle.close))).toEqual([defect]);
+      expect(reasons(yield* Effect.exit(Scope.close(owner, Exit.void)))).toEqual([defect]);
+    }),
+  ));
+
+test("an opening attempt that close cancels reports only its own finalizer defect", () =>
+  runClock(
+    Effect.gen(function* () {
+      const owner = yield* Scope.make();
+      const defect = new Error("opening finalizer defect");
+      const opening = yield* gate;
+      let attempts = 0;
+      const handle = yield* Renewal.makeContinuous({
+        lead: 500,
+        open: Effect.gen(function* () {
+          if (++attempts === 2) {
+            yield* Effect.addFinalizer(() => Effect.die(defect));
+            yield* opening.wait;
+          }
+          const fixture = yield* sourceFixture(`opening-${attempts}`);
+          return { source: fixture.source, lifetime: 1000 };
+        }),
+      }).pipe(Scope.provide(owner));
+      yield* until(() => attempts === 2, TestClock.adjust(100));
+      expect(reasons(yield* Effect.exit(handle.close))).toEqual([defect]);
+      expect(reasons(yield* Effect.exit(Scope.close(owner, Exit.void)))).toEqual([defect]);
     }),
   ));
 

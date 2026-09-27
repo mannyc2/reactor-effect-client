@@ -175,18 +175,21 @@ export const make = (options: Options) =>
           if (contractFailure !== undefined) errors.push(contractFailure);
           phase = Lifecycle.transitionSource(phase, { _tag: "Closed" });
           const exit = Exit.asVoidAll(stages);
-          yield* options.retired(
-            {
-              accounting:
-                accountingTimedOut || Exit.isFailure(accountingExit) ? "timed-out" : "settled",
-              scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
-              affinity: Exit.isSuccess(affinityExit) ? "retired" : "failed",
-              errors,
-              unknownSubmissions,
-            },
-            exit,
+          // Completion bookkeeping cannot hide a stage's failure, or its own.
+          const retiredExit = yield* Effect.exit(
+            options.retired(
+              {
+                accounting:
+                  accountingTimedOut || Exit.isFailure(accountingExit) ? "timed-out" : "settled",
+                scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
+                affinity: Exit.isSuccess(affinityExit) ? "retired" : "failed",
+                errors,
+                unknownSubmissions,
+              },
+              exit,
+            ),
           );
-          return yield* exit;
+          return yield* Exit.asVoidAll([exit, retiredExit]);
         }),
       ).pipe(
         Effect.withSpan(

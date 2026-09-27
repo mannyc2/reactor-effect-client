@@ -285,7 +285,15 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     let finalSummary: CleanupSummary | undefined;
     let firstCleanup: SourceCleanup | undefined;
     let initializing = true;
-    const retirementCauses = new Set<Cause.Cause<never>>();
+    // Close reports each ownership attempt's failures once. They are recorded
+    // where the attempt and its retirement end: every waiter of a cached close
+    // sees its own Cause object, and cancellation by close is not a failure.
+    const attemptFailures = new Map<object, Cause.Reason<never>[]>();
+    const recordFailure = (attempt: object, reasons: readonly Cause.Reason<never>[]): void => {
+      const failed = reasons.filter((reason) => !Cause.isInterruptReason(reason));
+      if (failed.length > 0)
+        attemptFailures.set(attempt, [...(attemptFailures.get(attempt) ?? []), ...failed]);
+    };
     let mediaState: MediaState = { _tag: "Closed" };
     let terminalFailure: ReactorFailure | undefined;
     let submissionSequence = 0n;
@@ -390,14 +398,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             ),
       );
     const retired = (slot: Slot) => slot.retired(buffer.forwarded);
-    const closeSlot = (slot: Slot) =>
-      slot.close.pipe(
-        Effect.onExit((exit) =>
-          Effect.sync(() => {
-            if (Exit.isFailure(exit)) retirementCauses.add(exit.cause);
-          }),
-        ),
-      );
+    const closeSlot = (slot: Slot) => slot.close;
 
     const replace = (slot: Slot, cause: ReactorFailure): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -590,6 +591,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             : Effect.sync(() => recordCleanup(cleanup));
         };
         const owned = yield* Scope.make();
+        const attempt = {};
         let acquired: Slot | undefined;
         let acquiredSource: Source | undefined;
         let acquisitionCleanup: SourceCleanup | undefined;
@@ -644,28 +646,35 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
               boundedHistory: continuous,
               retired: (facts, retirementExit) =>
                 Effect.gen(function* () {
-                  if (acquisitionCleanup !== undefined) yield* recordAttempt(acquisitionCleanup);
-                  if (retention !== undefined && reservation !== undefined) {
-                    const lossExit =
-                      acquired === undefined
-                        ? Exit.void
-                        : yield* Effect.exit(retireOwner(acquired));
-                    yield* retention.finish(reservation, {
-                      ...facts,
-                      errors: [
-                        ...facts.errors,
-                        ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
-                        ...(Exit.isFailure(lossExit)
-                          ? [errorOf(lossExit.cause, "InvalidState", "media loss accounting")]
-                          : []),
-                      ],
-                    });
-                    slots.delete(owner);
-                    if (physicalOwners.get(owner.sessionId) === owner)
-                      physicalOwners.delete(owner.sessionId);
-                    if (Exit.isFailure(lossExit))
-                      return yield* Exit.asVoidAll([retirementExit, lossExit]);
-                  }
+                  const bookkeeping = yield* Effect.exit(
+                    Effect.gen(function* () {
+                      if (acquisitionCleanup !== undefined)
+                        yield* recordAttempt(acquisitionCleanup);
+                      if (retention === undefined || reservation === undefined) return;
+                      const lossExit =
+                        acquired === undefined
+                          ? Exit.void
+                          : yield* Effect.exit(retireOwner(acquired));
+                      yield* retention.finish(reservation, {
+                        ...facts,
+                        errors: [
+                          ...facts.errors,
+                          ...(acquisitionDefect === undefined ? [] : [acquisitionDefect]),
+                          ...(Exit.isFailure(lossExit)
+                            ? [errorOf(lossExit.cause, "InvalidState", "media loss accounting")]
+                            : []),
+                        ],
+                      });
+                      slots.delete(owner);
+                      if (physicalOwners.get(owner.sessionId) === owner)
+                        physicalOwners.delete(owner.sessionId);
+                      return yield* lossExit;
+                    }),
+                  );
+                  // The slot calls this once, however many callers wait on its close.
+                  const exit = Exit.asVoidAll([retirementExit, bookkeeping]);
+                  if (Exit.isFailure(exit)) recordFailure(attempt, exit.cause.reasons);
+                  return yield* bookkeeping;
                 }),
               retireSequences: affinity.retire(owner).pipe(Effect.asVoid),
             });
@@ -719,16 +728,16 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
               : Effect.gen(function* () {
                   // Capture an acquisition failure even if the source also
                   // returns cleanup. Conflicting reports belong to this attempt.
-                  if (Cause.hasDies(exit.cause)) {
-                    const cause = Cause.findError(exit.cause);
-                    retirementCauses.add(
-                      Result.isFailure(cause)
-                        ? cause.failure
-                        : Cause.fromReasons(
-                            exit.cause.reasons.filter((reason) => !Cause.isFailReason(reason)),
-                          ),
+                  // A typed failure is the attempt's result, and cancellation
+                  // is not a defect: only a Die is a failure close must report.
+                  const defects = exit.cause.reasons.filter(Cause.isDieReason);
+                  if (defects.length > 0) {
+                    recordFailure(attempt, defects);
+                    acquisitionDefect = errorOf(
+                      Cause.fromReasons(defects),
+                      "InvalidState",
+                      "source acquisition",
                     );
-                    acquisitionDefect = errorOf(exit.cause, "InvalidState", "source acquisition");
                   }
                   const failure = Cause.findErrorOption(exit.cause);
                   if (Option.isSome(failure) && AcquisitionFailure.is(failure.value))
@@ -760,7 +769,8 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
                       });
                     }
                     const retirementExit = Exit.asVoidAll([sourceExit, scopeExit]);
-                    if (Exit.isFailure(retirementExit)) retirementCauses.add(retirementExit.cause);
+                    if (Exit.isFailure(retirementExit))
+                      recordFailure(attempt, retirementExit.cause.reasons);
                     yield* retirementExit;
                   }
                 }),
@@ -776,29 +786,17 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
           closing = true;
-          const exits: Exit.Exit<void>[] = [];
           if (replacement._tag === "Opening") {
             const pending = replacement.fiber;
             replacement = { _tag: "Absent" };
-            // Interrupt joins acquisition cleanup. Its original defect remains
-            // visible; ordinary cancellation alone is not a close failure.
+            // Interrupt joins acquisition cleanup, which records the attempt's
+            // own defects; cancelling it is not a close failure.
             yield* Fiber.interrupt(pending);
-            const result = yield* Fiber.await(pending);
-            if (Exit.isFailure(result) && Cause.hasDies(result.cause)) {
-              const failure = Cause.findError(result.cause);
-              exits.push(
-                Exit.failCause(
-                  Result.isFailure(failure)
-                    ? failure.failure
-                    : Cause.fromReasons(
-                        result.cause.reasons.filter((reason) => !Cause.isFailReason(reason)),
-                      ),
-                ),
-              );
-            }
           }
           for (const slot of [...slots.values()]) yield* Effect.exit(closeSlot(slot));
-          for (const cause of retirementCauses) exits.push(Exit.failCause(cause));
+          const exits = [...attemptFailures.values()].map((reasons) =>
+            Exit.failCause(Cause.fromReasons(reasons)),
+          );
           buffer.end();
           setMedia({ _tag: "Closed" });
           observations.end();
