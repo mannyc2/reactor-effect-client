@@ -101,28 +101,20 @@ test("the published rate must fit the whole capped session, billed by the minute
   expect(worstCaseUsd(cheap)).toBeCloseTo(0.3);
 });
 
-test("the scheduler check alone can authorize two capped sessions", () => {
-  const scheduler = authorize([
-    "scheduler",
-    "--i-authorize-paid-sessions",
-    "--budget-usd=1.50",
-    "--total-budget-usd=3.75",
-    "--ledger=ledger",
-    "--network=home fiber",
-  ]);
-  expect(scheduler.budgetUsd).toBe(1.5);
-  expect(
-    refused(() =>
-      authorize([
-        "vertical",
-        "--i-authorize-paid-sessions",
-        "--budget-usd=1.50",
-        "--total-budget-usd=3.75",
-        "--ledger=ledger",
-        "--network=home fiber",
-      ]),
-    ),
-  ).toContain("--budget-usd");
+test("only the two-session check can authorize two capped sessions", () => {
+  for (const check of ["vertical", "scheduler"])
+    expect(
+      refused(() =>
+        authorize([
+          check,
+          "--i-authorize-paid-sessions",
+          "--budget-usd=1.50",
+          "--total-budget-usd=3.75",
+          "--ledger=ledger",
+          "--network=home fiber",
+        ]),
+      ),
+    ).toContain("--budget-usd");
   expect(admitTotal([0.75, 0.75, 0.75], 1.5, 3.75)).toBe(2.25);
   expect(refused(() => admitTotal([0.75, 0.75, 0.75], 1.5, 3.74))).toContain("exceeds");
 });

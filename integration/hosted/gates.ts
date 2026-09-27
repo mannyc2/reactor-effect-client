@@ -6,7 +6,7 @@ import * as Data from "effect/Data";
 
 /**
  * One-session checks may reserve one billed minute at the published rate
- * ($0.75 on September 24, 2026). The two-session checks reserve two. All paid
+ * ($0.75 on September 24, 2026). The two-session check reserves two. All paid
  * runs still share the total ceiling, and the operator's command-line limit
  * may only be lower.
  */
@@ -47,8 +47,7 @@ export const checks = [
   "scheduler-renewal",
 ] as const;
 export type Check = (typeof checks)[number];
-export const sessionsFor = (check: Check): number =>
-  check === "scheduler" || check === "scheduler-renewal" ? 2 : 1;
+export const sessionsFor = (check: Check): number => (check === "scheduler-renewal" ? 2 : 1);
 export const ceilingFor = (check: Check): number => sessionsFor(check) * maxCheckUsd;
 
 export interface Authorization {

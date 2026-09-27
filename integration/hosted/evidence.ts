@@ -84,6 +84,54 @@ export const AudioSummary = Schema.Struct({
 });
 export type AudioSummary = typeof AudioSummary.Type;
 
+/**
+ * The longest stretch around a clip boundary with no new decoded picture: from
+ * the last frame that differed from the one before it to the next that did.
+ * A held frame, black frames and no frames at all each count.
+ */
+export const SeamPause = Schema.Struct({
+  lastNewFrameMs: Ms,
+  firstNewFrameMs: Ms,
+  durationMs: Ms,
+  /** The frames that arrived inside the pause, and how many of them were dark. */
+  frames: Schema.Natural,
+  dark: Schema.Natural,
+});
+export type SeamPause = typeof SeamPause.Type;
+
+/**
+ * The scheduler check's edit before each clip boundary, in playing order, and
+ * how long before the playing clip's expected end it is sent.
+ */
+export const schedulerBoundaries = [
+  { edit: "none", aimMs: 0 },
+  { edit: "move", aimMs: 2500 },
+  { edit: "move", aimMs: 250 },
+  { edit: "pop", aimMs: 1000 },
+  { edit: "pop", aimMs: 250 },
+] as const;
+
+/** One clip boundary in the scheduler check: its edit, the clips on either side, and its seam. */
+export const SchedulerBoundary = Schema.Struct({
+  edit: Schema.Literals(["none", "move", "pop"]),
+  /** How long before the ending clip's expected end the edit was sent. */
+  aimMs: Ms,
+  ending: Schema.Struct({
+    clipId: Schema.String,
+    seconds: Schema.Finite,
+    startedMs: Ms,
+    finishedMs: Schema.optionalKey(Ms),
+  }),
+  /** The clip moved to position zero, or popped. */
+  editedClipId: Schema.optionalKey(Schema.String),
+  /** The clip the edit should start next. */
+  expectedClipId: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.Struct({ sentMs: Ms, replyMs: Ms, refused: Schema.Boolean })),
+  next: Schema.optionalKey(Schema.Struct({ clipId: Schema.String, startedMs: Ms })),
+  pause: Schema.optionalKey(SeamPause),
+});
+export type SchedulerBoundary = typeof SchedulerBoundary.Type;
+
 export const Pressure = Schema.Struct({
   deliveredVideo: Counter,
   deliveredAudio: Counter,
@@ -484,34 +532,11 @@ export const Evidence = Schema.Struct({
       terminalMs: Schema.optionalKey(Ms),
     }),
   ),
-  /** Two capped sessions and observations relevant to scheduler policy. These
-   * are protocol and decoded-media observations, not billing or output proof. */
+  /** One capped session's queue edits with autoplay on, and the clip boundaries
+   * they meet. These are protocol and decoded-media observations, not billing
+   * or output proof. */
   scheduler: Schema.optionalKey(
     Schema.Struct({
-      replacement: Schema.Struct({
-        grant: Schema.optionalKey(
-          Schema.Struct({
-            maxSessions: Schema.Natural,
-            maxSessionSeconds: Schema.Natural,
-            expiresAt: Schema.Finite,
-          }),
-        ),
-        session: Schema.optionalKey(
-          Schema.Struct({
-            id: Schema.String,
-            allocatedMs: Ms,
-            endedMs: Schema.optionalKey(Ms),
-          }),
-        ),
-        termination: Schema.optionalKey(
-          Schema.Struct({
-            requestedMs: Ms,
-            reportedMs: Ms,
-            confirmed: Schema.Boolean,
-          }),
-        ),
-        estimatedUsd: Schema.optionalKey(Usd),
-      }),
       builds: Schema.Array(
         Schema.Struct({
           clipId: Schema.String,
@@ -519,25 +544,8 @@ export const Evidence = Schema.Struct({
           readySeconds: Schema.optionalKey(Schema.Finite),
           submittedMs: Ms,
           readyMs: Schema.optionalKey(Ms),
-          /** Submission to Ready includes provider queue waiting. */
+          /** Every clip is queued at once, so this includes waiting behind the builds ahead of it. */
           submitToReadyMs: Schema.optionalKey(Ms),
-        }),
-      ),
-      latencyByRequestedSeconds: Schema.Array(
-        Schema.Struct({
-          requestedSeconds: Schema.Finite,
-          count: Schema.Natural,
-          p50Ms: Ms,
-          p95Ms: Ms,
-        }),
-      ),
-      readyMove: Schema.optionalKey(
-        Schema.Struct({
-          clipId: Schema.String,
-          replyMs: Ms,
-          elapsedMs: Ms,
-          queue: Schema.String,
-          position: Schema.Natural,
         }),
       ),
       positionZero: Schema.optionalKey(
@@ -557,20 +565,10 @@ export const Evidence = Schema.Struct({
           startedAfterPop: Schema.Boolean,
         }),
       ),
+      /** One entry per clip boundary, in playing order, as `schedulerBoundaries` plans them. */
+      boundaries: Schema.Array(SchedulerBoundary),
       metadata: Schema.Struct({ observed: Counts, mismatched: Counts }),
-      media: Schema.optionalKey(
-        Schema.Struct({
-          retiring: Schema.Struct({ video: VideoSummary, audio: AudioSummary }),
-          replacement: Schema.Struct({ video: VideoSummary, audio: AudioSummary }),
-        }),
-      ),
-      decodedHandoff: Schema.optionalKey(
-        Schema.Struct({
-          oldLastFrameMs: Ms,
-          replacementFirstFrameMs: Ms,
-          gapMs: Ms,
-        }),
-      ),
+      media: Schema.optionalKey(Schema.Struct({ video: VideoSummary, audio: AudioSummary })),
     }),
   ),
   schedulerRenewal: Schema.optionalKey(SchedulerRenewal),
@@ -624,20 +622,18 @@ export const required = (evidence: Evidence): readonly string[] => {
   if (evidence.check === "scheduler")
     return [
       ...common,
-      "scheduler.replacement.grant",
-      "scheduler.replacement.session",
-      "scheduler.replacement.session.endedMs",
-      "scheduler.replacement.termination",
       "scheduler.builds.0.readyMs",
       "scheduler.builds.0.readySeconds",
-      "scheduler.builds.1.readyMs",
-      "scheduler.builds.1.readySeconds",
-      "scheduler.readyMove",
       "scheduler.positionZero",
       "scheduler.poppedBuild",
-      "scheduler.decodedHandoff",
-      "scheduler.media.retiring.video.arrivalsMs.0",
-      "scheduler.media.replacement.video.arrivalsMs.0",
+      // An edit that was not staged leaves its command empty: its boundary answers nothing.
+      ...schedulerBoundaries.flatMap(({ edit }, index) => [
+        `scheduler.boundaries.${index}.ending.finishedMs`,
+        `scheduler.boundaries.${index}.next`,
+        `scheduler.boundaries.${index}.pause`,
+        ...(edit === "none" ? [] : [`scheduler.boundaries.${index}.command`]),
+      ]),
+      "scheduler.media.video.arrivalsMs.0",
     ];
   if (evidence.check === "takeover" || evidence.check === "resume")
     return [
@@ -1135,9 +1131,7 @@ const verdictOf = (evidence: Evidence, failure: string | undefined) => {
           (slot.leaseCleanup !== undefined &&
             slot.leaseCleanup.allocation !== "none" &&
             !slot.leaseCleanup.remote.confirmed),
-      ) === true ||
-      evidence.termination?.confirmed === false ||
-      evidence.scheduler?.replacement.termination?.confirmed === false
+      ) === true || evidence.termination?.confirmed === false
         ? false
         : evidence.termination?.confirmed,
   });
@@ -1201,9 +1195,6 @@ const instant = (ms: number): string => {
 /** Every session identity the run holds, for reconciling billing when its file is incomplete. */
 export const recordedSessions = (evidence: Evidence): readonly string[] => [
   ...(evidence.session === undefined ? [] : [evidence.session.id]),
-  ...(evidence.scheduler?.replacement?.session === undefined
-    ? []
-    : [evidence.scheduler.replacement.session.id]),
   ...(evidence.schedulerRenewal?.allocations ?? []).flatMap((slot) =>
     slot.sessionId === undefined ? [] : [slot.sessionId],
   ),
@@ -1216,11 +1207,6 @@ export const cleanupInstructions = (evidence: Evidence): string | undefined => {
   if (session !== undefined && evidence.termination?.confirmed !== true)
     lines.push(
       `Session ${session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s, so the server ends it by ${instant(origin + session.allocatedMs + sessionSeconds * 1000)}; confirm in the Reactor dashboard that it ended, and what it cost.`,
-    );
-  const replacement = evidence.scheduler?.replacement;
-  if (replacement?.session !== undefined && replacement.termination?.confirmed !== true)
-    lines.push(
-      `Replacement session ${replacement.session.id} was not confirmed ended. Its token capped it at ${sessionSeconds} s; confirm its termination and cost in the Reactor dashboard.`,
     );
   for (const slot of evidence.schedulerRenewal?.allocations ?? [])
     if (
