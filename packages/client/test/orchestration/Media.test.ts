@@ -558,7 +558,7 @@ test("the output's loss totals carry a lost owner's losses into its replacement"
       });
       yield* sources[1]!.setPressure({ droppedVideo: 2n });
       expect(yield* handle.media.pressure).toMatchObject({ droppedVideo: 6n, droppedAudio: 1n });
-      // Review of 4443f80: close dropped its owner, so the final totals failed.
+      // Close keeps its last owner, so the final totals stay readable.
       yield* handle.close;
       expect(yield* handle.media.pressure).toMatchObject({
         closed: true,

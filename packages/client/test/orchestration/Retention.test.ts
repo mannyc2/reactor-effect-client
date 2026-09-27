@@ -306,7 +306,7 @@ test("identified acquisition failures have no invented accounting or affinity ob
   );
 });
 
-// Review of 23d03f8: an attempt still outstanding at summary time was absent.
+// A final summary never omits an attempt whose retirement is still outstanding.
 test("a final summary reports an attempt whose retirement has not finished as incomplete", async ({
   signal,
 }) => {

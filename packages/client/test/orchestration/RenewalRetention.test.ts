@@ -176,8 +176,8 @@ test("continuous close preserves its original defect while exposing incomplete f
     }),
   ));
 
-// Review of ed88be7/4443f80: every waiter recorded its own Cause object for one
-// cached retirement, and close added its own cancellation of an opening attempt.
+// Each waiter of one cached retirement sees its own Cause object, and close
+// cancels an opening attempt: neither may repeat a defect or report the cancellation.
 test("a legacy recovery retirement defect is reported once by close and by its owner scope", () =>
   runClock(
     Effect.gen(function* () {
@@ -259,8 +259,8 @@ test("a stalled scope finalizer keeps close and its cleanup reservation pending"
     }),
   ));
 
-// Review of 4443f80: close froze its summary around acquisitions it did not
-// track, so a source could open after close returned without being reported.
+// An acquisition that close does not join could open a source after close
+// returns and be missing from the summary.
 test("close cancels an inline replacement acquisition and reports its reservation", () =>
   runClock(
     Effect.gen(function* () {
@@ -547,7 +547,7 @@ test("a selected preparation never rebinds to a reused physical ID after history
     }),
   ));
 
-// Review of 4443f80: a selection fenced to a still-live source was refused as retired.
+// A selection fenced to a still-live source has only lost its route; it has not retired.
 test("a selected preparation refuses a changed route while its source is still live", () =>
   runClock(
     Effect.gen(function* () {
@@ -638,8 +638,8 @@ test("unresolved ledger exhaustion refuses before open and still fits both remai
     }),
   ));
 
-// Review of 4443f80: a recovery-time join timeout was reported as the later
-// retirement's own accounting, making a settled retirement incomplete.
+// A recovery-time join that gave up must not decide the later retirement's own
+// accounting, or a settled retirement would be reported incomplete.
 test("retirement accounting reflects its own join after recovery stopped waiting", () =>
   runClock(
     Effect.gen(function* () {
@@ -810,8 +810,8 @@ test("accepted history reserves its final entry before dispatch and rejects furt
     }),
   ));
 
-// Review of 4443f80: an oversized accepted identity failed the whole handle,
-// where an oversized Started identity only replaces its source.
+// An oversized accepted identity breaks only its source's contract, as an
+// oversized Started identity does, so it replaces that source, not the handle.
 test("an oversized accepted identity replaces its source and is never retained", () =>
   runClock(
     Effect.gen(function* () {

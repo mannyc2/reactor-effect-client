@@ -136,8 +136,7 @@ describe("evidence codecs", () => {
     ).toBe(true);
   });
 
-  // Review of 4443f80: the summary codec accepted provably incomplete rows
-  // marked complete, so decoded evidence could present them as compacted.
+  // Decoded evidence must not present an incomplete retirement as compacted.
   it("continuous summary rows marked complete must be provably complete", () => {
     const terminated: CloseReport = {
       localClosed: true,
