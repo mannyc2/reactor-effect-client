@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-27
+
+The scheduler bounds how long it waits on an unknown admission, renewal publishes its workers' defects and joins every acquisition when it closes, opt-in continuous renewal lifts the 64-session cap, and a queue read no longer misses a wakeup. Callers see failures where 0.5.0 waited or swallowed a defect, so a `^0.5.0` range does not include it: a scheduler with unresolved uncertainty fails after `unknownRecoveryTimeout`, renewal close can fail with the original defect, and `engine.failure` can fail with a renewal worker's Cause, which a waiter handles with `Effect.catchCause`. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host reads its track streams through the client's queue compatibility reads.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, and the pack/install smoke of all three archives. The unknown-admission deadline, renewal supervision, continuous renewal and the lost-wakeup fix have run only against the simulation, the loopback twin and scripted engines. The hosted `scheduler` and `scheduler-renewal` checks have not run, so hosted H3 queue edits, seams, the renewal handoff and output presentation are unqualified. A provider `Started` event is not proof of encoded output.
+
 ### Added
 
 - Planned `Switched` renewal events include immutable `handoff` evidence captured before retirement waits: the replacement session, eligibility decision, final clip's local decoded-frame counts and observed grace origin. `sessionId` still identifies the retiring source and aggregate `tail` accounting is unchanged. The field is optional in the public type so historical event values remain assignable. Audio and output presentation completeness remain unverified; hosted qualification of this change has not run.
@@ -262,7 +268,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/9d2fbd34da41c5be82bdf8e8e482f226fddd7c19...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/8d74e94504519ba351118c8a7a2441a157774bec...main
+[0.6.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.6.0
 [0.5.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.5.0
 [0.4.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.4.0
 [0.3.4]: https://www.npmjs.com/package/reactor-effect-client/v/0.3.4
