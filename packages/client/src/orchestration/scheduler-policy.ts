@@ -39,7 +39,49 @@ export interface PlannedItem {
   readonly held?: boolean;
   /** An `Asap` or released item: it airs ahead of everything waiting in every lane. */
   readonly asap?: boolean;
+  /** Built continuing from the clip that airs just before it. */
+  readonly continuity?: "previous";
 }
+
+/**
+ * The indexes of a playing clip's cues that fall due by `untilMs` and have not fired, in
+ * the order they fall: an offset from its start, or back from the end of its length.
+ */
+export const dueCues = (
+  cues: ReadonlyArray<{ readonly from: "start" | "end"; readonly offsetMs: number }>,
+  fired: ReadonlySet<number>,
+  startedAtMs: number,
+  durationSeconds: number,
+  untilMs: number,
+): ReadonlyArray<number> =>
+  cues
+    .map((cue, index) => ({
+      index,
+      atMs:
+        cue.from === "start"
+          ? startedAtMs + cue.offsetMs
+          : startedAtMs + durationSeconds * 1000 - cue.offsetMs,
+    }))
+    .filter(({ index, atMs }) => !fired.has(index) && atMs <= untilMs)
+    .sort((a, b) => a.atMs - b.atMs)
+    .map(({ index }) => index);
+
+/**
+ * The requested length for the next filler clip. Before an anchor, equal clips that tile the
+ * uncovered gap within the provider's lengths, so filler ends on the anchor; otherwise the
+ * shortest clip, which keeps boundaries, and so reactions, frequent. `ratio` is a built
+ * clip's actual over requested length.
+ */
+export const fillLength = (
+  uncoveredSeconds: number,
+  lengths: { readonly min: number; readonly max: number },
+  ratio: number,
+): number => {
+  const clamp = (requested: number) => Math.min(lengths.max, Math.max(lengths.min, requested));
+  if (!(uncoveredSeconds > 0)) return lengths.min;
+  const pieces = Math.max(1, Math.ceil(uncoveredSeconds / (lengths.max * ratio)));
+  return clamp(uncoveredSeconds / pieces / ratio);
+};
 
 /** A held clip that would be next within this many seconds is removed and rebuilt. */
 const exposureMarginSeconds = 1.5;
@@ -133,6 +175,8 @@ export interface PolicySnapshot {
   readonly fillerSeconds: number | undefined;
   /** Lanes whose Ready items cut a playing clip that ranks below them. */
   readonly cutLanes: ReadonlySet<string>;
+  /** The requested clip lengths filler may take, in seconds. */
+  readonly fillLengths: { readonly min: number; readonly max: number };
   /** A playing clip whose cut was refused is not cut again. */
   readonly blockedCut: ClipId | undefined;
 }
@@ -142,9 +186,19 @@ const cutMarginSeconds = 1;
 
 export type PolicyAction =
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
-  | { readonly _tag: "Build"; readonly key: ItemKey }
+  | {
+      readonly _tag: "Build";
+      readonly key: ItemKey;
+      /** The generated clip it continues from, for an item that asks for continuity. */
+      readonly continueFrom?: ClipId;
+    }
   | { readonly _tag: "Cut"; readonly clipId: ClipId }
-  | { readonly _tag: "BuildFiller"; readonly targetSeconds: number }
+  | {
+      readonly _tag: "BuildFiller";
+      readonly targetSeconds: number;
+      /** The requested length suggested for this filler clip. */
+      readonly durationSeconds: number;
+    }
   | { readonly _tag: "Order"; readonly clipId: ClipId; readonly position: number };
 
 export interface PolicyWithdrawal {
@@ -210,6 +264,39 @@ export const runwaySeconds = (
   );
 };
 
+type BuildKey = Pick<
+  PlannedItem,
+  "lane" | "admission" | "asap" | "held" | "replaces" | "group" | "startByMs"
+>;
+
+/**
+ * Which of two waiting items the build slot takes first: Asap, then everything but held
+ * items, then lane, a replacement racing its item, a group already under way, the earlier
+ * deadline, and admission.
+ */
+const buildOrder =
+  (lanes: ReadonlyArray<string>) =>
+  (a: BuildKey, b: BuildKey): number => {
+    const asap = Number(b.asap === true) - Number(a.asap === true);
+    const held = Number(a.held === true) - Number(b.held === true);
+    const lane = lanes.indexOf(a.lane) - lanes.indexOf(b.lane);
+    // A replacement races the clip it replaces, so it builds first in its lane.
+    const replacing = Number(b.replaces !== undefined) - Number(a.replaces !== undefined);
+    // A deadline may move a whole group ahead in its lane, never into one being built.
+    const open =
+      Number(b.group !== undefined && b.group.index > 0) -
+      Number(a.group !== undefined && a.group.index > 0);
+    return (
+      asap ||
+      held ||
+      lane ||
+      replacing ||
+      open ||
+      (a.startByMs ?? Infinity) - (b.startByMs ?? Infinity) ||
+      a.admission - b.admission
+    );
+  };
+
 /** Lexicographic place in a session's Ready order; lower airs first. */
 export type Rank = readonly [number, number, number, number];
 
@@ -250,10 +337,21 @@ const ordering = (
     );
   };
   // Within its place, a Ready replacement airs ahead of the item it replaces.
+  const byKey = new Map(items.map((item) => [item.key, item]));
+  /**
+   * The live item a replacement takes the place of. Replacing a replacement that was never
+   * built drops that one, so the chain leads back to the item still in the place.
+   */
+  const replacedOf = (item: PlannedItem): PlannedItem | undefined => {
+    let old = item.replaces === undefined ? undefined : byKey.get(item.replaces);
+    while (old?.phase === "Terminal" && old.replaces !== undefined) old = byKey.get(old.replaces);
+    return old;
+  };
   const replacedReady = new Set(
-    items.flatMap((item) =>
-      item.replaces !== undefined && item.phase === "Ready" ? [item.replaces] : [],
-    ),
+    items.flatMap((item) => {
+      const old = item.phase === "Ready" || item.phase === "Started" ? replacedOf(item) : undefined;
+      return old === undefined ? [] : [old.key];
+    }),
   );
   const rankItem = (
     item:
@@ -264,14 +362,16 @@ const ordering = (
         })
       | undefined,
   ): Rank => {
+    const generation =
+      item?.key !== undefined && replacedReady.has(item.key) ? Infinity : (item?.generation ?? 0);
     if (item?.held === true || (item?.atMs !== undefined && nowMs < item.atMs))
-      return [lanes.length + 1, 1, item.admission, item.generation ?? 0];
-    if (item?.asap === true) return [-0.5, 0, item.admission, item.generation ?? 0];
+      return [lanes.length + 1, 1, item.admission, generation];
+    if (item?.asap === true) return [-0.5, 0, item.admission, generation];
     return [
       Math.max(0, lanes.indexOf(item?.lane ?? "")),
       item?.key !== undefined && superseded.has(item.key) ? 2 : begun(item) ? 0 : 1,
       item?.admission ?? 0,
-      item?.key !== undefined && replacedReady.has(item.key) ? Infinity : (item?.generation ?? 0),
+      generation,
     ];
   };
   const rankClip = (clipId: ClipId, owned: ReadonlyMap<ClipId, OwnedClip>): Rank => {
@@ -280,7 +380,7 @@ const ordering = (
     if (clip._tag === "Filler") return [lanes.length, 1, clip.index, 0];
     return rankItem(items.find((value) => value.key === clip.key));
   };
-  return { previousAdmitted, begun, rankItem, rankClip };
+  return { previousAdmitted, begun, rankItem, rankClip, replacedOf };
 };
 
 /**
@@ -294,9 +394,10 @@ const fillerHeldFor = (snapshot: PolicySnapshot): boolean =>
   snapshot.drain === "accepted" &&
   snapshot.items.some(
     (item) =>
-      item.phase === "Accepted" ||
-      item.phase === "Building" ||
-      (item.phase === "Ready" && item.atMs !== undefined && item.atMs > snapshot.nowMs),
+      item.held !== true &&
+      (item.phase === "Accepted" ||
+        item.phase === "Building" ||
+        (item.phase === "Ready" && item.atMs !== undefined && item.atMs > snapshot.nowMs)),
   );
 
 export interface ProjectionView {
@@ -319,6 +420,9 @@ export type ProjectedPlace = Pick<PlannedItem, "lane" | "admission" | "group"> &
   readonly key?: ItemKey;
   readonly seconds?: number;
   readonly startByMs?: number;
+  readonly asap?: boolean;
+  readonly held?: boolean;
+  readonly replaces?: ItemKey;
 };
 
 /**
@@ -337,7 +441,7 @@ export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): n
     playingRecord === undefined || started === undefined
       ? 0
       : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
-  const { rankItem, rankClip } = ordering(
+  const { rankItem, rankClip, previousAdmitted } = ordering(
     view.items,
     view.lanes,
     nowMs,
@@ -368,18 +472,21 @@ export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): n
       ? []
       : [view.fillerDispatchedAtMs + buildMs(view.fillerSeconds)]),
   ];
-  const laneRank = view.lanes.indexOf(place.lane);
+  // Only builds that can go now and that the build order puts first count, so the
+  // projection stays optimistic: not held, future or not-yet items, nor a group's parts
+  // after one not yet built.
+  const order = buildOrder(view.lanes);
   const first = view.items
     .filter(
       (item) =>
         item.phase === "Accepted" &&
         item.key !== place.key &&
         !withdrawing.has(item.key) &&
-        (view.lanes.indexOf(item.lane) < laneRank ||
-          (item.lane === place.lane &&
-            (item.replaces !== undefined ||
-              (item.group !== undefined && item.group.index > 0) ||
-              (item.startByMs ?? Infinity) < (place.startByMs ?? Infinity)))),
+        item.held !== true &&
+        (item.atMs === undefined || item.atMs <= nowMs) &&
+        (item.notBeforeMs === undefined || item.notBeforeMs <= nowMs) &&
+        previousAdmitted(item) &&
+        order(item, place) < 0,
     )
     .reduce((total, item) => total + buildMs(item.seconds ?? 0), 0);
   const built = Math.max(nowMs, ...inFlight) + first + buildMs(place.seconds);
@@ -392,12 +499,53 @@ export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): n
  */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
-  const { previousAdmitted, rankClip } = ordering(
+  const { previousAdmitted, rankClip, rankItem, replacedOf } = ordering(
     items,
     snapshot.lanes,
     nowMs,
     supersededBy(snapshot.batches),
   );
+  /**
+   * What an item continuing from its predecessor continues from: the Ready clip or waiting
+   * item that airs just before it on the preferred source, else the clip playing there.
+   * `wait` while that predecessor is not built yet; no clip when there is none, or when
+   * the provider no longer offers it for continuation.
+   */
+  const continuation = (
+    item: PlannedItem,
+  ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId?: ClipId } => {
+    const place = rankItem(item);
+    // What will not air before it is no predecessor: the item it replaces, and what a batch
+    // or a withdrawal is taking off.
+    const gone = new Set<ItemKey>([...supersededBy(snapshot.batches), ...snapshot.withdrawing]);
+    const replaced = replacedOf(item);
+    if (replaced !== undefined) gone.add(replaced.key);
+    let best: { readonly rank: Rank; readonly clipId?: ClipId } | undefined;
+    const consider = (rank: Rank, clipId: ClipId | undefined) => {
+      if (compareRank(rank, place) < 0 && (best === undefined || compareRank(rank, best.rank) > 0))
+        best = clipId === undefined ? { rank } : { rank, clipId };
+    };
+    for (const clip of engine.ready) {
+      const owner = owned.get(clip.clipId);
+      if (
+        clip.sessionId === preferredSession(engine) &&
+        !(owner?._tag === "Item" && gone.has(owner.key))
+      )
+        consider(rankClip(clip.clipId, owned), clip.clipId);
+    }
+    for (const other of items)
+      if (
+        other.key !== item.key &&
+        !gone.has(other.key) &&
+        (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown")
+      )
+        consider(rankItem(other), undefined);
+    if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
+    const clipId = best?.clipId ?? Option.getOrUndefined(engine.playing)?.clipId;
+    return clipId !== undefined && engine.continuable.includes(clipId)
+      ? { _tag: "from", clipId }
+      : { _tag: "from" };
+  };
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
@@ -468,14 +616,16 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   // the replacement goes.
   const pendingReplacements = new Set(snapshot.batches.flatMap((batch) => batch.waitFor));
   for (const item of items) {
-    if (item.replaces === undefined) continue;
-    const old = items.find((candidate) => candidate.key === item.replaces);
+    if (item.replaces === undefined || item.phase === "Terminal") continue;
+    const old = replacedOf(item);
     if (old === undefined || old.phase === "Terminal") continue;
     if (old.phase === "Started") {
-      if (item.phase !== "Started" && item.phase !== "Terminal") drop(item, "withdrawn");
+      if (item.phase !== "Started") drop(item, "withdrawn");
     } else if (
-      ((item.phase === "Ready" || item.phase === "Started") &&
-        !pendingReplacements.has(item.key)) ||
+      // A batch's Ready replacement waits for its batch, but one that has started takes
+      // the place at once, so the item it replaces never follows it.
+      (item.phase === "Ready" && !pendingReplacements.has(item.key)) ||
+      item.phase === "Started" ||
       (old.phase === "Accepted" && !snapshot.dispatched.has(old.key))
     )
       drop(old, "replaced");
@@ -500,6 +650,9 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         if (target?.phase === "Accepted" && !snapshot.dispatched.has(key)) drop(target, reason);
       }
   }
+  // A held item cannot air without a release a drain will not wait for.
+  if (snapshot.drain !== undefined)
+    for (const item of items) if (item.held === true && waiting(item)) drop(item, "withdrawn");
   // A drain that finishes only the playing clip withdraws everything waiting.
   if (snapshot.drain === "playing")
     for (const item of items)
@@ -578,8 +731,8 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     offset += actual.length;
   }
 
-  // A cut lane's Ready item at the front of its session cuts the playing clip there when that
-  // clip ranks below it, once the provider has it at the front.
+  // A cut lane's Ready item at the front of its session cuts the playing clip there, once
+  // the provider has it at the front.
   if (snapshot.cutLanes.size > 0) {
     const current = Option.getOrUndefined(engine.playing);
     const record = current === undefined ? undefined : Option.getOrUndefined(current.record);
@@ -591,6 +744,18 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     const owner = front === undefined ? undefined : owned.get(front.clipId);
     const cutter =
       owner?._tag === "Item" ? items.find((item) => item.key === owner.key) : undefined;
+    // Only filler or a clip of a strictly lower lane is cut, never a clip of the cutter's
+    // own lane, whatever its rank.
+    const playingOwner = current === undefined ? undefined : owned.get(current.clipId);
+    const playingItem =
+      playingOwner?._tag === "Item"
+        ? items.find((item) => item.key === playingOwner.key)
+        : undefined;
+    const lower =
+      cutter !== undefined &&
+      (playingOwner?._tag === "Filler" ||
+        (playingItem !== undefined &&
+          snapshot.lanes.indexOf(playingItem.lane) > snapshot.lanes.indexOf(cutter.lane)));
     if (
       current !== undefined &&
       record !== undefined &&
@@ -599,8 +764,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       cutter !== undefined &&
       snapshot.cutLanes.has(cutter.lane) &&
       snapshot.blockedCut !== current.clipId &&
-      compareRank(rankClip(front.clipId, owned), rankClip(current.clipId, owned)) < 0 &&
-      rankClip(current.clipId, owned)[0] >= 0 &&
+      lower &&
       record.durationSeconds - (nowMs - since) / 1000 > cutMarginSeconds
     )
       return { ...base, action: { _tag: "Cut", clipId: current.clipId } };
@@ -681,30 +845,22 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         // known material ahead of it covers the time until that anchor.
         (item.atMs === undefined || item.atMs <= nowMs || runway >= (item.atMs - nowMs) / 1000) &&
         // A held item is built ahead only while filler keeps the runway at its floor.
-        (item.held !== true || (floorSeconds > 0 && runway >= floorSeconds)),
+        (item.held !== true || (floorSeconds > 0 && runway >= floorSeconds)) &&
+        // A continuing clip waits for the clip it continues from to be built.
+        (item.continuity !== "previous" || continuation(item)._tag !== "wait"),
     )
-    .sort((a, b) => {
-      // Asap goes first, and a held item after everything that will air before it.
-      const asap = Number(b.asap === true) - Number(a.asap === true);
-      const held = Number(a.held === true) - Number(b.held === true);
-      if (asap !== 0 || held !== 0) return asap || held;
-      const lane = snapshot.lanes.indexOf(a.lane) - snapshot.lanes.indexOf(b.lane);
-      // A replacement races the clip it replaces, so it builds first in its lane.
-      const replacing = Number(b.replaces !== undefined) - Number(a.replaces !== undefined);
-      // A deadline may move a whole group ahead in its lane, never into one being built.
-      const open =
-        Number(b.group !== undefined && b.group.index > 0) -
-        Number(a.group !== undefined && a.group.index > 0);
-      return (
-        lane ||
-        replacing ||
-        open ||
-        (a.startByMs ?? Infinity) - (b.startByMs ?? Infinity) ||
-        a.admission - b.admission
-      );
-    });
-  if (eligible[0] !== undefined)
-    return { ...base, action: { _tag: "Build", key: eligible[0].key } };
+    .sort(buildOrder(snapshot.lanes));
+  const next = eligible[0];
+  if (next !== undefined) {
+    const from = next.continuity === "previous" ? continuation(next) : undefined;
+    return {
+      ...base,
+      action:
+        from?._tag === "from" && from.clipId !== undefined
+          ? { _tag: "Build", key: next.key, continueFrom: from.clipId }
+          : { _tag: "Build", key: next.key },
+    };
+  }
   if (
     (snapshot.drain === undefined || fillerHeld) &&
     filling &&
@@ -714,7 +870,15 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   )
     return {
       ...base,
-      action: { _tag: "BuildFiller", targetSeconds: fillTarget - runway },
+      action: {
+        _tag: "BuildFiller",
+        targetSeconds: fillTarget - runway,
+        durationSeconds: fillLength(
+          anchorGapSeconds - runway,
+          snapshot.fillLengths,
+          snapshot.estimates.length,
+        ),
+      },
     };
   return base;
 };

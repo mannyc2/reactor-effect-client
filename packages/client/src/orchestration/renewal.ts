@@ -441,6 +441,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             clipId,
             reason: `Session lost: ${cause.message}`,
             sessionId: slot.source.id,
+            lost: true,
           });
         if (slot === current) yield* retireOwner(slot);
         yield* closeSlot(slot);

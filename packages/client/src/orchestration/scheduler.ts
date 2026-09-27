@@ -19,6 +19,7 @@ import { parsedInput } from "../internal/validation.js";
 import { ReactorError } from "../ReactorError.js";
 
 import { monotonicMillis } from "./elapsed.js";
+import { requestSeconds as h3RequestSeconds } from "../h3/profile.js";
 import { captureRequest, PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
 import { activeIds } from "./routing.js";
@@ -29,7 +30,13 @@ import {
   keyedRequest,
   keyFromProviderMetadata,
 } from "./scheduler-key.js";
-import { estimatesFrom, plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
+import {
+  dueCues,
+  estimatesFrom,
+  plan,
+  projectedStartMs,
+  runwaySeconds,
+} from "./scheduler-policy.js";
 import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
@@ -78,10 +85,35 @@ export type StartMode =
         | { readonly _tag: "drop" };
     };
 
+/**
+ * A secondary event on a clip, such as an overlay, caption or browser action, fired while
+ * the clip plays: an offset from its observed start, or back from its end.
+ */
+export interface Cue {
+  /** The application's name for it, reported when it fires. */
+  readonly name: string;
+  readonly at: { readonly from: "start" | "end"; readonly offset: Duration.Input };
+}
+
+export interface CueEvent {
+  readonly key: ItemKey;
+  readonly name: string;
+  /** Epoch milliseconds when the cue fired. */
+  readonly at: number;
+}
+
 export interface ItemSpec {
   readonly key: ItemKey;
   readonly lane: string;
   readonly request: ClipRequest;
+  /** Fired while the clip plays; one that falls after the clip ends, if cut, never fires. */
+  readonly cues?: ReadonlyArray<Cue>;
+  /**
+   * `"previous"` builds the clip continuing from the clip that airs just before it, so
+   * motion, camera and audio carry across the boundary. It waits for that clip to be built,
+   * and takes at most two audio references of its own.
+   */
+  readonly continuity?: "previous";
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: {
     readonly notBefore?: Duration.Input;
@@ -96,6 +128,13 @@ export interface FillContext {
   readonly runwaySeconds: number;
   /** For an `At` anchor, the uncovered gap that filler should approach. */
   readonly targetSeconds?: number;
+  /**
+   * A requested length for this clip, within `filler.lengths`: before an `At` anchor, one of
+   * equal clips that tile the uncovered gap, following the measured actual over requested
+   * length, so filler ends on the anchor; otherwise the shortest, which keeps boundaries,
+   * and so reactions, frequent. Using it is the application's choice.
+   */
+  readonly durationSeconds: number;
 }
 
 export interface SchedulerOptions {
@@ -105,6 +144,11 @@ export interface SchedulerOptions {
     readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
     /** Pure callback; each admitted index is requested once. */
     readonly clip: (context: FillContext) => ClipRequest;
+    /**
+     * The requested lengths filler may take, for `FillContext.durationSeconds`. Defaults to
+     * H3's request range, 5 to 15.084 seconds.
+     */
+    readonly lengths?: { readonly min: Duration.Input; readonly max: Duration.Input };
   };
   /** Provider build admissions in flight on the preferred source, independent of runway. Defaults to one. */
   readonly maxBuildsInFlight?: number;
@@ -120,7 +164,11 @@ export type ItemFailureReason =
   | { readonly _tag: "Clip"; readonly message: string };
 
 export type AsRunStatus =
-  | { readonly _tag: "Accepted" }
+  | {
+      readonly _tag: "Accepted";
+      /** Accepted again: its clip was lost with this session before it aired, and it is rebuilt. */
+      readonly carried?: { readonly sessionId: string };
+    }
   | { readonly _tag: "Building" }
   | { readonly _tag: "Ready"; readonly sessionId: string }
   | {
@@ -182,6 +230,8 @@ export interface ItemHandle {
 export interface GroupPart {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 export interface GroupSpec {
@@ -203,6 +253,8 @@ export interface GroupHandle {
 export interface ReplacementSpec {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 /**
@@ -216,6 +268,8 @@ export interface InsertSpec {
   readonly after?: ItemKey;
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: ItemSpec["window"];
+  readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
@@ -300,10 +354,18 @@ export class WouldMissDeadline extends Schema.TaggedError<WouldMissDeadline>()(
   }
 }
 
+interface CapturedCue {
+  readonly name: string;
+  readonly from: "start" | "end";
+  readonly offsetMs: number;
+}
+
 interface CapturedItem {
   readonly key: ItemKey;
   readonly lane: string;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<CapturedCue>;
+  readonly continuity?: "previous";
   readonly fingerprint: string;
   readonly notBeforeOffsetMs: number | undefined;
   readonly startByOffsetMs: number | undefined;
@@ -330,6 +392,9 @@ interface Entry extends PlannedItem {
   phase: PlannedItem["phase"];
   /** Set once another item was submitted to take this one's place. */
   replacedBy?: ItemKey;
+  readonly cues: ReadonlyArray<CapturedCue>;
+  /** Indexes of the cues already fired. */
+  readonly firedCues: Set<number>;
   held?: boolean;
   asap?: boolean;
   dispatchedAtMs?: number;
@@ -393,7 +458,8 @@ const maxEarlyClipIds = 4096;
 
 interface Batch {
   readonly id: number;
-  readonly waitFor: ReadonlyArray<ItemKey>;
+  /** Grows when a later batch withdraws or replaces something this one waits for. */
+  readonly waitFor: ItemKey[];
   /** Items the batch withdraws, each with its reason and any reply its withdrawal settles. */
   readonly targets: Map<
     ItemKey,
@@ -545,6 +611,49 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
     ).pipe(Effect.mapError((error) => invalid(error.message)));
   });
 
+/** A continuity choice, read as caller data, checked against the request it would continue. */
+const captureContinuity = (input: unknown, request: ClipRequest) =>
+  Effect.gen(function* (): Effect.fn.Return<"previous" | undefined, PolicyFailure> {
+    if (input === undefined) return undefined;
+    if (input !== "previous") return yield* invalid('Continuity is "previous" or absent');
+    if ((request.audio?.length ?? 0) > 2)
+      return yield* invalid("A clip that continues takes at most two audio references");
+    return "previous";
+  });
+
+/** Enough cues for a line's overlays and actions, and a bound on one clip's timers. */
+const maxCues = 32;
+
+/** A clip's cues, read as caller data. */
+const captureCues = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<ReadonlyArray<CapturedCue>, PolicyFailure> {
+    if (input === undefined) return [];
+    if (!Array.isArray(input)) return yield* invalid("Cues must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(input as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length > maxCues)
+      return yield* invalid(`A clip takes at most ${maxCues} cues`);
+    const cues: CapturedCue[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Cues must be data");
+      const cue = yield* Effect.fromResult(ownedData(descriptor.value, ["name", "at"], "Cue"));
+      const at = yield* Effect.fromResult(ownedData(cue.at, ["from", "offset"], "Cue time"));
+      if (typeof cue.name !== "string" || cue.name.length === 0)
+        return yield* invalid("A cue needs a nonempty name");
+      if (at.from !== "start" && at.from !== "end")
+        return yield* invalid("A cue is timed from the start or the end");
+      cues.push({
+        name: cue.name,
+        from: at.from,
+        offsetMs: yield* requestDuration(at.offset, "cue offset", true),
+      });
+    }
+    return cues;
+  });
+
 /** Capture scheduling fields before reading the request's placement fields. */
 /** A caller's clip request, without the placement and source fields the scheduler owns. */
 const captureClip = (input: unknown) =>
@@ -606,7 +715,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       Object.getOwnPropertySymbols(input).length > 0 ||
       Object.keys(descriptors).some(
         (field) =>
-          !["key", "lane", "request", "window", "start"].includes(field) ||
+          !["key", "lane", "request", "window", "start", "cues", "continuity"].includes(field) ||
           !("value" in descriptors[field]!),
       )
     )
@@ -622,6 +731,8 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     const { notBeforeOffsetMs, startByOffsetMs, firm } = yield* captureWindow(
       descriptors.window?.value,
     );
+    const cues = yield* captureCues(descriptors.cues?.value);
+    const continuity = yield* captureContinuity(descriptors.continuity?.value, request);
     const rawStart: unknown = descriptors.start?.value;
     const start =
       rawStart === undefined
@@ -662,6 +773,8 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       atWallMs,
       late,
       ...(mode === undefined ? {} : { mode }),
+      ...(cues.length === 0 ? {} : { cues }),
+      ...(continuity === undefined ? {} : { continuity }),
       fingerprint: JSON.stringify({
         lane,
         request,
@@ -671,6 +784,8 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
         atWallMs,
         late,
         mode,
+        ...(cues.length === 0 ? {} : { cues }),
+        ...(continuity === undefined ? {} : { continuity }),
       }),
     };
   });
@@ -707,7 +822,11 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
       if (descriptor === undefined || !("value" in descriptor))
         return yield* invalid("Scheduled group parts must be data");
       const part = yield* Effect.fromResult(
-        ownedData(descriptor.value, ["key", "request"], "Scheduled group part"),
+        ownedData(
+          descriptor.value,
+          ["key", "request", "cues", "continuity"],
+          "Scheduled group part",
+        ),
       );
       parts.push(
         yield* captureItem(
@@ -715,6 +834,8 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
             key: part.key,
             lane: group.lane,
             request: part.request,
+            ...(part.cues === undefined ? {} : { cues: part.cues }),
+            ...(part.continuity === undefined ? {} : { continuity: part.continuity }),
             ...(index === 0 && group.window !== undefined ? { window: group.window } : {}),
           } as ItemSpec,
           lanes,
@@ -734,16 +855,26 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
 interface CapturedReplacement {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues: ReadonlyArray<CapturedCue>;
+  readonly continuity: "previous" | undefined;
 }
 
 const captureReplacement = (input: ReplacementSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedReplacement, PolicyFailure> {
-    const next = yield* Effect.fromResult(ownedData(input, ["key", "request"], "Replacement"));
+    const next = yield* Effect.fromResult(
+      ownedData(input, ["key", "request", "cues", "continuity"], "Replacement"),
+    );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(next.key).pipe(
       Effect.mapError(() => invalid("Replacement key must be nonempty")),
     );
     if (isReservedSchedulerKey(key)) return yield* invalid("Replacement key is reserved");
-    return { key, request: yield* captureClip(next.request) };
+    const request = yield* captureClip(next.request);
+    return {
+      key,
+      request,
+      cues: yield* captureCues(next.cues),
+      continuity: yield* captureContinuity(next.continuity, request),
+    };
   });
 
 interface CapturedInsert {
@@ -754,13 +885,19 @@ interface CapturedInsert {
   readonly notBeforeOffsetMs: number | undefined;
   readonly startByOffsetMs: number | undefined;
   readonly firm: boolean;
+  readonly cues: ReadonlyArray<CapturedCue>;
+  readonly continuity: "previous" | undefined;
   readonly fingerprint: string;
 }
 
 const captureInsert = (input: InsertSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedInsert, PolicyFailure> {
     const spec = yield* Effect.fromResult(
-      ownedData(input, ["key", "request", "before", "after", "window"], "Insert"),
+      ownedData(
+        input,
+        ["key", "request", "before", "after", "window", "cues", "continuity"],
+        "Insert",
+      ),
     );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(spec.key).pipe(
       Effect.mapError(() => invalid("Insert key must be nonempty")),
@@ -774,13 +911,23 @@ const captureInsert = (input: InsertSpec) =>
     );
     const request = yield* captureClip(spec.request);
     const window = yield* captureWindow(spec.window);
+    const cues = yield* captureCues(spec.cues);
+    const continuity = yield* captureContinuity(spec.continuity, request);
     return {
       key,
       request,
       side,
       anchor,
       ...window,
-      fingerprint: JSON.stringify({ [side]: anchor, request, ...window }),
+      cues,
+      continuity,
+      fingerprint: JSON.stringify({
+        [side]: anchor,
+        request,
+        ...window,
+        ...(cues.length === 0 ? {} : { cues }),
+        ...(continuity === undefined ? {} : { continuity }),
+      }),
     };
   });
 
@@ -904,6 +1051,8 @@ export interface SchedulerShape {
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
   readonly asRun: Stream.Stream<AsRunEvent>;
+  /** Cues as they fire, within the scheduler's 100 ms turn of their time; subscribers receive later ones. */
+  readonly cues: Stream.Stream<CueEvent>;
 }
 
 export const lineup = (filler: SchedulerOptions["filler"]): SchedulerOptions => ({
@@ -945,39 +1094,66 @@ export const makeScheduler = (
     const cutLanes: ReadonlySet<string> = new Set(
       options.lanes.filter((lane) => lane.cut === true).map((lane) => lane.name),
     );
-    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
-      yield* parsedInput(() => {
-        const floorSeconds =
-          Duration.toMillis(
-            duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
-          ) / 1000;
-        const targetSeconds =
-          Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
-        const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
-        const maxHistory = options.maxHistory ?? 4096;
-        const unknownRecoveryMs = Duration.toMillis(
-          duration(
-            optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
-              "60 seconds",
-            "unknown recovery timeout",
-            { maximum: "10 minutes" },
-          ),
-        );
-        if (
-          floorSeconds > targetSeconds ||
-          !Number.isSafeInteger(maxBuildsInFlight) ||
-          maxBuildsInFlight < 1 ||
-          maxBuildsInFlight > 1024 ||
-          !Number.isSafeInteger(maxHistory) ||
-          maxHistory < 0 ||
-          maxHistory > 65_536
-        )
-          throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
-        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs };
-      }, "makeScheduler");
+    const {
+      floorSeconds,
+      targetSeconds,
+      maxBuildsInFlight,
+      maxHistory,
+      unknownRecoveryMs,
+      fillLengths,
+    } = yield* parsedInput(() => {
+      const floorSeconds =
+        Duration.toMillis(
+          duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
+        ) / 1000;
+      const targetSeconds =
+        Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
+      const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
+      const maxHistory = options.maxHistory ?? 4096;
+      const unknownRecoveryMs = Duration.toMillis(
+        duration(
+          optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
+            "60 seconds",
+          "unknown recovery timeout",
+          { maximum: "10 minutes" },
+        ),
+      );
+      if (
+        floorSeconds > targetSeconds ||
+        !Number.isSafeInteger(maxBuildsInFlight) ||
+        maxBuildsInFlight < 1 ||
+        maxBuildsInFlight > 1024 ||
+        !Number.isSafeInteger(maxHistory) ||
+        maxHistory < 0 ||
+        maxHistory > 65_536
+      )
+        throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
+      const lengths = options.filler.lengths;
+      const fillLengths = {
+        min:
+          lengths === undefined
+            ? h3RequestSeconds.min
+            : Duration.toMillis(duration(lengths.min, "filler minimum length")) / 1000,
+        max:
+          lengths === undefined
+            ? h3RequestSeconds.max
+            : Duration.toMillis(duration(lengths.max, "filler maximum length")) / 1000,
+      };
+      if (fillLengths.min > fillLengths.max)
+        throw ReactorError.fromCode("InvalidInput", "Filler lengths are inconsistent");
+      return {
+        floorSeconds,
+        targetSeconds,
+        maxBuildsInFlight,
+        maxHistory,
+        unknownRecoveryMs,
+        fillLengths,
+      };
+    }, "makeScheduler");
     const captureFiller = (
       index: number,
       runway: number,
+      durationSeconds: number,
       targetSeconds?: number,
     ): Effect.Effect<ClipRequest, PolicyFailure> =>
       Effect.gen(function* () {
@@ -985,6 +1161,7 @@ export const makeScheduler = (
           options.filler.clip({
             index,
             runwaySeconds: runway,
+            durationSeconds,
             ...(targetSeconds === undefined ? {} : { targetSeconds }),
           }),
         );
@@ -1005,16 +1182,18 @@ export const makeScheduler = (
     let fillerRetryAtMs = 0;
     const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
     const maxUnknownFillers = 4096;
-    let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
+    let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0, fillLengths.min);
     const actorScope = yield* Effect.scope;
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
     const events = yield* PubSub.unbounded<AsRunEvent>();
+    const cueEvents = yield* PubSub.unbounded<CueEvent>();
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* Queue.shutdown(commandQueue);
         yield* Queue.shutdown(inbox);
         yield* PubSub.shutdown(events);
+        yield* PubSub.shutdown(cueEvents);
       }),
     );
     const stateRef = yield* SubscriptionRef.make<SchedulerState>({
@@ -1104,10 +1283,39 @@ export const makeScheduler = (
       delete item.dispatchedAtMs;
     };
 
+    /** Fires the cues of a playing item that are due by `untilMs`, in the order they fall. */
+    const fireCues = (entry: Entry, untilMs: number): void => {
+      if (entry.status._tag !== "Started" || entry.startedAtMonoMs === undefined) return;
+      for (const due of dueCues(
+        entry.cues,
+        entry.firedCues,
+        entry.startedAtMonoMs,
+        entry.status.durationSeconds,
+        untilMs,
+      )) {
+        entry.firedCues.add(due);
+        PubSub.publishUnsafe(cueEvents, {
+          key: entry.key,
+          name: entry.cues[due]!.name,
+          at: clock.currentTimeMillisUnsafe(),
+        });
+      }
+    };
+
     const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (ended !== undefined && !terminal) return;
         if (JSON.stringify(entry.status) === JSON.stringify(status)) return;
+        // A clip that ends fires only the cues that fell within the airtime it had.
+        if (status._tag === "Ended" && entry.startedAtMonoMs !== undefined)
+          fireCues(
+            entry,
+            entry.startedAtMonoMs +
+              1000 *
+                (status.termination === "finished" && entry.status._tag === "Started"
+                  ? Math.max(status.airedSeconds, entry.status.durationSeconds)
+                  : status.airedSeconds),
+          );
         entry.status = status;
         entry.phase =
           status._tag === "Accepted" ||
@@ -1375,6 +1583,12 @@ export const makeScheduler = (
           pendingWithdrawals.has(key) ||
           pendingAtDeferrals.has(key) ||
           pendingItemRemovals.has(key) ||
+          [...batches.values()].some((batch) => batch.targets.has(key)) ||
+          // A replacement dropped before it was built still links its own replacement to
+          // the item in the place.
+          [...items.values()].some(
+            (other) => other.replaces === key && other.phase !== "Terminal",
+          ) ||
           (item.clipId !== undefined && active.has(item.clipId))
         )
           continue;
@@ -1743,9 +1957,37 @@ export const makeScheduler = (
             );
             playingStartedMs.delete(event.clipId);
             break;
-          case "Failed":
+          case "Failed": {
+            // A clip lost with a replaced session before it aired is rebuilt from the plan.
+            if (
+              event.lost === true &&
+              (item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready")
+            ) {
+              const sessionId = event.sessionId ?? item.sessionId;
+              // Its session may still list the clip until it closes; it is not adopted again.
+              removedIds.add(event.clipId);
+              owned.delete(event.clipId);
+              playingStartedMs.delete(event.clipId);
+              delete item.clipId;
+              delete item.dispatchedAtMs;
+              delete item.acknowledgedAtSnapshotSerial;
+              item.sessionId = undefined;
+              const pending = pendingWithdrawals.get(item.key);
+              if (pending !== undefined) {
+                yield* emit(item, { _tag: "Dropped", reason: pending.reason });
+                yield* finishWithdrawal(item.key, Result.succeed("withdrawn"));
+              } else
+                yield* emit(
+                  item,
+                  sessionId === undefined
+                    ? { _tag: "Accepted" }
+                    : { _tag: "Accepted", carried: { sessionId } },
+                );
+              break;
+            }
             yield* emit(item, { _tag: "Failed", reason: { _tag: "Clip", message: event.reason } });
             break;
+          }
           default:
             break;
         }
@@ -1889,6 +2131,14 @@ export const makeScheduler = (
         yield* sendCommand({ _tag: "RemoveItem", key: item.key, clipId: item.clipId, reason });
       });
 
+    /** A withdrawal's answer for an item that has started or settled another way. */
+    const settledOutcome = (item: Entry): WithdrawOutcome =>
+      item.phase === "Started" || item.status._tag === "Ended" || item.status._tag === "Unobserved"
+        ? "already-started"
+        : item.status._tag === "Dropped"
+          ? "withdrawn"
+          : "not-found";
+
     const requestWithdrawal = (
       item: Entry,
       reason: DropReason,
@@ -1896,11 +2146,7 @@ export const makeScheduler = (
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (item.phase === "Started" || item.phase === "Terminal") {
-          if (reply !== undefined)
-            yield* Deferred.succeed(
-              reply,
-              item.phase === "Started" ? "already-started" : "not-found",
-            );
+          if (reply !== undefined) yield* Deferred.succeed(reply, settledOutcome(item));
           return;
         }
         const pending = pendingWithdrawals.get(item.key);
@@ -1948,7 +2194,9 @@ export const makeScheduler = (
           case "Build": {
             const item = items.get(action.key);
             if (item?.phase !== "Accepted") break;
-            const prepared = yield* Effect.result(keyedRequest(item.request, item.key));
+            const prepared = yield* Effect.result(
+              keyedRequest(item.request, item.key, action.continueFrom),
+            );
             if (Result.isFailure(prepared)) {
               yield* emit(item, {
                 _tag: "Failed",
@@ -1981,6 +2229,7 @@ export const makeScheduler = (
                       runwaySeconds(state, monotonicMillis(clock), playingStartedMs, owned, [
                         ...items.values(),
                       ]),
+                      action.durationSeconds,
                       action.targetSeconds,
                     ),
                   )
@@ -2065,21 +2314,22 @@ export const makeScheduler = (
               item.unknownSessionId = undefined;
               item.unknownCause = undefined;
               yield* replayEarlyClipEvents(clipId);
+              // Evidence that overtook the reply may already have carried the clip away
+              // with a lost session; the item then waits to be rebuilt, not Building.
+              const carried = item.clipId === undefined;
               const pending = pendingWithdrawals.get(item.key);
-              if (pending !== undefined) {
-                if (
-                  item.phase === "Started" ||
-                  item.status._tag === "Ended" ||
-                  item.status._tag === "Unobserved"
-                )
-                  yield* finishWithdrawal(item.key, Result.succeed("already-started"));
-                else if (item.phase === "Terminal")
-                  yield* finishWithdrawal(item.key, Result.succeed("not-found"));
+              if (carried) {
+                // The carry settled any withdrawal that was waiting.
+              } else if (pending !== undefined) {
+                if (item.phase === "Started" || item.phase === "Terminal")
+                  yield* finishWithdrawal(item.key, Result.succeed(settledOutcome(item)));
                 else yield* sendItemRemoval(item, pending.reason);
               } else if (item.phase === "Accepted" || item.phase === "Unknown")
                 yield* emit(item, { _tag: "Building" });
               yield* observed(yield* engine.state);
             } else if (result.failure.context.outcome === "unknown") {
+              // Its time to Ready spans the uncertainty, so it is never measured.
+              delete item.dispatchedAtMs;
               if (item.clipId === undefined) {
                 // A generic engine may re-route between the state read and dispatch.
                 // Only an owner-fenced enqueue can attribute its unknown result.
@@ -2275,6 +2525,8 @@ export const makeScheduler = (
         yield* publishState(state, sources.sessions);
         return;
       }
+      const nowMs = monotonicMillis(clock);
+      for (const item of items.values()) if (item.phase === "Started") fireCues(item, nowMs);
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
           uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
@@ -2298,16 +2550,7 @@ export const makeScheduler = (
         // A withdrawal still being retried when its item settles another way. Terminal
         // Unknown keeps its uncertain result from the retirement or terminal settlement.
         else if (item.phase === "Terminal" && item.status._tag !== "Unknown")
-          yield* finishWithdrawal(
-            key,
-            Result.succeed(
-              item.status._tag === "Dropped"
-                ? "withdrawn"
-                : item.status._tag === "Ended" || item.status._tag === "Unobserved"
-                  ? "already-started"
-                  : "not-found",
-            ),
-          );
+          yield* finishWithdrawal(key, Result.succeed(settledOutcome(item)));
         else if (item.clipId !== undefined) yield* sendItemRemoval(item, pending.reason);
       }
       for (const item of items.values())
@@ -2352,6 +2595,7 @@ export const makeScheduler = (
           estimates: estimatesFrom(buildSamples, lengthSamples),
           ...fillerView(),
           cutLanes,
+          fillLengths,
           blockedCut,
         });
       let decision = decide();
@@ -2450,6 +2694,9 @@ export const makeScheduler = (
               atMs: nowMs + captured.atWallMs - clock.currentTimeMillisUnsafe(),
             }),
         late: captured.late,
+        cues: captured.cues ?? [],
+        firedCues: new Set(),
+        ...(captured.continuity === undefined ? {} : { continuity: captured.continuity }),
         ...(captured.mode === "asap" ? { asap: true } : {}),
         ...(captured.mode === "manual" ? { held: true } : {}),
         ...(group === undefined ? {} : { group }),
@@ -2510,6 +2757,10 @@ export const makeScheduler = (
           readonly lane: string;
           readonly admission: number;
           readonly group?: NonNullable<Entry["group"]>;
+          /** The anchor's timing, which the insert keeps so it stays beside it. */
+          readonly atWallMs?: number;
+          readonly late: PlannedItem["late"];
+          readonly asap: boolean;
         } => {
       const live = (entry: Entry | undefined): entry is Entry =>
         entry !== undefined && entry.phase !== "Terminal" && entry.replacedBy === undefined;
@@ -2530,6 +2781,7 @@ export const makeScheduler = (
       }
       if (!live(anchor)) return "Nothing queued under the anchor key";
       if (anchor.phase === "Unknown") return "The anchor's admission is uncertain";
+      if (anchor.held === true) return "The anchor is held until it is released";
       if (insert.side === "before" && anchor.phase === "Started")
         return "The anchor already started";
       const neighbours = [...items.values()]
@@ -2571,9 +2823,14 @@ export const makeScheduler = (
           group = { key: anchor.group.key, index: between / 2 };
         }
       }
+      const timing = {
+        ...(anchor.atWallMs === undefined ? {} : { atWallMs: anchor.atWallMs }),
+        late: anchor.late,
+        asap: anchor.asap === true,
+      };
       return group === undefined
-        ? { lane: anchor.lane, admission }
-        : { lane: anchor.lane, admission, group };
+        ? { lane: anchor.lane, admission, ...timing }
+        : { lane: anchor.lane, admission, group, ...timing };
     };
 
     /** The items a withdrawal of `key` names: a group's parts, a part and those after it, or one item. */
@@ -2663,7 +2920,7 @@ export const makeScheduler = (
         projectedStartMs(
           {
             engine: state,
-            items: [...items.values()].filter((item) => !excluding.has(item.key)),
+            items: [...items.values()],
             owned,
             lanes,
             playingStartedMs,
@@ -2671,7 +2928,7 @@ export const makeScheduler = (
             batches: pendingBatches(),
             estimates: estimatesFrom(buildSamples, lengthSamples),
             ...fillerView(),
-            withdrawing: new Set(pendingWithdrawals.keys()),
+            withdrawing: new Set([...pendingWithdrawals.keys(), ...excluding]),
           },
           place,
         );
@@ -2738,6 +2995,8 @@ export const makeScheduler = (
                 admission: Infinity,
                 seconds: item.request.durationSeconds,
                 startByMs,
+                ...(item.mode === "asap" ? { asap: true } : {}),
+                ...(item.mode === "manual" ? { held: true } : {}),
               }) > startByMs
             )
               return refuse(WouldMissDeadline.of(item.key));
@@ -2821,8 +3080,11 @@ export const makeScheduler = (
                 notBeforeOffsetMs: insert.notBeforeOffsetMs,
                 startByOffsetMs: insert.startByOffsetMs,
                 firm: insert.firm,
-                atWallMs: undefined,
-                late: "nextBoundary",
+                atWallMs: placed.atWallMs,
+                late: placed.late,
+                ...(placed.asap ? { mode: "asap" as const } : {}),
+                cues: insert.cues,
+                ...(insert.continuity === undefined ? {} : { continuity: insert.continuity }),
               },
               nowMs,
               startByMs,
@@ -2847,7 +3109,12 @@ export const makeScheduler = (
           }
           case "Replace": {
             const { next } = edit;
-            const fingerprint = JSON.stringify({ replaces: edit.key, request: next.request });
+            const fingerprint = JSON.stringify({
+              replaces: edit.key,
+              request: next.request,
+              ...(next.cues.length === 0 ? {} : { cues: next.cues }),
+              ...(next.continuity === undefined ? {} : { continuity: next.continuity }),
+            });
             const known = repeated(next.key, fingerprint);
             if (Result.isFailure(known)) return refuse(known.failure);
             if (known.success !== undefined) {
@@ -2872,6 +3139,10 @@ export const makeScheduler = (
                 firm: old.firm,
                 atWallMs: old.atWallMs,
                 late: old.late,
+                ...(old.asap === true ? { mode: "asap" as const } : {}),
+                ...(old.held === true ? { mode: "manual" as const } : {}),
+                cues: next.cues,
+                ...(next.continuity === undefined ? {} : { continuity: next.continuity }),
               },
               nowMs,
               old.startByMs,
@@ -2887,6 +3158,12 @@ export const makeScheduler = (
             admitted(entry);
             old.replacedBy = entry.key;
             undo.push(() => delete old.replacedBy);
+            // A pending batch that waits for the replaced item waits for its replacement.
+            for (const batch of batches.values())
+              if (batch.waitFor.includes(old.key)) {
+                batch.waitFor.push(entry.key);
+                undo.push(() => batch.waitFor.pop());
+              }
             if (old.group !== undefined) {
               const parts = groups.get(old.group.key)?.parts;
               parts?.push(entry.key);
@@ -2924,7 +3201,7 @@ export const makeScheduler = (
       const settle: Effect.Effect<void>[] = [];
       const batch: Batch = {
         id: ++batchCount,
-        waitFor: staged.waitFor,
+        waitFor: [...staged.waitFor],
         targets: new Map(
           staged.replaced.map((key) => [key, { reason: "replaced", reply: undefined }] as const),
         ),
@@ -2940,8 +3217,16 @@ export const makeScheduler = (
         }
         const outcome = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
         settle.push(settleWithdrawals(replies, outcome, groups.has(result.key)));
-        return { _tag: "Withdrawal", outcome: Deferred.await(outcome) };
+        return {
+          _tag: "Withdrawal",
+          outcome: Deferred.await(outcome).pipe(Effect.raceFirst(closedCall)),
+        };
       });
+      // A pending batch whose new clip this one withdraws now also waits for this one's, so
+      // its own cover is not withdrawn before anything replaces it.
+      for (const other of batches.values())
+        if (other.waitFor.some((key) => batch.targets.has(key)))
+          other.waitFor.push(...batch.waitFor);
       batches.set(batch.id, batch);
       return {
         handle: {
@@ -3270,6 +3555,7 @@ export const makeScheduler = (
       failure: Deferred.await(stopped),
       state: SubscriptionRef.get(stateRef),
       asRun: Stream.fromPubSub(events),
+      cues: Stream.fromPubSub(cueEvents),
     };
   }).pipe(
     Effect.provideServiceEffect(

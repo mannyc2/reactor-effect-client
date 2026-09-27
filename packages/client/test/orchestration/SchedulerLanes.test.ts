@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Clock, Effect } from "effect";
+import { Clock, Effect, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { makeScheduler, ItemKey } from "../../src/orchestration/scheduler.js";
 import type { ItemHandle, LaneSpec, SchedulerOptions } from "../../src/orchestration/scheduler.js";
@@ -95,5 +95,63 @@ test("a Ready item in a cut lane cuts a playing clip of a lower lane", () =>
       const ended = yield* long.outcome;
       expect(ended._tag === "Ended" && ended.termination).toBe("stopped");
       expect(ended._tag === "Ended" && ended.airedSeconds).toBeLessThan(5);
+    }).pipe(Effect.provide(quick)),
+  ));
+
+// cb42f67: a second submission to a replace lane dropped the first one before it was built,
+// which let the first one's batch take effect and withdraw the lane's cover early.
+test("a replace lane keeps its cover until the newest submission is Ready", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(
+        options({ name: "top" }, { name: "status", conflict: "replace" }),
+      );
+      const statuses: { key: string; tag: string; at: number }[] = [];
+      yield* scheduler.asRun.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            statuses.push({ key: event.key, tag: event.status._tag, at: event.at });
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* advance(1_000);
+      // A long clip plays in the top lane while the status lane changes behind it. s1 is
+      // built by 8 s; then another top clip holds the build slot, so s2 waits unbuilt when
+      // s3 arrives and supersedes both.
+      yield* scheduler.submit(item("top", "top", 15));
+      yield* scheduler.submit(item("s1", "status"));
+      yield* advance(7_400);
+      yield* scheduler.submit(item("busy", "top"));
+      yield* advance(100);
+      yield* scheduler.submit(item("s2", "status"));
+      yield* advance(500);
+      yield* scheduler.submit(item("s3", "status"));
+      yield* advance(30_000);
+      const at = (key: string, tag: string) =>
+        statuses.find((entry) => entry.key === key && entry.tag === tag)?.at ?? Infinity;
+      expect(at("s1", "Dropped")).toBeGreaterThanOrEqual(at("s3", "Ready"));
+    }).pipe(Effect.provide(Simulation.layerSim({ fixedBuildTime: 3_500, buildRatio: 0 }))),
+  ));
+
+// cb42f67: a cut lane cut a clip of its own lane that a pending batch was withdrawing.
+test("a cut lane never cuts a clip of its own lane", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(
+        options({ name: "urgent", cut: true }, { name: "line" }),
+      );
+      yield* advance(1_000);
+      const u1 = yield* scheduler.submit(item("u1", "urgent", 15));
+      yield* advance(3_000);
+      yield* scheduler.edit([
+        { _tag: "Withdraw", key: ItemKey.make("u1") },
+        { _tag: "Submit", item: item("u2", "urgent") },
+        { _tag: "Submit", item: item("l1", "line") },
+        { _tag: "Submit", item: item("l2", "line") },
+      ]);
+      yield* advance(30_000);
+      const ended = yield* u1.outcome;
+      expect(ended._tag === "Ended" && ended.termination).toBe("finished");
     }).pipe(Effect.provide(quick)),
   ));

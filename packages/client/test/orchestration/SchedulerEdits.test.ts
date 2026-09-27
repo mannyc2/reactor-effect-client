@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Exit, Fiber, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { makeScheduler, ItemKey } from "../../src/orchestration/scheduler.js";
 import type {
@@ -157,5 +157,109 @@ test("a refused edit leaves the whole batch unapplied", () =>
       expect((yield* scheduler.state).lanes[0]?.keys).toEqual([key("a")]);
       // The refused batches admitted nothing, so the key is still free for another spec.
       yield* scheduler.submit({ ...item("n"), request: clip("another") });
+    }).pipe(Effect.provide(hosted)),
+  ));
+
+// 7b13431: once a batch's replacement started, the item it replaced went back to its place
+// and aired right after it.
+test("the item a batch replaces never airs once its replacement has started", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options);
+      yield* advance(1_000);
+      const a = yield* scheduler.submit(item("a"));
+      const b = yield* scheduler.submit(item("b"));
+      const c = yield* scheduler.submit(item("c"));
+      yield* advance(3_000);
+      // b2 is Ready before a ends; y1 to y3 keep the batch pending well after b2 starts.
+      const batch = yield* scheduler.edit([
+        { _tag: "Replace", key: key("b"), next: part("b2") },
+        { _tag: "Submit", item: item("y1") },
+        { _tag: "Submit", item: item("y2") },
+        { _tag: "Submit", item: item("y3") },
+      ]);
+      yield* advance(60_000);
+      const [b2, y1, y2, y3] = batch.results.map(added);
+      expect(yield* startOrder([a, b, c, b2!, y1!, y2!, y3!])).toEqual([
+        "a",
+        "b2",
+        "c",
+        "y1",
+        "y2",
+        "y3",
+      ]);
+      expect(yield* b.outcome).toEqual({ _tag: "Dropped", reason: "replaced" });
+    }).pipe(Effect.provide(hosted)),
+  ));
+
+// 7b13431: a batch's deadline check counted the Ready clips the same batch withdraws first.
+test("a batch's deadline check does not count what the batch withdraws", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler({
+        ...options,
+        lanes: [{ name: "ack" }, { name: "line" }],
+      });
+      yield* advance(1_000);
+      for (const name of ["a", "b", "c"]) yield* scheduler.submit(item(name));
+      // a plays from 1.5 s to 6.7 s; b and c are Ready behind it.
+      yield* advance(4_000);
+      yield* scheduler.edit([
+        { _tag: "Withdraw", key: key("b") },
+        { _tag: "Withdraw", key: key("c") },
+        {
+          _tag: "Submit",
+          item: { ...item("x"), lane: "ack", window: { startBy: "3 seconds", firm: true } },
+        },
+      ]);
+    }).pipe(Effect.provide(Simulation.layerSim({ fixedBuildTime: 500, buildRatio: 0 }))),
+  ));
+
+// 7b13431: a batch's withdrawal outcome was settled only by a fiber the closing scheduler
+// interrupted, so it never settled.
+test("a pending batch's withdrawal outcome settles when the scheduler closes", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const scheduler = yield* makeScheduler(options).pipe(Scope.provide(scope));
+      yield* advance(1_000);
+      yield* scheduler.submit(item("a"));
+      yield* scheduler.submit(item("b"));
+      yield* advance(3_000);
+      const batch = yield* scheduler.edit([
+        { _tag: "Withdraw", key: key("b") },
+        { _tag: "Submit", item: item("y") },
+      ]);
+      const withdrawal = batch.results[0];
+      if (withdrawal?._tag !== "Withdrawal") throw new Error("expected a withdrawal");
+      const outcome = yield* Effect.forkChild(Effect.exit(withdrawal.outcome));
+      yield* Scope.close(scope, Exit.void);
+      yield* advance(1_000);
+      expect(outcome.pollUnsafe()).toBeDefined();
+    }).pipe(Effect.provide(hosted)),
+  ));
+
+// 7b13431: a withdrawn clip that aired as cover and ended before its batch took effect
+// reported not-found.
+test("a batch's withdrawal of a clip that aired as cover reports already-started", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options);
+      yield* advance(1_000);
+      yield* scheduler.submit(item("a"));
+      yield* scheduler.submit(item("b"));
+      // a plays from 3 s to 8.2 s; nothing the batch adds is Ready then, so b airs as cover,
+      // and it ends at 13.3 s, before the batch takes effect at 14 s.
+      yield* advance(7_000);
+      const batch = yield* scheduler.edit([
+        { _tag: "Withdraw", key: key("b") },
+        { _tag: "Submit", item: item("y1") },
+        { _tag: "Submit", item: item("y2") },
+        { _tag: "Submit", item: item("y3") },
+      ]);
+      yield* advance(30_000);
+      const withdrawal = batch.results[0];
+      if (withdrawal?._tag !== "Withdrawal") throw new Error("expected a withdrawal");
+      expect(yield* withdrawal.outcome).toBe("already-started");
     }).pipe(Effect.provide(hosted)),
   ));

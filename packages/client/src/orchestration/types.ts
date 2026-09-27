@@ -134,6 +134,11 @@ export type EngineEvent =
       readonly clipId: ClipId;
       readonly reason: string;
       readonly sessionId?: string;
+      /**
+       * The clip was lost with its session, which renewal replaced, rather than failed by
+       * the provider. A clip that had not started never aired there.
+       */
+      readonly lost?: true;
     }
   | { readonly _tag: "Starved"; readonly at: number }
   /**
