@@ -95,7 +95,10 @@ test("continuous renewal exceeds 64 sources and preserves exact bounded cleanup 
       expect((yield* handle.sequences.get("first"))?.status).toBe("retired");
       expect((yield* handle.sequences.get("first"))?.owner).toBe("continuous-0");
       expect(Option.isNone(yield* handle.cleanup)).toBe(true);
+      yield* sources.at(-1)!.setPressure({ droppedVideo: 2n });
       const summary = yield* handle.close;
+      // Retiring the last owner folds its loss into the output's totals once.
+      expect(yield* handle.media.pressure).toMatchObject({ closed: true, droppedVideo: 2n });
       expect(summary.totalRetirements).toBe(BigInt(sources.length));
       expect(summary.retained).toHaveLength(2);
       expect(summary.omittedComplete.attachedDetached).toBe(BigInt(sources.length - 2));

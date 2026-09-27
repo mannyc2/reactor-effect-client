@@ -809,7 +809,7 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
           if (retention === undefined)
             finalReport = Object.freeze({ sessions: Object.freeze([...cleanups]) });
           else finalSummary = yield* retention.summary;
-          current = undefined;
+          // The closed owner stays current, so final loss totals remain readable.
           replacement = { _tag: "Absent" };
           return yield* Exit.asVoidAll(exits);
         }),
@@ -1379,10 +1379,15 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       return owner.pressure.pipe(
         Effect.flatMap((source) => {
           const queued = buffer.pressure();
-          const loss = SourceSlot.addLoss(
-            outputLoss,
-            SourceSlot.subtractLoss(SourceSlot.lossOf(Result.succeed(source)), ownerBaseline),
-          );
+          // A retired owner's loss is already in the output's totals, as the
+          // closed continuous owner's is once its retirement completes.
+          const loss =
+            outputOwner === owner.owner
+              ? SourceSlot.addLoss(
+                  outputLoss,
+                  SourceSlot.subtractLoss(SourceSlot.lossOf(Result.succeed(source)), ownerBaseline),
+                )
+              : outputLoss;
           if (loss.video === null || loss.audio === null || loss.readers === null)
             return Effect.fail(
               ReactorError.fromCode(
