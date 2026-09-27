@@ -1631,7 +1631,17 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
         const aEnded = yield* a.outcome;
         if (aEnded._tag !== "Ended")
           return yield* Reactor.ReactorError.fromCode("InvalidState", "A did not end");
-        yield* waitFor(() => evidence.prepared !== undefined);
+        // Waiting for A's recorded Ended, not only its handle, puts that record
+        // before the retiring close B's Ready unblocks, as the judgment requires.
+        yield* waitFor(
+          () =>
+            evidence.prepared !== undefined &&
+            evidence.items.some(
+              (item) =>
+                item.key === "qualification-A" &&
+                item.statuses.some((status) => status._tag === "Ended"),
+            ),
+        );
         const b = yield* submit("qualification-B");
         yield* waitFor(
           () =>

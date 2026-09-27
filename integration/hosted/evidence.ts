@@ -864,6 +864,49 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
     "exactly one matching planned switch with final-clip evidence is required",
     "planned switch",
   );
+  // Orders the harness flow guarantees, each checked once both times exist; a
+  // missing time fails its own requirement. The first source opens while the
+  // owner is built, before A is submitted. Prepared follows the replacement's
+  // allocation, and B is submitted only after Prepared and A's Ended are
+  // recorded. A switch closes the retiring source only once B is Ready on the
+  // replacement, and the SDK announces Switched after that close returns. A
+  // completed drain follows that announcement, and the scenario then records
+  // the switch before cleanup begins; a failure can start cleanup sooner. B's
+  // start is not ordered against the switch: the SDK resumes autoplay before
+  // the retiring close.
+  const ordered = (earlier: number | undefined, later: number | undefined) =>
+    earlier === undefined || later === undefined || earlier <= later;
+  const retiring = allocations[0],
+    replacement = allocations[1];
+  requireEvidence(
+    a?.statuses.every((status) => ordered(retiring?.allocatedMs, status.atMs)) !== false,
+    "A cannot be observed before its source was allocated",
+    "keyed playback order",
+  );
+  requireEvidence(
+    ordered(replacement?.allocatedMs, run.prepared?.atMs) &&
+      b?.statuses.every(
+        (status) =>
+          ordered(replacement?.allocatedMs, status.atMs) &&
+          ordered(run.prepared?.atMs, status.atMs),
+      ) !== false,
+    "Prepared must follow the replacement's allocation, and B must follow both",
+    "public renewal preparation",
+  );
+  requireEvidence(
+    (switched === undefined || ordered(endedA?.atMs, retiring?.closeRequestedMs)) &&
+      ordered(retiring?.closedMs, switched?.atMs) &&
+      ordered(run.prepared?.atMs, switched?.atMs) &&
+      (run.drain?.outcome !== "completed" || ordered(switched?.atMs, run.cleanup?.requestedMs)),
+    "the switch must follow A's end, Prepared and the retiring close, and precede cleanup",
+    "planned switch",
+  );
+  requireEvidence(
+    switched?.handoff?.grace._tag !== "Observed" ||
+      switched.handoff.grace.limitMs === run.configuration.graceMs,
+    "an observed handoff grace must report the configured limit",
+    "planned switch",
+  );
   requireEvidence(
     run.media.sources.every(
       (source) =>

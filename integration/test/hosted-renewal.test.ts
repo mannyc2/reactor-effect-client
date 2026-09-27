@@ -22,6 +22,7 @@ import {
   conclude,
   format,
   renewalCriteria,
+  renewalJudgments,
   confirmedOwnedCleanup,
   reservedUsd,
   type Draft,
@@ -395,6 +396,82 @@ test("a renewal summary claims no pass or confirmed cleanup its evidence does no
   const weakText = summarize([weak]);
   expect(weakText).toContain("**Source 1:** a; canonical owned termination UNCONFIRMED");
   expect(weakText).not.toContain("canonical source reports; complete");
+});
+
+test("renewal refuses event orders the harness flow cannot produce", () => {
+  const original = renewal(),
+    switched = original.switches[0]!,
+    [a, b] = original.items;
+  const impossible: readonly SchedulerRenewal[] = [
+    // Switched is announced only after the retiring source's close returned.
+    { ...original, switches: [{ ...switched, atMs: 0 }] },
+    // Cleanup begins only once the switch was recorded.
+    { ...original, switches: [{ ...switched, atMs: 16_003 }] },
+    // Prepared follows the replacement's allocation, and B follows Prepared.
+    {
+      ...original,
+      prepared: { ...original.prepared!, atMs: 9_000 },
+      items: [
+        a!,
+        {
+          ...b!,
+          statuses: [
+            { _tag: "Building", atMs: 9_100 },
+            { _tag: "Ready", atMs: 9_200, sessionId: "b" },
+            ...b!.statuses.slice(2),
+          ],
+        },
+      ],
+    },
+    // The first source opens while the owner is built, before A is submitted.
+    {
+      ...original,
+      allocations: original.allocations.map((slot) =>
+        slot.slot === 1 ? { ...slot, allocatedMs: 200 } : slot,
+      ),
+    },
+    // The SDK reports the grace it was configured with.
+    {
+      ...original,
+      switches: [
+        {
+          ...switched,
+          handoff: {
+            replacementSessionId: "b",
+            decision: "grace-elapsed",
+            finalClip: {
+              _tag: "Observed",
+              clipId: "clip-a",
+              expectedVideoFrames: 2,
+              receivedVideoFrames: 1,
+              videoStatus: "incomplete",
+            },
+            grace: { _tag: "Observed", origin: "Ended", elapsedMs: 0, limitMs: 0 },
+          },
+        },
+      ],
+    },
+  ];
+  const nominal = draft(original);
+  conclude(nominal, undefined);
+  expect(nominal.verdict).toBe("pass");
+  const verdicts = impossible.map((evidence) => {
+    // Each order is valid to the codec; only the cross-field judgment can refuse it.
+    const run = draft(Schema.decodeUnknownSync(SchedulerRenewal)(evidence));
+    conclude(run, undefined);
+    return run.verdict;
+  });
+  expect(verdicts).toEqual(impossible.map(() => "fail"));
+  // A failure can start cleanup before the drain completes and the switch is recorded.
+  const { completedMs: _completed, ...requested } = original.drain!;
+  const failed = renewalJudgments(
+    draft({
+      ...original,
+      drain: { ...requested, outcome: "pending" },
+      switches: [{ ...switched, atMs: 16_003 }],
+    }),
+  );
+  expect(failed.find((criterion) => criterion.name === "planned switch")?.passed).toBe(true);
 });
 
 test("handoff codec rejects impossible count and grace claims", () => {
