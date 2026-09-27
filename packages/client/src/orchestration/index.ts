@@ -62,6 +62,7 @@ export type {
   GroupSpec,
   GroupHandle,
   ReplacementSpec,
+  InsertSpec,
   StartMode,
   FillContext,
   LaneSpec,

@@ -116,6 +116,11 @@ const amended: Effect.Effect<
   Orchestration.ItemHandle,
   Orchestration.KeyMismatch | Orchestration.EngineError
 > = schedulerHandle.replace(Orchestration.ItemKey.make("beat"), amendment);
+declare const acknowledgement: Orchestration.InsertSpec;
+const inserted: Effect.Effect<
+  Orchestration.ItemHandle,
+  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+> = schedulerHandle.insert(acknowledgement);
 const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
@@ -163,6 +168,7 @@ void [
   drained,
   line,
   amended,
+  inserted,
   terminalFailure,
   stoppedRenewal,
   historicalSwitched,

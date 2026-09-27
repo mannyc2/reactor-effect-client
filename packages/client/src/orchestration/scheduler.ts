@@ -181,6 +181,19 @@ export interface ReplacementSpec {
   readonly request: ClipRequest;
 }
 
+/**
+ * A clip that airs immediately before or after an anchor: an item, a group part or a
+ * group key. Give exactly one of `before` and `after`.
+ */
+export interface InsertSpec {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+  readonly before?: ItemKey;
+  readonly after?: ItemKey;
+  /** Relative to admission, measured on the monotonic clock. */
+  readonly window?: ItemSpec["window"];
+}
+
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
 
 export interface DrainOptions {
@@ -329,6 +342,11 @@ type Message =
       readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | EngineError>;
     }
   | {
+      readonly _tag: "Insert";
+      readonly insert: CapturedInsert;
+      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+    }
+  | {
       readonly _tag: "Withdraw";
       readonly key: ItemKey;
       readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError>;
@@ -463,6 +481,42 @@ const captureClip = (input: unknown) =>
     return request;
   });
 
+/** A window's offsets from admission, read as caller data. */
+const captureWindow = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<
+    {
+      readonly notBeforeOffsetMs: number | undefined;
+      readonly startByOffsetMs: number | undefined;
+      readonly firm: boolean;
+    },
+    PolicyFailure
+  > {
+    const window =
+      input === undefined
+        ? undefined
+        : yield* Effect.fromResult(
+            ownedData(input, ["notBefore", "startBy", "firm"], "Scheduled window"),
+          );
+    const notBeforeOffsetMs =
+      window?.notBefore === undefined
+        ? undefined
+        : yield* requestDuration(window.notBefore, "notBefore", true);
+    const startByOffsetMs =
+      window?.startBy === undefined
+        ? undefined
+        : yield* requestDuration(window.startBy, "startBy", true);
+    if (
+      window !== undefined &&
+      (typeof window.firm !== "boolean" ||
+        (notBeforeOffsetMs !== undefined &&
+          startByOffsetMs !== undefined &&
+          startByOffsetMs >= 0 &&
+          notBeforeOffsetMs > startByOffsetMs))
+    )
+      return yield* invalid("Scheduled window is inconsistent");
+    return { notBeforeOffsetMs, startByOffsetMs, firm: window?.firm === true };
+  });
+
 const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedItem, PolicyFailure> {
     if (input === null || typeof input !== "object" || Array.isArray(input))
@@ -485,30 +539,9 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     if (typeof lane !== "string" || !lanes.has(lane))
       return yield* invalid("Scheduled item lane is not configured");
     const request = yield* captureClip(descriptors.request?.value);
-    const rawWindow: unknown = descriptors.window?.value;
-    const window =
-      rawWindow === undefined
-        ? undefined
-        : yield* Effect.fromResult(
-            ownedData(rawWindow, ["notBefore", "startBy", "firm"], "Scheduled window"),
-          );
-    const notBeforeOffsetMs =
-      window?.notBefore === undefined
-        ? undefined
-        : yield* requestDuration(window.notBefore, "notBefore", true);
-    const startByOffsetMs =
-      window?.startBy === undefined
-        ? undefined
-        : yield* requestDuration(window.startBy, "startBy", true);
-    if (
-      window !== undefined &&
-      (typeof window.firm !== "boolean" ||
-        (notBeforeOffsetMs !== undefined &&
-          startByOffsetMs !== undefined &&
-          startByOffsetMs >= 0 &&
-          notBeforeOffsetMs > startByOffsetMs))
-    )
-      return yield* invalid("Scheduled window is inconsistent");
+    const { notBeforeOffsetMs, startByOffsetMs, firm } = yield* captureWindow(
+      descriptors.window?.value,
+    );
     const rawStart: unknown = descriptors.start?.value;
     const start =
       rawStart === undefined
@@ -541,7 +574,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       request,
       notBeforeOffsetMs,
       startByOffsetMs,
-      firm: window?.firm === true,
+      firm,
       atWallMs,
       late,
       fingerprint: JSON.stringify({
@@ -549,7 +582,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
         request,
         notBeforeOffsetMs,
         startByOffsetMs,
-        firm: window?.firm === true,
+        firm,
         atWallMs,
         late,
       }),
@@ -627,6 +660,44 @@ const captureReplacement = (input: ReplacementSpec) =>
     return { key, request: yield* captureClip(next.request) };
   });
 
+interface CapturedInsert {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+  readonly side: "before" | "after";
+  readonly anchor: ItemKey;
+  readonly notBeforeOffsetMs: number | undefined;
+  readonly startByOffsetMs: number | undefined;
+  readonly firm: boolean;
+  readonly fingerprint: string;
+}
+
+const captureInsert = (input: InsertSpec) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedInsert, PolicyFailure> {
+    const spec = yield* Effect.fromResult(
+      ownedData(input, ["key", "request", "before", "after", "window"], "Insert"),
+    );
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(spec.key).pipe(
+      Effect.mapError(() => invalid("Insert key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Insert key is reserved");
+    if ((spec.before === undefined) === (spec.after === undefined))
+      return yield* invalid("Insert needs exactly one of before or after");
+    const side = spec.before === undefined ? "after" : "before";
+    const anchor = yield* Schema.decodeUnknownEffect(ItemKey)(spec.before ?? spec.after).pipe(
+      Effect.mapError(() => invalid("Insert anchor must be a nonempty key")),
+    );
+    const request = yield* captureClip(spec.request);
+    const window = yield* captureWindow(spec.window);
+    return {
+      key,
+      request,
+      side,
+      anchor,
+      ...window,
+      fingerprint: JSON.stringify({ [side]: anchor, request, ...window }),
+    };
+  });
+
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
@@ -642,7 +713,18 @@ export interface SchedulerShape {
     key: ItemKey,
     next: ReplacementSpec,
   ) => Effect.Effect<ItemHandle, KeyMismatch | EngineError>;
-  /** A group key withdraws every unstarted part; a part key, that part and every part after it. */
+  /**
+   * Places a clip immediately before or after an anchor, in the anchor's lane. Between two
+   * parts of a group it joins the group, but its own failure or withdrawal never breaks the
+   * group. An insert that is not Ready in time for its place airs at the next boundary.
+   */
+  readonly insert: (
+    spec: InsertSpec,
+  ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  /**
+   * A group key withdraws every unstarted part; a part key, that part and every part after it.
+   * An inserted part withdraws only itself.
+   */
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
   /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
@@ -829,6 +911,7 @@ export const makeScheduler = (
         const replaced = entry.replaces === undefined ? undefined : items.get(entry.replaces);
         if (
           entry.group !== undefined &&
+          entry.inserted !== true &&
           (status._tag === "Failed" || status._tag === "Dropped") &&
           !(status._tag === "Dropped" && status.reason === "replaced") &&
           (replaced === undefined || replaced.phase === "Terminal")
@@ -2026,8 +2109,9 @@ export const makeScheduler = (
       group: Entry["group"],
       place?: {
         readonly admission: number;
-        readonly replaces: ItemKey;
-        readonly generation: number;
+        readonly replaces?: ItemKey;
+        readonly generation?: number;
+        readonly inserted?: boolean;
         readonly notBeforeMs: number | undefined;
       },
     ): Entry => {
@@ -2049,7 +2133,10 @@ export const makeScheduler = (
           : place.notBeforeMs === undefined
             ? {}
             : { notBeforeMs: place.notBeforeMs }),
-        ...(place === undefined ? {} : { replaces: place.replaces, generation: place.generation }),
+        ...(place?.replaces === undefined
+          ? {}
+          : { replaces: place.replaces, generation: place.generation ?? 1 }),
+        ...(place?.inserted === true ? { inserted: true } : {}),
         ...(startByMs === undefined ? {} : { startByMs }),
         firm: captured.firm,
         ...(captured.atWallMs === undefined
@@ -2109,6 +2196,85 @@ export const makeScheduler = (
         );
       });
 
+    /**
+     * The place an insert takes beside its anchor, or why it cannot: the anchor's lane, an
+     * admission between the anchor and its neighbour in that lane, and a group place when
+     * the insert falls between two parts of a group.
+     */
+    const placeInsert = (
+      insert: CapturedInsert,
+    ):
+      | string
+      | {
+          readonly lane: string;
+          readonly admission: number;
+          readonly group?: NonNullable<Entry["group"]>;
+        } => {
+      const live = (entry: Entry | undefined): entry is Entry =>
+        entry !== undefined && entry.phase !== "Terminal" && entry.replacedBy === undefined;
+      const named = groups.get(insert.anchor);
+      let anchor: Entry | undefined;
+      if (named === undefined) anchor = items.get(insert.anchor);
+      else {
+        const parts = named.parts
+          .map((key) => items.get(key))
+          .filter(live)
+          .sort((a, b) => a.group!.index - b.group!.index);
+        if (
+          insert.side === "before" &&
+          (parts.some((part) => part.phase === "Started") || parts[0]?.group?.index !== 0)
+        )
+          return "The anchor group already started";
+        anchor = insert.side === "before" ? parts[0] : parts.at(-1);
+      }
+      if (!live(anchor)) return "Nothing queued under the anchor key";
+      if (anchor.phase === "Unknown") return "The anchor's admission is uncertain";
+      if (insert.side === "before" && anchor.phase === "Started")
+        return "The anchor already started";
+      const neighbours = [...items.values()]
+        .filter((entry) => entry.lane === anchor.lane && entry.phase !== "Terminal")
+        .map((entry) => entry.admission);
+      const bound =
+        insert.side === "before"
+          ? Math.max(...neighbours.filter((value) => value < anchor.admission))
+          : Math.min(...neighbours.filter((value) => value > anchor.admission));
+      const admission = Number.isFinite(bound)
+        ? (anchor.admission + bound) / 2
+        : anchor.admission + (insert.side === "before" ? -0.5 : 0.5);
+      if (admission === anchor.admission || admission === bound)
+        return "No room is left to insert at that place";
+      let group: Entry["group"];
+      if (anchor.group !== undefined) {
+        const indexes = (groups.get(anchor.group.key)?.parts ?? [])
+          .map((key) => items.get(key)?.group?.index)
+          .filter((value): value is number => value !== undefined);
+        const index = anchor.group.index;
+        const neighbour =
+          insert.side === "before"
+            ? Math.max(...indexes.filter((value) => value < index))
+            : Math.min(...indexes.filter((value) => value > index));
+        // Before the first part or after the last one, the insert stays outside the group.
+        // Once parts have aired and settled, the place before the first remaining part is
+        // still inside the group.
+        const between =
+          insert.side === "before"
+            ? index > 0
+              ? (Number.isFinite(neighbour) ? neighbour : index - 1) + index
+              : undefined
+            : Number.isFinite(neighbour)
+              ? index + neighbour
+              : undefined;
+        if (between !== undefined) {
+          if (between / 2 === index || between / 2 === neighbour)
+            return "No room is left to insert at that place";
+          group = { key: anchor.group.key, index: between / 2 };
+        }
+      }
+      return group === undefined
+        ? { lane: anchor.lane, admission }
+        : { lane: anchor.lane, admission, group };
+    };
+
     const actor = Effect.gen(function* () {
       for (;;) {
         const message = yield* takeQueue(inbox);
@@ -2144,7 +2310,7 @@ export const makeScheduler = (
               owned,
               lanes,
               playingStartedMs,
-              message.item.lane,
+              { lane: message.item.lane, admission: Infinity },
               nowMs,
             );
             if (startByMs !== undefined && projectedMs > startByMs) {
@@ -2196,7 +2362,7 @@ export const makeScheduler = (
                 owned,
                 lanes,
                 playingStartedMs,
-                first.lane,
+                { lane: first.lane, admission: Infinity },
                 nowMs,
               ) > startByMs
             ) {
@@ -2273,6 +2439,7 @@ export const makeScheduler = (
                 admission: old.admission,
                 replaces: old.key,
                 generation: (old.generation ?? 0) + 1,
+                inserted: old.inserted === true,
                 notBeforeMs: old.notBeforeMs,
               },
             );
@@ -2283,12 +2450,81 @@ export const makeScheduler = (
             yield* Deferred.succeed(message.reply, replacement.handle);
             break;
           }
+          case "Insert": {
+            if (!accepting) {
+              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
+              break;
+            }
+            const { insert } = message;
+            const existing = items.get(insert.key) ?? history.get(insert.key);
+            if (existing !== undefined || groups.has(insert.key)) {
+              if (existing?.fingerprint === insert.fingerprint)
+                yield* Deferred.succeed(message.reply, existing.handle);
+              else yield* Deferred.fail(message.reply, KeyMismatch.of(insert.key));
+              break;
+            }
+            const placed = placeInsert(insert);
+            if (typeof placed === "string") {
+              yield* Deferred.fail(message.reply, invalid(placed));
+              break;
+            }
+            const nowMs = monotonicMillis(clock);
+            const state = yield* engine.state;
+            if (ended !== undefined) continue;
+            const startByMs =
+              insert.startByOffsetMs === undefined ? undefined : nowMs + insert.startByOffsetMs;
+            if (
+              startByMs !== undefined &&
+              projectedStartMs(
+                state,
+                [...items.values()],
+                owned,
+                lanes,
+                playingStartedMs,
+                placed,
+                nowMs,
+              ) > startByMs
+            ) {
+              yield* Deferred.fail(message.reply, WouldMissDeadline.of(insert.key));
+              break;
+            }
+            // As for a submission, no yield from the terminal check through admission.
+            const inserted = accept(
+              {
+                key: insert.key,
+                lane: placed.lane,
+                request: insert.request,
+                fingerprint: insert.fingerprint,
+                notBeforeOffsetMs: insert.notBeforeOffsetMs,
+                startByOffsetMs: insert.startByOffsetMs,
+                firm: insert.firm,
+                atWallMs: undefined,
+                late: "nextBoundary",
+              },
+              nowMs,
+              startByMs,
+              placed.group,
+              {
+                admission: placed.admission,
+                inserted: true,
+                notBeforeMs:
+                  insert.notBeforeOffsetMs === undefined
+                    ? undefined
+                    : nowMs + insert.notBeforeOffsetMs,
+              },
+            );
+            if (placed.group !== undefined) groups.get(placed.group.key)?.parts.push(inserted.key);
+            yield* observed(state);
+            yield* publishState(state);
+            yield* Deferred.succeed(message.reply, inserted.handle);
+            break;
+          }
           case "Withdraw": {
             const item = items.get(message.key);
             const named = groups.get(message.key);
             const group =
               named ?? (item?.group === undefined ? undefined : groups.get(item.group.key));
-            if (group === undefined) {
+            if (group === undefined || (named === undefined && item?.inserted === true)) {
               if (item === undefined) yield* Deferred.succeed(message.reply, "not-found");
               else yield* requestWithdrawal(item, "withdrawn", message.reply);
               break;
@@ -2476,6 +2712,21 @@ export const makeScheduler = (
       }).pipe(
         Effect.withSpan("Scheduler.replace", { attributes: { key } }, { captureStackTrace: false }),
       );
+    const insert: SchedulerShape["insert"] = (
+      input,
+    ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const captured = yield* captureInsert(input);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", captured.key);
+        const reply = yield* Deferred.make<
+          ItemHandle,
+          KeyMismatch | WouldMissDeadline | EngineError
+        >();
+        if (!(yield* Queue.offer(inbox, { _tag: "Insert", insert: captured, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      }).pipe(Effect.withSpan("Scheduler.insert", {}, { captureStackTrace: false }));
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -2505,6 +2756,7 @@ export const makeScheduler = (
       submit,
       submitGroup,
       replace,
+      insert,
       withdraw,
       drain,
       failure: Deferred.await(stopped),
