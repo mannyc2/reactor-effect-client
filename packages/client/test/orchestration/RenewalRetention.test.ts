@@ -527,6 +527,41 @@ test("a selected preparation never rebinds to a reused physical ID after history
     }),
   ));
 
+// Review of 4443f80: a selection fenced to a still-live source was refused as retired.
+test("a selected preparation refuses a changed route while its source is still live", () =>
+  runClock(
+    Effect.gen(function* () {
+      const sources: SourceFixture[] = [];
+      let preworks = 0;
+      let prepared = false;
+      const handle = yield* Renewal.makeContinuous({
+        lead: 500,
+        onRenewal: (event) =>
+          Effect.sync(() => {
+            if (event._tag === "Prepared") prepared = true;
+          }),
+        open: Effect.gen(function* () {
+          const fixture = yield* sourceFixture(`selected-${sources.length}`, {
+            prework: () =>
+              ++preworks === 1
+                ? Effect.fail(failure("not-submitted", "upload failed"))
+                : Effect.void,
+          });
+          sources.push(fixture);
+          return { source: fixture.source, lifetime: 1000 };
+        }),
+      });
+      const pending = yield* handle.engine.prepare(request());
+      expect((yield* Effect.result(pending.submit))._tag).toBe("Failure");
+      // The prepared replacement is now preferred; the selected source is live.
+      yield* until(() => prepared, TestClock.adjust(100));
+      expect((yield* handle.engine.state).sessions).toHaveLength(2);
+      const retried = yield* Effect.result(pending.submit);
+      expect(retried._tag === "Failure" && refusal(retried.failure)).toBe("RouteChanged");
+      expect(sources.every((source) => source.sends.length === 0)).toBe(true);
+    }),
+  ));
+
 test("simultaneously live duplicate physical IDs refuse and close the attempted replacement", () =>
   runClock(
     Effect.gen(function* () {

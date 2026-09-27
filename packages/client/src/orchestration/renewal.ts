@@ -926,11 +926,20 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
                   "RouteChanged",
                   "The selected source changed before dispatch",
                 );
-              if (continuous && selectedOwner !== undefined && selectedOwner !== decision.owner)
-                return yield* PolicyFailure.refuse(
-                  "SessionRetired",
-                  "Selected source incarnation was retired",
-                );
+              if (continuous && selectedOwner !== undefined && selectedOwner !== decision.owner) {
+                // The selection stays fenced to its incarnation. While that
+                // source is live, only the route moved; it has not retired.
+                const selected = slots.get(selectedOwner);
+                return yield* selected !== undefined && !selected.closed
+                  ? PolicyFailure.refuse(
+                      "RouteChanged",
+                      "The selected source changed before dispatch",
+                    )
+                  : PolicyFailure.refuse(
+                      "SessionRetired",
+                      "Selected source incarnation was retired",
+                    );
+              }
               selectedOwner = decision.owner;
               const target = slots.get(decision.owner);
               if (target === undefined)
