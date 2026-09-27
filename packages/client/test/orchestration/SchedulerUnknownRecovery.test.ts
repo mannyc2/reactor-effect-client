@@ -959,6 +959,7 @@ test(
           pauseAndStop: Effect.void,
           remove: () =>
             Effect.die(new Error("Uncertain filler cannot be removed without a clip ID")),
+          cut: () => Effect.die(new Error("Nothing plays, so nothing is cut")),
           move: () => Effect.void,
           setCanvas: () => Effect.void,
           state: Effect.sync(() => state),

@@ -105,7 +105,10 @@ declare const schedulerHandle: Orchestration.SchedulerShape;
 declare const lineParts: Orchestration.GroupSpec["parts"];
 const line: Effect.Effect<
   Orchestration.GroupHandle,
-  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+  | Orchestration.KeyMismatch
+  | Orchestration.WouldMissDeadline
+  | Orchestration.LaneBusy
+  | Orchestration.EngineError
 > = schedulerHandle.submitGroup({
   key: Orchestration.ItemKey.make("line"),
   lane: "line",
@@ -127,8 +130,19 @@ const edits: ReadonlyArray<Orchestration.Edit> = [
 ];
 const edited: Effect.Effect<
   Orchestration.EditHandle,
-  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+  | Orchestration.KeyMismatch
+  | Orchestration.WouldMissDeadline
+  | Orchestration.LaneBusy
+  | Orchestration.EngineError
 > = schedulerHandle.edit(edits);
+const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
+  { name: "urgent", cut: true },
+  { name: "status", conflict: "replace" },
+  { name: "ack", conflict: "skip" },
+];
+const cut: Effect.Effect<void, Orchestration.EngineError> = engine.cut(
+  Orchestration.ClipId.make("playing"),
+);
 const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
@@ -178,6 +192,8 @@ void [
   amended,
   inserted,
   edited,
+  lanes,
+  cut,
   terminalFailure,
   stoppedRenewal,
   historicalSwitched,

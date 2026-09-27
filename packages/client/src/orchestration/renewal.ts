@@ -1305,6 +1305,19 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         commands.withPermit(
           guard("pop", owner(id, "pop").pipe(Effect.flatMap(({ slot }) => slot.source.remove(id)))),
         ),
+      cut: (id) =>
+        commands.withPermit(
+          guard(
+            "stop",
+            owner(id, "stop").pipe(
+              Effect.flatMap(({ slot, state }) =>
+                Option.getOrUndefined(state.playing)?.clipId === id
+                  ? slot.source.stop
+                  : PolicyFailure.refuse("NotFound", "The clip is no longer playing", "stop"),
+              ),
+            ),
+          ),
+        ),
       move: (id, position, queue) =>
         commands.withPermit(
           guard(

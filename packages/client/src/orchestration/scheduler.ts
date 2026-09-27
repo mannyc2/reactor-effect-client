@@ -40,6 +40,20 @@ export type ItemKey = typeof ItemKey.Type;
 export interface LaneSpec {
   /** Lanes are listed from highest to lowest priority. */
   readonly name: string;
+  /**
+   * What a new submission does to the lane's items still waiting: queue behind them (the
+   * default); replace them, make-before-break, so they stay only as cover until it is Ready
+   * and then settle `Dropped` as `replaced`; or skip, refusing it with `LaneBusy` while the
+   * lane has an item waiting or playing. Inserts and replacements place themselves and are
+   * not affected.
+   */
+  readonly conflict?: "queue" | "replace" | "skip";
+  /**
+   * A Ready item of this lane cuts a playing clip of a lower lane, or filler, instead of
+   * waiting for its end, unless that clip ends within a second anyway. The provider stops
+   * the clip, which cannot resume, and starts the next Ready one.
+   */
+  readonly cut?: boolean;
 }
 
 export type StartMode =
@@ -258,6 +272,15 @@ export class KeyMismatch extends Schema.TaggedError<KeyMismatch>()("KeyMismatch"
   }
 }
 
+export class LaneBusy extends Schema.TaggedError<LaneBusy>()("LaneBusy", {
+  key: ItemKey,
+  lane: Schema.String,
+}) {
+  static of(key: ItemKey, lane: string): LaneBusy {
+    return new LaneBusy({ key, lane });
+  }
+}
+
 export class WouldMissDeadline extends Schema.TaggedError<WouldMissDeadline>()(
   "WouldMissDeadline",
   { key: ItemKey },
@@ -346,7 +369,8 @@ type Command =
       readonly position: number;
       readonly signature: string;
     }
-  | { readonly _tag: "PauseAutoplay" };
+  | { readonly _tag: "PauseAutoplay" }
+  | { readonly _tag: "Cut"; readonly clipId: ClipId };
 
 type CommandValue = ClipId | RemoveOutcome | void;
 
@@ -357,8 +381,14 @@ const maxEarlyClipIds = 4096;
 interface Batch {
   readonly id: number;
   readonly waitFor: ReadonlyArray<ItemKey>;
-  /** Items the batch withdraws, each with the reply its withdrawal settles. */
-  readonly targets: Map<ItemKey, Deferred.Deferred<WithdrawOutcome, EngineError>>;
+  /** Items the batch withdraws, each with its reason and any reply its withdrawal settles. */
+  readonly targets: Map<
+    ItemKey,
+    {
+      readonly reason: DropReason;
+      readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError> | undefined;
+    }
+  >;
   readonly committed: Deferred.Deferred<void, EngineError>;
 }
 
@@ -373,7 +403,10 @@ type Message =
       readonly edits: ReadonlyArray<CapturedEdit>;
       /** A batch holds what it adds until it commits; a single call does not. */
       readonly batched: boolean;
-      readonly reply: Deferred.Deferred<EditHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+      readonly reply: Deferred.Deferred<
+        EditHandle,
+        KeyMismatch | WouldMissDeadline | LaneBusy | EngineError
+      >;
     }
   | {
       readonly _tag: "Withdraw";
@@ -803,10 +836,10 @@ const captureEdits = (input: ReadonlyArray<Edit>, lanes: ReadonlySet<string>) =>
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
-  ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
   readonly submitGroup: (
     group: GroupSpec,
-  ) => Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  ) => Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
   /**
    * Builds `next` to take the queued item's place, lane and group position. Once `next` is
    * Ready the item is withdrawn as `replaced`; if the item starts first, `next` is withdrawn.
@@ -833,7 +866,7 @@ export interface SchedulerShape {
    */
   readonly edit: (
     edits: ReadonlyArray<Edit>,
-  ) => Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  ) => Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
   /**
    * A group key withdraws every unstarted part; a part key, that part and every part after it.
    * An inserted part withdraws only itself.
@@ -871,8 +904,21 @@ export const makeScheduler = (
         new Set(options.lanes.map((lane) => lane.name)).size !== options.lanes.length
       )
         throw ReactorError.fromCode("InvalidInput", "Scheduler lanes must be unique and nonempty");
+      if (
+        options.lanes.some(
+          (lane) =>
+            (lane.conflict !== undefined &&
+              !["queue", "replace", "skip"].includes(lane.conflict)) ||
+            (lane.cut !== undefined && typeof lane.cut !== "boolean"),
+        )
+      )
+        throw ReactorError.fromCode("InvalidInput", "A lane's conflict or cut is invalid");
       return options.lanes.map((lane) => lane.name);
     }, "makeScheduler");
+    const conflicts = new Map(options.lanes.map((lane) => [lane.name, lane.conflict ?? "queue"]));
+    const cutLanes: ReadonlySet<string> = new Set(
+      options.lanes.filter((lane) => lane.cut === true).map((lane) => lane.name),
+    );
     const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
       yield* parsedInput(() => {
         const floorSeconds =
@@ -1010,6 +1056,7 @@ export const makeScheduler = (
     let drained = false;
     let observationReady = false;
     let blockedMove: string | undefined;
+    let blockedCut: ClipId | undefined;
     // Recent measured builds: build seconds per requested second, and actual over requested length.
     const buildSamples: number[] = [];
     const lengthSamples: number[] = [];
@@ -1133,7 +1180,8 @@ export const makeScheduler = (
           }
           pendingWithdrawals.clear();
           for (const batch of batches.values()) {
-            for (const reply of batch.targets.values()) yield* Deferred.done(reply, closed);
+            for (const target of batch.targets.values())
+              if (target.reply !== undefined) yield* Deferred.done(target.reply, closed);
             yield* Deferred.done(batch.committed, closed);
           }
           batches.clear();
@@ -1716,6 +1764,8 @@ export const makeScheduler = (
           return engine.move(command.clipId, command.position, "playout");
         case "PauseAutoplay":
           return engine.setAutoplay(false);
+        case "Cut":
+          return engine.cut(command.clipId);
       }
     };
 
@@ -1849,6 +1899,9 @@ export const makeScheduler = (
           case "DeferAt":
             if (canRetryRemoval(action.clipId))
               yield* sendCommand({ _tag: "DeferAt", key: action.key, clipId: action.clipId });
+            break;
+          case "Cut":
+            yield* sendCommand({ _tag: "Cut", clipId: action.clipId });
             break;
           case "Order": {
             const signature =
@@ -2139,6 +2192,9 @@ export const makeScheduler = (
           case "Order":
             blockedMove = Result.isFailure(result) ? command.signature : undefined;
             break;
+          case "Cut":
+            if (Result.isFailure(result)) blockedCut = command.clipId;
+            break;
           case "PauseAutoplay":
             if (Result.isFailure(result)) {
               drainFailure = result.failure;
@@ -2153,7 +2209,7 @@ export const makeScheduler = (
       [...batches.values()].map((batch) => ({
         id: batch.id,
         waitFor: batch.waitFor,
-        targets: [...batch.targets.keys()],
+        targets: [...batch.targets].map(([key, target]) => ({ key, reason: target.reason })),
       }));
 
     /** The reply a batch keeps for its withdrawal of `key`, taken once. */
@@ -2161,10 +2217,10 @@ export const makeScheduler = (
       key: ItemKey,
     ): Deferred.Deferred<WithdrawOutcome, EngineError> | undefined => {
       for (const batch of batches.values()) {
-        const reply = batch.targets.get(key);
-        if (reply === undefined) continue;
+        const target = batch.targets.get(key);
+        if (target === undefined) continue;
         batch.targets.delete(key);
-        return reply;
+        return target.reply;
       }
       return undefined;
     };
@@ -2175,10 +2231,10 @@ export const makeScheduler = (
         const batch = batches.get(id);
         if (batch === undefined) return;
         batches.delete(id);
-        for (const [key, reply] of batch.targets) {
+        for (const [key, target] of batch.targets) {
           const item = items.get(key);
-          if (item === undefined) yield* Deferred.succeed(reply, "not-found");
-          else yield* requestWithdrawal(item, "withdrawn", reply);
+          if (item !== undefined) yield* requestWithdrawal(item, target.reason, target.reply);
+          else if (target.reply !== undefined) yield* Deferred.succeed(target.reply, "not-found");
         }
         yield* Deferred.succeed(batch.committed, undefined);
       });
@@ -2269,6 +2325,8 @@ export const makeScheduler = (
           batches: pendingBatches(),
           estimates: estimatesFrom(buildSamples, lengthSamples),
           ...fillerView(),
+          cutLanes,
+          blockedCut,
         });
       let decision = decide();
       // A commit changes what is withdrawn and what takes over, so the plan is read again.
@@ -2517,6 +2575,8 @@ export const makeScheduler = (
       readonly added: ReadonlyArray<Entry>;
       /** Items the batch waits for: those it added and any it repeats that another batch holds. */
       readonly waitFor: ReadonlyArray<ItemKey>;
+      /** Waiting items of replace lanes that what it added supersedes. */
+      readonly replaced: ReadonlyArray<ItemKey>;
     }
 
     /**
@@ -2528,12 +2588,13 @@ export const makeScheduler = (
       batched: boolean,
       state: EngineState,
       nowMs: number,
-    ): Result.Result<Staged, KeyMismatch | WouldMissDeadline | PolicyFailure> => {
+    ): Result.Result<Staged, KeyMismatch | WouldMissDeadline | LaneBusy | PolicyFailure> => {
       const undo: Array<() => void> = [];
       const added: Entry[] = [];
       const waitFor: ItemKey[] = [];
+      const replaced: ItemKey[] = [];
       const results: StagedResult[] = [];
-      const refuse = (error: KeyMismatch | WouldMissDeadline | PolicyFailure) => {
+      const refuse = (error: KeyMismatch | WouldMissDeadline | LaneBusy | PolicyFailure) => {
         for (const step of undo.reverse()) step();
         return Result.fail(error);
       };
@@ -2586,6 +2647,32 @@ export const makeScheduler = (
           },
           place,
         );
+      /**
+       * A new submission's lane policy: a skip lane refuses it while the lane has an item
+       * waiting or playing; a replace lane supersedes the items still waiting there.
+       */
+      const conflict = (key: ItemKey, lane: string): LaneBusy | undefined => {
+        const others = [...items.values()].filter(
+          (entry) =>
+            entry.lane === lane &&
+            entry.phase !== "Terminal" &&
+            !excluding.has(entry.key) &&
+            !added.includes(entry),
+        );
+        switch (conflicts.get(lane)) {
+          case "skip":
+            return others.length > 0 ? LaneBusy.of(key, lane) : undefined;
+          case "replace":
+            for (const entry of others)
+              if (entry.phase !== "Started" && !pendingWithdrawals.has(entry.key)) {
+                replaced.push(entry.key);
+                excluding.add(entry.key);
+              }
+            return undefined;
+          default:
+            return undefined;
+        }
+      };
       const admitted = (entry: Entry) => {
         added.push(entry);
         waitFor.push(entry.key);
@@ -2612,6 +2699,8 @@ export const makeScheduler = (
               results.push({ _tag: "Added", handle: known.success });
               break;
             }
+            const busy = conflict(item.key, item.lane);
+            if (busy !== undefined) return refuse(busy);
             const startByMs =
               item.startByOffsetMs === undefined ? undefined : nowMs + item.startByOffsetMs;
             if (
@@ -2643,6 +2732,8 @@ export const makeScheduler = (
             );
             if (taken !== undefined) return refuse(KeyMismatch.of(taken));
             const [first, ...rest] = group.parts;
+            const busy = conflict(group.key, first.lane);
+            if (busy !== undefined) return refuse(busy);
             const startByMs =
               first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
             if (
@@ -2781,7 +2872,7 @@ export const makeScheduler = (
             break;
         }
       }
-      return Result.succeed({ results, added, waitFor: batched ? waitFor : [] });
+      return Result.succeed({ results, added, waitFor, replaced });
     };
 
     /**
@@ -2792,8 +2883,9 @@ export const makeScheduler = (
       staged: Staged,
       batched: boolean,
     ): { readonly handle: EditHandle; readonly settle: ReadonlyArray<Effect.Effect<void>> } => {
-      // A single call adds one item or group and never withdraws.
-      if (!batched)
+      // A single call adds one item or group and never withdraws; only a replace lane gives
+      // it something to supersede.
+      if (!batched && staged.replaced.length === 0)
         return {
           handle: {
             results: staged.results.filter((result) => result._tag !== "Withdrawal"),
@@ -2805,7 +2897,9 @@ export const makeScheduler = (
       const batch: Batch = {
         id: ++batchCount,
         waitFor: staged.waitFor,
-        targets: new Map(),
+        targets: new Map(
+          staged.replaced.map((key) => [key, { reason: "replaced", reply: undefined }] as const),
+        ),
         committed: Deferred.makeUnsafe<void, EngineError>(),
       };
       const results = staged.results.map((result): EditResult => {
@@ -2814,14 +2908,20 @@ export const makeScheduler = (
         for (const target of withdrawalTargets(result.key)) {
           const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
           replies.push(reply);
-          batch.targets.set(target.key, reply);
+          batch.targets.set(target.key, { reason: "withdrawn", reply });
         }
         const outcome = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
         settle.push(settleWithdrawals(replies, outcome, groups.has(result.key)));
         return { _tag: "Withdrawal", outcome: Deferred.await(outcome) };
       });
       batches.set(batch.id, batch);
-      return { handle: { results, committed: Deferred.await(batch.committed) }, settle };
+      return {
+        handle: {
+          results: batched ? results : results.filter((result) => result._tag !== "Withdrawal"),
+          committed: batched ? Deferred.await(batch.committed) : Effect.void,
+        },
+        settle,
+      };
     };
 
     const actor = Effect.gen(function* () {
@@ -3008,11 +3108,11 @@ export const makeScheduler = (
     const send = (
       edits: ReadonlyArray<CapturedEdit>,
       batched: boolean,
-    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<
           EditHandle,
-          KeyMismatch | WouldMissDeadline | EngineError
+          KeyMismatch | WouldMissDeadline | LaneBusy | EngineError
         >();
         if (!(yield* Queue.offer(inbox, { _tag: "Edit", edits, batched, reply })))
           return yield* closedCall;
@@ -3022,7 +3122,7 @@ export const makeScheduler = (
     const only = (handle: EditHandle): EditResult | undefined => handle.results[0];
     const submit: SchedulerShape["submit"] = (
       input,
-    ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+    ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const item = yield* captureItem(input, laneSet);
@@ -3033,7 +3133,7 @@ export const makeScheduler = (
       }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
     const submitGroup: SchedulerShape["submitGroup"] = (
       input,
-    ): Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+    ): Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const group = yield* captureGroup(input, laneSet);
@@ -3051,8 +3151,9 @@ export const makeScheduler = (
         const next = yield* captureReplacement(input);
         const result = only(
           yield* send([{ _tag: "Replace", key, next }], false).pipe(
-            // A replacement keeps the replaced item's place, so no deadline is checked for it.
-            Effect.catchTag("WouldMissDeadline", (error) => Effect.die(error)),
+            // A replacement keeps the replaced item's place and window, so neither a deadline
+            // nor its lane's policy is checked for it.
+            Effect.catchTag(["WouldMissDeadline", "LaneBusy"], (error) => Effect.die(error)),
           ),
         );
         if (result?._tag !== "Added") return yield* Effect.die("A replacement returned no item");
@@ -3067,13 +3168,18 @@ export const makeScheduler = (
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const captured = yield* captureInsert(input);
         yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", captured.key);
-        const result = only(yield* send([{ _tag: "Insert", insert: captured }], false));
+        const result = only(
+          yield* send([{ _tag: "Insert", insert: captured }], false).pipe(
+            // An insert places itself, so its lane's policy does not apply.
+            Effect.catchTag("LaneBusy", (error) => Effect.die(error)),
+          ),
+        );
         if (result?._tag !== "Added") return yield* Effect.die("An insert returned no item");
         return result.handle;
       }).pipe(Effect.withSpan("Scheduler.insert", {}, { captureStackTrace: false }));
     const edit: SchedulerShape["edit"] = (
       input,
-    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
         const edits = yield* captureEdits(input, laneSet);
