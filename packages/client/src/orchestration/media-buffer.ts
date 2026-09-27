@@ -119,11 +119,11 @@ export const make = (limits: Limits = defaultLimits) =>
         queuedBytes: queuedVideoBytes + queuedSamples * 2,
       }),
       forwarded: () => ({ queuedVideoFrames: queuedFrames, queuedAudioSamples: queuedSamples }),
-      fail: (cause: ReactorFailure): void => {
+      failCause: (cause: Cause.Cause<ReactorFailure>): void => {
         if (ended) return;
         ended = true;
-        Queue.failCauseUnsafe(video, Cause.fail(cause));
-        Queue.failCauseUnsafe(audio, Cause.fail(cause));
+        Queue.failCauseUnsafe(video, cause);
+        Queue.failCauseUnsafe(audio, cause);
       },
       end: (): void => {
         if (ended) return;

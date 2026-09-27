@@ -25,7 +25,7 @@ export interface ObservationOptions {
 export class Observations<A> {
   private readonly subscribers = new Set<Subscriber<A>>();
   private closed = false;
-  private failure: ReactorError | undefined;
+  private failure: Cause.Cause<ReactorError> | undefined;
   overflowCount = 0n;
 
   constructor(private readonly maxSubscribers = 64) {
@@ -60,7 +60,7 @@ export class Observations<A> {
           const queue = yield* Queue.dropping<Entry<A>, ReactorError | Cause.Done>(bounds.capacity);
           const subscriber: Subscriber<A> = { queue, maxBytes: bounds.maxBytes, bufferedBytes: 0 };
           if (observations.failure !== undefined)
-            Queue.failCauseUnsafe(queue, Cause.fail(observations.failure));
+            Queue.failCauseUnsafe(queue, observations.failure);
           else if (observations.closed) Queue.endUnsafe(queue);
           else observations.subscribers.add(subscriber);
           return subscriber;
@@ -158,11 +158,15 @@ export class Observations<A> {
 
   /** Source failure belongs to each reader, including a later subscription. */
   fail(error: ReactorError): void {
+    this.failCause(Cause.fail(error));
+  }
+
+  /** Owned worker defects must reach observers without becoming recoverable errors. */
+  failCause(cause: Cause.Cause<ReactorError>): void {
     if (this.closed) return;
-    this.failure = error;
+    this.failure = cause;
     this.closed = true;
-    for (const subscriber of this.subscribers)
-      Queue.failCauseUnsafe(subscriber.queue, Cause.fail(error));
+    for (const subscriber of this.subscribers) Queue.failCauseUnsafe(subscriber.queue, cause);
     this.subscribers.clear();
   }
 }

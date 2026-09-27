@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect, Fiber, Result, Stream } from "effect";
+import { Cause, Effect, Fiber, Result, Stream } from "effect";
 import { ReactorError } from "../../src/errors.js";
 import type { ReactorFailure } from "../../src/errors.js";
 import * as MediaBuffer from "../../src/orchestration/media-buffer.js";
@@ -101,7 +101,7 @@ test("queue admission refuses overflow without changing accounting or accepting 
         expect(buffer.pressure()).toEqual(before);
       }
       const failure = ReactorError.fromCode("Overflow", "fixture queue is full");
-      buffer.fail(failure);
+      buffer.failCause(Cause.fail(failure));
       buffer.end();
       yield* buffer.offerVideo(videoFrame());
       yield* buffer.offerAudio(audioFrame(1));
