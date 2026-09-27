@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Scheduler uncertainty now has a service deadline: `unknownRecoveryTimeout` defaults to 60 seconds and accepts a positive finite duration up to 10 minutes. It starts at the original unknown observation while a preferred-source reservation or drain is blocked, including with spare capacity and no waiting demand. A usable replacement or keyed proof can restore service; an overdue drain retains the original uncertainty age. Expiry fails scheduler service with `Timeout`, settles waiters and closes admission without releasing uncertain remote capacity, replaying a key or asserting cleanup completed; an enqueue still in flight settles as terminal `Unknown`. At most 4,096 uncertain filler identities are retained, and the scheduler fails with `Overflow` before dispatching another. The option is captured as caller data: `null` or an accessor fails as invalid input without running. Applications that relied on longer waits must select a larger finite budget or revise their policy.
+
+### Fixed
+
+- Scheduler terminal publication now follows retained item/control settlement and admission fencing, so immediate owner closure after `scheduler.failure`, or from a handle wait or `asRun` subscriber, cannot strand those waits or replace evidence they already recorded. As-run evidence is published in the step that records it, so a terminal claim cannot put its settlement ahead of a recorded status or leave one unpublished. Typed termination preserves terminal `Unknown` and earlier decisive evidence; defects and unexpected interruption keep their original Cause. This ordering does not establish remote cleanup completion or wait for resumed callers.
+
 ## [0.5.0] - 2026-09-26
 
 The keyed scheduler replaces the lineup, and renewal hands off on the retiring session's final clip after a bounded grace. It breaks the 0.4 API, so a `^0.4.0` range does not include it. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host has one fix, and it is released with the client as always.
