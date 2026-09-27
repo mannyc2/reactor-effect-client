@@ -81,6 +81,7 @@ import type { Pressure, StatsSample, SchedulerRenewal } from "./evidence.js";
 import {
   Writer,
   cleanupInstructions,
+  recordedSessions,
   conclude,
   format,
   lockLedger,
@@ -2279,8 +2280,23 @@ const execute = async (
     }
     console.log(`hosted-qualification-fail ${check} ${file}`);
     console.log(`  - ${reason}`);
+    // Sessions may exist although the run could not be concluded; the operator
+    // still needs their identities and the dashboard instructions.
+    try {
+      console.log(`  - ${sessionsLine(run.evidence)}`);
+      const instructions = cleanupInstructions(run.evidence);
+      if (instructions !== undefined) console.error(instructions);
+    } catch {
+      // The reason above still fails the run.
+    }
     return 1;
   }
+};
+
+/** Without a complete durable record, these are what billing is reconciled against. */
+const sessionsLine = (evidence: Run["evidence"]): string => {
+  const sessions = recordedSessions(evidence);
+  return `sessions this run recorded: ${sessions.length === 0 ? "none" : sessions.join(", ")}`;
 };
 
 /** A thrown value as bounded text, even one that cannot print itself. */
@@ -2337,6 +2353,7 @@ const runClaimed = async (
     run.evidence.reasons = [
       ...run.evidence.reasons,
       `the final evidence was not saved: ${describe(cause)}`,
+      sessionsLine(run.evidence),
     ];
   }
   console.log(`hosted-qualification-${run.evidence.verdict} ${check} ${file}`);

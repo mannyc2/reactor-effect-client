@@ -505,6 +505,12 @@ test("public renewal continuous still closes its source and exits 1 when evidenc
   expect(status, output).toBe(1);
   expect(output).toContain("hosted-qualification-fail scheduler-renewal");
   expect(output).toContain("the final evidence was not saved");
+  // The incomplete file cannot name every session, so the run prints them.
+  const allocated = evidence.schedulerRenewal?.allocations.flatMap((slot) =>
+    slot.sessionId === undefined ? [] : [slot.sessionId],
+  );
+  expect(allocated).toHaveLength(1);
+  expect(output).toContain(`sessions this run recorded: ${allocated?.join(", ")}`);
   // The owner still closed the allocated source: no dashboard instruction names it.
   expect(output).not.toContain("was not confirmed ended");
   // The durable file keeps the admission's reservation and the last checkpoint before cleanup.

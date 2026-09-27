@@ -1198,6 +1198,17 @@ const instant = (ms: number): string => {
  * or could not tell whether one was allocated: the Reactor dashboard is then
  * the only remaining record.
  */
+/** Every session identity the run holds, for reconciling billing when its file is incomplete. */
+export const recordedSessions = (evidence: Evidence): readonly string[] => [
+  ...(evidence.session === undefined ? [] : [evidence.session.id]),
+  ...(evidence.scheduler?.replacement?.session === undefined
+    ? []
+    : [evidence.scheduler.replacement.session.id]),
+  ...(evidence.schedulerRenewal?.allocations ?? []).flatMap((slot) =>
+    slot.sessionId === undefined ? [] : [slot.sessionId],
+  ),
+];
+
 export const cleanupInstructions = (evidence: Evidence): string | undefined => {
   const origin = Date.parse(evidence.startedAt);
   const lines: string[] = [];
