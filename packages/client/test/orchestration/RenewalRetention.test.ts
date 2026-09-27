@@ -591,6 +591,47 @@ for (const constructor of ["legacy", "continuous"] as const)
       }),
     ));
 
+// Construction returns a handle only if its owner still admits sources after
+// the first source's activation; an owner closed meanwhile fails construction
+// as closed and retires that source rather than returning a closed handle.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} construction closed during its final activation fails and retires its source`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const enabling = yield* gate;
+        const enabled = yield* gate;
+        let fixture: SourceFixture | undefined;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            fixture = yield* sourceFixture(`activation-${constructor}`, {
+              autoplay: (on) =>
+                on
+                  ? enabling.release.pipe(Effect.andThen(Effect.uninterruptible(enabled.wait)))
+                  : Effect.void,
+            });
+            return { source: fixture.source, lifetime: "Infinity" };
+          }),
+        };
+        const constructing = yield* (
+          constructor === "legacy"
+            ? Renewal.make(options).pipe(Scope.provide(owner), Effect.asVoid)
+            : Renewal.makeContinuous(options).pipe(Scope.provide(owner), Effect.asVoid)
+        ).pipe(Effect.exit, Effect.forkScoped);
+        yield* enabling.wait;
+        const closing = yield* Scope.close(owner, Exit.void).pipe(
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* enabled.release;
+        const failure = constructionFailure(yield* Fiber.join(constructing));
+        expect(
+          (ReactorError.is(failure) || AcquisitionFailure.is(failure)) && failure.reason._tag,
+        ).toBe("Closed");
+        yield* Fiber.join(closing);
+        expect(fixture?.status()).toMatchObject({ closed: true, finalized: true });
+      }),
+    ));
+
 test("unknown submissions exhaust their reserved history even after confirmed termination", () =>
   runClock(
     Effect.gen(function* () {

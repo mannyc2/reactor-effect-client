@@ -879,6 +879,13 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     yield* Effect.addFinalizer(() => close);
     current = yield* acquire.pipe(
       Effect.tap((slot) => slot.source.setAutoplay(true)),
+      // Fenced as publishReady is: construction returns no handle whose owner
+      // stopped while its first source was activated, and close retires it.
+      Effect.tap(() =>
+        Effect.gen(function* () {
+          if (stopping()) return yield* admissionClosed();
+        }),
+      ),
       Effect.catch((cause) =>
         Effect.exit(close).pipe(
           Effect.flatMap((closed) => {
