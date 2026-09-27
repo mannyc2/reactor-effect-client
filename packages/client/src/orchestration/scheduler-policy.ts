@@ -29,6 +29,8 @@ export interface PlannedItem {
   readonly replaces?: ItemKey;
   /** How many replacements this item is in its place: the tiebreak behind the one it replaces. */
   readonly generation?: number;
+  /** Inserted beside an anchor: it keeps its place in a group, but its fate never breaks one. */
+  readonly inserted?: boolean;
 }
 
 export type OwnedClip =
@@ -118,6 +120,65 @@ export const runwaySeconds = (
   );
 };
 
+/** Lexicographic place in a session's Ready order; lower airs first. */
+export type Rank = readonly [number, number, number, number];
+
+const compareRank = (left: Rank, right: Rank): number =>
+  left[0] - right[0] || left[1] - right[1] || left[2] - right[2] || left[3] - right[3];
+
+/** Where a place sits among a group's parts, and whether a part must wait for the one before it. */
+const ordering = (
+  items: ReadonlyArray<PlannedItem>,
+  lanes: ReadonlyArray<string>,
+  nowMs: number,
+) => {
+  // A group's parts in order. A part already pruned has settled, so it counts as admitted.
+  const groups = new Map<ItemKey, PlannedItem[]>();
+  for (const item of items)
+    if (item.group !== undefined)
+      groups.set(item.group.key, [...(groups.get(item.group.key) ?? []), item]);
+  const previousAdmitted = (item: PlannedItem): boolean => {
+    if (item.group === undefined) return true;
+    const index = item.group.index;
+    const parts = groups.get(item.group.key) ?? [];
+    const previous = Math.max(
+      ...parts.map((part) => part.group?.index ?? 0).filter((value) => value < index),
+    );
+    // The previous place may hold a part and its replacement; either one unadmitted holds this part.
+    return !parts.some((part) => part.group?.index === previous && part.phase === "Accepted");
+  };
+  // Once a group airs, its remaining parts stay ahead of the rest of their lane. A group
+  // whose first part was pruned has settled it, and a settled first part that did not
+  // air withdrew the others.
+  const begun = (item: Pick<PlannedItem, "group"> | undefined): boolean => {
+    if (item?.group === undefined) return false;
+    const parts = groups.get(item.group.key) ?? [];
+    return (
+      parts.some((part) => part.startedAtMonoMs !== undefined) ||
+      Math.min(...parts.map((part) => part.group?.index ?? 0)) > 0
+    );
+  };
+  const rankItem = (
+    item: Pick<PlannedItem, "lane" | "admission" | "group" | "atMs" | "generation"> | undefined,
+  ): Rank => {
+    if (item?.atMs !== undefined && nowMs < item.atMs)
+      return [lanes.length + 1, 1, item.admission, item.generation ?? 0];
+    return [
+      Math.max(0, lanes.indexOf(item?.lane ?? "")),
+      begun(item) ? 0 : 1,
+      item?.admission ?? 0,
+      item?.generation ?? 0,
+    ];
+  };
+  const rankClip = (clipId: ClipId, owned: ReadonlyMap<ClipId, OwnedClip>): Rank => {
+    const clip = owned.get(clipId);
+    if (clip === undefined) return [-1, 0, 0, 0];
+    if (clip._tag === "Filler") return [lanes.length, 1, clip.index, 0];
+    return rankItem(items.find((value) => value.key === clip.key));
+  };
+  return { previousAdmitted, begun, rankItem, rankClip };
+};
+
 /**
  * An accepted drain still owes air to every line not yet Ready, and to a Ready line held
  * for a future At anchor, which runway must reach. Filler is the only material that can
@@ -135,8 +196,9 @@ const fillerHeldFor = (snapshot: PolicySnapshot): boolean =>
   );
 
 /**
- * When an item submitted now to `lane` could start at the earliest: after the rest of the
- * playing clip and every Ready clip on the preferred source that it cannot pass.
+ * When an item could start at the earliest if it took `place`: after the rest of the playing
+ * clip and every Ready clip on the preferred source that ranks ahead of that place. A new
+ * submission's place is the end of its lane.
  */
 export const projectedStartMs = (
   engine: EngineState,
@@ -144,7 +206,7 @@ export const projectedStartMs = (
   owned: ReadonlyMap<ClipId, OwnedClip>,
   lanes: ReadonlyArray<string>,
   playingStartedMs: ReadonlyMap<ClipId, number>,
-  lane: string,
+  place: Pick<PlannedItem, "lane" | "admission" | "group">,
   nowMs: number,
 ): number => {
   const playing = Option.getOrUndefined(engine.playing);
@@ -154,18 +216,16 @@ export const projectedStartMs = (
     playingRecord === undefined || started === undefined
       ? 0
       : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
-  const laneRank = lanes.indexOf(lane);
+  const { rankItem, rankClip } = ordering(items, lanes, nowMs);
+  const rank = rankItem(place);
   const preferred = preferredSession(engine);
-  const aheadMs = engine.ready.reduce((total, record) => {
-    if (record.sessionId !== preferred) return total;
-    const owner = owned.get(record.clipId);
-    if (owner?._tag === "Filler") return total;
-    if (owner?._tag === "Item") {
-      const prior = items.find((item) => item.key === owner.key);
-      if (prior !== undefined && lanes.indexOf(prior.lane) > laneRank) return total;
-    }
-    return total + record.durationSeconds * 1000;
-  }, 0);
+  const aheadMs = engine.ready.reduce(
+    (total, record) =>
+      record.sessionId === preferred && compareRank(rankClip(record.clipId, owned), rank) < 0
+        ? total + record.durationSeconds * 1000
+        : total,
+    0,
+  );
   return nowMs + restMs + aheadMs;
 };
 
@@ -175,30 +235,7 @@ export const projectedStartMs = (
  */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
-  // A group's parts in order. A part already pruned has settled, so it counts as admitted.
-  const groups = new Map<ItemKey, PlannedItem[]>();
-  for (const item of items)
-    if (item.group !== undefined)
-      groups.set(item.group.key, [...(groups.get(item.group.key) ?? []), item]);
-  const previousAdmitted = (item: PlannedItem): boolean => {
-    if (item.group === undefined || item.group.index === 0) return true;
-    const index = item.group.index;
-    // The previous place may hold a part and its replacement; either one unadmitted holds this part.
-    return !(groups.get(item.group.key) ?? []).some(
-      (part) => part.group?.index === index - 1 && part.phase === "Accepted",
-    );
-  };
-  // Once a group airs, its remaining parts stay ahead of the rest of their lane. A group
-  // whose first part was pruned has settled it, and a settled first part that did not
-  // air withdrew the others.
-  const begun = (item: PlannedItem | undefined): boolean => {
-    if (item?.group === undefined) return false;
-    const parts = groups.get(item.group.key) ?? [];
-    return (
-      parts.some((part) => part.startedAtMonoMs !== undefined) ||
-      Math.min(...parts.map((part) => part.group?.index ?? 0)) > 0
-    );
-  };
+  const { previousAdmitted, rankClip } = ordering(items, snapshot.lanes, nowMs);
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
@@ -301,25 +338,9 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       continue;
     }
     if (actual.length === 0) continue;
-    const rank = (clipId: ClipId): readonly [number, number, number, number] => {
-      const clip = owned.get(clipId);
-      if (clip === undefined) return [-1, 0, 0, 0];
-      if (clip._tag === "Filler") return [snapshot.lanes.length, 1, clip.index, 0];
-      const item = items.find((value) => value.key === clip.key);
-      if (item?.atMs !== undefined && nowMs < item.atMs)
-        return [snapshot.lanes.length + 1, 1, item.admission, item.generation ?? 0];
-      return [
-        Math.max(0, snapshot.lanes.indexOf(item?.lane ?? "")),
-        begun(item) ? 0 : 1,
-        item?.admission ?? 0,
-        item?.generation ?? 0,
-      ];
-    };
-    const desired = [...actual].sort((a, b) => {
-      const left = rank(a.clipId);
-      const right = rank(b.clipId);
-      return left[0] - right[0] || left[1] - right[1] || left[2] - right[2] || left[3] - right[3];
-    });
+    const desired = [...actual].sort((a, b) =>
+      compareRank(rankClip(a.clipId, owned), rankClip(b.clipId, owned)),
+    );
     for (let index = 0; index < actual.length; index++) {
       if (actual[index]?.clipId === desired[index]?.clipId) continue;
       const wanted = desired[index]!;
