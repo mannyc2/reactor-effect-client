@@ -37,10 +37,11 @@ interface FrameSource {
 
 /** Tags the original objects at the public source boundary, including queued retiring frames. */
 export class FrameAttribution {
-  private readonly frames = new WeakMap<VideoFrame | AudioFrame, FrameSource>();
+  private readonly frames = new WeakMap<VideoFrame | AudioFrame, FrameSource | "ambiguous">();
 
   get(frame: VideoFrame | AudioFrame): FrameSource | undefined {
-    return this.frames.get(frame);
+    const source = this.frames.get(frame);
+    return source === "ambiguous" ? undefined : source;
   }
 
   tag<F extends VideoFrame | AudioFrame, E, R>(
@@ -50,7 +51,18 @@ export class FrameAttribution {
     return stream.pipe(
       Stream.tap((frame) =>
         Effect.sync(() => {
-          this.frames.set(frame, source);
+          // An object a second source re-emits has no single source; relabelling
+          // it would credit one source with another's frame, so it stays untagged.
+          const previous = this.frames.get(frame);
+          this.frames.set(
+            frame,
+            previous === undefined ||
+              (previous !== "ambiguous" &&
+                previous.sessionId === source.sessionId &&
+                previous.generation === source.generation)
+              ? source
+              : "ambiguous",
+          );
         }),
       ),
     );

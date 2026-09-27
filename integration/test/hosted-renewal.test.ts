@@ -96,6 +96,11 @@ test("attribution preserves objects and resets recorder accounting at source and
       expect(attribution.get(b2)).toEqual({ sessionId: "b", generation: 2n });
       expect(attribution.get(frame(200n))).toBeUndefined();
       expect(recorded[1]).toMatchObject({ _tag: "Lost", count: 2n });
+      // An object a second source re-emits has no single source, so it counts as untagged.
+      yield* attribution
+        .tag(Stream.make(a), { sessionId: "b", generation: 1n })
+        .pipe(Stream.runDrain);
+      expect(attribution.get(a)).toBeUndefined();
     }),
   ));
 
