@@ -94,3 +94,30 @@ test("a cue due after its clip was cut never fires", () =>
       expect(cues).toEqual([]);
     }).pipe(Effect.provide(quick)),
   ));
+
+// 04654ec: a clip that finished reported slightly less airtime than its length, so a cue
+// at its very end never fired.
+test("a cue at the end of a clip that finishes fires", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options);
+      const cues: CueEvent[] = [];
+      yield* scheduler.cues.pipe(
+        Stream.runForEach((cue) =>
+          Effect.sync(() => {
+            cues.push(cue);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* advance(1_000);
+      yield* scheduler.submit({
+        key: ItemKey.make("line"),
+        lane: "line",
+        request: clip("line"),
+        cues: [{ name: "last word", at: { from: "end", offset: 0 } }],
+      });
+      yield* advance(10_000);
+      expect(cues.map((cue) => cue.name)).toEqual(["last word"]);
+    }).pipe(Effect.provide(quick)),
+  ));

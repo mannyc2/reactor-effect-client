@@ -109,3 +109,19 @@ test("a clip that continues waits for the clip before it to be built, even with 
       expect(continues.get("b")).toBe(clips.get("a"));
     }),
   ));
+
+// 71d593c: a replacement continued from the clip it replaces, which never airs.
+test("a replacement continues from the clip before its place, not the one it replaces", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { engine, clips, continues } = yield* recording(500);
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      yield* advance(1_000);
+      yield* scheduler.submit({ key: ItemKey.make("a"), lane: "line", request: clip("a") });
+      yield* scheduler.submit({ key: ItemKey.make("b"), lane: "line", request: clip("b") });
+      yield* advance(2_000);
+      yield* scheduler.replace(ItemKey.make("b"), part("b2"));
+      yield* advance(2_000);
+      expect(continues.get("b2")).toBe(clips.get("a"));
+    }),
+  ));
