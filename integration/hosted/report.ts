@@ -170,6 +170,53 @@ const section = (evidence: Evidence): string => {
       "Takeover",
       `attached ${seconds(takeover.attachMs)} after the kill; clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; metadata ${takeover.metadataPreserved === true ? "preserved" : "not preserved"}; ${takeover.enqueuesAfterAttach ?? "?"} enqueue(s) after attach; first fresh frame ${takeover.firstFreshFrameMs === undefined ? "none" : `+${seconds(takeover.firstFreshFrameMs - takeover.killedMs - (takeover.attachMs ?? 0))} after attach`}`,
     );
+  const scheduler = evidence.scheduler;
+  if (scheduler !== undefined) {
+    const ready = scheduler.builds.flatMap((build) =>
+      build.readyMs === undefined ? [] : [build.readyMs],
+    );
+    // One build slot and a queue that never empties: each clip builds while the one before it waits.
+    const between = ready.slice(1).map((at, index) => at - ready[index]!);
+    add(
+      "Builds",
+      `${ready.length} of ${scheduler.builds.length} Ready, ${[...new Set(scheduler.builds.flatMap((build) => (build.readySeconds === undefined ? [] : [build.readySeconds.toFixed(3)])))].join(", ") || "?"} s each; ${seconds(median(between))} median between consecutive Ready clips`,
+    );
+    const zero = scheduler.positionZero;
+    if (zero !== undefined)
+      add(
+        "Position zero",
+        zero.generationOrder[0] === zero.buildingClipId &&
+          zero.generationOrder[1] === zero.requestedClipId
+          ? "queued behind the running build"
+          : "not queued behind the running build",
+      );
+    const popped = scheduler.poppedBuild;
+    if (popped !== undefined)
+      add(
+        "Build popped in flight",
+        `${popped.wasGeneration ? "was" : "was NOT"} the generation head; ${popped.generatedAfterPop || popped.startedAfterPop ? "generated or started afterwards" : "never generated or started"} in the ${seconds(popped.observedUntilMs - popped.poppedMs)} after`,
+      );
+    for (const [index, boundary] of scheduler.boundaries.entries()) {
+      const finished = boundary.ending.finishedMs;
+      const command = boundary.command;
+      const edit =
+        boundary.edit === "none"
+          ? "no edit"
+          : command === undefined
+            ? `${boundary.edit} not staged`
+            : `${boundary.edit} aimed ${seconds(boundary.aimMs)} before the end, reply ${finished === undefined ? "?" : seconds(finished - command.replyMs)} before clip_finished${command.refused ? ", refused" : `, next clip ${boundary.next?.clipId === boundary.expectedClipId ? "as intended" : "NOT as intended"}`}`;
+      const pause = boundary.pause;
+      const seam =
+        pause === undefined || finished === undefined || boundary.next === undefined
+          ? "seam not measured"
+          : `pause ${seconds(pause.durationMs)} (${pause.frames} frames, ${pause.dark} dark); last new frame ${seconds(pause.lastNewFrameMs - finished)} after clip_finished; clip_started ${seconds(boundary.next.startedMs - finished)} after it, first new frame ${seconds(pause.firstNewFrameMs - boundary.next.startedMs)} after that`;
+      add(`Boundary ${index + 1}`, `${edit}; ${seam}`);
+    }
+    add(
+      "Clip metadata",
+      `${counts(scheduler.metadata.observed)}; mismatched ${counts(scheduler.metadata.mismatched)}`,
+    );
+  }
   const renewal = evidence.schedulerRenewal;
   if (renewal !== undefined) {
     add(

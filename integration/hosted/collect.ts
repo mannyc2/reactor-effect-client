@@ -16,7 +16,7 @@ import type * as H3 from "reactor-effect-client/h3";
 import type * as Orchestration from "reactor-effect-client/orchestration";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
 import { terminal } from "reactor-effect-client/host";
-import type { AudioSummary, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
+import type { AudioSummary, SeamPause, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
 import { liveVideoMotionFrames, type ClipVideoSeen } from "./gates.js";
 
 /** Milliseconds since `origin`, a `Date.now()` reading. */
@@ -298,6 +298,35 @@ export class VideoReader {
   /** Last decoded frame arrival at or before a handoff observation. */
   lastBefore(atMs: number): number | undefined {
     return this.arrivals.findLast((at) => at <= atMs);
+  }
+
+  /**
+   * The longest stretch between `fromMs` and `toMs` with no new picture: from
+   * a frame that differed from the one before it to the next that did. Frames
+   * carry no clip identity, so a caller bounds the window around one boundary.
+   */
+  pause(fromMs: number, toMs: number): SeamPause | undefined {
+    const frames = this.seen.filter((frame) => frame.atMs >= fromMs && frame.atMs <= toMs);
+    // The window's first frame has no predecessor to differ from.
+    const changed: number[] = [];
+    for (let index = 1; index < frames.length; index++)
+      if (frames[index]!.digest !== frames[index - 1]!.digest) changed.push(index);
+    let longest: SeamPause | undefined;
+    for (let index = 1; index < changed.length; index++) {
+      const last = frames[changed[index - 1]!]!;
+      const first = frames[changed[index]!]!;
+      const durationMs = first.atMs - last.atMs;
+      if (longest !== undefined && durationMs <= longest.durationMs) continue;
+      const inside = frames.slice(changed[index - 1]! + 1, changed[index]);
+      longest = {
+        lastNewFrameMs: last.atMs,
+        firstNewFrameMs: first.atMs,
+        durationMs,
+        frames: inside.length,
+        dark: inside.filter((frame) => !frame.lit).length,
+      };
+    }
+    return longest;
   }
 
   summary(): VideoSummary {
