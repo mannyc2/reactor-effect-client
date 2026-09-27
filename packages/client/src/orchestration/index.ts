@@ -64,6 +64,8 @@ export type {
   GroupHandle,
   ReplacementSpec,
   InsertSpec,
+  Cue,
+  CueEvent,
   Edit,
   EditResult,
   EditHandle,

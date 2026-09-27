@@ -3,6 +3,7 @@ import type * as Redacted from "effect/Redacted";
 import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
 import type * as Queue from "effect/Queue";
+import type * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import type * as Http from "effect/unstable/http/HttpClient";
 import * as Root from "reactor-effect-client";
@@ -140,6 +141,8 @@ const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
   { name: "status", conflict: "replace" },
   { name: "ack", conflict: "skip" },
 ];
+const cue: Orchestration.Cue = { name: "open chart", at: { from: "start", offset: "2 seconds" } };
+const cues: Stream.Stream<Orchestration.CueEvent> = schedulerHandle.cues;
 const starts: ReadonlyArray<Orchestration.StartMode> = [{ _tag: "Asap" }, { _tag: "Manual" }];
 const released: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.release(
   Orchestration.ItemKey.make("cue"),
@@ -197,6 +200,8 @@ void [
   inserted,
   edited,
   lanes,
+  cue,
+  cues,
   starts,
   released,
   cut,
