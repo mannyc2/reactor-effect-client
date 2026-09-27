@@ -357,7 +357,24 @@ for (const constructor of ["legacy", "continuous"] as const)
           expect(unresolved?.retirement.unknownSubmissions).toBeGreaterThan(0n);
         }
       }
-      if (fault === "stallSecondBuild") expect(renewal.switches).toEqual([]);
+      if (fault === "slowDelete" || fault === "ignoreDelete") {
+        // The retiring source's DELETE is accepted, but its end is never confirmed.
+        expect(run.evidence.reasons).toContain("Shutdown: source cleanup was not confirmed");
+        expect(renewal.allocations[0]?.cleanup?.lease.remote.confirmed).toBe(false);
+        expect(run.evidence.cleanup).toContain("was not confirmed ended");
+      }
+      if (fault === "noFirstVideo" || fault === "noSecondVideo") {
+        expect(run.evidence.reasons.join("\n")).toContain(
+          "logical video from both sources and complete frame attribution are required",
+        );
+        expect(run.evidence.missing).toContain("schedulerRenewal.media.decodedBoundary");
+      }
+      if (fault === "stallSecondBuild") {
+        expect(renewal.switches).toEqual([]);
+        expect(run.evidence.reasons).toContain(
+          "Timeout: scheduler renewal exceeded its shared deadline",
+        );
+      }
       credentialFree(run.text);
     }, 180_000);
 
