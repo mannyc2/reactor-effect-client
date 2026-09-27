@@ -371,6 +371,55 @@ test("withdraw waits for the source removal result before publishing Dropped", (
     }),
   ));
 
+// The-show's air retried every refused withdrawal once a second (reactor-effect-client#31,
+// comment 5858578306). The scheduler owns that retry: a refusal is not an outcome.
+test("a refused removal is retried until the clip is withdrawn", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({ fixedBuildTime: "10 seconds", buildRatio: 0 });
+      let removals = 0;
+      const engine: EngineShape = {
+        ...handle.engine,
+        remove: (id) =>
+          ++removals === 1
+            ? Effect.fail(failure("replied", "clip busy", "remove"))
+            : handle.engine.remove(id),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const key = ItemKey.make("refused-once");
+      const item = yield* scheduler.submit({ key, lane: "line", request: clip("Refused once") });
+      yield* advance(500);
+      const pending = yield* Effect.forkScoped(scheduler.withdraw(key));
+      yield* advance(2_000);
+      expect(yield* Fiber.join(pending)).toBe("withdrawn");
+      expect(removals).toBe(2);
+      expect(yield* item.outcome).toEqual({ _tag: "Dropped", reason: "withdrawn" });
+    }),
+  ));
+
+test("a withdrawal refused until its build fails settles as not-found", () =>
+  runClock(
+    Effect.gen(function* () {
+      const handle = yield* Simulation.make({
+        fixedBuildTime: "3 seconds",
+        buildRatio: 0,
+        faults: { buildFails: () => true },
+      });
+      const engine: EngineShape = {
+        ...handle.engine,
+        remove: () => Effect.fail(failure("replied", "clip busy", "remove")),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const key = ItemKey.make("refused-then-failed");
+      const item = yield* scheduler.submit({ key, lane: "line", request: clip("Refused") });
+      yield* advance(500);
+      const pending = yield* Effect.forkScoped(scheduler.withdraw(key));
+      yield* advance(5_000);
+      expect(yield* Fiber.join(pending)).toBe("not-found");
+      expect((yield* item.outcome)._tag).toBe("Failed");
+    }),
+  ));
+
 test("withdraw and drain wait for an in-flight enqueue, then remove its clip", () =>
   runClock(
     Effect.gen(function* () {

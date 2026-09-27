@@ -55,9 +55,18 @@ export {
   ItemKey,
   KeyMismatch,
   WouldMissDeadline,
+  LaneBusy,
 } from "./scheduler.js";
 export type {
   ItemSpec,
+  GroupPart,
+  GroupSpec,
+  GroupHandle,
+  ReplacementSpec,
+  InsertSpec,
+  Edit,
+  EditResult,
+  EditHandle,
   StartMode,
   FillContext,
   LaneSpec,

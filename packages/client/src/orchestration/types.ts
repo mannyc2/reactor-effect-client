@@ -197,6 +197,11 @@ export interface EngineShape {
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, EngineError>;
   readonly pauseAndStop: Effect.Effect<void, EngineError>;
   readonly remove: (id: ClipId) => Effect.Effect<RemoveOutcome, EngineError>;
+  /**
+   * Stops `id` if it is still the clip playing on its session. Autoplay stays as it is, so
+   * with autoplay on the session's next Ready clip starts; the stopped clip cannot resume.
+   */
+  readonly cut: (id: ClipId) => Effect.Effect<void, EngineError>;
   /** A global rank within this clip's physical session range in the chosen queue. */
   readonly move: (
     id: ClipId,

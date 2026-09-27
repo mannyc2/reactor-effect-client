@@ -102,6 +102,51 @@ const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
 declare const queued: Orchestration.ItemHandle;
 const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
 declare const schedulerHandle: Orchestration.SchedulerShape;
+declare const lineParts: Orchestration.GroupSpec["parts"];
+const line: Effect.Effect<
+  Orchestration.GroupHandle,
+  | Orchestration.KeyMismatch
+  | Orchestration.WouldMissDeadline
+  | Orchestration.LaneBusy
+  | Orchestration.EngineError
+> = schedulerHandle.submitGroup({
+  key: Orchestration.ItemKey.make("line"),
+  lane: "line",
+  parts: lineParts,
+});
+declare const amendment: Orchestration.ReplacementSpec;
+const amended: Effect.Effect<
+  Orchestration.ItemHandle,
+  Orchestration.KeyMismatch | Orchestration.EngineError
+> = schedulerHandle.replace(Orchestration.ItemKey.make("beat"), amendment);
+declare const acknowledgement: Orchestration.InsertSpec;
+const inserted: Effect.Effect<
+  Orchestration.ItemHandle,
+  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+> = schedulerHandle.insert(acknowledgement);
+const edits: ReadonlyArray<Orchestration.Edit> = [
+  { _tag: "Withdraw", key: Orchestration.ItemKey.make("wrong") },
+  { _tag: "Insert", insert: acknowledgement },
+];
+const edited: Effect.Effect<
+  Orchestration.EditHandle,
+  | Orchestration.KeyMismatch
+  | Orchestration.WouldMissDeadline
+  | Orchestration.LaneBusy
+  | Orchestration.EngineError
+> = schedulerHandle.edit(edits);
+const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
+  { name: "urgent", cut: true },
+  { name: "status", conflict: "replace" },
+  { name: "ack", conflict: "skip" },
+];
+const starts: ReadonlyArray<Orchestration.StartMode> = [{ _tag: "Asap" }, { _tag: "Manual" }];
+const released: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.release(
+  Orchestration.ItemKey.make("cue"),
+);
+const cut: Effect.Effect<void, Orchestration.EngineError> = engine.cut(
+  Orchestration.ClipId.make("playing"),
+);
 const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
@@ -147,6 +192,14 @@ void [
   itemKey,
   started,
   drained,
+  line,
+  amended,
+  inserted,
+  edited,
+  lanes,
+  starts,
+  released,
+  cut,
   terminalFailure,
   stoppedRenewal,
   historicalSwitched,

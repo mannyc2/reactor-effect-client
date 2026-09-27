@@ -28,8 +28,8 @@ import {
   keyedRequest,
   keyFromProviderMetadata,
 } from "./scheduler-key.js";
-import { plan, runwaySeconds } from "./scheduler-policy.js";
-import type { OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
+import { estimatesFrom, plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
+import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
 
@@ -40,10 +40,32 @@ export type ItemKey = typeof ItemKey.Type;
 export interface LaneSpec {
   /** Lanes are listed from highest to lowest priority. */
   readonly name: string;
+  /**
+   * What a new submission does to the lane's items still waiting: queue behind them (the
+   * default); replace them, make-before-break, so they stay only as cover until it is Ready
+   * and then settle `Dropped` as `replaced`; or skip, refusing it with `LaneBusy` while the
+   * lane has an item waiting or playing. Inserts and replacements place themselves and are
+   * not affected.
+   */
+  readonly conflict?: "queue" | "replace" | "skip";
+  /**
+   * A Ready item of this lane cuts a playing clip of a lower lane, or filler, instead of
+   * waiting for its end, unless that clip ends within a second anyway. The provider stops
+   * the clip, which cannot resume, and starts the next Ready one.
+   */
+  readonly cut?: boolean;
 }
 
 export type StartMode =
   | { readonly _tag: "Follow" }
+  /** The next boundary, ahead of everything waiting in every lane. */
+  | { readonly _tag: "Asap" }
+  /**
+   * Built ahead and held until `release(key)`, then the next boundary as `Asap`. It is built
+   * early only while filler keeps the runway at its floor, and if it would still be next at
+   * a boundary it is removed and rebuilt; with filler off it is built once released.
+   */
+  | { readonly _tag: "Manual" }
   | {
       readonly _tag: "At";
       /** Epoch milliseconds; its monotonic deadline follows wall-clock corrections. */
@@ -112,7 +134,7 @@ export type AsRunStatus =
       readonly termination: "finished" | "stopped";
       readonly airedSeconds: number;
     }
-  | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" }
+  | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" | "replaced" }
   | { readonly _tag: "Failed"; readonly reason: ItemFailureReason }
   | { readonly _tag: "Unobserved" }
   | {
@@ -154,7 +176,72 @@ export interface ItemHandle {
   readonly firstDecisive: Effect.Effect<FirstDecisiveStatus>;
 }
 
+/** One part of a group: its own key, and the clip it asks for. */
+export interface GroupPart {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+}
+
+export interface GroupSpec {
+  readonly key: ItemKey;
+  readonly lane: string;
+  /** Built in order and aired back to back; a higher lane may still go in between parts. */
+  readonly parts: readonly [GroupPart, ...ReadonlyArray<GroupPart>];
+  /** Relative to admission, measured on the monotonic clock; it applies to the first part. */
+  readonly window?: ItemSpec["window"];
+}
+
+export interface GroupHandle {
+  readonly key: ItemKey;
+  /** One handle per part, in order. */
+  readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+}
+
+/** The clip that takes a queued item's place, under a key of its own. */
+export interface ReplacementSpec {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+}
+
+/**
+ * A clip that airs immediately before or after an anchor: an item, a group part or a
+ * group key. Give exactly one of `before` and `after`.
+ */
+export interface InsertSpec {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+  readonly before?: ItemKey;
+  readonly after?: ItemKey;
+  /** Relative to admission, measured on the monotonic clock. */
+  readonly window?: ItemSpec["window"];
+}
+
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
+
+/** One edit in a batch applied together. */
+export type Edit =
+  | { readonly _tag: "Submit"; readonly item: ItemSpec }
+  | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec }
+  | { readonly _tag: "Insert"; readonly insert: InsertSpec }
+  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: ReplacementSpec }
+  | { readonly _tag: "Withdraw"; readonly key: ItemKey };
+
+/** What one edit of a batch did: the handle of what it added, or its withdrawal's outcome. */
+export type EditResult =
+  | { readonly _tag: "Added"; readonly handle: ItemHandle }
+  | { readonly _tag: "AddedGroup"; readonly handle: GroupHandle }
+  | { readonly _tag: "Withdrawal"; readonly outcome: Effect.Effect<WithdrawOutcome, EngineError> };
+
+export interface EditHandle {
+  /** One result per edit, in the order given. */
+  readonly results: ReadonlyArray<EditResult>;
+  /**
+   * Resolves when the batch takes effect together: every clip it adds is Ready or has
+   * settled, and its withdrawals and replacements are requested at once. Fails with the
+   * scheduler's closing refusal if it closes first.
+   */
+  readonly committed: Effect.Effect<void, EngineError>;
+}
 
 export interface DrainOptions {
   /** Finish only current playback, or every item already accepted. Defaults to playing. */
@@ -174,6 +261,15 @@ export interface SchedulerState {
     readonly ready: ReadonlyArray<ItemKey | "filler" | "other">;
   }>;
   readonly starved: number;
+  /**
+   * What the scheduler has measured from its own recent builds: seconds from sending a
+   * build to its clip being Ready, per requested second of clip (absent until three builds
+   * were measured), and a built clip's actual length over its requested length.
+   */
+  readonly estimates: {
+    readonly build: { readonly median: number; readonly p95: number } | undefined;
+    readonly length: number;
+  };
 }
 
 export class KeyMismatch extends Schema.TaggedError<KeyMismatch>()("KeyMismatch", {
@@ -181,6 +277,15 @@ export class KeyMismatch extends Schema.TaggedError<KeyMismatch>()("KeyMismatch"
 }) {
   static of(key: ItemKey): KeyMismatch {
     return new KeyMismatch({ key });
+  }
+}
+
+export class LaneBusy extends Schema.TaggedError<LaneBusy>()("LaneBusy", {
+  key: ItemKey,
+  lane: Schema.String,
+}) {
+  static of(key: ItemKey, lane: string): LaneBusy {
+    return new LaneBusy({ key, lane });
   }
 }
 
@@ -203,6 +308,7 @@ interface CapturedItem {
   readonly firm: boolean;
   readonly atWallMs: number | undefined;
   readonly late: PlannedItem["late"];
+  readonly mode?: "asap" | "manual";
 }
 
 interface UnknownAdmission {
@@ -220,6 +326,11 @@ interface Entry extends PlannedItem {
   readonly firstDecisiveWaiter: Deferred.Deferred<FirstDecisiveStatus>;
   readonly atWallMs?: number;
   phase: PlannedItem["phase"];
+  /** Set once another item was submitted to take this one's place. */
+  replacedBy?: ItemKey;
+  held?: boolean;
+  asap?: boolean;
+  dispatchedAtMs?: number;
   retryAtMs?: number;
   atMs?: number;
   clipId?: ClipId;
@@ -258,7 +369,7 @@ type Command =
       readonly _tag: "RemoveItem";
       readonly key: ItemKey;
       readonly clipId: ClipId;
-      readonly reason: "late" | "withdrawn";
+      readonly reason: DropReason;
     }
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
   | { readonly _tag: "RemoveFiller"; readonly clipId: ClipId }
@@ -269,7 +380,8 @@ type Command =
       readonly position: number;
       readonly signature: string;
     }
-  | { readonly _tag: "PauseAutoplay" };
+  | { readonly _tag: "PauseAutoplay" }
+  | { readonly _tag: "Cut"; readonly clipId: ClipId };
 
 type CommandValue = ClipId | RemoveOutcome | void;
 
@@ -277,21 +389,45 @@ type EarlyClipEvent = Extract<EngineEvent, { readonly _tag: "Started" | "Ended" 
 
 const maxEarlyClipIds = 4096;
 
+interface Batch {
+  readonly id: number;
+  readonly waitFor: ReadonlyArray<ItemKey>;
+  /** Items the batch withdraws, each with its reason and any reply its withdrawal settles. */
+  readonly targets: Map<
+    ItemKey,
+    {
+      readonly reason: DropReason;
+      readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError> | undefined;
+    }
+  >;
+  readonly committed: Deferred.Deferred<void, EngineError>;
+}
+
 interface PendingWithdrawal {
-  readonly reason: "late" | "withdrawn";
+  readonly reason: DropReason;
   readonly replies: Deferred.Deferred<WithdrawOutcome, EngineError>[];
 }
 
 type Message =
   | {
-      readonly _tag: "Submit";
-      readonly item: CapturedItem;
-      readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+      readonly _tag: "Edit";
+      readonly edits: ReadonlyArray<CapturedEdit>;
+      /** A batch holds what it adds until it commits; a single call does not. */
+      readonly batched: boolean;
+      readonly reply: Deferred.Deferred<
+        EditHandle,
+        KeyMismatch | WouldMissDeadline | LaneBusy | EngineError
+      >;
     }
   | {
       readonly _tag: "Withdraw";
       readonly key: ItemKey;
       readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError>;
+    }
+  | {
+      readonly _tag: "Release";
+      readonly key: ItemKey;
+      readonly reply: Deferred.Deferred<void, EngineError>;
     }
   | {
       readonly _tag: "Drain";
@@ -408,6 +544,57 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
   });
 
 /** Capture scheduling fields before reading the request's placement fields. */
+/** A caller's clip request, without the placement and source fields the scheduler owns. */
+const captureClip = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<ClipRequest, PolicyFailure> {
+    const request = yield* captureRequest(input as ClipRequest);
+    if (
+      request.position !== undefined ||
+      request.before !== undefined ||
+      request.sameSessionAs !== undefined ||
+      request.continueFrom !== undefined ||
+      request.sequence !== undefined
+    )
+      return yield* invalid("Scheduler owns placement and source selection");
+    return request;
+  });
+
+/** A window's offsets from admission, read as caller data. */
+const captureWindow = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<
+    {
+      readonly notBeforeOffsetMs: number | undefined;
+      readonly startByOffsetMs: number | undefined;
+      readonly firm: boolean;
+    },
+    PolicyFailure
+  > {
+    const window =
+      input === undefined
+        ? undefined
+        : yield* Effect.fromResult(
+            ownedData(input, ["notBefore", "startBy", "firm"], "Scheduled window"),
+          );
+    const notBeforeOffsetMs =
+      window?.notBefore === undefined
+        ? undefined
+        : yield* requestDuration(window.notBefore, "notBefore", true);
+    const startByOffsetMs =
+      window?.startBy === undefined
+        ? undefined
+        : yield* requestDuration(window.startBy, "startBy", true);
+    if (
+      window !== undefined &&
+      (typeof window.firm !== "boolean" ||
+        (notBeforeOffsetMs !== undefined &&
+          startByOffsetMs !== undefined &&
+          startByOffsetMs >= 0 &&
+          notBeforeOffsetMs > startByOffsetMs))
+    )
+      return yield* invalid("Scheduled window is inconsistent");
+    return { notBeforeOffsetMs, startByOffsetMs, firm: window?.firm === true };
+  });
+
 const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedItem, PolicyFailure> {
     if (input === null || typeof input !== "object" || Array.isArray(input))
@@ -429,40 +616,10 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     const lane: unknown = descriptors.lane?.value;
     if (typeof lane !== "string" || !lanes.has(lane))
       return yield* invalid("Scheduled item lane is not configured");
-    const rawRequest: unknown = descriptors.request?.value;
-    const request = yield* captureRequest(rawRequest as ClipRequest);
-    if (
-      request.position !== undefined ||
-      request.before !== undefined ||
-      request.sameSessionAs !== undefined ||
-      request.continueFrom !== undefined ||
-      request.sequence !== undefined
-    )
-      return yield* invalid("Scheduler owns placement and source selection");
-    const rawWindow: unknown = descriptors.window?.value;
-    const window =
-      rawWindow === undefined
-        ? undefined
-        : yield* Effect.fromResult(
-            ownedData(rawWindow, ["notBefore", "startBy", "firm"], "Scheduled window"),
-          );
-    const notBeforeOffsetMs =
-      window?.notBefore === undefined
-        ? undefined
-        : yield* requestDuration(window.notBefore, "notBefore", true);
-    const startByOffsetMs =
-      window?.startBy === undefined
-        ? undefined
-        : yield* requestDuration(window.startBy, "startBy", true);
-    if (
-      window !== undefined &&
-      (typeof window.firm !== "boolean" ||
-        (notBeforeOffsetMs !== undefined &&
-          startByOffsetMs !== undefined &&
-          startByOffsetMs >= 0 &&
-          notBeforeOffsetMs > startByOffsetMs))
-    )
-      return yield* invalid("Scheduled window is inconsistent");
+    const request = yield* captureClip(descriptors.request?.value);
+    const { notBeforeOffsetMs, startByOffsetMs, firm } = yield* captureWindow(
+      descriptors.window?.value,
+    );
     const rawStart: unknown = descriptors.start?.value;
     const start =
       rawStart === undefined
@@ -472,9 +629,13 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
           );
     let atWallMs: number | undefined;
     let late: PlannedItem["late"] = "nextBoundary";
-    if (start?._tag === "Follow" && (start.time !== undefined || start.late !== undefined))
-      return yield* invalid("Follow cannot contain an anchor or lateness policy");
-    if (start !== undefined && start._tag !== "Follow") {
+    const mode = start?._tag === "Asap" ? "asap" : start?._tag === "Manual" ? "manual" : undefined;
+    if (
+      (start?._tag === "Follow" || mode !== undefined) &&
+      (start?.time !== undefined || start?.late !== undefined)
+    )
+      return yield* invalid(`${String(start?._tag)} cannot contain an anchor or lateness policy`);
+    if (start !== undefined && start._tag !== "Follow" && mode === undefined) {
       if (start._tag !== "At" || !Number.isFinite(start.time))
         return yield* invalid("Scheduled start mode is invalid");
       atWallMs = start.time as number;
@@ -495,25 +656,245 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       request,
       notBeforeOffsetMs,
       startByOffsetMs,
-      firm: window?.firm === true,
+      firm,
       atWallMs,
       late,
+      ...(mode === undefined ? {} : { mode }),
       fingerprint: JSON.stringify({
         lane,
         request,
         notBeforeOffsetMs,
         startByOffsetMs,
-        firm: window?.firm === true,
+        firm,
         atWallMs,
         late,
+        mode,
       }),
     };
+  });
+
+interface CapturedGroup {
+  readonly key: ItemKey;
+  /** Only the first part carries the group's window. */
+  readonly parts: readonly [CapturedItem, ...ReadonlyArray<CapturedItem>];
+  readonly fingerprint: string;
+}
+
+/** Enough parts for a spoken line of beats, and a bound on one submission's work. */
+const maxGroupParts = 64;
+
+const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedGroup, PolicyFailure> {
+    const group = yield* Effect.fromResult(
+      ownedData(input, ["key", "lane", "parts", "window"], "Scheduled group"),
+    );
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(group.key).pipe(
+      Effect.mapError(() => invalid("Scheduled group key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Scheduled group key is reserved");
+    if (!Array.isArray(group.parts))
+      return yield* invalid("Scheduled group parts must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(group.parts as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length < 1 || length > maxGroupParts)
+      return yield* invalid(`Scheduled group needs 1 to ${maxGroupParts} parts`);
+    const parts: CapturedItem[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Scheduled group parts must be data");
+      const part = yield* Effect.fromResult(
+        ownedData(descriptor.value, ["key", "request"], "Scheduled group part"),
+      );
+      parts.push(
+        yield* captureItem(
+          {
+            key: part.key,
+            lane: group.lane,
+            request: part.request,
+            ...(index === 0 && group.window !== undefined ? { window: group.window } : {}),
+          } as ItemSpec,
+          lanes,
+        ),
+      );
+    }
+    const [first, ...rest] = parts;
+    if (first === undefined || new Set([key, ...parts.map((part) => part.key)]).size !== length + 1)
+      return yield* invalid("Scheduled group and part keys must be distinct");
+    return {
+      key,
+      parts: [first, ...rest],
+      fingerprint: JSON.stringify(parts.map((part) => [part.key, part.fingerprint])),
+    };
+  });
+
+interface CapturedReplacement {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+}
+
+const captureReplacement = (input: ReplacementSpec) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedReplacement, PolicyFailure> {
+    const next = yield* Effect.fromResult(ownedData(input, ["key", "request"], "Replacement"));
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(next.key).pipe(
+      Effect.mapError(() => invalid("Replacement key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Replacement key is reserved");
+    return { key, request: yield* captureClip(next.request) };
+  });
+
+interface CapturedInsert {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+  readonly side: "before" | "after";
+  readonly anchor: ItemKey;
+  readonly notBeforeOffsetMs: number | undefined;
+  readonly startByOffsetMs: number | undefined;
+  readonly firm: boolean;
+  readonly fingerprint: string;
+}
+
+const captureInsert = (input: InsertSpec) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedInsert, PolicyFailure> {
+    const spec = yield* Effect.fromResult(
+      ownedData(input, ["key", "request", "before", "after", "window"], "Insert"),
+    );
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(spec.key).pipe(
+      Effect.mapError(() => invalid("Insert key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Insert key is reserved");
+    if ((spec.before === undefined) === (spec.after === undefined))
+      return yield* invalid("Insert needs exactly one of before or after");
+    const side = spec.before === undefined ? "after" : "before";
+    const anchor = yield* Schema.decodeUnknownEffect(ItemKey)(spec.before ?? spec.after).pipe(
+      Effect.mapError(() => invalid("Insert anchor must be a nonempty key")),
+    );
+    const request = yield* captureClip(spec.request);
+    const window = yield* captureWindow(spec.window);
+    return {
+      key,
+      request,
+      side,
+      anchor,
+      ...window,
+      fingerprint: JSON.stringify({ [side]: anchor, request, ...window }),
+    };
+  });
+
+type CapturedEdit =
+  | { readonly _tag: "Submit"; readonly item: CapturedItem }
+  | { readonly _tag: "SubmitGroup"; readonly group: CapturedGroup }
+  | { readonly _tag: "Insert"; readonly insert: CapturedInsert }
+  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: CapturedReplacement }
+  | { readonly _tag: "Withdraw"; readonly key: ItemKey };
+
+/** A bound on one batch's work, generous for a spoken plan of several lines. */
+const maxEdits = 256;
+
+const editKey = (input: unknown, name: string) =>
+  Schema.decodeUnknownEffect(ItemKey)(input).pipe(
+    Effect.mapError(() => invalid(`${name} must be a nonempty key`)),
+  );
+
+const captureEdits = (input: ReadonlyArray<Edit>, lanes: ReadonlySet<string>) =>
+  Effect.gen(function* (): Effect.fn.Return<ReadonlyArray<CapturedEdit>, PolicyFailure> {
+    if (!Array.isArray(input)) return yield* invalid("Edits must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(input as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length < 1 || length > maxEdits)
+      return yield* invalid(`An edit batch needs 1 to ${maxEdits} edits`);
+    const edits: CapturedEdit[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Edits must be data");
+      const raw: unknown = descriptor.value;
+      const tag: unknown =
+        raw !== null && typeof raw === "object"
+          ? Object.getOwnPropertyDescriptor(raw, "_tag")?.value
+          : undefined;
+      switch (tag) {
+        case "Submit": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "item"], "Edit"));
+          edits.push({ _tag: "Submit", item: yield* captureItem(edit.item as ItemSpec, lanes) });
+          break;
+        }
+        case "SubmitGroup": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "group"], "Edit"));
+          edits.push({
+            _tag: "SubmitGroup",
+            group: yield* captureGroup(edit.group as GroupSpec, lanes),
+          });
+          break;
+        }
+        case "Insert": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "insert"], "Edit"));
+          edits.push({ _tag: "Insert", insert: yield* captureInsert(edit.insert as InsertSpec) });
+          break;
+        }
+        case "Replace": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "key", "next"], "Edit"));
+          edits.push({
+            _tag: "Replace",
+            key: yield* editKey(edit.key, "A replaced key"),
+            next: yield* captureReplacement(edit.next as ReplacementSpec),
+          });
+          break;
+        }
+        case "Withdraw": {
+          const edit = yield* Effect.fromResult(ownedData(raw, ["_tag", "key"], "Edit"));
+          edits.push({ _tag: "Withdraw", key: yield* editKey(edit.key, "A withdrawn key") });
+          break;
+        }
+        default:
+          return yield* invalid("An edit's _tag is not one the scheduler knows");
+      }
+    }
+    return edits;
   });
 
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
+  ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
+  readonly submitGroup: (
+    group: GroupSpec,
+  ) => Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
+  /**
+   * Builds `next` to take the queued item's place, lane and group position. Once `next` is
+   * Ready the item is withdrawn as `replaced`; if the item starts first, `next` is withdrawn.
+   */
+  readonly replace: (
+    key: ItemKey,
+    next: ReplacementSpec,
+  ) => Effect.Effect<ItemHandle, KeyMismatch | EngineError>;
+  /**
+   * Places a clip immediately before or after an anchor, in the anchor's lane. Between two
+   * parts of a group it joins the group, but its own failure or withdrawal never breaks the
+   * group. An insert that is not Ready in time for its place airs at the next boundary.
+   */
+  readonly insert: (
+    spec: InsertSpec,
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  /**
+   * Applies several edits as one change, make-before-break: every edit is checked before any
+   * takes effect, and a refused edit fails the whole batch. What the batch withdraws or
+   * replaces keeps its place, and may still air, until every clip the batch adds is Ready or
+   * has settled; the withdrawals and replacements then happen together, and the added clips
+   * take their places. A withdrawn item that nothing was built for yet goes at once. Clips the
+   * batch adds wait behind everything else on air until then. Each key may appear once.
+   */
+  readonly edit: (
+    edits: ReadonlyArray<Edit>,
+  ) => Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
+  /** Releases a held `Manual` item to air at the next boundary, as `Asap`. */
+  readonly release: (key: ItemKey) => Effect.Effect<void, EngineError>;
+  /**
+   * A group key withdraws every unstarted part; a part key, that part and every part after it.
+   * An inserted part withdraws only itself.
+   */
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
   /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
@@ -547,8 +928,21 @@ export const makeScheduler = (
         new Set(options.lanes.map((lane) => lane.name)).size !== options.lanes.length
       )
         throw ReactorError.fromCode("InvalidInput", "Scheduler lanes must be unique and nonempty");
+      if (
+        options.lanes.some(
+          (lane) =>
+            (lane.conflict !== undefined &&
+              !["queue", "replace", "skip"].includes(lane.conflict)) ||
+            (lane.cut !== undefined && typeof lane.cut !== "boolean"),
+        )
+      )
+        throw ReactorError.fromCode("InvalidInput", "A lane's conflict or cut is invalid");
       return options.lanes.map((lane) => lane.name);
     }, "makeScheduler");
+    const conflicts = new Map(options.lanes.map((lane) => [lane.name, lane.conflict ?? "queue"]));
+    const cutLanes: ReadonlySet<string> = new Set(
+      options.lanes.filter((lane) => lane.cut === true).map((lane) => lane.name),
+    );
     const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
       yield* parsedInput(() => {
         const floorSeconds =
@@ -610,6 +1004,7 @@ export const makeScheduler = (
     const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
     const maxUnknownFillers = 4096;
     let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
+    const actorScope = yield* Effect.scope;
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
     const events = yield* PubSub.unbounded<AsRunEvent>();
@@ -627,6 +1022,7 @@ export const makeScheduler = (
       lanes: lanes.map((name) => ({ name, keys: [] })),
       sessions: [],
       starved: 0,
+      estimates: { build: undefined, length: 1 },
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
     const stopped = yield* Deferred.make<ReactorFailure>();
@@ -636,6 +1032,18 @@ export const makeScheduler = (
     );
     const items = new Map<ItemKey, Entry>();
     const history = new Map<ItemKey, Pick<Entry, "fingerprint" | "handle">>();
+    /** Kept while any part is active or in history, for idempotency and withdrawal. */
+    const groups = new Map<
+      ItemKey,
+      {
+        readonly fingerprint: string;
+        readonly handle: GroupHandle;
+        /** Every part's key, replacements included; a part's place is its group index. */
+        readonly parts: ItemKey[];
+        /** The first part that failed or was dropped: the parts after it are withdrawn. */
+        brokenAt: number | undefined;
+      }
+    >();
     const owned = new Map<ClipId, OwnedClip>();
     // An event can overtake its enqueue reply. Keep only the evidence needed to
     // decide that clip's fate until the one in-flight command returns its ID.
@@ -651,6 +1059,9 @@ export const makeScheduler = (
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
+    /** Edit batches that have not taken effect yet. */
+    const batches = new Map<number, Batch>();
+    let batchCount = 0;
     const pendingBuilds = new Set<ItemKey>();
     // A Build whose enqueue has started and whose result the worker has not
     // yet seen. The provider may still accept it after the scheduler ends.
@@ -669,6 +1080,27 @@ export const makeScheduler = (
     let drained = false;
     let observationReady = false;
     let blockedMove: string | undefined;
+    let blockedCut: ClipId | undefined;
+    // Recent measured builds: build seconds per requested second, and actual over requested length.
+    const buildSamples: number[] = [];
+    const lengthSamples: number[] = [];
+    const maxSamples = 32;
+    let lastFillerSeconds: number | undefined;
+    /** Filler builds sent and not yet Ready, by filler index. */
+    const fillerDispatch = new Map<number, { readonly atMs: number; readonly seconds: number }>();
+    const measure = (atMs: number, requested: number, actual: number): void => {
+      if (!(requested > 0)) return;
+      buildSamples.push((monotonicMillis(clock) - atMs) / 1000 / requested);
+      lengthSamples.push(actual / requested);
+      if (buildSamples.length > maxSamples) buildSamples.shift();
+      if (lengthSamples.length > maxSamples) lengthSamples.shift();
+    };
+    /** An item's build is measured once, when its clip is first seen Ready. */
+    const measureItem = (item: Entry, actual: number): void => {
+      if (item.dispatchedAtMs === undefined) return;
+      measure(item.dispatchedAtMs, item.request.durationSeconds, actual);
+      delete item.dispatchedAtMs;
+    };
 
     const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -684,6 +1116,18 @@ export const makeScheduler = (
             : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
+        const replaced = entry.replaces === undefined ? undefined : items.get(entry.replaces);
+        if (
+          entry.group !== undefined &&
+          entry.inserted !== true &&
+          (status._tag === "Failed" || status._tag === "Dropped") &&
+          !(status._tag === "Dropped" && status.reason === "replaced") &&
+          (replaced === undefined || replaced.phase === "Terminal")
+        ) {
+          const group = groups.get(entry.group.key);
+          if (group !== undefined)
+            group.brokenAt = Math.min(group.brokenAt ?? entry.group.index, entry.group.index);
+        }
         // Publish in the step that records it (the PubSub is unbounded): a claim
         // from another fiber cannot land between the two, so asRun never carries
         // a settlement ahead of a recorded status, nor omits one.
@@ -759,6 +1203,12 @@ export const makeScheduler = (
             for (const waiter of pending.replies) yield* Deferred.done(waiter, reply);
           }
           pendingWithdrawals.clear();
+          for (const batch of batches.values()) {
+            for (const target of batch.targets.values())
+              if (target.reply !== undefined) yield* Deferred.done(target.reply, closed);
+            yield* Deferred.done(batch.committed, closed);
+          }
+          batches.clear();
           for (const reply of drainReplies.splice(0)) yield* Deferred.done(reply, closed);
           yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
           yield* Deferred.done(
@@ -934,6 +1384,8 @@ export const makeScheduler = (
         items.delete(key);
       }
       while (history.size > maxHistory) history.delete(history.keys().next().value!);
+      for (const [key, group] of groups)
+        if (!group.parts.some((part) => items.has(part) || history.has(part))) groups.delete(key);
     };
 
     // Capture membership and public rows in one pass. A fresh token reads every
@@ -999,8 +1451,18 @@ export const makeScheduler = (
         })),
         sessions,
         starved,
+        estimates: estimatesFrom(buildSamples, lengthSamples),
       });
     };
+
+    /** When the filler build in flight was sent, and the next filler clip's requested length. */
+    const fillerView = () => ({
+      fillerDispatchedAtMs:
+        fillerDispatch.size === 0
+          ? undefined
+          : Math.min(...[...fillerDispatch.values()].map((sent) => sent.atMs)),
+      fillerSeconds: upcomingFiller?.durationSeconds ?? lastFillerSeconds,
+    });
 
     const activeRecords = (state: EngineState) => [
       ...state.queued,
@@ -1128,6 +1590,7 @@ export const makeScheduler = (
               yield* emit(item, { _tag: "Unobserved" });
           } else if (state.ready.some((record) => record.clipId === clipId)) {
             const record = knownRecord(state, clipId)!;
+            measureItem(item, record.durationSeconds);
             item.sessionId = record.sessionId;
             if (item.phase !== "Started")
               yield* emit(item, { _tag: "Ready", sessionId: record.sessionId });
@@ -1199,6 +1662,11 @@ export const makeScheduler = (
         const owner = owned.get(event.clipId);
         if (owner === undefined) return;
         if (owner._tag === "Filler") {
+          const sent = fillerDispatch.get(owner.index);
+          if (event._tag === "Ready" && sent !== undefined)
+            measure(sent.atMs, sent.seconds, event.durationSeconds);
+          if (event._tag === "Ready" || event._tag === "Ended" || event._tag === "Failed")
+            fillerDispatch.delete(owner.index);
           if (event._tag === "Started")
             playingStartedMs.set(event.clipId, event.atMonotonicMillis ?? monotonicMillis(clock));
           if (event._tag === "Ended" || event._tag === "Failed") {
@@ -1217,6 +1685,7 @@ export const makeScheduler = (
               yield* emit(item, { _tag: "Building" });
             break;
           case "Ready": {
+            measureItem(item, event.durationSeconds);
             const record = knownRecord(yield* engine.state, event.clipId);
             if (record !== undefined) {
               item.sessionId = record.sessionId;
@@ -1319,6 +1788,8 @@ export const makeScheduler = (
           return engine.move(command.clipId, command.position, "playout");
         case "PauseAutoplay":
           return engine.setAutoplay(false);
+        case "Cut":
+          return engine.cut(command.clipId);
       }
     };
 
@@ -1366,7 +1837,21 @@ export const makeScheduler = (
     const sendCommand = (command: Command): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (ended !== undefined) return;
-        if (command._tag === "Build") pendingBuilds.add(command.key);
+        if (command._tag === "Build") {
+          pendingBuilds.add(command.key);
+          const item = items.get(command.key);
+          if (item !== undefined) item.dispatchedAtMs = monotonicMillis(clock);
+        }
+        if (command._tag === "BuildFiller") {
+          lastFillerSeconds = command.request.durationSeconds;
+          fillerDispatch.set(command.index, {
+            atMs: monotonicMillis(clock),
+            seconds: command.request.durationSeconds,
+          });
+          // In-flight filler is bounded like the samples it feeds.
+          for (const index of fillerDispatch.keys())
+            if (fillerDispatch.size > maxSamples) fillerDispatch.delete(index);
+        }
         if (command._tag === "DeferAt") pendingAtDeferrals.add(command.key);
         commandCount++;
         yield* Queue.offer(commandQueue, command);
@@ -1390,7 +1875,7 @@ export const makeScheduler = (
           else yield* Deferred.fail(reply, result.failure);
       });
 
-    const sendItemRemoval = (item: Entry, reason: "late" | "withdrawn"): Effect.Effect<void> =>
+    const sendItemRemoval = (item: Entry, reason: DropReason): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (
           item.clipId === undefined ||
@@ -1404,7 +1889,7 @@ export const makeScheduler = (
 
     const requestWithdrawal = (
       item: Entry,
-      reason: "late" | "withdrawn",
+      reason: DropReason,
       reply?: Deferred.Deferred<WithdrawOutcome, EngineError>,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1435,21 +1920,12 @@ export const makeScheduler = (
     const applyPolicy = (action: PolicyAction, state: EngineState): Effect.Effect<void> =>
       Effect.gen(function* () {
         switch (action._tag) {
-          case "Withdraw": {
-            const item = items.get(action.key);
-            if (item !== undefined) yield* requestWithdrawal(item, action.reason);
-            break;
-          }
           case "DeferAt":
             if (canRetryRemoval(action.clipId))
               yield* sendCommand({ _tag: "DeferAt", key: action.key, clipId: action.clipId });
             break;
-          case "WithdrawFiller":
-            for (const clipId of action.clipIds)
-              if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
-                pendingFillerRemovals.add(clipId);
-                yield* sendCommand({ _tag: "RemoveFiller", clipId });
-              }
+          case "Cut":
+            yield* sendCommand({ _tag: "Cut", clipId: action.clipId });
             break;
           case "Order": {
             const signature =
@@ -1626,6 +2102,7 @@ export const makeScheduler = (
                   reason: { _tag: "Command", cause: result.failure },
                 });
               else item.retryAtMs = monotonicMillis(clock) + 1_000;
+              delete item.dispatchedAtMs;
             }
             break;
           }
@@ -1652,6 +2129,7 @@ export const makeScheduler = (
             } else if (result.failure.context.outcome === "unknown") {
               // The worker already retained this identity and its original age.
             } else {
+              fillerDispatch.delete(command.index);
               fillerRetryAtMs = monotonicMillis(clock) + 1_000;
               if (result.failure.context.outcome === "replied") {
                 fillerIndex = Math.max(fillerIndex, command.index + 1);
@@ -1683,7 +2161,10 @@ export const makeScheduler = (
                 removalUnknownAtSerial.set(command.clipId, snapshotAcquiredSerial);
               if (item?.phase === "Started")
                 yield* finishWithdrawal(command.key, Result.succeed("already-started"));
-              else yield* finishWithdrawal(command.key, Result.fail(result.failure));
+              // A refusal is not an outcome: the withdrawal stays pending and is retried.
+              // An unknown removal may already have taken effect, so it ends the wait.
+              else if (result.failure.context.outcome === "unknown")
+                yield* finishWithdrawal(command.key, Result.fail(result.failure));
             }
             break;
           }
@@ -1735,6 +2216,9 @@ export const makeScheduler = (
           case "Order":
             blockedMove = Result.isFailure(result) ? command.signature : undefined;
             break;
+          case "Cut":
+            if (Result.isFailure(result)) blockedCut = command.clipId;
+            break;
           case "PauseAutoplay":
             if (Result.isFailure(result)) {
               drainFailure = result.failure;
@@ -1745,69 +2229,39 @@ export const makeScheduler = (
         }
       });
 
-    // An accepted drain still owes air to every line not yet Ready, and to a
-    // Ready line held for a future At anchor, which runway must reach. Filler
-    // is the only material that can cover either, so it keeps playing and
-    // refilling until nothing accepted can still leave the host frozen. An
-    // Unknown item does not count: without a fenced source it can stay open
-    // until the scheduler closes, and filler for it would never stop.
-    const fillerHeld = (nowMs: number): boolean =>
-      draining &&
-      finishAccepted &&
-      [...items.values()].some(
-        (item) =>
-          item.phase === "Accepted" ||
-          item.phase === "Building" ||
-          (item.phase === "Ready" && item.atMs !== undefined && item.atMs > nowMs),
-      );
+    const pendingBatches = () =>
+      [...batches.values()].map((batch) => ({
+        id: batch.id,
+        waitFor: batch.waitFor,
+        targets: [...batch.targets].map(([key, target]) => ({ key, reason: target.reason })),
+      }));
 
-    const drainPending = (state: EngineState): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (!draining) return;
-        const playingId = Option.getOrUndefined(state.playing)?.clipId;
-        for (const item of items.values()) {
-          if (finishAccepted) break;
-          if (item.phase === "Terminal" || item.phase === "Started") continue;
-          if (item.clipId === playingId) continue;
-          yield* requestWithdrawal(item, "withdrawn");
-        }
-        if (fillerHeld(monotonicMillis(clock))) return;
-        for (const entry of filler.values()) {
-          if (
-            entry.clipId !== undefined &&
-            entry.clipId !== playingId &&
-            !pendingFillerRemovals.has(entry.clipId) &&
-            canRetryRemoval(entry.clipId)
-          ) {
-            pendingFillerRemovals.add(entry.clipId);
-            yield* sendCommand({ _tag: "RemoveFiller", clipId: entry.clipId });
-          }
-        }
-      });
-
-    const projectedStartMs = (state: EngineState, lane: string, nowMs: number): number => {
-      const playing = Option.getOrUndefined(state.playing);
-      const playingRecord =
-        playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-      const started = playing === undefined ? undefined : playingStartedMs.get(playing.clipId);
-      const restMs =
-        playingRecord === undefined || started === undefined
-          ? 0
-          : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
-      const laneRank = lanes.indexOf(lane);
-      const preferred = Option.getOrUndefined(state.preferredSessionId);
-      const aheadMs = state.ready.reduce((total, record) => {
-        if (record.sessionId !== preferred) return total;
-        const owner = owned.get(record.clipId);
-        if (owner?._tag === "Filler") return total;
-        if (owner?._tag === "Item") {
-          const prior = items.get(owner.key);
-          if (prior !== undefined && lanes.indexOf(prior.lane) > laneRank) return total;
-        }
-        return total + record.durationSeconds * 1000;
-      }, 0);
-      return nowMs + restMs + aheadMs;
+    /** The reply a batch keeps for its withdrawal of `key`, taken once. */
+    const takeBatchReply = (
+      key: ItemKey,
+    ): Deferred.Deferred<WithdrawOutcome, EngineError> | undefined => {
+      for (const batch of batches.values()) {
+        const target = batch.targets.get(key);
+        if (target === undefined) continue;
+        batch.targets.delete(key);
+        return target.reply;
+      }
+      return undefined;
     };
+
+    /** A batch takes effect: what it withdraws goes at once, and its replacements take over. */
+    const commitBatch = (id: number): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const batch = batches.get(id);
+        if (batch === undefined) return;
+        batches.delete(id);
+        for (const [key, target] of batch.targets) {
+          const item = items.get(key);
+          if (item !== undefined) yield* requestWithdrawal(item, target.reason, target.reply);
+          else if (target.reply !== undefined) yield* Deferred.succeed(target.reply, "not-found");
+        }
+        yield* Deferred.succeed(batch.committed, undefined);
+      });
 
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
@@ -1839,6 +2293,19 @@ export const makeScheduler = (
         if (item === undefined) continue;
         if (item.phase === "Started")
           yield* finishWithdrawal(key, Result.succeed("already-started"));
+        // A withdrawal still being retried when its item settles another way. Terminal
+        // Unknown keeps its uncertain result from the retirement or terminal settlement.
+        else if (item.phase === "Terminal" && item.status._tag !== "Unknown")
+          yield* finishWithdrawal(
+            key,
+            Result.succeed(
+              item.status._tag === "Dropped"
+                ? "withdrawn"
+                : item.status._tag === "Ended" || item.status._tag === "Unobserved"
+                  ? "already-started"
+                  : "not-found",
+            ),
+          );
         else if (item.clipId !== undefined) yield* sendItemRemoval(item, pending.reason);
       }
       for (const item of items.values())
@@ -1852,29 +2319,55 @@ export const makeScheduler = (
       // After retirement, so a deadline no longer outlives the uncertainty that
       // set it until the next message.
       updateRecovery(state);
-      if (draining) yield* drainPending(state);
       const preferred = Option.getOrUndefined(state.preferredSessionId);
       let unknownFillerCount = 0;
       for (const entry of unknownFillers.values())
         if (entry.sessionId === undefined || entry.sessionId === preferred) unknownFillerCount++;
-      const decision = plan({
-        engine: state,
-        items: [...items.values()],
-        owned,
-        lanes,
-        nowMs: monotonicMillis(clock),
-        playingStartedMs,
-        floorSeconds,
-        targetSeconds,
-        refillActive,
-        maxBuildsInFlight,
-        accepting: accepting || (draining && finishAccepted),
-        fillerEnabled: !draining || fillerHeld(monotonicMillis(clock)),
-        fillerRetryAtMs,
-        unknownFillerCount,
-        blockedMove,
-      });
+      const brokenGroups = new Map<ItemKey, number>();
+      for (const [key, group] of groups)
+        if (group.brokenAt !== undefined) brokenGroups.set(key, group.brokenAt);
+      const decide = () =>
+        plan({
+          engine: state,
+          items: [...items.values()],
+          owned,
+          lanes,
+          nowMs: monotonicMillis(clock),
+          playingStartedMs,
+          floorSeconds,
+          targetSeconds,
+          refillActive,
+          maxBuildsInFlight,
+          accepting,
+          drain: draining ? (finishAccepted ? "accepted" : "playing") : undefined,
+          fillerRetryAtMs,
+          unknownFillerCount,
+          blockedMove,
+          withdrawing: new Set(pendingWithdrawals.keys()),
+          dispatched: pendingBuilds,
+          brokenGroups,
+          batches: pendingBatches(),
+          estimates: estimatesFrom(buildSamples, lengthSamples),
+          ...fillerView(),
+          cutLanes,
+          blockedCut,
+        });
+      let decision = decide();
+      // A commit changes what is withdrawn and what takes over, so the plan is read again.
+      if (decision.commit.length > 0) {
+        for (const id of decision.commit) yield* commitBatch(id);
+        decision = decide();
+      }
       refillActive = decision.refillActive;
+      for (const { key, reason } of decision.withdraw) {
+        const item = items.get(key);
+        if (item !== undefined) yield* requestWithdrawal(item, reason, takeBatchReply(key));
+      }
+      for (const clipId of decision.withdrawFiller)
+        if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
+          pendingFillerRemovals.add(clipId);
+          yield* sendCommand({ _tag: "RemoveFiller", clipId });
+        }
       yield* publishState(state, sources.sessions);
       if ((!draining || finishAccepted) && commandCount === 0 && decision.action !== undefined)
         yield* applyPolicy(decision.action, state);
@@ -1909,94 +2402,619 @@ export const makeScheduler = (
       }
     });
 
+    /** Registers a captured item, without yielding; its caller publishes the Accepted evidence. */
+    const accept = (
+      captured: CapturedItem,
+      nowMs: number,
+      startByMs: number | undefined,
+      group: Entry["group"],
+      place?: {
+        readonly admission: number;
+        readonly replaces?: ItemKey;
+        readonly generation?: number;
+        readonly inserted?: boolean;
+        readonly notBeforeMs: number | undefined;
+      },
+    ): Entry => {
+      const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
+      const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
+      const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
+      const item: Entry = {
+        key: captured.key,
+        lane: captured.lane,
+        request: captured.request,
+        fingerprint: captured.fingerprint,
+        admission: place === undefined ? ++admission : place.admission,
+        seconds: captured.request.durationSeconds,
+        phase: "Accepted",
+        status: { _tag: "Accepted" },
+        ...(place === undefined
+          ? captured.notBeforeOffsetMs === undefined
+            ? {}
+            : { notBeforeMs: nowMs + captured.notBeforeOffsetMs }
+          : place.notBeforeMs === undefined
+            ? {}
+            : { notBeforeMs: place.notBeforeMs }),
+        ...(place?.replaces === undefined
+          ? {}
+          : { replaces: place.replaces, generation: place.generation ?? 1 }),
+        ...(place?.inserted === true ? { inserted: true } : {}),
+        ...(startByMs === undefined ? {} : { startByMs }),
+        firm: captured.firm,
+        ...(captured.atWallMs === undefined
+          ? {}
+          : {
+              atWallMs: captured.atWallMs,
+              atMs: nowMs + captured.atWallMs - clock.currentTimeMillisUnsafe(),
+            }),
+        late: captured.late,
+        ...(captured.mode === "asap" ? { asap: true } : {}),
+        ...(captured.mode === "manual" ? { held: true } : {}),
+        ...(group === undefined ? {} : { group }),
+        sessionId: undefined,
+        unknownSessionId: undefined,
+        unknownCause: undefined,
+        unknownAtMs: undefined,
+        handle: {
+          key: captured.key,
+          started: Deferred.await(startedWaiter),
+          outcome: Deferred.await(outcomeWaiter),
+          firstDecisive: Deferred.await(firstDecisiveWaiter),
+        },
+        startedWaiter,
+        outcomeWaiter,
+        firstDecisiveWaiter,
+      };
+      items.set(item.key, item);
+      return item;
+    };
+
+    /**
+     * One reply for withdrawals across a group's parts. A group key reports
+     * `withdrawn` if any part was; a part key reports that part's own outcome,
+     * while the parts after it are withdrawn too.
+     */
+    const settleWithdrawals = (
+      replies: ReadonlyArray<Deferred.Deferred<WithdrawOutcome, EngineError>>,
+      reply: Deferred.Deferred<WithdrawOutcome, EngineError>,
+      wholeGroup: boolean,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const outcomes: WithdrawOutcome[] = [];
+        for (const pending of replies) {
+          const result = yield* Effect.result(Deferred.await(pending));
+          if (Result.isFailure(result)) {
+            yield* Deferred.fail(reply, result.failure);
+            return;
+          }
+          outcomes.push(result.success);
+        }
+        yield* Deferred.succeed(
+          reply,
+          wholeGroup && outcomes.includes("withdrawn") ? "withdrawn" : (outcomes[0] ?? "not-found"),
+        );
+      });
+
+    /**
+     * The place an insert takes beside its anchor, or why it cannot: the anchor's lane, an
+     * admission between the anchor and its neighbour in that lane, and a group place when
+     * the insert falls between two parts of a group.
+     */
+    const placeInsert = (
+      insert: CapturedInsert,
+    ):
+      | string
+      | {
+          readonly lane: string;
+          readonly admission: number;
+          readonly group?: NonNullable<Entry["group"]>;
+        } => {
+      const live = (entry: Entry | undefined): entry is Entry =>
+        entry !== undefined && entry.phase !== "Terminal" && entry.replacedBy === undefined;
+      const named = groups.get(insert.anchor);
+      let anchor: Entry | undefined;
+      if (named === undefined) anchor = items.get(insert.anchor);
+      else {
+        const parts = named.parts
+          .map((key) => items.get(key))
+          .filter(live)
+          .sort((a, b) => a.group!.index - b.group!.index);
+        if (
+          insert.side === "before" &&
+          (parts.some((part) => part.phase === "Started") || parts[0]?.group?.index !== 0)
+        )
+          return "The anchor group already started";
+        anchor = insert.side === "before" ? parts[0] : parts.at(-1);
+      }
+      if (!live(anchor)) return "Nothing queued under the anchor key";
+      if (anchor.phase === "Unknown") return "The anchor's admission is uncertain";
+      if (insert.side === "before" && anchor.phase === "Started")
+        return "The anchor already started";
+      const neighbours = [...items.values()]
+        .filter((entry) => entry.lane === anchor.lane && entry.phase !== "Terminal")
+        .map((entry) => entry.admission);
+      const bound =
+        insert.side === "before"
+          ? Math.max(...neighbours.filter((value) => value < anchor.admission))
+          : Math.min(...neighbours.filter((value) => value > anchor.admission));
+      const admission = Number.isFinite(bound)
+        ? (anchor.admission + bound) / 2
+        : anchor.admission + (insert.side === "before" ? -0.5 : 0.5);
+      if (admission === anchor.admission || admission === bound)
+        return "No room is left to insert at that place";
+      let group: Entry["group"];
+      if (anchor.group !== undefined) {
+        const indexes = (groups.get(anchor.group.key)?.parts ?? [])
+          .map((key) => items.get(key)?.group?.index)
+          .filter((value): value is number => value !== undefined);
+        const index = anchor.group.index;
+        const neighbour =
+          insert.side === "before"
+            ? Math.max(...indexes.filter((value) => value < index))
+            : Math.min(...indexes.filter((value) => value > index));
+        // Before the first part or after the last one, the insert stays outside the group.
+        // Once parts have aired and settled, the place before the first remaining part is
+        // still inside the group.
+        const between =
+          insert.side === "before"
+            ? index > 0
+              ? (Number.isFinite(neighbour) ? neighbour : index - 1) + index
+              : undefined
+            : Number.isFinite(neighbour)
+              ? index + neighbour
+              : undefined;
+        if (between !== undefined) {
+          if (between / 2 === index || between / 2 === neighbour)
+            return "No room is left to insert at that place";
+          group = { key: anchor.group.key, index: between / 2 };
+        }
+      }
+      return group === undefined
+        ? { lane: anchor.lane, admission }
+        : { lane: anchor.lane, admission, group };
+    };
+
+    /** The items a withdrawal of `key` names: a group's parts, a part and those after it, or one item. */
+    const withdrawalTargets = (key: ItemKey): ReadonlyArray<Entry> => {
+      const item = items.get(key);
+      const named = groups.get(key);
+      const group = named ?? (item?.group === undefined ? undefined : groups.get(item.group.key));
+      if (group === undefined || (named === undefined && item?.inserted === true))
+        return item === undefined ? [] : [item];
+      const from = named === undefined ? item!.group!.index : 0;
+      const targets = group.parts
+        .map((part) => items.get(part))
+        .filter((part): part is Entry => part?.group !== undefined && part.group.index >= from);
+      // A part key's reply is that part's own outcome, so it goes first.
+      if (named === undefined) targets.sort((a, b) => Number(b === item) - Number(a === item));
+      return targets;
+    };
+
+    type StagedResult =
+      | { readonly _tag: "Added"; readonly handle: ItemHandle }
+      | { readonly _tag: "AddedGroup"; readonly handle: GroupHandle }
+      | { readonly _tag: "Withdrawal"; readonly key: ItemKey };
+
+    interface Staged {
+      readonly results: ReadonlyArray<StagedResult>;
+      /** Items this call admitted, in order; their Accepted evidence is still unpublished. */
+      readonly added: ReadonlyArray<Entry>;
+      /** Items the batch waits for: those it added and any it repeats that another batch holds. */
+      readonly waitFor: ReadonlyArray<ItemKey>;
+      /** Waiting items of replace lanes that what it added supersedes. */
+      readonly replaced: ReadonlyArray<ItemKey>;
+    }
+
+    /**
+     * Checks and admits a call's edits in order, without yielding. A refused edit undoes the
+     * edits before it, so nothing of a refused batch is admitted or published.
+     */
+    const stageEdits = (
+      edits: ReadonlyArray<CapturedEdit>,
+      batched: boolean,
+      state: EngineState,
+      nowMs: number,
+    ): Result.Result<Staged, KeyMismatch | WouldMissDeadline | LaneBusy | PolicyFailure> => {
+      const undo: Array<() => void> = [];
+      const added: Entry[] = [];
+      const waitFor: ItemKey[] = [];
+      const replaced: ItemKey[] = [];
+      const results: StagedResult[] = [];
+      const refuse = (error: KeyMismatch | WouldMissDeadline | LaneBusy | PolicyFailure) => {
+        for (const step of undo.reverse()) step();
+        return Result.fail(error);
+      };
+      // Clips a batch withdraws or replaces do not count ahead of the clips it adds.
+      const excluding = new Set<ItemKey>();
+      const named: ItemKey[] = [];
+      for (const edit of edits)
+        switch (edit._tag) {
+          case "Submit":
+            named.push(edit.item.key);
+            break;
+          case "SubmitGroup":
+            named.push(edit.group.key, ...edit.group.parts.map((part) => part.key));
+            break;
+          case "Insert":
+            named.push(edit.insert.key);
+            break;
+          case "Replace":
+            named.push(edit.key, edit.next.key);
+            excluding.add(edit.key);
+            break;
+          case "Withdraw": {
+            const targets = withdrawalTargets(edit.key);
+            named.push(
+              edit.key,
+              ...targets.map((target) => target.key).filter((key) => key !== edit.key),
+            );
+            for (const target of targets) excluding.add(target.key);
+            break;
+          }
+        }
+      if (new Set(named).size !== named.length)
+        return refuse(invalid("An edit batch names each key once"));
+      for (const edit of edits)
+        if (edit._tag === "Insert" && excluding.has(edit.insert.anchor))
+          return refuse(invalid("An insert's anchor is withdrawn or replaced in the same batch"));
+      const view = (place: Parameters<typeof projectedStartMs>[1]) =>
+        projectedStartMs(
+          {
+            engine: state,
+            items: [...items.values()].filter((item) => !excluding.has(item.key)),
+            owned,
+            lanes,
+            playingStartedMs,
+            nowMs,
+            batches: pendingBatches(),
+            estimates: estimatesFrom(buildSamples, lengthSamples),
+            ...fillerView(),
+            withdrawing: new Set(pendingWithdrawals.keys()),
+          },
+          place,
+        );
+      /**
+       * A new submission's lane policy: a skip lane refuses it while the lane has an item
+       * waiting or playing; a replace lane supersedes the items still waiting there.
+       */
+      const conflict = (key: ItemKey, lane: string): LaneBusy | undefined => {
+        const others = [...items.values()].filter(
+          (entry) =>
+            entry.lane === lane &&
+            entry.phase !== "Terminal" &&
+            !excluding.has(entry.key) &&
+            !added.includes(entry),
+        );
+        switch (conflicts.get(lane)) {
+          case "skip":
+            return others.length > 0 ? LaneBusy.of(key, lane) : undefined;
+          case "replace":
+            for (const entry of others)
+              if (entry.phase !== "Started" && !pendingWithdrawals.has(entry.key)) {
+                replaced.push(entry.key);
+                excluding.add(entry.key);
+              }
+            return undefined;
+          default:
+            return undefined;
+        }
+      };
+      const admitted = (entry: Entry) => {
+        added.push(entry);
+        waitFor.push(entry.key);
+        undo.push(() => items.delete(entry.key));
+      };
+      /** An existing key: the same spec returns its handle, and the batch waits for it too. */
+      const repeated = (
+        key: ItemKey,
+        fingerprint: string,
+      ): Result.Result<ItemHandle | undefined, KeyMismatch> => {
+        const existing = items.get(key) ?? history.get(key);
+        if (existing === undefined && !groups.has(key)) return Result.succeed(undefined);
+        if (existing?.fingerprint !== fingerprint) return Result.fail(KeyMismatch.of(key));
+        waitFor.push(key);
+        return Result.succeed(existing.handle);
+      };
+      for (const edit of edits) {
+        switch (edit._tag) {
+          case "Submit": {
+            const { item } = edit;
+            const known = repeated(item.key, item.fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
+              break;
+            }
+            const busy = conflict(item.key, item.lane);
+            if (busy !== undefined) return refuse(busy);
+            const startByMs =
+              item.startByOffsetMs === undefined ? undefined : nowMs + item.startByOffsetMs;
+            if (
+              startByMs !== undefined &&
+              view({
+                lane: item.lane,
+                admission: Infinity,
+                seconds: item.request.durationSeconds,
+                startByMs,
+              }) > startByMs
+            )
+              return refuse(WouldMissDeadline.of(item.key));
+            const entry = accept(item, nowMs, startByMs, undefined);
+            admitted(entry);
+            results.push({ _tag: "Added", handle: entry.handle });
+            break;
+          }
+          case "SubmitGroup": {
+            const { group } = edit;
+            const known = groups.get(group.key);
+            if (known !== undefined) {
+              if (known.fingerprint !== group.fingerprint) return refuse(KeyMismatch.of(group.key));
+              waitFor.push(...known.parts);
+              results.push({ _tag: "AddedGroup", handle: known.handle });
+              break;
+            }
+            const taken = [group.key, ...group.parts.map((part) => part.key)].find(
+              (key) => items.has(key) || history.has(key) || groups.has(key),
+            );
+            if (taken !== undefined) return refuse(KeyMismatch.of(taken));
+            const [first, ...rest] = group.parts;
+            const busy = conflict(group.key, first.lane);
+            if (busy !== undefined) return refuse(busy);
+            const startByMs =
+              first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
+            if (
+              startByMs !== undefined &&
+              view({
+                lane: first.lane,
+                admission: Infinity,
+                seconds: first.request.durationSeconds,
+                startByMs,
+              }) > startByMs
+            )
+              return refuse(WouldMissDeadline.of(group.key));
+            const parts = [
+              accept(first, nowMs, startByMs, { key: group.key, index: 0 }),
+              ...rest.map((part, index) =>
+                accept(part, nowMs, undefined, { key: group.key, index: index + 1 }),
+              ),
+            ] as const;
+            for (const part of parts) admitted(part);
+            const handle: GroupHandle = {
+              key: group.key,
+              parts: [parts[0].handle, ...parts.slice(1).map((part) => part.handle)],
+            };
+            groups.set(group.key, {
+              fingerprint: group.fingerprint,
+              handle,
+              parts: group.parts.map((part) => part.key),
+              brokenAt: undefined,
+            });
+            undo.push(() => groups.delete(group.key));
+            results.push({ _tag: "AddedGroup", handle });
+            break;
+          }
+          case "Insert": {
+            const { insert } = edit;
+            const known = repeated(insert.key, insert.fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
+              break;
+            }
+            const placed = placeInsert(insert);
+            if (typeof placed === "string") return refuse(invalid(placed));
+            const startByMs =
+              insert.startByOffsetMs === undefined ? undefined : nowMs + insert.startByOffsetMs;
+            if (
+              startByMs !== undefined &&
+              view({ ...placed, seconds: insert.request.durationSeconds, startByMs }) > startByMs
+            )
+              return refuse(WouldMissDeadline.of(insert.key));
+            const entry = accept(
+              {
+                key: insert.key,
+                lane: placed.lane,
+                request: insert.request,
+                fingerprint: insert.fingerprint,
+                notBeforeOffsetMs: insert.notBeforeOffsetMs,
+                startByOffsetMs: insert.startByOffsetMs,
+                firm: insert.firm,
+                atWallMs: undefined,
+                late: "nextBoundary",
+              },
+              nowMs,
+              startByMs,
+              placed.group,
+              {
+                admission: placed.admission,
+                inserted: true,
+                notBeforeMs:
+                  insert.notBeforeOffsetMs === undefined
+                    ? undefined
+                    : nowMs + insert.notBeforeOffsetMs,
+              },
+            );
+            admitted(entry);
+            if (placed.group !== undefined) {
+              const parts = groups.get(placed.group.key)?.parts;
+              parts?.push(entry.key);
+              undo.push(() => parts?.pop());
+            }
+            results.push({ _tag: "Added", handle: entry.handle });
+            break;
+          }
+          case "Replace": {
+            const { next } = edit;
+            const fingerprint = JSON.stringify({ replaces: edit.key, request: next.request });
+            const known = repeated(next.key, fingerprint);
+            if (Result.isFailure(known)) return refuse(known.failure);
+            if (known.success !== undefined) {
+              results.push({ _tag: "Added", handle: known.success });
+              break;
+            }
+            const old = items.get(edit.key);
+            if (
+              old === undefined ||
+              old.replacedBy !== undefined ||
+              (old.phase !== "Accepted" && old.phase !== "Building" && old.phase !== "Ready")
+            )
+              return refuse(invalid("Nothing queued to replace under that key"));
+            const entry = accept(
+              {
+                key: next.key,
+                lane: old.lane,
+                request: next.request,
+                fingerprint,
+                notBeforeOffsetMs: undefined,
+                startByOffsetMs: undefined,
+                firm: old.firm,
+                atWallMs: old.atWallMs,
+                late: old.late,
+              },
+              nowMs,
+              old.startByMs,
+              old.group,
+              {
+                admission: old.admission,
+                replaces: old.key,
+                generation: (old.generation ?? 0) + 1,
+                inserted: old.inserted === true,
+                notBeforeMs: old.notBeforeMs,
+              },
+            );
+            admitted(entry);
+            old.replacedBy = entry.key;
+            undo.push(() => delete old.replacedBy);
+            if (old.group !== undefined) {
+              const parts = groups.get(old.group.key)?.parts;
+              parts?.push(entry.key);
+              undo.push(() => parts?.pop());
+            }
+            results.push({ _tag: "Added", handle: entry.handle });
+            break;
+          }
+          case "Withdraw":
+            results.push({ _tag: "Withdrawal", key: edit.key });
+            break;
+        }
+      }
+      return Result.succeed({ results, added, waitFor, replaced });
+    };
+
+    /**
+     * Makes a staged call's handle. A batch keeps what it withdraws as cover until it commits;
+     * a single call adds one item or group and takes effect at once.
+     */
+    const openBatch = (
+      staged: Staged,
+      batched: boolean,
+    ): { readonly handle: EditHandle; readonly settle: ReadonlyArray<Effect.Effect<void>> } => {
+      // A single call adds one item or group and never withdraws; only a replace lane gives
+      // it something to supersede.
+      if (!batched && staged.replaced.length === 0)
+        return {
+          handle: {
+            results: staged.results.filter((result) => result._tag !== "Withdrawal"),
+            committed: Effect.void,
+          },
+          settle: [],
+        };
+      const settle: Effect.Effect<void>[] = [];
+      const batch: Batch = {
+        id: ++batchCount,
+        waitFor: staged.waitFor,
+        targets: new Map(
+          staged.replaced.map((key) => [key, { reason: "replaced", reply: undefined }] as const),
+        ),
+        committed: Deferred.makeUnsafe<void, EngineError>(),
+      };
+      const results = staged.results.map((result): EditResult => {
+        if (result._tag !== "Withdrawal") return result;
+        const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
+        for (const target of withdrawalTargets(result.key)) {
+          const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+          replies.push(reply);
+          batch.targets.set(target.key, { reason: "withdrawn", reply });
+        }
+        const outcome = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+        settle.push(settleWithdrawals(replies, outcome, groups.has(result.key)));
+        return { _tag: "Withdrawal", outcome: Deferred.await(outcome) };
+      });
+      batches.set(batch.id, batch);
+      return {
+        handle: {
+          results: batched ? results : results.filter((result) => result._tag !== "Withdrawal"),
+          committed: batched ? Deferred.await(batch.committed) : Effect.void,
+        },
+        settle,
+      };
+    };
+
     const actor = Effect.gen(function* () {
       for (;;) {
         const message = yield* takeQueue(inbox);
         // Queued public calls observe the same terminal result through closedCall.
         if (ended !== undefined && message._tag !== "CommandDone") continue;
         switch (message._tag) {
-          case "Submit": {
+          case "Edit": {
             if (!accepting) {
               yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
-              break;
-            }
-            const existing = items.get(message.item.key) ?? history.get(message.item.key);
-            if (existing !== undefined) {
-              if (existing.fingerprint === message.item.fingerprint)
-                yield* Deferred.succeed(message.reply, existing.handle);
-              else yield* Deferred.fail(message.reply, KeyMismatch.of(message.item.key));
               break;
             }
             const nowMs = monotonicMillis(clock);
             const state = yield* engine.state;
             if (ended !== undefined) continue;
-            const startByMs =
-              message.item.startByOffsetMs === undefined
-                ? undefined
-                : nowMs + message.item.startByOffsetMs;
-            const projectedMs = projectedStartMs(state, message.item.lane, nowMs);
-            if (startByMs !== undefined && projectedMs > startByMs) {
-              yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
+            // No yield from the terminal check above through admission and its
+            // publication below: a claim either precedes the items or settles them
+            // after their Accepted evidence.
+            const staged = stageEdits(message.edits, message.batched, state, nowMs);
+            if (Result.isFailure(staged)) {
+              yield* Deferred.fail(message.reply, staged.failure);
               break;
             }
-            // No yield from the terminal check above through admission and its
-            // publication below: a claim either precedes the item or settles it
-            // after its Accepted evidence.
-            const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
-            const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
-            const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
-            const handle: ItemHandle = {
-              key: message.item.key,
-              started: Deferred.await(startedWaiter),
-              outcome: Deferred.await(outcomeWaiter),
-              firstDecisive: Deferred.await(firstDecisiveWaiter),
-            };
-            const item: Entry = {
-              key: message.item.key,
-              lane: message.item.lane,
-              request: message.item.request,
-              fingerprint: message.item.fingerprint,
-              admission: ++admission,
-              phase: "Accepted",
-              status: { _tag: "Accepted" },
-              ...(message.item.notBeforeOffsetMs === undefined
-                ? {}
-                : { notBeforeMs: nowMs + message.item.notBeforeOffsetMs }),
-              ...(startByMs === undefined ? {} : { startByMs }),
-              firm: message.item.firm,
-              ...(message.item.atWallMs === undefined
-                ? {}
-                : {
-                    atWallMs: message.item.atWallMs,
-                    atMs: nowMs + message.item.atWallMs - clock.currentTimeMillisUnsafe(),
-                  }),
-              late: message.item.late,
-              sessionId: undefined,
-              unknownSessionId: undefined,
-              unknownCause: undefined,
-              unknownAtMs: undefined,
-              handle,
-              startedWaiter,
-              outcomeWaiter,
-              firstDecisiveWaiter,
-            };
-            items.set(item.key, item);
-            PubSub.publishUnsafe(events, {
-              key: item.key,
-              at: clock.currentTimeMillisUnsafe(),
-              status: item.status,
-            });
+            for (const entry of staged.success.added)
+              PubSub.publishUnsafe(events, {
+                key: entry.key,
+                at: clock.currentTimeMillisUnsafe(),
+                status: entry.status,
+              });
+            const opened = openBatch(staged.success, message.batched);
+            for (const effect of opened.settle) yield* Effect.forkIn(effect, actorScope);
             yield* observed(state);
-            // Submit returns its committed view; other messages publish once
+            // An edit returns its committed view; other messages publish once
             // through reconciliation after all their evidence is adopted.
             yield* publishState(state);
-            yield* Deferred.succeed(message.reply, handle);
+            yield* Deferred.succeed(message.reply, opened.handle);
             break;
           }
           case "Withdraw": {
+            const targets = withdrawalTargets(message.key);
+            if (targets.length <= 1 && !groups.has(message.key)) {
+              if (targets[0] === undefined) yield* Deferred.succeed(message.reply, "not-found");
+              else yield* requestWithdrawal(targets[0], "withdrawn", message.reply);
+              break;
+            }
+            const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
+            for (const part of targets) {
+              const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+              replies.push(reply);
+              yield* requestWithdrawal(part, "withdrawn", reply);
+            }
+            yield* Effect.forkIn(
+              settleWithdrawals(replies, message.reply, groups.has(message.key)),
+              actorScope,
+            );
+            break;
+          }
+          case "Release": {
             const item = items.get(message.key);
-            if (item === undefined) yield* Deferred.succeed(message.reply, "not-found");
-            else yield* requestWithdrawal(item, "withdrawn", message.reply);
+            if (item?.held !== true || item.phase === "Started" || item.phase === "Terminal") {
+              yield* Deferred.fail(message.reply, invalid("Nothing is held under that key"));
+              break;
+            }
+            item.held = false;
+            item.asap = true;
+            yield* Deferred.succeed(message.reply, undefined);
             break;
           }
           case "Drain": {
@@ -2029,7 +3047,6 @@ export const makeScheduler = (
                 yield* sendCommand({ _tag: "PauseAutoplay" });
               }
             }
-            yield* drainPending(yield* engine.state);
             break;
           }
           case "Snapshot": {
@@ -2124,20 +3141,96 @@ export const makeScheduler = (
     );
     yield* Deferred.await(initialized);
 
+    const laneSet = new Set(lanes);
+    const send = (
+      edits: ReadonlyArray<CapturedEdit>,
+      batched: boolean,
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<
+          EditHandle,
+          KeyMismatch | WouldMissDeadline | LaneBusy | EngineError
+        >();
+        if (!(yield* Queue.offer(inbox, { _tag: "Edit", edits, batched, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      });
+    /** The one result of a single call. */
+    const only = (handle: EditHandle): EditResult | undefined => handle.results[0];
     const submit: SchedulerShape["submit"] = (
+      input,
+    ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const item = yield* captureItem(input, laneSet);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", item.key);
+        const result = only(yield* send([{ _tag: "Submit", item }], false));
+        if (result?._tag !== "Added") return yield* Effect.die("A submission returned no item");
+        return result.handle;
+      }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
+    const submitGroup: SchedulerShape["submitGroup"] = (
+      input,
+    ): Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const group = yield* captureGroup(input, laneSet);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.group.key", group.key);
+        const result = only(yield* send([{ _tag: "SubmitGroup", group }], false));
+        if (result?._tag !== "AddedGroup") return yield* Effect.die("A group returned no handle");
+        return result.handle;
+      }).pipe(Effect.withSpan("Scheduler.submitGroup", {}, { captureStackTrace: false }));
+    const replace: SchedulerShape["replace"] = (
+      key,
+      input,
+    ): Effect.Effect<ItemHandle, KeyMismatch | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const next = yield* captureReplacement(input);
+        const result = only(
+          yield* send([{ _tag: "Replace", key, next }], false).pipe(
+            // A replacement keeps the replaced item's place and window, so neither a deadline
+            // nor its lane's policy is checked for it.
+            Effect.catchTag(["WouldMissDeadline", "LaneBusy"], (error) => Effect.die(error)),
+          ),
+        );
+        if (result?._tag !== "Added") return yield* Effect.die("A replacement returned no item");
+        return result.handle;
+      }).pipe(
+        Effect.withSpan("Scheduler.replace", { attributes: { key } }, { captureStackTrace: false }),
+      );
+    const insert: SchedulerShape["insert"] = (
       input,
     ): Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
       Effect.gen(function* () {
         if (yield* Deferred.isDone(stopped)) return yield* closedCall;
-        const item = yield* captureItem(input, new Set(lanes));
-        yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", item.key);
-        const reply = yield* Deferred.make<
-          ItemHandle,
-          KeyMismatch | WouldMissDeadline | EngineError
-        >();
-        if (!(yield* Queue.offer(inbox, { _tag: "Submit", item, reply }))) return yield* closedCall;
+        const captured = yield* captureInsert(input);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.item.key", captured.key);
+        const result = only(
+          yield* send([{ _tag: "Insert", insert: captured }], false).pipe(
+            // An insert places itself, so its lane's policy does not apply.
+            Effect.catchTag("LaneBusy", (error) => Effect.die(error)),
+          ),
+        );
+        if (result?._tag !== "Added") return yield* Effect.die("An insert returned no item");
+        return result.handle;
+      }).pipe(Effect.withSpan("Scheduler.insert", {}, { captureStackTrace: false }));
+    const edit: SchedulerShape["edit"] = (
+      input,
+    ): Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const edits = yield* captureEdits(input, laneSet);
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.edits", edits.length);
+        return yield* send(edits, true);
+      }).pipe(Effect.withSpan("Scheduler.edit", {}, { captureStackTrace: false }));
+    const release: SchedulerShape["release"] = (key) =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<void, EngineError>();
+        if (!(yield* Queue.offer(inbox, { _tag: "Release", key, reply }))) return yield* closedCall;
         return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
-      }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
+      }).pipe(
+        Effect.withSpan("Scheduler.release", { attributes: { key } }, { captureStackTrace: false }),
+      );
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -2165,6 +3258,11 @@ export const makeScheduler = (
       }).pipe(Effect.withSpan("Scheduler.drain", {}, { captureStackTrace: false }));
     return {
       submit,
+      submitGroup,
+      replace,
+      insert,
+      edit,
+      release,
       withdraw,
       drain,
       failure: Deferred.await(stopped),
