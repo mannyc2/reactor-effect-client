@@ -226,16 +226,24 @@ test("rejects mixed and incompatible duplicate lock coordinates", () => {
 });
 
 test("a scoped package named effect is not an Effect instance unless its coordinate is", () => {
-  const withEntry = (coordinate: string) =>
-    selectStack(
-      manifest,
-      lock().replace(
-        '"packages": {',
-        `"packages": { "@acme/effect": ["${coordinate}", "", {}, "sha512-fixture"],`,
-      ),
-    );
-  expect(withEntry("@acme/effect@1.0.0").selected.effect).toBe(baseline);
-  expect(() => withEntry(`effect@${later}`)).toThrow(/conflicting.*effect/);
+  for (const key of ["@acme/effect", "foo/@acme/effect", "@x/foo/@acme/effect"]) {
+    const withEntry = (coordinate: string) =>
+      selectStack(
+        manifest,
+        lock().replace(
+          '"packages": {',
+          `"packages": { "${key}": ["${coordinate}", "", {}, "sha512-fixture"],`,
+        ),
+      );
+    expect(withEntry("@acme/effect@1.0.0").selected.effect).toBe(baseline);
+    expect(() => withEntry(`effect@${later}`)).toThrow(/conflicting.*effect/);
+  }
+  // A nested scoped instance of a stack package is still inspected by its key.
+  const nested = lock().replace(
+    '"packages": {',
+    `"packages": { "foo/@effect/platform-node": ["@effect/platform-node@${later}", "", {}, "sha512-fixture"],`,
+  );
+  expect(() => selectStack(manifest, nested)).toThrow(/conflicting.*platform-node/);
 });
 
 test("owner-relative resolution succeeds without an undeclared root Effect", () =>
