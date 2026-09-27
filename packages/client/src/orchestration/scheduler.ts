@@ -28,7 +28,13 @@ import {
   keyedRequest,
   keyFromProviderMetadata,
 } from "./scheduler-key.js";
-import { estimatesFrom, plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
+import {
+  dueCues,
+  estimatesFrom,
+  plan,
+  projectedStartMs,
+  runwaySeconds,
+} from "./scheduler-policy.js";
 import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
@@ -76,10 +82,29 @@ export type StartMode =
         | { readonly _tag: "drop" };
     };
 
+/**
+ * A secondary event on a clip, such as an overlay, caption or browser action, fired while
+ * the clip plays: an offset from its observed start, or back from its end.
+ */
+export interface Cue {
+  /** The application's name for it, reported when it fires. */
+  readonly name: string;
+  readonly at: { readonly from: "start" | "end"; readonly offset: Duration.Input };
+}
+
+export interface CueEvent {
+  readonly key: ItemKey;
+  readonly name: string;
+  /** Epoch milliseconds when the cue fired. */
+  readonly at: number;
+}
+
 export interface ItemSpec {
   readonly key: ItemKey;
   readonly lane: string;
   readonly request: ClipRequest;
+  /** Fired while the clip plays; one that falls after the clip ends, if cut, never fires. */
+  readonly cues?: ReadonlyArray<Cue>;
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: {
     readonly notBefore?: Duration.Input;
@@ -180,6 +205,7 @@ export interface ItemHandle {
 export interface GroupPart {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<Cue>;
 }
 
 export interface GroupSpec {
@@ -201,6 +227,7 @@ export interface GroupHandle {
 export interface ReplacementSpec {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<Cue>;
 }
 
 /**
@@ -214,6 +241,7 @@ export interface InsertSpec {
   readonly after?: ItemKey;
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: ItemSpec["window"];
+  readonly cues?: ReadonlyArray<Cue>;
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
@@ -298,10 +326,17 @@ export class WouldMissDeadline extends Schema.TaggedError<WouldMissDeadline>()(
   }
 }
 
+interface CapturedCue {
+  readonly name: string;
+  readonly from: "start" | "end";
+  readonly offsetMs: number;
+}
+
 interface CapturedItem {
   readonly key: ItemKey;
   readonly lane: string;
   readonly request: ClipRequest;
+  readonly cues?: ReadonlyArray<CapturedCue>;
   readonly fingerprint: string;
   readonly notBeforeOffsetMs: number | undefined;
   readonly startByOffsetMs: number | undefined;
@@ -328,6 +363,9 @@ interface Entry extends PlannedItem {
   phase: PlannedItem["phase"];
   /** Set once another item was submitted to take this one's place. */
   replacedBy?: ItemKey;
+  readonly cues: ReadonlyArray<CapturedCue>;
+  /** Indexes of the cues already fired. */
+  readonly firedCues: Set<number>;
   held?: boolean;
   asap?: boolean;
   dispatchedAtMs?: number;
@@ -543,6 +581,39 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
     ).pipe(Effect.mapError((error) => invalid(error.message)));
   });
 
+/** Enough cues for a line's overlays and actions, and a bound on one clip's timers. */
+const maxCues = 32;
+
+/** A clip's cues, read as caller data. */
+const captureCues = (input: unknown) =>
+  Effect.gen(function* (): Effect.fn.Return<ReadonlyArray<CapturedCue>, PolicyFailure> {
+    if (input === undefined) return [];
+    if (!Array.isArray(input)) return yield* invalid("Cues must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(input as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length > maxCues)
+      return yield* invalid(`A clip takes at most ${maxCues} cues`);
+    const cues: CapturedCue[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Cues must be data");
+      const cue = yield* Effect.fromResult(ownedData(descriptor.value, ["name", "at"], "Cue"));
+      const at = yield* Effect.fromResult(ownedData(cue.at, ["from", "offset"], "Cue time"));
+      if (typeof cue.name !== "string" || cue.name.length === 0)
+        return yield* invalid("A cue needs a nonempty name");
+      if (at.from !== "start" && at.from !== "end")
+        return yield* invalid("A cue is timed from the start or the end");
+      cues.push({
+        name: cue.name,
+        from: at.from,
+        offsetMs: yield* requestDuration(at.offset, "cue offset", true),
+      });
+    }
+    return cues;
+  });
+
 /** Capture scheduling fields before reading the request's placement fields. */
 /** A caller's clip request, without the placement and source fields the scheduler owns. */
 const captureClip = (input: unknown) =>
@@ -604,7 +675,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       Object.getOwnPropertySymbols(input).length > 0 ||
       Object.keys(descriptors).some(
         (field) =>
-          !["key", "lane", "request", "window", "start"].includes(field) ||
+          !["key", "lane", "request", "window", "start", "cues"].includes(field) ||
           !("value" in descriptors[field]!),
       )
     )
@@ -620,6 +691,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     const { notBeforeOffsetMs, startByOffsetMs, firm } = yield* captureWindow(
       descriptors.window?.value,
     );
+    const cues = yield* captureCues(descriptors.cues?.value);
     const rawStart: unknown = descriptors.start?.value;
     const start =
       rawStart === undefined
@@ -660,6 +732,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       atWallMs,
       late,
       ...(mode === undefined ? {} : { mode }),
+      ...(cues.length === 0 ? {} : { cues }),
       fingerprint: JSON.stringify({
         lane,
         request,
@@ -669,6 +742,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
         atWallMs,
         late,
         mode,
+        ...(cues.length === 0 ? {} : { cues }),
       }),
     };
   });
@@ -705,7 +779,7 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
       if (descriptor === undefined || !("value" in descriptor))
         return yield* invalid("Scheduled group parts must be data");
       const part = yield* Effect.fromResult(
-        ownedData(descriptor.value, ["key", "request"], "Scheduled group part"),
+        ownedData(descriptor.value, ["key", "request", "cues"], "Scheduled group part"),
       );
       parts.push(
         yield* captureItem(
@@ -713,6 +787,7 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
             key: part.key,
             lane: group.lane,
             request: part.request,
+            ...(part.cues === undefined ? {} : { cues: part.cues }),
             ...(index === 0 && group.window !== undefined ? { window: group.window } : {}),
           } as ItemSpec,
           lanes,
@@ -732,16 +807,23 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
 interface CapturedReplacement {
   readonly key: ItemKey;
   readonly request: ClipRequest;
+  readonly cues: ReadonlyArray<CapturedCue>;
 }
 
 const captureReplacement = (input: ReplacementSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedReplacement, PolicyFailure> {
-    const next = yield* Effect.fromResult(ownedData(input, ["key", "request"], "Replacement"));
+    const next = yield* Effect.fromResult(
+      ownedData(input, ["key", "request", "cues"], "Replacement"),
+    );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(next.key).pipe(
       Effect.mapError(() => invalid("Replacement key must be nonempty")),
     );
     if (isReservedSchedulerKey(key)) return yield* invalid("Replacement key is reserved");
-    return { key, request: yield* captureClip(next.request) };
+    return {
+      key,
+      request: yield* captureClip(next.request),
+      cues: yield* captureCues(next.cues),
+    };
   });
 
 interface CapturedInsert {
@@ -752,13 +834,14 @@ interface CapturedInsert {
   readonly notBeforeOffsetMs: number | undefined;
   readonly startByOffsetMs: number | undefined;
   readonly firm: boolean;
+  readonly cues: ReadonlyArray<CapturedCue>;
   readonly fingerprint: string;
 }
 
 const captureInsert = (input: InsertSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedInsert, PolicyFailure> {
     const spec = yield* Effect.fromResult(
-      ownedData(input, ["key", "request", "before", "after", "window"], "Insert"),
+      ownedData(input, ["key", "request", "before", "after", "window", "cues"], "Insert"),
     );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(spec.key).pipe(
       Effect.mapError(() => invalid("Insert key must be nonempty")),
@@ -772,13 +855,20 @@ const captureInsert = (input: InsertSpec) =>
     );
     const request = yield* captureClip(spec.request);
     const window = yield* captureWindow(spec.window);
+    const cues = yield* captureCues(spec.cues);
     return {
       key,
       request,
       side,
       anchor,
       ...window,
-      fingerprint: JSON.stringify({ [side]: anchor, request, ...window }),
+      cues,
+      fingerprint: JSON.stringify({
+        [side]: anchor,
+        request,
+        ...window,
+        ...(cues.length === 0 ? {} : { cues }),
+      }),
     };
   });
 
@@ -902,6 +992,8 @@ export interface SchedulerShape {
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
   readonly asRun: Stream.Stream<AsRunEvent>;
+  /** Cues as they fire, within the scheduler's 100 ms turn of their time; subscribers receive later ones. */
+  readonly cues: Stream.Stream<CueEvent>;
 }
 
 export const lineup = (filler: SchedulerOptions["filler"]): SchedulerOptions => ({
@@ -1008,11 +1100,13 @@ export const makeScheduler = (
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
     const events = yield* PubSub.unbounded<AsRunEvent>();
+    const cueEvents = yield* PubSub.unbounded<CueEvent>();
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* Queue.shutdown(commandQueue);
         yield* Queue.shutdown(inbox);
         yield* PubSub.shutdown(events);
+        yield* PubSub.shutdown(cueEvents);
       }),
     );
     const stateRef = yield* SubscriptionRef.make<SchedulerState>({
@@ -1102,10 +1196,32 @@ export const makeScheduler = (
       delete item.dispatchedAtMs;
     };
 
+    /** Fires the cues of a playing item that are due by `untilMs`, in the order they fall. */
+    const fireCues = (entry: Entry, untilMs: number): void => {
+      if (entry.status._tag !== "Started" || entry.startedAtMonoMs === undefined) return;
+      for (const due of dueCues(
+        entry.cues,
+        entry.firedCues,
+        entry.startedAtMonoMs,
+        entry.status.durationSeconds,
+        untilMs,
+      )) {
+        entry.firedCues.add(due);
+        PubSub.publishUnsafe(cueEvents, {
+          key: entry.key,
+          name: entry.cues[due]!.name,
+          at: clock.currentTimeMillisUnsafe(),
+        });
+      }
+    };
+
     const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (ended !== undefined && !terminal) return;
         if (JSON.stringify(entry.status) === JSON.stringify(status)) return;
+        // A clip that ends fires only the cues that fell within the airtime it had.
+        if (status._tag === "Ended" && entry.startedAtMonoMs !== undefined)
+          fireCues(entry, entry.startedAtMonoMs + status.airedSeconds * 1000);
         entry.status = status;
         entry.phase =
           status._tag === "Accepted" ||
@@ -2273,6 +2389,8 @@ export const makeScheduler = (
         yield* publishState(state, sources.sessions);
         return;
       }
+      const nowMs = monotonicMillis(clock);
+      for (const item of items.values()) if (item.phase === "Started") fireCues(item, nowMs);
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
           uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
@@ -2448,6 +2566,8 @@ export const makeScheduler = (
               atMs: nowMs + captured.atWallMs - clock.currentTimeMillisUnsafe(),
             }),
         late: captured.late,
+        cues: captured.cues ?? [],
+        firedCues: new Set(),
         ...(captured.mode === "asap" ? { asap: true } : {}),
         ...(captured.mode === "manual" ? { held: true } : {}),
         ...(group === undefined ? {} : { group }),
@@ -2821,6 +2941,7 @@ export const makeScheduler = (
                 firm: insert.firm,
                 atWallMs: undefined,
                 late: "nextBoundary",
+                cues: insert.cues,
               },
               nowMs,
               startByMs,
@@ -2845,7 +2966,11 @@ export const makeScheduler = (
           }
           case "Replace": {
             const { next } = edit;
-            const fingerprint = JSON.stringify({ replaces: edit.key, request: next.request });
+            const fingerprint = JSON.stringify({
+              replaces: edit.key,
+              request: next.request,
+              ...(next.cues.length === 0 ? {} : { cues: next.cues }),
+            });
             const known = repeated(next.key, fingerprint);
             if (Result.isFailure(known)) return refuse(known.failure);
             if (known.success !== undefined) {
@@ -2870,6 +2995,7 @@ export const makeScheduler = (
                 firm: old.firm,
                 atWallMs: old.atWallMs,
                 late: old.late,
+                cues: next.cues,
               },
               nowMs,
               old.startByMs,
@@ -3268,6 +3394,7 @@ export const makeScheduler = (
       failure: Deferred.await(stopped),
       state: SubscriptionRef.get(stateRef),
       asRun: Stream.fromPubSub(events),
+      cues: Stream.fromPubSub(cueEvents),
     };
   }).pipe(
     Effect.provideServiceEffect(

@@ -41,6 +41,29 @@ export interface PlannedItem {
   readonly asap?: boolean;
 }
 
+/**
+ * The indexes of a playing clip's cues that fall due by `untilMs` and have not fired, in
+ * the order they fall: an offset from its start, or back from the end of its length.
+ */
+export const dueCues = (
+  cues: ReadonlyArray<{ readonly from: "start" | "end"; readonly offsetMs: number }>,
+  fired: ReadonlySet<number>,
+  startedAtMs: number,
+  durationSeconds: number,
+  untilMs: number,
+): ReadonlyArray<number> =>
+  cues
+    .map((cue, index) => ({
+      index,
+      atMs:
+        cue.from === "start"
+          ? startedAtMs + cue.offsetMs
+          : startedAtMs + durationSeconds * 1000 - cue.offsetMs,
+    }))
+    .filter(({ index, atMs }) => !fired.has(index) && atMs <= untilMs)
+    .sort((a, b) => a.atMs - b.atMs)
+    .map(({ index }) => index);
+
 /** A held clip that would be next within this many seconds is removed and rebuilt. */
 const exposureMarginSeconds = 1.5;
 
