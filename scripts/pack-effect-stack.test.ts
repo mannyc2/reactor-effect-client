@@ -87,13 +87,9 @@ test("frozen JSONC selection keeps exact versions separate from compatibility ra
   expect(selected.lockfileSha256).toBe(createHash("sha256").update(lock()).digest("hex"));
 });
 
-test("a later aligned frozen RC qualifies; the old range-minimum equality rejects it", () => {
+test("a later aligned frozen RC above the range minimum qualifies", () => {
   const stack = select(later);
   expect(stack.selected.effect).toBe(later);
-  const oldExpected = requirement.replace(/^[\^~>=<]+/, "");
-  expect(() => {
-    if (later !== oldExpected) throw new Error("old native equality rejects the installed stack");
-  }).toThrow("old native equality");
   withWorkspace((root) => {
     expect(resolveWorkspaceStack(root, stack)).toHaveLength(11);
     expect(inspectConsumerTree("native", "bun", nativeTree(later), stack).instances).toHaveLength(
