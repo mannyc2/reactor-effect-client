@@ -194,7 +194,7 @@ const section = (evidence: Evidence): string => {
     if (popped !== undefined)
       add(
         "Build popped in flight",
-        `${popped.wasGeneration ? "was" : "was NOT"} the generation head; ${popped.generatedAfterPop || popped.startedAfterPop ? "generated or started afterwards" : "never generated or started"} in the ${seconds(popped.observedUntilMs - popped.poppedMs)} after`,
+        `${popped.wasGeneration ? "was" : "was NOT"} the generation head; ${popped.generatedAfterPop || popped.startedAfterPop ? "generated or started afterwards" : "never generated or started"} in the ${seconds(popped.observedUntilMs - popped.poppedMs)} after${popped.nextReadyMs === undefined ? "" : `; the clip queued behind it was Ready ${seconds(popped.nextReadyMs - popped.poppedMs)} after the pop`}`,
       );
     for (const [index, boundary] of scheduler.boundaries.entries()) {
       const finished = boundary.ending.finishedMs;
@@ -206,10 +206,18 @@ const section = (evidence: Evidence): string => {
             ? `${boundary.edit} not staged`
             : `${boundary.edit} aimed ${seconds(boundary.aimMs)} before the end, reply ${finished === undefined ? "?" : seconds(finished - command.replyMs)} before clip_finished${command.refused ? ", refused" : `, next clip ${boundary.next?.clipId === boundary.expectedClipId ? "as intended" : "NOT as intended"}`}`;
       const pause = boundary.pause;
+      const next = boundary.next;
+      // The longest pause near a seamless boundary can be an ordinary frame gap beside it.
+      const spans =
+        pause !== undefined &&
+        finished !== undefined &&
+        next !== undefined &&
+        pause.lastNewFrameMs <= next.startedMs &&
+        pause.firstNewFrameMs >= finished;
       const seam =
-        pause === undefined || finished === undefined || boundary.next === undefined
+        pause === undefined || finished === undefined || next === undefined
           ? "seam not measured"
-          : `pause ${seconds(pause.durationMs)} (${pause.frames} frames, ${pause.dark} dark); last new frame ${seconds(pause.lastNewFrameMs - finished)} after clip_finished; clip_started ${seconds(boundary.next.startedMs - finished)} after it, first new frame ${seconds(pause.firstNewFrameMs - boundary.next.startedMs)} after that`;
+          : `clip_started ${seconds(next.startedMs - finished)} after clip_finished; longest pause nearby ${seconds(pause.durationMs)} (${pause.frames} frames, ${pause.dark} dark)${spans ? `, spanning the boundary from ${seconds(pause.lastNewFrameMs - finished)} after clip_finished to ${seconds(pause.firstNewFrameMs - next.startedMs)} after clip_started` : ", not at the boundary"}`;
       add(`Boundary ${index + 1}`, `${edit}; ${seam}`);
     }
     add(

@@ -170,7 +170,7 @@ test("a rehearsed scheduler edits the queue before five boundaries in one bounde
     expect(boundary.command?.refused).toBe(false);
     expect(boundary.next?.clipId).toBe(boundary.expectedClipId);
   }
-  // Between clips the twin holds the ending clip's last frame.
+  // Between clips the twin shows no new picture while it arms the next one.
   for (const boundary of scheduler.boundaries) expect(boundary.pause?.frames).toBeGreaterThan(0);
   expect(scheduler.positionZero?.generationOrder.slice(0, 2)).toEqual([
     scheduler.positionZero!.buildingClipId,

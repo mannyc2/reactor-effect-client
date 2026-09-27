@@ -106,9 +106,9 @@ export type SeamPause = typeof SeamPause.Type;
 export const schedulerBoundaries = [
   { edit: "none", aimMs: 0 },
   { edit: "move", aimMs: 2500 },
-  { edit: "move", aimMs: 250 },
+  { edit: "move", aimMs: 100 },
   { edit: "pop", aimMs: 1000 },
-  { edit: "pop", aimMs: 250 },
+  { edit: "pop", aimMs: 100 },
 ] as const;
 
 /** One clip boundary in the scheduler check: its edit, the clips on either side, and its seam. */
@@ -563,6 +563,9 @@ export const Evidence = Schema.Struct({
           observedUntilMs: Ms,
           generatedAfterPop: Schema.Boolean,
           startedAfterPop: Schema.Boolean,
+          /** The clip queued behind the popped build, and when it was Ready: when the slot freed. */
+          nextClipId: Schema.optionalKey(Schema.String),
+          nextReadyMs: Schema.optionalKey(Ms),
         }),
       ),
       /** One entry per clip boundary, in playing order, as `schedulerBoundaries` plans them. */
@@ -625,7 +628,7 @@ export const required = (evidence: Evidence): readonly string[] => {
       "scheduler.builds.0.readyMs",
       "scheduler.builds.0.readySeconds",
       "scheduler.positionZero",
-      "scheduler.poppedBuild",
+      "scheduler.poppedBuild.nextReadyMs",
       // An edit that was not staged leaves its command empty: its boundary answers nothing.
       ...schedulerBoundaries.flatMap(({ edit }, index) => [
         `scheduler.boundaries.${index}.ending.finishedMs`,

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The hosted `scheduler` check tests position zero first, while its first clip builds, then pops the build in flight after the second boundary and records when the clip queued behind it is Ready. Its late move and late pop aim 100 ms before the playing clip's end. The local twin now holds a popped running build's slot until that build finishes, as H3 documents. In 0.6.0's first paid run, the pop that preceded the position-zero request left the check's first clip waiting, so position zero was not observed behind a running build.
+
 ## [0.6.0] - 2026-09-27
 
 The scheduler bounds how long it waits on an unknown admission, renewal publishes its workers' defects and joins every acquisition when it closes, opt-in continuous renewal lifts the 64-session cap, and a queue read no longer misses a wakeup. Callers see failures where 0.5.0 waited or swallowed a defect, so a `^0.5.0` range does not include it: a scheduler with unresolved uncertainty fails after `unknownRecoveryTimeout`, renewal close can fail with the original defect, and `engine.failure` can fail with a renewal worker's Cause, which a waiter handles with `Effect.catchCause`. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host reads its track streams through the client's queue compatibility reads.

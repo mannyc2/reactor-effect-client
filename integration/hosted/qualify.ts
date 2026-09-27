@@ -749,6 +749,8 @@ const queueLeadMs = 600;
 const seamWindowMs = 1500;
 /** An edit sent at least this long before the playing clip ends must decide the next clip. */
 const judgedAimMs = 1000;
+/** After this boundary (the second) the queue is busy, so its head is a build in flight. */
+const popInFlightAfter = 1;
 
 /**
  * One bounded H3 session with autoplay on. Before each clip boundary in
@@ -886,13 +888,8 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           );
 
         yield* recorded(run, provider.setAutoplay(false));
-        // A build popped while it runs must never reach playout.
-        const popped = yield* submit("popped");
-        const wasGeneration = (yield* queue).generation[0]?.clip_id === popped.clipId;
-        yield* recorded(run, provider.pop(popped.clipId));
-        run.evidence.outcomes.push("replied");
-        const poppedMs = since(run.origin);
-        // H3 documents position zero as next, behind the build that is running.
+        // H3 documents position zero as next, behind the build that is running. The
+        // session is idle, so the first clip builds as soon as it is queued.
         const first = yield* submit("first");
         const zero = yield* submit("position-zero", 0);
         const generationOrder = (yield* queue).generation.map((clip) => clip.clip_id);
@@ -931,6 +928,8 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           };
         };
         const acceptedPops: string[] = [];
+        let popped: { clipId: string; nextClipId: string; poppedMs: number } | undefined;
+        let popRefused = false;
         for (const [index, planned] of schedulerBoundaries.entries()) {
           const ending = yield* seen(() => started()[index]);
           const endsAtMs = ending.atMs + ending.seconds * 1000;
@@ -982,6 +981,29 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
           boundary.ending = { ...boundary.ending, finishedMs: finished.atMs };
           boundary.next = { clipId: next.clipId, startedMs: next.atMs };
           recordBoundaries();
+          if (index === popInFlightAfter) {
+            // The generation head is building. With fewer than two clips queued, two
+            // more go in, and the first builds at once in the free slot. H3 documents
+            // that a popped running build finishes and is discarded; the clip behind
+            // it shows when the build slot frees.
+            let generation = (yield* queue).generation.map((clip) => clip.clip_id);
+            if (generation.length < 2) {
+              for (const name of ["in-flight", "behind-in-flight"])
+                builds.push(yield* submit(name));
+              generation = (yield* queue).generation.map((clip) => clip.clip_id);
+            }
+            const [head, behind] = generation;
+            if (head !== undefined && behind !== undefined) {
+              popRefused = yield* edit(provider.pop(head));
+              if (!popRefused)
+                popped = { clipId: head, nextClipId: behind, poppedMs: since(run.origin) };
+            }
+            yield* mark(
+              run,
+              "build popped in flight",
+              popped === undefined ? (popRefused ? "refused" : "not staged") : undefined,
+            );
+          }
         }
         // The last seam's frames arrive after its clip starts.
         yield* sleepUntil((boundaries.at(-1)?.next?.startedMs ?? 0) + seamWindowMs);
@@ -1017,27 +1039,40 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
             : undefined,
         );
 
-        const afterPop = observed.filter(
-          (event) => event.clipId === popped.clipId && event.atMs > poppedMs,
-        );
-        const generatedAfterPop = afterPop.some((event) => event.type === "clip_generated");
-        const startedAfterPop = afterPop.some((event) => event.type === "clip_started");
-        run.evidence.scheduler = {
-          ...run.evidence.scheduler,
-          poppedBuild: {
-            clipId: popped.clipId,
-            wasGeneration,
-            poppedMs,
-            observedUntilMs: since(run.origin),
-            generatedAfterPop,
-            startedAfterPop,
-          },
-        };
+        const inFlight = popped;
+        let generatedAfterPop = false;
+        let startedAfterPop = false;
+        if (inFlight !== undefined) {
+          const afterPop = observed.filter(
+            (event) => event.clipId === inFlight.clipId && event.atMs > inFlight.poppedMs,
+          );
+          generatedAfterPop = afterPop.some((event) => event.type === "clip_generated");
+          startedAfterPop = afterPop.some((event) => event.type === "clip_started");
+          const nextReady = observed.find(
+            (event) => event.type === "clip_generated" && event.clipId === inFlight.nextClipId,
+          );
+          run.evidence.scheduler = {
+            ...run.evidence.scheduler,
+            poppedBuild: {
+              clipId: inFlight.clipId,
+              // The check pops the generation head itself.
+              wasGeneration: true,
+              poppedMs: inFlight.poppedMs,
+              observedUntilMs: since(run.origin),
+              generatedAfterPop,
+              startedAfterPop,
+              nextClipId: inFlight.nextClipId,
+              ...(nextReady === undefined ? {} : { nextReadyMs: nextReady.atMs }),
+            },
+          };
+        }
         judge(
           run,
           "pop the build in flight",
-          !wasGeneration
-            ? "the clip was not at the head of the generation queue before pop"
+          inFlight === undefined
+            ? popRefused
+              ? "the provider refused the pop of the build in flight"
+              : "no build was in flight with a clip queued behind it"
             : generatedAfterPop || startedAfterPop
               ? "the popped build generated or started after the pop reply"
               : undefined,
@@ -1062,7 +1097,8 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
         });
         run.evidence.scheduler = { ...run.evidence.scheduler, builds: recordedBuilds };
 
-        const watched = new Set([popped.clipId, ...builds.map((build) => build.clipId)]);
+        // The build popped in flight is one of these.
+        const watched = new Set(builds.map((build) => build.clipId));
         const counts: Record<string, number> = {};
         const mismatched: Record<string, number> = {};
         for (const event of observed) {

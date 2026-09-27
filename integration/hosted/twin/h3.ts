@@ -476,8 +476,8 @@ export class H3Model {
     if (clip === undefined) return this.refuse(id, "pop", "no queued clip has that id");
     this.generation = this.generation.filter((entry) => entry !== clip);
     this.playout = this.playout.filter((entry) => entry !== clip);
-    // A popped build's result is discarded.
-    if (this.building === clip.clip_id) this.building = undefined;
+    // A popped running build still holds the slot until it finishes, and its result is
+    // discarded, as H3 documents; the build timer then moves on to the next clip.
     this.reply(id, "clip_popped", { clip: { ...clip } });
     this.changedQueues();
     this.build();
