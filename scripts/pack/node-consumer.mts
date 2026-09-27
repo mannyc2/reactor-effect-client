@@ -141,6 +141,7 @@ const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
   { name: "status", conflict: "replace" },
   { name: "ack", conflict: "skip" },
 ];
+const continued: Orchestration.ItemSpec["continuity"] = "previous";
 const cue: Orchestration.Cue = { name: "open chart", at: { from: "start", offset: "2 seconds" } };
 const cues: Stream.Stream<Orchestration.CueEvent> = schedulerHandle.cues;
 const starts: ReadonlyArray<Orchestration.StartMode> = [{ _tag: "Asap" }, { _tag: "Manual" }];
@@ -200,6 +201,7 @@ void [
   inserted,
   edited,
   lanes,
+  continued,
   cue,
   cues,
   starts,
