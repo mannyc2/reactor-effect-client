@@ -10,7 +10,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { duration } from "../duration.js";
@@ -85,6 +85,8 @@ export interface SchedulerOptions {
   readonly maxBuildsInFlight?: number;
   /** Completed keys retained for idempotency, oldest first; defaults to 4096. Active keys are never evicted. */
   readonly maxHistory?: number;
+  /** Unknown admission service deadline; defaults to 60 seconds, positive and finite up to 10 minutes. */
+  readonly unknownRecoveryTimeout?: Duration.Input;
 }
 
 export type ItemFailureReason =
@@ -114,7 +116,7 @@ export type AsRunStatus =
   | { readonly _tag: "Unobserved" }
   | {
       readonly _tag: "Unknown";
-      /** The original source retired without keyed proof; no further reconciliation is possible. */
+      /** Source retirement or scheduler failure ended reconciliation; remote fate remains unknown. */
       readonly terminal?: true;
     };
 
@@ -202,6 +204,12 @@ interface CapturedItem {
   readonly late: PlannedItem["late"];
 }
 
+interface UnknownAdmission {
+  readonly sessionId: string | undefined;
+  readonly atMs: number;
+  readonly cause: EngineError;
+}
+
 interface Entry extends PlannedItem {
   readonly request: ClipRequest;
   readonly fingerprint: string;
@@ -217,6 +225,7 @@ interface Entry extends PlannedItem {
   sessionId: string | undefined;
   unknownSessionId: string | undefined;
   unknownCause: EngineError | undefined;
+  unknownAtMs: number | undefined;
   acknowledgedAtSnapshotSerial?: number;
   startedAtMonoMs?: number;
   startedAtEpochMs?: number;
@@ -323,42 +332,67 @@ const ownedData = (
   );
 };
 
+/** A Duration tuple or object read from own data properties; no accessor runs. */
+const durationData = (input: object): Result.Result<Duration.Input, PolicyFailure> => {
+  if (Array.isArray(input)) {
+    const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(input);
+    if (
+      Object.getOwnPropertySymbols(input).length > 0 ||
+      Object.keys(descriptors).some(
+        (field) => !["0", "1", "length"].includes(field) || !("value" in descriptors[field]!),
+      ) ||
+      descriptors.length?.value !== 2 ||
+      descriptors["0"] === undefined ||
+      descriptors["1"] === undefined
+    )
+      return Result.fail(invalid("Duration tuple has unsupported fields or accessors"));
+    const seconds: unknown = descriptors["0"].value;
+    const nanos: unknown = descriptors["1"].value;
+    return Result.succeed([seconds, nanos] as readonly [number, number]);
+  }
+  const fields = ownedData(
+    input,
+    ["weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"],
+    "Duration",
+  );
+  return Result.isFailure(fields) ? Result.fail(fields.failure) : Result.succeed(fields.success);
+};
+
 const captureDuration = (input: unknown): Effect.Effect<Duration.Input, PolicyFailure> =>
   Effect.gen(function* () {
     if (input === null || typeof input !== "object" || Duration.isDuration(input))
       return input as Duration.Input;
-    if (Array.isArray(input)) {
-      const descriptors: Record<string, PropertyDescriptor> =
-        Object.getOwnPropertyDescriptors(input);
-      if (
-        Object.getOwnPropertySymbols(input).length > 0 ||
-        Object.keys(descriptors).some(
-          (field) => !["0", "1", "length"].includes(field) || !("value" in descriptors[field]!),
-        ) ||
-        descriptors.length?.value !== 2 ||
-        descriptors["0"] === undefined ||
-        descriptors["1"] === undefined
-      )
-        return yield* invalid("Duration tuple has unsupported fields or accessors");
-      return [descriptors["0"].value, descriptors["1"].value];
-    }
-    return (yield* Effect.fromResult(
-      ownedData(
-        input,
-        [
-          "weeks",
-          "days",
-          "hours",
-          "minutes",
-          "seconds",
-          "milliseconds",
-          "microseconds",
-          "nanoseconds",
-        ],
-        "Duration",
-      ),
-    )) as Duration.Input;
+    return yield* Effect.fromResult(durationData(input));
   });
+
+/**
+ * A Duration option read as caller data: a data property, own or inherited,
+ * captured without running any accessor. Rejections throw for `parsedInput`.
+ */
+const optionDuration = (
+  options: object,
+  field: string,
+  name: string,
+): Duration.Input | undefined => {
+  let descriptor: PropertyDescriptor | undefined;
+  for (
+    let owner: object | null = options;
+    descriptor === undefined && owner !== null;
+    owner = Object.getPrototypeOf(owner) as object | null
+  )
+    descriptor = Object.getOwnPropertyDescriptor(owner, field);
+  if (descriptor === undefined) return undefined;
+  const reject = () =>
+    ReactorError.fromCode("InvalidInput", `${name} must be a Duration of data properties`);
+  if (!("value" in descriptor)) throw reject();
+  const value: unknown = descriptor.value;
+  if (value === undefined) return undefined;
+  if (value === null) throw reject();
+  if (typeof value !== "object" || Duration.isDuration(value)) return value;
+  const captured = durationData(value);
+  if (Result.isFailure(captured)) throw reject();
+  return captured.success;
+};
 
 const requestDuration = (input: unknown, name: string, allowZero = false) =>
   Effect.gen(function* () {
@@ -481,7 +515,7 @@ export interface SchedulerShape {
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
-  /** Original terminal failure, including Closed when the owning scope ends. */
+  /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
   readonly failure: Effect.Effect<ReactorFailure>;
   readonly state: Effect.Effect<SchedulerState>;
   /** Lifecycle evidence is ordered per item; subscribers receive later events. */
@@ -514,8 +548,8 @@ export const makeScheduler = (
         throw ReactorError.fromCode("InvalidInput", "Scheduler lanes must be unique and nonempty");
       return options.lanes.map((lane) => lane.name);
     }, "makeScheduler");
-    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory } = yield* parsedInput(
-      () => {
+    const { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs } =
+      yield* parsedInput(() => {
         const floorSeconds =
           Duration.toMillis(
             duration(options.filler.runway.floor, "runway floor", { allowZero: true }),
@@ -524,6 +558,14 @@ export const makeScheduler = (
           Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
         const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
         const maxHistory = options.maxHistory ?? 4096;
+        const unknownRecoveryMs = Duration.toMillis(
+          duration(
+            optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
+              "60 seconds",
+            "unknown recovery timeout",
+            { maximum: "10 minutes" },
+          ),
+        );
         if (
           floorSeconds > targetSeconds ||
           !Number.isSafeInteger(maxBuildsInFlight) ||
@@ -534,10 +576,8 @@ export const makeScheduler = (
           maxHistory > 65_536
         )
           throw ReactorError.fromCode("InvalidInput", "Scheduler runway or build cap is invalid");
-        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory };
-      },
-      "makeScheduler",
-    );
+        return { floorSeconds, targetSeconds, maxBuildsInFlight, maxHistory, unknownRecoveryMs };
+      }, "makeScheduler");
     const captureFiller = (
       index: number,
       runway: number,
@@ -566,12 +606,8 @@ export const makeScheduler = (
       });
     let fillerIndex = 0;
     let fillerRetryAtMs = 0;
-    let unknownFiller:
-      | {
-          readonly index: number;
-          readonly sessionId: string | undefined;
-        }
-      | undefined;
+    const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
+    const maxUnknownFillers = 4096;
     let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
@@ -593,6 +629,7 @@ export const makeScheduler = (
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
     const stopped = yield* Deferred.make<ReactorFailure>();
+    const settled = yield* Deferred.make<void>();
     const closedCall = Deferred.await(stopped).pipe(
       Effect.flatMap((cause) => PolicyFailure.refuse("SessionClosed", cause.message)),
     );
@@ -609,11 +646,14 @@ export const makeScheduler = (
     let accepting = true;
     let starved = 0;
     let refillActive = false;
-    let ended: ReactorFailure | undefined;
+    let ended: Exit.Exit<ReactorFailure> | undefined;
     let drainFailure: EngineError | undefined;
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
     const pendingBuilds = new Set<ItemKey>();
+    // A Build whose enqueue has started and whose result the worker has not
+    // yet seen. The provider may still accept it after the scheduler ends.
+    let dispatching: ItemKey | undefined;
     const pendingAtDeferrals = new Set<ItemKey>();
     const pendingItemRemovals = new Set<ItemKey>();
     const pendingFillerRemovals = new Set<ClipId>();
@@ -629,8 +669,9 @@ export const makeScheduler = (
     let observationReady = false;
     let blockedMove: string | undefined;
 
-    const emit = (entry: Entry, status: AsRunStatus): Effect.Effect<void> =>
+    const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (ended !== undefined && !terminal) return;
         if (JSON.stringify(entry.status) === JSON.stringify(status)) return;
         entry.status = status;
         entry.phase =
@@ -642,7 +683,10 @@ export const makeScheduler = (
             : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
-        yield* PubSub.publish(events, {
+        // Publish in the step that records it (the PubSub is unbounded): a claim
+        // from another fiber cannot land between the two, so asRun never carries
+        // a settlement ahead of a recorded status, nor omits one.
+        PubSub.publishUnsafe(events, {
           key: entry.key,
           at: clock.currentTimeMillisUnsafe(),
           status,
@@ -661,27 +705,207 @@ export const makeScheduler = (
         }
       });
 
-    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (ended !== undefined) return;
-        ended = cause;
+    // The claim is synchronous; interruption masking alone would still allow
+    // two closers to publish conflicting results. Join only local bookkeeping,
+    // never the worker scope (a worker can itself own terminal settlement).
+    const terminate = (terminal: Exit.Exit<ReactorFailure>): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (ended !== undefined) return Deferred.await(settled);
+        ended = terminal;
         accepting = false;
-        yield* Deferred.succeed(stopped, cause);
-        for (const item of items.values()) {
-          if (item.phase === "Terminal") continue;
-          if (item.phase === "Unknown") {
-            yield* emit(item, { _tag: "Unknown", terminal: true });
-            item.phase = "Terminal";
-          } else yield* emit(item, { _tag: "Failed", reason: { _tag: "Scheduler", cause } });
+        // Wake the watchdog so an episode left armed by another owner cannot
+        // keep re-arming its timer.
+        Deferred.doneUnsafe(recoveryChanged, Exit.void);
+        return Effect.gen(function* () {
+          for (const item of items.values()) {
+            if (Exit.isFailure(terminal)) {
+              yield* Deferred.failCause(item.startedWaiter, terminal.cause);
+              yield* Deferred.failCause(item.outcomeWaiter, terminal.cause);
+              yield* Deferred.failCause(item.firstDecisiveWaiter, terminal.cause);
+              continue;
+            }
+            // emit records and publishes a status before completing its waits,
+            // and a claim can land in between: a completion can resume an
+            // observer that closes the owner, and another fiber can claim while
+            // the actor is preempted. Finish those waits from the record.
+            const recorded = item.status;
+            if (item.phase === "Started" || item.phase === "Terminal") {
+              if (isFirstDecisive(recorded))
+                yield* Deferred.succeed(item.firstDecisiveWaiter, recorded);
+              yield* Deferred.succeed(item.startedWaiter, recorded);
+            }
+            if (item.phase === "Terminal") yield* Deferred.succeed(item.outcomeWaiter, recorded);
+            else
+              yield* emit(
+                item,
+                item.phase === "Unknown" ||
+                  (item.clipId === undefined &&
+                    (item.unknownAtMs !== undefined || item.key === dispatching))
+                  ? { _tag: "Unknown", terminal: true }
+                  : { _tag: "Failed", reason: { _tag: "Scheduler", cause: terminal.value } },
+                true,
+              );
+          }
+          const closed = Exit.isSuccess(terminal)
+            ? Exit.fail(PolicyFailure.refuse("SessionClosed", terminal.value.message))
+            : Exit.failCause(terminal.cause);
+          for (const [key, pending] of pendingWithdrawals) {
+            // A drop recorded before the claim is the withdrawal's actual result.
+            const reply =
+              Exit.isSuccess(terminal) && items.get(key)?.status._tag === "Dropped"
+                ? Exit.succeed("withdrawn" as const)
+                : closed;
+            for (const waiter of pending.replies) yield* Deferred.done(waiter, reply);
+          }
+          pendingWithdrawals.clear();
+          for (const reply of drainReplies.splice(0)) yield* Deferred.done(reply, closed);
+          yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
+          yield* Deferred.done(
+            initialized,
+            Exit.isFailure(terminal)
+              ? Exit.failCause(terminal.cause)
+              : Exit.fail(ReactorError.fromCode("Closed", terminal.value.message)),
+          );
+          // Supervisors may close the owner immediately when this wakes them.
+          yield* Deferred.done(stopped, terminal);
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              // A bookkeeping defect must release joiners with that Cause, never
+              // leave an unfinished latch or report a partial settlement as success.
+              yield* Deferred.done(settled, exit);
+              if (Exit.isFailure(exit)) {
+                yield* Deferred.failCause(initialized, exit.cause);
+                yield* Deferred.failCause(stopped, exit.cause);
+              }
+            }),
+          ),
+        );
+      }).pipe(Effect.uninterruptible);
+
+    const closeActor = (cause: ReactorFailure): Effect.Effect<void> =>
+      terminate(Exit.succeed(cause));
+
+    interface RecoveryDeadline {
+      readonly deadlineMs: number;
+      readonly sessionId: string | undefined;
+      readonly cause: EngineError;
+    }
+    let recoveryState: EngineState | undefined;
+    let capacityRecovery: RecoveryDeadline | undefined;
+    let recoveryDeadline: RecoveryDeadline | undefined;
+    let recoveryChanged = Deferred.makeUnsafe<void>();
+
+    // Retain the original age while Closing hides the old source and acquisition
+    // is still pending. Only accepted evidence or a Ready replacement clears it.
+    const updateRecovery = (state = recoveryState, fresh?: UnknownAdmission): void => {
+      if (ended !== undefined) return;
+      recoveryState = state;
+      const preferred =
+        state === undefined ? undefined : Option.getOrUndefined(state.preferredSessionId);
+      const ready =
+        preferred !== undefined &&
+        state?.sessions.some(
+          (source) => source.sessionId === preferred && source.availability === "Ready",
+        ) === true;
+      let earliest: RecoveryDeadline | undefined;
+      let drainDeadline: RecoveryDeadline | undefined;
+      const consider = (
+        atMs: number,
+        sessionId: string | undefined,
+        cause: EngineError,
+        newlyObserved = false,
+      ): void => {
+        const deadlineMs = atMs + unknownRecoveryMs;
+        if (
+          ((!ready && newlyObserved) || sessionId === undefined || sessionId === preferred) &&
+          (earliest === undefined || deadlineMs < earliest.deadlineMs)
+        )
+          earliest = { deadlineMs, sessionId, cause };
+        if (draining && (drainDeadline === undefined || deadlineMs < drainDeadline.deadlineMs))
+          drainDeadline = { deadlineMs, sessionId, cause };
+      };
+      for (const entry of unknownFillers.values())
+        consider(entry.atMs, entry.sessionId, entry.cause);
+      for (const item of items.values())
+        if (
+          item.phase !== "Terminal" &&
+          item.clipId === undefined &&
+          item.unknownAtMs !== undefined &&
+          item.unknownCause !== undefined
+        )
+          consider(item.unknownAtMs, item.unknownSessionId, item.unknownCause);
+      if (fresh !== undefined) consider(fresh.atMs, fresh.sessionId, fresh.cause, true);
+      if (
+        ready &&
+        (earliest === undefined ||
+          (capacityRecovery?.sessionId !== undefined && capacityRecovery.sessionId !== preferred))
+      )
+        capacityRecovery = undefined;
+      if (
+        earliest !== undefined &&
+        (capacityRecovery === undefined || earliest.deadlineMs < capacityRecovery.deadlineMs)
+      )
+        capacityRecovery = earliest;
+      const next =
+        drainDeadline !== undefined &&
+        (capacityRecovery === undefined || drainDeadline.deadlineMs < capacityRecovery.deadlineMs)
+          ? drainDeadline
+          : capacityRecovery;
+      if (
+        next?.deadlineMs !== recoveryDeadline?.deadlineMs ||
+        next?.cause !== recoveryDeadline?.cause
+      ) {
+        recoveryDeadline = next;
+        Deferred.doneUnsafe(recoveryChanged, Exit.void);
+      }
+    };
+
+    const provedUnknown = (atMs: number | undefined): void => {
+      if (atMs !== undefined && capacityRecovery?.deadlineMs === atMs + unknownRecoveryMs)
+        capacityRecovery = undefined;
+    };
+
+    const watchdog = Effect.gen(function* () {
+      for (;;) {
+        // A committed result and its queued actor evidence can arrive in one
+        // turn. Coalesce those revisions before allocating a replacement timer;
+        // the original monotonic deadline remains unchanged.
+        yield* Effect.yieldNow;
+        if (ended !== undefined) return;
+        recoveryChanged = Deferred.makeUnsafe<void>();
+        const episode = recoveryDeadline;
+        if (episode === undefined) {
+          yield* Deferred.await(recoveryChanged);
+          continue;
         }
-        const closed = PolicyFailure.refuse("SessionClosed", cause.message);
-        for (const [key, pending] of pendingWithdrawals) {
-          for (const reply of pending.replies) yield* Deferred.fail(reply, closed);
-          pendingWithdrawals.delete(key);
+        yield* Deferred.await(recoveryChanged).pipe(
+          Effect.timeoutOrElse({
+            duration: Math.max(0, episode.deadlineMs - monotonicMillis(clock)),
+            orElse: () => Effect.void,
+          }),
+        );
+        // A canceled timer may already have resumed. Recheck the retained
+        // identity without awaiting the actor, Engine state, or its permits.
+        if (
+          ended === undefined &&
+          recoveryDeadline === episode &&
+          monotonicMillis(clock) >= episode.deadlineMs
+        ) {
+          const causes = new Set<EngineError>([episode.cause]);
+          for (const item of items.values())
+            if (item.unknownCause !== undefined) causes.add(item.unknownCause);
+          for (const entry of unknownFillers.values()) causes.add(entry.cause);
+          yield* closeActor(
+            ReactorError.fromCode("Timeout", "Scheduler unknown recovery deadline elapsed", {
+              operation: "scheduler.unknownRecovery",
+              detail: [...causes],
+            }),
+          );
+          return;
         }
-        for (const reply of drainReplies.splice(0)) yield* Deferred.fail(reply, closed);
-        yield* SubscriptionRef.update(stateRef, (state) => ({ ...state, accepting: false }));
-      });
+      }
+    });
 
     const prune = (state: EngineState): void => {
       const active = new Set(activeIds(state));
@@ -711,7 +935,45 @@ export const makeScheduler = (
       while (history.size > maxHistory) history.delete(history.keys().next().value!);
     };
 
-    const publishState = (state: EngineState): Effect.Effect<void> => {
+    // Capture membership and public rows in one pass. A fresh token reads every
+    // source on every observation, including in-place changes to Engine arrays;
+    // frozen empty rows can be shared by every published state without treating
+    // array identity as proof.
+    const noReady: SchedulerState["sessions"][number]["ready"] = Object.freeze([]);
+    const sourceRows = new Map<
+      string,
+      { readonly empty: SchedulerState["sessions"][number]; seen: symbol }
+    >();
+    const projectSources = (state: EngineState) => {
+      const seen = Symbol();
+      const sessions = state.sessions.map<SchedulerState["sessions"][number]>(({ sessionId }) => {
+        let cached = sourceRows.get(sessionId);
+        if (cached === undefined) {
+          cached = { empty: Object.freeze({ sessionId, ready: noReady }), seen };
+          sourceRows.set(sessionId, cached);
+        } else cached.seen = seen;
+        if (state.ready.length === 0) return cached.empty;
+        return {
+          sessionId,
+          ready: state.ready
+            .filter((clip) => clip.sessionId === sessionId)
+            .map((clip) => {
+              const owner = owned.get(clip.clipId);
+              return owner === undefined ? "other" : owner._tag === "Filler" ? "filler" : owner.key;
+            }),
+        };
+      });
+      // Bound cached rows by snapshot size without scanning unchanged overlap.
+      // Membership still requires this observation's token, even before pruning.
+      if (sourceRows.size > state.sessions.length)
+        for (const [id, cached] of sourceRows) if (cached.seen !== seen) sourceRows.delete(id);
+      // Only the serialized actor uses this membership view, before its next projection.
+      return { sessions, has: (id: string) => sourceRows.get(id)?.seen === seen };
+    };
+    const publishState = (
+      state: EngineState,
+      sessions = projectSources(state).sessions,
+    ): Effect.Effect<void> => {
       const playing = Option.getOrUndefined(state.playing);
       const playingOwner = playing === undefined ? undefined : owned.get(playing.clipId);
       const playingKey: SchedulerState["playing"] =
@@ -734,15 +996,7 @@ export const makeScheduler = (
             .filter((item) => item.lane === name && item.phase !== "Terminal")
             .map((item) => item.key),
         })),
-        sessions: state.sessions.map(({ sessionId }) => ({
-          sessionId,
-          ready: state.ready
-            .filter((clip) => clip.sessionId === sessionId)
-            .map((clip) => {
-              const owner = owned.get(clip.clipId);
-              return owner === undefined ? "other" : owner._tag === "Filler" ? "filler" : owner.key;
-            }),
-        })),
+        sessions,
         starved,
       });
     };
@@ -820,7 +1074,8 @@ export const makeScheduler = (
           filler.set(index, { index, clipId: record.clipId, sessionId: record.sessionId });
           const priorIndex = fillerIndex;
           fillerIndex = Math.max(fillerIndex, index + 1);
-          if (unknownFiller?.index === index) unknownFiller = undefined;
+          provedUnknown(unknownFillers.get(index)?.atMs);
+          unknownFillers.delete(index);
           if (fillerIndex !== priorIndex) upcomingFiller = undefined;
         }
         for (const item of items.values()) {
@@ -830,6 +1085,9 @@ export const makeScheduler = (
             if (resumed !== undefined) {
               item.clipId = resumed.clipId;
               item.sessionId = resumed.sessionId;
+              provedUnknown(item.unknownAtMs);
+              item.unknownAtMs = undefined;
+              item.unknownCause = undefined;
               item.unknownSessionId = undefined;
               owned.set(resumed.clipId, { _tag: "Item", key: item.key });
             }
@@ -896,7 +1154,7 @@ export const makeScheduler = (
           )
             yield* emit(item, { _tag: "Unobserved" });
         }
-        yield* publishState(state);
+        updateRecovery(state);
       });
 
     const onEvent = (event: EngineEvent): Effect.Effect<void> =>
@@ -1042,6 +1300,11 @@ export const makeScheduler = (
                 "RouteChanged",
                 "The preferred source changed before dispatch",
               );
+            // Termination can be claimed while the route is read; its settlement
+            // must not be followed by a new dispatch.
+            if (ended !== undefined)
+              return yield* PolicyFailure.refuse("SessionClosed", "The scheduler closed");
+            if (command._tag === "Build") dispatching = command.key;
             return yield* engine.enqueueOnSource === undefined
               ? engine.enqueue(command.request)
               : engine.enqueueOnSource(command.request, command.sessionId);
@@ -1061,13 +1324,47 @@ export const makeScheduler = (
     const commandWorker = Effect.gen(function* () {
       for (;;) {
         const command = yield* Queue.take(commandQueue);
+        if (ended !== undefined) continue;
         const result = yield* Effect.result(executeCommand(command));
+        dispatching = undefined;
+        // Capture uncertainty before actor delivery: drain may be awaiting a
+        // permit in stopRenewal while this committed command finishes.
+        if (
+          ended === undefined &&
+          Result.isFailure(result) &&
+          result.failure.context.outcome === "unknown"
+        ) {
+          let fresh: UnknownAdmission | undefined;
+          const sessionId =
+            engine.enqueueOnSource === undefined ||
+            (command._tag !== "Build" && command._tag !== "BuildFiller")
+              ? undefined
+              : command.sessionId;
+          if (command._tag === "Build") {
+            const item = items.get(command.key);
+            if (item !== undefined && item.phase !== "Terminal" && item.clipId === undefined) {
+              item.unknownAtMs ??= monotonicMillis(clock);
+              item.unknownCause = result.failure;
+              item.unknownSessionId = sessionId;
+              fresh = { sessionId, atMs: item.unknownAtMs, cause: result.failure };
+            }
+          } else if (
+            command._tag === "BuildFiller" &&
+            !filler.has(command.index) &&
+            !unknownFillers.has(command.index)
+          ) {
+            fresh = { sessionId, atMs: monotonicMillis(clock), cause: result.failure };
+            unknownFillers.set(command.index, { ...fresh, index: command.index });
+          }
+          updateRecovery(recoveryState, fresh);
+        }
         yield* Queue.offer(inbox, { _tag: "CommandDone", command, result });
       }
     });
 
     const sendCommand = (command: Command): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (ended !== undefined) return;
         if (command._tag === "Build") pendingBuilds.add(command.key);
         if (command._tag === "DeferAt") pendingAtDeferrals.add(command.key);
         commandCount++;
@@ -1189,6 +1486,14 @@ export const makeScheduler = (
             break;
           }
           case "BuildFiller": {
+            if (unknownFillers.size >= maxUnknownFillers) {
+              yield* closeActor(
+                ReactorError.fromCode("Overflow", "Scheduler uncertain filler ledger is full", {
+                  operation: "scheduler.unknownRecovery",
+                }),
+              );
+              break;
+            }
             const captured =
               upcomingFiller === undefined
                 ? yield* Effect.result(
@@ -1276,6 +1581,8 @@ export const makeScheduler = (
               item.sessionId =
                 knownRecord(yield* engine.state, clipId)?.sessionId ??
                 (engine.enqueueOnSource === undefined ? undefined : command.sessionId);
+              provedUnknown(item.unknownAtMs);
+              item.unknownAtMs = undefined;
               item.unknownSessionId = undefined;
               item.unknownCause = undefined;
               yield* replayEarlyClipEvents(clipId);
@@ -1342,11 +1649,7 @@ export const makeScheduler = (
               upcomingFiller = undefined;
               yield* replayEarlyClipEvents(clipId);
             } else if (result.failure.context.outcome === "unknown") {
-              if (!filler.has(command.index))
-                unknownFiller = {
-                  index: command.index,
-                  sessionId: engine.enqueueOnSource === undefined ? undefined : command.sessionId,
-                };
+              // The worker already retained this identity and its original age.
             } else {
               fillerRetryAtMs = monotonicMillis(clock) + 1_000;
               if (result.failure.context.outcome === "replied") {
@@ -1507,30 +1810,27 @@ export const makeScheduler = (
 
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
+      if (ended !== undefined) return;
       prune(state);
       refreshAnchors();
+      const sources = projectSources(state);
       if (!observationReady) {
-        yield* publishState(state);
+        yield* publishState(state, sources.sessions);
         return;
       }
-      if (unknownFiller !== undefined) {
-        const uncertain = unknownFiller;
+      for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
-          uncertain.sessionId !== undefined &&
-          !state.sessions.some((session) => session.sessionId === uncertain.sessionId);
-        if (sourceRetired) {
-          unknownFiller = undefined;
-          fillerIndex = Math.max(fillerIndex, uncertain.index + 1);
-          upcomingFiller = undefined;
-        } else if (
-          uncertain.sessionId !== undefined &&
-          Option.getOrUndefined(state.preferredSessionId) !== uncertain.sessionId &&
-          fillerIndex <= uncertain.index
+          uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
+        if (sourceRetired) unknownFillers.delete(uncertain.index);
+        if (
+          sourceRetired ||
+          (uncertain.sessionId !== undefined &&
+            Option.getOrUndefined(state.preferredSessionId) !== uncertain.sessionId)
         ) {
-          // A replacement may build independently, with a distinct key. The
-          // uncertain old request can still be adopted if it later appears.
-          fillerIndex = uncertain.index + 1;
-          upcomingFiller = undefined;
+          if (fillerIndex <= uncertain.index) {
+            fillerIndex = uncertain.index + 1;
+            upcomingFiller = undefined;
+          }
         }
       }
       for (const [key, pending] of pendingWithdrawals) {
@@ -1545,10 +1845,17 @@ export const makeScheduler = (
           item.phase === "Unknown" &&
           item.clipId === undefined &&
           item.unknownSessionId !== undefined &&
-          !state.sessions.some((session) => session.sessionId === item.unknownSessionId)
+          !sources.has(item.unknownSessionId)
         )
           yield* resolveRetiredUnknown(item);
+      // After retirement, so a deadline no longer outlives the uncertainty that
+      // set it until the next message.
+      updateRecovery(state);
       if (draining) yield* drainPending(state);
+      const preferred = Option.getOrUndefined(state.preferredSessionId);
+      let unknownFillerCount = 0;
+      for (const entry of unknownFillers.values())
+        if (entry.sessionId === undefined || entry.sessionId === preferred) unknownFillerCount++;
       const decision = plan({
         engine: state,
         items: [...items.values()],
@@ -1563,12 +1870,11 @@ export const makeScheduler = (
         accepting: accepting || (draining && finishAccepted),
         fillerEnabled: !draining || fillerHeld(monotonicMillis(clock)),
         fillerRetryAtMs,
-        fillerUnknown: unknownFiller !== undefined,
-        fillerUnknownSessionId: unknownFiller?.sessionId,
+        unknownFillerCount,
         blockedMove,
       });
       refillActive = decision.refillActive;
-      yield* publishState(state);
+      yield* publishState(state, sources.sessions);
       if ((!draining || finishAccepted) && commandCount === 0 && decision.action !== undefined)
         yield* applyPolicy(decision.action, state);
       if (
@@ -1587,11 +1893,15 @@ export const makeScheduler = (
         commandCount === 0 &&
         [...items.values()].every((item) => item.phase === "Terminal") &&
         pendingWithdrawals.size === 0 &&
-        unknownFiller === undefined
+        unknownFillers.size === 0
       ) {
         const after = yield* engine.state;
         if (Option.isNone(after.playing) && !activeIds(after).some((clipId) => owned.has(clipId))) {
           drained = true;
+          // A truthful completed drain no longer needs a replacement to resume
+          // service, even when retirement left a capacity episode behind.
+          capacityRecovery = undefined;
+          updateRecovery(after);
           const replies = drainReplies.splice(0);
           for (const reply of replies) yield* Deferred.succeed(reply, undefined);
         }
@@ -1601,24 +1911,8 @@ export const makeScheduler = (
     const actor = Effect.gen(function* () {
       for (;;) {
         const message = yield* Queue.take(inbox);
-        if (ended !== undefined && message._tag !== "CommandDone") {
-          if (message._tag === "Submit")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          else if (message._tag === "Withdraw")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          else if (message._tag === "Drain")
-            yield* Deferred.fail(
-              message.reply,
-              PolicyFailure.refuse("SessionClosed", ended.message),
-            );
-          continue;
-        }
+        // Queued public calls observe the same terminal result through closedCall.
+        if (ended !== undefined && message._tag !== "CommandDone") continue;
         switch (message._tag) {
           case "Submit": {
             if (!accepting) {
@@ -1634,6 +1928,7 @@ export const makeScheduler = (
             }
             const nowMs = monotonicMillis(clock);
             const state = yield* engine.state;
+            if (ended !== undefined) continue;
             const startByMs =
               message.item.startByOffsetMs === undefined
                 ? undefined
@@ -1643,9 +1938,12 @@ export const makeScheduler = (
               yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
               break;
             }
-            const startedWaiter = yield* Deferred.make<AsRunStatus>();
-            const outcomeWaiter = yield* Deferred.make<AsRunStatus>();
-            const firstDecisiveWaiter = yield* Deferred.make<FirstDecisiveStatus>();
+            // No yield from the terminal check above through admission and its
+            // publication below: a claim either precedes the item or settles it
+            // after its Accepted evidence.
+            const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
+            const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
+            const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
             const handle: ItemHandle = {
               key: message.item.key,
               started: Deferred.await(startedWaiter),
@@ -1675,18 +1973,22 @@ export const makeScheduler = (
               sessionId: undefined,
               unknownSessionId: undefined,
               unknownCause: undefined,
+              unknownAtMs: undefined,
               handle,
               startedWaiter,
               outcomeWaiter,
               firstDecisiveWaiter,
             };
             items.set(item.key, item);
-            yield* PubSub.publish(events, {
+            PubSub.publishUnsafe(events, {
               key: item.key,
               at: clock.currentTimeMillisUnsafe(),
               status: item.status,
             });
             yield* observed(state);
+            // Submit returns its committed view; other messages publish once
+            // through reconciliation after all their evidence is adopted.
+            yield* publishState(state);
             yield* Deferred.succeed(message.reply, handle);
             break;
           }
@@ -1710,9 +2012,11 @@ export const makeScheduler = (
             if (!draining) {
               draining = true;
               finishAccepted = message.finish === "accepted";
+              updateRecovery();
               // Renewal admission must stop even while an earlier enqueue is
               // awaiting its reply in the command worker.
               const stoppedRenewal = yield* Effect.result(engine.stopRenewal);
+              if (ended !== undefined) break;
               if (Result.isFailure(stoppedRenewal)) {
                 drainFailure = stoppedRenewal.failure;
                 for (const reply of drainReplies.splice(0))
@@ -1791,27 +2095,17 @@ export const makeScheduler = (
         }
       }
     });
-    // A defect remains a defect, but it must wake waiters just as a typed
-    // terminal failure does. Scope interruption uses the finalizer below.
+    // Orderly scope teardown has already claimed and settled Closed before
+    // worker interruption; unexpected interruption retains its original Cause.
     const supervise = (effect: Effect.Effect<void>) =>
       effect.pipe(
         Effect.onExit((exit) =>
           Exit.isFailure(exit) && ended === undefined
-            ? Effect.gen(function* () {
-                accepting = false;
-                yield* Deferred.failCause(stopped, exit.cause);
-                yield* Deferred.failCause(initialized, exit.cause);
-                for (const item of items.values()) {
-                  yield* Deferred.failCause(item.startedWaiter, exit.cause);
-                  yield* Deferred.failCause(item.outcomeWaiter, exit.cause);
-                  yield* Deferred.failCause(item.firstDecisiveWaiter, exit.cause);
-                }
-                yield* Queue.shutdown(inbox);
-                yield* Queue.shutdown(commandQueue);
-              })
+            ? terminate(Exit.failCause(exit.cause))
             : Effect.void,
         ),
       );
+    yield* Effect.forkScoped(supervise(watchdog));
     yield* Effect.forkScoped(supervise(commandWorker));
     yield* Effect.forkScoped(supervise(actor));
     yield* Effect.forkScoped(supervise(observe));
@@ -1876,7 +2170,12 @@ export const makeScheduler = (
       state: SubscriptionRef.get(stateRef),
       asRun: Stream.fromPubSub(events),
     };
-  });
+  }).pipe(
+    Effect.provideServiceEffect(
+      Scope.Scope,
+      Effect.flatMap(Scope.Scope, (parent) => Scope.fork(parent, "sequential")),
+    ),
+  );
 
 export const layerScheduler = (
   options: SchedulerOptions,

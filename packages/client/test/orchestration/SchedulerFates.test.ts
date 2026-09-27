@@ -1,5 +1,17 @@
 import { expect, test } from "vitest";
-import { Clock, Effect, Exit, Fiber, Option, Queue, Result, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Queue,
+  Result,
+  Scheduler,
+  Scope,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { ReactorError } from "../../src/errors.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
@@ -903,3 +915,388 @@ test("an uncertain removal has no false Dropped status or tight replay", () =>
       );
     }),
   ));
+
+// A small worker yield budget exposes notification-before-settlement without
+// relying on load, repeated trials, or elapsed time during the close.
+for (const strategy of ["sequential", "parallel"] as const) {
+  for (const phase of ["Accepted", "Building", "Ready", "Started", "Unknown"] as const) {
+    test(`failure-driven ${strategy} scope close settles ${phase} handles first`, () =>
+      runClock(
+        Effect.gen(function* () {
+          const simulation = yield* Simulation.make({
+            fixedBuildTime: phase === "Building" ? "10 seconds" : 0,
+            buildRatio: 0,
+          });
+          if (phase === "Ready") yield* simulation.engine.setAutoplay(false);
+          const scope = yield* Scope.make(strategy);
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+          const engine: EngineShape = {
+            ...simulation.engine,
+            enqueueOnSource: undefined,
+            enqueue:
+              phase === "Unknown"
+                ? () => Effect.fail(failure("unknown"))
+                : simulation.engine.enqueue,
+            observe: () =>
+              Effect.gen(function* () {
+                const observation = yield* simulation.engine.observe();
+                return {
+                  ...observation,
+                  events: Stream.merge(observation.events, Stream.fromQueue(feed)),
+                };
+              }),
+          };
+          const scheduler = yield* makeScheduler(options).pipe(
+            Effect.provideService(Engine, engine),
+            Effect.provideService(Scheduler.MaxOpsBeforeYield, 32),
+            Scope.provide(scope),
+          );
+          const history = yield* scheduler.submit({
+            key: ItemKey.make("already-terminal"),
+            lane: "line",
+            request: clip("history"),
+            window: { notBefore: "1 hour", firm: false },
+          });
+          yield* scheduler.withdraw(history.key);
+          const events = yield* watch(scheduler);
+          const item = yield* scheduler.submit({
+            key: ItemKey.make("terminal-race"),
+            lane: "line",
+            request: clip("race"),
+            ...(phase === "Accepted"
+              ? { window: { notBefore: "1 hour" as const, firm: false } }
+              : {}),
+          });
+          yield* advance(1_000);
+          expect(events.filter((event) => event.key === item.key).at(-1)?.status._tag).toBe(phase);
+          const observers = yield* Effect.forEach(
+            [item.started, item.outcome, item.firstDecisive],
+            (wait) => Effect.forkScoped(Effect.exit(wait)),
+          );
+          const cause = ReactorError.fromCode("Disconnected", "Observation stopped");
+          const supervisor = yield* Effect.forkScoped(
+            Effect.gen(function* () {
+              const result = yield* Effect.exit(scheduler.failure);
+              const acceptingAtNotification = (yield* scheduler.state).accepting;
+              yield* Scope.close(scope, Exit.void);
+              return { result, acceptingAtNotification };
+            }),
+          );
+          yield* Queue.fail(feed, cause);
+          const notification = yield* Fiber.join(supervisor);
+          yield* advance(1);
+          expect(notification.result).toEqual(Exit.succeed(cause));
+          expect(notification.acceptingAtNotification).toBe(false);
+          for (const [index, observer] of observers.entries()) {
+            const observed = observer.pollUnsafe();
+            expect(observed).toBeDefined();
+            if (observed === undefined || Exit.isFailure(observed))
+              throw new Error("Expected the handle observer to finish with its wait's Exit");
+            expect(Exit.isSuccess(observed.value)).toBe(true);
+            if (Exit.isFailure(observed.value)) continue;
+            if (phase === "Unknown")
+              expect(observed.value.value).toEqual({ _tag: "Unknown", terminal: true });
+            else if (phase === "Started" && index !== 1)
+              expect(observed.value.value._tag).toBe("Started");
+            else
+              expect(observed.value.value).toEqual({
+                _tag: "Failed",
+                reason: { _tag: "Scheduler", cause },
+              });
+          }
+          expect(yield* history.outcome).toEqual({ _tag: "Dropped", reason: "withdrawn" });
+        }),
+      ));
+  }
+
+  test(`worker defect retains its Cause through immediate ${strategy} scope close`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+        const scope = yield* Scope.make(strategy);
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+        const engine: EngineShape = {
+          ...simulation.engine,
+          observe: () =>
+            Effect.map(simulation.engine.state, (initial) => ({
+              initial,
+              events: Stream.fromQueue(feed),
+            })),
+        };
+        const scheduler = yield* makeScheduler(options).pipe(
+          Effect.provideService(Engine, engine),
+          Effect.provideService(Scheduler.MaxOpsBeforeYield, 32),
+          Scope.provide(scope),
+        );
+        const item = yield* scheduler.submit({
+          key: ItemKey.make("defect"),
+          lane: "line",
+          request: clip("defect"),
+          window: { notBefore: "1 hour", firm: false },
+        });
+        const cause = Cause.die(new Error("controlled observation defect"));
+        const supervisor = yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            const result = yield* Effect.exit(scheduler.failure);
+            const accepting = (yield* scheduler.state).accepting;
+            yield* Scope.close(scope, Exit.void);
+            return { result, accepting };
+          }),
+        );
+        yield* Queue.failCause(feed, cause);
+        const notification = yield* Fiber.join(supervisor);
+        expect(notification.result).toEqual(Exit.failCause(cause));
+        expect(notification.accepting).toBe(false);
+        for (const wait of [item.started, item.outcome, item.firstDecisive])
+          expect(yield* Effect.exit(wait)).toEqual(Exit.failCause(cause));
+      }),
+    ));
+}
+
+for (const strategy of ["sequential", "parallel"] as const) {
+  test(`terminal settlement releases controls and interrupts a stalled command with ${strategy} ownership`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+        const scope = yield* Scope.make(strategy);
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const entered = yield* gate;
+        const interrupted = yield* gate;
+        const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+        const engine: EngineShape = {
+          ...simulation.engine,
+          enqueueOnSource: undefined,
+          enqueue: () =>
+            entered.release.pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() => interrupted.release),
+            ),
+          observe: () =>
+            Effect.map(simulation.engine.state, (initial) => ({
+              initial,
+              events: Stream.fromQueue(feed),
+            })),
+        };
+        const scheduler = yield* makeScheduler(options).pipe(
+          Effect.provideService(Engine, engine),
+          Scope.provide(scope),
+        );
+        const spec = { key: ItemKey.make("stalled"), lane: "line", request: clip("stalled") };
+        const item = yield* scheduler.submit(spec);
+        yield* entered.wait;
+        const controls = yield* Effect.forEach(
+          [
+            scheduler.withdraw(item.key).pipe(Effect.asVoid),
+            scheduler.drain({ finish: "accepted" }),
+          ],
+          (call) => Effect.forkScoped(Effect.result(call)),
+        );
+        yield* advance(100);
+        const failure = ReactorError.fromCode("Disconnected", "Controlled terminal failure");
+        const supervisor = yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            const observed = yield* scheduler.failure;
+            yield* Scope.close(scope, Exit.void);
+            return observed;
+          }),
+        );
+        yield* Queue.fail(feed, failure);
+        expect(yield* Fiber.join(supervisor)).toBe(failure);
+        yield* interrupted.wait;
+        for (const control of controls) {
+          const result = yield* Fiber.join(control);
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) expect(refusal(result.failure)).toBe("SessionClosed");
+        }
+        // The stalled enqueue was already in flight: the provider may still take it.
+        expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
+        yield* Scope.close(scope, Exit.void);
+        expect(yield* scheduler.failure).toBe(failure);
+        expect(refusal(yield* Effect.flip(scheduler.submit(spec)))).toBe("SessionClosed");
+      }),
+    ));
+}
+
+for (const mode of ["typed", "defect", "interruption"] as const) {
+  test(`startup ${mode} releases the constructor with its original failure`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+        const failure = ReactorError.fromCode("Disconnected", "Observation unavailable");
+        const cause =
+          mode === "defect" ? Cause.die(new Error("startup defect")) : Cause.interrupt();
+        const engine: EngineShape = {
+          ...simulation.engine,
+          observe: () => (mode === "typed" ? Effect.fail(failure) : Effect.failCause(cause)),
+        };
+        const result = yield* Effect.exit(
+          makeScheduler(options).pipe(Effect.provideService(Engine, engine)),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          if (mode === "typed")
+            expect(Cause.squash(result.cause)).toMatchObject({
+              reason: { _tag: "Closed" },
+              message: failure.message,
+            });
+          else expect(result.cause).toEqual(cause);
+        }
+      }),
+    ));
+}
+
+test("canceling a withdrawal wait leaves the owned command and scheduler alive", () =>
+  runClock(
+    Effect.gen(function* () {
+      const simulation = yield* Simulation.make({ fixedBuildTime: "10 seconds", buildRatio: 0 });
+      const entered = yield* gate;
+      const release = yield* gate;
+      const engine: EngineShape = {
+        ...simulation.engine,
+        remove: (id) =>
+          entered.release.pipe(
+            Effect.andThen(release.wait),
+            Effect.andThen(simulation.engine.remove(id)),
+          ),
+      };
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const item = yield* scheduler.submit({
+        key: ItemKey.make("cancel-wait"),
+        lane: "line",
+        request: clip("cancel wait"),
+      });
+      yield* advance(100);
+      const waiting = yield* Effect.forkScoped(scheduler.withdraw(item.key));
+      yield* entered.wait;
+      yield* Fiber.interrupt(waiting);
+      expect((yield* scheduler.state).accepting).toBe(true);
+      yield* release.release;
+      expect(yield* item.outcome).toEqual({ _tag: "Dropped", reason: "withdrawn" });
+      expect((yield* scheduler.state).accepting).toBe(true);
+    }),
+  ));
+
+for (const strategy of ["sequential", "parallel"] as const) {
+  test(`an external ${strategy} close joins terminal settlement already in progress`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+        const scope = yield* Scope.make(strategy);
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const feed = yield* Queue.unbounded<EngineEvent, ReactorError>();
+        const engine: EngineShape = {
+          ...simulation.engine,
+          observe: () =>
+            Effect.map(simulation.engine.state, (initial) => ({
+              initial,
+              events: Stream.fromQueue(feed),
+            })),
+        };
+        const scheduler = yield* makeScheduler(options).pipe(
+          Effect.provideService(Engine, engine),
+          Effect.provideService(Scheduler.MaxOpsBeforeYield, 32),
+          Scope.provide(scope),
+        );
+        const items = yield* Effect.forEach([0, 1, 2, 3], (index) =>
+          scheduler.submit({
+            key: ItemKey.make(`competing-${index}`),
+            lane: "line",
+            request: clip("competing close"),
+            window: { notBefore: "1 hour", firm: false },
+          }),
+        );
+        let acceptingWhenCloseBegan: boolean | undefined;
+        const closer = yield* scheduler.asRun.pipe(
+          Stream.filter((event) => event.status._tag === "Failed"),
+          Stream.take(1),
+          Stream.runForEach(() =>
+            Effect.gen(function* () {
+              acceptingWhenCloseBegan = (yield* scheduler.state).accepting;
+              yield* Scope.close(scope, Exit.void);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const cause = ReactorError.fromCode("Disconnected", "First terminal claim");
+        yield* Queue.fail(feed, cause);
+        yield* Fiber.join(closer);
+        expect(acceptingWhenCloseBegan).toBe(true);
+        expect(yield* scheduler.failure).toBe(cause);
+        for (const item of items)
+          for (const wait of [item.started, item.outcome, item.firstDecisive])
+            expect(yield* wait).toEqual({ _tag: "Failed", reason: { _tag: "Scheduler", cause } });
+        expect((yield* scheduler.state).accepting).toBe(false);
+      }),
+    ));
+}
+
+// #36: completing a handle wait or publishing as-run evidence resumes its
+// observers synchronously, inside emit. An observer that closes the owner there
+// must find that item's recorded evidence settled, neither stranded nor replaced.
+for (const observer of ["firstDecisive", "asRun"] as const) {
+  for (const evidence of ["Started", "Dropped"] as const) {
+    test(`an owner closed from ${observer} ${evidence} evidence keeps that evidence`, () =>
+      runClock(
+        Effect.gen(function* () {
+          const simulation = yield* Simulation.make({ fixedBuildTime: 0, buildRatio: 0 });
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const scheduler = yield* makeScheduler(options).pipe(
+            Effect.provideService(Engine, simulation.engine),
+            Scope.provide(scope),
+          );
+          const item = yield* scheduler.submit({
+            key: ItemKey.make("closing-evidence"),
+            lane: "line",
+            request: clip("closing evidence"),
+            ...(evidence === "Dropped" ? { window: { notBefore: "1 hour", firm: false } } : {}),
+          });
+          const observed: Effect.Effect<AsRunStatus> =
+            observer === "firstDecisive"
+              ? item.firstDecisive
+              : scheduler.asRun.pipe(
+                  Stream.filter(
+                    (event) => event.key === item.key && event.status._tag === evidence,
+                  ),
+                  Stream.take(1),
+                  Stream.runCollect,
+                  Effect.map((events) => events[0]!.status),
+                );
+          const closer = yield* Effect.forkScoped(
+            Effect.gen(function* () {
+              const status = yield* observed;
+              yield* Scope.close(scope, Exit.void);
+              return status;
+            }),
+          );
+          yield* Effect.yieldNow;
+          const withdrawal =
+            evidence === "Dropped"
+              ? yield* Effect.forkScoped(scheduler.withdraw(item.key))
+              : undefined;
+          if (evidence === "Started") yield* advance(1_000);
+          const status = yield* Fiber.join(closer);
+          const failure = yield* scheduler.failure;
+          const waits = yield* Effect.forEach(
+            [item.firstDecisive, item.started, item.outcome],
+            (wait) => Effect.forkScoped(Effect.exit(wait)),
+          );
+          yield* Effect.yieldNow;
+          expect(status._tag).toBe(evidence);
+          expect(waits.map((wait) => wait.pollUnsafe())).toEqual(
+            [
+              status,
+              status,
+              evidence === "Started"
+                ? { _tag: "Failed", reason: { _tag: "Scheduler", cause: failure } }
+                : status,
+            ].map((value) => Exit.succeed(Exit.succeed(value))),
+          );
+          if (withdrawal !== undefined) expect(yield* Fiber.join(withdrawal)).toBe("withdrawn");
+        }),
+      ));
+  }
+}
