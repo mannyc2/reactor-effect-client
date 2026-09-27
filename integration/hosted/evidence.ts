@@ -11,7 +11,15 @@ import type { Mutable } from "effect/Types";
 import * as Reactor from "reactor-effect-client";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Result from "effect/Result";
-import { Refused, checks, ceilingFor, stopFor, billedUsd } from "./gates.js";
+import {
+  Refused,
+  checks,
+  ceilingFor,
+  reservationUsd,
+  sessionsFor,
+  stopFor,
+  worstCaseUsd,
+} from "./gates.js";
 
 export const format = "reactor-hosted-qualification/v1";
 
@@ -727,7 +735,8 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
       rate.creditsPerSecond > 0 &&
       rate.creditsPerDollar > 0 &&
       budget.worstCaseUsd !== undefined &&
-      billedUsd(rate, 50) * 2 <= budget.worstCaseUsd + 1e-9 &&
+      // Admission's own rounding: both sides are on the ledger's four-decimal grid.
+      reservationUsd(worstCaseUsd(rate) * sessionsFor(evidence.check)) <= budget.worstCaseUsd &&
       budget.worstCaseUsd <= budget.checkUsd &&
       budget.checkUsd <= 1.5 &&
       budget.totalUsd <= 3.75 &&

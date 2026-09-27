@@ -353,7 +353,7 @@ const admitted = (target: Target, run: Run, budget: Budget, sessionCount = 1) =>
     run.evidence.budget.rate = rate;
     const worst = yield* gate(() => admit(rate, budget.checkUsd, sessionCount));
     yield* gate(() => admitTotal([budget.reservedUsd], worst, budget.totalUsd));
-    run.evidence.budget.worstCaseUsd = round(worst);
+    run.evidence.budget.worstCaseUsd = worst;
     yield* mark(run, "admitted", `worst case $${worst.toFixed(4)}`);
     const grant = yield* coordinator.mintToken({
       apiKey: target.apiKey,

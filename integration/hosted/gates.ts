@@ -140,9 +140,17 @@ export const billedUsd = (rate: Rate, seconds: number): number =>
 /** The worst case of one session at `rate`: the whole server-enforced cap, billed by the minute. */
 export const worstCaseUsd = (rate: Rate): number => billedUsd(rate, sessionSeconds);
 
-/** Refuse unless every capped session fits the budget at the published rate. */
+/**
+ * What the ledger reserves for `amount`: rounded up to the four decimals it
+ * keeps, so a reservation never falls below the worst case it stands for. The
+ * slack keeps a float a hair above a grid point, such as 0.75 computed as
+ * 0.7500000000000001, at that point.
+ */
+export const reservationUsd = (amount: number): number => Math.ceil(amount * 1e4 - 1e-6) / 1e4;
+
+/** Refuse unless every capped session fits the budget at the published rate; returns the reservation. */
 export const admit = (rate: Rate, budgetUsd: number, sessions = 1): number => {
-  const cost = worstCaseUsd(rate) * sessions;
+  const cost = reservationUsd(worstCaseUsd(rate) * sessions);
   if (!(cost <= budgetUsd + 1e-9))
     return refuse(
       `${sessions} capped ${sessionSeconds} s session(s) bill up to $${cost.toFixed(4)}, over the $${budgetUsd} budget`,

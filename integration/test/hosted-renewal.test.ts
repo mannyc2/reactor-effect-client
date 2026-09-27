@@ -26,6 +26,7 @@ import {
   reservedUsd,
   type Draft,
 } from "../hosted/evidence.js";
+import { admit } from "../hosted/gates.js";
 
 const frame = (sequence: bigint): VideoFrame => ({
   _tag: "VideoFrame",
@@ -383,6 +384,18 @@ test("handoff codec rejects impossible count and grace claims", () => {
         switches: [{ ...switched, handoff: candidate }],
       }),
     ).toThrow();
+});
+
+test("admission reserves the two-session worst case rounded up to the ledger's precision", () => {
+  // Two billed minutes at 1 credit/s and 9,000 credits a dollar cost $0.013333…;
+  // four-decimal rounding reserved $0.0133, below what the run's own judgment requires.
+  const rate = { creditsPerSecond: 1, creditsPerDollar: 9_000 };
+  const reserved = admit(rate, 1.5, 2);
+  expect(reserved).toBe(0.0134);
+  const run = draft();
+  run.budget = { ...run.budget, rate, worstCaseUsd: reserved };
+  conclude(run, undefined);
+  expect(run.verdict).toBe("pass");
 });
 
 test("a partial new two-session paid run retains the full ceiling without a reservation", () => {
