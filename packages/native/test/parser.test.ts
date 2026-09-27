@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { revealed } from "./support.js";
 import * as Cause from "effect/Cause";
 import * as Redacted from "effect/Redacted";
 import { ReactorError } from "reactor-effect-client/ReactorError";
@@ -99,16 +100,15 @@ describe("native media and event decoding", () => {
     const event = nativePeerTesting.parseEvent(
       packet({ type: "error", status: -3, message: "native transport event queue overflowed" }),
     );
-    expect(event).toMatchObject({
-      type: "error",
-      error: {
-        reason: { _tag: "Overflow" },
-        message: "native peer failed (Overflow)",
-        context: { detail: { status: -3 } },
-      },
-    });
     const classified = event.type === "error" ? event.error : undefined;
-    const detail = classified?.context.detail as { readonly backendMessage: unknown } | undefined;
+    expect(classified === undefined ? undefined : revealed(classified)).toMatchObject({
+      reason: { _tag: "Overflow" },
+      message: "native peer failed (Overflow)",
+      context: { detail: { status: -3 } },
+    });
+    const detail = (classified === undefined ? undefined : revealed(classified).context.detail) as
+      | { readonly backendMessage: unknown }
+      | undefined;
     expect(
       Redacted.isRedacted(detail?.backendMessage) && Redacted.value(detail.backendMessage),
     ).toBe("native transport event queue overflowed");

@@ -31,6 +31,7 @@ import type { VideoFrame } from "reactor-effect-client/Media";
 import { assertExactFrames } from "reactor-effect-test-kit/frames";
 import type { IsolatedPeer } from "../src/_internal/isolated/host.js";
 import { defaultShutdownTimeout } from "../src/_internal/peer.js";
+import { acquirePeer } from "../src/_internal/port.js";
 import * as Native from "../src/index.js";
 import { FarPeer, compileLibrary, libraryPath, record, until } from "./support.js";
 
@@ -179,8 +180,12 @@ const isolatedClient = (
               PeerFactory,
               PeerFactory.of({
                 check: factory.check,
-                make: Effect.tap(factory.make, (peer) =>
-                  Effect.sync(() => peers.push(peer as unknown as IsolatedPeer)),
+                make: Effect.flatMap(isolatedPeers(options), (made) =>
+                  acquirePeer(() => {
+                    const peer = made.make();
+                    peers.push(peer);
+                    return peer;
+                  }),
                 ),
               }),
             ),
@@ -412,16 +417,17 @@ describe("isolated native host", () => {
       // its own exit on disconnect, it would outlive the parent as an orphan.
       const compiled = fixture(holdStats);
       const script = `
-import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import { PeerFactory } from "reactor-effect-client/Peer";
-import * as Native from "./dist/index.js";
+import * as host from "./dist/_internal/isolated/host.js";
 Effect.runFork(
   Effect.scoped(
     Effect.gen(function* () {
-      const context = yield* Layer.build(Native.Isolated.layer({ libraryPath: process.env.FIXTURE }));
-      const peer = Context.get(context, PeerFactory).make();
+      const { environment } = yield* host.environmentFor({
+        libraryPath: process.env.FIXTURE,
+        shutdownTimeout: Duration.seconds(10),
+      });
+      const peer = new host.IsolatedPeer(environment);
       yield* peer.opened;
       yield* Effect.forkChild(peer.stats, { startImmediately: true });
       process.stdout.write(JSON.stringify({ child: peer.link.child.pid }) + "\\n");

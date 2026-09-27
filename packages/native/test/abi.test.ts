@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
+import { revealed } from "./support.js";
 import * as Effect from "effect/Effect";
 import {
   checkNativeBridge,
@@ -14,6 +16,13 @@ import {
 } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";
 import { compileFixture, compileLibrary, libraryName, libraryPath } from "./support.js";
+
+/** The ReactorError a bridge promise rejects with. */
+const rejection = (promise: Promise<unknown>): Promise<ReactorError> =>
+  promise.then(
+    () => Promise.reject(new Error("expected a rejection")),
+    (error: unknown) => error as ReactorError,
+  );
 
 describe("native C ABI", () => {
   test("uses the same source-identified staged artifact as installed-package preflight", async () => {
@@ -136,7 +145,7 @@ describe("native C ABI", () => {
     try {
       // These errors came back after entering the ABI. A native failure class
       // alone cannot establish execution history, unlike the local fence below.
-      await expect(bridge.send("data", Uint8Array.of(1))).rejects.toMatchObject({
+      expect(revealed(await rejection(bridge.send("data", Uint8Array.of(1))))).toMatchObject({
         reason: { _tag: "ChannelClosed" },
         context: expect.objectContaining({
           outcome: "unknown",
@@ -155,9 +164,13 @@ describe("native C ABI", () => {
       expect(prepared.mapping).toEqual([
         expect.objectContaining({ name: "video", kind: "video", direction: "recvonly" }),
       ]);
-      await expect(
-        bridge.call(NativeCall.Answer, encodeNativeText("v=0\r\nnot an answer\r\n")),
-      ).rejects.toMatchObject({
+      expect(
+        revealed(
+          await rejection(
+            bridge.call(NativeCall.Answer, encodeNativeText("v=0\r\nnot an answer\r\n")),
+          ),
+        ),
+      ).toMatchObject({
         reason: { _tag: "SdpRejected" },
         context: expect.objectContaining({
           outcome: "unknown",

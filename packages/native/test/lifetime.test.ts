@@ -6,6 +6,7 @@ import * as TestClock from "effect/testing/TestClock";
 import koffi from "koffi";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { describe, expect, test, vi } from "vitest";
+import { revealed } from "./support.js";
 import { checkNativeBridge } from "../src/_internal/bridge.js";
 import { NativePeer } from "../src/_internal/peer.js";
 import { compileFixture, until } from "./support.js";
@@ -253,7 +254,7 @@ describe("native foreign-call ownership", () => {
       );
       expect(waited).toBeLessThan(1_000);
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatchObject({
+      expect(errors[0] === undefined ? undefined : revealed(errors[0])).toMatchObject({
         reason: { _tag: "Disconnected" },
         message: "peer state failed",
         context: {

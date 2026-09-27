@@ -1476,10 +1476,11 @@ export const make = Effect.fnUntraced(function* (input: {
         if (Exit.isFailure(shutdown)) {
           // The host's own failure is the evidence; its message says what did
           // not finish. Anything else is reported as an opaque shutdown.
-          const failure = Cause.findError(shutdown.cause);
+          // A host finalizer that cannot carry a typed error dies with it.
+          const failure = Cause.squash(shutdown.cause);
           errors.push(
-            failure._tag === "Success" && ReactorError.is(failure.success)
-              ? failure.success
+            ReactorError.is(failure)
+              ? failure
               : ReactorError.fromCode("Shutdown", "local cleanup did not complete cleanly", {
                   detail: shutdown.cause,
                 }),

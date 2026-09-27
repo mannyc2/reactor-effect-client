@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -177,3 +178,19 @@ export class FarPeer {
     await this.exited;
   }
 }
+
+/** An error with its Redacted diagnostic detail revealed, for assertions on what it recorded. */
+export const revealed = <E extends { readonly context: { readonly detail?: unknown } }>(
+  error: E,
+) => {
+  const detail = error.context.detail;
+  return {
+    ...error,
+    reason: (error as { readonly reason?: unknown }).reason,
+    message: (error as { readonly message?: unknown }).message,
+    context: {
+      ...error.context,
+      detail: Redacted.isRedacted(detail) ? Redacted.value(detail) : detail,
+    },
+  };
+};
