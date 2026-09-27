@@ -306,15 +306,15 @@ for (const constructor of ["legacy", "continuous"] as const)
         expect(renewal.allocations.some((slot) => slot.sessionId !== undefined)).toBe(false);
       if (fault === "refuseSecondAllocation") {
         expect(renewal.allocations.filter((slot) => slot.sessionId !== undefined)).toHaveLength(1);
-        if (constructor === "legacy") expect(renewal.openAttempts).toBe(3);
-        else {
-          // The failed acquisition keeps its reserved incomplete record. Together
-          // with the live source it fills continuous capacity before the open guard.
-          expect(renewal.openAttempts).toBe(2);
+        // The refused open's unknown allocation stops the run before the SDK's
+        // retry, so neither a third open nor continuous capacity is ever reached.
+        expect(renewal.openAttempts).toBe(2);
+        if (constructor === "continuous") {
+          // The failed acquisition keeps its reserved incomplete record.
           if (renewal.cleanup?._tag !== "Continuous") throw new Error("Missing continuous cleanup");
           expect(renewal.cleanup.summary).toMatchObject({
             totalRetirements: 2n,
-            exhausted: true,
+            exhausted: false,
             omittedComplete: { noAllocation: 0n, ownedTerminated: 0n, attachedDetached: 0n },
           });
           expect(renewal.cleanup.summary?.retained).toHaveLength(2);
@@ -339,6 +339,11 @@ for (const constructor of ["legacy", "continuous"] as const)
           expect(run.evidence.outcomes).toContain("unknown");
           expect(run.evidence.cleanup).toContain("Source 2's allocation outcome is unknown");
           expect(run.output).toContain("Source 2's allocation outcome is unknown");
+          // Cleanup starts as soon as that outcome is recorded, well inside the 5 s
+          // the SDK waits before it would try another allocation.
+          expect(renewal.cleanup.requestedMs - renewal.allocations[1]!.closedMs!).toBeLessThan(
+            2_500,
+          );
         }
       }
       if (fault === "failConnect")

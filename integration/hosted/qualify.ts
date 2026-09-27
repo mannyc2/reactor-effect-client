@@ -1399,7 +1399,8 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
                       ? undefined
                       : (yield* allocatedSession.current).close;
                 // With no session named and no report ruling allocation out, one may
-                // exist under this grant: the stop rules and the operator must see it.
+                // exist under this grant: the stop rules and the operator must see it,
+                // and the run stops before the SDK can try another allocation.
                 const unknown = allocatedSession === undefined && report?.allocation !== "none";
                 if (unknown) run.evidence.outcomes.push("unknown");
                 if (report !== undefined || unknown)
@@ -1407,6 +1408,15 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
                     ...(report === undefined ? {} : { leaseCleanup: report, closedMs: time.now() }),
                     ...(unknown ? { allocation: "unknown" as const } : {}),
                   });
+                if (unknown)
+                  yield* Deferred.fail(
+                    failure,
+                    Reactor.ReactorError.fromCode(
+                      "InvalidState",
+                      "a source allocation's outcome is unknown",
+                      { outcome: "unknown" },
+                    ),
+                  );
               }),
             ),
           );
