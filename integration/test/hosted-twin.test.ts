@@ -352,7 +352,8 @@ test("the twin mints recognisable credentials: an HS256 JWT the twin plainly sig
 
 test("twin close joins an owned socket with an unfinished HTTP request", async () => {
   const twin = await startTwin();
-  const socket = connect({ host: "127.0.0.1", port: Number(new URL(twin.url).port) });
+  const port = Number(new URL(twin.url).port);
+  const socket = connect({ host: "127.0.0.1", port });
   try {
     await once(socket, "connect");
     const continued: Promise<readonly unknown[]> = once(socket, "data");
@@ -369,6 +370,15 @@ test("twin close joins an owned socket with an unfinished HTTP request", async (
     expect(twin.close()).toBe(closing);
     await Promise.all([closing, closed]);
     expect(socket.destroyed).toBe(true);
+    // Destroying sockets alone would leave the listener accepting; a refused
+    // connection shows the close waited for the server's own close callback.
+    const probe = connect({ host: "127.0.0.1", port });
+    const answer = await new Promise<string | undefined>((resolve) => {
+      probe.once("connect", () => resolve("connected"));
+      probe.once("error", (error: NodeJS.ErrnoException) => resolve(error.code));
+    });
+    probe.destroy();
+    expect(answer).toBe("ECONNREFUSED");
   } finally {
     socket.destroy();
     await twin.close();
