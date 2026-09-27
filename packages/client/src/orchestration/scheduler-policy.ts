@@ -31,7 +31,46 @@ export interface PlannedItem {
   readonly generation?: number;
   /** Inserted beside an anchor: it keeps its place in a group, but its fate never breaks one. */
   readonly inserted?: boolean;
+  /** The requested length, in seconds; the provider's actual length follows once built. */
+  readonly seconds?: number;
+  /** When its build command was sent, until the clip is Ready. */
+  readonly dispatchedAtMs?: number;
 }
+
+/** What the scheduler has measured of its provider, from its own builds. */
+export interface Estimates {
+  /** Seconds of build per requested second of clip, once a few builds were measured. */
+  readonly build: { readonly median: number; readonly p95: number } | undefined;
+  /** A built clip's actual length over its requested length. */
+  readonly length: number;
+}
+
+/** Enough measured builds to act on. */
+export const minimumSamples = 3;
+
+const quantile = (values: ReadonlyArray<number>, q: number): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+};
+
+/** Estimates from recent samples: build seconds per requested second, and actual over requested length. */
+export const estimatesFrom = (
+  build: ReadonlyArray<number>,
+  length: ReadonlyArray<number>,
+): Estimates => ({
+  build:
+    build.length < minimumSamples
+      ? undefined
+      : { median: quantile(build, 0.5), p95: quantile(build, 0.95) },
+  length: length.length === 0 ? 1 : quantile(length, 0.5),
+});
+
+/**
+ * Seconds added to the measured p95 build time before a refill counts as early enough: the
+ * scheduler's 100 ms turn, a command round trip, and the provider's delay in starting the
+ * next clip (30 to 110 ms on hosted H3).
+ */
+const lookaheadMarginSeconds = 1;
 
 /**
  * An edit batch that has not taken effect yet. Until it does, what it withdraws is only
@@ -80,6 +119,11 @@ export interface PolicySnapshot {
   /** The first failed or dropped part of each broken group. */
   readonly brokenGroups: ReadonlyMap<ItemKey, number>;
   readonly batches: ReadonlyArray<PendingBatch>;
+  readonly estimates: Estimates;
+  /** When the filler build in flight on the preferred source was sent, if one is. */
+  readonly fillerDispatchedAtMs: number | undefined;
+  /** The requested length of the next filler clip, if known. */
+  readonly fillerSeconds: number | undefined;
 }
 
 export type PolicyAction =
@@ -109,6 +153,18 @@ export interface PolicyDecision {
 const preferredSession = (state: EngineState): string | undefined =>
   Option.getOrUndefined(state.preferredSessionId);
 
+/**
+ * When the playing clip started on the monotonic clock. Engine state can show a new clip
+ * playing before its Started event is handled, so the state's own observation fills in.
+ */
+const playingSince = (
+  playing: Option.Option.Value<EngineState["playing"]> | undefined,
+  playingStartedMs: ReadonlyMap<ClipId, number>,
+): number | undefined =>
+  playing === undefined
+    ? undefined
+    : (playingStartedMs.get(playing.clipId) ?? playing.startedAtMonotonicMillis);
+
 /** Ready material on a retiring source is not runway for the replacement. */
 export const runwaySeconds = (
   state: EngineState,
@@ -120,7 +176,7 @@ export const runwaySeconds = (
   const preferred = preferredSession(state);
   const playing = Option.getOrUndefined(state.playing);
   const record = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-  const started = playing === undefined ? undefined : playingStartedMs.get(playing.clipId);
+  const started = playingSince(playing, playingStartedMs);
   const rest =
     record === undefined || started === undefined
       ? 0
@@ -225,11 +281,6 @@ const fillerHeldFor = (snapshot: PolicySnapshot): boolean =>
       (item.phase === "Ready" && item.atMs !== undefined && item.atMs > snapshot.nowMs),
   );
 
-/**
- * When an item could start at the earliest if it took `place`: after the rest of the playing
- * clip and every Ready clip on the preferred source that ranks ahead of that place. A new
- * submission's place is the end of its lane.
- */
 export interface ProjectionView {
   readonly engine: EngineState;
   readonly items: ReadonlyArray<PlannedItem>;
@@ -238,16 +289,32 @@ export interface ProjectionView {
   readonly playingStartedMs: ReadonlyMap<ClipId, number>;
   readonly nowMs: number;
   readonly batches: ReadonlyArray<PendingBatch>;
+  readonly estimates: Estimates;
+  readonly fillerDispatchedAtMs: number | undefined;
+  readonly fillerSeconds: number | undefined;
+  /** Items being withdrawn, which count for nothing ahead. */
+  readonly withdrawing?: ReadonlySet<ItemKey>;
 }
 
-export const projectedStartMs = (
-  view: ProjectionView,
-  place: Pick<PlannedItem, "lane" | "admission" | "group">,
-): number => {
+/** The place a projection is for: a new submission's is the end of its lane. */
+export type ProjectedPlace = Pick<PlannedItem, "lane" | "admission" | "group"> & {
+  readonly key?: ItemKey;
+  readonly seconds?: number;
+  readonly startByMs?: number;
+};
+
+/**
+ * When a clip could start at the earliest if it took `place`, optimistically, so a refusal
+ * means it cannot make it: after the rest of the playing clip and every Ready clip on the
+ * preferred source ranked ahead, and after its own build, once builds have been measured.
+ * The build waits for the one in flight and for every build that must go first: higher
+ * lanes, a replacement or a group already under way in its lane, and earlier deadlines.
+ */
+export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): number => {
   const { engine, owned, nowMs } = view;
   const playing = Option.getOrUndefined(engine.playing);
   const playingRecord = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-  const started = playing === undefined ? undefined : view.playingStartedMs.get(playing.clipId);
+  const started = playingSince(playing, view.playingStartedMs);
   const restMs =
     playingRecord === undefined || started === undefined
       ? 0
@@ -260,14 +327,45 @@ export const projectedStartMs = (
   );
   const rank = rankItem(place);
   const preferred = preferredSession(engine);
-  const aheadMs = engine.ready.reduce(
-    (total, record) =>
-      record.sessionId === preferred && compareRank(rankClip(record.clipId, owned), rank) < 0
-        ? total + record.durationSeconds * 1000
-        : total,
-    0,
-  );
-  return nowMs + restMs + aheadMs;
+  const withdrawing = view.withdrawing ?? new Set<ItemKey>();
+  const aheadMs = engine.ready.reduce((total, record) => {
+    if (record.sessionId !== preferred || compareRank(rankClip(record.clipId, owned), rank) >= 0)
+      return total;
+    const owner = owned.get(record.clipId);
+    if (owner?._tag === "Item" && withdrawing.has(owner.key)) return total;
+    return total + record.durationSeconds * 1000;
+  }, 0);
+  const playable = nowMs + restMs + aheadMs;
+  const perSecond = view.estimates.build?.median;
+  if (perSecond === undefined || place.seconds === undefined) return playable;
+  const buildMs = (seconds: number) => seconds * perSecond * 1000;
+  // The build slot is busy until the build in flight is done.
+  const inFlight = [
+    ...view.items.flatMap((item) =>
+      item.phase === "Building" && item.dispatchedAtMs !== undefined && item.key !== place.key
+        ? [item.dispatchedAtMs + buildMs(item.seconds ?? 0)]
+        : [],
+    ),
+    ...(view.fillerDispatchedAtMs === undefined || view.fillerSeconds === undefined
+      ? []
+      : [view.fillerDispatchedAtMs + buildMs(view.fillerSeconds)]),
+  ];
+  const laneRank = view.lanes.indexOf(place.lane);
+  const first = view.items
+    .filter(
+      (item) =>
+        item.phase === "Accepted" &&
+        item.key !== place.key &&
+        !withdrawing.has(item.key) &&
+        (view.lanes.indexOf(item.lane) < laneRank ||
+          (item.lane === place.lane &&
+            (item.replaces !== undefined ||
+              (item.group !== undefined && item.group.index > 0) ||
+              (item.startByMs ?? Infinity) < (place.startByMs ?? Infinity)))),
+    )
+    .reduce((total, item) => total + buildMs(item.seconds ?? 0), 0);
+  const built = Math.max(nowMs, ...inFlight) + first + buildMs(place.seconds);
+  return Math.max(playable, built);
 };
 
 /**
@@ -287,10 +385,19 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
     .reduce((earliest, item) => Math.min(earliest, item.atMs ?? Infinity), Infinity);
   const anchorGapSeconds = nextAnchorMs === Infinity ? 0 : (nextAnchorMs - nowMs) / 1000;
-  const fillTarget = Math.max(snapshot.targetSeconds, anchorGapSeconds);
+  // A nonzero floor covers at least one measured p95 build of the next filler clip, so a
+  // refill started at the floor is Ready before the picture runs out. A zero floor keeps
+  // filler off.
+  const p95 = snapshot.estimates.build?.p95;
+  const floorSeconds =
+    snapshot.floorSeconds > 0 && p95 !== undefined && snapshot.fillerSeconds !== undefined
+      ? Math.max(snapshot.floorSeconds, p95 * snapshot.fillerSeconds + lookaheadMarginSeconds)
+      : snapshot.floorSeconds;
+  const targetSeconds = Math.max(snapshot.targetSeconds, floorSeconds);
+  const fillTarget = Math.max(targetSeconds, anchorGapSeconds);
   const filling =
     anchorGapSeconds > runway ||
-    (snapshot.refillActive ? runway < snapshot.targetSeconds : runway < snapshot.floorSeconds);
+    (snapshot.refillActive ? runway < targetSeconds : runway < floorSeconds);
   const playingId = Option.getOrUndefined(engine.playing)?.clipId;
   const fillerHeld = fillerHeldFor(snapshot);
 
@@ -319,6 +426,18 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     if ((item.firm && item.startByMs !== undefined && nowMs > item.startByMs) || atExpired)
       drop(item, "late");
   }
+  // A firm item that cannot start before its deadline is dropped before it takes the build
+  // slot, once builds have been measured.
+  if (snapshot.estimates.build !== undefined)
+    for (const item of items)
+      if (
+        item.firm &&
+        item.phase === "Accepted" &&
+        item.startByMs !== undefined &&
+        !snapshot.dispatched.has(item.key) &&
+        projectedStartMs(snapshot, item) > item.startByMs
+      )
+        drop(item, "late");
   // A part that failed or was dropped withdraws the parts after it.
   for (const item of items) {
     const brokenAt =
@@ -446,8 +565,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   // A wall-clock correction can otherwise require removing and rebuilding it.
   const playing = Option.getOrUndefined(engine.playing);
   const playingRecord = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-  const playingStarted =
-    playing === undefined ? undefined : snapshot.playingStartedMs.get(playing.clipId);
+  const playingStarted = playingSince(playing, snapshot.playingStartedMs);
   const playingRest =
     playingRecord === undefined || playingStarted === undefined
       ? 0

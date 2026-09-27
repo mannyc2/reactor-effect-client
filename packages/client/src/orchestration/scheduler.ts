@@ -28,7 +28,7 @@ import {
   keyedRequest,
   keyFromProviderMetadata,
 } from "./scheduler-key.js";
-import { plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
+import { estimatesFrom, plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
 import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
@@ -239,6 +239,15 @@ export interface SchedulerState {
     readonly ready: ReadonlyArray<ItemKey | "filler" | "other">;
   }>;
   readonly starved: number;
+  /**
+   * What the scheduler has measured from its own recent builds: seconds from sending a
+   * build to its clip being Ready, per requested second of clip (absent until three builds
+   * were measured), and a built clip's actual length over its requested length.
+   */
+  readonly estimates: {
+    readonly build: { readonly median: number; readonly p95: number } | undefined;
+    readonly length: number;
+  };
 }
 
 export class KeyMismatch extends Schema.TaggedError<KeyMismatch>()("KeyMismatch", {
@@ -287,6 +296,7 @@ interface Entry extends PlannedItem {
   phase: PlannedItem["phase"];
   /** Set once another item was submitted to take this one's place. */
   replacedBy?: ItemKey;
+  dispatchedAtMs?: number;
   retryAtMs?: number;
   atMs?: number;
   clipId?: ClipId;
@@ -942,6 +952,7 @@ export const makeScheduler = (
       lanes: lanes.map((name) => ({ name, keys: [] })),
       sessions: [],
       starved: 0,
+      estimates: { build: undefined, length: 1 },
     });
     const initialized = yield* Deferred.make<void, ReactorError>();
     const stopped = yield* Deferred.make<ReactorFailure>();
@@ -999,6 +1010,26 @@ export const makeScheduler = (
     let drained = false;
     let observationReady = false;
     let blockedMove: string | undefined;
+    // Recent measured builds: build seconds per requested second, and actual over requested length.
+    const buildSamples: number[] = [];
+    const lengthSamples: number[] = [];
+    const maxSamples = 32;
+    let lastFillerSeconds: number | undefined;
+    /** Filler builds sent and not yet Ready, by filler index. */
+    const fillerDispatch = new Map<number, { readonly atMs: number; readonly seconds: number }>();
+    const measure = (atMs: number, requested: number, actual: number): void => {
+      if (!(requested > 0)) return;
+      buildSamples.push((monotonicMillis(clock) - atMs) / 1000 / requested);
+      lengthSamples.push(actual / requested);
+      if (buildSamples.length > maxSamples) buildSamples.shift();
+      if (lengthSamples.length > maxSamples) lengthSamples.shift();
+    };
+    /** An item's build is measured once, when its clip is first seen Ready. */
+    const measureItem = (item: Entry, actual: number): void => {
+      if (item.dispatchedAtMs === undefined) return;
+      measure(item.dispatchedAtMs, item.request.durationSeconds, actual);
+      delete item.dispatchedAtMs;
+    };
 
     const emit = (entry: Entry, status: AsRunStatus, terminal = false): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1348,8 +1379,18 @@ export const makeScheduler = (
         })),
         sessions,
         starved,
+        estimates: estimatesFrom(buildSamples, lengthSamples),
       });
     };
+
+    /** When the filler build in flight was sent, and the next filler clip's requested length. */
+    const fillerView = () => ({
+      fillerDispatchedAtMs:
+        fillerDispatch.size === 0
+          ? undefined
+          : Math.min(...[...fillerDispatch.values()].map((sent) => sent.atMs)),
+      fillerSeconds: upcomingFiller?.durationSeconds ?? lastFillerSeconds,
+    });
 
     const activeRecords = (state: EngineState) => [
       ...state.queued,
@@ -1477,6 +1518,7 @@ export const makeScheduler = (
               yield* emit(item, { _tag: "Unobserved" });
           } else if (state.ready.some((record) => record.clipId === clipId)) {
             const record = knownRecord(state, clipId)!;
+            measureItem(item, record.durationSeconds);
             item.sessionId = record.sessionId;
             if (item.phase !== "Started")
               yield* emit(item, { _tag: "Ready", sessionId: record.sessionId });
@@ -1548,6 +1590,11 @@ export const makeScheduler = (
         const owner = owned.get(event.clipId);
         if (owner === undefined) return;
         if (owner._tag === "Filler") {
+          const sent = fillerDispatch.get(owner.index);
+          if (event._tag === "Ready" && sent !== undefined)
+            measure(sent.atMs, sent.seconds, event.durationSeconds);
+          if (event._tag === "Ready" || event._tag === "Ended" || event._tag === "Failed")
+            fillerDispatch.delete(owner.index);
           if (event._tag === "Started")
             playingStartedMs.set(event.clipId, event.atMonotonicMillis ?? monotonicMillis(clock));
           if (event._tag === "Ended" || event._tag === "Failed") {
@@ -1566,6 +1613,7 @@ export const makeScheduler = (
               yield* emit(item, { _tag: "Building" });
             break;
           case "Ready": {
+            measureItem(item, event.durationSeconds);
             const record = knownRecord(yield* engine.state, event.clipId);
             if (record !== undefined) {
               item.sessionId = record.sessionId;
@@ -1715,7 +1763,21 @@ export const makeScheduler = (
     const sendCommand = (command: Command): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (ended !== undefined) return;
-        if (command._tag === "Build") pendingBuilds.add(command.key);
+        if (command._tag === "Build") {
+          pendingBuilds.add(command.key);
+          const item = items.get(command.key);
+          if (item !== undefined) item.dispatchedAtMs = monotonicMillis(clock);
+        }
+        if (command._tag === "BuildFiller") {
+          lastFillerSeconds = command.request.durationSeconds;
+          fillerDispatch.set(command.index, {
+            atMs: monotonicMillis(clock),
+            seconds: command.request.durationSeconds,
+          });
+          // In-flight filler is bounded like the samples it feeds.
+          for (const index of fillerDispatch.keys())
+            if (fillerDispatch.size > maxSamples) fillerDispatch.delete(index);
+        }
         if (command._tag === "DeferAt") pendingAtDeferrals.add(command.key);
         commandCount++;
         yield* Queue.offer(commandQueue, command);
@@ -1963,6 +2025,7 @@ export const makeScheduler = (
                   reason: { _tag: "Command", cause: result.failure },
                 });
               else item.retryAtMs = monotonicMillis(clock) + 1_000;
+              delete item.dispatchedAtMs;
             }
             break;
           }
@@ -1989,6 +2052,7 @@ export const makeScheduler = (
             } else if (result.failure.context.outcome === "unknown") {
               // The worker already retained this identity and its original age.
             } else {
+              fillerDispatch.delete(command.index);
               fillerRetryAtMs = monotonicMillis(clock) + 1_000;
               if (result.failure.context.outcome === "replied") {
                 fillerIndex = Math.max(fillerIndex, command.index + 1);
@@ -2203,6 +2267,8 @@ export const makeScheduler = (
           dispatched: pendingBuilds,
           brokenGroups,
           batches: pendingBatches(),
+          estimates: estimatesFrom(buildSamples, lengthSamples),
+          ...fillerView(),
         });
       let decision = decide();
       // A commit changes what is withdrawn and what takes over, so the plan is read again.
@@ -2277,6 +2343,7 @@ export const makeScheduler = (
         request: captured.request,
         fingerprint: captured.fingerprint,
         admission: place === undefined ? ++admission : place.admission,
+        seconds: captured.request.durationSeconds,
         phase: "Accepted",
         status: { _tag: "Accepted" },
         ...(place === undefined
@@ -2513,6 +2580,9 @@ export const makeScheduler = (
             playingStartedMs,
             nowMs,
             batches: pendingBatches(),
+            estimates: estimatesFrom(buildSamples, lengthSamples),
+            ...fillerView(),
+            withdrawing: new Set(pendingWithdrawals.keys()),
           },
           place,
         );
@@ -2546,7 +2616,12 @@ export const makeScheduler = (
               item.startByOffsetMs === undefined ? undefined : nowMs + item.startByOffsetMs;
             if (
               startByMs !== undefined &&
-              view({ lane: item.lane, admission: Infinity }) > startByMs
+              view({
+                lane: item.lane,
+                admission: Infinity,
+                seconds: item.request.durationSeconds,
+                startByMs,
+              }) > startByMs
             )
               return refuse(WouldMissDeadline.of(item.key));
             const entry = accept(item, nowMs, startByMs, undefined);
@@ -2572,7 +2647,12 @@ export const makeScheduler = (
               first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
             if (
               startByMs !== undefined &&
-              view({ lane: first.lane, admission: Infinity }) > startByMs
+              view({
+                lane: first.lane,
+                admission: Infinity,
+                seconds: first.request.durationSeconds,
+                startByMs,
+              }) > startByMs
             )
               return refuse(WouldMissDeadline.of(group.key));
             const parts = [
@@ -2608,7 +2688,10 @@ export const makeScheduler = (
             if (typeof placed === "string") return refuse(invalid(placed));
             const startByMs =
               insert.startByOffsetMs === undefined ? undefined : nowMs + insert.startByOffsetMs;
-            if (startByMs !== undefined && view(placed) > startByMs)
+            if (
+              startByMs !== undefined &&
+              view({ ...placed, seconds: insert.request.durationSeconds, startByMs }) > startByMs
+            )
               return refuse(WouldMissDeadline.of(insert.key));
             const entry = accept(
               {
