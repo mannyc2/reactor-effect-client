@@ -104,7 +104,6 @@ export const make = (options: Options) =>
     const clock = yield* Clock.Clock;
     let phase: Lifecycle.SourcePhase = { _tag: "Active" };
     let indeterminate = false;
-    let accountingTimedOut = false;
     let unknownSubmissions = 0n;
     let contractFailure: ReactorError | undefined;
     let inFlight = 0;
@@ -145,7 +144,10 @@ export const make = (options: Options) =>
         }),
       );
 
-    const joinCommitted = (budget: number): Effect.Effect<void> =>
+    // Whether committed accounting settled within this wait. A recovery wait
+    // that gives up marks the source indeterminate for replacement; only the
+    // retirement's own wait decides its reported accounting.
+    const joinCommitted = (budget: number): Effect.Effect<boolean> =>
       Effect.suspend(() =>
         Effect.all(
           [
@@ -165,13 +167,14 @@ export const make = (options: Options) =>
           { concurrency: "unbounded", discard: true },
         ),
       ).pipe(
+        Effect.as(true),
         Effect.interruptible,
         Effect.timeoutOrElse({
           duration: budget,
           orElse: () =>
             Effect.sync(() => {
               indeterminate = true;
-              accountingTimedOut = true;
+              return false;
             }),
         }),
       );
@@ -192,7 +195,7 @@ export const make = (options: Options) =>
           const completionExit = yield* Effect.exit(
             Effect.forEach([...submissions.keys()], completed, { discard: true }),
           );
-          const stages = [
+          const stages: Exit.Exit<unknown>[] = [
             mediaExit,
             sourceExit,
             accountingExit,
@@ -212,7 +215,7 @@ export const make = (options: Options) =>
             options.retired(
               {
                 accounting:
-                  accountingTimedOut || Exit.isFailure(accountingExit) ? "timed-out" : "settled",
+                  Exit.isSuccess(accountingExit) && accountingExit.value ? "settled" : "timed-out",
                 scope: Exit.isSuccess(scopeExit) ? "closed" : "failed",
                 affinity: Exit.isSuccess(affinityExit) ? "retired" : "failed",
                 errors,

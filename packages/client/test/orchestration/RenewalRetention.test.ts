@@ -5,6 +5,7 @@ import * as Renewal from "../../src/orchestration/renewal.js";
 import { AcquisitionFailure, ReactorError } from "../../src/errors.js";
 import { ClipId } from "../../src/orchestration/request.js";
 import {
+  cleanPressure,
   failure,
   gate,
   member,
@@ -615,6 +616,57 @@ test("unresolved ledger exhaustion refuses before open and still fits both remai
       expect(summary.exhausted).toBe(true);
       expect(summary.retained).toHaveLength(3);
       expect(summary.retained.every((row) => row.disposition === "incomplete")).toBe(true);
+    }),
+  ));
+
+// Review of 4443f80: a recovery-time join timeout was reported as the later
+// retirement's own accounting, making a settled retirement incomplete.
+test("retirement accounting reflects its own join after recovery stopped waiting", () =>
+  runClock(
+    Effect.gen(function* () {
+      const accepted = yield* gate;
+      const tail = yield* gate;
+      let holdTail = false;
+      let tailHeld = false;
+      const sources: SourceFixture[] = [];
+      const handle = yield* Renewal.makeContinuous({
+        reconnectTimeout: 50,
+        open: Effect.gen(function* () {
+          const fixture = yield* sourceFixture(
+            `accounting-${sources.length}`,
+            sources.length === 0
+              ? {
+                  execute: (_, accept) => accepted.wait.pipe(Effect.andThen(accept)),
+                  pressure: () =>
+                    Effect.gen(function* () {
+                      if (holdTail && !tailHeld) {
+                        tailHeld = true;
+                        yield* tail.wait;
+                      }
+                      return cleanPressure;
+                    }),
+                }
+              : {},
+          );
+          sources.push(fixture);
+          return { source: fixture.source, lifetime: "Infinity" };
+        }),
+      });
+      const submitted = yield* handle.engine.enqueue(request()).pipe(Effect.forkScoped);
+      yield* until(() => sources[0]!.sends.length === 1);
+      holdTail = true;
+      yield* sources[0]!.failEvents(ReactorError.fromCode("Disconnected", "lost"));
+      // Recovery stops waiting for the dispatch; replacement then reads the tail.
+      yield* TestClock.adjust(50);
+      yield* until(() => tailHeld);
+      yield* accepted.release;
+      yield* Fiber.join(submitted);
+      yield* tail.release;
+      yield* until(() => sources.length === 2);
+      const summary = yield* handle.close;
+      const retired = summary.retained.find((row) => row.source?.sessionId === "accounting-0");
+      expect(retired?.retirement).toMatchObject({ accounting: "settled", unknownSubmissions: 0n });
+      expect(retired?.disposition).toBe("complete");
     }),
   ));
 
