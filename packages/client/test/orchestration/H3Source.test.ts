@@ -457,6 +457,10 @@ test("foreign generation and failure remain visible with unknown timing and boun
           .every((event) => event.timing._tag === "Unknown"),
       ).toBe(true);
       yield* emit("clip_failed", { clip: { ...clips[8]! }, reason: "content policy fixture" });
+      // The provider revision precedes the source adapter and its event reader.
+      yield* until(() =>
+        events.some((event) => event._tag === "Failed" && event.clipId === clips[8]!.clip_id),
+      );
       const failed = events.find((event) => event._tag === "Failed");
       expect(failed?._tag === "Failed" && failed.reason).toBe("content policy fixture");
       expect((yield* source.state).failed).toEqual([ClipId.make(clips[8]!.clip_id)]);

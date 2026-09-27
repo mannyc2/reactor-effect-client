@@ -935,62 +935,68 @@ test("in-place source snapshots retire uncertainty without changing earlier publ
     }),
   ));
 
-test("uncertain filler ledger fails before dispatching a 4097th identity", () =>
-  // This is an operation bound: no deadline is advanced or awaited. The live
-  // clock avoids sorting thousands of canceled virtual watchdog sleeps.
-  run(
-    Effect.gen(function* () {
-      let state = readyState({
-        sessions: [{ sessionId: "ledger-0", availability: "Ready" }],
-        preferredSessionId: Option.some("ledger-0"),
-      });
-      const keys: (string | undefined)[] = [];
-      const uncertain = failure("unknown");
-      const filler = clip("bounded filler");
-      const engine: EngineShape = {
-        prepare: () => Effect.die(new Error("Unexpected unfenced preparation")),
-        enqueue: () => Effect.die(new Error("Unexpected unfenced enqueue")),
-        events: Stream.never,
-        failure: Effect.never,
-        stopRenewal: Effect.void,
-        setAutoplay: () => Effect.void,
-        pauseAndStop: Effect.void,
-        remove: () => Effect.die(new Error("Uncertain filler cannot be removed without a clip ID")),
-        move: () => Effect.void,
-        setCanvas: () => Effect.void,
-        state: Effect.sync(() => state),
-        observe: () => Effect.succeed({ initial: state, events: Stream.never }),
-        enqueueOnSource: (request) =>
-          Effect.gen(function* () {
-            keys.push(schedulerKeyOf(request));
-            const sessionId = `ledger-${keys.length}`;
-            state = {
-              ...state,
-              // Keep every uncertain source live; their enumeration order is
-              // unrelated to the ledger bound, so preference is cheap to find.
-              sessions: [{ sessionId, availability: "Ready" }, ...state.sessions],
-              preferredSessionId: Option.some(sessionId),
-            };
-            return yield* uncertain;
-          }),
-      };
-      const scheduler = yield* makeScheduler({
-        ...options,
-        unknownRecoveryTimeout: "10 minutes",
-        filler: {
-          runway: { floor: "5 seconds", target: "5 seconds" },
-          clip: () => filler,
-        },
-      }).pipe(Effect.provideService(Engine, engine));
-      const result = yield* scheduler.failure;
-      expect(result.reason._tag).toBe("Overflow");
-      expect(keys).toHaveLength(4096);
-      expect(new Set(keys).size).toBe(4096);
-      expect(keys.at(-1)).toBe(fillerKey(4095));
-      expect(state.sessions).toHaveLength(4097);
-      expect((yield* scheduler.state).accepting).toBe(false);
-    }),
-  ));
+test(
+  "uncertain filler ledger fails before dispatching a 4097th identity",
+  () =>
+    // This is an operation bound: no deadline is advanced or awaited. The live
+    // clock avoids sorting thousands of canceled virtual watchdog sleeps.
+    run(
+      Effect.gen(function* () {
+        let state = readyState({
+          sessions: [{ sessionId: "ledger-0", availability: "Ready" }],
+          preferredSessionId: Option.some("ledger-0"),
+        });
+        const keys: (string | undefined)[] = [];
+        const uncertain = failure("unknown");
+        const filler = clip("bounded filler");
+        const engine: EngineShape = {
+          prepare: () => Effect.die(new Error("Unexpected unfenced preparation")),
+          enqueue: () => Effect.die(new Error("Unexpected unfenced enqueue")),
+          events: Stream.never,
+          failure: Effect.never,
+          stopRenewal: Effect.void,
+          setAutoplay: () => Effect.void,
+          pauseAndStop: Effect.void,
+          remove: () =>
+            Effect.die(new Error("Uncertain filler cannot be removed without a clip ID")),
+          move: () => Effect.void,
+          setCanvas: () => Effect.void,
+          state: Effect.sync(() => state),
+          observe: () => Effect.succeed({ initial: state, events: Stream.never }),
+          enqueueOnSource: (request) =>
+            Effect.gen(function* () {
+              keys.push(schedulerKeyOf(request));
+              const sessionId = `ledger-${keys.length}`;
+              state = {
+                ...state,
+                // Keep every uncertain source live; their enumeration order is
+                // unrelated to the ledger bound, so preference is cheap to find.
+                sessions: [{ sessionId, availability: "Ready" }, ...state.sessions],
+                preferredSessionId: Option.some(sessionId),
+              };
+              return yield* uncertain;
+            }),
+        };
+        const scheduler = yield* makeScheduler({
+          ...options,
+          unknownRecoveryTimeout: "10 minutes",
+          filler: {
+            runway: { floor: "5 seconds", target: "5 seconds" },
+            clip: () => filler,
+          },
+        }).pipe(Effect.provideService(Engine, engine));
+        const result = yield* scheduler.failure;
+        expect(result.reason._tag).toBe("Overflow");
+        expect(keys).toHaveLength(4096);
+        expect(new Set(keys).size).toBe(4096);
+        expect(keys.at(-1)).toBe(fillerKey(4095));
+        expect(state.sessions).toHaveLength(4097);
+        expect((yield* scheduler.state).accepting).toBe(false);
+      }),
+    ),
+  // The 4096-dispatch assertion is the bound; allow suite contention to finish it.
+  20_000,
+);
 
 for (const kind of ["item", "filler"] as const) {
   test(`real H3 result hook forwards unknown ${kind} through Renewal to a usable replacement`, () =>
