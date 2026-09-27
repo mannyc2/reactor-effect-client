@@ -689,6 +689,9 @@ export const makeScheduler = (
         if (ended !== undefined) return Deferred.await(settled);
         ended = terminal;
         accepting = false;
+        // Wake the watchdog so an episode left armed by another owner cannot
+        // keep re-arming its timer.
+        Deferred.doneUnsafe(recoveryChanged, Exit.void);
         return Effect.gen(function* () {
           for (const item of items.values()) {
             if (Exit.isFailure(terminal)) {
@@ -843,6 +846,7 @@ export const makeScheduler = (
         // turn. Coalesce those revisions before allocating a replacement timer;
         // the original monotonic deadline remains unchanged.
         yield* Effect.yieldNow;
+        if (ended !== undefined) return;
         recoveryChanged = Deferred.makeUnsafe<void>();
         const episode = recoveryDeadline;
         if (episode === undefined) {

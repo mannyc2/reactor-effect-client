@@ -574,6 +574,44 @@ test("keyed proof after timeout cannot revive admission or replace terminal Unkn
     }),
   ));
 
+// fb88362: after another owner's terminal claim, an armed episode re-armed a
+// zero-length timer forever once its deadline passed.
+test("the unknown watchdog stops after another terminal claim", () =>
+  runClock(
+    Effect.gen(function* () {
+      const base = yield* Clock.Clock;
+      let sleeps = 0;
+      const counting: Clock.Clock = {
+        currentTimeMillisUnsafe: () => base.currentTimeMillisUnsafe(),
+        currentTimeMillis: base.currentTimeMillis,
+        currentTimeNanosUnsafe: () => base.currentTimeNanosUnsafe(),
+        currentTimeNanos: base.currentTimeNanos,
+        monotonicTimeNanosUnsafe: () => base.monotonicTimeNanosUnsafe(),
+        monotonicTimeNanos: base.monotonicTimeNanos,
+        sleep: (duration) => {
+          sleeps++;
+          return base.sleep(duration);
+        },
+      };
+      const fixture = yield* scripted({ scheduler: { unknownRecoveryTimeout: "1 second" } }).pipe(
+        Effect.provideService(Clock.Clock, counting),
+      );
+      const item = yield* submit(fixture.scheduler, "claimed-elsewhere");
+      yield* fixture.unknown(item.key);
+      const cause = ReactorError.fromCode("Disconnected", "Another terminal owner");
+      yield* Queue.fail(fixture.feeds.at(-1)!, cause);
+      expect(yield* fixture.scheduler.failure).toBe(cause);
+      yield* TestClock.adjust(2_000);
+      // Every remaining timer waits on the stationary clock; count further arms.
+      for (let turn = 0; turn < 10; turn++) yield* Effect.yieldNow;
+      const parked = sleeps;
+      for (let turn = 0; turn < 100; turn++) yield* Effect.yieldNow;
+      expect(sleeps).toBe(parked);
+      expect(yield* fixture.scheduler.failure).toBe(cause);
+      expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
+    }),
+  ));
+
 test("overlapping uncertain filler identities reconcile independently and both hold drain", () =>
   runClock(
     Effect.gen(function* () {
