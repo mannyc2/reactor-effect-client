@@ -3,6 +3,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { metadataMaxChars } from "../h3/profile.js";
 import { ClipRequest, PolicyFailure, captureRequest } from "./request.js";
+import type { ClipId } from "./request.js";
 
 const keys = new WeakMap<ClipRequest, string>();
 const ProviderEnvelope = Schema.Struct({
@@ -32,12 +33,15 @@ export const fillerIndexFromKey = (key: string | undefined): number | undefined 
 export const keyedRequest = (
   input: ClipRequest,
   key: string,
+  continueFrom?: ClipId,
 ): Effect.Effect<ClipRequest, PolicyFailure> =>
   Effect.gen(function* () {
     if (typeof key !== "string" || key.length === 0)
       return yield* PolicyFailure.refuse("InvalidRequest", "Scheduler key must be nonempty");
     const captured = yield* captureRequest(input);
-    const copy = yield* captureRequest(new ClipRequest({ ...captured }));
+    const copy = yield* captureRequest(
+      new ClipRequest({ ...captured, ...(continueFrom === undefined ? {} : { continueFrom }) }),
+    );
     keys.set(copy, key);
     return copy;
   });

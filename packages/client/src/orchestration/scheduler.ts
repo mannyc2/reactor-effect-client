@@ -106,6 +106,12 @@ export interface ItemSpec {
   readonly request: ClipRequest;
   /** Fired while the clip plays; one that falls after the clip ends, if cut, never fires. */
   readonly cues?: ReadonlyArray<Cue>;
+  /**
+   * `"previous"` builds the clip continuing from the clip that airs just before it, so
+   * motion, camera and audio carry across the boundary. It waits for that clip to be built,
+   * and takes at most two audio references of its own.
+   */
+  readonly continuity?: "previous";
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: {
     readonly notBefore?: Duration.Input;
@@ -223,6 +229,7 @@ export interface GroupPart {
   readonly key: ItemKey;
   readonly request: ClipRequest;
   readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 export interface GroupSpec {
@@ -245,6 +252,7 @@ export interface ReplacementSpec {
   readonly key: ItemKey;
   readonly request: ClipRequest;
   readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 /**
@@ -259,6 +267,7 @@ export interface InsertSpec {
   /** Relative to admission, measured on the monotonic clock. */
   readonly window?: ItemSpec["window"];
   readonly cues?: ReadonlyArray<Cue>;
+  readonly continuity?: "previous";
 }
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
@@ -354,6 +363,7 @@ interface CapturedItem {
   readonly lane: string;
   readonly request: ClipRequest;
   readonly cues?: ReadonlyArray<CapturedCue>;
+  readonly continuity?: "previous";
   readonly fingerprint: string;
   readonly notBeforeOffsetMs: number | undefined;
   readonly startByOffsetMs: number | undefined;
@@ -598,6 +608,16 @@ const requestDuration = (input: unknown, name: string, allowZero = false) =>
     ).pipe(Effect.mapError((error) => invalid(error.message)));
   });
 
+/** A continuity choice, read as caller data, checked against the request it would continue. */
+const captureContinuity = (input: unknown, request: ClipRequest) =>
+  Effect.gen(function* (): Effect.fn.Return<"previous" | undefined, PolicyFailure> {
+    if (input === undefined) return undefined;
+    if (input !== "previous") return yield* invalid('Continuity is "previous" or absent');
+    if ((request.audio?.length ?? 0) > 2)
+      return yield* invalid("A clip that continues takes at most two audio references");
+    return "previous";
+  });
+
 /** Enough cues for a line's overlays and actions, and a bound on one clip's timers. */
 const maxCues = 32;
 
@@ -692,7 +712,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       Object.getOwnPropertySymbols(input).length > 0 ||
       Object.keys(descriptors).some(
         (field) =>
-          !["key", "lane", "request", "window", "start", "cues"].includes(field) ||
+          !["key", "lane", "request", "window", "start", "cues", "continuity"].includes(field) ||
           !("value" in descriptors[field]!),
       )
     )
@@ -709,6 +729,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       descriptors.window?.value,
     );
     const cues = yield* captureCues(descriptors.cues?.value);
+    const continuity = yield* captureContinuity(descriptors.continuity?.value, request);
     const rawStart: unknown = descriptors.start?.value;
     const start =
       rawStart === undefined
@@ -750,6 +771,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       late,
       ...(mode === undefined ? {} : { mode }),
       ...(cues.length === 0 ? {} : { cues }),
+      ...(continuity === undefined ? {} : { continuity }),
       fingerprint: JSON.stringify({
         lane,
         request,
@@ -760,6 +782,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
         late,
         mode,
         ...(cues.length === 0 ? {} : { cues }),
+        ...(continuity === undefined ? {} : { continuity }),
       }),
     };
   });
@@ -796,7 +819,11 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
       if (descriptor === undefined || !("value" in descriptor))
         return yield* invalid("Scheduled group parts must be data");
       const part = yield* Effect.fromResult(
-        ownedData(descriptor.value, ["key", "request", "cues"], "Scheduled group part"),
+        ownedData(
+          descriptor.value,
+          ["key", "request", "cues", "continuity"],
+          "Scheduled group part",
+        ),
       );
       parts.push(
         yield* captureItem(
@@ -805,6 +832,7 @@ const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
             lane: group.lane,
             request: part.request,
             ...(part.cues === undefined ? {} : { cues: part.cues }),
+            ...(part.continuity === undefined ? {} : { continuity: part.continuity }),
             ...(index === 0 && group.window !== undefined ? { window: group.window } : {}),
           } as ItemSpec,
           lanes,
@@ -825,21 +853,24 @@ interface CapturedReplacement {
   readonly key: ItemKey;
   readonly request: ClipRequest;
   readonly cues: ReadonlyArray<CapturedCue>;
+  readonly continuity: "previous" | undefined;
 }
 
 const captureReplacement = (input: ReplacementSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedReplacement, PolicyFailure> {
     const next = yield* Effect.fromResult(
-      ownedData(input, ["key", "request", "cues"], "Replacement"),
+      ownedData(input, ["key", "request", "cues", "continuity"], "Replacement"),
     );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(next.key).pipe(
       Effect.mapError(() => invalid("Replacement key must be nonempty")),
     );
     if (isReservedSchedulerKey(key)) return yield* invalid("Replacement key is reserved");
+    const request = yield* captureClip(next.request);
     return {
       key,
-      request: yield* captureClip(next.request),
+      request,
       cues: yield* captureCues(next.cues),
+      continuity: yield* captureContinuity(next.continuity, request),
     };
   });
 
@@ -852,13 +883,18 @@ interface CapturedInsert {
   readonly startByOffsetMs: number | undefined;
   readonly firm: boolean;
   readonly cues: ReadonlyArray<CapturedCue>;
+  readonly continuity: "previous" | undefined;
   readonly fingerprint: string;
 }
 
 const captureInsert = (input: InsertSpec) =>
   Effect.gen(function* (): Effect.fn.Return<CapturedInsert, PolicyFailure> {
     const spec = yield* Effect.fromResult(
-      ownedData(input, ["key", "request", "before", "after", "window", "cues"], "Insert"),
+      ownedData(
+        input,
+        ["key", "request", "before", "after", "window", "cues", "continuity"],
+        "Insert",
+      ),
     );
     const key = yield* Schema.decodeUnknownEffect(ItemKey)(spec.key).pipe(
       Effect.mapError(() => invalid("Insert key must be nonempty")),
@@ -873,6 +909,7 @@ const captureInsert = (input: InsertSpec) =>
     const request = yield* captureClip(spec.request);
     const window = yield* captureWindow(spec.window);
     const cues = yield* captureCues(spec.cues);
+    const continuity = yield* captureContinuity(spec.continuity, request);
     return {
       key,
       request,
@@ -880,11 +917,13 @@ const captureInsert = (input: InsertSpec) =>
       anchor,
       ...window,
       cues,
+      continuity,
       fingerprint: JSON.stringify({
         [side]: anchor,
         request,
         ...window,
         ...(cues.length === 0 ? {} : { cues }),
+        ...(continuity === undefined ? {} : { continuity }),
       }),
     };
   });
@@ -2133,7 +2172,9 @@ export const makeScheduler = (
           case "Build": {
             const item = items.get(action.key);
             if (item?.phase !== "Accepted") break;
-            const prepared = yield* Effect.result(keyedRequest(item.request, item.key));
+            const prepared = yield* Effect.result(
+              keyedRequest(item.request, item.key, action.continueFrom),
+            );
             if (Result.isFailure(prepared)) {
               yield* emit(item, {
                 _tag: "Failed",
@@ -2641,6 +2682,7 @@ export const makeScheduler = (
         late: captured.late,
         cues: captured.cues ?? [],
         firedCues: new Set(),
+        ...(captured.continuity === undefined ? {} : { continuity: captured.continuity }),
         ...(captured.mode === "asap" ? { asap: true } : {}),
         ...(captured.mode === "manual" ? { held: true } : {}),
         ...(group === undefined ? {} : { group }),
@@ -3015,6 +3057,7 @@ export const makeScheduler = (
                 atWallMs: undefined,
                 late: "nextBoundary",
                 cues: insert.cues,
+                ...(insert.continuity === undefined ? {} : { continuity: insert.continuity }),
               },
               nowMs,
               startByMs,
@@ -3043,6 +3086,7 @@ export const makeScheduler = (
               replaces: edit.key,
               request: next.request,
               ...(next.cues.length === 0 ? {} : { cues: next.cues }),
+              ...(next.continuity === undefined ? {} : { continuity: next.continuity }),
             });
             const known = repeated(next.key, fingerprint);
             if (Result.isFailure(known)) return refuse(known.failure);
@@ -3069,6 +3113,7 @@ export const makeScheduler = (
                 atWallMs: old.atWallMs,
                 late: old.late,
                 cues: next.cues,
+                ...(next.continuity === undefined ? {} : { continuity: next.continuity }),
               },
               nowMs,
               old.startByMs,

@@ -39,6 +39,8 @@ export interface PlannedItem {
   readonly held?: boolean;
   /** An `Asap` or released item: it airs ahead of everything waiting in every lane. */
   readonly asap?: boolean;
+  /** Built continuing from the clip that airs just before it. */
+  readonly continuity?: "previous";
 }
 
 /**
@@ -184,7 +186,12 @@ const cutMarginSeconds = 1;
 
 export type PolicyAction =
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
-  | { readonly _tag: "Build"; readonly key: ItemKey }
+  | {
+      readonly _tag: "Build";
+      readonly key: ItemKey;
+      /** The generated clip it continues from, for an item that asks for continuity. */
+      readonly continueFrom?: ClipId;
+    }
   | { readonly _tag: "Cut"; readonly clipId: ClipId }
   | {
       readonly _tag: "BuildFiller";
@@ -439,12 +446,42 @@ export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): n
  */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
-  const { previousAdmitted, rankClip } = ordering(
+  const { previousAdmitted, rankClip, rankItem } = ordering(
     items,
     snapshot.lanes,
     nowMs,
     supersededBy(snapshot.batches),
   );
+  /**
+   * What an item continuing from its predecessor continues from: the Ready clip or waiting
+   * item that airs just before it on the preferred source, else the clip playing there.
+   * `wait` while that predecessor is not built yet; no clip when there is none, or when
+   * the provider no longer offers it for continuation.
+   */
+  const continuation = (
+    item: PlannedItem,
+  ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId?: ClipId } => {
+    const place = rankItem(item);
+    let best: { readonly rank: Rank; readonly clipId?: ClipId } | undefined;
+    const consider = (rank: Rank, clipId: ClipId | undefined) => {
+      if (compareRank(rank, place) < 0 && (best === undefined || compareRank(rank, best.rank) > 0))
+        best = clipId === undefined ? { rank } : { rank, clipId };
+    };
+    for (const clip of engine.ready)
+      if (clip.sessionId === preferredSession(engine))
+        consider(rankClip(clip.clipId, owned), clip.clipId);
+    for (const other of items)
+      if (
+        other.key !== item.key &&
+        (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown")
+      )
+        consider(rankItem(other), undefined);
+    if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
+    const clipId = best?.clipId ?? Option.getOrUndefined(engine.playing)?.clipId;
+    return clipId !== undefined && engine.continuable.includes(clipId)
+      ? { _tag: "from", clipId }
+      : { _tag: "from" };
+  };
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
@@ -728,7 +765,9 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         // known material ahead of it covers the time until that anchor.
         (item.atMs === undefined || item.atMs <= nowMs || runway >= (item.atMs - nowMs) / 1000) &&
         // A held item is built ahead only while filler keeps the runway at its floor.
-        (item.held !== true || (floorSeconds > 0 && runway >= floorSeconds)),
+        (item.held !== true || (floorSeconds > 0 && runway >= floorSeconds)) &&
+        // A continuing clip waits for the clip it continues from to be built.
+        (item.continuity !== "previous" || continuation(item)._tag !== "wait"),
     )
     .sort((a, b) => {
       // Asap goes first, and a held item after everything that will air before it.
@@ -750,8 +789,17 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         a.admission - b.admission
       );
     });
-  if (eligible[0] !== undefined)
-    return { ...base, action: { _tag: "Build", key: eligible[0].key } };
+  const next = eligible[0];
+  if (next !== undefined) {
+    const from = next.continuity === "previous" ? continuation(next) : undefined;
+    return {
+      ...base,
+      action:
+        from?._tag === "from" && from.clipId !== undefined
+          ? { _tag: "Build", key: next.key, continueFrom: from.clipId }
+          : { _tag: "Build", key: next.key },
+    };
+  }
   if (
     (snapshot.drain === undefined || fillerHeld) &&
     filling &&
