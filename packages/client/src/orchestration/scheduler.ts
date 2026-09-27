@@ -154,6 +154,27 @@ export interface ItemHandle {
   readonly firstDecisive: Effect.Effect<FirstDecisiveStatus>;
 }
 
+/** One part of a group: its own key, and the clip it asks for. */
+export interface GroupPart {
+  readonly key: ItemKey;
+  readonly request: ClipRequest;
+}
+
+export interface GroupSpec {
+  readonly key: ItemKey;
+  readonly lane: string;
+  /** Built in order and aired back to back; a higher lane may still go in between parts. */
+  readonly parts: readonly [GroupPart, ...ReadonlyArray<GroupPart>];
+  /** Relative to admission, measured on the monotonic clock; it applies to the first part. */
+  readonly window?: ItemSpec["window"];
+}
+
+export interface GroupHandle {
+  readonly key: ItemKey;
+  /** One handle per part, in order. */
+  readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+}
+
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
 
 export interface DrainOptions {
@@ -287,6 +308,11 @@ type Message =
       readonly _tag: "Submit";
       readonly item: CapturedItem;
       readonly reply: Deferred.Deferred<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+    }
+  | {
+      readonly _tag: "SubmitGroup";
+      readonly group: CapturedGroup;
+      readonly reply: Deferred.Deferred<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
     }
   | {
       readonly _tag: "Withdraw";
@@ -510,10 +536,70 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
     };
   });
 
+interface CapturedGroup {
+  readonly key: ItemKey;
+  /** Only the first part carries the group's window. */
+  readonly parts: readonly [CapturedItem, ...ReadonlyArray<CapturedItem>];
+  readonly fingerprint: string;
+}
+
+/** Enough parts for a spoken line of beats, and a bound on one submission's work. */
+const maxGroupParts = 64;
+
+const captureGroup = (input: GroupSpec, lanes: ReadonlySet<string>) =>
+  Effect.gen(function* (): Effect.fn.Return<CapturedGroup, PolicyFailure> {
+    const group = yield* Effect.fromResult(
+      ownedData(input, ["key", "lane", "parts", "window"], "Scheduled group"),
+    );
+    const key = yield* Schema.decodeUnknownEffect(ItemKey)(group.key).pipe(
+      Effect.mapError(() => invalid("Scheduled group key must be nonempty")),
+    );
+    if (isReservedSchedulerKey(key)) return yield* invalid("Scheduled group key is reserved");
+    if (!Array.isArray(group.parts))
+      return yield* invalid("Scheduled group parts must be an array");
+    // Read as a plain object: a mapped array type would hide the descriptors.
+    const descriptors = Object.getOwnPropertyDescriptors(group.parts as object);
+    const length: unknown = descriptors.length?.value;
+    if (typeof length !== "number" || length < 1 || length > maxGroupParts)
+      return yield* invalid(`Scheduled group needs 1 to ${maxGroupParts} parts`);
+    const parts: CapturedItem[] = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        return yield* invalid("Scheduled group parts must be data");
+      const part = yield* Effect.fromResult(
+        ownedData(descriptor.value, ["key", "request"], "Scheduled group part"),
+      );
+      parts.push(
+        yield* captureItem(
+          {
+            key: part.key,
+            lane: group.lane,
+            request: part.request,
+            ...(index === 0 && group.window !== undefined ? { window: group.window } : {}),
+          } as ItemSpec,
+          lanes,
+        ),
+      );
+    }
+    const [first, ...rest] = parts;
+    if (first === undefined || new Set([key, ...parts.map((part) => part.key)]).size !== length + 1)
+      return yield* invalid("Scheduled group and part keys must be distinct");
+    return {
+      key,
+      parts: [first, ...rest],
+      fingerprint: JSON.stringify(parts.map((part) => [part.key, part.fingerprint])),
+    };
+  });
+
 export interface SchedulerShape {
   readonly submit: (
     item: ItemSpec,
   ) => Effect.Effect<ItemHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  readonly submitGroup: (
+    group: GroupSpec,
+  ) => Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError>;
+  /** A group key withdraws every unstarted part; a part key, that part and every part after it. */
   readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome, EngineError>;
   readonly drain: (options?: DrainOptions) => Effect.Effect<void, EngineError>;
   /** Published after local handle/control settlement; includes Closed when the owning scope ends. */
@@ -610,6 +696,7 @@ export const makeScheduler = (
     const unknownFillers = new Map<number, UnknownAdmission & { readonly index: number }>();
     const maxUnknownFillers = 4096;
     let upcomingFiller: ClipRequest | undefined = yield* captureFiller(0, 0);
+    const actorScope = yield* Effect.scope;
     const inbox = yield* Queue.unbounded<Message>();
     const commandQueue = yield* Queue.unbounded<Command>();
     const events = yield* PubSub.unbounded<AsRunEvent>();
@@ -636,6 +723,17 @@ export const makeScheduler = (
     );
     const items = new Map<ItemKey, Entry>();
     const history = new Map<ItemKey, Pick<Entry, "fingerprint" | "handle">>();
+    /** Kept while any part is active or in history, for idempotency and withdrawal. */
+    const groups = new Map<
+      ItemKey,
+      {
+        readonly fingerprint: string;
+        readonly handle: GroupHandle;
+        readonly parts: ReadonlyArray<ItemKey>;
+        /** The first part that failed or was dropped: the parts after it are withdrawn. */
+        brokenAt: number | undefined;
+      }
+    >();
     const owned = new Map<ClipId, OwnedClip>();
     // An event can overtake its enqueue reply. Keep only the evidence needed to
     // decide that clip's fate until the one in-flight command returns its ID.
@@ -684,6 +782,11 @@ export const makeScheduler = (
             : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
+        if (entry.group !== undefined && (status._tag === "Failed" || status._tag === "Dropped")) {
+          const group = groups.get(entry.group.key);
+          if (group !== undefined)
+            group.brokenAt = Math.min(group.brokenAt ?? entry.group.index, entry.group.index);
+        }
         // Publish in the step that records it (the PubSub is unbounded): a claim
         // from another fiber cannot land between the two, so asRun never carries
         // a settlement ahead of a recorded status, nor omits one.
@@ -934,6 +1037,8 @@ export const makeScheduler = (
         items.delete(key);
       }
       while (history.size > maxHistory) history.delete(history.keys().next().value!);
+      for (const [key, group] of groups)
+        if (!group.parts.some((part) => items.has(part) || history.has(part))) groups.delete(key);
     };
 
     // Capture membership and public rows in one pass. A fresh token reads every
@@ -1819,6 +1924,14 @@ export const makeScheduler = (
         yield* publishState(state, sources.sessions);
         return;
       }
+      // A part that failed or was dropped withdraws the parts after it.
+      for (const group of groups.values())
+        if (group.brokenAt !== undefined)
+          for (const key of group.parts.slice(group.brokenAt + 1)) {
+            const part = items.get(key);
+            if (part !== undefined && !pendingWithdrawals.has(key))
+              yield* requestWithdrawal(part, "withdrawn");
+          }
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
           uncertain.sessionId !== undefined && !sources.has(uncertain.sessionId);
@@ -1909,6 +2022,86 @@ export const makeScheduler = (
       }
     });
 
+    /** Admits a captured item and publishes its Accepted evidence, without yielding. */
+    const accept = (
+      captured: CapturedItem,
+      nowMs: number,
+      startByMs: number | undefined,
+      group: Entry["group"],
+    ): Entry => {
+      const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
+      const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
+      const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
+      const item: Entry = {
+        key: captured.key,
+        lane: captured.lane,
+        request: captured.request,
+        fingerprint: captured.fingerprint,
+        admission: ++admission,
+        phase: "Accepted",
+        status: { _tag: "Accepted" },
+        ...(captured.notBeforeOffsetMs === undefined
+          ? {}
+          : { notBeforeMs: nowMs + captured.notBeforeOffsetMs }),
+        ...(startByMs === undefined ? {} : { startByMs }),
+        firm: captured.firm,
+        ...(captured.atWallMs === undefined
+          ? {}
+          : {
+              atWallMs: captured.atWallMs,
+              atMs: nowMs + captured.atWallMs - clock.currentTimeMillisUnsafe(),
+            }),
+        late: captured.late,
+        ...(group === undefined ? {} : { group }),
+        sessionId: undefined,
+        unknownSessionId: undefined,
+        unknownCause: undefined,
+        unknownAtMs: undefined,
+        handle: {
+          key: captured.key,
+          started: Deferred.await(startedWaiter),
+          outcome: Deferred.await(outcomeWaiter),
+          firstDecisive: Deferred.await(firstDecisiveWaiter),
+        },
+        startedWaiter,
+        outcomeWaiter,
+        firstDecisiveWaiter,
+      };
+      items.set(item.key, item);
+      PubSub.publishUnsafe(events, {
+        key: item.key,
+        at: clock.currentTimeMillisUnsafe(),
+        status: item.status,
+      });
+      return item;
+    };
+
+    /**
+     * One reply for withdrawals across a group's parts. A group key reports
+     * `withdrawn` if any part was; a part key reports that part's own outcome,
+     * while the parts after it are withdrawn too.
+     */
+    const settleWithdrawals = (
+      replies: ReadonlyArray<Deferred.Deferred<WithdrawOutcome, EngineError>>,
+      reply: Deferred.Deferred<WithdrawOutcome, EngineError>,
+      wholeGroup: boolean,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const outcomes: WithdrawOutcome[] = [];
+        for (const pending of replies) {
+          const result = yield* Effect.result(Deferred.await(pending));
+          if (Result.isFailure(result)) {
+            yield* Deferred.fail(reply, result.failure);
+            return;
+          }
+          outcomes.push(result.success);
+        }
+        yield* Deferred.succeed(
+          reply,
+          wholeGroup && outcomes.includes("withdrawn") ? "withdrawn" : (outcomes[0] ?? "not-found"),
+        );
+      });
+
     const actor = Effect.gen(function* () {
       for (;;) {
         const message = yield* takeQueue(inbox);
@@ -1918,6 +2111,10 @@ export const makeScheduler = (
           case "Submit": {
             if (!accepting) {
               yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
+              break;
+            }
+            if (groups.has(message.item.key)) {
+              yield* Deferred.fail(message.reply, KeyMismatch.of(message.item.key));
               break;
             }
             const existing = items.get(message.item.key) ?? history.get(message.item.key);
@@ -1942,61 +2139,88 @@ export const makeScheduler = (
             // No yield from the terminal check above through admission and its
             // publication below: a claim either precedes the item or settles it
             // after its Accepted evidence.
-            const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
-            const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
-            const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
-            const handle: ItemHandle = {
-              key: message.item.key,
-              started: Deferred.await(startedWaiter),
-              outcome: Deferred.await(outcomeWaiter),
-              firstDecisive: Deferred.await(firstDecisiveWaiter),
-            };
-            const item: Entry = {
-              key: message.item.key,
-              lane: message.item.lane,
-              request: message.item.request,
-              fingerprint: message.item.fingerprint,
-              admission: ++admission,
-              phase: "Accepted",
-              status: { _tag: "Accepted" },
-              ...(message.item.notBeforeOffsetMs === undefined
-                ? {}
-                : { notBeforeMs: nowMs + message.item.notBeforeOffsetMs }),
-              ...(startByMs === undefined ? {} : { startByMs }),
-              firm: message.item.firm,
-              ...(message.item.atWallMs === undefined
-                ? {}
-                : {
-                    atWallMs: message.item.atWallMs,
-                    atMs: nowMs + message.item.atWallMs - clock.currentTimeMillisUnsafe(),
-                  }),
-              late: message.item.late,
-              sessionId: undefined,
-              unknownSessionId: undefined,
-              unknownCause: undefined,
-              unknownAtMs: undefined,
-              handle,
-              startedWaiter,
-              outcomeWaiter,
-              firstDecisiveWaiter,
-            };
-            items.set(item.key, item);
-            PubSub.publishUnsafe(events, {
-              key: item.key,
-              at: clock.currentTimeMillisUnsafe(),
-              status: item.status,
-            });
+            const item = accept(message.item, nowMs, startByMs, undefined);
             yield* observed(state);
             // Submit returns its committed view; other messages publish once
             // through reconciliation after all their evidence is adopted.
+            yield* publishState(state);
+            yield* Deferred.succeed(message.reply, item.handle);
+            break;
+          }
+          case "SubmitGroup": {
+            if (!accepting) {
+              yield* Deferred.fail(message.reply, invalid("Scheduler is draining or closed"));
+              break;
+            }
+            const { group } = message;
+            const known = groups.get(group.key);
+            if (known !== undefined) {
+              if (known.fingerprint === group.fingerprint)
+                yield* Deferred.succeed(message.reply, known.handle);
+              else yield* Deferred.fail(message.reply, KeyMismatch.of(group.key));
+              break;
+            }
+            const taken = [group.key, ...group.parts.map((part) => part.key)].find(
+              (key) => items.has(key) || history.has(key) || groups.has(key),
+            );
+            if (taken !== undefined) {
+              yield* Deferred.fail(message.reply, KeyMismatch.of(taken));
+              break;
+            }
+            const nowMs = monotonicMillis(clock);
+            const state = yield* engine.state;
+            if (ended !== undefined) continue;
+            const [first, ...rest] = group.parts;
+            const startByMs =
+              first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
+            if (startByMs !== undefined && projectedStartMs(state, first.lane, nowMs) > startByMs) {
+              yield* Deferred.fail(message.reply, WouldMissDeadline.of(group.key));
+              break;
+            }
+            // As for one item, no yield from the terminal check through admission.
+            const handle: GroupHandle = {
+              key: group.key,
+              parts: [
+                accept(first, nowMs, startByMs, { key: group.key, index: 0 }).handle,
+                ...rest.map(
+                  (part, index) =>
+                    accept(part, nowMs, undefined, { key: group.key, index: index + 1 }).handle,
+                ),
+              ],
+            };
+            groups.set(group.key, {
+              fingerprint: group.fingerprint,
+              handle,
+              parts: group.parts.map((part) => part.key),
+              brokenAt: undefined,
+            });
+            yield* observed(state);
             yield* publishState(state);
             yield* Deferred.succeed(message.reply, handle);
             break;
           }
           case "Withdraw": {
             const item = items.get(message.key);
-            if (item === undefined) yield* Deferred.succeed(message.reply, "not-found");
-            else yield* requestWithdrawal(item, "withdrawn", message.reply);
+            const named = groups.get(message.key);
+            const group =
+              named ?? (item?.group === undefined ? undefined : groups.get(item.group.key));
+            if (group === undefined) {
+              if (item === undefined) yield* Deferred.succeed(message.reply, "not-found");
+              else yield* requestWithdrawal(item, "withdrawn", message.reply);
+              break;
+            }
+            const replies: Deferred.Deferred<WithdrawOutcome, EngineError>[] = [];
+            for (const key of group.parts.slice(named === undefined ? item!.group!.index : 0)) {
+              const part = items.get(key);
+              if (part === undefined) continue;
+              const reply = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
+              replies.push(reply);
+              yield* requestWithdrawal(part, "withdrawn", reply);
+            }
+            yield* Effect.forkIn(
+              settleWithdrawals(replies, message.reply, named !== undefined),
+              actorScope,
+            );
             break;
           }
           case "Drain": {
@@ -2138,6 +2362,21 @@ export const makeScheduler = (
         if (!(yield* Queue.offer(inbox, { _tag: "Submit", item, reply }))) return yield* closedCall;
         return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
       }).pipe(Effect.withSpan("Scheduler.submit", {}, { captureStackTrace: false }));
+    const submitGroup: SchedulerShape["submitGroup"] = (
+      input,
+    ): Effect.Effect<GroupHandle, KeyMismatch | WouldMissDeadline | EngineError> =>
+      Effect.gen(function* () {
+        if (yield* Deferred.isDone(stopped)) return yield* closedCall;
+        const group = yield* captureGroup(input, new Set(lanes));
+        yield* Effect.annotateCurrentSpan("reactor.scheduler.group.key", group.key);
+        const reply = yield* Deferred.make<
+          GroupHandle,
+          KeyMismatch | WouldMissDeadline | EngineError
+        >();
+        if (!(yield* Queue.offer(inbox, { _tag: "SubmitGroup", group, reply })))
+          return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      }).pipe(Effect.withSpan("Scheduler.submitGroup", {}, { captureStackTrace: false }));
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -2165,6 +2404,7 @@ export const makeScheduler = (
       }).pipe(Effect.withSpan("Scheduler.drain", {}, { captureStackTrace: false }));
     return {
       submit,
+      submitGroup,
       withdraw,
       drain,
       failure: Deferred.await(stopped),

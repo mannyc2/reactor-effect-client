@@ -58,6 +58,9 @@ export {
 } from "./scheduler.js";
 export type {
   ItemSpec,
+  GroupPart,
+  GroupSpec,
+  GroupHandle,
   StartMode,
   FillContext,
   LaneSpec,

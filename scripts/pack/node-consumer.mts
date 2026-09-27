@@ -102,6 +102,15 @@ const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
 declare const queued: Orchestration.ItemHandle;
 const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
 declare const schedulerHandle: Orchestration.SchedulerShape;
+declare const lineParts: Orchestration.GroupSpec["parts"];
+const line: Effect.Effect<
+  Orchestration.GroupHandle,
+  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
+> = schedulerHandle.submitGroup({
+  key: Orchestration.ItemKey.make("line"),
+  lane: "line",
+  parts: lineParts,
+});
 const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
 const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
 const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
@@ -147,6 +156,7 @@ void [
   itemKey,
   started,
   drained,
+  line,
   terminalFailure,
   stoppedRenewal,
   historicalSwitched,
