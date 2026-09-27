@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import { parsed, positiveLimit, ReactorError } from "../errors.js";
+import { completeKind } from "./types.js";
 import type { CleanupSummary, SourceCleanup } from "./types.js";
 
 export interface Options {
@@ -28,63 +28,6 @@ export interface Reservation {
   readonly incarnation: bigint;
   readonly [attemptState]: Attempt;
 }
-
-const noTermination = (report: SourceCleanup["lease"]["remote"]): boolean =>
-  !report.attempted &&
-  !report.responseReceived &&
-  !report.confirmed &&
-  report.evidence === null &&
-  report.deleteStatus === null &&
-  report.state === null;
-
-const completeKind = (attempt: Attempt, retirement: Retirement): CompleteKind | undefined => {
-  const cleanup = attempt.cleanup;
-  if (
-    cleanup === undefined ||
-    attempt.conflictingCleanup !== undefined ||
-    retirement.accounting === "timed-out" ||
-    retirement.scope !== "closed" ||
-    retirement.affinity === "failed" ||
-    retirement.errors.length > 0 ||
-    retirement.unknownSubmissions > 0n ||
-    !cleanup.lease.localClosed ||
-    cleanup.lease.localErrors.length > 0 ||
-    cleanup.lease.unresolvedPublications.length > 0 ||
-    cleanup.lease.remote.error !== undefined ||
-    cleanup.policy.some((policy) => Result.isFailure(policy.result))
-  )
-    return undefined;
-  // A failed acquisition may already have a physical ID without ever creating
-  // accounting or affinity owners. Its caller explicitly records not-applicable.
-  const lease = cleanup.lease;
-  // Confirmation can prove termination without a successful DELETE, but cannot
-  // make contradictory response facts or another session's lease compactable.
-  if (
-    lease.remote.responseReceived !== (lease.remote.deleteStatus !== null) ||
-    (lease.remote.responseReceived && !lease.remote.attempted) ||
-    (attempt.source !== undefined &&
-      lease.sessionId !== undefined &&
-      attempt.source.sessionId !== lease.sessionId)
-  )
-    return undefined;
-  switch (lease.allocation) {
-    case "none":
-      return noTermination(lease.remote) ? "noAllocation" : undefined;
-    case "unknown":
-      return undefined;
-    case "known":
-      if (lease.sessionId === undefined || lease.sessionId.length === 0) return undefined;
-      if (lease.ownership === "attached")
-        return noTermination(lease.remote) ? "attachedDetached" : undefined;
-      if (
-        lease.ownership === "owned" &&
-        lease.remote.confirmed &&
-        (lease.remote.evidence === "absent" || lease.remote.evidence === "terminal")
-      )
-        return "ownedTerminated";
-      return undefined;
-  }
-};
 
 /**
  * Reservations precede allocation so even a failed acquisition has room for
@@ -172,7 +115,7 @@ export const make = (options: Options = {}) =>
         const attempt = reservation[attemptState];
         if (attempt.completed !== undefined) return attempt.completed;
         active(reservation);
-        const kind = completeKind(attempt, retirement);
+        const kind = completeKind({ ...attempt, retirement });
         const row: Record = Object.freeze({
           ordinal: ++ordinal,
           ...(attempt.source === undefined ? {} : { source: attempt.source }),

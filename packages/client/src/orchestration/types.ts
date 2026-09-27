@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
-import type * as Result from "effect/Result";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
@@ -340,6 +340,85 @@ export const CleanupReport = Schema.Struct({ sessions: Schema.Array(SourceCleanu
 export interface CleanupReport extends Schema.Schema.Type<typeof CleanupReport> {}
 
 const cleanupCount = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
+
+/** The facts that decide whether a retirement is proven complete. */
+interface RetirementEvidence {
+  readonly source?: { readonly sessionId: string } | undefined;
+  readonly cleanup?: SourceCleanup | undefined;
+  readonly conflictingCleanup?: SourceCleanup | undefined;
+  readonly retirement: {
+    readonly accounting: "settled" | "timed-out" | "not-applicable";
+    readonly scope: "closed" | "failed";
+    readonly affinity: "retired" | "failed" | "not-applicable";
+    readonly errors: readonly unknown[];
+    readonly unknownSubmissions: bigint;
+  };
+}
+
+const noTermination = (report: SourceCleanup["lease"]["remote"]): boolean =>
+  !report.attempted &&
+  !report.responseReceived &&
+  !report.confirmed &&
+  report.evidence === null &&
+  report.deleteStatus === null &&
+  report.state === null;
+
+/**
+ * The omitted-complete counter a proven complete retirement belongs to, or
+ * undefined when its evidence is incomplete. The retention owner classifies
+ * with it and the summary codec checks rows marked complete against it, so
+ * decoded evidence cannot present an incomplete retirement as compacted.
+ */
+export const completeKind = (
+  evidence: RetirementEvidence,
+): "noAllocation" | "ownedTerminated" | "attachedDetached" | undefined => {
+  const { cleanup, retirement } = evidence;
+  if (
+    cleanup === undefined ||
+    evidence.conflictingCleanup !== undefined ||
+    retirement.accounting === "timed-out" ||
+    retirement.scope !== "closed" ||
+    retirement.affinity === "failed" ||
+    retirement.errors.length > 0 ||
+    retirement.unknownSubmissions > 0n ||
+    !cleanup.lease.localClosed ||
+    cleanup.lease.localErrors.length > 0 ||
+    cleanup.lease.unresolvedPublications.length > 0 ||
+    cleanup.lease.remote.error !== undefined ||
+    cleanup.policy.some((policy) => Result.isFailure(policy.result))
+  )
+    return undefined;
+  // A failed acquisition may already have a physical ID without ever creating
+  // accounting or affinity owners. Its caller explicitly records not-applicable.
+  const lease = cleanup.lease;
+  // Confirmation can prove termination without a successful DELETE, but cannot
+  // make contradictory response facts or another session's lease compactable.
+  if (
+    lease.remote.responseReceived !== (lease.remote.deleteStatus !== null) ||
+    (lease.remote.responseReceived && !lease.remote.attempted) ||
+    (evidence.source !== undefined &&
+      lease.sessionId !== undefined &&
+      evidence.source.sessionId !== lease.sessionId)
+  )
+    return undefined;
+  switch (lease.allocation) {
+    case "none":
+      return noTermination(lease.remote) ? "noAllocation" : undefined;
+    case "unknown":
+      return undefined;
+    case "known":
+      if (lease.sessionId === undefined || lease.sessionId.length === 0) return undefined;
+      if (lease.ownership === "attached")
+        return noTermination(lease.remote) ? "attachedDetached" : undefined;
+      if (
+        lease.ownership === "owned" &&
+        lease.remote.confirmed &&
+        (lease.remote.evidence === "absent" || lease.remote.evidence === "terminal")
+      )
+        return "ownedTerminated";
+      return undefined;
+  }
+};
 /**
  * Continuous cleanup is explicitly summarized. The absence of `sessions` makes
  * legacy complete-history decoders reject it instead of accepting truncated evidence.
@@ -388,8 +467,8 @@ export const CleanupSummary = Schema.Struct({
     for (const row of summary.retained) {
       if (row.ordinal <= previous || row.ordinal > summary.totalRetirements)
         return "Retirement ordinals must be unique, increasing, and within the total";
-      if (row.retirement.unknownSubmissions > 0n && row.disposition === "complete")
-        return "Unknown submission evidence must remain incomplete";
+      if (row.disposition === "complete" && completeKind(row) === undefined)
+        return "A retirement marked complete must have complete evidence";
       previous = row.ordinal;
     }
     return true;

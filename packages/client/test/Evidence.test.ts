@@ -136,6 +136,71 @@ describe("evidence codecs", () => {
     ).toBe(true);
   });
 
+  // Review of 4443f80: the summary codec accepted provably incomplete rows
+  // marked complete, so decoded evidence could present them as compacted.
+  it("continuous summary rows marked complete must be provably complete", () => {
+    const terminated: CloseReport = {
+      localClosed: true,
+      allocation: "known",
+      ownership: "owned",
+      sessionId: "s-2",
+      remote: {
+        attempted: true,
+        responseReceived: true,
+        confirmed: true,
+        evidence: "absent",
+        deleteStatus: 204,
+        state: null,
+      },
+      unpublishSubmitted: [],
+      unresolvedPublications: [],
+      localErrors: [],
+    };
+    type Row = Orchestration.CleanupSummary["retained"][number];
+    const complete: Row = {
+      ordinal: 1n,
+      source: { sessionId: "s-2", incarnation: 1n },
+      cleanup: { lease: terminated, policy: [] },
+      retirement: {
+        accounting: "settled",
+        scope: "closed",
+        affinity: "retired",
+        errors: [],
+        unknownSubmissions: 0n,
+      },
+      disposition: "complete",
+    };
+    const summary = (row: Row): Orchestration.CleanupSummary => ({
+      format: "reactor-orchestration-cleanup-summary/v1",
+      totalRetirements: 1n,
+      omittedComplete: { noAllocation: 0n, ownedTerminated: 0n, attachedDetached: 0n },
+      retained: [row],
+      exhausted: false,
+    });
+    expect(
+      restored(
+        Orchestration.CleanupSummary,
+        persisted(Orchestration.CleanupSummary, summary(complete)),
+      ),
+    ).toEqual(summary(complete));
+    const { cleanup: _cleanup, ...unreported } = complete;
+    const incomplete: Row[] = [
+      unreported,
+      { ...complete, retirement: { ...complete.retirement, scope: "failed" } },
+      { ...complete, retirement: { ...complete.retirement, accounting: "timed-out" } },
+      { ...complete, cleanup: { lease: { ...terminated, allocation: "unknown" }, policy: [] } },
+      {
+        ...complete,
+        cleanup: { lease: { ...terminated, unresolvedPublications: ["publication"] }, policy: [] },
+      },
+    ];
+    expect(
+      incomplete.map((row) =>
+        Result.isFailure(Schema.decodeResult(Orchestration.CleanupSummary)(summary(row))),
+      ),
+    ).toEqual(incomplete.map(() => true));
+  });
+
   it("encodes every reason as the failure's diagnostic JSON, and decodes it back", () => {
     for (const reason of reasons) {
       const error = failure(reason);
