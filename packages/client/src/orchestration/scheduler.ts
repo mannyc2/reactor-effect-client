@@ -28,8 +28,8 @@ import {
   keyedRequest,
   keyFromProviderMetadata,
 } from "./scheduler-key.js";
-import { plan, runwaySeconds } from "./scheduler-policy.js";
-import type { OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
+import { plan, projectedStartMs, runwaySeconds } from "./scheduler-policy.js";
+import type { DropReason, OwnedClip, PlannedItem, PolicyAction } from "./scheduler-policy.js";
 import type { EngineError, EngineEvent, EngineState, RemoveOutcome } from "./types.js";
 import { Engine } from "./types.js";
 
@@ -301,8 +301,6 @@ type Command =
   | { readonly _tag: "PauseAutoplay" };
 
 type CommandValue = ClipId | RemoveOutcome | void;
-
-type DropReason = Extract<AsRunStatus, { readonly _tag: "Dropped" }>["reason"];
 
 type EarlyClipEvent = Extract<EngineEvent, { readonly _tag: "Started" | "Ended" | "Failed" }>;
 
@@ -1592,21 +1590,9 @@ export const makeScheduler = (
     const applyPolicy = (action: PolicyAction, state: EngineState): Effect.Effect<void> =>
       Effect.gen(function* () {
         switch (action._tag) {
-          case "Withdraw": {
-            const item = items.get(action.key);
-            if (item !== undefined) yield* requestWithdrawal(item, action.reason);
-            break;
-          }
           case "DeferAt":
             if (canRetryRemoval(action.clipId))
               yield* sendCommand({ _tag: "DeferAt", key: action.key, clipId: action.clipId });
-            break;
-          case "WithdrawFiller":
-            for (const clipId of action.clipIds)
-              if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
-                pendingFillerRemovals.add(clipId);
-                yield* sendCommand({ _tag: "RemoveFiller", clipId });
-              }
             break;
           case "Order": {
             const signature =
@@ -1840,7 +1826,10 @@ export const makeScheduler = (
                 removalUnknownAtSerial.set(command.clipId, snapshotAcquiredSerial);
               if (item?.phase === "Started")
                 yield* finishWithdrawal(command.key, Result.succeed("already-started"));
-              else yield* finishWithdrawal(command.key, Result.fail(result.failure));
+              // A refusal is not an outcome: the withdrawal stays pending and is retried.
+              // An unknown removal may already have taken effect, so it ends the wait.
+              else if (result.failure.context.outcome === "unknown")
+                yield* finishWithdrawal(command.key, Result.fail(result.failure));
             }
             break;
           }
@@ -1902,70 +1891,6 @@ export const makeScheduler = (
         }
       });
 
-    // An accepted drain still owes air to every line not yet Ready, and to a
-    // Ready line held for a future At anchor, which runway must reach. Filler
-    // is the only material that can cover either, so it keeps playing and
-    // refilling until nothing accepted can still leave the host frozen. An
-    // Unknown item does not count: without a fenced source it can stay open
-    // until the scheduler closes, and filler for it would never stop.
-    const fillerHeld = (nowMs: number): boolean =>
-      draining &&
-      finishAccepted &&
-      [...items.values()].some(
-        (item) =>
-          item.phase === "Accepted" ||
-          item.phase === "Building" ||
-          (item.phase === "Ready" && item.atMs !== undefined && item.atMs > nowMs),
-      );
-
-    const drainPending = (state: EngineState): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (!draining) return;
-        const playingId = Option.getOrUndefined(state.playing)?.clipId;
-        for (const item of items.values()) {
-          if (finishAccepted) break;
-          if (item.phase === "Terminal" || item.phase === "Started") continue;
-          if (item.clipId === playingId) continue;
-          yield* requestWithdrawal(item, "withdrawn");
-        }
-        if (fillerHeld(monotonicMillis(clock))) return;
-        for (const entry of filler.values()) {
-          if (
-            entry.clipId !== undefined &&
-            entry.clipId !== playingId &&
-            !pendingFillerRemovals.has(entry.clipId) &&
-            canRetryRemoval(entry.clipId)
-          ) {
-            pendingFillerRemovals.add(entry.clipId);
-            yield* sendCommand({ _tag: "RemoveFiller", clipId: entry.clipId });
-          }
-        }
-      });
-
-    const projectedStartMs = (state: EngineState, lane: string, nowMs: number): number => {
-      const playing = Option.getOrUndefined(state.playing);
-      const playingRecord =
-        playing === undefined ? undefined : Option.getOrUndefined(playing.record);
-      const started = playing === undefined ? undefined : playingStartedMs.get(playing.clipId);
-      const restMs =
-        playingRecord === undefined || started === undefined
-          ? 0
-          : Math.max(0, playingRecord.durationSeconds * 1000 - (nowMs - started));
-      const laneRank = lanes.indexOf(lane);
-      const preferred = Option.getOrUndefined(state.preferredSessionId);
-      const aheadMs = state.ready.reduce((total, record) => {
-        if (record.sessionId !== preferred) return total;
-        const owner = owned.get(record.clipId);
-        if (owner?._tag === "Filler") return total;
-        if (owner?._tag === "Item") {
-          const prior = items.get(owner.key);
-          if (prior !== undefined && lanes.indexOf(prior.lane) > laneRank) return total;
-        }
-        return total + record.durationSeconds * 1000;
-      }, 0);
-      return nowMs + restMs + aheadMs;
-    };
-
     const reconcile = Effect.gen(function* () {
       const state = yield* engine.state;
       if (ended !== undefined) return;
@@ -1975,38 +1900,6 @@ export const makeScheduler = (
       if (!observationReady) {
         yield* publishState(state, sources.sessions);
         return;
-      }
-      // A part that failed or was dropped withdraws the parts after it.
-      for (const group of groups.values()) {
-        const brokenAt = group.brokenAt;
-        if (brokenAt === undefined) continue;
-        for (const key of group.parts) {
-          const part = items.get(key);
-          if (
-            part?.group !== undefined &&
-            part.group.index > brokenAt &&
-            !pendingWithdrawals.has(key)
-          )
-            yield* requestWithdrawal(part, "withdrawn");
-        }
-      }
-      // A replacement takes the place once Ready; if the replaced item starts first, it goes.
-      for (const item of items.values()) {
-        if (item.replaces === undefined) continue;
-        const old = items.get(item.replaces);
-        if (old === undefined || old.phase === "Terminal") continue;
-        if (old.phase === "Started") {
-          if (
-            item.phase !== "Started" &&
-            item.phase !== "Terminal" &&
-            !pendingWithdrawals.has(item.key)
-          )
-            yield* requestWithdrawal(item, "withdrawn");
-        } else if (
-          (item.phase === "Ready" || item.phase === "Started") &&
-          !pendingWithdrawals.has(old.key)
-        )
-          yield* requestWithdrawal(old, "replaced");
       }
       for (const uncertain of unknownFillers.values()) {
         const sourceRetired =
@@ -2028,6 +1921,19 @@ export const makeScheduler = (
         if (item === undefined) continue;
         if (item.phase === "Started")
           yield* finishWithdrawal(key, Result.succeed("already-started"));
+        // A withdrawal still being retried when its item settles another way. Terminal
+        // Unknown keeps its uncertain result from the retirement or terminal settlement.
+        else if (item.phase === "Terminal" && item.status._tag !== "Unknown")
+          yield* finishWithdrawal(
+            key,
+            Result.succeed(
+              item.status._tag === "Dropped"
+                ? "withdrawn"
+                : item.status._tag === "Ended" || item.status._tag === "Unobserved"
+                  ? "already-started"
+                  : "not-found",
+            ),
+          );
         else if (item.clipId !== undefined) yield* sendItemRemoval(item, pending.reason);
       }
       for (const item of items.values())
@@ -2041,11 +1947,13 @@ export const makeScheduler = (
       // After retirement, so a deadline no longer outlives the uncertainty that
       // set it until the next message.
       updateRecovery(state);
-      if (draining) yield* drainPending(state);
       const preferred = Option.getOrUndefined(state.preferredSessionId);
       let unknownFillerCount = 0;
       for (const entry of unknownFillers.values())
         if (entry.sessionId === undefined || entry.sessionId === preferred) unknownFillerCount++;
+      const brokenGroups = new Map<ItemKey, number>();
+      for (const [key, group] of groups)
+        if (group.brokenAt !== undefined) brokenGroups.set(key, group.brokenAt);
       const decision = plan({
         engine: state,
         items: [...items.values()],
@@ -2057,13 +1965,25 @@ export const makeScheduler = (
         targetSeconds,
         refillActive,
         maxBuildsInFlight,
-        accepting: accepting || (draining && finishAccepted),
-        fillerEnabled: !draining || fillerHeld(monotonicMillis(clock)),
+        accepting,
+        drain: draining ? (finishAccepted ? "accepted" : "playing") : undefined,
         fillerRetryAtMs,
         unknownFillerCount,
         blockedMove,
+        withdrawing: new Set(pendingWithdrawals.keys()),
+        dispatched: pendingBuilds,
+        brokenGroups,
       });
       refillActive = decision.refillActive;
+      for (const { key, reason } of decision.withdraw) {
+        const item = items.get(key);
+        if (item !== undefined) yield* requestWithdrawal(item, reason);
+      }
+      for (const clipId of decision.withdrawFiller)
+        if (!pendingFillerRemovals.has(clipId) && canRetryRemoval(clipId)) {
+          pendingFillerRemovals.add(clipId);
+          yield* sendCommand({ _tag: "RemoveFiller", clipId });
+        }
       yield* publishState(state, sources.sessions);
       if ((!draining || finishAccepted) && commandCount === 0 && decision.action !== undefined)
         yield* applyPolicy(decision.action, state);
@@ -2218,7 +2138,15 @@ export const makeScheduler = (
               message.item.startByOffsetMs === undefined
                 ? undefined
                 : nowMs + message.item.startByOffsetMs;
-            const projectedMs = projectedStartMs(state, message.item.lane, nowMs);
+            const projectedMs = projectedStartMs(
+              state,
+              [...items.values()],
+              owned,
+              lanes,
+              playingStartedMs,
+              message.item.lane,
+              nowMs,
+            );
             if (startByMs !== undefined && projectedMs > startByMs) {
               yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
               break;
@@ -2260,7 +2188,18 @@ export const makeScheduler = (
             const [first, ...rest] = group.parts;
             const startByMs =
               first.startByOffsetMs === undefined ? undefined : nowMs + first.startByOffsetMs;
-            if (startByMs !== undefined && projectedStartMs(state, first.lane, nowMs) > startByMs) {
+            if (
+              startByMs !== undefined &&
+              projectedStartMs(
+                state,
+                [...items.values()],
+                owned,
+                lanes,
+                playingStartedMs,
+                first.lane,
+                nowMs,
+              ) > startByMs
+            ) {
               yield* Deferred.fail(message.reply, WouldMissDeadline.of(group.key));
               break;
             }
@@ -2339,9 +2278,6 @@ export const makeScheduler = (
             );
             old.replacedBy = replacement.key;
             if (old.group !== undefined) groups.get(old.group.key)?.parts.push(replacement.key);
-            // Nothing was built for the old item yet, so the replacement takes over at once.
-            if (old.phase === "Accepted" && !pendingBuilds.has(old.key))
-              yield* requestWithdrawal(old, "replaced");
             yield* observed(state);
             yield* publishState(state);
             yield* Deferred.succeed(message.reply, replacement.handle);
@@ -2406,7 +2342,6 @@ export const makeScheduler = (
                 yield* sendCommand({ _tag: "PauseAutoplay" });
               }
             }
-            yield* drainPending(yield* engine.state);
             break;
           }
           case "Snapshot": {
