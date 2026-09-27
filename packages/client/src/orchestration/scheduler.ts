@@ -143,7 +143,11 @@ export type ItemFailureReason =
   | { readonly _tag: "Clip"; readonly message: string };
 
 export type AsRunStatus =
-  | { readonly _tag: "Accepted" }
+  | {
+      readonly _tag: "Accepted";
+      /** Accepted again: its clip was lost with this session before it aired, and it is rebuilt. */
+      readonly carried?: { readonly sessionId: string };
+    }
   | { readonly _tag: "Building" }
   | { readonly _tag: "Ready"; readonly sessionId: string }
   | {
@@ -1857,9 +1861,35 @@ export const makeScheduler = (
             );
             playingStartedMs.delete(event.clipId);
             break;
-          case "Failed":
+          case "Failed": {
+            // A clip lost with a replaced session before it aired is rebuilt from the plan.
+            if (
+              event.lost === true &&
+              (item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready")
+            ) {
+              const sessionId = event.sessionId ?? item.sessionId;
+              owned.delete(event.clipId);
+              playingStartedMs.delete(event.clipId);
+              delete item.clipId;
+              delete item.dispatchedAtMs;
+              delete item.acknowledgedAtSnapshotSerial;
+              item.sessionId = undefined;
+              const pending = pendingWithdrawals.get(item.key);
+              if (pending !== undefined) {
+                yield* emit(item, { _tag: "Dropped", reason: pending.reason });
+                yield* finishWithdrawal(item.key, Result.succeed("withdrawn"));
+              } else
+                yield* emit(
+                  item,
+                  sessionId === undefined
+                    ? { _tag: "Accepted" }
+                    : { _tag: "Accepted", carried: { sessionId } },
+                );
+              break;
+            }
             yield* emit(item, { _tag: "Failed", reason: { _tag: "Clip", message: event.reason } });
             break;
+          }
           default:
             break;
         }
