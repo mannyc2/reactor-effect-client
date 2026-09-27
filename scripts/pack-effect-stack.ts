@@ -181,13 +181,16 @@ export const selectStack = (manifest: unknown, lockBytes: string | Uint8Array): 
   }
   // Bun may add qualified keys for a second instance. Inspect its coordinate as
   // well as its key so a nested conflicting version cannot hide behind an alias.
+  // A nested key is `<parent package>/<name>`; `@scope/effect` is another package.
+  const nestedUnder = (location: string, name: string): boolean =>
+    location.endsWith(`/${name}`) && !/^@[^/]+$/.test(location.slice(0, -name.length - 1));
   for (const [location, value] of Object.entries(tuples)) {
     const tuple: readonly unknown[] = Array.isArray(value) ? value : [];
     for (const key of Object.keys(packages) as StackKey[]) {
       const name = packages[key];
       if (
         location === name ||
-        location.endsWith(`/${name}`) ||
+        nestedUnder(location, name) ||
         (typeof tuple[0] === "string" && tuple[0].startsWith(`${name}@`))
       ) {
         if (tupleVersion(value, name, location) !== selected[key])

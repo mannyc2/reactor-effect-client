@@ -229,6 +229,19 @@ test("rejects mixed and incompatible duplicate lock coordinates", () => {
   expect(() => selectStack(manifest, lock("3.0.0"))).toThrow(/satisfy/);
 });
 
+test("a scoped package named effect is not an Effect instance unless its coordinate is", () => {
+  const withEntry = (coordinate: string) =>
+    selectStack(
+      manifest,
+      lock().replace(
+        '"packages": {',
+        `"packages": { "@acme/effect": ["${coordinate}", "", {}, "sha512-fixture"],`,
+      ),
+    );
+  expect(withEntry("@acme/effect@1.0.0").selected.effect).toBe(baseline);
+  expect(() => withEntry(`effect@${later}`)).toThrow(/conflicting.*effect/);
+});
+
 test("owner-relative resolution succeeds without an undeclared root Effect", () =>
   withWorkspace((root) => {
     expect(() =>
