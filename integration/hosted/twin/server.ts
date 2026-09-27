@@ -45,6 +45,8 @@ export interface TwinFaults {
   readonly refuseFirstAllocation?: boolean;
   readonly refuseSecondAllocation?: boolean;
   readonly failConnect?: boolean;
+  /** The second session is allocated with its id, then its connect is refused. */
+  readonly failSecondConnect?: boolean;
   readonly overgrantSecondToken?: boolean;
   readonly noFirstVideo?: boolean;
   readonly noSecondVideo?: boolean;
@@ -214,6 +216,8 @@ interface Connection {
 
 interface Session {
   readonly id: string;
+  /** Its place in creation order, from 1. */
+  readonly ordinal: number;
   readonly grant: Grant;
   state: "ACTIVE" | "STOPPING" | "CLOSED";
   readonly model: H3Model;
@@ -467,7 +471,10 @@ class TwinServer implements Twin {
     if (resource !== "connections") throw refuse(404, "not_found", "no such route");
     if (session.state !== "ACTIVE") throw refuse(409, "session_ended", "the session has ended");
     if (cid === undefined) {
-      if (this.options.faults?.failConnect === true)
+      if (
+        this.options.faults?.failConnect === true ||
+        (this.options.faults?.failSecondConnect === true && session.ordinal === 2)
+      )
         throw refuse(403, "fixture_connect_refused", "fixture connect refusal");
       if (method !== "POST") throw refuse(405, "method_not_allowed", method);
       await read(request);
@@ -529,6 +536,7 @@ class TwinServer implements Twin {
     const faults = this.options.faults ?? {};
     const session: Session = {
       id: `sess_${randomUUID()}`,
+      ordinal: this.created,
       grant,
       state: "ACTIVE",
       model: new H3Model(

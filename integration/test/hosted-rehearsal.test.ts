@@ -285,6 +285,7 @@ for (const constructor of ["legacy", "continuous"] as const)
     "refuseFirstAllocation",
     "refuseSecondAllocation",
     "failConnect",
+    "failSecondConnect",
     "overgrantSecondToken",
     "slowDelete",
     "ignoreDelete",
@@ -348,6 +349,22 @@ for (const constructor of ["legacy", "continuous"] as const)
       }
       if (fault === "failConnect")
         expect(renewal.allocations[0]?.leaseCleanup?.remote.confirmed).toBe(true);
+      if (fault === "failSecondConnect") {
+        // The second session is known and closed, so its failed open is one the SDK
+        // retries: the harness's guard must refuse that third open before allocating.
+        expect(run.output).toContain("rehearsal twin: 2 created, 0 not closed");
+        expect(renewal.openAttempts).toBe(3);
+        expect(run.evidence.reasons).toContain(
+          "InvalidState: scheduler renewal refused a third open attempt",
+        );
+        expect(renewal.allocations[1]?.leaseCleanup).toMatchObject({
+          allocation: "known",
+          sessionId: renewal.allocations[1]?.sessionId,
+          remote: { confirmed: true },
+        });
+        expect(renewal.allocations.some((slot) => slot.allocation === "unknown")).toBe(false);
+        expect(run.evidence.outcomes).not.toContain("unknown");
+      }
       if (fault === "dropSecondEnqueueReply") {
         expect(run.evidence.outcomes).toContain("unknown");
         expect(renewal.items[1]?.sessionId).toBe(renewal.allocations[1]?.sessionId);
