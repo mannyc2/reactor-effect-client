@@ -58,6 +58,14 @@ export interface LaneSpec {
 
 export type StartMode =
   | { readonly _tag: "Follow" }
+  /** The next boundary, ahead of everything waiting in every lane. */
+  | { readonly _tag: "Asap" }
+  /**
+   * Built ahead and held until `release(key)`, then the next boundary as `Asap`. It is built
+   * early only while filler keeps the runway at its floor, and if it would still be next at
+   * a boundary it is removed and rebuilt; with filler off it is built once released.
+   */
+  | { readonly _tag: "Manual" }
   | {
       readonly _tag: "At";
       /** Epoch milliseconds; its monotonic deadline follows wall-clock corrections. */
@@ -300,6 +308,7 @@ interface CapturedItem {
   readonly firm: boolean;
   readonly atWallMs: number | undefined;
   readonly late: PlannedItem["late"];
+  readonly mode?: "asap" | "manual";
 }
 
 interface UnknownAdmission {
@@ -319,6 +328,8 @@ interface Entry extends PlannedItem {
   phase: PlannedItem["phase"];
   /** Set once another item was submitted to take this one's place. */
   replacedBy?: ItemKey;
+  held?: boolean;
+  asap?: boolean;
   dispatchedAtMs?: number;
   retryAtMs?: number;
   atMs?: number;
@@ -412,6 +423,11 @@ type Message =
       readonly _tag: "Withdraw";
       readonly key: ItemKey;
       readonly reply: Deferred.Deferred<WithdrawOutcome, EngineError>;
+    }
+  | {
+      readonly _tag: "Release";
+      readonly key: ItemKey;
+      readonly reply: Deferred.Deferred<void, EngineError>;
     }
   | {
       readonly _tag: "Drain";
@@ -613,9 +629,13 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
           );
     let atWallMs: number | undefined;
     let late: PlannedItem["late"] = "nextBoundary";
-    if (start?._tag === "Follow" && (start.time !== undefined || start.late !== undefined))
-      return yield* invalid("Follow cannot contain an anchor or lateness policy");
-    if (start !== undefined && start._tag !== "Follow") {
+    const mode = start?._tag === "Asap" ? "asap" : start?._tag === "Manual" ? "manual" : undefined;
+    if (
+      (start?._tag === "Follow" || mode !== undefined) &&
+      (start?.time !== undefined || start?.late !== undefined)
+    )
+      return yield* invalid(`${String(start?._tag)} cannot contain an anchor or lateness policy`);
+    if (start !== undefined && start._tag !== "Follow" && mode === undefined) {
       if (start._tag !== "At" || !Number.isFinite(start.time))
         return yield* invalid("Scheduled start mode is invalid");
       atWallMs = start.time as number;
@@ -639,6 +659,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
       firm,
       atWallMs,
       late,
+      ...(mode === undefined ? {} : { mode }),
       fingerprint: JSON.stringify({
         lane,
         request,
@@ -647,6 +668,7 @@ const captureItem = (input: ItemSpec, lanes: ReadonlySet<string>) =>
         firm,
         atWallMs,
         late,
+        mode,
       }),
     };
   });
@@ -867,6 +889,8 @@ export interface SchedulerShape {
   readonly edit: (
     edits: ReadonlyArray<Edit>,
   ) => Effect.Effect<EditHandle, KeyMismatch | WouldMissDeadline | LaneBusy | EngineError>;
+  /** Releases a held `Manual` item to air at the next boundary, as `Asap`. */
+  readonly release: (key: ItemKey) => Effect.Effect<void, EngineError>;
   /**
    * A group key withdraws every unstarted part; a part key, that part and every part after it.
    * An inserted part withdraws only itself.
@@ -2424,6 +2448,8 @@ export const makeScheduler = (
               atMs: nowMs + captured.atWallMs - clock.currentTimeMillisUnsafe(),
             }),
         late: captured.late,
+        ...(captured.mode === "asap" ? { asap: true } : {}),
+        ...(captured.mode === "manual" ? { held: true } : {}),
         ...(group === undefined ? {} : { group }),
         sessionId: undefined,
         unknownSessionId: undefined,
@@ -2980,6 +3006,17 @@ export const makeScheduler = (
             );
             break;
           }
+          case "Release": {
+            const item = items.get(message.key);
+            if (item?.held !== true || item.phase === "Started" || item.phase === "Terminal") {
+              yield* Deferred.fail(message.reply, invalid("Nothing is held under that key"));
+              break;
+            }
+            item.held = false;
+            item.asap = true;
+            yield* Deferred.succeed(message.reply, undefined);
+            break;
+          }
           case "Drain": {
             if (drainFailure !== undefined) {
               yield* Deferred.fail(message.reply, drainFailure);
@@ -3186,6 +3223,14 @@ export const makeScheduler = (
         yield* Effect.annotateCurrentSpan("reactor.scheduler.edits", edits.length);
         return yield* send(edits, true);
       }).pipe(Effect.withSpan("Scheduler.edit", {}, { captureStackTrace: false }));
+    const release: SchedulerShape["release"] = (key) =>
+      Effect.gen(function* () {
+        const reply = yield* Deferred.make<void, EngineError>();
+        if (!(yield* Queue.offer(inbox, { _tag: "Release", key, reply }))) return yield* closedCall;
+        return yield* Deferred.await(reply).pipe(Effect.raceFirst(closedCall));
+      }).pipe(
+        Effect.withSpan("Scheduler.release", { attributes: { key } }, { captureStackTrace: false }),
+      );
     const withdraw: SchedulerShape["withdraw"] = (key) =>
       Effect.gen(function* () {
         const reply = yield* Deferred.make<WithdrawOutcome, EngineError>();
@@ -3217,6 +3262,7 @@ export const makeScheduler = (
       replace,
       insert,
       edit,
+      release,
       withdraw,
       drain,
       failure: Deferred.await(stopped),

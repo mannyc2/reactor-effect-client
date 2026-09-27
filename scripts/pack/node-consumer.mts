@@ -140,6 +140,10 @@ const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
   { name: "status", conflict: "replace" },
   { name: "ack", conflict: "skip" },
 ];
+const starts: ReadonlyArray<Orchestration.StartMode> = [{ _tag: "Asap" }, { _tag: "Manual" }];
+const released: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.release(
+  Orchestration.ItemKey.make("cue"),
+);
 const cut: Effect.Effect<void, Orchestration.EngineError> = engine.cut(
   Orchestration.ClipId.make("playing"),
 );
@@ -193,6 +197,8 @@ void [
   inserted,
   edited,
   lanes,
+  starts,
+  released,
   cut,
   terminalFailure,
   stoppedRenewal,
