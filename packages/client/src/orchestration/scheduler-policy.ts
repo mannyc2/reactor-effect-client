@@ -80,13 +80,13 @@ export interface PendingBatch {
   readonly id: number;
   /** The batch takes effect once each of these is Ready, started or settled. */
   readonly waitFor: ReadonlyArray<ItemKey>;
-  /** The items it withdraws once it takes effect. */
-  readonly targets: ReadonlyArray<ItemKey>;
+  /** The items it withdraws once it takes effect, and why. */
+  readonly targets: ReadonlyArray<PolicyWithdrawal>;
 }
 
 /** Items that pending batches withdraw. */
 export const supersededBy = (batches: ReadonlyArray<PendingBatch>): ReadonlySet<ItemKey> =>
-  new Set(batches.flatMap((batch) => batch.targets));
+  new Set(batches.flatMap((batch) => batch.targets.map((target) => target.key)));
 
 export type OwnedClip =
   | { readonly _tag: "Item"; readonly key: ItemKey }
@@ -124,11 +124,19 @@ export interface PolicySnapshot {
   readonly fillerDispatchedAtMs: number | undefined;
   /** The requested length of the next filler clip, if known. */
   readonly fillerSeconds: number | undefined;
+  /** Lanes whose Ready items cut a playing clip that ranks below them. */
+  readonly cutLanes: ReadonlySet<string>;
+  /** A playing clip whose cut was refused is not cut again. */
+  readonly blockedCut: ClipId | undefined;
 }
+
+/** A clip ending within this many seconds is left to end rather than cut. */
+const cutMarginSeconds = 1;
 
 export type PolicyAction =
   | { readonly _tag: "DeferAt"; readonly key: ItemKey; readonly clipId: ClipId }
   | { readonly _tag: "Build"; readonly key: ItemKey }
+  | { readonly _tag: "Cut"; readonly clipId: ClipId }
   | { readonly _tag: "BuildFiller"; readonly targetSeconds: number }
   | { readonly _tag: "Order"; readonly clipId: ClipId; readonly position: number };
 
@@ -477,10 +485,9 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     )
       commit.push(batch.id);
     else
-      for (const key of batch.targets) {
+      for (const { key, reason } of batch.targets) {
         const target = find(key);
-        if (target?.phase === "Accepted" && !snapshot.dispatched.has(key))
-          drop(target, "withdrawn");
+        if (target?.phase === "Accepted" && !snapshot.dispatched.has(key)) drop(target, reason);
       }
   }
   // A drain that finishes only the playing clip withdraws everything waiting.
@@ -559,6 +566,34 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       }
     }
     offset += actual.length;
+  }
+
+  // A cut lane's Ready item at the front of its session cuts the playing clip there when that
+  // clip ranks below it, once the provider has it at the front.
+  if (snapshot.cutLanes.size > 0) {
+    const current = Option.getOrUndefined(engine.playing);
+    const record = current === undefined ? undefined : Option.getOrUndefined(current.record);
+    const since = playingSince(current, snapshot.playingStartedMs);
+    const front =
+      record === undefined
+        ? undefined
+        : engine.ready.find((clip) => clip.sessionId === record.sessionId);
+    const owner = front === undefined ? undefined : owned.get(front.clipId);
+    const cutter =
+      owner?._tag === "Item" ? items.find((item) => item.key === owner.key) : undefined;
+    if (
+      current !== undefined &&
+      record !== undefined &&
+      since !== undefined &&
+      front !== undefined &&
+      cutter !== undefined &&
+      snapshot.cutLanes.has(cutter.lane) &&
+      snapshot.blockedCut !== current.clipId &&
+      compareRank(rankClip(front.clipId, owned), rankClip(current.clipId, owned)) < 0 &&
+      rankClip(current.clipId, owned)[0] >= 0 &&
+      record.durationSeconds - (nowMs - since) / 1000 > cutMarginSeconds
+    )
+      return { ...base, action: { _tag: "Cut", clipId: current.clipId } };
   }
 
   // Reorder movable Ready runway before treating a future At clip as exposed.
