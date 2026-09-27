@@ -30,7 +30,7 @@ import * as Worker from "effect/unstable/workers/Worker";
 import { WorkerReceiveError, WorkerSendError } from "effect/unstable/workers/WorkerError";
 import { PeerFactory, ReactorError } from "reactor-effect-client";
 import type { PeerFactoryShape, Track } from "reactor-effect-client";
-import { Observations, parsed } from "reactor-effect-client/host";
+import { Observations, parsed, takeQueue, takeAllQueue } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   Channel,
@@ -76,6 +76,17 @@ class Dispatch extends Context.Service<Dispatch, { sent: boolean }>()(
 
 type Client = RpcClient.FromGroup<typeof IsolatedRpcs, RpcClientError>;
 type CallError = WireFailure | RpcClientError;
+
+/**
+ * A track stream's chunks, taken with the client's queue compatibility read.
+ * RpcClient's own stream takes with rc.117's `Queue.takeAll`, and with one
+ * chunk of credit its full queue wakes no reader, so a lost wakeup there
+ * stalls the track until the stream ends.
+ */
+const chunks = <A, E>(
+  queue: Effect.Effect<Queue.Dequeue<A, E>, never, Scope.Scope>,
+): Stream.Stream<A, Exclude<E, Cause.Done>> =>
+  Stream.unwrap(Effect.map(queue, (items) => Stream.fromPull(Effect.succeed(takeAllQueue(items)))));
 
 const isClientError = (u: unknown): u is RpcClientError => Predicate.isTagged(u, "RpcClientError");
 
@@ -338,7 +349,7 @@ export class IsolatedPeer implements Peer {
       video: (name: string) =>
         this.track(name, "video", this.video, (client) =>
           Stream.map(
-            client.Video({ name }, { streamBufferSize: FRAME_BUFFER }),
+            chunks(client.Video({ name }, { streamBufferSize: FRAME_BUFFER, asQueue: true })),
             (frame): readonly [VideoFrame, number] => {
               const owned = videoFrame(name, frame);
               return [owned, owned.data.byteLength + owned.metadata.byteLength + name.length * 2];
@@ -348,7 +359,7 @@ export class IsolatedPeer implements Peer {
       audio: (name: string) =>
         this.track(name, "audio", this.audio, (client) =>
           Stream.map(
-            client.Audio({ name }, { streamBufferSize: FRAME_BUFFER }),
+            chunks(client.Audio({ name }, { streamBufferSize: FRAME_BUFFER, asQueue: true })),
             (frame): readonly [AudioFrame, number] => {
               const owned = audioFrame(name, frame);
               return [owned, owned.samples.byteLength + name.length * 2];
@@ -559,7 +570,7 @@ export class IsolatedPeer implements Peer {
       const items = yield* client
         .Prepare(request, { asQueue: true, streamBufferSize: EVENT_BUFFER })
         .pipe(Effect.provideService(Dispatch, mark));
-      const first = yield* Effect.exit(Queue.take(items));
+      const first = yield* Effect.exit(takeQueue(items));
       if (Exit.isFailure(first)) return yield* self.lost(first.cause, operation, mark.sent);
       const head = first.value;
       if (head._tag !== "Prepared")
@@ -577,7 +588,7 @@ export class IsolatedPeer implements Peer {
 
   /** The child's peer events, in order, until the peer retires. */
   private deliver(items: Queue.Dequeue<PrepareItem, CallError | Cause.Done>): Effect.Effect<void> {
-    return Queue.takeAll(items).pipe(
+    return takeAllQueue(items).pipe(
       Effect.flatMap((batch) =>
         Effect.sync(() => {
           for (const item of batch) if (item._tag === "Event") this.receive(item.event);

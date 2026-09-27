@@ -19,7 +19,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ReactorError } from "reactor-effect-client";
 import type { Track } from "reactor-effect-client";
-import { parsed } from "reactor-effect-client/host";
+import { parsed, takeQueue, takeAllQueue } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   IceServer,
@@ -145,7 +145,7 @@ const handlers = IsolatedRpcs.toLayer(
             queuedBytes += bytes;
           };
           const prepared = yield* target.prepare(servers, tracks, offer);
-          const next = Effect.map(Queue.takeAll(queue), (entries) =>
+          const next = Effect.map(takeAllQueue(queue), (entries) =>
             Arr.map(entries, (entry) => {
               queuedBytes -= entry.bytes;
               return entry.item;
@@ -187,7 +187,7 @@ const handlers = IsolatedRpcs.toLayer(
             // request releases is then already observed.
             Effect.forkScoped({ startImmediately: true }),
           );
-          return Stream.fromEffectRepeat(Queue.take(queue));
+          return Stream.fromEffectRepeat(takeQueue(queue));
         }),
       ).pipe(Stream.mapError(toWire));
 

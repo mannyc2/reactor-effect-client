@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { take as takeQueue } from "../_internal/queue.js";
 import { duration } from "../duration.js";
 import { parsedInput, ReactorError } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
@@ -1323,7 +1324,7 @@ export const makeScheduler = (
 
     const commandWorker = Effect.gen(function* () {
       for (;;) {
-        const command = yield* Queue.take(commandQueue);
+        const command = yield* takeQueue(commandQueue);
         if (ended !== undefined) continue;
         const result = yield* Effect.result(executeCommand(command));
         dispatching = undefined;
@@ -1910,7 +1911,7 @@ export const makeScheduler = (
 
     const actor = Effect.gen(function* () {
       for (;;) {
-        const message = yield* Queue.take(inbox);
+        const message = yield* takeQueue(inbox);
         // Queued public calls observe the same terminal result through closedCall.
         if (ended !== undefined && message._tag !== "CommandDone") continue;
         switch (message._tag) {

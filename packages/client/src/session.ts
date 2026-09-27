@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Stream from "effect/Stream";
+import { take as takeQueue } from "./_internal/queue.js";
 import { duration } from "./duration.js";
 import { parsed, parsedInput, positiveLimit, ReactorError, Remote } from "./errors.js";
 import type { ErrorContext } from "./errors.js";
@@ -648,7 +649,7 @@ export class Session {
           c,
           Effect.gen(function* () {
             while (true) {
-              yield* Queue.take(c.iceWake);
+              yield* takeQueue(c.iceWake);
               yield* self.flushIce(c);
             }
           }),

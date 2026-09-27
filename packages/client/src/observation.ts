@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { take as takeQueue } from "./_internal/queue.js";
 import { parsed, positiveLimit, ReactorError } from "./errors.js";
 
 interface Entry<A> {
@@ -91,7 +92,7 @@ export class Observations<A> {
           );
           return Stream.fromEffectRepeat(
             Effect.uninterruptibleMask((restore) =>
-              restore(Queue.take(subscriber.queue)).pipe(
+              restore(takeQueue(subscriber.queue)).pipe(
                 Effect.map((entry) => {
                   subscriber.bufferedBytes -= entry.bytes;
                   return entry.value;
