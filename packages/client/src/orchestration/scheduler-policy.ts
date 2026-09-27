@@ -19,6 +19,10 @@ export interface PlannedItem {
   readonly firm: boolean;
   readonly atMs?: number;
   readonly late: "nextBoundary" | "drop" | { readonly skipIfLaterThanMs: number };
+  /** The group this item is a part of, and its place in that group. */
+  readonly group?: { readonly key: ItemKey; readonly index: number };
+  /** Set once the item's start was observed. */
+  readonly startedAtMonoMs?: number;
 }
 
 export type OwnedClip =
@@ -95,6 +99,28 @@ export const runwaySeconds = (
 /** A pure, single-action policy. The actor re-reads Engine after each applied action. */
 export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
   const { engine, items, nowMs, owned } = snapshot;
+  // A group's parts in order. A part already pruned has settled, so it counts as admitted.
+  const groups = new Map<ItemKey, PlannedItem[]>();
+  for (const item of items)
+    if (item.group !== undefined)
+      groups.set(item.group.key, [...(groups.get(item.group.key) ?? []), item]);
+  const previousAdmitted = (item: PlannedItem): boolean => {
+    if (item.group === undefined || item.group.index === 0) return true;
+    const index = item.group.index;
+    const previous = groups.get(item.group.key)?.find((part) => part.group?.index === index - 1);
+    return previous?.phase !== "Accepted";
+  };
+  // Once a group airs, its remaining parts stay ahead of the rest of their lane. A group
+  // whose first part was pruned has settled it, and a settled first part that did not
+  // air withdrew the others.
+  const begun = (item: PlannedItem | undefined): boolean => {
+    if (item?.group === undefined) return false;
+    const parts = groups.get(item.group.key) ?? [];
+    return (
+      parts.some((part) => part.startedAtMonoMs !== undefined) ||
+      Math.min(...parts.map((part) => part.group?.index ?? 0)) > 0
+    );
+  };
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
     .filter((item) => item.phase !== "Terminal" && item.atMs !== undefined && item.atMs > nowMs)
@@ -156,19 +182,23 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       continue;
     }
     if (actual.length === 0) continue;
-    const rank = (clipId: ClipId): readonly [number, number] => {
+    const rank = (clipId: ClipId): readonly [number, number, number] => {
       const clip = owned.get(clipId);
-      if (clip === undefined) return [-1, 0];
-      if (clip._tag === "Filler") return [snapshot.lanes.length, clip.index];
+      if (clip === undefined) return [-1, 0, 0];
+      if (clip._tag === "Filler") return [snapshot.lanes.length, 1, clip.index];
       const item = items.find((value) => value.key === clip.key);
       if (item?.atMs !== undefined && nowMs < item.atMs)
-        return [snapshot.lanes.length + 1, item.admission];
-      return [Math.max(0, snapshot.lanes.indexOf(item?.lane ?? "")), item?.admission ?? 0];
+        return [snapshot.lanes.length + 1, 1, item.admission];
+      return [
+        Math.max(0, snapshot.lanes.indexOf(item?.lane ?? "")),
+        begun(item) ? 0 : 1,
+        item?.admission ?? 0,
+      ];
     };
     const desired = [...actual].sort((a, b) => {
       const left = rank(a.clipId);
       const right = rank(b.clipId);
-      return left[0] - right[0] || left[1] - right[1];
+      return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
     });
     for (let index = 0; index < actual.length; index++) {
       if (actual[index]?.clipId === desired[index]?.clipId) continue;
@@ -266,6 +296,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     .filter(
       (item) =>
         item.phase === "Accepted" &&
+        previousAdmitted(item) &&
         (item.retryAtMs === undefined || nowMs >= item.retryAtMs) &&
         (item.notBeforeMs === undefined || nowMs >= item.notBeforeMs) &&
         // Autoplay cannot hold a Ready clip. Admit a future anchor only once
@@ -274,8 +305,15 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     )
     .sort((a, b) => {
       const lane = snapshot.lanes.indexOf(a.lane) - snapshot.lanes.indexOf(b.lane);
+      // A deadline may move a whole group ahead in its lane, never into one being built.
+      const open =
+        Number(b.group !== undefined && b.group.index > 0) -
+        Number(a.group !== undefined && a.group.index > 0);
       return (
-        lane || (a.startByMs ?? Infinity) - (b.startByMs ?? Infinity) || a.admission - b.admission
+        lane ||
+        open ||
+        (a.startByMs ?? Infinity) - (b.startByMs ?? Infinity) ||
+        a.admission - b.admission
       );
     });
   if (eligible[0] !== undefined)

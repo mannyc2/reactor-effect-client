@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Scheduler.submitGroup` submits a group of parts that build in order and air back to back, such as the beats of one line, with a handle per part. A deadline can move a whole group ahead in its lane but never split one, and a group that has started keeps its remaining parts ahead of the rest of its lane; a higher lane can still go in between parts. `withdraw` takes a group key for every unstarted part, or a part key for that part and the parts after it, and a part that fails or is dropped withdraws the parts after it. `GroupSpec`, `GroupPart` and `GroupHandle` are exported. `SchedulerShape` gains `submitGroup`, so a hand-written implementation of it needs one.
+
 ## [0.6.0] - 2026-09-27
 
 The scheduler bounds how long it waits on an unknown admission, renewal publishes its workers' defects and joins every acquisition when it closes, opt-in continuous renewal lifts the 64-session cap, and a queue read no longer misses a wakeup. Callers see failures where 0.5.0 waited or swallowed a defect, so a `^0.5.0` range does not include it: a scheduler with unresolved uncertainty fails after `unknownRecoveryTimeout`, renewal close can fail with the original defect, and `engine.failure` can fail with a renewal worker's Cause, which a waiter handles with `Effect.catchCause`. The native Rust sources are unchanged; `reactor-effect-native`'s isolated host reads its track streams through the client's queue compatibility reads.
