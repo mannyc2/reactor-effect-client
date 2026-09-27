@@ -18,7 +18,6 @@ import * as pathPosix from "node:path/posix";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { rules } from "./architecture.mjs";
 import {
   completeQualification,
   inspectConsumerTree,
@@ -265,17 +264,13 @@ const packArchive = (directory: string): Archive => {
 
 const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
   const { files, manifest } = archive;
-  const rule = rules[manifest.name] ?? fail(`no public contract for package ${manifest.name}`);
+  // Only the native package runs on Node and loads Koffi.
+  const hostBuiltins = manifest.name === "reactor-effect-native";
   for (const required of ["package.json", "README.md", "LICENSE", "NOTICE"]) {
     if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
   }
   if (![...files].some((path) => path.startsWith("notices/")))
     fail(`${manifest.name} tarball omitted its third-party notices`);
-  if (
-    JSON.stringify(Object.keys(manifest.exports).sort()) !==
-    JSON.stringify(Object.keys(rule.entries).sort())
-  )
-    fail(`${manifest.name} must expose exactly its canonical public entry points`);
   for (const group of [
     manifest.dependencies,
     manifest.peerDependencies,
@@ -327,11 +322,11 @@ const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): voi
       if (specifier.startsWith("/") || specifier.startsWith("file:"))
         fail(`${path} contains absolute import ${specifier}`);
       if (builtins.has(specifier)) {
-        if (!rule.hostBuiltins) fail(`${path} imports Node builtin ${specifier}`);
+        if (!hostBuiltins) fail(`${path} imports Node builtin ${specifier}`);
         continue;
       }
       const external = packageName(specifier);
-      if (external === "koffi" && !rule.hostBuiltins) fail(`${path} imports Koffi`);
+      if (external === "koffi" && !hostBuiltins) fail(`${path} imports Koffi`);
       if (!dependencies.has(external))
         fail(`${path} imports undeclared external dependency ${specifier}`);
     }

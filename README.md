@@ -47,7 +47,7 @@ packages/test-kit    private                 runner-agnostic assertion helpers a
 examples/livestream  private                 the live channel example: one orchestration broadcast to many browsers
 packages/*/examples  private                 each package's own example
 integration          private                 real Chrome/native WebRTC qualification (Node/Vitest) and its browser bundle
-scripts              workspace tooling       verify profiles, test runner, architecture check, examples check, installed-package smoke
+scripts              workspace tooling       verify profiles, test runner, examples check, installed-package smoke
 ```
 
 Every workspace declares exactly the dependencies it uses; `bun install` uses the isolated linker, so an undeclared import fails to resolve instead of leaning on a hoisted copy. Versions shared by several workspaces are pinned once in the root [`package.json`](./package.json) catalog, and sibling packages depend on each other with `workspace:*`; `bun pm pack` rewrites both to exact versions in the published manifests.
@@ -58,7 +58,7 @@ Bun 1.4.2 (declared by `packageManager`), Node.js 22 or newer and CPython 3.13 f
 
 ```sh
 bun install --frozen-lockfile
-bun run verify --profile portable   # generation, format, lint, build, typecheck, architecture, examples, portable tests
+bun run verify --profile portable   # generation, format, lint, build, typecheck, examples, portable tests
 ```
 
 | Command                               | What it does                                                                                        |
@@ -69,7 +69,6 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 | `bun run test:native`                 | Vitest tests in `packages/native` against the staged library, on Node and then on Bun               |
 | `bun run test:integration`            | Real local browser/native session through the public packages                                       |
 | `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                |
-| `bun run check:architecture`          | Compiler-backed layering, host-boundary, dependency and cycle check for every package               |
 | `bun run native:build`                | Builds the Rust bridge for the current host and stages it under `packages/native/lib/`              |
 | `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                       |
 

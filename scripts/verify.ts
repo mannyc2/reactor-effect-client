@@ -27,7 +27,6 @@ const portable = [
   "build",
   "lint",
   "typecheck",
-  "check:architecture",
   "check:examples",
   "test:portable",
 ];

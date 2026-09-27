@@ -1,33 +1,29 @@
 # Verification
 
-`bun run verify` runs the same checks CI uses: wire regeneration, formatting, lint, the dependency-ordered package build, every workspace's typecheck, architecture, the examples' offline tests, portable runtime imports and tests, native staging and tests, real local browser/native WebRTC, and clean installed-package validation. Any failure stops the profile and returns its nonzero exit status.
+`bun run verify` runs the same checks CI uses: wire regeneration, formatting, lint, the dependency-ordered package build, every workspace's typecheck, the examples' offline tests, portable runtime imports and tests, native staging and tests, real local browser/native WebRTC, and clean installed-package validation. Any failure stops the profile and returns its nonzero exit status.
 
 The profiles are `portable`, `runtime`, `native`, `package`, `release` and `full`. Print a profile without executing it with `bun run verify --profile full --list`. `portable` needs no native binary. `runtime` builds and runs only the portable tests and import guards; CI uses it for the OS/Node matrix, where the Vitest suites run on that Node as well as on Bun. `native` builds the packages, then builds and stages the host binary before checking it and running the public session integration. `package` checks the already staged binaries without rebuilding them. `release` combines the portable and package checks; its native matrix must have qualified the staged artifacts first. `full` runs all three parts.
 
-`test:portable` runs Vitest in `packages/client` and then `packages/browser`, each under Node and then Bun, followed by Bun discovery from the workspace root for the integration modeled-host tests and `scripts/architecture.test.mjs`; `bunfig.toml` excludes every package's `test/`, the real-host `*.integration.test.ts` files and disposable output. `test:native` runs Vitest in `packages/native` under Node and then Bun, and `test:integration` runs Vitest under Node in `integration`. There is no test filename registry: a new test in its workspace joins the corresponding project automatically. Each Vitest subprocess retains its 180-second aggregate limit. Root Bun discovery has a 600-second aggregate limit: the measured legacy renewal matrix took 175.85 seconds, both constructors require about 351.70 seconds, and the prior root baseline took 116.56 seconds (about 468.26 seconds together). The remaining budget allows bounded runtime variance; individual test and hosted CLI deadlines are unchanged. The verification wrapper adds no shorter timeout, and CI sets no shorter job timeout.
+`test:portable` runs Vitest in `packages/client` and then `packages/browser`, each under Node and then Bun, followed by Bun discovery from the workspace root for the integration modeled-host tests; `bunfig.toml` excludes every package's `test/`, the real-host `*.integration.test.ts` files and disposable output. `test:native` runs Vitest in `packages/native` under Node and then Bun, and `test:integration` runs Vitest under Node in `integration`. There is no test filename registry: a new test in its workspace joins the corresponding project automatically. Each Vitest subprocess retains its 180-second aggregate limit. Root Bun discovery has a 600-second aggregate limit: the measured legacy renewal matrix took 175.85 seconds, both constructors require about 351.70 seconds, and the prior root baseline took 116.56 seconds (about 468.26 seconds together). The remaining budget allows bounded runtime variance; individual test and hosted CLI deadlines are unchanged. The verification wrapper adds no shorter timeout, and CI sets no shorter job timeout.
 
 ## Files
 
-| Path                    | Purpose                                                                                  |
-| ----------------------- | ---------------------------------------------------------------------------------------- |
-| `verify.ts`             | Profile orchestration; also runs the Node and Bun portable import guards after `build`   |
-| `test.ts`               | Runs one test project with credential-like environment variables removed                 |
-| `architecture.mjs`      | Compiler-backed layering, host, dependency, cycle and export-contract check per package  |
-| `architecture.test.mjs` | Regression fixtures for the architecture check (Bun)                                     |
-| `portable-import.mjs`   | Imports every portable entry of the built client and browser packages                    |
-| `examples.ts`           | Runs the examples' offline tests on Node and Bun and checks their browser bundles        |
-| `pack.ts`               | Packs, validates and installs the public packages into isolated consumers                |
-| `pack-effect-stack.ts`  | Selects the frozen Effect stack and validates workspace and consumer resolutions         |
-| `pack/`                 | Consumer fixtures copied into those isolated installations                               |
-| `tsconfig.json`         | Typechecks this directory (JavaScript included); `pack/` is checked inside the consumers |
+| Path                   | Purpose                                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| `verify.ts`            | Profile orchestration; also runs the Node and Bun portable import guards after `build`   |
+| `test.ts`              | Runs one test project with credential-like environment variables removed                 |
+| `portable-import.mjs`  | Imports every portable entry of the built client and browser packages                    |
+| `examples.ts`          | Runs the examples' offline tests on Node and Bun and checks their browser bundles        |
+| `pack.ts`              | Packs, validates and installs the public packages into isolated consumers                |
+| `pack-effect-stack.ts` | Selects the frozen Effect stack and validates workspace and consumer resolutions         |
+| `pack/`                | Consumer fixtures copied into those isolated installations                               |
+| `tsconfig.json`        | Typechecks this directory (JavaScript included); `pack/` is checked inside the consumers |
 
 ## Pinned tools and generated code
 
 The root manifest pins Bun 1.4.2 and, through its catalog, TypeScript, Vitest, the Effect packages and their types; Oxlint and Oxfmt are root development dependencies. The formatter configuration disables import and package-key sorting and keeps generated wire code, native source, notices and staged libraries outside JavaScript formatting. Native formatting is checked by `cargo fmt` with the pinned Rust 1.90.0 toolchain.
 
 Each package builds from its `tsconfig.build.json`, which is also its host closure: the client and browser packages compile with DOM types and no Node types, the native package with Node types and no DOM. `packages/client/tsconfig.node.json` checks the client without DOM types. Each package's `tsconfig.json` adds its tests and test runner types; `scripts/tsconfig.json` and `integration/tsconfig.json` check the JavaScript tooling with `checkJs`. Each example workspace typechecks its TypeScript sources, which import one another with `.ts` specifiers so Node's type stripping runs them as they are.
-
-The architecture check uses the pinned compiler's syntax tree to check layer boundaries inside the client, host-only imports, declared dependencies, literal loading and runtime cycles for every package. Its regression fixtures distinguish actual imports from prose and type-only dependencies from initialization cycles. The synchronous TypeScript API runs on Node because it requires Node child-process pipe handles, even when Bun launches verification. `node scripts/architecture.mjs --package <directory>` checks one package directory; without arguments it checks the workspace.
 
 After build, `check:examples` (`examples.ts`) runs each example workspace's offline tests under Node and then Bun and builds each browser bundle, failing if a bundle reaches Node or native code. Credential variables are removed and examples that need a paid session are never executed. The tests that encode video need `ffmpeg`; they skip without it, and `EXAMPLES_REQUIRE_FFMPEG=1`, which CI sets, turns its absence into a failure.
 

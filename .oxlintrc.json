@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript"],
+  "plugins": ["typescript", "import"],
   "options": {
     "typeAware": true
   },
@@ -70,9 +70,18 @@
       }
     ],
     // Spreading a Schema class instance is how a changed copy is built.
-    "typescript/no-misused-spread": "off"
+    "typescript/no-misused-spread": "off",
+    // A runtime import cycle makes initialization order depend on who imports first.
+    "import/no-cycle": "error"
   },
   "overrides": [
+    {
+      // The client and browser packages run in browsers; only the native package may use Node.
+      "files": ["packages/client/src/**", "packages/browser/src/**"],
+      "rules": {
+        "import/no-nodejs-modules": "error"
+      }
+    },
     {
       // JavaScript has no declared types, so every value it reads is `any`.
       "files": ["**/*.mjs", "**/*.js"],
