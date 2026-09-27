@@ -791,6 +791,38 @@ test("accepted history reserves its final entry before dispatch and rejects furt
     }),
   ));
 
+// Review of 4443f80: an oversized accepted identity failed the whole handle,
+// where an oversized Started identity only replaces its source.
+test("an oversized accepted identity replaces its source and is never retained", () =>
+  runClock(
+    Effect.gen(function* () {
+      const sources: SourceFixture[] = [];
+      const handle = yield* Renewal.makeContinuous({
+        open: Effect.gen(function* () {
+          const fixture = yield* sourceFixture(
+            `oversized-${sources.length}`,
+            sources.length === 0
+              ? { execute: () => Effect.succeed(ClipId.make("x".repeat(1025))) }
+              : {},
+          );
+          sources.push(fixture);
+          return { source: fixture.source, lifetime: "Infinity" };
+        }),
+      });
+      yield* handle.engine.enqueue(member("contract"));
+      expect((yield* handle.mediaState)._tag).not.toBe("Failed");
+      yield* until(() => sources.length === 2);
+      // The member cannot be attributed to an identity past the bound.
+      expect((yield* handle.sequences.get("contract"))?.members.map((row) => row._tag)).toEqual([
+        "Indeterminate",
+      ]);
+      const summary = yield* handle.close;
+      const retired = summary.retained.find((row) => row.source?.sessionId === "oversized-0");
+      expect(retired?.disposition).toBe("incomplete");
+      expect(retired?.retirement.errors.map((error) => error.reason._tag)).toEqual(["Protocol"]);
+    }),
+  ));
+
 test("continuous Started history accepts duplicates at capacity and refuses one unseen identity", () =>
   runClock(
     Effect.gen(function* () {

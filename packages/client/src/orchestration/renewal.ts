@@ -992,19 +992,30 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
                     Effect.gen(function* () {
                       if (resultAccounted) return;
                       resultAccounted = true;
-                      yield* target.recordResult(result).pipe(Effect.catch(fail));
+                      // An accepted identity past the continuous bound is a
+                      // source-contract failure, as for Started: it is never
+                      // retained, its member cannot be attributed and the source
+                      // is replaced.
+                      const recorded = yield* Effect.result(target.recordResult(result));
                       if (sequence !== undefined) {
                         const memberId = sequence.memberId ?? submissionId;
-                        const account = Result.isSuccess(result)
-                          ? affinity.accepted(sequence.id, memberId, result.success, sequence.final)
-                          : result.failure.context.outcome === "unknown"
-                            ? affinity.uncertain(sequence.id, memberId, result.failure.message)
-                            : affinity.rejected(
+                        const account = Result.isFailure(recorded)
+                          ? affinity.uncertain(sequence.id, memberId, recorded.failure.message)
+                          : Result.isSuccess(result)
+                            ? affinity.accepted(
                                 sequence.id,
                                 memberId,
-                                result.failure.message,
+                                result.success,
                                 sequence.final,
-                              );
+                              )
+                            : result.failure.context.outcome === "unknown"
+                              ? affinity.uncertain(sequence.id, memberId, result.failure.message)
+                              : affinity.rejected(
+                                  sequence.id,
+                                  memberId,
+                                  result.failure.message,
+                                  sequence.final,
+                                );
                         yield* account.pipe(
                           Effect.catch((cause) =>
                             Effect.gen(function* () {
@@ -1022,7 +1033,9 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
                         );
                       }
                       target.finishAccounting();
-                      if (
+                      if (Result.isFailure(recorded))
+                        yield* scheduleRecovery(target, recorded.failure, "replace");
+                      else if (
                         Result.isFailure(result) &&
                         result.failure.context.outcome === "unknown"
                       ) {
