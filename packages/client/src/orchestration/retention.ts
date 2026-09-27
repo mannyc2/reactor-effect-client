@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { parsed, positiveLimit, ReactorError } from "../errors.js";
+import { parsed, ReactorError } from "../errors.js";
 import { completeKind } from "./types.js";
 import type { CleanupSummary, SourceCleanup } from "./types.js";
 
@@ -29,6 +29,15 @@ export interface Reservation {
   readonly [attemptState]: Attempt;
 }
 
+/** Neither range starts at one, which `positiveLimit` requires. */
+const limit = (value: number, name: string, minimum: number): number => {
+  if (!Number.isSafeInteger(value) || value < minimum || value > 4096)
+    throw ReactorError.fromCode("InvalidInput", `${name} must be an integer in ${minimum}..4096`, {
+      outcome: "not-submitted",
+    });
+  return value;
+};
+
 /**
  * Reservations precede allocation so even a failed acquisition has room for
  * its final evidence. Completed failures never compete with still-owned sources
@@ -36,19 +45,12 @@ export interface Reservation {
  */
 export const make = (options: Options = {}) =>
   parsed(() => {
-    const successfulLimit =
-      positiveLimit(
-        (options.retainedSuccessfulCleanups ?? 64) + 1,
-        "retainedSuccessfulCleanups + 1",
-        4097,
-      ) - 1;
-    const unresolvedLimit = positiveLimit(
-      options.maxUnresolvedCleanups ?? 16,
-      "maxUnresolvedCleanups",
-      4096,
+    const successfulLimit = limit(
+      options.retainedSuccessfulCleanups ?? 64,
+      "retainedSuccessfulCleanups",
+      0,
     );
-    if (unresolvedLimit < 2)
-      throw ReactorError.fromCode("InvalidInput", "maxUnresolvedCleanups must be at least two");
+    const unresolvedLimit = limit(options.maxUnresolvedCleanups ?? 16, "maxUnresolvedCleanups", 2);
     const outstanding = new Set<Reservation>();
     const completed: { readonly record: Record; readonly kind: CompleteKind }[] = [];
     const incomplete: Record[] = [];
