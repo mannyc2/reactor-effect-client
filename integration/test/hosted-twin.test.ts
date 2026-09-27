@@ -368,10 +368,13 @@ test("twin close joins an owned socket with an unfinished HTTP request", async (
     const closed: Promise<unknown> = once(socket, "close");
     const closing = twin.close();
     expect(twin.close()).toBe(closing);
-    await Promise.all([closing, closed]);
+    // Read the moment close resolves: the server's own close must already have completed.
+    const joined = closing.then(() => twin.closed);
+    await Promise.all([joined, closed]);
+    expect(await joined).toBe(true);
     expect(socket.destroyed).toBe(true);
     // Destroying sockets alone would leave the listener accepting; a refused
-    // connection shows the close waited for the server's own close callback.
+    // connection shows shutdown closed the listener itself.
     const probe = connect({ host: "127.0.0.1", port });
     const answer = await new Promise<string | undefined>((resolve) => {
       probe.once("connect", () => resolve("connected"));

@@ -107,6 +107,8 @@ export interface Twin extends AsyncDisposable {
   readonly enqueues: number;
   /** Every session, by id. */
   readonly sessions: ReadonlyMap<string, TwinSession>;
+  /** The server has closed: its listener and every connection it accepted are gone. */
+  readonly closed: boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -236,6 +238,7 @@ class TwinServer implements Twin {
   private deleted = 0;
   private enqueued = 0;
   private closing: Promise<void> | undefined;
+  private finished = false;
   private readonly sockets = new Set<Socket>();
 
   constructor(
@@ -270,6 +273,10 @@ class TwinServer implements Twin {
     return this.enqueued;
   }
 
+  get closed(): boolean {
+    return this.finished;
+  }
+
   get sessions(): ReadonlyMap<string, TwinSession> {
     return new Map(
       [...this.records].map(([id, session]) => [
@@ -287,7 +294,12 @@ class TwinServer implements Twin {
       for (const timer of session.timers) clearTimeout(timer);
     }
     for (const link of this.links.values()) clearTimeout(link.hold);
-    this.closing = new Promise((resolve) => this.server.close(() => resolve()));
+    this.closing = new Promise((resolve) =>
+      this.server.close(() => {
+        this.finished = true;
+        resolve();
+      }),
+    );
     // Own raw sockets as well as HTTP requests: closeAllConnections left an
     // accepted socket open in repeated Bun rehearsals.
     // The server callback still joins their actual closure; no timer declares success.
