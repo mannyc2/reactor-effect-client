@@ -633,6 +633,9 @@ export const makeScheduler = (
     const drainReplies: Deferred.Deferred<void, EngineError>[] = [];
     const pendingWithdrawals = new Map<ItemKey, PendingWithdrawal>();
     const pendingBuilds = new Set<ItemKey>();
+    // A Build whose enqueue has started and whose result the worker has not
+    // yet seen. The provider may still accept it after the scheduler ends.
+    let dispatching: ItemKey | undefined;
     const pendingAtDeferrals = new Set<ItemKey>();
     const pendingItemRemovals = new Set<ItemKey>();
     const pendingFillerRemovals = new Set<ClipId>();
@@ -714,7 +717,8 @@ export const makeScheduler = (
               yield* emit(
                 item,
                 item.phase === "Unknown" ||
-                  (item.unknownAtMs !== undefined && item.clipId === undefined)
+                  (item.clipId === undefined &&
+                    (item.unknownAtMs !== undefined || item.key === dispatching))
                   ? { _tag: "Unknown", terminal: true }
                   : { _tag: "Failed", reason: { _tag: "Scheduler", cause: terminal.value } },
                 true,
@@ -1273,6 +1277,11 @@ export const makeScheduler = (
                 "RouteChanged",
                 "The preferred source changed before dispatch",
               );
+            // Termination can be claimed while the route is read; its settlement
+            // must not be followed by a new dispatch.
+            if (ended !== undefined)
+              return yield* PolicyFailure.refuse("SessionClosed", "The scheduler closed");
+            if (command._tag === "Build") dispatching = command.key;
             return yield* engine.enqueueOnSource === undefined
               ? engine.enqueue(command.request)
               : engine.enqueueOnSource(command.request, command.sessionId);
@@ -1294,6 +1303,7 @@ export const makeScheduler = (
         const command = yield* Queue.take(commandQueue);
         if (ended !== undefined) continue;
         const result = yield* Effect.result(executeCommand(command));
+        dispatching = undefined;
         // Capture uncertainty before actor delivery: drain may be awaiting a
         // permit in stopRenewal while this committed command finishes.
         if (

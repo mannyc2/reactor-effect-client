@@ -1109,10 +1109,8 @@ for (const strategy of ["sequential", "parallel"] as const) {
           expect(Result.isFailure(result)).toBe(true);
           if (Result.isFailure(result)) expect(refusal(result.failure)).toBe("SessionClosed");
         }
-        expect(yield* item.outcome).toEqual({
-          _tag: "Failed",
-          reason: { _tag: "Scheduler", cause: failure },
-        });
+        // The stalled enqueue was already in flight: the provider may still take it.
+        expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
         yield* Scope.close(scope, Exit.void);
         expect(yield* scheduler.failure).toBe(failure);
         expect(refusal(yield* Effect.flip(scheduler.submit(spec)))).toBe("SessionClosed");

@@ -249,6 +249,35 @@ test("unknown timeout settles later accepted work without replay or invented rej
     }),
   ));
 
+// #37: the deadline can expire while another item's enqueue is in flight. That
+// enqueue may still be accepted and played, so its fate is unknown, not failed.
+test("an enqueue in flight at the unknown deadline settles as terminal Unknown", () =>
+  runClock(
+    Effect.gen(function* () {
+      const entered = yield* gate;
+      const release = yield* gate;
+      let sends = 0;
+      const fixture = yield* scripted({
+        scheduler: { maxBuildsInFlight: 2, unknownRecoveryTimeout: "1 second" },
+        send: Effect.suspend(() =>
+          ++sends === 2 ? entered.release.pipe(Effect.andThen(release.wait)) : Effect.void,
+        ),
+      });
+      const first = yield* submit(fixture.scheduler, "uncertain");
+      yield* fixture.unknown(first.key);
+      const inflight = yield* submit(fixture.scheduler, "in-flight");
+      yield* entered.wait;
+      const stopped = yield* Effect.forkScoped(fixture.scheduler.failure);
+      yield* TestClock.adjust(1_000);
+      expect((yield* Fiber.join(stopped)).reason._tag).toBe("Timeout");
+      for (const wait of [inflight.firstDecisive, inflight.started, inflight.outcome])
+        expect(yield* wait).toEqual({ _tag: "Unknown", terminal: true });
+      yield* release.release;
+      yield* TestClock.adjust(100);
+      expect(fixture.calls.map((request) => request.prompt)).toEqual(["uncertain", "in-flight"]);
+    }),
+  ));
+
 for (const timeout of [0, -1, Infinity, NaN, "Infinity", "11 minutes"] as const) {
   test(`unknown recovery rejects invalid duration ${timeout}`, () =>
     runClock(
