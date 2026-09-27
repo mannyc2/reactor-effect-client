@@ -119,3 +119,31 @@ test("repeating a replacement returns its handle, and a started clip cannot be r
       );
     }).pipe(Effect.provide(quick)),
   ));
+
+// aafd59e: replacing a replacement before it was built dropped only the middle item, so
+// the original and the final replacement both aired.
+test("replacing a replacement before it is built still replaces the original", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options);
+      yield* advance(1_000);
+      const a = yield* scheduler.submit({
+        ...submit("a"),
+        request: new ClipRequest({
+          prompt: "a",
+          references: [],
+          durationSeconds: 15,
+          metadata: {},
+        }),
+      });
+      const b = yield* scheduler.submit(submit("b"));
+      // a builds until 7 s and plays until 22 s; b builds from 7 s to 13 s.
+      yield* advance(7_000);
+      yield* scheduler.replace(ItemKey.make("b"), next("b2"));
+      yield* advance(1_000);
+      const b3 = yield* scheduler.replace(ItemKey.make("b2"), next("b3"));
+      yield* advance(40_000);
+      expect(yield* startOrder([a, b, b3])).toEqual(["a", "b3"]);
+      expect(yield* b.outcome).toEqual({ _tag: "Dropped", reason: "replaced" });
+    }).pipe(Effect.provide(slow)),
+  ));

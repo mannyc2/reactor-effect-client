@@ -456,7 +456,8 @@ const maxEarlyClipIds = 4096;
 
 interface Batch {
   readonly id: number;
-  readonly waitFor: ReadonlyArray<ItemKey>;
+  /** Grows when a later batch withdraws or replaces something this one waits for. */
+  readonly waitFor: ItemKey[];
   /** Items the batch withdraws, each with its reason and any reply its withdrawal settles. */
   readonly targets: Map<
     ItemKey,
@@ -1305,7 +1306,14 @@ export const makeScheduler = (
         if (JSON.stringify(entry.status) === JSON.stringify(status)) return;
         // A clip that ends fires only the cues that fell within the airtime it had.
         if (status._tag === "Ended" && entry.startedAtMonoMs !== undefined)
-          fireCues(entry, entry.startedAtMonoMs + status.airedSeconds * 1000);
+          fireCues(
+            entry,
+            entry.startedAtMonoMs +
+              1000 *
+                (status.termination === "finished" && entry.status._tag === "Started"
+                  ? Math.max(status.airedSeconds, entry.status.durationSeconds)
+                  : status.airedSeconds),
+          );
         entry.status = status;
         entry.phase =
           status._tag === "Accepted" ||
@@ -1573,6 +1581,12 @@ export const makeScheduler = (
           pendingWithdrawals.has(key) ||
           pendingAtDeferrals.has(key) ||
           pendingItemRemovals.has(key) ||
+          [...batches.values()].some((batch) => batch.targets.has(key)) ||
+          // A replacement dropped before it was built still links its own replacement to
+          // the item in the place.
+          [...items.values()].some(
+            (other) => other.replaces === key && other.phase !== "Terminal",
+          ) ||
           (item.clipId !== undefined && active.has(item.clipId))
         )
           continue;
@@ -1948,6 +1962,8 @@ export const makeScheduler = (
               (item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready")
             ) {
               const sessionId = event.sessionId ?? item.sessionId;
+              // Its session may still list the clip until it closes; it is not adopted again.
+              removedIds.add(event.clipId);
               owned.delete(event.clipId);
               playingStartedMs.delete(event.clipId);
               delete item.clipId;
@@ -2113,6 +2129,14 @@ export const makeScheduler = (
         yield* sendCommand({ _tag: "RemoveItem", key: item.key, clipId: item.clipId, reason });
       });
 
+    /** A withdrawal's answer for an item that has started or settled another way. */
+    const settledOutcome = (item: Entry): WithdrawOutcome =>
+      item.phase === "Started" || item.status._tag === "Ended" || item.status._tag === "Unobserved"
+        ? "already-started"
+        : item.status._tag === "Dropped"
+          ? "withdrawn"
+          : "not-found";
+
     const requestWithdrawal = (
       item: Entry,
       reason: DropReason,
@@ -2120,11 +2144,7 @@ export const makeScheduler = (
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (item.phase === "Started" || item.phase === "Terminal") {
-          if (reply !== undefined)
-            yield* Deferred.succeed(
-              reply,
-              item.phase === "Started" ? "already-started" : "not-found",
-            );
+          if (reply !== undefined) yield* Deferred.succeed(reply, settledOutcome(item));
           return;
         }
         const pending = pendingWithdrawals.get(item.key);
@@ -2292,21 +2312,22 @@ export const makeScheduler = (
               item.unknownSessionId = undefined;
               item.unknownCause = undefined;
               yield* replayEarlyClipEvents(clipId);
+              // Evidence that overtook the reply may already have carried the clip away
+              // with a lost session; the item then waits to be rebuilt, not Building.
+              const carried = item.clipId === undefined;
               const pending = pendingWithdrawals.get(item.key);
-              if (pending !== undefined) {
-                if (
-                  item.phase === "Started" ||
-                  item.status._tag === "Ended" ||
-                  item.status._tag === "Unobserved"
-                )
-                  yield* finishWithdrawal(item.key, Result.succeed("already-started"));
-                else if (item.phase === "Terminal")
-                  yield* finishWithdrawal(item.key, Result.succeed("not-found"));
+              if (carried) {
+                // The carry settled any withdrawal that was waiting.
+              } else if (pending !== undefined) {
+                if (item.phase === "Started" || item.phase === "Terminal")
+                  yield* finishWithdrawal(item.key, Result.succeed(settledOutcome(item)));
                 else yield* sendItemRemoval(item, pending.reason);
               } else if (item.phase === "Accepted" || item.phase === "Unknown")
                 yield* emit(item, { _tag: "Building" });
               yield* observed(yield* engine.state);
             } else if (result.failure.context.outcome === "unknown") {
+              // Its time to Ready spans the uncertainty, so it is never measured.
+              delete item.dispatchedAtMs;
               if (item.clipId === undefined) {
                 // A generic engine may re-route between the state read and dispatch.
                 // Only an owner-fenced enqueue can attribute its unknown result.
@@ -2527,16 +2548,7 @@ export const makeScheduler = (
         // A withdrawal still being retried when its item settles another way. Terminal
         // Unknown keeps its uncertain result from the retirement or terminal settlement.
         else if (item.phase === "Terminal" && item.status._tag !== "Unknown")
-          yield* finishWithdrawal(
-            key,
-            Result.succeed(
-              item.status._tag === "Dropped"
-                ? "withdrawn"
-                : item.status._tag === "Ended" || item.status._tag === "Unobserved"
-                  ? "already-started"
-                  : "not-found",
-            ),
-          );
+          yield* finishWithdrawal(key, Result.succeed(settledOutcome(item)));
         else if (item.clipId !== undefined) yield* sendItemRemoval(item, pending.reason);
       }
       for (const item of items.values())
@@ -2743,6 +2755,10 @@ export const makeScheduler = (
           readonly lane: string;
           readonly admission: number;
           readonly group?: NonNullable<Entry["group"]>;
+          /** The anchor's timing, which the insert keeps so it stays beside it. */
+          readonly atWallMs?: number;
+          readonly late: PlannedItem["late"];
+          readonly asap: boolean;
         } => {
       const live = (entry: Entry | undefined): entry is Entry =>
         entry !== undefined && entry.phase !== "Terminal" && entry.replacedBy === undefined;
@@ -2763,6 +2779,7 @@ export const makeScheduler = (
       }
       if (!live(anchor)) return "Nothing queued under the anchor key";
       if (anchor.phase === "Unknown") return "The anchor's admission is uncertain";
+      if (anchor.held === true) return "The anchor is held until it is released";
       if (insert.side === "before" && anchor.phase === "Started")
         return "The anchor already started";
       const neighbours = [...items.values()]
@@ -2804,9 +2821,14 @@ export const makeScheduler = (
           group = { key: anchor.group.key, index: between / 2 };
         }
       }
+      const timing = {
+        ...(anchor.atWallMs === undefined ? {} : { atWallMs: anchor.atWallMs }),
+        late: anchor.late,
+        asap: anchor.asap === true,
+      };
       return group === undefined
-        ? { lane: anchor.lane, admission }
-        : { lane: anchor.lane, admission, group };
+        ? { lane: anchor.lane, admission, ...timing }
+        : { lane: anchor.lane, admission, group, ...timing };
     };
 
     /** The items a withdrawal of `key` names: a group's parts, a part and those after it, or one item. */
@@ -2896,7 +2918,7 @@ export const makeScheduler = (
         projectedStartMs(
           {
             engine: state,
-            items: [...items.values()].filter((item) => !excluding.has(item.key)),
+            items: [...items.values()],
             owned,
             lanes,
             playingStartedMs,
@@ -2904,7 +2926,7 @@ export const makeScheduler = (
             batches: pendingBatches(),
             estimates: estimatesFrom(buildSamples, lengthSamples),
             ...fillerView(),
-            withdrawing: new Set(pendingWithdrawals.keys()),
+            withdrawing: new Set([...pendingWithdrawals.keys(), ...excluding]),
           },
           place,
         );
@@ -2971,6 +2993,8 @@ export const makeScheduler = (
                 admission: Infinity,
                 seconds: item.request.durationSeconds,
                 startByMs,
+                ...(item.mode === "asap" ? { asap: true } : {}),
+                ...(item.mode === "manual" ? { held: true } : {}),
               }) > startByMs
             )
               return refuse(WouldMissDeadline.of(item.key));
@@ -3054,8 +3078,9 @@ export const makeScheduler = (
                 notBeforeOffsetMs: insert.notBeforeOffsetMs,
                 startByOffsetMs: insert.startByOffsetMs,
                 firm: insert.firm,
-                atWallMs: undefined,
-                late: "nextBoundary",
+                atWallMs: placed.atWallMs,
+                late: placed.late,
+                ...(placed.asap ? { mode: "asap" as const } : {}),
                 cues: insert.cues,
                 ...(insert.continuity === undefined ? {} : { continuity: insert.continuity }),
               },
@@ -3112,6 +3137,8 @@ export const makeScheduler = (
                 firm: old.firm,
                 atWallMs: old.atWallMs,
                 late: old.late,
+                ...(old.asap === true ? { mode: "asap" as const } : {}),
+                ...(old.held === true ? { mode: "manual" as const } : {}),
                 cues: next.cues,
                 ...(next.continuity === undefined ? {} : { continuity: next.continuity }),
               },
@@ -3129,6 +3156,12 @@ export const makeScheduler = (
             admitted(entry);
             old.replacedBy = entry.key;
             undo.push(() => delete old.replacedBy);
+            // A pending batch that waits for the replaced item waits for its replacement.
+            for (const batch of batches.values())
+              if (batch.waitFor.includes(old.key)) {
+                batch.waitFor.push(entry.key);
+                undo.push(() => batch.waitFor.pop());
+              }
             if (old.group !== undefined) {
               const parts = groups.get(old.group.key)?.parts;
               parts?.push(entry.key);
@@ -3166,7 +3199,7 @@ export const makeScheduler = (
       const settle: Effect.Effect<void>[] = [];
       const batch: Batch = {
         id: ++batchCount,
-        waitFor: staged.waitFor,
+        waitFor: [...staged.waitFor],
         targets: new Map(
           staged.replaced.map((key) => [key, { reason: "replaced", reply: undefined }] as const),
         ),
@@ -3182,8 +3215,16 @@ export const makeScheduler = (
         }
         const outcome = Deferred.makeUnsafe<WithdrawOutcome, EngineError>();
         settle.push(settleWithdrawals(replies, outcome, groups.has(result.key)));
-        return { _tag: "Withdrawal", outcome: Deferred.await(outcome) };
+        return {
+          _tag: "Withdrawal",
+          outcome: Deferred.await(outcome).pipe(Effect.raceFirst(closedCall)),
+        };
       });
+      // A pending batch whose new clip this one withdraws now also waits for this one's, so
+      // its own cover is not withdrawn before anything replaces it.
+      for (const other of batches.values())
+        if (other.waitFor.some((key) => batch.targets.has(key)))
+          other.waitFor.push(...batch.waitFor);
       batches.set(batch.id, batch);
       return {
         handle: {

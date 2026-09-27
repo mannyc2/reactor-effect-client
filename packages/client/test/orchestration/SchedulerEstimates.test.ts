@@ -107,3 +107,28 @@ test("a runway floor below the build time is raised so filler is Ready before th
       expect((yield* scheduler.state).starved).toBe(warm);
     }).pipe(Effect.provide(Simulation.layerSim({ fixedBuildTime: 4_000, buildRatio: 0 }))),
   ));
+
+// 433e5ac: the deadline projection counted a group's own later parts as builds going
+// first, so a firm group whose deadline it could meet was dropped as late.
+test("a firm group that can meet its deadline is not dropped for its own later parts", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(lanes("line"));
+      yield* advance(1_000);
+      yield* warmUp(scheduler);
+      // A part builds in 2 s, well inside the 4 s the group has to start.
+      const line = yield* scheduler.submitGroup({
+        key: ItemKey.make("line"),
+        lane: "line",
+        parts: [
+          { key: ItemKey.make("p0"), request: clip("p0") },
+          { key: ItemKey.make("p1"), request: clip("p1") },
+          { key: ItemKey.make("p2"), request: clip("p2") },
+          { key: ItemKey.make("p3"), request: clip("p3") },
+        ],
+        window: { startBy: "4 seconds", firm: true },
+      });
+      yield* advance(10_000);
+      expect((yield* line.parts[0].started)._tag).toBe("Started");
+    }).pipe(Effect.provide(Simulation.layerSim({ fixedBuildTime: 2_000, buildRatio: 0 }))),
+  ));

@@ -109,3 +109,59 @@ test("with filler off, a Manual item is built only once it is released", () =>
       expect(statuses[0]).toBe("Building");
     }).pipe(Effect.provide(quick)),
   ));
+
+// 42c21e9: an accepted drain kept an unreleased Manual item building, then withdrew the
+// filler covering it, so the held clip was removed and rebuilt in a loop and drain never
+// finished.
+test("an accepted drain withdraws an unreleased Manual item and completes", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options("5 seconds", "10 seconds"));
+      yield* advance(1_000);
+      const m = yield* scheduler.submit({ ...item("m"), start: { _tag: "Manual" } });
+      yield* advance(10_000);
+      const draining = yield* Effect.forkChild(scheduler.drain({ finish: "accepted" }));
+      yield* advance(30_000);
+      expect(draining.pollUnsafe()).toBeDefined();
+      expect(yield* m.outcome).toEqual({ _tag: "Dropped", reason: "withdrawn" });
+    }).pipe(Effect.provide(quick)),
+  ));
+
+// 42c21e9: a replacement of an Asap item lost Asap and aired in its lane's order.
+test("a replacement of an Asap item is Asap too", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options("0 seconds", "1 second"));
+      yield* advance(1_000);
+      const a = yield* scheduler.submit(item("a"));
+      const k1 = yield* scheduler.submit(item("k1"));
+      const k2 = yield* scheduler.submit(item("k2"));
+      yield* advance(2_000);
+      yield* scheduler.submit({ ...item("x"), start: { _tag: "Asap" } });
+      yield* advance(600);
+      const x2 = yield* scheduler.replace(ItemKey.make("x"), {
+        key: ItemKey.make("x2"),
+        request: clip("x2"),
+      });
+      yield* advance(40_000);
+      expect(yield* startOrder([a, k1, k2, x2])).toEqual(["a", "x2", "k1", "k2"]);
+    }).pipe(Effect.provide(quick)),
+  ));
+
+// 42c21e9: the deadline check ranked an Asap submission in its lane's order, behind the
+// Ready clips it goes ahead of.
+test("an Asap item's deadline does not count the Ready clips it goes ahead of", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options("0 seconds", "1 second"));
+      yield* advance(1_000);
+      for (const name of ["a", "b", "c", "d", "e"]) yield* scheduler.submit(item(name));
+      // a plays from 1.5 s to 6.7 s, with 20 s of Ready clips behind it.
+      yield* advance(4_000);
+      yield* scheduler.submit({
+        ...item("x"),
+        start: { _tag: "Asap" },
+        window: { startBy: "4 seconds", firm: true },
+      });
+    }).pipe(Effect.provide(quick)),
+  ));

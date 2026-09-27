@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { TestClock } from "effect/testing";
 import { makeScheduler, ItemKey } from "../../src/orchestration/scheduler.js";
 import type { ItemHandle, SchedulerOptions } from "../../src/orchestration/scheduler.js";
@@ -134,5 +134,22 @@ test("an insert needs one anchor that has not aired, and repeats return its hand
       expect(
         yield* refused({ ...part("y"), before: ItemKey.make("b"), after: ItemKey.make("a") }),
       ).toBe("InvalidRequest");
+    }).pipe(Effect.provide(quick)),
+  ));
+
+// 02dcc8e: an insert after an At item did not take its anchor time, so it aired first.
+test("an insert after an At item airs after it", () =>
+  runClock(
+    Effect.gen(function* () {
+      const scheduler = yield* makeScheduler(options);
+      yield* advance(1_000);
+      const anchor = (yield* Clock.currentTimeMillis) + 20_000;
+      const at = yield* scheduler.submit({
+        ...submit("at"),
+        start: { _tag: "At", time: anchor, late: { _tag: "nextBoundary" } },
+      });
+      const x = yield* scheduler.insert({ ...part("x"), after: ItemKey.make("at") });
+      yield* advance(40_000);
+      expect(yield* startOrder([at, x])).toEqual(["at", "x"]);
     }).pipe(Effect.provide(quick)),
   ));
