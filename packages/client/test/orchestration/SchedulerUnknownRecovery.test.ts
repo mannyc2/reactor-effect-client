@@ -24,6 +24,7 @@ import {
   readyState,
   record,
   refusal,
+  run,
   runClock,
   sourceFixture,
   until,
@@ -632,7 +633,9 @@ test("overlapping uncertain filler identities reconcile independently and both h
   ));
 
 test("uncertain filler ledger fails before dispatching a 4097th identity", () =>
-  runClock(
+  // This is an operation bound: no deadline is advanced or awaited. The live
+  // clock avoids sorting thousands of canceled virtual watchdog sleeps.
+  run(
     Effect.gen(function* () {
       let state = readyState({
         sessions: [{ sessionId: "ledger-0", availability: "Ready" }],
@@ -660,7 +663,9 @@ test("uncertain filler ledger fails before dispatching a 4097th identity", () =>
             const sessionId = `ledger-${keys.length}`;
             state = {
               ...state,
-              sessions: [...state.sessions, { sessionId, availability: "Ready" }],
+              // Keep every uncertain source live; their enumeration order is
+              // unrelated to the ledger bound, so preference is cheap to find.
+              sessions: [{ sessionId, availability: "Ready" }, ...state.sessions],
               preferredSessionId: Option.some(sessionId),
             };
             return yield* uncertain;
@@ -679,6 +684,7 @@ test("uncertain filler ledger fails before dispatching a 4097th identity", () =>
       expect(keys).toHaveLength(4096);
       expect(new Set(keys).size).toBe(4096);
       expect(keys.at(-1)).toBe(fillerKey(4095));
+      expect(state.sessions).toHaveLength(4097);
       expect((yield* scheduler.state).accepting).toBe(false);
     }),
   ));
