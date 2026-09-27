@@ -808,9 +808,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
     // A prepared replacement opens on its own after the tick that forks it.
     const forkAcquisition = Effect.forkIn(acquisition, scope);
     // To its caller, an attempt that close, stopRenewal or the owner's scope
-    // stopped is refused, not failed. A caller interrupted while it waits stops
-    // the attempt too: the handler is in place before the wait is restored, so
-    // an interruption that arrives first still reaches it.
+    // stopped is refused, not failed. Interrupted while the owner still admits
+    // sources, as by its own open, the attempt failed. A caller interrupted
+    // while it waits stops the attempt too: the handler is in place before the
+    // wait is restored, so an interruption that arrives first still reaches it.
     const joinAcquisition = (
       fiber: Fiber.Fiber<Slot, ReactorFailure>,
       restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
@@ -820,9 +821,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
         Effect.flatMap((exit): Effect.Effect<Slot, ReactorFailure> => {
           if (Exit.isSuccess(exit)) return exit;
           const failures = exit.cause.reasons.filter((reason) => !Cause.isInterruptReason(reason));
-          return failures.length === 0
+          if (failures.length > 0) return Effect.failCause(Cause.fromReasons(failures));
+          return stopping()
             ? admissionClosed()
-            : Effect.failCause(Cause.fromReasons(failures));
+            : ReactorError.fromCode("InvalidState", "Source acquisition was interrupted");
         }),
       );
     // The constructor and a replacement start their attempt at once, so an open

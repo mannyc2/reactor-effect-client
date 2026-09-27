@@ -499,6 +499,49 @@ for (const constructor of ["legacy", "continuous"] as const)
       }),
     ));
 
+// An attempt whose open is interrupted while its owner still admits sources
+// failed on its own; it was not refused by a closing owner.
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a ${constructor} construction whose open is interrupted fails as interrupted, not closed`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const owner = yield* Scope.make();
+        const options: Renewal.Options = { open: Effect.interrupt };
+        const exit: Exit.Exit<unknown, unknown> =
+          constructor === "legacy"
+            ? yield* Effect.exit(Renewal.make(options).pipe(Scope.provide(owner)))
+            : yield* Effect.exit(Renewal.makeContinuous(options).pipe(Scope.provide(owner)));
+        const failure = constructionFailure(exit);
+        expect(ReactorError.is(failure) && failure.reason._tag).toBe("InvalidState");
+        yield* Scope.close(owner, Exit.void);
+      }),
+    ));
+
+for (const constructor of ["legacy", "continuous"] as const)
+  test(`a live ${constructor} owner whose replacement open is interrupted fails as interrupted, not closed`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const sources: SourceFixture[] = [];
+        let attempts = 0;
+        const options: Renewal.Options = {
+          open: Effect.gen(function* () {
+            if (++attempts === 2) return yield* Effect.interrupt;
+            const fixture = yield* sourceFixture(`interrupted-replacement-${constructor}`);
+            sources.push(fixture);
+            return { source: fixture.source, lifetime: "Infinity" };
+          }),
+        };
+        const handle =
+          constructor === "legacy"
+            ? yield* Renewal.make(options)
+            : yield* Renewal.makeContinuous(options);
+        yield* sources[0]!.failEvents(ReactorError.fromCode("Disconnected", "lost"));
+        const failure = yield* handle.engine.failure;
+        expect(ReactorError.is(failure) && failure.reason._tag).toBe("InvalidState");
+        expect((yield* handle.mediaState)._tag).toBe("Failed");
+      }),
+    ));
+
 test("unknown submissions exhaust their reserved history even after confirmed termination", () =>
   runClock(
     Effect.gen(function* () {
