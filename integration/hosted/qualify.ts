@@ -1368,21 +1368,27 @@ const schedulerRenewal = (target: Target, run: Run, budget: Budget) =>
                   : Effect.void;
               }),
           }).pipe(
-            Effect.tapError((error) =>
-              Effect.sync(() => {
-                if (Reactor.AcquisitionFailure.is(error) && error.cleanup.sessionId !== undefined)
-                  allocation(slot, {
-                    closedMs: time.now(),
-                    leaseCleanup: error.cleanup,
-                  });
-              }),
-            ),
             Effect.onExit((exit) =>
               Effect.gen(function* () {
-                if (Exit.isSuccess(exit) || allocatedSession === undefined) return;
-                const current = yield* allocatedSession.current;
-                if (current.close !== undefined)
-                  allocation(slot, { leaseCleanup: current.close, closedMs: time.now() });
+                if (Exit.isSuccess(exit)) return;
+                // A failed open's own report is canonical whether or not it names a
+                // session; an interrupted one is read back from its session, if any.
+                const error = Cause.findErrorOption(exit.cause);
+                const report =
+                  Option.isSome(error) && Reactor.AcquisitionFailure.is(error.value)
+                    ? error.value.cleanup
+                    : allocatedSession === undefined
+                      ? undefined
+                      : (yield* allocatedSession.current).close;
+                // With no session named and no report ruling allocation out, one may
+                // exist under this grant: the stop rules and the operator must see it.
+                const unknown = allocatedSession === undefined && report?.allocation !== "none";
+                if (unknown) run.evidence.outcomes.push("unknown");
+                if (report !== undefined || unknown)
+                  allocation(slot, {
+                    ...(report === undefined ? {} : { leaseCleanup: report, closedMs: time.now() }),
+                    ...(unknown ? { allocation: "unknown" as const } : {}),
+                  });
               }),
             ),
           );
@@ -2246,6 +2252,8 @@ const execute = async (
       (slot.cleanup?.lease ?? slot.leaseCleanup)?.remote.confirmed !== true
     )
       run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Session ${slot.sessionId} was not confirmed ended. Its recorded cap expiry is ${slot.capEndsAt ?? "unknown"}; confirm termination and cost in the Reactor dashboard.`;
+    else if (slot.allocation === "unknown")
+      run.evidence.cleanup = `${run.evidence.cleanup === undefined ? "" : `${run.evidence.cleanup}\n`}Source ${slot.slot}'s allocation outcome is unknown. A session its grant allocated runs at most ${sessionSeconds} s, and the grant expires at ${slot.grant === undefined ? "an unrecorded time" : new Date(slot.grant.expiresAt * 1000).toISOString()}; check the Reactor dashboard for a session under it, and confirm its termination and cost.`;
   }
   try {
     save(run);

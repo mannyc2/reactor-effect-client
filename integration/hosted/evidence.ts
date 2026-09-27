@@ -212,6 +212,8 @@ export const SchedulerRenewal = Schema.Struct({
     Schema.Struct({
       slot: Schema.Literals([1, 2]),
       grant: Schema.optionalKey(Grant),
+      /** An open whose allocation the SDK could not settle: a session may exist under the grant. */
+      allocation: Schema.optionalKey(Schema.Literal("unknown")),
       sessionId: Schema.optionalKey(Schema.String),
       allocatedAt: Schema.optionalKey(Schema.String),
       capEndsAt: Schema.optionalKey(Schema.String),
@@ -1115,7 +1117,10 @@ const verdictOf = (evidence: Evidence, failure: string | undefined) => {
       evidence.schedulerRenewal?.allocations.some(
         (slot) =>
           slot.cleanup?.lease.remote.confirmed === false ||
-          slot.leaseCleanup?.remote.confirmed === false,
+          // A failed open that allocated nothing has nothing to terminate.
+          (slot.leaseCleanup !== undefined &&
+            slot.leaseCleanup.allocation !== "none" &&
+            !slot.leaseCleanup.remote.confirmed),
       ) === true ||
       evidence.termination?.confirmed === false ||
       evidence.scheduler?.replacement.termination?.confirmed === false

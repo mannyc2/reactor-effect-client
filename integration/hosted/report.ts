@@ -205,7 +205,8 @@ const section = (evidence: Evidence): string => {
     const summary = cleanup?._tag === "Continuous" ? cleanup.summary : undefined;
     // Complete only when nothing is left open: the observation's own list, a
     // close that never returned, any allocated lease without canonical
-    // confirmation, and incomplete or exhausted retained cleanup.
+    // confirmation, any unknown allocation, and incomplete or exhausted
+    // retained cleanup.
     const open =
       cleanup === undefined
         ? ["not recorded"]
@@ -215,6 +216,9 @@ const section = (evidence: Evidence): string => {
             ...renewal.allocations
               .filter((slot) => slot.sessionId !== undefined && !ownedTermination(slot))
               .map((slot) => `source ${slot.slot} lease unconfirmed`),
+            ...renewal.allocations
+              .filter((slot) => slot.allocation === "unknown")
+              .map((slot) => `source ${slot.slot} allocation unknown`),
             ...(summary?.retained.some((row) => row.disposition === "incomplete") === true
               ? ["incomplete retained cleanup"]
               : []),
@@ -237,7 +241,7 @@ const section = (evidence: Evidence): string => {
     for (const slot of renewal.allocations)
       add(
         `Source ${slot.slot}`,
-        `${slot.sessionId ?? "not allocated"}; canonical owned termination ${ownedTermination(slot) ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
+        `${slot.sessionId ?? (slot.allocation === "unknown" ? "allocation outcome unknown" : "not allocated")}; canonical owned termination ${ownedTermination(slot) ? "confirmed" : "UNCONFIRMED"}; cap expiry ${slot.capEndsAt ?? "not recorded"}`,
       );
   }
   const termination = evidence.termination;

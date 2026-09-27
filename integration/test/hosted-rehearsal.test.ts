@@ -328,6 +328,17 @@ for (const constructor of ["legacy", "continuous"] as const)
               affinity: "not-applicable",
             },
           });
+          // The refused open names no session, so its allocation stays unknown: the
+          // slot records it with its own report, the stop rule sees it, and the
+          // operator is sent to the dashboard with the grant's expiry.
+          expect(renewal.allocations[1]).toMatchObject({
+            slot: 2,
+            allocation: "unknown",
+            leaseCleanup: { allocation: "unknown" },
+          });
+          expect(run.evidence.outcomes).toContain("unknown");
+          expect(run.evidence.cleanup).toContain("Source 2's allocation outcome is unknown");
+          expect(run.output).toContain("Source 2's allocation outcome is unknown");
         }
       }
       if (fault === "failConnect")
