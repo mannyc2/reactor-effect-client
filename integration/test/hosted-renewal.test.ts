@@ -403,66 +403,101 @@ test("renewal refuses event orders the harness flow cannot produce", () => {
   const original = renewal(),
     switched = original.switches[0]!,
     [a, b] = original.items;
-  const impossible: readonly SchedulerRenewal[] = [
-    // Switched is announced only after the retiring source's close returned.
-    { ...original, switches: [{ ...switched, atMs: 0 }] },
-    // Cleanup begins only once the switch was recorded.
-    { ...original, switches: [{ ...switched, atMs: 16_003 }] },
-    // Prepared follows the replacement's allocation, and B follows Prepared.
-    {
-      ...original,
-      prepared: { ...original.prepared!, atMs: 9_000 },
-      items: [
-        a!,
-        {
-          ...b!,
-          statuses: [
-            { _tag: "Building", atMs: 9_100 },
-            { _tag: "Ready", atMs: 9_200, sessionId: "b" },
-            ...b!.statuses.slice(2),
-          ],
-        },
-      ],
-    },
-    // The first source opens while the owner is built, before A is submitted.
-    {
-      ...original,
-      allocations: original.allocations.map((slot) =>
-        slot.slot === 1 ? { ...slot, allocatedMs: 200 } : slot,
-      ),
-    },
-    // The SDK reports the grace it was configured with.
-    {
-      ...original,
-      switches: [
-        {
-          ...switched,
-          handoff: {
-            replacementSessionId: "b",
-            decision: "grace-elapsed",
-            finalClip: {
-              _tag: "Observed",
-              clipId: "clip-a",
-              expectedVideoFrames: 2,
-              receivedVideoFrames: 1,
-              videoStatus: "incomplete",
-            },
-            grace: { _tag: "Observed", origin: "Ended", elapsedMs: 0, limitMs: 0 },
-          },
-        },
-      ],
-    },
-  ];
-  const nominal = draft(original);
-  conclude(nominal, undefined);
-  expect(nominal.verdict).toBe("pass");
-  const verdicts = impossible.map((evidence) => {
-    // Each order is valid to the codec; only the cross-field judgment can refuse it.
-    const run = draft(Schema.decodeUnknownSync(SchedulerRenewal)(evidence));
-    conclude(run, undefined);
-    return run.verdict;
+  const retiringAt = (fields: Partial<SchedulerRenewal["allocations"][number]>) =>
+    original.allocations.map((slot) => (slot.slot === 1 ? { ...slot, ...fields } : slot));
+  const bFrom = (building: number, ready: number) => ({
+    ...b!,
+    statuses: [
+      { _tag: "Building" as const, atMs: building },
+      { _tag: "Ready" as const, atMs: ready, sessionId: "b" },
+      ...b!.statuses.slice(2),
+    ],
   });
-  expect(verdicts).toEqual(impossible.map(() => "fail"));
+  // Each order is valid to the codec, so only the cross-field judgment refuses it;
+  // after the first row, exactly one ordering check refuses each.
+  const refusals = (evidence: SchedulerRenewal) =>
+    renewalJudgments(draft(Schema.decodeUnknownSync(SchedulerRenewal)(evidence)))
+      .filter((criterion) => !criterion.passed)
+      .map((criterion) => `${criterion.name}: ${criterion.detail}`);
+  const impossible: readonly (readonly [SchedulerRenewal, string])[] = [
+    [
+      { ...original, switches: [{ ...switched, atMs: 0 }] },
+      "planned switch: the switch cannot precede the retiring close's return; the switch cannot precede Prepared",
+    ],
+    // Switched is announced only after the retiring source's close returned.
+    [
+      { ...original, allocations: retiringAt({ closedMs: 10_502 }) },
+      "planned switch: the switch cannot precede the retiring close's return",
+    ],
+    // A switch closes the retiring source only once B, submitted after A's recorded end, is Ready.
+    [
+      {
+        ...original,
+        items: [{ ...a!, statuses: [a!.statuses[0]!, { ...a!.statuses[1]!, atMs: 10_600 }] }, b!],
+      },
+      "planned switch: a switch cannot close the retiring source before A ended",
+    ],
+    // The switch follows the replacement's Prepared.
+    [
+      {
+        ...original,
+        prepared: { ...original.prepared!, atMs: 10_502 },
+        items: [a!, bFrom(10_503, 10_504)],
+        drain: { ...original.drain!, requestedMs: 10_505 },
+      },
+      "planned switch: the switch cannot precede Prepared",
+    ],
+    // Cleanup begins only once the scenario recorded the switch.
+    [
+      { ...original, switches: [{ ...switched, atMs: 16_003 }] },
+      "planned switch: after a completed drain, the switch must precede cleanup",
+    ],
+    // Prepared follows the replacement's allocation.
+    [
+      {
+        ...original,
+        prepared: { ...original.prepared!, atMs: 9_000 },
+        items: [a!, bFrom(9_100, 9_200)],
+      },
+      "public renewal preparation: Prepared cannot precede the replacement's allocation",
+    ],
+    // B is submitted only after Prepared was recorded.
+    [
+      { ...original, items: [a!, bFrom(10_050, 10_300)] },
+      "public renewal preparation: B cannot be observed before Prepared",
+    ],
+    // The first source opens while the owner is built, before A is submitted.
+    [
+      { ...original, allocations: retiringAt({ allocatedMs: 200 }) },
+      "keyed playback order: A cannot be observed before its source was allocated",
+    ],
+    // The SDK reports the grace it was configured with.
+    [
+      {
+        ...original,
+        switches: [
+          {
+            ...switched,
+            handoff: {
+              replacementSessionId: "b",
+              decision: "grace-elapsed",
+              finalClip: {
+                _tag: "Observed",
+                clipId: "clip-a",
+                expectedVideoFrames: 2,
+                receivedVideoFrames: 1,
+                videoStatus: "incomplete",
+              },
+              grace: { _tag: "Observed", origin: "Ended", elapsedMs: 0, limitMs: 0 },
+            },
+          },
+        ],
+      },
+      "planned switch: an observed handoff grace must report the configured limit",
+    ],
+  ];
+  expect(refusals(original)).toEqual([]);
+  for (const [evidence, refusal] of impossible) expect(refusals(evidence)).toEqual([refusal]);
   // A failure can start cleanup before the drain completes and the switch is recorded.
   const { completedMs: _completed, ...requested } = original.drain!;
   const failed = renewalJudgments(

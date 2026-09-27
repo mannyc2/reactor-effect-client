@@ -887,21 +887,34 @@ export const renewalJudgments = (evidence: Evidence): readonly Criterion[] => {
     "keyed playback order",
   );
   requireEvidence(
-    ordered(replacement?.allocatedMs, run.prepared?.atMs) &&
-      b?.statuses.every(
-        (status) =>
-          ordered(replacement?.allocatedMs, status.atMs) &&
-          ordered(run.prepared?.atMs, status.atMs),
-      ) !== false,
-    "Prepared must follow the replacement's allocation, and B must follow both",
+    ordered(replacement?.allocatedMs, run.prepared?.atMs),
+    "Prepared cannot precede the replacement's allocation",
+    "public renewal preparation",
+  );
+  // B after Prepared is then after the replacement's allocation as well.
+  requireEvidence(
+    b?.statuses.every((status) => ordered(run.prepared?.atMs, status.atMs)) !== false,
+    "B cannot be observed before Prepared",
     "public renewal preparation",
   );
   requireEvidence(
-    (switched === undefined || ordered(endedA?.atMs, retiring?.closeRequestedMs)) &&
-      ordered(retiring?.closedMs, switched?.atMs) &&
-      ordered(run.prepared?.atMs, switched?.atMs) &&
-      (run.drain?.outcome !== "completed" || ordered(switched?.atMs, run.cleanup?.requestedMs)),
-    "the switch must follow A's end, Prepared and the retiring close, and precede cleanup",
+    switched === undefined || ordered(endedA?.atMs, retiring?.closeRequestedMs),
+    "a switch cannot close the retiring source before A ended",
+    "planned switch",
+  );
+  requireEvidence(
+    ordered(retiring?.closedMs, switched?.atMs),
+    "the switch cannot precede the retiring close's return",
+    "planned switch",
+  );
+  requireEvidence(
+    ordered(run.prepared?.atMs, switched?.atMs),
+    "the switch cannot precede Prepared",
+    "planned switch",
+  );
+  requireEvidence(
+    run.drain?.outcome !== "completed" || ordered(switched?.atMs, run.cleanup?.requestedMs),
+    "after a completed drain, the switch must precede cleanup",
     "planned switch",
   );
   requireEvidence(
