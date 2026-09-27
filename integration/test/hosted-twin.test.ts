@@ -385,16 +385,10 @@ test("twin close joins an owned socket with an unfinished HTTP request", async (
   }
 });
 
-test("a reference image uploads through the twin before its clip is queued", async () => {
-  const origin = performance.now();
-  const phases: { name: string; atMs: number }[] = [];
-  const phase = (name: string) => phases.push({ name, atMs: performance.now() - origin });
-  phase("twin-start");
-  // A rare timeout otherwise hides whether upload or either owner is waiting.
-  // Emit only phase names/times before the unchanged test deadline, never payloads.
-  const diagnostic = setTimeout(() => console.error("reference-image phases", phases), 25_000);
-  try {
-    await withTwin(async (twin) => {
+test(
+  "a reference image uploads through the twin before its clip is queued",
+  () =>
+    withTwin(async (twin) => {
       // The smallest complete PNG: one pixel.
       const png = Uint8Array.from(
         Buffer.from(
@@ -405,31 +399,21 @@ test("a reference image uploads through the twin before its clip is queued", asy
       const acceptance = await run(
         twin,
         Effect.gen(function* () {
-          phase("mint");
-          const grant = yield* mint(twin);
-          phase("connect");
-          const { provider } = yield* open(grant);
-          phase("prepare");
+          const { provider } = yield* open(yield* mint(twin));
           const submission = yield* provider.prepare({
             prompt,
             references: [{ _tag: "Bytes", bytes: png }],
           });
-          phase("submit");
-          const accepted = yield* submission.submit;
-          phase("owner-close");
-          return accepted;
+          return yield* submission.submit;
         }),
       );
       expect(acceptance.clip).toMatchObject({
         has_reference_image: true,
         reference_image_count: 1,
       });
-      phase("twin-close");
-    });
-  } finally {
-    clearTimeout(diagnostic);
-  }
-}, 30_000);
+    }),
+  30_000,
+);
 
 test("reference audio uploads through the twin and its clip reports it; audio alone is refused", () =>
   withTwin(async (twin) => {

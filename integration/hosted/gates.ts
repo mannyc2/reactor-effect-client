@@ -6,13 +6,11 @@ import * as Data from "effect/Data";
 
 /**
  * One-session checks may reserve one billed minute at the published rate
- * ($0.75 on September 24, 2026). The scheduler check reserves two. All paid
+ * ($0.75 on September 24, 2026). The two-session checks reserve two. All paid
  * runs still share the total ceiling, and the operator's command-line limit
  * may only be lower.
  */
 export const maxCheckUsd = 0.75;
-/** Two independently capped sessions in the scheduler qualification. */
-export const maxSchedulerUsd = 1.5;
 export const maxTotalUsd = 3.75;
 /**
  * Reactor bills a session by the minute, from `ready` until it ends. Its

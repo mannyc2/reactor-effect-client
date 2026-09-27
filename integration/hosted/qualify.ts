@@ -6,14 +6,17 @@
  *
  *   bun integration/hosted/qualify.ts preflight --total-budget-usd=1.50 --ledger=<dir>
  *   bun integration/hosted/qualify.ts rehearse <check> [--faults=<a,b>] [--ledger=<dir>]
+ *     [--constructor=legacy|continuous]   (scheduler-renewal only; continuous by default)
  *   bun integration/hosted/qualify.ts <vertical|takeover|turn|audio|resume> --budget-usd=0.75 \
  *     --total-budget-usd=1.50 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
- *   bun integration/hosted/qualify.ts scheduler --budget-usd=1.50 \
+ *   bun integration/hosted/qualify.ts <scheduler|scheduler-renewal> --budget-usd=1.50 \
  *     --total-budget-usd=3.75 --ledger=<dir> --network="<where>" --i-authorize-paid-sessions
  *   bun integration/hosted/qualify.ts summarize <evidence file or ledger>...
  *
  * `REACTOR_API_KEY` mints one token per session, each capped at 50 s
- * server-side; `scheduler` uses two. `REACTOR_API_URL` overrides the coordinator. A paid check
+ * server-side; `scheduler` and `scheduler-renewal` use two, and a paid
+ * `scheduler-renewal` always runs the continuous constructor.
+ * `REACTOR_API_URL` overrides the coordinator. A paid check
  * refuses before allocating unless the published rate fits its budget, the
  * ledger's earlier runs leave room for its worst case, and the returned token
  * grants no more than it asked for. It saves its evidence (never a token) at
@@ -2479,8 +2482,12 @@ const preflight = async (args: readonly string[]): Promise<number> => {
         .map(({ evidence }) => evidence.check),
     );
     const order = (["vertical", "takeover"] as const).filter((check) => !passed.has(check));
+    // Informational only: each runs in its own release's ledger, so neither sets the exit code.
+    const twoSession = (["scheduler", "scheduler-renewal"] as const).filter(
+      (check) => !passed.has(check),
+    );
     console.log(
-      `next: ${order.length === 0 ? "nothing required" : order.join(", then ")}; turn only if no run selected a relay pair`,
+      `next: ${order.length === 0 ? "nothing required" : order.join(", then ")}; turn only if no run selected a relay pair${twoSession.length === 0 ? "" : `; ${twoSession.join(" and ")} each reserve ${sessionsFor("scheduler")} capped sessions, in their release's ledger`}`,
     );
     return sessions >= order.length ? 0 : 2;
   } catch (cause) {
