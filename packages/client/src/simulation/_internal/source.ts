@@ -11,6 +11,7 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import { take as takeQueue, takeAll as takeAllQueue } from "../../_internal/queue.js";
 import { duration } from "../../duration.js";
 import { ReactorError, errorOf, parsed } from "../../errors.js";
 import {
@@ -219,7 +220,7 @@ export const source = (
       while (!closed && failed === undefined) {
         const next = generation.find((clip) => !clip.popped);
         if (next === undefined || playout.length >= playoutCapacity) {
-          yield* Queue.take(buildSignal);
+          yield* takeQueue(buildSignal);
           continue;
         }
         building = next;
@@ -294,7 +295,7 @@ export const source = (
       while (!closed && failed === undefined) {
         const next = autoplay ? playout.find((clip) => !clip.popped) : undefined;
         if (next === undefined) {
-          yield* Queue.take(playSignal);
+          yield* takeQueue(playSignal);
           continue;
         }
         playout = playout.filter((clip) => clip !== next);
@@ -589,14 +590,14 @@ export const source = (
       prepareRouted,
       media: Effect.succeed({
         generation: 1n,
-        video: Stream.fromQueue(video).pipe(
+        video: Stream.fromPull(Effect.succeed(takeAllQueue(video))).pipe(
           Stream.tap(() =>
             Effect.sync(() => {
               deliveredVideo++;
             }),
           ),
         ),
-        audio: Stream.fromQueue(audio).pipe(
+        audio: Stream.fromPull(Effect.succeed(takeAllQueue(audio))).pipe(
           Stream.tap(() =>
             Effect.sync(() => {
               deliveredAudio++;

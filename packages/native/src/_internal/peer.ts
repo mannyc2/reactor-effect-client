@@ -8,7 +8,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { IceFailed, Mapping, ReactorError, TransportFailed } from "reactor-effect-client";
 import type { Track } from "reactor-effect-client";
-import { Observations, errorOf } from "reactor-effect-client/host";
+import { Observations, errorOf, takeQueue } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   Channel,
@@ -466,7 +466,7 @@ export class NativePeer implements Peer {
     const self = this;
     return Effect.gen(function* () {
       while (!self.closed) {
-        yield* Queue.take(wake);
+        yield* takeQueue(wake);
         while (!self.closed && (yield* step)) {
           yield* Effect.yieldNow;
         }

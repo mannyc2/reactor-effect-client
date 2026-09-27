@@ -2,6 +2,7 @@ import type * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
 import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
+import type * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import type * as Http from "effect/unstable/http/HttpClient";
 import * as Root from "reactor-effect-client";
@@ -10,6 +11,13 @@ import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Simulation from "reactor-effect-client/simulation";
 import * as Testing from "reactor-effect-client/testing";
 import * as Wire from "reactor-effect-client/wire";
+import * as Host from "reactor-effect-client/host";
+
+declare const hostQueue: Queue.Dequeue<number, Root.ReactorError>;
+const hostTake: Effect.Effect<number, Root.ReactorError> = Host.takeQueue(hostQueue);
+const hostTakeAll: Effect.Effect<[number, ...number[]], Root.ReactorError> =
+  Host.takeAllQueue(hostQueue);
+void [hostTake, hostTakeAll];
 
 declare const continuousOptions: Orchestration.ContinuousOptions;
 const continuous: Effect.Effect<

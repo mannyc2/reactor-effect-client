@@ -8,6 +8,7 @@
  * compose hosts through their packages and read media through their `media`
  * functions. Nothing here allocates or owns a session.
  */
+export { take as takeQueue, takeAll as takeAllQueue } from "./_internal/queue.js";
 export { duration } from "./duration.js";
 export type { DurationPolicy } from "./duration.js";
 export { errorOf, parse, parsed, positiveLimit } from "./errors.js";

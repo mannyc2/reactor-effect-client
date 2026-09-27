@@ -30,7 +30,7 @@ import * as Worker from "effect/unstable/workers/Worker";
 import { WorkerReceiveError, WorkerSendError } from "effect/unstable/workers/WorkerError";
 import { PeerFactory, ReactorError } from "reactor-effect-client";
 import type { PeerFactoryShape, Track } from "reactor-effect-client";
-import { Observations, parsed } from "reactor-effect-client/host";
+import { Observations, parsed, takeQueue, takeAllQueue } from "reactor-effect-client/host";
 import type {
   AudioFrame,
   Channel,
@@ -559,7 +559,7 @@ export class IsolatedPeer implements Peer {
       const items = yield* client
         .Prepare(request, { asQueue: true, streamBufferSize: EVENT_BUFFER })
         .pipe(Effect.provideService(Dispatch, mark));
-      const first = yield* Effect.exit(Queue.take(items));
+      const first = yield* Effect.exit(takeQueue(items));
       if (Exit.isFailure(first)) return yield* self.lost(first.cause, operation, mark.sent);
       const head = first.value;
       if (head._tag !== "Prepared")
@@ -577,7 +577,7 @@ export class IsolatedPeer implements Peer {
 
   /** The child's peer events, in order, until the peer retires. */
   private deliver(items: Queue.Dequeue<PrepareItem, CallError | Cause.Done>): Effect.Effect<void> {
-    return Queue.takeAll(items).pipe(
+    return takeAllQueue(items).pipe(
       Effect.flatMap((batch) =>
         Effect.sync(() => {
           for (const item of batch) if (item._tag === "Event") this.receive(item.event);

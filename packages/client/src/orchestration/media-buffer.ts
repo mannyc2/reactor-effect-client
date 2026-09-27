@@ -2,6 +2,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import { take as takeQueue } from "../_internal/queue.js";
 import { ReactorError } from "../errors.js";
 import type { ReactorFailure } from "../errors.js";
 import type { AudioFrame, VideoFrame } from "../session/media.js";
@@ -40,7 +41,7 @@ const singleReader = <A, E>(
       Effect.as(
         Stream.fromEffectRepeat(
           Effect.uninterruptibleMask((restore) =>
-            restore(Queue.take(queue)).pipe(
+            restore(takeQueue(queue)).pipe(
               Effect.map((value) => {
                 taken(value);
                 return value;
