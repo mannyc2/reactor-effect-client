@@ -1,5 +1,17 @@
 import { expect, test } from "vitest";
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, Queue, Result, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Queue,
+  Result,
+  Scheduler,
+  Stream,
+} from "effect";
 import { TestClock } from "effect/testing";
 import * as H3 from "../../src/h3/index.js";
 import { fromH3 } from "../../src/orchestration/h3-source.js";
@@ -140,6 +152,8 @@ const scripted = (
     readonly fenced?: boolean;
     readonly stop?: Effect.Effect<void>;
     readonly send?: Effect.Effect<void>;
+    /** Runs the scheduler, and only the scheduler, on this clock and fiber scheduler. */
+    readonly runtime?: { readonly clock: Clock.Clock; readonly scheduler: Scheduler.Scheduler };
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -167,9 +181,15 @@ const scripted = (
           return { initial: state, events: Stream.fromQueue(feed) };
         }),
     };
-    const scheduler = yield* makeScheduler(
-      settings.options ?? { ...options, ...settings.scheduler },
-    ).pipe(Effect.provideService(Engine, engine));
+    const make = makeScheduler(settings.options ?? { ...options, ...settings.scheduler }).pipe(
+      Effect.provideService(Engine, engine),
+    );
+    const scheduler = yield* settings.runtime === undefined
+      ? make
+      : make.pipe(
+          Effect.provideService(Clock.Clock, settings.runtime.clock),
+          Effect.provideService(Scheduler.Scheduler, settings.runtime.scheduler),
+        );
     const events: AsRunEvent[] = [];
     yield* scheduler.asRun.pipe(
       Stream.runForEach((event) =>
@@ -702,6 +722,93 @@ test("the unknown watchdog stops after another terminal claim", () =>
       expect(yield* item.outcome).toEqual({ _tag: "Unknown", terminal: true });
     }),
   ));
+
+// Emit and admission record a status and then publish it.
+// A claim that does not interrupt the actor, such as this watchdog, could land
+// between the two: asRun then carried the settlement before the record, or
+// never carried a recorded status whose waits already resolved to it.
+for (const site of ["admission", "emit"] as const) {
+  test(`evidence recorded before a watchdog claim is on asRun when failure publishes (${site})`, () =>
+    runClock(
+      Effect.gen(function* () {
+        const base = yield* Clock.Clock;
+        const parked: Deferred.Deferred<void>[] = [];
+        let arming: Fiber.Fiber<unknown, unknown> | undefined;
+        let preempted: Fiber.Fiber<unknown, unknown> | undefined;
+        // Timers wait for the test. Once armed, the first scheduler fiber to read
+        // wall time (to stamp evidence) is preempted at its next operation.
+        const clock: Clock.Clock = {
+          currentTimeMillisUnsafe: () => {
+            const current = Fiber.getCurrent();
+            if (arming !== undefined && current !== undefined && current !== arming) {
+              arming = undefined;
+              preempted = current;
+            }
+            return base.currentTimeMillisUnsafe();
+          },
+          currentTimeMillis: base.currentTimeMillis,
+          currentTimeNanosUnsafe: () => base.currentTimeNanosUnsafe(),
+          currentTimeNanos: base.currentTimeNanos,
+          monotonicTimeNanosUnsafe: () => base.monotonicTimeNanosUnsafe(),
+          monotonicTimeNanos: base.monotonicTimeNanos,
+          sleep: () =>
+            Effect.suspend(() => {
+              const timer = Deferred.makeUnsafe<void>();
+              parked.push(timer);
+              return Deferred.await(timer);
+            }),
+        };
+        const mixed = new Scheduler.MixedScheduler();
+        // At that operation boundary, expire every parked timer: the watchdog
+        // claims termination inside the actor's step without interrupting it.
+        const steered: Scheduler.Scheduler = {
+          executionMode: mixed.executionMode,
+          makeDispatcher: () => mixed.makeDispatcher(),
+          shouldYield: (fiber) => {
+            if (fiber !== preempted) return mixed.shouldYield(fiber);
+            preempted = undefined;
+            for (const timer of parked.splice(0)) Deferred.doneUnsafe(timer, Exit.void);
+            return true;
+          },
+        };
+        const fixture = yield* scripted({
+          scheduler: { unknownRecoveryTimeout: "1 second" },
+          runtime: { clock, scheduler: steered },
+        });
+        const statuses = () =>
+          fixture.events
+            .filter((event) => event.key === "recorded")
+            .map((event) => event.status._tag);
+        const uncertain = yield* submit(fixture.scheduler, "uncertain");
+        yield* fixture.unknown(uncertain.key);
+        if (site === "emit") yield* submit(fixture.scheduler, "recorded");
+        const notified = yield* Effect.forkScoped(
+          Effect.map(fixture.scheduler.failure, (failure) => ({ failure, published: statuses() })),
+        );
+        yield* TestClock.adjust(1_000);
+        yield* Effect.sync(() => {
+          arming = Fiber.getCurrent();
+        });
+        const control =
+          site === "admission"
+            ? yield* submit(fixture.scheduler, "recorded").pipe(
+                Effect.as("admitted"),
+                Effect.catch((error) => Effect.succeed(refusal(error))),
+              )
+            : yield* fixture.scheduler
+                .withdraw(ItemKey.make("recorded"))
+                .pipe(Effect.catch((error) => Effect.succeed(refusal(error))));
+        const { failure, published } = yield* Fiber.join(notified);
+        for (let turn = 0; turn < 10; turn++) yield* Effect.yieldNow;
+        expect(failure.reason._tag).toBe("Timeout");
+        expect(published).toEqual(
+          site === "admission" ? ["Accepted", "Failed"] : ["Accepted", "Dropped"],
+        );
+        expect(statuses()).toEqual(published);
+        expect(control).toBe(site === "admission" ? "SessionClosed" : "withdrawn");
+      }),
+    ));
+}
 
 test("overlapping uncertain filler identities reconcile independently and both hold drain", () =>
   runClock(

@@ -683,7 +683,10 @@ export const makeScheduler = (
             : status._tag === "Unknown" && status.terminal !== true
               ? "Unknown"
               : "Terminal";
-        yield* PubSub.publish(events, {
+        // Publish in the step that records it (the PubSub is unbounded): a claim
+        // from another fiber cannot land between the two, so asRun never carries
+        // a settlement ahead of a recorded status, nor omits one.
+        PubSub.publishUnsafe(events, {
           key: entry.key,
           at: clock.currentTimeMillisUnsafe(),
           status,
@@ -721,9 +724,10 @@ export const makeScheduler = (
               yield* Deferred.failCause(item.firstDecisiveWaiter, terminal.cause);
               continue;
             }
-            // emit records a status before completing its waits, and each
-            // completion can resume an observer that closes the owner. Finish
-            // those waits from the record rather than from the closing claim.
+            // emit records and publishes a status before completing its waits,
+            // and a claim can land in between: a completion can resume an
+            // observer that closes the owner, and another fiber can claim while
+            // the actor is preempted. Finish those waits from the record.
             const recorded = item.status;
             if (item.phase === "Started" || item.phase === "Terminal") {
               if (isFirstDecisive(recorded))
@@ -1934,8 +1938,9 @@ export const makeScheduler = (
               yield* Deferred.fail(message.reply, WouldMissDeadline.of(message.item.key));
               break;
             }
-            // No yield between the terminal check above and items.set below: a
-            // claim either precedes admission or settles the admitted item.
+            // No yield from the terminal check above through admission and its
+            // publication below: a claim either precedes the item or settles it
+            // after its Accepted evidence.
             const startedWaiter = Deferred.makeUnsafe<AsRunStatus>();
             const outcomeWaiter = Deferred.makeUnsafe<AsRunStatus>();
             const firstDecisiveWaiter = Deferred.makeUnsafe<FirstDecisiveStatus>();
@@ -1975,7 +1980,7 @@ export const makeScheduler = (
               firstDecisiveWaiter,
             };
             items.set(item.key, item);
-            yield* PubSub.publish(events, {
+            PubSub.publishUnsafe(events, {
               key: item.key,
               at: clock.currentTimeMillisUnsafe(),
               status: item.status,
