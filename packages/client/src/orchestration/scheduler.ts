@@ -332,42 +332,67 @@ const ownedData = (
   );
 };
 
+/** A Duration tuple or object read from own data properties; no accessor runs. */
+const durationData = (input: object): Result.Result<Duration.Input, PolicyFailure> => {
+  if (Array.isArray(input)) {
+    const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(input);
+    if (
+      Object.getOwnPropertySymbols(input).length > 0 ||
+      Object.keys(descriptors).some(
+        (field) => !["0", "1", "length"].includes(field) || !("value" in descriptors[field]!),
+      ) ||
+      descriptors.length?.value !== 2 ||
+      descriptors["0"] === undefined ||
+      descriptors["1"] === undefined
+    )
+      return Result.fail(invalid("Duration tuple has unsupported fields or accessors"));
+    const seconds: unknown = descriptors["0"].value;
+    const nanos: unknown = descriptors["1"].value;
+    return Result.succeed([seconds, nanos] as readonly [number, number]);
+  }
+  const fields = ownedData(
+    input,
+    ["weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"],
+    "Duration",
+  );
+  return Result.isFailure(fields) ? Result.fail(fields.failure) : Result.succeed(fields.success);
+};
+
 const captureDuration = (input: unknown): Effect.Effect<Duration.Input, PolicyFailure> =>
   Effect.gen(function* () {
     if (input === null || typeof input !== "object" || Duration.isDuration(input))
       return input as Duration.Input;
-    if (Array.isArray(input)) {
-      const descriptors: Record<string, PropertyDescriptor> =
-        Object.getOwnPropertyDescriptors(input);
-      if (
-        Object.getOwnPropertySymbols(input).length > 0 ||
-        Object.keys(descriptors).some(
-          (field) => !["0", "1", "length"].includes(field) || !("value" in descriptors[field]!),
-        ) ||
-        descriptors.length?.value !== 2 ||
-        descriptors["0"] === undefined ||
-        descriptors["1"] === undefined
-      )
-        return yield* invalid("Duration tuple has unsupported fields or accessors");
-      return [descriptors["0"].value, descriptors["1"].value];
-    }
-    return (yield* Effect.fromResult(
-      ownedData(
-        input,
-        [
-          "weeks",
-          "days",
-          "hours",
-          "minutes",
-          "seconds",
-          "milliseconds",
-          "microseconds",
-          "nanoseconds",
-        ],
-        "Duration",
-      ),
-    )) as Duration.Input;
+    return yield* Effect.fromResult(durationData(input));
   });
+
+/**
+ * A Duration option read as caller data: a data property, own or inherited,
+ * captured without running any accessor. Rejections throw for `parsedInput`.
+ */
+const optionDuration = (
+  options: object,
+  field: string,
+  name: string,
+): Duration.Input | undefined => {
+  let descriptor: PropertyDescriptor | undefined;
+  for (
+    let owner: object | null = options;
+    descriptor === undefined && owner !== null;
+    owner = Object.getPrototypeOf(owner) as object | null
+  )
+    descriptor = Object.getOwnPropertyDescriptor(owner, field);
+  if (descriptor === undefined) return undefined;
+  const reject = () =>
+    ReactorError.fromCode("InvalidInput", `${name} must be a Duration of data properties`);
+  if (!("value" in descriptor)) throw reject();
+  const value: unknown = descriptor.value;
+  if (value === undefined) return undefined;
+  if (value === null) throw reject();
+  if (typeof value !== "object" || Duration.isDuration(value)) return value;
+  const captured = durationData(value);
+  if (Result.isFailure(captured)) throw reject();
+  return captured.success;
+};
 
 const requestDuration = (input: unknown, name: string, allowZero = false) =>
   Effect.gen(function* () {
@@ -533,17 +558,10 @@ export const makeScheduler = (
           Duration.toMillis(duration(options.filler.runway.target, "runway target")) / 1000;
         const maxBuildsInFlight = options.maxBuildsInFlight ?? 1;
         const maxHistory = options.maxHistory ?? 4096;
-        const recoveryOption = Object.getOwnPropertyDescriptor(options, "unknownRecoveryTimeout");
-        if (recoveryOption !== undefined && !("value" in recoveryOption))
-          throw ReactorError.fromCode(
-            "InvalidInput",
-            "Unknown recovery timeout must be a data property",
-          );
         const unknownRecoveryMs = Duration.toMillis(
           duration(
-            recoveryOption === undefined
-              ? "60 seconds"
-              : (options.unknownRecoveryTimeout ?? "60 seconds"),
+            optionDuration(options, "unknownRecoveryTimeout", "Unknown recovery timeout") ??
+              "60 seconds",
             "unknown recovery timeout",
             { maximum: "10 minutes" },
           ),

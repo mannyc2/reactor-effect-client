@@ -130,6 +130,8 @@ for (const unknownKind of ["item", "filler"] as const) {
 const scripted = (
   settings: {
     readonly scheduler?: Partial<SchedulerOptions>;
+    /** Used as given; a spread would drop inherited fields. */
+    readonly options?: SchedulerOptions;
     readonly fenced?: boolean;
     readonly stop?: Effect.Effect<void>;
     readonly send?: Effect.Effect<void>;
@@ -160,9 +162,9 @@ const scripted = (
           return { initial: state, events: Stream.fromQueue(feed) };
         }),
     };
-    const scheduler = yield* makeScheduler({ ...options, ...settings.scheduler }).pipe(
-      Effect.provideService(Engine, engine),
-    );
+    const scheduler = yield* makeScheduler(
+      settings.options ?? { ...options, ...settings.scheduler },
+    ).pipe(Effect.provideService(Engine, engine));
     const events: AsRunEvent[] = [];
     yield* scheduler.asRun.pipe(
       Stream.runForEach((event) =>
@@ -314,6 +316,61 @@ test("unknown recovery captures a finite ten-minute maximum without evaluating a
       );
       expect(Result.isFailure(result)).toBe(true);
       expect(reads).toBe(0);
+    }),
+  ));
+
+// fb88362 read the option only as an own property: an inherited value fell
+// back to the default and an accessor inside a Duration object ran.
+test("unknown recovery reads data properties at any depth without invoking accessors", () =>
+  runClock(
+    Effect.gen(function* () {
+      let reads = 0;
+      class InheritedData implements SchedulerOptions {
+        readonly lanes = options.lanes;
+        readonly filler = options.filler;
+      }
+      Object.defineProperty(InheritedData.prototype, "unknownRecoveryTimeout", {
+        value: "5 seconds",
+      });
+      class InheritedAccessor implements SchedulerOptions {
+        readonly lanes = options.lanes;
+        readonly filler = options.filler;
+        get unknownRecoveryTimeout() {
+          reads++;
+          return "5 seconds" as const;
+        }
+      }
+      const nestedAccessor = {
+        get seconds() {
+          reads++;
+          return 5;
+        },
+      };
+      const simulation = yield* Simulation.make();
+      for (const rejected of [
+        new InheritedAccessor(),
+        { ...options, unknownRecoveryTimeout: nestedAccessor },
+        { ...options, unknownRecoveryTimeout: null as never },
+      ]) {
+        const result = yield* Effect.result(
+          makeScheduler(rejected).pipe(Effect.provideService(Engine, simulation.engine)),
+        );
+        expect(Result.isFailure(result) && result.failure.reason._tag).toBe("InvalidInput");
+      }
+      expect(reads).toBe(0);
+      for (const [accepted, millis] of [
+        [new InheritedData(), 5_000],
+        [{ ...options, unknownRecoveryTimeout: undefined as never }, 60_000],
+      ] as const) {
+        const fixture = yield* scripted({ options: accepted });
+        const item = yield* submit(fixture.scheduler, `deadline-${millis}`);
+        yield* fixture.unknown(item.key);
+        const stopped = yield* Effect.forkScoped(fixture.scheduler.failure);
+        yield* TestClock.adjust(millis - 1);
+        expect(stopped.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust(1);
+        expect(stopped.pollUnsafe()).toBeDefined();
+      }
     }),
   ));
 
