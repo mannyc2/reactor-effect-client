@@ -212,6 +212,14 @@ export const TokensRecord = Schema.Struct({
   ownerKilledMs: Schema.optionalKey(Ms),
   resumeStartedMs: Schema.optionalKey(Ms),
   attachedMs: Schema.optionalKey(Ms),
+  /**
+   * The owner's clips: the one playing when it was killed, and the one queued
+   * behind it. The adoption waits for the creating token to expire, so either
+   * may be playing then (paid run tokens 7bc779d4 found the queued one).
+   */
+  ownerClipIds: Schema.optionalKey(
+    Schema.Struct({ playing: Schema.String, queued: Schema.String }),
+  ),
   playingClipId: Schema.optionalKey(Nullable),
   clipIdentified: Schema.optionalKey(Schema.Boolean),
   firstFreshFrameMs: Schema.optionalKey(Ms),

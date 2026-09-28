@@ -109,6 +109,24 @@ for (const check of ["takeover", "resume", "tokens"] as const) {
   });
 }
 
+// Paid run tokens 7bc779d4 adopted after the owner's first clip had ended: the
+// clip queued behind it was playing, and it is the owner's too.
+rehearse("tokens names the owner's queued clip when the first has ended", {
+  check: "tokens",
+  adoptAfterMs: 14_000,
+  judge: (evidence) => {
+    // So late an adoption leaves no time to refresh inside the work budget; only
+    // the clip is judged here.
+    assert.isTrue(
+      evidence.criteria.find((judged) => judged.name === "clip identified")?.passed,
+      evidence.reasons.join("; "),
+    );
+    const tokens = evidence.tokens;
+    assert.isDefined(tokens?.ownerClipIds);
+    assert.strictEqual(tokens?.playingClipId, tokens?.ownerClipIds?.queued);
+  },
+});
+
 rehearse("tokens records the free probes and the documented refusals", {
   check: "tokens",
   judge: (evidence) => {
