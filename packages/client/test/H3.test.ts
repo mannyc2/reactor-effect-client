@@ -227,9 +227,6 @@ scenario("enqueues at each documented limit, and refuses one step past it before
       local,
       "seconds",
     );
-    yield* provider.setClipSeconds(15.084);
-    const longer = yield* Effect.flip(provider.setClipSeconds(15.085));
-    assert.deepStrictEqual([longer.reason._tag, longer.context.outcome], local, "default length");
     const image = {
       _tag: "Bytes",
       bytes: ReactorTest.pngBytes({ width: 64, height: 64 }),
@@ -252,7 +249,6 @@ scenario("enqueues at each documented limit, and refuses one step past it before
       [9, 3],
     );
     assert.strictEqual((yield* commands("enqueue")).length, 5);
-    assert.strictEqual((yield* commands("set_clip_seconds")).length, 1);
   }),
 );
 

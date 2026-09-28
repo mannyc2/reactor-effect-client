@@ -171,26 +171,6 @@ export const alignFrames: {
   return Math.min(profile.maxFrames, profile.minFrames + steps * profile.frameStep);
 });
 
-export const alignSecondsTo: {
-  (seconds: number): (profile: ModelProfile) => number;
-  (profile: ModelProfile, seconds: number): number;
-} = dual(
-  2,
-  (profile: ModelProfile, seconds: number): number => alignFrames(profile, seconds) / profile.fps,
-);
-
-/** Clamps into the accepted request range, then aligns: always a length the provider accepts. */
-export const clampSecondsTo: {
-  (seconds: number): (profile: ModelProfile) => number;
-  (profile: ModelProfile, seconds: number): number;
-} = dual(2, (profile: ModelProfile, seconds: number): number => {
-  const { min, max } = profile.requestSeconds;
-  return alignSecondsTo(
-    profile,
-    Math.min(max, Math.max(min, Number.isFinite(seconds) ? seconds : min)),
-  );
-});
-
 /** True when `seconds` is a length the provider accepts as a request. */
 export const isRequestableSeconds: {
   (seconds: number): (profile: ModelProfile) => boolean;
