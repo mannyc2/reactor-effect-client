@@ -98,7 +98,7 @@ const counters = new Set([
 ]);
 
 /** Statistics with the 64-bit counters the addon sends as decimal strings as bigints. */
-export const statsValue = (value: unknown): unknown => {
+const statsValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(statsValue);
   if (!Predicate.isObject(value)) return value;
   return Object.fromEntries(
@@ -123,7 +123,7 @@ const receiving = (tracks: ReadonlyArray<Track>, index: number, kind: Track["kin
     : Effect.fail(protocol(`native ${kind} was delivered without its declared receive mapping`));
 };
 
-export const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
+const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
   Effect.flatMap(receiving(tracks, taken.track, "video"), (track) =>
     taken.width === 0 ||
     taken.height === 0 ||
@@ -144,7 +144,7 @@ export const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Vide
         }),
   );
 
-export const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audio) =>
+const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audio) =>
   Effect.flatMap(receiving(tracks, taken.track, "audio"), (track) =>
     taken.sampleRate === 0 || taken.channels === 0 || taken.samples.length % taken.channels !== 0
       ? Effect.fail(protocol("native PCM format does not match its payload"))
@@ -404,7 +404,7 @@ export const make = Effect.fnUntraced(function* (
       Number.isSafeInteger(bitsPerSecond) && bitsPerSecond >= 1 && bitsPerSecond <= 0x7fffffff
         ? native.maxBitrate(name, bitsPerSecond)
         : Effect.fail(unsupported("native max bitrate must be an integer in 1..2147483647")),
-    stats: Effect.map(native.stats, (stats) => statsValue(stats) as ReadonlyArray<unknown>),
+    stats: Effect.map(native.stats, (stats) => stats.map(statsValue)),
     close,
     shutdown: Ref.set(explicit, true).pipe(Effect.andThen(run)),
   };
