@@ -16,7 +16,7 @@ import * as Stream from "effect/Stream";
 import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
 import { PeerState, trackFeed } from "reactor-effect-client/Peer";
-import type { Channel, Peer, PeerEvent, TrackFeed } from "reactor-effect-client/Peer";
+import type { Channel, Peer, PeerEvent, Prepared, TrackFeed } from "reactor-effect-client/Peer";
 import { Native, ReactorError } from "reactor-effect-client/ReactorError";
 import type * as Binding from "./binding.js";
 
@@ -25,7 +25,7 @@ export interface NativeHandle {
   readonly prepare: (
     servers: ReadonlyArray<IceServer>,
     tracks: ReadonlyArray<Track>,
-  ) => Effect.Effect<Binding.Prepared, ReactorError>;
+  ) => Effect.Effect<Prepared, ReactorError>;
   readonly answer: (sdp: string) => Effect.Effect<void, ReactorError>;
   readonly direction: (name: string, active: boolean) => Effect.Effect<void, ReactorError>;
   readonly maxBitrate: (name: string, bitsPerSecond: number) => Effect.Effect<void, ReactorError>;

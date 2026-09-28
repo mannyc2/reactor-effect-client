@@ -282,7 +282,7 @@ export const remote = Effect.fnUntraced(function* (
   const queue = <A>(
     open: (
       rpc: Client,
-    ) => Effect.Effect<Queue.Dequeue<A, RpcClientError | Cause.Done>, never, Scope.Scope>,
+    ) => Effect.Effect<Queue.Dequeue<A, CallError | Cause.Done>, never, Scope.Scope>,
   ): Stream.Stream<A, ReactorError> =>
     Deferred.await(client).pipe(
       Effect.flatMap(open),
