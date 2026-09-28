@@ -1,9 +1,8 @@
-import { spawn, spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
+/** The isolated native host: one child process per connection, over the fake addon and real libwebrtc. */
 import { fileURLToPath } from "node:url";
+import { layer } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import type * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -12,23 +11,33 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import type * as PlatformHttp from "effect/unstable/http/HttpClient";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import * as Reactor from "reactor-effect-client/Reactor";
-import { PeerFactory } from "reactor-effect-client/Peer";
-import type { ReactorError } from "reactor-effect-client/ReactorError";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
 import * as Coordinator from "reactor-effect-client/Coordinator";
-import type { IceCandidate } from "reactor-effect-client/Coordinator";
-import type { PeerEvent } from "reactor-effect-client/Peer";
 import type { VideoFrame } from "reactor-effect-client/Media";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import type { PeerEvent } from "reactor-effect-client/Peer";
+import * as Reactor from "reactor-effect-client/Reactor";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
+import { describe, expect } from "vitest";
 import type { IsolatedPeer } from "../src/internal/isolated/host.js";
 import { defaultShutdownTimeout } from "../src/internal/peer.js";
 import * as NativePeer from "../src/NativePeer.js";
-import { assertExactFrames, decoded, FarPeer, makeFakeAddon, record, until } from "./support.js";
+import {
+  assertExactFrames,
+  candidateRelay,
+  clientServices,
+  decoded,
+  eventually,
+  fakeAddon,
+  FarPeer,
+  farPeerCoordinator,
+  fixtureCoordinator,
+  withFetch,
+} from "./support.js";
 
 /*
  * The isolated host forks the built child entry, dist/internal/isolated/child.js,
@@ -50,72 +59,24 @@ const tracks = [
 const closeBound = Duration.toMillis(defaultShutdownTimeout) / 5;
 
 /** Whether `pid` names a live process: a zombie awaiting its reaper does not count. */
-const alive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
-  const stat = state.stdout.trim();
-  return stat !== "" && !stat.startsWith("Z");
-};
+const alive = (pid: number) =>
+  Effect.gen(function* () {
+    const signalled = yield* Effect.try(() => process.kill(pid, 0)).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!signalled) return false;
+    const spawner = yield* ChildProcessSpawner;
+    const stat = yield* spawner
+      .string(ChildProcess.make("ps", ["-o", "stat=", "-p", String(pid)]))
+      .pipe(Effect.orElseSucceed(() => ""));
+    return stat.trim() !== "" && !stat.trim().startsWith("Z");
+  });
 
 const sessionId = "sess_isolated_fixture";
-const descriptor = (id: string) => ({
-  session_id: id,
-  state: "ACTIVE",
-  capabilities: {
-    protocol_version: "1.0",
-    tracks,
-    commands: [{ name: "echo", schema: {} }],
-  },
-  selected_transport: { protocol: "webrtc", version: "1.0" },
-});
-
-/** A coordinator that allocates one session per POST; a deleted session reads as absent. */
-const coordinator = () => {
-  const allocated: string[] = [],
-    deleted = new Set<string>();
-  const fetch = async (input: string | Request | URL, init?: RequestInit): Promise<Response> => {
-    const request = new Request(input, init);
-    const path = new URL(request.url).pathname;
-    const id = /^\/sessions\/([^/]+)/.exec(path)?.[1] ?? sessionId;
-    if (path === "/sessions" && request.method === "POST") {
-      const allocation = allocated.length === 0 ? sessionId : `${sessionId}_${allocated.length}`;
-      allocated.push(allocation);
-      return Response.json(descriptor(allocation));
-    }
-    if (path === `/sessions/${id}` && request.method === "GET")
-      return deleted.has(id)
-        ? Response.json({ error: "session not found" }, { status: 404 })
-        : Response.json(descriptor(id));
-    if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
-    if (path.endsWith("/connections")) return Response.json({ connection_id: 1001 });
-    if (path.endsWith("/ice_candidates")) return new Response(null, { status: 204 });
-    if (path.endsWith("/sdp_params")) {
-      if (request.method !== "GET") return new Response(null, { status: 204 });
-      return Response.json({ sdp_answer: "fixture native answer" });
-    }
-    if (path === `/sessions/${id}` && request.method === "DELETE") {
-      deleted.add(id);
-      return new Response(null, { status: 202 });
-    }
-    return Response.json({ error: `unhandled fixture route ${path}` }, { status: 404 });
-  };
-  return { fetch, allocated, deleted };
-};
-
-const runClient = <A, E>(
-  effect: Effect.Effect<A, E, PlatformHttp.HttpClient | Crypto.Crypto>,
-  fetch: typeof globalThis.fetch,
-): Promise<A> =>
-  Effect.runPromise(
-    effect.pipe(
-      Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer)),
-      Effect.provideService(FetchHttpClient.Fetch, fetch),
-    ),
-  );
+const settings = { apiUrl: "https://coordinator.fixture" } as const;
+const create = { model: "fixture/native-session", jwt: Redacted.make("fixture-token") };
+const coordinator = () => fixtureCoordinator({ sessionId, tracks });
 
 /** The isolated factory, built in the caller's scope. */
 const isolatedFactory = (options: NativePeer.Options) =>
@@ -135,107 +96,107 @@ const isolatedPeers = (options: NativePeer.Options) =>
   });
 
 /** The canonical factory over the isolated host, recording each peer it makes. */
-const isolatedClient = (
-  settings: Coordinator.Options & Reactor.Options,
-  options: NativePeer.Options,
-  peers: IsolatedPeer[],
-) =>
+const isolatedClient = (input: {
+  readonly settings: Coordinator.Options & Reactor.Options;
+  readonly options: NativePeer.Options;
+  readonly peers: Array<IsolatedPeer>;
+}) =>
   Effect.gen(function* () {
-    const factory = yield* isolatedFactory(options);
-    const made = yield* isolatedPeers(options);
-    const services = yield* Layer.build(Coordinator.layer(settings));
-    return yield* Reactor.make(settings).pipe(
+    const factory = yield* isolatedFactory(input.options);
+    const made = yield* isolatedPeers(input.options);
+    const services = yield* Layer.build(Coordinator.layer(input.settings));
+    return yield* Reactor.make(input.settings).pipe(
       Effect.provide(services),
       Effect.provideService(
         PeerFactory,
         PeerFactory.of({
           check: factory.check,
-          make: Effect.tap(made.make, (peer) => Effect.sync(() => peers.push(peer))),
+          make: Effect.tap(made.make, (peer) => Effect.sync(() => input.peers.push(peer))),
         }),
       ),
     );
   });
 
-const create = { model: "fixture/native-session", jwt: Redacted.make("fixture-token") };
+/** A peer's events, recorded as they arrive. */
+const recorded = () => {
+  const events: Array<PeerEvent> = [];
+  return { events, emit: (event: PeerEvent) => events.push(event) };
+};
 
-describe("isolated native host", () => {
-  test.runIf(isBun)("refuses to build under Bun, before any child exists", async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(Effect.result(Layer.build(NativePeer.layerIsolated()))),
-    );
-    expect(result._tag).toBe("Failure");
-    if (result._tag === "Failure")
-      expect(result.failure).toMatchObject({
-        reason: { _tag: "UnsupportedCapability" },
-        context: expect.objectContaining({ outcome: "not-submitted" }),
-      });
-  });
-
-  test.runIf(onNode)(
-    "rejects an invalid deadline and an unloadable addon while the layer builds",
-    async () => {
-      for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
-        const result = await Effect.runPromise(
-          Effect.scoped(
-            Effect.result(isolatedFactory({ shutdownTimeout: shutdownTimeout as Duration.Input })),
-          ),
-        );
-        expect(result._tag).toBe("Failure");
-        if (result._tag === "Failure")
-          expect(result.failure).toMatchObject({
-            reason: { _tag: "InvalidInput" },
-            context: expect.objectContaining({ outcome: "not-submitted" }),
-          });
-      }
-      // The probe child cannot load it, so the layer fails before any Client exists.
-      const missing = await Effect.runPromise(
-        Effect.scoped(
-          Effect.result(isolatedFactory({ addon: "/nonexistent/reactor-effect-native.node" })),
-        ),
+layer(clientServices, { excludeTestServices: true })("isolated native host", (it) => {
+  it.effect.runIf(isBun)("refuses to build under Bun, before any child exists", () =>
+    Effect.gen(function* () {
+      const result = yield* Layer.build(NativePeer.layerIsolated()).pipe(
+        Effect.result,
+        Effect.scoped,
       );
-      expect(missing._tag).toBe("Failure");
-      if (missing._tag === "Failure")
-        expect(missing.failure).toMatchObject({
-          reason: expect.objectContaining({ _tag: "Native" }),
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure).toMatchObject({
+          reason: { _tag: "UnsupportedCapability" },
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
-    },
+    }),
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
+    "rejects an invalid deadline and an unloadable addon while the layer builds",
+    () =>
+      Effect.gen(function* () {
+        for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
+          const result = yield* isolatedFactory({
+            shutdownTimeout: shutdownTimeout as Duration.Input,
+          }).pipe(Effect.result, Effect.scoped);
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure")
+            expect(result.failure).toMatchObject({
+              reason: { _tag: "InvalidInput" },
+              context: expect.objectContaining({ outcome: "not-submitted" }),
+            });
+        }
+        // The probe child cannot load it, so the layer fails before any Client exists.
+        const missing = yield* isolatedFactory({
+          addon: "/nonexistent/reactor-effect-native.node",
+        }).pipe(Effect.result, Effect.scoped);
+        expect(missing._tag).toBe("Failure");
+        if (missing._tag === "Failure")
+          expect(missing.failure).toMatchObject({
+            reason: expect.objectContaining({ _tag: "Native" }),
+            context: expect.objectContaining({ outcome: "not-submitted" }),
+          });
+      }),
+  );
+
+  it.effect.runIf(onNode)(
     "serves successive generations from one parent, each child answering its own client",
-    async () => {
-      const addon = makeFakeAddon();
-      const remote = coordinator();
-      const peers: IsolatedPeer[] = [];
-      try {
-        const result = await runClient(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const factory = yield* isolatedClient(
-                { apiUrl: "https://coordinator.fixture" },
-                { addon: addon.path },
-                peers,
-              );
-              const client = yield* factory.create(create);
-              const first = (yield* client.ready).generation;
-              const before = yield* (yield* client.decoded).pressure;
-              yield* client.reconnect;
-              const second = (yield* client.ready).generation;
-              const media = yield* client.decoded;
-              const reader = yield* Effect.forkChild(
-                media.video("main_video").pipe(Stream.runHead),
-                { startImmediately: true },
-              );
-              // The snapshot releases the fake's frame, which waits in its queue until taken.
-              const after = yield* media.pressure;
-              const frame = Option.getOrThrow(yield* Fiber.join(reader));
-              const report = yield* client.close;
-              return { first, second, before, after, frame, report };
-            }),
-          ),
-          remote.fetch,
-        );
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const remote = coordinator();
+        const peers: Array<IsolatedPeer> = [];
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const factory = yield* isolatedClient({
+              settings,
+              options: { addon: addon.path },
+              peers,
+            });
+            const client = yield* factory.create(create);
+            const first = (yield* client.ready).generation;
+            const before = yield* (yield* client.decoded).pressure;
+            yield* client.reconnect;
+            const second = (yield* client.ready).generation;
+            const media = yield* client.decoded;
+            const reader = yield* Effect.forkChild(media.video("main_video").pipe(Stream.runHead), {
+              startImmediately: true,
+            });
+            // The snapshot releases the fake's frame, which waits in its queue until taken.
+            const after = yield* media.pressure;
+            const frame = Option.getOrThrow(yield* Fiber.join(reader));
+            const report = yield* client.close;
+            return { first, second, before, after, frame, report };
+          }),
+        ).pipe(withFetch(remote.fetch));
         expect(result.second).toBeGreaterThan(result.first);
         expect(result.before.closed).toBe(false);
         expect(result.after.closed).toBe(false);
@@ -257,68 +218,62 @@ describe("isolated native host", () => {
         const [a, b] = peers;
         expect(a!.link.child!.pid).not.toBe(b!.link.child!.pid);
         for (const peer of peers) expect(peer.link.exit).toEqual({ code: 0, signal: null });
-      } finally {
-        addon.remove();
-      }
-    },
+      }),
     30_000,
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
     "fails a dispatched call as unknown when its child dies, fences later calls and never respawns",
-    async () => {
-      const addon = makeFakeAddon();
-      try {
-        const result = await Effect.runPromise(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const peers = yield* isolatedPeers({ addon: addon.path });
-              const peer = yield* peers.make;
-              // Making the peer forks its child at once, while a session allocates.
-              const spawnedAtMake = peer.link.child?.pid !== undefined;
-              const pid = peer.link.child?.pid;
-              yield* peer.opened;
-              const events: PeerEvent[] = [];
-              yield* peer.prepare([], tracks, (event) => events.push(event));
-              // The fake holds a data-channel send for 50 ms.
-              const sending = yield* Effect.forkChild(
-                Effect.result(peer.send("data", Uint8Array.of(1, 2))),
-                { startImmediately: true },
-              );
-              yield* addon.reached("send");
-              process.kill(peer.link.child!.pid!, "SIGKILL");
-              const pending = yield* Fiber.join(sending);
-              yield* Deferred.await(peer.link.exited);
-              yield* Effect.promise(() =>
-                until(() => events.some((event) => event.type === "error"), "no failure event"),
-              );
-              const started = performance.now();
-              const later = yield* Effect.result(peer.stats);
-              const laterMs = performance.now() - started;
-              const shutdown = yield* Effect.exit(peer.shutdown);
-              // A peer with no events to learn of the death from is still refused
-              // before dispatch, rather than buffered for a worker that is gone.
-              const solo = yield* peers.make;
-              yield* solo.opened;
-              solo.link.child?.kill("SIGKILL");
-              yield* Deferred.await(solo.link.exited);
-              const fenced = yield* Effect.result(solo.stats).pipe(
-                Effect.timeoutOption("2 seconds"),
-              );
-              yield* solo.shutdown;
-              return {
-                spawnedAtMake,
-                pid,
-                pending,
-                later,
-                laterMs,
-                events,
-                shutdown,
-                link: peer.link,
-                fenced,
-              };
-            }),
-          ),
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const peers = yield* isolatedPeers({ addon: addon.path });
+            const peer = yield* peers.make;
+            // Making the peer forks its child at once, while a session allocates.
+            const spawnedAtMake = peer.link.child?.pid !== undefined;
+            const pid = peer.link.child?.pid;
+            yield* peer.opened;
+            const { events, emit } = recorded();
+            yield* peer.prepare([], tracks, emit);
+            // The fake holds a data-channel send for 50 ms.
+            const sending = yield* Effect.forkChild(
+              Effect.result(peer.send("data", Uint8Array.of(1, 2))),
+              { startImmediately: true },
+            );
+            yield* addon.reached("send");
+            process.kill(peer.link.child!.pid!, "SIGKILL");
+            const pending = yield* Fiber.join(sending);
+            yield* Deferred.await(peer.link.exited);
+            yield* eventually({
+              condition: () => events.some((event) => event.type === "error"),
+              message: "no failure event",
+            });
+            const started = performance.now();
+            const later = yield* Effect.result(peer.stats);
+            const laterMs = performance.now() - started;
+            const shutdown = yield* Effect.exit(peer.shutdown);
+            // A peer with no events to learn of the death from is still refused
+            // before dispatch, rather than buffered for a worker that is gone.
+            const solo = yield* peers.make;
+            yield* solo.opened;
+            solo.link.child?.kill("SIGKILL");
+            yield* Deferred.await(solo.link.exited);
+            const fenced = yield* Effect.result(solo.stats).pipe(Effect.timeoutOption("2 seconds"));
+            yield* solo.shutdown;
+            return {
+              spawnedAtMake,
+              pid,
+              pending,
+              later,
+              laterMs,
+              events,
+              shutdown,
+              fenced,
+              link: peer.link,
+            };
+          }),
         );
         expect(result.spawnedAtMake).toBe(true);
         expect(result.pending._tag).toBe("Failure");
@@ -353,21 +308,19 @@ describe("isolated native host", () => {
             context: expect.objectContaining({ outcome: "not-submitted" }),
           });
         else expect.fail("a call to a dead child was not refused");
-      } finally {
-        addon.remove();
-      }
-    },
+      }),
     20_000,
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
     "ends a child whose parent dies, even with a native call in flight",
-    async () => {
-      // The held statistics call keeps the child's event loop alive: without
-      // its own exit on disconnect, it would outlive the parent as an orphan.
-      const addon = makeFakeAddon();
-      addon.hold("stats", true);
-      const script = `
+    () =>
+      Effect.gen(function* () {
+        // The held statistics call keeps the child's event loop alive: without
+        // its own exit on disconnect, it would outlive the parent as an orphan.
+        const addon = yield* fakeAddon;
+        addon.hold("stats", true);
+        const script = `
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as host from "./dist/internal/isolated/host.js";
@@ -387,57 +340,70 @@ Effect.runFork(
   ),
 );
 `;
-      const parent = spawn(process.execPath, ["--input-type=module", "-e", script], {
-        cwd: packageRoot,
-        env: { ...process.env, FIXTURE: addon.path },
-        stdio: ["ignore", "pipe", "inherit"],
-      });
-      let child: number | undefined;
-      try {
-        const line = await new Promise<string>((resolve, reject) => {
-          createInterface({ input: parent.stdout }).once("line", resolve);
-          parent.once("exit", (code) => reject(new Error(`parent exited early with ${code}`)));
+        const spawner = yield* ChildProcessSpawner;
+        const parent = yield* spawner.spawn(
+          ChildProcess.make(process.execPath, ["--input-type=module", "-e", script], {
+            cwd: packageRoot,
+            env: { FIXTURE: addon.path },
+            extendEnv: true,
+            stdout: "pipe",
+            stderr: "inherit",
+          }),
+        );
+        const line = yield* parent.stdout.pipe(
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.runHead,
+        );
+        const child = Number(/"child":(\d+)/.exec(Option.getOrThrow(line))?.[1]);
+        yield* Effect.addFinalizer(() =>
+          alive(child).pipe(
+            Effect.flatMap((live) =>
+              live ? Effect.sync(() => process.kill(child, "SIGKILL")) : Effect.void,
+            ),
+            Effect.orDie,
+          ),
+        );
+        yield* eventually({
+          condition: () => addon.calls().includes("stats"),
+          message: "statistics never reached the child",
         });
-        child = (JSON.parse(line) as { readonly child: number }).child;
-        const orphan = child;
-        await until(() => addon.calls().includes("stats"), "statistics never reached the child");
-        expect(alive(orphan)).toBe(true);
-        parent.kill("SIGKILL");
-        await until(() => !alive(orphan), "the child outlived its parent", 5_000);
-      } finally {
-        parent.kill("SIGKILL");
-        if (child !== undefined && alive(child)) process.kill(child, "SIGKILL");
-        addon.remove();
-      }
-    },
+        expect(yield* alive(child)).toBe(true);
+        yield* parent.kill({ killSignal: "SIGKILL" });
+        yield* alive(child).pipe(
+          Effect.flatMap((live) => (live ? Effect.fail("alive") : Effect.void)),
+          Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+          Effect.timeoutOrElse({
+            duration: "5 seconds",
+            orElse: () => Effect.die(new Error("the child outlived its parent")),
+          }),
+        );
+      }),
     20_000,
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
     "kills a child whose shutdown outlives its deadline, reports Shutdown and still terminates the remote session",
-    async () => {
-      const addon = makeFakeAddon();
-      const remote = coordinator();
-      const peers: IsolatedPeer[] = [];
-      try {
-        const result = await runClient(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const factory = yield* isolatedClient(
-                { apiUrl: "https://coordinator.fixture" },
-                { addon: addon.path, shutdownTimeout: "250 millis" },
-                peers,
-              );
-              // The probe has shut down; every child from here on holds its join.
-              addon.hold("shutdown", true);
-              const client = yield* factory.create(create);
-              const started = performance.now();
-              const report = yield* client.close;
-              return { report, closeMs: performance.now() - started };
-            }),
-          ),
-          remote.fetch,
-        );
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const remote = coordinator();
+        const peers: Array<IsolatedPeer> = [];
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const factory = yield* isolatedClient({
+              settings,
+              options: { addon: addon.path, shutdownTimeout: "250 millis" },
+              peers,
+            });
+            // The probe has shut down; every child from here on holds its join.
+            addon.hold("shutdown", true);
+            const client = yield* factory.create(create);
+            const started = performance.now();
+            const report = yield* client.close;
+            return { report, closeMs: performance.now() - started };
+          }),
+        ).pipe(withFetch(remote.fetch));
         expect(result.closeMs).toBeGreaterThanOrEqual(200);
         expect(result.closeMs).toBeLessThan(closeBound);
         expect(result.report.localClosed).toBe(false);
@@ -456,91 +422,93 @@ Effect.runFork(
         expect(remote.deleted.has(sessionId)).toBe(true);
         expect(peers).toHaveLength(1);
         expect(peers[0]!.link.exit).toEqual({ code: null, signal: "SIGKILL" });
-        expect(alive(peers[0]!.link.child!.pid!)).toBe(false);
-      } finally {
-        addon.remove();
-      }
-    },
+        expect(yield* alive(peers[0]!.link.child!.pid!)).toBe(false);
+      }),
     20_000,
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
     "never delivers a closed or killed child's late events and frames, to it or to a later peer",
-    async () => {
-      const addon = makeFakeAddon();
-      try {
-        const result = await Effect.runPromise(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const peers = yield* isolatedPeers({ addon: addon.path });
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const peers = yield* isolatedPeers({ addon: addon.path });
 
-              // Closed while its answer's three events and a frame are on their way.
-              const a = yield* peers.make;
-              yield* a.opened;
-              const aEvents: PeerEvent[] = [];
-              const aFrames: VideoFrame[] = [];
-              const aScope = yield* Scope.make();
-              yield* a
-                .prepare([], tracks, (event) => aEvents.push(event))
-                .pipe(Scope.provide(aScope));
-              const aReader = yield* Effect.forkChild(
-                decoded(a)
-                  .video("main_video")
-                  .pipe(Stream.runForEach((frame) => Effect.sync(() => aFrames.push(frame)))),
-                { startImmediately: true },
-              );
-              const answering = yield* Effect.forkChild(a.answer("fixture answer"), {
-                startImmediately: true,
-              });
-              const releasing = yield* Effect.forkChild(decoded(a).pressure, {
-                startImmediately: true,
-              });
-              // Both requests are on the channel: whatever they release is late.
-              yield* a.close;
-              yield* Fiber.join(answering);
-              yield* Fiber.join(releasing);
-              yield* addon.reached("answer");
-              // The child queued three events and a frame; none reaches anyone.
-              yield* Effect.sleep("100 millis");
-              const aReaderExit = yield* Fiber.await(aReader);
-              yield* a.shutdown;
-              yield* Scope.close(aScope, Exit.void);
+            // Closed while its answer's three events and a frame are on their way.
+            const a = yield* peers.make;
+            yield* a.opened;
+            const aEvents = recorded();
+            const aFrames: Array<VideoFrame> = [];
+            const aScope = yield* Scope.make();
+            yield* a.prepare([], tracks, aEvents.emit).pipe(Scope.provide(aScope));
+            const aReader = yield* Effect.forkChild(
+              decoded(a)
+                .video("main_video")
+                .pipe(Stream.runForEach((frame) => Effect.sync(() => aFrames.push(frame)))),
+              { startImmediately: true },
+            );
+            const answering = yield* Effect.forkChild(a.answer("fixture answer"), {
+              startImmediately: true,
+            });
+            const releasing = yield* Effect.forkChild(decoded(a).pressure, {
+              startImmediately: true,
+            });
+            // Both requests are on the channel: whatever they release is late.
+            yield* a.close;
+            yield* Fiber.join(answering);
+            yield* Fiber.join(releasing);
+            yield* addon.reached("answer");
+            // The child queued three events and a frame; none reaches anyone.
+            yield* Effect.sleep("100 millis");
+            const aReaderExit = yield* Fiber.await(aReader);
+            yield* a.shutdown;
+            yield* Scope.close(aScope, Exit.void);
 
-              // Killed while connected: one failure event, then nothing.
-              const b = yield* peers.make;
-              yield* b.opened;
-              const bEvents: PeerEvent[] = [];
-              const bScope = yield* Scope.make();
-              yield* b
-                .prepare([], tracks, (event) => bEvents.push(event))
-                .pipe(Scope.provide(bScope));
-              yield* b.answer("fixture answer");
-              yield* Effect.promise(() => until(() => bEvents.length === 3, "b never connected"));
-              b.link.child!.kill("SIGKILL");
-              yield* Deferred.await(b.link.exited);
-              yield* Effect.promise(() =>
-                until(() => bEvents.length === 4, "b's failure never came"),
-              );
-              yield* b.close;
-              yield* b.shutdown;
-              yield* Scope.close(bScope, Exit.void);
+            // Killed while connected: one failure event, then nothing.
+            const b = yield* peers.make;
+            yield* b.opened;
+            const bEvents = recorded();
+            const bScope = yield* Scope.make();
+            yield* b.prepare([], tracks, bEvents.emit).pipe(Scope.provide(bScope));
+            yield* b.answer("fixture answer");
+            yield* eventually({
+              condition: () => bEvents.events.length === 3,
+              message: "b never connected",
+            });
+            b.link.child!.kill("SIGKILL");
+            yield* Deferred.await(b.link.exited);
+            yield* eventually({
+              condition: () => bEvents.events.length === 4,
+              message: "b's failure never came",
+            });
+            yield* b.close;
+            yield* b.shutdown;
+            yield* Scope.close(bScope, Exit.void);
 
-              // A later peer hears only its own child.
-              const c = yield* peers.make;
-              yield* c.opened;
-              const cEvents: PeerEvent[] = [];
-              const cScope = yield* Scope.make();
-              yield* c
-                .prepare([], tracks, (event) => cEvents.push(event))
-                .pipe(Scope.provide(cScope));
-              yield* c.answer("fixture answer");
-              yield* Effect.promise(() => until(() => cEvents.length === 3, "c never connected"));
-              yield* c.close;
-              yield* c.shutdown;
-              yield* Scope.close(cScope, Exit.void);
-              return { aEvents, aFrames, aReaderExit, bEvents, cEvents };
-            }),
-          ),
+            // A later peer hears only its own child.
+            const c = yield* peers.make;
+            yield* c.opened;
+            const cEvents = recorded();
+            const cScope = yield* Scope.make();
+            yield* c.prepare([], tracks, cEvents.emit).pipe(Scope.provide(cScope));
+            yield* c.answer("fixture answer");
+            yield* eventually({
+              condition: () => cEvents.events.length === 3,
+              message: "c never connected",
+            });
+            yield* c.close;
+            yield* c.shutdown;
+            yield* Scope.close(cScope, Exit.void);
+            return {
+              aEvents: aEvents.events,
+              aFrames,
+              aReaderExit,
+              bEvents: bEvents.events,
+              cEvents: cEvents.events,
+            };
+          }),
         );
         expect(result.aEvents).toEqual([]);
         expect(result.aFrames).toEqual([]);
@@ -557,51 +525,46 @@ Effect.runFork(
           { type: "channel", channel: "control", open: true },
           { type: "channel", channel: "data", open: true },
         ]);
-      } finally {
-        addon.remove();
-      }
-    },
+      }),
     30_000,
   );
 
-  test.runIf(onNode)(
+  it.effect.runIf(onNode)(
     "reports a dispatched call whose wait is cancelled as unknown, and never attributes a late reply to a later call",
-    async () => {
-      const addon = makeFakeAddon();
-      try {
-        const result = await Effect.runPromise(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const peers = yield* isolatedPeers({
-                addon: addon.path,
-                shutdownTimeout: "300 millis",
-              });
-              const peer = yield* peers.make;
-              yield* peer.opened;
-              // The caller stops waiting for a send the child holds for 50 ms.
-              const sending = yield* Effect.forkChild(peer.send("data", Uint8Array.of(7)), {
-                startImmediately: true,
-              });
-              yield* addon.reached("send");
-              yield* Fiber.interrupt(sending);
-              const interrupted = yield* Fiber.await(sending);
-              const snapshot = yield* decoded(peer).pressure;
-              // The abandoned send's reply arrives while the next call waits.
-              const direction = yield* Effect.exit(
-                Effect.andThen(Effect.sleep("60 millis"), peer.direction("main_video", true)),
-              );
-              // A statistics read the child never completes: its join waits for it,
-              // and the shutdown deadline kills the child under it.
-              addon.hold("stats", true);
-              const reading = yield* Effect.forkChild(Effect.result(peer.stats), {
-                startImmediately: true,
-              });
-              yield* addon.reached("stats");
-              const shutdown = yield* Effect.exit(peer.shutdown);
-              const stats = yield* Fiber.join(reading);
-              return { interrupted, snapshot, direction, stats, shutdown, link: peer.link };
-            }),
-          ),
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const peers = yield* isolatedPeers({
+              addon: addon.path,
+              shutdownTimeout: "300 millis",
+            });
+            const peer = yield* peers.make;
+            yield* peer.opened;
+            // The caller stops waiting for a send the child holds for 50 ms.
+            const sending = yield* Effect.forkChild(peer.send("data", Uint8Array.of(7)), {
+              startImmediately: true,
+            });
+            yield* addon.reached("send");
+            yield* Fiber.interrupt(sending);
+            const interrupted = yield* Fiber.await(sending);
+            const snapshot = yield* decoded(peer).pressure;
+            // The abandoned send's reply arrives while the next call waits.
+            const direction = yield* Effect.exit(
+              Effect.andThen(Effect.sleep("60 millis"), peer.direction("main_video", true)),
+            );
+            // A statistics read the child never completes: its join waits for it,
+            // and the shutdown deadline kills the child under it.
+            addon.hold("stats", true);
+            const reading = yield* Effect.forkChild(Effect.result(peer.stats), {
+              startImmediately: true,
+            });
+            yield* addon.reached("stats");
+            const shutdown = yield* Effect.exit(peer.shutdown);
+            const stats = yield* Fiber.join(reading);
+            return { interrupted, snapshot, direction, stats, shutdown, link: peer.link };
+          }),
         );
         expect(Exit.hasInterrupts(result.interrupted)).toBe(true);
         // Each later call received its own reply, of its own shape.
@@ -620,182 +583,138 @@ Effect.runFork(
             message: "native child shutdown exceeded its deadline; child process killed",
           });
         expect(result.link.exit).toEqual({ code: null, signal: "SIGKILL" });
-      } finally {
-        addon.remove();
-      }
-    },
+      }),
     20_000,
   );
 });
 
+const farTracks = [
+  { name: "main_video", kind: "video", direction: "recvonly" },
+  { name: "main_audio", kind: "audio", direction: "recvonly" },
+] as const;
+
 describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
-  const farTracks = [
-    { name: "main_video", kind: "video", direction: "recvonly" },
-    { name: "main_audio", kind: "audio", direction: "recvonly" },
-  ] as const;
-  let far: FarPeer;
-  beforeAll(async () => {
-    far = await FarPeer.start();
-  });
-  afterAll(async () => {
-    await far?.quit();
-  });
-
-  test("fails only the reader that stops consuming", async () => {
-    const id = "isolated-overflow";
-    try {
-      const result = await Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const peers = yield* isolatedPeers({});
-            const peer = yield* peers.make;
-            const failures: ReactorError[] = [];
-            const prepared = yield* peer.prepare([], farTracks, (event) => {
-              if (event.type === "ice" && event.candidate !== undefined)
-                far.candidate(id, event.candidate);
-              else if (event.type === "error") failures.push(event.error);
+  layer(Layer.merge(clientServices, FarPeer.layer), { excludeTestServices: true })((it) => {
+    it.effect(
+      "fails only the reader that stops consuming",
+      () =>
+        Effect.gen(function* () {
+          const far = yield* FarPeer;
+          const id = "isolated-overflow";
+          yield* Effect.addFinalizer(() => far.close(id));
+          const result = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const peers = yield* isolatedPeers({});
+              const peer = yield* peers.make;
+              const failures: Array<ReactorError> = [];
+              const relay = yield* candidateRelay({ far, id });
+              const prepared = yield* peer.prepare([], farTracks, (event) => {
+                if (event.type === "ice" && event.candidate !== undefined) relay(event.candidate);
+                else if (event.type === "error") failures.push(event.error);
+              });
+              const counted = { fast: 0 };
+              const gate = yield* Deferred.make<void>();
+              const stalled = yield* Effect.forkChild(
+                decoded(peer)
+                  .video("main_video")
+                  .pipe(Stream.runForEach(() => Deferred.await(gate))),
+                { startImmediately: true },
+              );
+              const reader = yield* Effect.forkChild(
+                decoded(peer)
+                  .video("main_video")
+                  .pipe(Stream.runForEach(() => Effect.sync(() => counted.fast++))),
+                { startImmediately: true },
+              );
+              yield* peer.answer(yield* far.answer(id, prepared.sdp));
+              yield* eventually({
+                condition: () => counted.fast >= 24,
+                message: "no frames reached the reader",
+                timeout: "20 seconds",
+              });
+              yield* Deferred.succeed(gate, undefined);
+              const stalledExit = yield* Fiber.await(stalled);
+              const reached = counted.fast;
+              yield* eventually({
+                condition: () => counted.fast >= reached + 24,
+                message: "the consuming reader stopped",
+                timeout: "20 seconds",
+              });
+              const pressure = yield* decoded(peer).pressure;
+              yield* peer.close;
+              yield* Fiber.interrupt(reader);
+              yield* peer.shutdown;
+              return { stalledExit, pressure, failures, link: peer.link };
+            }),
+          );
+          expect(result.failures).toEqual([]);
+          expect(Exit.isFailure(result.stalledExit)).toBe(true);
+          if (Exit.isFailure(result.stalledExit))
+            expect(Cause.squash(result.stalledExit.cause)).toMatchObject({
+              reason: { _tag: "Overflow" },
             });
-            let fast = 0;
-            const gate = yield* Deferred.make<void>();
-            const stalled = yield* Effect.forkChild(
-              decoded(peer)
-                .video("main_video")
-                .pipe(Stream.runForEach(() => Deferred.await(gate))),
-              { startImmediately: true },
-            );
-            const reader = yield* Effect.forkChild(
-              decoded(peer)
-                .video("main_video")
-                .pipe(
-                  Stream.runForEach(() =>
-                    Effect.sync(() => {
-                      fast++;
-                    }),
-                  ),
-                ),
-              { startImmediately: true },
-            );
-            yield* peer.answer(yield* Effect.promise(() => far.answer(id, prepared.sdp)));
-            yield* Effect.promise(() =>
-              until(() => fast >= 24, "no frames reached the reader", 20_000),
-            );
-            yield* Deferred.succeed(gate, undefined);
-            const stalledExit = yield* Fiber.await(stalled);
-            const reached = fast;
-            yield* Effect.promise(() =>
-              until(() => fast >= reached + 24, "the consuming reader stopped", 20_000),
-            );
-            const pressure = yield* decoded(peer).pressure;
-            yield* peer.close;
-            yield* Fiber.interrupt(reader);
-            yield* peer.shutdown;
-            return { stalledExit, pressure, failures, link: peer.link };
-          }),
-        ),
-      );
-      expect(result.failures).toEqual([]);
-      expect(Exit.isFailure(result.stalledExit)).toBe(true);
-      if (Exit.isFailure(result.stalledExit))
-        expect(Cause.squash(result.stalledExit.cause)).toMatchObject({
-          reason: { _tag: "Overflow" },
-        });
-      expect(result.pressure.readerOverflows).toBe(1n);
-      expect(result.link.exit).toEqual({ code: 0, signal: null });
-    } finally {
-      await far.close(id);
-    }
-  }, 60_000);
+          expect(result.pressure.readerOverflows).toBe(1n);
+          expect(result.link.exit).toEqual({ code: 0, signal: null });
+        }),
+      60_000,
+    );
 
-  test("delivers exact frames through a canonical session over real libwebrtc in a child process and closes it cleanly", async () => {
-    const id = "isolated-canonical";
-    const described = {
-      session_id: id,
-      state: "ACTIVE",
-      capabilities: {
-        protocol_version: "1.0",
-        tracks: farTracks,
-        commands: [{ name: "echo", schema: {} }],
-      },
-      selected_transport: { protocol: "webrtc", version: "1.0" },
-    };
-    let answer: Promise<string> | undefined;
-    let deleted = false;
-    // A coordinator that relays signaling to the far peer.
-    const relay = async (input: string | Request | URL, init?: RequestInit): Promise<Response> => {
-      const request = new Request(input, init);
-      const path = new URL(request.url).pathname;
-      if (path === "/sessions" && request.method === "POST") return Response.json(described);
-      if (path === `/sessions/${id}` && request.method === "GET")
-        return deleted
-          ? Response.json({ error: "session not found" }, { status: 404 })
-          : Response.json(described);
-      if (path === `/sessions/${id}` && request.method === "DELETE") {
-        deleted = true;
-        return new Response(null, { status: 202 });
-      }
-      if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
-      if (path.endsWith("/connections")) return Response.json({ connection_id: 1 });
-      if (path.endsWith("/ice_candidates")) {
-        const body = record(await request.json());
-        for (const candidate of Array.isArray(body.candidates) ? body.candidates : [])
-          far.candidate(id, candidate as IceCandidate);
-        return new Response(null, { status: 204 });
-      }
-      if (path.endsWith("/sdp_params")) {
-        if (request.method === "GET") return Response.json({ sdp_answer: await answer });
-        answer = far.answer(id, String(record(await request.json()).sdp_offer));
-        return new Response(null, { status: 204 });
-      }
-      return Response.json({ error: `unhandled route ${path}` }, { status: 404 });
-    };
-    const peers: IsolatedPeer[] = [];
-    try {
-      const result = await runClient(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const factory = yield* isolatedClient(
-              { apiUrl: "https://coordinator.far-peer" },
-              {},
-              peers,
-            );
-            const client = yield* factory.create({
-              model: "far-peer",
-              jwt: Redacted.make("far-peer-token"),
-            });
-            const media = yield* client.decoded;
-            const video = yield* media.video("main_video").pipe(Stream.take(8), Stream.runCollect);
-            const audio = yield* media.audio("main_audio").pipe(Stream.take(8), Stream.runCollect);
-            const pressure = yield* media.pressure;
-            const started = performance.now();
-            const report = yield* client.close;
-            return { video, audio, pressure, report, closeMs: performance.now() - started };
-          }),
-        ),
-        relay,
-      );
-      expect(result.video).toHaveLength(8);
-      expect(result.audio).toHaveLength(8);
-      // Each frame's bytes are the whole of their own buffer after the IPC hop.
-      assertExactFrames(result.video, (frame) => frame.data);
-      assertExactFrames(result.video, (frame) => frame.metadata);
-      assertExactFrames(result.audio, (frame) => frame.samples);
-      for (const frame of result.video) {
-        expect(frame.format).toBe("BGRA");
-        expect(frame.data.byteLength).toBe(frame.width * frame.height * 4);
-      }
-      // The native admission sequence crosses the process boundary: it only rises.
-      for (const frames of [result.video, result.audio])
-        for (let index = 1; index < frames.length; index++)
-          expect(frames[index]!.sequence).toBeGreaterThan(frames[index - 1]!.sequence);
-      expect(result.pressure.deliveredVideo).toBeGreaterThanOrEqual(8n);
-      expect(result.report.localClosed).toBe(true);
-      expect(result.report.localErrors).toEqual([]);
-      expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
-      expect(result.closeMs).toBeLessThan(closeBound);
-      expect(peers).toHaveLength(1);
-      expect(peers[0]!.link.exit).toEqual({ code: 0, signal: null });
-    } finally {
-      await far.close(id);
-    }
-  }, 60_000);
+    it.effect(
+      "delivers exact frames through a canonical session over real libwebrtc in a child process and closes it cleanly",
+      () =>
+        Effect.gen(function* () {
+          const far = yield* FarPeer;
+          const id = "isolated-canonical";
+          yield* Effect.addFinalizer(() => far.close(id));
+          const relay = farPeerCoordinator({ far, id, tracks: farTracks });
+          const peers: Array<IsolatedPeer> = [];
+          const result = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const factory = yield* isolatedClient({
+                settings: { apiUrl: "https://coordinator.far-peer" },
+                options: {},
+                peers,
+              });
+              const client = yield* factory.create({
+                model: "far-peer",
+                jwt: Redacted.make("far-peer-token"),
+              });
+              const media = yield* client.decoded;
+              const video = yield* media
+                .video("main_video")
+                .pipe(Stream.take(8), Stream.runCollect);
+              const audio = yield* media
+                .audio("main_audio")
+                .pipe(Stream.take(8), Stream.runCollect);
+              const pressure = yield* media.pressure;
+              const started = performance.now();
+              const report = yield* client.close;
+              return { video, audio, pressure, report, closeMs: performance.now() - started };
+            }),
+          ).pipe(withFetch(relay.fetch));
+          expect(result.video).toHaveLength(8);
+          expect(result.audio).toHaveLength(8);
+          // Each frame's bytes are the whole of their own buffer after the IPC hop.
+          assertExactFrames({ frames: result.video, bytes: (frame) => frame.data });
+          assertExactFrames({ frames: result.video, bytes: (frame) => frame.metadata });
+          assertExactFrames({ frames: result.audio, bytes: (frame) => frame.samples });
+          for (const frame of result.video) {
+            expect(frame.format).toBe("BGRA");
+            expect(frame.data.byteLength).toBe(frame.width * frame.height * 4);
+          }
+          // The native admission sequence crosses the process boundary: it only rises.
+          for (const frames of [result.video, result.audio])
+            for (let index = 1; index < frames.length; index++)
+              expect(frames[index]!.sequence).toBeGreaterThan(frames[index - 1]!.sequence);
+          expect(result.pressure.deliveredVideo).toBeGreaterThanOrEqual(8n);
+          expect(result.report.localClosed).toBe(true);
+          expect(result.report.localErrors).toEqual([]);
+          expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
+          expect(result.closeMs).toBeLessThan(closeBound);
+          expect(peers).toHaveLength(1);
+          expect(peers[0]!.link.exit).toEqual({ code: 0, signal: null });
+        }),
+      60_000,
+    );
+  });
 });
