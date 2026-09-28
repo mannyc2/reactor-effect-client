@@ -84,16 +84,6 @@
       }
     },
     {
-      // The native package and the hosted harness decode what crosses their boundaries
-      // rather than assert it, and keep no condition their types already decide.
-      "files": ["packages/native/**", "integration/hosted/**"],
-      "rules": {
-        "typescript/no-non-null-assertion": "error",
-        "typescript/no-unnecessary-condition": "error",
-        "typescript/no-unsafe-type-assertion": "error"
-      }
-    },
-    {
       // release-tools builds a changed copy of a Schema class instance by spreading it into
       // the class's `make`, which checks the result again; the prototype is not wanted.
       "files": ["release-tools/**"],
@@ -107,21 +97,14 @@
         "packages/browser/src/BrowserMedia.ts",
         "packages/browser/src/BrowserPeer.ts",
         "packages/browser/test/BrowserMedia.test.ts",
-        "packages/client/src/internal/playout/runtime.ts",
-        "packages/native/scripts/stage.mjs",
-        "packages/native/src/internal/addon.ts",
-        "packages/native/src/internal/peer.ts"
+        "packages/client/src/internal/playout/runtime.ts"
       ],
       "rules": {
         "typescript/no-unsafe-type-assertion": "off"
       }
     },
     {
-      "files": [
-        "integration/hosted/Qualify.ts",
-        "integration/hosted/test/Rehearsal.test.ts",
-        "packages/client/src/internal/playout/runtime.ts"
-      ],
+      "files": ["packages/client/src/internal/playout/runtime.ts"],
       "rules": {
         "typescript/no-unnecessary-condition": "off"
       }
