@@ -16,6 +16,7 @@ import {
   audioReferenceLimits,
   canvases,
   documentedVersion,
+  estimateTokens,
   h3ReferenceTurboRealtime as profile,
   metadataMaxChars,
   referenceLimits,
@@ -34,9 +35,18 @@ export interface H3 {
   readonly playing:
     | { readonly clip: Clip; readonly startedAt: number; readonly token: number }
     | undefined;
-  /** The token of a start waiting out its seam. */
-  readonly arming: number | undefined;
+  /**
+   * The ready clip waiting out its seam before it starts. H3 counts an armed
+   * clip as playing: `state_update` reports it, `play` refuses and `stop` cuts it.
+   */
+  readonly arming: { readonly token: number; readonly clipId: string } | undefined;
   readonly autoplay: boolean;
+  /**
+   * The documented boundary: true flushes the video to black when a clip ends,
+   * false holds its last frame. The paid runs of 2026-09-27 used the default
+   * and saw no black frame at their seams; the documented rule is modelled
+   * until hosted H3 settles the conflict.
+   */
   readonly flush: boolean;
   readonly seed: number;
   readonly clipFrames: number;
@@ -45,6 +55,12 @@ export interface H3 {
   readonly secondsSent: number;
   /** Clips created, which numbers the next clip id. */
   readonly clips: number;
+  /** Clips that finished generating; a continuation can follow one. */
+  readonly generated: ReadonlySet<string>;
+  /** Clips popped, failed or reset away; a continuation from one falls back. */
+  readonly dropped: ReadonlySet<string>;
+  /** The clip each enqueue asked to continue from. */
+  readonly continuations: ReadonlyMap<string, string>;
   /** Timer tokens issued, so a stale timer is ignored. */
   readonly tokens: number;
 }
@@ -63,6 +79,9 @@ export const initial: H3 = {
   clipsPlayed: 0,
   secondsSent: 0,
   clips: 0,
+  generated: new Set(),
+  dropped: new Set(),
+  continuations: new Map(),
   tokens: 0,
 };
 
@@ -73,6 +92,8 @@ export type Input =
       readonly requestId: string;
       readonly name: string;
       readonly args: JsonObject;
+      /** A fault's refusal, returned in place of the command. */
+      readonly refuse?: string;
     }
   | { readonly _tag: "Built"; readonly token: number }
   | { readonly _tag: "BuildFailed"; readonly token: number; readonly reason: string }
@@ -94,8 +115,21 @@ export type Output =
       readonly startedAt: number;
       readonly token: number;
     }
-  /** Playback stopped before the clip's last frame. */
-  | { readonly _tag: "Halt" };
+  /** Playback of the clip started with `token` stopped before its last frame. */
+  | { readonly _tag: "Halt"; readonly token: number }
+  /** The video flushes to black at a boundary. */
+  | { readonly _tag: "Flush"; readonly clip: Clip }
+  /**
+   * A clip asked to continue from another starts building: the continuation
+   * applies only if that clip finished generating and was not dropped, and
+   * otherwise the clip builds independently, which H3 does not report.
+   */
+  | {
+      readonly _tag: "Continuation";
+      readonly clipId: string;
+      readonly from: string;
+      readonly applied: boolean;
+    };
 
 export interface Env {
   /** Monotonic milliseconds. */
@@ -104,9 +138,19 @@ export interface Env {
   readonly playoutCapacity: number;
 }
 
+const idPrefix = "00000000-0000-4000-8000-";
+
 /** Clip ids are UUIDs numbered in creation order, so a frame can name its clip. */
 export const clipId = (ordinal: number): string =>
-  `00000000-0000-4000-8000-${ordinal.toString(16).padStart(12, "0")}`;
+  `${idPrefix}${ordinal.toString(16).padStart(12, "0")}`;
+
+/** Whether the session created `id` and has not dropped it. */
+const holds = (model: H3, id: string): boolean => {
+  const ordinal = id.startsWith(idPrefix) ? Number.parseInt(id.slice(idPrefix.length), 16) : 0;
+  return ordinal >= 1 && ordinal <= model.clips && !model.dropped.has(id);
+};
+
+const adding = (set: ReadonlySet<string>, ids: ReadonlyArray<string>) => new Set([...set, ...ids]);
 
 const requestable = (seconds: number): boolean =>
   seconds >= requestSeconds.min && seconds <= requestSeconds.max;
@@ -162,7 +206,7 @@ export const step: {
   const elapsed = (): number | undefined =>
     s.playing && Math.min(s.playing.clip.seconds, (env.now - s.playing.startedAt) / 1000);
   const state = (): State => {
-    const idle = s.playing === undefined;
+    const idle = s.playing === undefined && s.arming === undefined;
     const queued = s.generation.length + s.playout.length;
     // Commands the state names valid; any command not listed here always is.
     const valid: Partial<Record<string, boolean>> = {
@@ -183,7 +227,7 @@ export const step: {
       aspect: s.aspect,
       ...canvases[s.aspect],
       playing: !idle,
-      playing_clip_id: s.playing?.clip.clip_id ?? null,
+      playing_clip_id: s.playing?.clip.clip_id ?? s.arming?.clipId ?? null,
       generation_queued: s.generation.length,
       generation_capacity: env.generationCapacity,
       playout_queued: s.playout.length,
@@ -197,20 +241,48 @@ export const step: {
     broadcast({ type: "queue_update", data: queue() });
     if (withState) broadcast({ type: "state_update", data: state() });
   };
-  /** The next clip builds unless a build holds the slot or the ready queue is full. */
+  const fail = (clip: Clip, reason: string): void => {
+    set({
+      generation: s.generation.filter((entry) => entry !== clip),
+      dropped: adding(s.dropped, [clip.clip_id]),
+    });
+    broadcast({ type: "clip_failed", data: { clip, reason } });
+    changed();
+  };
+  /**
+   * The next clip builds unless a build holds the slot or the ready queue is
+   * full. A prompt past the model's text budget fails its clip when it would
+   * build.
+   */
   const build = (): void => {
-    const next = s.generation[0];
-    if (s.building !== undefined || next === undefined) return;
-    if (s.playout.length >= env.playoutCapacity) return;
-    const t = token();
-    set({ building: { clipId: next.clip_id, token: t, discarded: false } });
-    emit({ _tag: "Build", token: t, seconds: next.seconds });
+    for (;;) {
+      const next = s.generation[0];
+      if (s.building !== undefined || next === undefined) return;
+      if (s.playout.length >= env.playoutCapacity) return;
+      if (estimateTokens(profile, next.prompt) > profile.prompt.maxTokens) {
+        fail(next, "the prompt exceeds the model's text budget");
+        continue;
+      }
+      const from = s.continuations.get(next.clip_id);
+      if (from !== undefined)
+        emit({
+          _tag: "Continuation",
+          clipId: next.clip_id,
+          from,
+          applied: s.generated.has(from) && !s.dropped.has(from),
+        });
+      const t = token();
+      set({ building: { clipId: next.clip_id, token: t, discarded: false } });
+      emit({ _tag: "Build", token: t, seconds: next.seconds });
+      return;
+    }
   };
   const arm = (): void => {
     if (!s.autoplay || s.playing !== undefined || s.arming !== undefined) return;
-    if (s.playout.length === 0) return;
+    const next = s.playout[0];
+    if (next === undefined) return;
     const t = token();
-    set({ arming: t });
+    set({ arming: { token: t, clipId: next.clip_id } });
     emit({ _tag: "Arm", token: t });
   };
   const start = (clip: Clip): void => {
@@ -234,10 +306,27 @@ export const step: {
       secondsSent: s.secondsSent + seconds,
       clipsPlayed: s.clipsPlayed + 1,
     });
-    if (how === "clip_stopped") emit({ _tag: "Halt" });
+    if (how === "clip_stopped") emit({ _tag: "Halt", token: playing.token });
+    if (s.flush) emit({ _tag: "Flush", clip: playing.clip });
     broadcast({ type: how, data: { clip: playing.clip, seconds_sent: s.secondsSent } });
     broadcast({ type: "state_update", data: state() });
     arm();
+  };
+  /** Stop cuts the armed clip before it starts, as it would cut a playing one. */
+  const cutArmed = (): boolean => {
+    const armed =
+      s.playout.find((entry) => entry.clip_id === s.arming?.clipId) ??
+      (s.arming === undefined ? undefined : s.playout[0]);
+    if (armed === undefined) return false;
+    set({
+      arming: undefined,
+      playout: s.playout.filter((entry) => entry !== armed),
+      clipsPlayed: s.clipsPlayed + 1,
+    });
+    broadcast({ type: "clip_stopped", data: { clip: armed, seconds_sent: s.secondsSent } });
+    changed();
+    arm();
+    return true;
   };
   const accepted = (id: string, message: Message): void => {
     reply(id, message);
@@ -255,6 +344,13 @@ export const step: {
     const a = decoded.success;
     const problem = refusal(a, s.generation.length, env);
     if (problem !== undefined) return refuse(id, "enqueue", problem);
+    // An unknown or dropped continuation falls back to an independent clip,
+    // except for a clip whose audio would then have no image to go with.
+    const from = a.continue_from_clip_id ?? "";
+    const audioOnly =
+      (a.reference_audios?.length ?? 0) > 0 && (a.reference_images?.length ?? 0) === 0;
+    if (from !== "" && !holds(s, from) && audioOnly)
+      return refuse(id, "enqueue", "continue_from_clip_id names no clip the session holds");
     const frames = a.seconds == null ? s.clipFrames : alignFrames(profile, a.seconds);
     const images = a.reference_images?.length ?? 0;
     const audios = a.reference_audios?.length ?? 0;
@@ -278,6 +374,7 @@ export const step: {
       clips: s.clips + 1,
       seed: a.seed == null ? s.seed + 1 : s.seed,
       generation: [...s.generation.slice(0, at), clip, ...s.generation.slice(at)],
+      ...(from === "" ? {} : { continuations: new Map(s.continuations).set(clip.clip_id, from) }),
     });
     // Hosted H3 broadcasts the queue that lists the clip before its reply.
     changed();
@@ -315,6 +412,7 @@ export const step: {
     set({
       generation: s.generation.filter((entry) => entry !== clip),
       playout: s.playout.filter((entry) => entry !== clip),
+      dropped: adding(s.dropped, [clip.clip_id]),
       ...(s.building?.clipId === clip.clip_id
         ? { building: { ...s.building, discarded: true } }
         : {}),
@@ -327,7 +425,8 @@ export const step: {
   const play = (id: string, args: JsonObject): void => {
     const decoded = Schema.decodeResult(Commands.play.args)({ clip_id: "", ...args });
     if (Result.isFailure(decoded)) return refuse(id, "play", "invalid arguments");
-    if (s.playing !== undefined) return refuse(id, "play", "a clip is already playing");
+    if (s.playing !== undefined || s.arming !== undefined)
+      return refuse(id, "play", "a clip is already playing");
     const wanted = decoded.success.clip_id;
     const clip = wanted === "" ? s.playout[0] : s.playout.find((entry) => entry.clip_id === wanted);
     if (clip === undefined) return refuse(id, "play", "no matching ready clip");
@@ -336,23 +435,33 @@ export const step: {
   };
 
   const reset = (id: string): void => {
-    const playing = s.playing;
-    const cleared = s.generation.length + s.playout.length;
+    const armed = s.playout.find((entry) => entry.clip_id === s.arming?.clipId);
+    const stopped = s.playing?.clip ?? armed;
+    const queued = [...s.generation, ...s.playout].filter((clip) => clip !== armed);
+    const halted = s.playing?.token;
     set({
       ...initial,
       clips: s.clips,
       tokens: s.tokens,
-      clipsPlayed: s.clipsPlayed + (playing === undefined ? 0 : 1),
+      generated: s.generated,
+      dropped: adding(
+        s.dropped,
+        [...queued, ...(armed === undefined ? [] : [armed])].map((clip) => clip.clip_id),
+      ),
+      continuations: s.continuations,
+      clipsPlayed: s.clipsPlayed + (stopped === undefined ? 0 : 1),
       secondsSent: s.secondsSent + (elapsed() ?? 0),
     });
     reply(id, {
       type: "session_reset",
-      data: { cleared_clips: cleared, was_playing: playing !== undefined },
+      data: { cleared_clips: queued.length, was_playing: stopped !== undefined },
     });
     changed();
-    if (playing === undefined) return;
-    emit({ _tag: "Halt" });
-    broadcast({ type: "clip_stopped", data: { clip: playing.clip, seconds_sent: s.secondsSent } });
+    if (stopped === undefined) return;
+    if (halted !== undefined) emit({ _tag: "Halt", token: halted });
+    // Reset always clears the tracks.
+    emit({ _tag: "Flush", clip: stopped });
+    broadcast({ type: "clip_stopped", data: { clip: stopped, seconds_sent: s.secondsSent } });
   };
 
   const command = (id: string, name: string, args: JsonObject): void => {
@@ -366,9 +475,14 @@ export const step: {
       case "play":
         return play(id, args);
       case "stop":
-        if (s.playing === undefined) return refuse(id, name, "nothing is playing");
+        if (s.playing !== undefined) {
+          emit({ _tag: "Ack", requestId: id });
+          return end("clip_stopped");
+        }
+        if (s.arming === undefined) return refuse(id, name, "nothing is playing");
         emit({ _tag: "Ack", requestId: id });
-        return end("clip_stopped");
+        cutArmed();
+        return;
       case "set_seed": {
         const decoded = Schema.decodeUnknownResult(Commands.set_seed.args)(args);
         if (Result.isFailure(decoded) || decoded.success.seed < 0)
@@ -421,7 +535,8 @@ export const step: {
       changed();
       break;
     case "Command":
-      command(input.requestId, input.name, input.args);
+      if (input.refuse !== undefined) refuse(input.requestId, input.name, input.refuse);
+      else command(input.requestId, input.name, input.args);
       break;
     case "Built":
     case "BuildFailed": {
@@ -433,9 +548,12 @@ export const step: {
         set({ generation: s.generation.filter((entry) => entry !== clip) });
         if (input._tag === "Built") {
           const ready: Clip = { ...clip, ready: true };
-          set({ playout: [...s.playout, ready] });
+          set({ playout: [...s.playout, ready], generated: adding(s.generated, [clip.clip_id]) });
           broadcast({ type: "clip_generated", data: { clip: ready } });
-        } else broadcast({ type: "clip_failed", data: { clip, reason: input.reason } });
+        } else {
+          set({ dropped: adding(s.dropped, [clip.clip_id]) });
+          broadcast({ type: "clip_failed", data: { clip, reason: input.reason } });
+        }
         changed();
         arm();
       }
@@ -443,9 +561,10 @@ export const step: {
       break;
     }
     case "Start": {
-      if (s.arming !== input.token) break;
+      const armed = s.arming;
+      if (armed?.token !== input.token) break;
       set({ arming: undefined });
-      const next = s.playout[0];
+      const next = s.playout.find((entry) => entry.clip_id === armed.clipId) ?? s.playout[0];
       if (next !== undefined && s.autoplay && s.playing === undefined) start(next);
       break;
     }

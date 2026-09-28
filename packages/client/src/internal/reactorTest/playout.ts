@@ -6,7 +6,7 @@
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as FiberHandle from "effect/FiberHandle";
+import * as FiberMap from "effect/FiberMap";
 import * as FiberSet from "effect/FiberSet";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
@@ -51,9 +51,15 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   const model = yield* Ref.make(H3.initial);
   const lock = yield* Semaphore.make(1);
   const timers = yield* FiberSet.make<void>();
-  const player = yield* FiberHandle.make<void>();
+  /** Each playing clip's media, by its start token: a stop ends one, a boundary none. */
+  const players = yield* FiberMap.make<number, void>();
+  /**
+   * The open connection. Its media arrives at one latency, drawn when it
+   * opens, so frames keep their order across a boundary as a track does.
+   */
   const connection = yield* Ref.make<
-    { readonly link: Link; readonly paused: ReadonlySet<string> } | undefined
+    | { readonly link: Link; readonly paused: ReadonlySet<string>; readonly latency: number }
+    | undefined
   >(undefined);
 
   const send = (channel: "control" | "data", bytes: Uint8Array<ArrayBuffer>) =>
@@ -95,16 +101,36 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     Effect.flatMap(Ref.get(connection), (open) =>
       open === undefined || open.paused.has(track) ? Effect.void : deliver(open.link),
     );
+  const latency = Effect.map(Ref.get(connection), (open) => open?.latency ?? 0);
+  /** One black frame, sent `at` a boundary: the flush H3 documents for `flush_on_clip_end`. */
+  const flush = (clip: Clip, at: number) =>
+    until(at).pipe(
+      Effect.andThen(
+        media(profile.tracks.video, (link) =>
+          link.video({
+            data: Media.render({
+              clipId: clip.clip_id,
+              index: clip.frames,
+              picture: "black",
+              width: options.width,
+              height: options.height,
+            }),
+            frameId: BigInt(clip.frames + 1),
+            timestampMicros: BigInt(Math.round(at * 1000)),
+          }),
+        ),
+      ),
+    );
   /** One clip's frames and audio, each at its own time, until the clip ends or stops. */
   const play = (clip: Clip, startedAt: number) =>
     Effect.gen(function* () {
       const video = yield* faults.standing((fault) => fault._tag === "Video");
       const silent = yield* faults.standing((fault) => fault._tag === "NoAudio");
       const picture = video?._tag === "Video" ? video.video : "live";
-      const latency = yield* environment.timing.delay("channel");
+      const delay = yield* latency;
       const frameMs = 1000 / profile.fps;
       const frame = (index: number) =>
-        until(startedAt + latency + index * frameMs).pipe(
+        until(startedAt + delay + index * frameMs).pipe(
           Effect.andThen(
             media(profile.tracks.video, (link) =>
               link.video({
@@ -122,7 +148,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           ),
         );
       const block = (index: number) =>
-        until(startedAt + latency + index * Media.audioBlockMs).pipe(
+        until(startedAt + delay + index * Media.audioBlockMs).pipe(
           Effect.andThen(
             media(profile.tracks.audio, (link) =>
               link.audio(
@@ -175,9 +201,21 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         }
         case "Play":
           yield* later(output.clip.seconds * 1000, { _tag: "Finish", token: output.token });
-          return yield* FiberHandle.run(player, play(output.clip, output.startedAt));
+          return yield* FiberMap.run(players, output.token, play(output.clip, output.startedAt));
         case "Halt":
-          return yield* FiberHandle.clear(player);
+          return yield* FiberMap.remove(players, output.token);
+        case "Flush": {
+          const at = (yield* monotonic) + (yield* latency);
+          return yield* FiberSet.run(timers, flush(output.clip, at));
+        }
+        case "Continuation":
+          return yield* log({
+            sessionId,
+            kind: "build",
+            name: output.applied ? "continued" : "independent",
+            clipId: output.clipId,
+            continuedFrom: output.from,
+          });
       }
     }).pipe(Effect.asVoid);
 
@@ -244,8 +282,19 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       yield* log({ sessionId, kind: "command", name, ...(dropped && { dropped }) });
       if (dropped === "command") return;
       const input = yield* Effect.try(() => (args === undefined ? {} : objectFromStruct(args)));
+      const images = input.reference_images;
+      const invalid =
+        name === "enqueue" && Array.isArray(images) && images.length > 0
+          ? yield* faults.trip((candidate) => candidate._tag === "InvalidImage")
+          : undefined;
       yield* apply(
-        { _tag: "Command", requestId, name, args: input },
+        {
+          _tag: "Command",
+          requestId,
+          name,
+          args: input,
+          ...(invalid === undefined ? {} : { refuse: "a reference image is invalid" }),
+        },
         applied ? requestId : undefined,
       );
     });
@@ -253,10 +302,13 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   return {
     /** The connection's channels opened: hosted Reactor holds its media until it resumes the tracks. */
     connect: (link: Link) =>
-      Ref.set(connection, {
-        link,
-        paused: new Set([profile.tracks.video, profile.tracks.audio]),
-      }).pipe(Effect.andThen(apply({ _tag: "Connected" }))),
+      Effect.flatMap(environment.timing.delay("channel"), (latency) =>
+        Ref.set(connection, {
+          link,
+          paused: new Set([profile.tracks.video, profile.tracks.audio]),
+          latency,
+        }),
+      ).pipe(Effect.andThen(apply({ _tag: "Connected" }))),
     disconnect: (link: Link) =>
       Ref.update(connection, (open) => (open?.link === link ? undefined : open)),
     receive: (link: Link, channel: "control" | "data", bytes: Uint8Array) =>
