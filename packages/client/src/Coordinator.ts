@@ -667,7 +667,62 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   ): Effect.Effect<Reply, ReactorError> =>
     Effect.gen(function* () {
       const operation = spec.operation;
+      const deadline = spec.timeout ?? Duration.seconds(15);
       const url = yield* checkedUrl(spec.url);
+      const auth = spec.auth ?? "session";
+      const authenticate =
+        auth === "session" ||
+        auth === "signaling" ||
+        (auth === "same-origin" && url.origin === origin);
+      // A request whose token could not be had, at all or in time, was never sent. The token
+      // has its own deadline, before the request's starts: a slow mint is not a request that
+      // may have landed.
+      const token = authenticate
+        ? yield* credential.pipe(
+            Effect.timeoutOrElse({
+              duration: deadline,
+              orElse: () =>
+                Effect.fail(
+                  ReactorError.fromCode("Timeout", `${operation}: no token in time`, {
+                    operation,
+                    outcome: "not-submitted",
+                  }),
+                ),
+            }),
+            Effect.mapError((error) =>
+              ReactorError.make({
+                reason: error.reason,
+                context: { ...error.context, operation, outcome: "not-submitted" },
+              }),
+            ),
+          )
+        : undefined;
+      return yield* send(url, token, spec).pipe(
+        Effect.timeoutOrElse({
+          duration: deadline,
+          orElse: () =>
+            Effect.fail(
+              ReactorError.fromCode("Timeout", `${operation}: deadline`, {
+                operation,
+                outcome: "unknown",
+              }),
+            ),
+        }),
+      );
+    }).pipe(
+      // Never follow a redirect with a credential, and never send ambient cookies.
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        credentials: "omit",
+        redirect: "error",
+      }),
+      Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+      Effect.updateService(Headers.CurrentRedactedNames, (names) => [...names, "reactor-api-key"]),
+    );
+
+  /** One request, once its token is in hand: from here, a failure may follow its delivery. */
+  const send = (url: URL, token: Redacted.Redacted<string> | undefined, spec: Exchange) =>
+    Effect.gen(function* () {
+      const operation = spec.operation;
       const auth = spec.auth ?? "session";
       const versioned: Record<string, string> =
         auth === "session" || auth === "signaling"
@@ -677,21 +732,6 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
               ...(auth === "signaling" ? { "reactor-webrtc-version": "1.0" } : {}),
             }
           : {};
-      const authenticate =
-        auth === "session" ||
-        auth === "signaling" ||
-        (auth === "same-origin" && url.origin === origin);
-      // A request whose token could not be had was never sent.
-      const token = authenticate
-        ? yield* credential.pipe(
-            Effect.mapError((error) =>
-              ReactorError.make({
-                reason: error.reason,
-                context: { ...error.context, operation, outcome: "not-submitted" },
-              }),
-            ),
-          )
-        : undefined;
       let request = HttpClientRequest.make(spec.method ?? "GET")(url.href).pipe(
         HttpClientRequest.setHeaders({ ...versioned, ...spec.headers }),
       );
@@ -738,26 +778,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         }),
         context: { operation, outcome: "replied" },
       });
-    }).pipe(
-      Effect.scoped,
-      Effect.timeoutOrElse({
-        duration: spec.timeout ?? Duration.seconds(15),
-        orElse: () =>
-          Effect.fail(
-            ReactorError.fromCode("Timeout", `${spec.operation}: deadline`, {
-              operation: spec.operation,
-              outcome: "unknown",
-            }),
-          ),
-      }),
-      // Never follow a redirect with a credential, and never send ambient cookies.
-      Effect.provideService(FetchHttpClient.RequestInit, {
-        credentials: "omit",
-        redirect: "error",
-      }),
-      Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
-      Effect.updateService(Headers.CurrentRedactedNames, (names) => [...names, "reactor-api-key"]),
-    );
+    }).pipe(Effect.scoped);
 
   const signaling = (
     credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
@@ -869,6 +890,17 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ).pipe(
           Effect.flatMap((body) =>
             request({ operation: "create session", method: "POST", url: path("/sessions"), body }),
+          ),
+          // A refusal (4xx) proves nothing was allocated; a server error may follow an allocation.
+          Effect.mapError((error) =>
+            error.context.outcome === "replied" &&
+            error.reason._tag === "Http" &&
+            (error.reason.status ?? 0) >= 500
+              ? ReactorError.make({
+                  reason: error.reason,
+                  context: { ...error.context, outcome: "unknown" },
+                })
+              : error,
           ),
           Effect.flatMap(decodeReply(Schema.Unknown, "create session")),
           Effect.flatMap((raw) =>

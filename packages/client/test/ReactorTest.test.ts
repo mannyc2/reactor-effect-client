@@ -124,10 +124,26 @@ layer(
       const failure = yield* Effect.flip(connect);
       assert.strictEqual(failure._tag, "AcquisitionFailure");
       assert.deepStrictEqual(
-        failure.reason._tag === "Http" ? [failure.reason.status, failure.context.outcome] : [],
-        [403, "replied"],
+        failure.reason._tag === "Http"
+          ? [failure.reason.status, failure.context.outcome, failure.cleanup.allocation]
+          : [],
+        [403, "replied", "none"],
       );
       assert.deepStrictEqual(yield* test.sessions, []);
+    }),
+  );
+
+  // A refusal proves nothing was allocated; a server error does not, since one can follow an allocation.
+  it.effect("a server error on create leaves the allocation unknown, and not retryable", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseAllocation", nth: 1, status: 503 });
+      const failed = yield* Effect.flip(connect);
+      assert.deepStrictEqual(
+        [failed.cleanup.allocation, failed.context.outcome, failed.isRetryable],
+        ["unknown", "unknown", false],
+      );
     }),
   );
 });

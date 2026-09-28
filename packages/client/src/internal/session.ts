@@ -683,14 +683,19 @@ export const make = Effect.fnUntraced(function* (input: {
           .pipe(Effect.raceFirst(Deferred.await(closing))),
       ).pipe(
         Effect.tapError((error) =>
-          // A request never sent, or a refusal the coordinator answered, proves nothing was allocated.
+          // A request never sent, or a refusal (4xx) the coordinator answered, proves nothing was
+          // allocated; a server error, a timeout or a lost reply does not.
           SubscriptionRef.update(state, (current): State => ({
             ...current,
             remote:
               current.remote?.ownership !== "allocating"
                 ? current.remote
                 : error.context.outcome === "not-submitted" ||
-                    (error.context.outcome === "replied" && error.reason._tag === "Http")
+                    (error.context.outcome === "replied" &&
+                      error.reason._tag === "Http" &&
+                      error.reason.status !== undefined &&
+                      error.reason.status >= 400 &&
+                      error.reason.status < 500)
                   ? undefined
                   : { ownership: "unknown" },
           })),

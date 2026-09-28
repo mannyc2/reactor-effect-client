@@ -37,8 +37,14 @@ const nth = { nth: Schema.optionalKey(Count) };
  * fault matches since it was added, from 1; without it every one matches.
  */
 export const Fault = Schema.Union([
-  /** `POST /sessions` is refused with 403. */
-  Schema.TaggedStruct("RefuseAllocation", nth),
+  /**
+   * `POST /sessions` is refused with 403, or with `status`, allocating nothing
+   * either way: from a 5xx the client cannot tell that.
+   */
+  Schema.TaggedStruct("RefuseAllocation", {
+    ...nth,
+    status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
+  }),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /** The model never answers the command; with `applied` it takes effect and only the reply is lost. */
