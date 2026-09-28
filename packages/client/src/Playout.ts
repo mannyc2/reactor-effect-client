@@ -366,11 +366,14 @@ export interface Source {
   readonly move: (clipId: string, position: number) => Effect.Effect<void, CommandFailure>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
   /**
-   * Stops `clipId` and, once the stop has taken effect, plays `next`, a Ready
-   * clip. Autoplay is off throughout, so nothing starts in between. Another
-   * clip playing by then is left alone.
+   * Stops `clipId` if it still plays, and completes once the provider reports
+   * it ended. A provider's stop may name no clip, so one that ended first, or
+   * another clip playing by then, is left alone. The playout turns autoplay
+   * off first, so nothing starts in its place.
    */
-  readonly cut: (clipId: string, next: string) => Effect.Effect<void, CommandFailure>;
+  readonly stop: (clipId: string) => Effect.Effect<void, CommandFailure>;
+  /** Plays `clipId`, a Ready clip, while nothing plays. */
+  readonly play: (clipId: string) => Effect.Effect<void, CommandFailure>;
   readonly video: Stream.Stream<VideoFrame, ReactorError>;
   readonly audio: Stream.Stream<AudioFrame, ReactorError>;
   /** Idempotent; closing an owned session terminates it. */

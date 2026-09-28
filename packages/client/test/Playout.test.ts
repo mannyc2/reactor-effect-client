@@ -365,33 +365,6 @@ layer(
   );
 });
 
-layer(hosted)("the cut's fence", (it) => {
-  it.effect("puts back the autoplay the playout asked for, not always on", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const source = yield* H3Source.open({ tokens: yield* tokens("10 minutes") });
-      const started = yield* Ref.make<ReadonlyArray<string>>([]);
-      yield* source.events.pipe(
-        Stream.runForEach((event) =>
-          event._tag === "Started"
-            ? Ref.update(started, (all) => [...all, event.clip.clipId])
-            : Effect.void,
-        ),
-        Effect.forkScoped,
-      );
-      yield* source.setAutoplay(false);
-      const first = yield* source.enqueue(clip("first"), { _tag: "Filler", index: 0 });
-      yield* source.enqueue(clip("second"), { _tag: "Filler", index: 1 });
-      yield* Effect.sleep("6 seconds");
-      // Nothing plays, so nothing is stopped; the play starts the first clip.
-      yield* source.cut("no-such-clip", first);
-      yield* Effect.sleep("12 seconds");
-      // Autoplay stayed off: the second clip, Ready all along, waits for a play.
-      assert.deepStrictEqual(yield* Ref.get(started), [first]);
-    }),
-  );
-});
-
 layer(hosted)("resume", (it) => {
   // H3 keeps no history: the process that adopts a session learns the playing clip's id
   // from the state alone. The rehearsed `resume` check found that id dropped.

@@ -12,6 +12,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -22,7 +23,7 @@ import type * as Playout from "../../Playout.js";
 import { requestSeconds } from "../h3/profile.js";
 import { take } from "../queue.js";
 import { ReactorError } from "../../ReactorError.js";
-import type { ReactorFailure } from "../../ReactorError.js";
+import type { CommandFailure, ReactorFailure } from "../../ReactorError.js";
 import type { CloseReport } from "../../Session.js";
 import {
   InvalidItem,
@@ -259,30 +260,28 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         } as const;
       const source = entry.source;
       const command = action.command;
-      const result =
-        command._tag === "Enqueue"
-          ? Effect.map(
-              source.enqueue(command.request, command.tag, command.continueFrom),
-              (clipId) => ({ clipId }),
-            )
-          : command._tag === "Remove"
-            ? source.remove(command.clipId)
-            : command._tag === "Move"
-              ? source.move(command.clipId, command.position)
-              : command._tag === "Autoplay"
-                ? source.setAutoplay(command.enabled)
-                : source.cut(command.clipId, command.next);
+      const result = ((): Effect.Effect<string | void, CommandFailure> => {
+        switch (command._tag) {
+          case "Enqueue":
+            return source.enqueue(command.request, command.tag, command.continueFrom);
+          case "Remove":
+            return source.remove(command.clipId);
+          case "Move":
+            return source.move(command.clipId, command.position);
+          case "Autoplay":
+            return source.setAutoplay(command.enabled);
+          case "Stop":
+            return source.stop(command.clipId);
+          case "Play":
+            return source.play(command.clipId);
+        }
+      })();
       const exit = yield* Effect.exit(result);
-      if (Exit.isSuccess(exit)) {
-        const value: unknown = exit.value;
+      if (Exit.isSuccess(exit))
         return {
           _tag: "Done",
-          clipId:
-            typeof value === "object" && value !== null && "clipId" in value
-              ? String(value.clipId)
-              : undefined,
+          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
         } as const;
-      }
       const error = Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
       return {
         _tag: "Failed",

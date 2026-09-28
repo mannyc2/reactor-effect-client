@@ -293,18 +293,6 @@ const fromSession = Effect.fnUntraced(function* (
           ),
       }),
     );
-  // The autoplay the playout last asked for, which a cut puts back when it is done.
-  const autoplay = yield* Ref.make(false);
-  const withAutoplayOff = <A>(effect: Effect.Effect<A, CommandFailure>) =>
-    provider.setAutoplay(false).pipe(
-      Effect.andThen(Effect.exit(effect)),
-      Effect.flatMap((exit) =>
-        Effect.andThen(
-          Effect.flatMap(Ref.get(autoplay), (wanted) => provider.setAutoplay(wanted)),
-          exit,
-        ),
-      ),
-    );
   return {
     sessionId: session.id,
     lifetime: options.lifetime,
@@ -333,24 +321,19 @@ const fromSession = Effect.fnUntraced(function* (
       }),
     remove: (clipId) => Effect.asVoid(provider.pop(clipId)),
     move: (clipId, position) => Effect.asVoid(provider.move(clipId, position)),
-    setAutoplay: (enabled) =>
-      provider.setAutoplay(enabled).pipe(Effect.andThen(Ref.set(autoplay, enabled))),
-    // With autoplay off nothing starts between the stop and the play, so the stop can only hit
-    // the clip that was playing. That clip may have ended on its own first: a refusal because
-    // nothing plays is harmless, and a clip that took its place is not stopped.
-    cut: (clipId, next) =>
-      withAutoplayOff(
-        Effect.gen(function* () {
-          const playing = playingOf(yield* provider.snapshot);
-          if (playing !== undefined && playing !== clipId) return;
-          if (playing !== undefined)
-            yield* provider.stop.pipe(
-              Effect.flatMap((stopped) => landed(clipId, stopped)),
-              Effect.catchIf(replied, () => Effect.void),
-            );
-          yield* provider.play(next);
-        }),
-      ),
+    setAutoplay: (enabled) => Effect.asVoid(provider.setAutoplay(enabled)),
+    // With autoplay off nothing starts after the clip, so H3's stop, which names no clip, can
+    // only hit it. It may have ended on its own first: a refusal because nothing plays is
+    // harmless, and a clip that took its place is not stopped.
+    stop: (clipId) =>
+      Effect.gen(function* () {
+        if (playingOf(yield* provider.snapshot) !== clipId) return;
+        yield* provider.stop.pipe(
+          Effect.flatMap((stopped) => landed(clipId, stopped)),
+          Effect.catchIf(replied, () => Effect.void),
+        );
+      }),
+    play: (clipId) => Effect.asVoid(provider.play(clipId)),
     video: track(session, (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video)),
     audio: track(session, (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio)),
     close: session.close,

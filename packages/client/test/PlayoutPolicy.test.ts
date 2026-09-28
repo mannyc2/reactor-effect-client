@@ -198,12 +198,12 @@ describe("PlayoutPolicy", () => {
               state: source({ playing, ready: [clip("cu", item("urgent"))] }),
             },
           },
+          { _tag: "Result", id: 3, result: { _tag: "Done" } },
         ]).actions,
-      ).find((action) => action.command._tag === "Cut");
+      ).find((action) => action.command._tag === "Stop");
     assert.deepStrictEqual(cut(clip("filler", { _tag: "Filler", index: 0 }, 15))?.command, {
-      _tag: "Cut",
+      _tag: "Stop",
       clipId: "filler",
-      next: "cu",
     });
     assert.isUndefined(cut(clip("peer", item("other"), 15)));
   });
@@ -211,31 +211,24 @@ describe("PlayoutPolicy", () => {
   // The 0.7.0 scheduler-cut paid run: H3 answered the stop before it reported the clip ended,
   // the scheduler cut the clip again, and that second stop cut the cutter 5 ms after it started.
   it("cuts a playing clip once, though its end is reported after the cut's result", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
     const playing = clip("long", item("other"), 15);
-    const stale: Policy.Input = {
-      _tag: "Source",
-      sessionId: "s1",
-      event: {
-        _tag: "State",
-        state: source({ playing, ready: [clip("cu", item("urgent"))] }),
-      },
-    };
-    const { state, actions } = run([
-      ...opened(),
-      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("other") }], batch: false },
-      { _tag: "Result", id: 2, result: { _tag: "Done", clipId: "long" } },
-      { _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: playing } },
-      { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("urgent", 0) }], batch: false },
-      { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "cu" } },
-      stale,
-    ]);
-    assert.deepStrictEqual(commands(actions).at(-1)?.command, {
-      _tag: "Cut",
-      clipId: "long",
-      next: "cu",
-    });
-    const after = run([answer(state, { _tag: "Done" }), stale, { _tag: "Tick" }], state, 10);
-    assert.isUndefined(commands(after.actions).find((action) => action.command._tag === "Cut"));
+    policy.submit(spec("other"));
+    policy.reply({ _tag: "Done", clipId: "long" });
+    policy.event({ _tag: "Started", clip: playing });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "cu" });
+    const stale: Partial<SourceState> = { playing, ready: [clip("cu", item("urgent"))] };
+    policy.observe(stale);
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "long" });
+    policy.reply({ _tag: "Done" });
+    policy.observe(stale);
+    policy.tick();
+    const stops = commands(policy.actions).filter((action) => action.command._tag === "Stop");
+    assert.strictEqual(stops.length, 1);
   });
 
   it("withdraws what has no clip at once and removes a clip before it drops it", () => {
@@ -792,7 +785,9 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(withdrawn(policy.actions), ["not-found"]);
   });
 
-  it("answers already-started for a cutter the cut in flight is playing", () => {
+  // One command at a time: a cut that stopped the playing clip and played its cutter in one call
+  // played a cutter withdrawn while the stop was landing, and answered already-started.
+  it("drops a cutter withdrawn while its cut stops the playing clip, and never plays it", () => {
     const policy = drive();
     policy.tick(0);
     policy.open();
@@ -803,15 +798,52 @@ describe("PlayoutPolicy, edits", () => {
     policy.observe({ playing: long });
     policy.submit(spec("urgent", 0));
     policy.reply({ _tag: "Done", clipId: "c-urgent" });
-    policy.observe({ playing: long, ready: [clip("c-urgent", item("urgent"))] });
-    assert.deepStrictEqual(policy.busy(), { _tag: "Cut", clipId: "c-long", next: "c-urgent" });
-    // The withdrawal waits behind the cut, which plays the cutter: it is too late.
+    const cutter = clip("c-urgent", item("urgent"));
+    policy.observe({ playing: long, ready: [cutter] });
+    // Autoplay goes off first, so nothing starts in the stopped clip's place.
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "c-long" });
     policy.edit([{ _tag: "Withdraw", key: key("urgent") }]);
     policy.event({ _tag: "Ended", clip: long, termination: "stopped" });
-    policy.event({ _tag: "Started", clip: clip("c-urgent", item("urgent")) });
-    assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
+    policy.observe({ ready: [cutter] });
     policy.reply({ _tag: "Done" });
-    assert.deepStrictEqual(policy.busy(), undefined);
+    // The plan looks again once the stop has landed: the cutter goes instead of playing.
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-urgent" });
+    policy.reply({ _tag: "Done" });
+    policy.observe({});
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+    assert.deepStrictEqual(statuses(policy.actions, "urgent").at(-1), "Dropped");
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+    assert.isUndefined(commands(policy.actions).find((action) => action.command._tag === "Play"));
+  });
+
+  it("plays the cutter once the stop has landed, then puts autoplay back", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const long = clip("c-long", item("long"), 15);
+    policy.submit(spec("long", 1, 15));
+    built(policy, ["long"]);
+    policy.event({ _tag: "Started", clip: long });
+    policy.observe({ playing: long });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "c-urgent" });
+    const cutter = clip("c-urgent", item("urgent"));
+    policy.observe({ playing: long, ready: [cutter] });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "c-long" });
+    // The stop's reply can come before H3 reports the clip ended: the play waits for that.
+    policy.reply({ _tag: "Done" });
+    assert.isUndefined(policy.busy());
+    policy.event({ _tag: "Ended", clip: long, termination: "stopped" });
+    policy.observe({ ready: [cutter] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Play", clipId: "c-urgent" });
+    policy.reply({ _tag: "Done" });
+    policy.event({ _tag: "Started", clip: cutter });
+    policy.observe({ playing: cutter });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+    assert.deepStrictEqual(statuses(policy.actions, "urgent").at(-1), "Started");
   });
 
   // 0.7.0 answered a group key's withdrawal `withdrawn` if any part was; the first Playout
@@ -998,9 +1030,9 @@ const simulate = (script: Script) => {
         outstanding = { id: action.id, sessionId: action.sessionId };
         // A cut stops only filler, a clip the plan does not own, or a strictly lower lane's clip.
         const command = action.command;
-        if (command._tag === "Cut") {
+        if (command._tag === "Stop") {
           const value = sessions.get(action.sessionId);
-          const cutter = value?.ready.find((clip) => clip.clipId === command.next)?.tag;
+          const cutter = value?.ready.find((clip) => clip.clipId === state.cutting?.next)?.tag;
           const cut = value?.playing?.clipId === command.clipId ? value.playing.tag : undefined;
           if (
             cutter?._tag === "Item" &&
@@ -1164,26 +1196,27 @@ const simulate = (script: Script) => {
               }
               break;
             }
-            case "Cut": {
-              const next = value.ready.find((clip) => clip.clipId === command.next);
-              if (value.playing?.clipId === command.clipId) {
-                const cut = value.playing;
-                value.playing = undefined;
-                send({
-                  _tag: "Source",
-                  sessionId: busy.sessionId,
-                  event: { _tag: "Ended", clip: cut, termination: "stopped" },
-                });
-              }
-              if (next !== undefined && value.playing === undefined) {
-                value.ready = value.ready.filter((clip) => clip !== next);
-                value.playing = next;
-                send({
-                  _tag: "Source",
-                  sessionId: busy.sessionId,
-                  event: { _tag: "Started", clip: next },
-                });
-              }
+            case "Stop": {
+              if (value.playing?.clipId !== command.clipId) break;
+              const cut = value.playing;
+              value.playing = undefined;
+              send({
+                _tag: "Source",
+                sessionId: busy.sessionId,
+                event: { _tag: "Ended", clip: cut, termination: "stopped" },
+              });
+              break;
+            }
+            case "Play": {
+              const next = value.ready.find((clip) => clip.clipId === command.clipId);
+              if (next === undefined || value.playing !== undefined) break;
+              value.ready = value.ready.filter((clip) => clip !== next);
+              value.playing = next;
+              send({
+                _tag: "Source",
+                sessionId: busy.sessionId,
+                event: { _tag: "Started", clip: next },
+              });
               break;
             }
             case "Autoplay":

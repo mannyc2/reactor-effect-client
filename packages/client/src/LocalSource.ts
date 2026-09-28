@@ -57,6 +57,8 @@ interface Local {
   readonly ready: ReadonlyArray<Queued>;
   readonly playing: Queued | undefined;
   readonly autoplay: boolean;
+  /** A Ready clip asked to play, which plays next whatever autoplay says. */
+  readonly play: string | undefined;
   /** The build in flight was popped: it finishes, and its result is discarded. */
   readonly popped: ReadonlySet<string>;
 }
@@ -73,6 +75,12 @@ const view = (local: Local): SourceState => ({
   playing: local.playing === undefined ? undefined : clip(local.playing),
   continuable: [],
 });
+/** What plays once nothing does: the clip asked for, else with autoplay on the queue's head. */
+const nextToPlay = (local: Local): Queued | undefined => {
+  if (local.playing !== undefined) return undefined;
+  if (local.play !== undefined) return local.ready.find((value) => value.clipId === local.play);
+  return local.autoplay ? local.ready[0] : undefined;
+};
 const refused = (operation: string, message: string) =>
   CommandFailure.from(ReactorError.fromCode("InvalidState", message), {
     operation,
@@ -88,6 +96,7 @@ export const open = Effect.fnUntraced(function* (
     ready: [],
     playing: undefined,
     autoplay: false,
+    play: undefined,
     popped: new Set(),
   });
   const events = yield* PubSub.unbounded<SourceEvent>();
@@ -104,8 +113,8 @@ export const open = Effect.fnUntraced(function* (
     Effect.flatMap(SubscriptionRef.updateAndGet(state, f), (local) =>
       publish({ _tag: "State", state: view(local) }),
     );
-  /** The first clip `pick` finds in the state, now or once it changes. */
-  const first = (pick: (local: Local) => Queued | undefined) =>
+  /** The first value `pick` finds in the state, now or once it changes. */
+  const first = <A>(pick: (local: Local) => A | undefined) =>
     SubscriptionRef.changes(state).pipe(
       Stream.map(pick),
       Stream.filter(Predicate.isNotUndefined),
@@ -142,15 +151,18 @@ export const open = Effect.fnUntraced(function* (
     }),
   ).pipe(Effect.forkScoped);
 
-  // Autoplay: the head of the playout queue plays once nothing else does.
+  // Playback: a clip plays once nothing else does, as `nextToPlay` picks it.
   yield* Effect.forever(
     Effect.gen(function* () {
-      const next = yield* first((value) =>
-        value.autoplay && value.playing === undefined ? value.ready[0] : undefined,
-      );
+      const next = yield* first(nextToPlay);
       const stopped = yield* Deferred.make<void>();
       yield* Ref.set(stop, stopped);
-      yield* change((value) => ({ ...value, ready: value.ready.slice(1), playing: next }));
+      yield* change((value) => ({
+        ...value,
+        ready: value.ready.filter((other) => other.clipId !== next.clipId),
+        playing: next,
+        play: undefined,
+      }));
       yield* publish({ _tag: "Started", clip: clip(next) });
       // A presentation that fails did not air in full: it ends as stopped, and the failure is logged.
       const presentation =
@@ -237,17 +249,22 @@ export const open = Effect.fnUntraced(function* (
         return { ...value, ready: [...rest.slice(0, position), moved, ...rest.slice(position)] };
       }),
     setAutoplay: (enabled) => change((value) => ({ ...value, autoplay: enabled })),
-    cut: (clipId, next) =>
+    stop: (clipId) =>
       Effect.gen(function* () {
-        yield* change((value) => {
-          const moved = value.ready.find((other) => other.clipId === next);
-          return moved === undefined
-            ? value
-            : { ...value, ready: [moved, ...value.ready.filter((other) => other !== moved)] };
-        });
         const current = yield* Ref.get(stop);
-        if (current !== undefined && (yield* SubscriptionRef.get(state)).playing?.clipId === clipId)
-          yield* Deferred.succeed(current, undefined);
+        if (current === undefined || (yield* SubscriptionRef.get(state)).playing?.clipId !== clipId)
+          return;
+        yield* Deferred.succeed(current, undefined);
+        // It has ended once playback takes it off.
+        yield* first((value) => (value.playing?.clipId === clipId ? undefined : true));
+      }),
+    play: (clipId) =>
+      Effect.gen(function* () {
+        const local = yield* SubscriptionRef.get(state);
+        if (local.playing !== undefined) return yield* refused("play", "a clip is playing");
+        if (!local.ready.some((value) => value.clipId === clipId))
+          return yield* refused("play", "no Ready clip has this id");
+        yield* change((value) => ({ ...value, play: clipId }));
       }),
     video: Stream.fromPubSub(video),
     audio: Stream.fromPubSub(audio),

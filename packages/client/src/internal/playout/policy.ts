@@ -78,8 +78,9 @@ export type Command =
   | { readonly _tag: "Remove"; readonly clipId: string }
   | { readonly _tag: "Move"; readonly clipId: string; readonly position: number }
   | { readonly _tag: "Autoplay"; readonly enabled: boolean }
-  /** Stop `clipId`, if it still plays, and play `next`. */
-  | { readonly _tag: "Cut"; readonly clipId: string; readonly next: string };
+  /** Stop `clipId` if it still plays, once autoplay is off; done when its end is reported. */
+  | { readonly _tag: "Stop"; readonly clipId: string }
+  | { readonly _tag: "Play"; readonly clipId: string };
 
 /** A command's result: the clip an enqueue created, or how a failure left the provider. */
 export type CommandResult =
@@ -323,6 +324,20 @@ export interface State {
    * its end is reported, so a second cut would stop the clip after it.
    */
   readonly cut: string | undefined;
+  /**
+   * The cut under way, one command at a time: autoplay off on its session, a
+   * stop of the clip it cuts, then a play of its cutter. Autoplay stays off
+   * until the cutter has left the Ready queue, played or withdrawn, or a step
+   * failed with the cutter still wanted, which then airs at the next boundary.
+   */
+  readonly cutting:
+    | {
+        readonly sessionId: string;
+        readonly clipId: string;
+        readonly next: string;
+        readonly stage: "stopping" | "stopped" | "played" | "failed";
+      }
+    | undefined;
   readonly starving: boolean;
   readonly starved: number;
 }
@@ -364,6 +379,7 @@ export const initial: State = {
   samples: { build: [], continued: [], length: [] },
   blockedMove: undefined,
   cut: undefined,
+  cutting: undefined,
   starving: false,
   starved: 0,
 };
@@ -1311,6 +1327,10 @@ export const step: {
     }
   };
 
+  const cutFailed = (sessionId: string): void => {
+    if (state.cutting?.sessionId === sessionId)
+      state = { ...state, cutting: { ...state.cutting, stage: "failed" } };
+  };
   const applyResult = (id: number, result: CommandResult): void => {
     const busy = state.busy;
     if (busy === undefined || busy.id !== id) return;
@@ -1401,9 +1421,18 @@ export const step: {
         return;
       case "Autoplay":
         if (result._tag === "Done") updateSession(busy.sessionId, { autoplay: command.enabled });
+        else if (!command.enabled) cutFailed(busy.sessionId);
         return;
-      case "Cut":
-        // Its clip was marked cut when it was sent; neither result makes it cuttable again.
+      // Its clip was marked cut when the cut began; no result makes it cuttable again.
+      case "Stop":
+        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (state.cutting?.sessionId === busy.sessionId && state.cutting.clipId === command.clipId)
+          state = { ...state, cutting: { ...state.cutting, stage: "stopped" } };
+        return;
+      case "Play":
+        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (state.cutting?.sessionId === busy.sessionId && state.cutting.next === command.clipId)
+          state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
     }
   };
@@ -1793,10 +1822,47 @@ export const step: {
       : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
   }
   function decideCommand(): void {
-    // Autoplay as each session's role wants it: off on a replacement until it takes the air.
-    for (const value of state.sessions)
-      if (value.source?.available === true && value.autoplay !== value.wantAutoplay)
-        return queueCommand(value.id, { _tag: "Autoplay", enabled: value.wantAutoplay });
+    // A cut ends once its cutter has left its session's Ready queue; once a step failed with the
+    // cutter still wanted, which then airs at the next boundary; or once a cutter no longer
+    // wanted is not being removed.
+    const cutting = state.cutting;
+    const cutOn = session(cutting?.sessionId);
+    const cutter = cutOn?.source?.ready.find((clip) => clip.clipId === cutting?.next);
+    const cutterItem = itemOf(cutter);
+    const wanted = cutter !== undefined && airs(cutter) && cutterItem?.phase === "Ready";
+    const removing =
+      cutterItem?.withdraw !== undefined && cutterItem.blockedRemove !== signature(cutOn);
+    if (
+      cutting !== undefined &&
+      (cutter === undefined || (cutting.stage === "failed" && wanted) || (!wanted && !removing))
+    )
+      state = { ...state, cutting: undefined };
+    // Autoplay as each session's role wants it: off on a replacement until it takes the air,
+    // and off on the air while a cut is under way.
+    for (const value of state.sessions) {
+      const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id;
+      if (value.source?.available === true && value.autoplay !== autoplay)
+        return queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
+    }
+    // The cut's next step, with autoplay off: stop the clip it cuts, and once that has ended,
+    // play the cutter. The plan looks again between them, so a cutter withdrawn meanwhile goes
+    // instead, and until its play nothing else is sent that could hold it up.
+    if (
+      state.cutting !== undefined &&
+      (state.cutting.stage === "stopping" || state.cutting.stage === "stopped") &&
+      wanted &&
+      cutOn?.source?.available === true
+    ) {
+      const playing = cutOn.source.playing?.clipId;
+      if (state.cutting.stage === "stopping")
+        return queueCommand(cutOn.id, { _tag: "Stop", clipId: state.cutting.clipId });
+      if (playing === undefined)
+        return queueCommand(cutOn.id, { _tag: "Play", clipId: state.cutting.next });
+      if (playing === state.cutting.clipId) return;
+      // Something else plays: the cutter waits for the next boundary.
+      state = { ...state, cutting: undefined };
+      return decideCommand();
+    }
     // Withdrawals the plan wants, retried once a refused one's session changes.
     for (const item of items.values())
       if (
@@ -1838,14 +1904,15 @@ export const step: {
     }
     // A cut lane's Ready item at the front cuts a lower lane's clip, or filler, that has a while to run.
     const onAirNow = session(state.air);
-    const cutter = onAirNow === undefined ? undefined : readyOf(onAirNow)[0];
-    const cutItem = itemOf(cutter);
+    const front = onAirNow === undefined ? undefined : readyOf(onAirNow)[0];
+    const cutItem = itemOf(front);
     const playing = onAirNow?.source?.playing;
     if (
       onAirNow !== undefined &&
-      cutter !== undefined &&
+      front !== undefined &&
       cutItem !== undefined &&
       playing !== undefined &&
+      state.cutting === undefined &&
       config.lanes[cutItem.spec.lane]?.cut === true &&
       state.cut !== playing.clipId &&
       playingRestMs(onAirNow) > cutMarginMs
@@ -1855,13 +1922,18 @@ export const step: {
       const lower =
         playing.tag?._tag === "Filler" ||
         (playingItem !== undefined && playingItem.spec.lane > cutItem.spec.lane);
-      if (lower && airs(cutter)) {
-        state = { ...state, cut: playing.clipId };
-        return queueCommand(onAirNow.id, {
-          _tag: "Cut",
-          clipId: playing.clipId,
-          next: cutter.clipId,
-        });
+      if (lower && airs(front)) {
+        state = {
+          ...state,
+          cut: playing.clipId,
+          cutting: {
+            sessionId: onAirNow.id,
+            clipId: playing.clipId,
+            next: front.clipId,
+            stage: "stopping",
+          },
+        };
+        return decideCommand();
       }
     }
     // A held item about to be next, or an At item Ready too early, is removed and rebuilt later.
