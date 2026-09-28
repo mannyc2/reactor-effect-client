@@ -1,8 +1,10 @@
 /** One session through its public contract, on a simulated Reactor with the timing each case states. */
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, Redacted, Stream } from "effect";
+import { Deferred, Duration, Effect, Fiber, Option, Redacted, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
+import type { CommandFailure } from "../src/ReactorError.js";
+import type { CommandReply, Session } from "../src/Session.js";
 import { connect, environment } from "./fixtures/Simulated.js";
 
 const timing = ReactorTest.Timing.fixed({ buildSpeed: 2.4, channel: "10 millis" });
@@ -173,6 +175,114 @@ layer(environment({ timing }))("tokens", (it) => {
         Effect.flatMap((test) => test.log),
       )).filter((entry) => entry.sessionId === session.id && entry.kind === "track");
       assert.deepStrictEqual(tracks, []);
+    }),
+  );
+});
+
+/** The reply the model sends `session` for the request `sent` names, whenever it comes. */
+const replyTo = (session: Session, sent: Deferred.Deferred<string>) =>
+  Effect.gen(function* () {
+    const observed = yield* session.observe();
+    return yield* observed.events.pipe(
+      Stream.filter((event): event is CommandReply => event._tag === "Model"),
+      Stream.filterEffect((reply) =>
+        Effect.map(Deferred.await(sent), (requestId) => reply.requestId === requestId),
+      ),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+      Effect.forkScoped,
+    );
+  });
+
+/** The request a failed command was sent as. */
+const requestOf = (failure: CommandFailure) =>
+  failure.context.outcome === "not-submitted" ? "" : failure.context.requestId;
+
+// A model command is paid and cannot be cancelled, so a reply that comes after its caller stopped
+// waiting, or on a later connection, is kept and labelled rather than dropped or mistaken.
+layer(environment({ timing }))("a reply's correlation", (it) => {
+  it.effect("is late once the caller's deadline passed", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      yield* test.inject({
+        _tag: "LateReply",
+        nth: 1,
+        command: "get_state",
+        after: Duration.seconds(5),
+      });
+      const sent = yield* Deferred.make<string>();
+      const late = yield* replyTo(session, sent);
+      const failure = yield* Effect.flip(
+        session.command("get_state", {}, { replyTimeout: "1 second" }),
+      );
+      yield* Deferred.succeed(sent, requestOf(failure));
+      assert.deepStrictEqual(
+        [failure.reason._tag, failure.context.outcome],
+        ["Timeout", "unknown"],
+      );
+      const reply = yield* Fiber.join(late);
+      assert.deepStrictEqual([reply.generation, reply.correlation], [1n, "late"]);
+    }),
+  );
+
+  it.effect("is stale when it arrives on a later generation", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      // The model takes `set_seed` at once, which its state broadcast shows, and answers later.
+      yield* test.inject({
+        _tag: "LateReply",
+        nth: 1,
+        command: "set_seed",
+        after: Duration.seconds(5),
+      });
+      const observed = yield* session.observe();
+      const taken = yield* observed.events.pipe(
+        Stream.filter(
+          (event) =>
+            event._tag === "Model" &&
+            event.kind === "message" &&
+            event.type === "state_update" &&
+            event.data?.seed === 7,
+        ),
+        Stream.runHead,
+        Effect.forkScoped,
+      );
+      const sent = yield* Deferred.make<string>();
+      const stale = yield* replyTo(session, sent);
+      const command = yield* Effect.forkChild(
+        Effect.flip(session.command("set_seed", { seed: 7 })),
+      );
+      yield* Fiber.join(taken);
+      yield* session.reconnect;
+      const failure = yield* Fiber.join(command);
+      yield* Deferred.succeed(sent, requestOf(failure));
+      assert.deepStrictEqual(
+        [failure.reason._tag, failure.context.outcome],
+        ["Disconnected", "unknown"],
+      );
+      const reply = yield* Fiber.join(stale);
+      assert.deepStrictEqual([reply.generation, reply.correlation], [2n, "stale-generation"]);
+    }),
+  );
+});
+
+// An observer that falls behind fails with Overflow rather than silently missing events.
+layer(environment({ timing }))("a slow observer", (it) => {
+  it.effect("fails with Overflow once it holds its capacity, and is counted", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const observed = yield* session.observe({ capacity: 2 });
+      for (let command = 0; command < 3; command++) yield* session.command("get_state", {});
+      assert.strictEqual((yield* session.snapshot).observationOverflows, 1n);
+      const failure = yield* Effect.flip(Stream.runCollect(observed.events));
+      assert.strictEqual(failure.reason._tag, "Overflow");
+      // The session goes on for everyone else.
+      yield* session.command("get_state", {});
     }),
   );
 });

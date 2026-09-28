@@ -54,6 +54,11 @@ export const Fault = Schema.Union([
     command: Schema.String,
     applied: Schema.optionalKey(Schema.Boolean),
   }),
+  /**
+   * The model takes the command on time and answers it this long late, over
+   * the connection the command came on, whichever transport then carries it.
+   */
+  Schema.TaggedStruct("LateReply", { ...nth, command: Schema.String, after: Schema.Duration }),
   /** A build never finishes and holds the build slot. */
   Schema.TaggedStruct("StallBuild", nth),
   /** A build fails: the model broadcasts `clip_failed` and drops the clip. */
