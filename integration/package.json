@@ -13,7 +13,6 @@
     "reactor-effect-browser": "workspace:*",
     "reactor-effect-client": "workspace:*",
     "reactor-effect-native": "workspace:*",
-    "reactor-effect-test-kit": "workspace:*",
     "vitest": "catalog:"
   },
   "scripts": {

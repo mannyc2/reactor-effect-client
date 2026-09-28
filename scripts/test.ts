@@ -5,9 +5,7 @@ import { join } from "node:path";
 /**
  * Runtime projects discover their own files; there is no test filename registry.
  *   portable    Vitest in packages/client, packages/browser and integration/hosted,
- *               each on Node then Bun, then Bun discovery from the workspace root
- *               for the integration modeled-host and script tests (bunfig.toml
- *               excludes the others)
+ *               each on Node then Bun, then the scripts' own tests on Bun
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  */
@@ -39,7 +37,8 @@ const runs: readonly Run[] =
         // The hosted qualification's gates, ledger and a rehearsal of every check.
         [node, [vitest(integration), "run", "--root", "hosted"], integration],
         [bun, ["--bun", vitest(integration), "run", "--root", "hosted"], integration],
-        [bun, ["--no-env-file", "test"], root],
+        // pack runs on Bun and reads bun.lock with Bun.JSONC, so its tests run there.
+        [bun, ["--bun", vitest(root), "run", "--root", "scripts"], root],
       ]
     : project === "native"
       ? nodeAndBun(join(packages, "native"))
