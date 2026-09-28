@@ -1,0 +1,1755 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "a2382505",
+  "check": "tour",
+  "mode": "paid",
+  "startedAt": "2026-09-28T16:12:10.204Z",
+  "finishedAt": "2026-09-28T16:12:48.792Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "c5480777873d71c9d02fa9239be7644808c8c1e0",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.7.1",
+      "reactor-effect-native": "0.7.1",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "4fdccf92059868e48b6f5cb8e5174b1663476dfaf4d0e3d95da5914aab90a847",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 1.125,
+    "totalUsd": 5,
+    "reservedBeforeUsd": 0.9375,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 1.125,
+    "estimatedUsd": 0.4625
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 90,
+      "expiresAt": 1790611960
+    },
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 90,
+      "expiresAt": 1790611983
+    }
+  ],
+  "sessions": [
+    {
+      "id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1",
+      "allocatedMs": 903,
+      "capEndsAt": "2026-09-28T16:13:41.121Z",
+      "close": {
+        "requestedMs": 37033,
+        "reportedMs": 37462,
+        "confirmed": true,
+        "termination": {
+          "attempted": true,
+          "responseReceived": true,
+          "confirmed": true,
+          "evidence": "terminal",
+          "deleteStatus": 200,
+          "state": "CLOSED"
+        }
+      },
+      "trail": [
+        {
+          "atMs": 38570,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 38570
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $1.1250"
+    },
+    {
+      "atMs": 433,
+      "step": "free mints"
+    },
+    {
+      "atMs": 903,
+      "step": "allocated",
+      "detail": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1"
+    },
+    {
+      "atMs": 3835,
+      "step": "connected"
+    },
+    {
+      "atMs": 4494,
+      "step": "H3 ready"
+    },
+    {
+      "atMs": 4572,
+      "step": "canvas set",
+      "detail": "1:1"
+    },
+    {
+      "atMs": 6083,
+      "step": "clip 1 accepted",
+      "detail": "correlated"
+    },
+    {
+      "atMs": 6171,
+      "step": "clip 2 accepted"
+    },
+    {
+      "atMs": 8607,
+      "step": "queue edited"
+    },
+    {
+      "atMs": 8931,
+      "step": "over budget accepted"
+    },
+    {
+      "atMs": 8999,
+      "step": "by hand accepted"
+    },
+    {
+      "atMs": 13665,
+      "step": "clip 1 aired"
+    },
+    {
+      "atMs": 14365,
+      "step": "stopped and played"
+    },
+    {
+      "atMs": 14530,
+      "step": "reset"
+    },
+    {
+      "atMs": 14531,
+      "step": "build failed as documented"
+    },
+    {
+      "atMs": 14612,
+      "step": "long clip accepted"
+    },
+    {
+      "atMs": 29784,
+      "step": "recordings asked for"
+    },
+    {
+      "atMs": 29786,
+      "step": "token refreshed"
+    },
+    {
+      "atMs": 33949,
+      "step": "reconnected",
+      "detail": "2"
+    },
+    {
+      "atMs": 37462,
+      "step": "closed",
+      "detail": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1 confirmed"
+    },
+    {
+      "atMs": 37890,
+      "step": "ended with the API key"
+    },
+    {
+      "atMs": 38353,
+      "step": "after the end"
+    },
+    {
+      "atMs": 38571,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the deployment offers every command the tour sends",
+      "passed": true
+    },
+    {
+      "name": "canvas_accepted names the canvas asked for at its size",
+      "passed": true
+    },
+    {
+      "name": "the state reports the new canvas",
+      "passed": true
+    },
+    {
+      "name": "clip 2 is accepted on clip 1's uploads",
+      "passed": true
+    },
+    {
+      "name": "clip 2 reports its reused references",
+      "passed": true
+    },
+    {
+      "name": "the queue read reflects the move",
+      "passed": true
+    },
+    {
+      "name": "clip 1: correlated acceptance",
+      "passed": true
+    },
+    {
+      "name": "clip 1: lifecycle progression",
+      "passed": true
+    },
+    {
+      "name": "clip 1: live video",
+      "passed": true
+    },
+    {
+      "name": "clip 1: audio when offered",
+      "passed": true
+    },
+    {
+      "name": "clip 1: reference audio reported",
+      "passed": true
+    },
+    {
+      "name": "clip 1: metadata preserved",
+      "passed": true
+    },
+    {
+      "name": "stop cuts the playing clip",
+      "passed": true
+    },
+    {
+      "name": "nothing starts after a stop with autoplay off",
+      "passed": true
+    },
+    {
+      "name": "play starts the clip it names",
+      "passed": true
+    },
+    {
+      "name": "reset stops the playing clip",
+      "passed": true
+    },
+    {
+      "name": "reset leaves both queues empty and nothing playing",
+      "passed": true
+    },
+    {
+      "name": "a prompt past H3's text budget fails its clip",
+      "passed": true
+    },
+    {
+      "name": "the operation reports the failure as ClipEnded",
+      "passed": true
+    },
+    {
+      "name": "the session refreshes to a token bound to itself before its token expires",
+      "passed": true
+    },
+    {
+      "name": "a call after the creating token expired succeeds",
+      "passed": true
+    },
+    {
+      "name": "the reconnect makes the next generation",
+      "passed": true
+    },
+    {
+      "name": "H3 answers on the new connection with the session's state kept",
+      "passed": true
+    },
+    {
+      "name": "fresh frames on the new connection",
+      "passed": true
+    },
+    {
+      "name": "popped clips are never built or started",
+      "passed": true
+    },
+    {
+      "name": "the API key ends the session",
+      "passed": true
+    },
+    {
+      "name": "the session's own close confirms it ended",
+      "passed": true
+    },
+    {
+      "name": "attaching to the ended session is refused",
+      "passed": true
+    },
+    {
+      "name": "the API key finds no unknown session",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 3.7,
+      "durationMs": 220.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 224,
+      "durationMs": 208.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 437.3,
+      "durationMs": 3397,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1"
+      }
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 442.1,
+      "durationMs": 85,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 903.2,
+      "durationMs": 2931.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1"
+      }
+    },
+    {
+      "name": "Session.control",
+      "startMs": 3845.3,
+      "durationMs": 366.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_4c0c68af267ec2d9308fe31b7b9f0b0c_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4214.3,
+      "durationMs": 25.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4242.4,
+      "durationMs": 25.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 4270.7,
+      "durationMs": 222.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4495.6,
+      "durationMs": 75.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_canvas",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4574.2,
+      "durationMs": 28.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_4",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 4625,
+      "durationMs": 520.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/png",
+        "reactor.upload.size": 110809
+      }
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 5146.7,
+      "durationMs": 382.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "audio/wav",
+        "reactor.upload.size": 288044
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 5530.5,
+      "durationMs": 547.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 5533.9,
+      "durationMs": 541.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_5",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 6077.3,
+      "durationMs": 0.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 6105.9,
+      "durationMs": 63.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6106.4,
+      "durationMs": 61.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_6",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 6169.5,
+      "durationMs": 0.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 6173.2,
+      "durationMs": 124.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:3",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6173.6,
+      "durationMs": 122.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_7",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 6297.2,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 6298.2,
+      "durationMs": 45.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:4",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6298.6,
+      "durationMs": 44,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_8",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 6343.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6344.4,
+      "durationMs": 61.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_9",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6407.6,
+      "durationMs": 21.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_10",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6429.8,
+      "durationMs": 20.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_11",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6453,
+      "durationMs": 23,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "pop",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_12",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8533.8,
+      "durationMs": 32.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_13",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8567.7,
+      "durationMs": 38.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "pop",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_14",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8608.2,
+      "durationMs": 42.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_15",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8652.3,
+      "durationMs": 32.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_16",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8686,
+      "durationMs": 39.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_17",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8726.5,
+      "durationMs": 33.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_18",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 8763.2,
+      "durationMs": 166.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:5",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8763.6,
+      "durationMs": 154.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_19",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 8919.8,
+      "durationMs": 10,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 8932.8,
+      "durationMs": 65.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:6",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8933.3,
+      "durationMs": 64.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_20",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 8998.1,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13684.9,
+      "durationMs": 40.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_21",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13726.2,
+      "durationMs": 23.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_22",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13750.6,
+      "durationMs": 28.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "stop",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_23",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14313.6,
+      "durationMs": 43.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "play",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_24",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14366.3,
+      "durationMs": 35.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_25",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14403.4,
+      "durationMs": 21.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_26",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14425.8,
+      "durationMs": 44.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "reset",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_27",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14471.1,
+      "durationMs": 28.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_28",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14500.5,
+      "durationMs": 28.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_29",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14532.3,
+      "durationMs": 32.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_30",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 14566.5,
+      "durationMs": 44.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ceda3e26d7159569018bba37e9b95219:7",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14567,
+      "durationMs": 43.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_31",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 14611,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.control",
+      "startMs": 14614.2,
+      "durationMs": 38.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_clip",
+        "reactor.request.id": "ctrl_4c0c68af267ec2d9308fe31b7b9f0b0c_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 22707.4,
+      "durationMs": 684.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/png",
+        "reactor.upload.size": 173058
+      }
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 22708,
+      "durationMs": 204.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.control",
+      "startMs": 29783,
+      "durationMs": 20.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_recording",
+        "reactor.request.id": "ctrl_4c0c68af267ec2d9308fe31b7b9f0b0c_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.reconnect",
+      "startMs": 31783.4,
+      "durationMs": 2164.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "2",
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 33949.9,
+      "durationMs": 23.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_32",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 33973.6,
+      "durationMs": 23.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_33",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 34000.1,
+      "durationMs": 25.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "play",
+        "reactor.request.id": "data_4c0c68af267ec2d9308fe31b7b9f0b0c_34",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 37032.6,
+      "durationMs": 428.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 37462.3,
+      "durationMs": 427.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 37470.5,
+      "durationMs": 418.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Reactor.attach",
+      "startMs": 37891.3,
+      "durationMs": 89.6,
+      "status": "error",
+      "attributes": {
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1",
+        "reactor.session.adopt": false
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 37891.7,
+      "durationMs": 88.3,
+      "status": "error",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 37980.1,
+      "durationMs": 0.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": false,
+        "reactor.termination.confirmed": false
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 37981.1,
+      "durationMs": 81,
+      "status": "error",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 38062.4,
+      "durationMs": 290.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "00000000-0000-4000-8000-000000000000",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "absent"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 38356.8,
+      "durationMs": 213.1,
+      "status": "ok",
+      "attributes": {}
+    }
+  ],
+  "contract": {
+    "deploymentTitle": "h3-reference-to-video-turbo-realtime",
+    "deploymentVersion": "v0.0.0",
+    "documentedVersion": "0.5.5",
+    "referenceAudio": true,
+    "messages": {
+      "state_update": 33,
+      "canvas_accepted": 1,
+      "autoplay_accepted": 3,
+      "queue_update": 28,
+      "clip_queued": 7,
+      "clip_moved": 1,
+      "clip_popped": 2,
+      "clip_generated": 4,
+      "clip_started": 4,
+      "clip_failed": 1,
+      "clip_finished": 1,
+      "clip_stopped": 2,
+      "session_reset": 1
+    },
+    "unknown": {},
+    "diagnostics": {
+      "Closed": 1
+    },
+    "duplicates": 0,
+    "stale": 0
+  },
+  "server": {
+    "cluster": "5a004973-4a49-4f0e-96ac-6cd7637f61eb",
+    "zone": "us-east",
+    "serverVersion": "1.20260924.28429",
+    "transport": "webrtc/1.0"
+  },
+  "media": {
+    "audioOffered": true,
+    "firstClipFrameMs": 8648,
+    "video": {
+      "frames": 204,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "768x768",
+        "1344x768"
+      ],
+      "firstFrameMs": 8648,
+      "fps": 7.1,
+      "interval": {
+        "p50": 41,
+        "p95": 47,
+        "max": 19618
+      },
+      "lit": 201,
+      "distinct": 204,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 2990,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "peakRms": 0.1951,
+      "lost": 0
+    },
+    "pressure": {
+      "deliveredVideo": "73",
+      "deliveredAudio": "312",
+      "droppedVideo": "0",
+      "droppedAudio": "0",
+      "readerOverflows": "0"
+    }
+  },
+  "network": {
+    "samples": [
+      {
+        "atMs": 3853,
+        "local": "relay",
+        "rttMs": 34
+      },
+      {
+        "atMs": 4856,
+        "local": "relay",
+        "rttMs": 62,
+        "receivedKbps": 293.8,
+        "jitterMs": 4,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 5858,
+        "local": "prflx",
+        "rttMs": 19,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 6861,
+        "local": "prflx",
+        "rttMs": 22,
+        "receivedKbps": 217.7,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7863,
+        "local": "prflx",
+        "rttMs": 22,
+        "receivedKbps": 29.2,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8864,
+        "local": "prflx",
+        "rttMs": 22,
+        "receivedKbps": 981,
+        "fps": 23,
+        "jitterMs": 16,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9866,
+        "local": "prflx",
+        "rttMs": 36,
+        "receivedKbps": 6324.6,
+        "fps": 26,
+        "jitterMs": 4,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 10868,
+        "local": "prflx",
+        "rttMs": 36,
+        "receivedKbps": 7850.4,
+        "fps": 24,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 11870,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 7735.8,
+        "fps": 24,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 12872,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 8167.3,
+        "fps": 24,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 13873,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 7266.5,
+        "fps": 24,
+        "jitterMs": 3,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 14875,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 707.9,
+        "fps": 4,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 15876,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 30.3,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 16878,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 30.8,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 17879,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 29.2,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 18880,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 45.1,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 19881,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 30.3,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 20882,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 29.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 21884,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 29.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 22885,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 29.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 23886,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 30.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 24887,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.6,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 25888,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 30.3,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 26889,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 29.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 27889,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 30.9,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 28890,
+        "local": "prflx",
+        "rttMs": 20,
+        "receivedKbps": 29.7,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 29891,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 31.9,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 30892,
+        "local": "prflx",
+        "rttMs": 19,
+        "receivedKbps": 29.2,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 34899,
+        "local": "prflx",
+        "rttMs": 21,
+        "fps": 26,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 35900,
+        "local": "prflx",
+        "rttMs": 22,
+        "receivedKbps": 9249.4,
+        "fps": 23,
+        "jitterMs": 16,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 36902,
+        "local": "prflx",
+        "rttMs": 22,
+        "receivedKbps": 9060,
+        "fps": 25,
+        "jitterMs": 5,
+        "lossRatio": 0
+      }
+    ],
+    "pair": "prflx"
+  },
+  "tour": {
+    "mints": [
+      {
+        "sentMs": 443,
+        "atMs": 528,
+        "kind": "create",
+        "lifetimeSeconds": 29.3,
+        "echoed": true,
+        "bound": 0,
+        "ownSession": false
+      },
+      {
+        "sentMs": 22708,
+        "atMs": 22914,
+        "kind": "bind",
+        "lifetimeSeconds": 30.1,
+        "echoed": true,
+        "bound": 1,
+        "ownSession": true
+      }
+    ],
+    "createExpiresMs": 29782,
+    "refreshDueMs": 22447.3,
+    "refreshCall": {
+      "what": "an upload",
+      "startedMs": 22697,
+      "endedMs": 23393,
+      "ok": true
+    },
+    "afterExpiryCall": {
+      "what": "reconnect",
+      "startedMs": 31784,
+      "endedMs": 33949,
+      "ok": true
+    },
+    "missingCommands": [],
+    "canvas": {
+      "requested": "1:1",
+      "listed": true,
+      "reply": {
+        "aspect": "1:1",
+        "width": 768,
+        "height": 768
+      },
+      "state": {
+        "aspect": "1:1",
+        "width": 768,
+        "height": 768
+      }
+    },
+    "clip1": {
+      "clipId": "7c9032e5-cda8-45aa-b9fb-5fa2ec94ac18",
+      "acceptance": "correlated",
+      "submitMs": 4624,
+      "acceptedMs": 6078,
+      "generatedMs": 8533,
+      "startedMs": 8536,
+      "endedMs": 13664,
+      "ended": "clip_finished",
+      "references": {
+        "images": 1,
+        "audio": 1,
+        "uploads": 2,
+        "reportedImages": 1,
+        "reportedAudio": 1,
+        "hasReferenceAudio": true
+      },
+      "seed": {
+        "sent": 4242,
+        "echoed": 4242,
+        "defaultBefore": 1000,
+        "defaultAfter": 1000
+      },
+      "echoes": {
+        "clip_queued": 1,
+        "queue_update": 8,
+        "clip_generated": 1,
+        "clip_started": 1
+      },
+      "video": {
+        "frames": 122,
+        "formats": [
+          "BGRA"
+        ],
+        "sizes": [
+          "768x768"
+        ],
+        "firstFrameMs": 8648,
+        "fps": 24.3,
+        "interval": {
+          "p50": 41,
+          "p95": 45,
+          "max": 151
+        },
+        "lit": 122,
+        "distinct": 122,
+        "lost": 0,
+        "gaps": 0
+      },
+      "audio": {
+        "blocks": 513,
+        "sampleRates": [
+          48000
+        ],
+        "channels": [
+          1
+        ],
+        "peakRms": 0.1951,
+        "lost": 0
+      }
+    },
+    "clip2": {
+      "clipId": "dcffa926-2c5f-4d4d-8013-1d2ad142f5bf",
+      "acceptance": "correlated",
+      "submitMs": 6106,
+      "acceptedMs": 6170,
+      "generatedMs": 11206,
+      "startedMs": 13684,
+      "endedMs": 13813,
+      "ended": "clip_stopped",
+      "references": {
+        "images": 1,
+        "audio": 1,
+        "uploads": 0,
+        "reportedImages": 1,
+        "reportedAudio": 1,
+        "hasReferenceAudio": true
+      }
+    },
+    "queue": {
+      "enqueued": [
+        "position zero",
+        "clip 1",
+        "clip 2",
+        "moved"
+      ],
+      "move": {
+        "queue": "generation",
+        "position": 0,
+        "generation": [
+          "moved",
+          "position zero",
+          "clip 1",
+          "clip 2"
+        ]
+      },
+      "pops": [
+        {
+          "name": "position zero",
+          "headOfGeneration": false,
+          "sentMs": 6453,
+          "repliedMs": 6478,
+          "generatedAfter": false,
+          "startedAfter": false
+        },
+        {
+          "name": "moved",
+          "headOfGeneration": true,
+          "sentMs": 8568,
+          "repliedMs": 8607,
+          "generatedAfter": false,
+          "startedAfter": false
+        }
+      ],
+      "clip2GeneratedAfterPopMs": 2599,
+      "after": {
+        "generation": [
+          "clip 2"
+        ],
+        "playout": [],
+        "generationQueued": 1,
+        "playoutQueued": 0,
+        "refresh": "refreshed"
+      },
+      "replies": {
+        "get_queue": 44,
+        "move": 22,
+        "pop position zero": 25,
+        "pop moved": 39,
+        "get_state": 34,
+        "refresh": 76
+      }
+    },
+    "stopPlay": {
+      "stopped": "clip 2",
+      "stopSentMs": 13751,
+      "stop": "Acknowledged",
+      "stoppedMs": 13813,
+      "startedBetween": [],
+      "played": "by hand",
+      "playSentMs": 14313,
+      "play": "Acknowledged",
+      "playStartedMs": 14365
+    },
+    "failedBuild": {
+      "promptChars": 16171,
+      "submitMs": 8763,
+      "acceptedMs": 8931,
+      "acceptance": "correlated",
+      "endedMs": 11317,
+      "ended": "clip_failed",
+      "generatedFailure": "ClipEnded",
+      "clipEnded": {
+        "lifecycle": "clip_failed",
+        "sameClip": true,
+        "transportGeneration": "1"
+      },
+      "reasonChars": 60,
+      "started": false
+    },
+    "recordings": [
+      {
+        "request": "clip",
+        "outcome": "ClipReady",
+        "kind": "snap",
+        "markers": 5,
+        "readyInMs": 2591,
+        "download": {
+          "outcome": "TimeoutError",
+          "ms": 15130
+        }
+      },
+      {
+        "request": "recording",
+        "outcome": "TimeoutError"
+      }
+    ],
+    "reconnect": {
+      "startedMs": 31784,
+      "readyMs": 33949,
+      "generationBefore": "1",
+      "generationAfter": "2",
+      "keptClip": true,
+      "playSentMs": 34000,
+      "playStartedMs": 34032,
+      "firstFreshFrameMs": 34124,
+      "video": {
+        "frames": 71,
+        "formats": [
+          "BGRA"
+        ],
+        "sizes": [
+          "1344x768"
+        ],
+        "firstFrameMs": 34124,
+        "fps": 24.1,
+        "interval": {
+          "p50": 42,
+          "p95": 47,
+          "max": 71
+        },
+        "lit": 71,
+        "distinct": 71,
+        "lost": 0,
+        "gaps": 0
+      },
+      "stateRead": true
+    },
+    "reset": {
+      "before": {
+        "aspect": "1:1",
+        "width": 768,
+        "height": 768,
+        "autoplay": false,
+        "flushOnClipEnd": true,
+        "seed": 1005,
+        "clipSeconds": 15.083,
+        "playing": true,
+        "playingClip": "by hand",
+        "queued": 0
+      },
+      "sentMs": 14426,
+      "clearedClips": 0,
+      "wasPlaying": true,
+      "stoppedMs": 14469,
+      "after": {
+        "aspect": "16:9",
+        "width": 1344,
+        "height": 768,
+        "autoplay": false,
+        "flushOnClipEnd": true,
+        "seed": 1000,
+        "clipSeconds": 15.083,
+        "playing": false,
+        "playingClip": null,
+        "queued": 0
+      }
+    },
+    "apiKeyTermination": {
+      "attempted": true,
+      "responseReceived": true,
+      "confirmed": true,
+      "evidence": "terminal",
+      "deleteStatus": 200,
+      "state": "CLOSED"
+    },
+    "ownedClose": {
+      "localClosed": true,
+      "allocation": "known",
+      "ownership": "owned",
+      "sessionId": "ef93e126-d2c4-4c68-ae2d-418309c9c4b1",
+      "remote": {
+        "attempted": true,
+        "responseReceived": true,
+        "confirmed": true,
+        "evidence": "terminal",
+        "deleteStatus": 200,
+        "state": "CLOSED"
+      },
+      "unpublishSubmitted": [],
+      "unresolvedPublications": [],
+      "localErrors": []
+    },
+    "afterEnd": {
+      "attach": "TerminalSession",
+      "inspectUnknown": "Http",
+      "inspectStatus": 404,
+      "terminateUnknown": {
+        "attempted": true,
+        "responseReceived": true,
+        "confirmed": true,
+        "evidence": "absent",
+        "deleteStatus": 404,
+        "state": null
+      }
+    },
+    "freeMints": [
+      {
+        "name": "three sessions",
+        "outcome": "granted",
+        "lifetimeSeconds": 14.8,
+        "echoed": true,
+        "maxSessions": 3,
+        "maxSessionSeconds": 1,
+        "bound": 0
+      },
+      {
+        "name": "no session cap",
+        "outcome": "granted",
+        "lifetimeSeconds": 14.6,
+        "echoed": true,
+        "maxSessions": 1,
+        "maxSessionSeconds": "absent",
+        "bound": 0
+      }
+    ],
+    "commands": {
+      "get_state": 7,
+      "get_queue": 9,
+      "set_canvas": 1,
+      "set_autoplay": 3,
+      "enqueue": 7,
+      "move": 1,
+      "pop": 2,
+      "stop": 1,
+      "play": 2,
+      "reset": 1
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
