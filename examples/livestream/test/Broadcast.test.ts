@@ -4,9 +4,12 @@
  * afterwards gets a new run, starting with a new initialization segment. The
  * media here is synthetic, so no playout is involved; ffmpeg is real.
  */
+// Vitest decides which suites to run while it collects them, synchronously,
+// so whether ffmpeg is on PATH is asked with a synchronous child process.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, layer } from "@effect/vitest";
 import { Effect, Layer, Result, Stream } from "effect";
 import type { VideoFrame } from "reactor-effect-client/Media";
 import { Broadcast, ChannelMedia } from "../src/Broadcast.ts";
@@ -48,19 +51,21 @@ const boxType = (bytes: Uint8Array) => String.fromCharCode(...bytes.subarray(4, 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 
 describe.skipIf(!hasFfmpeg)("Broadcast", () => {
-  it.live("gives a viewer who reconnects after the format changed a new run", () =>
-    Effect.gen(function* () {
-      const broadcast = yield* Broadcast;
-      const first = yield* broadcast.viewer.pipe(Stream.runCollect, Effect.result);
-      assert.isTrue(Result.isFailure(first));
-      const next = yield* broadcast.viewer.pipe(
-        Stream.take(1),
-        Stream.runCollect,
-        Effect.timeout("10 seconds"),
-      );
-      assert.strictEqual(boxType(next[0] ?? new Uint8Array(8)), "ftyp");
-    }).pipe(
-      Effect.provide(Broadcast.layer.pipe(Layer.provide([SyntheticMedia, NodeServices.layer]))),
-    ),
-  );
+  layer(Broadcast.layer.pipe(Layer.provide([SyntheticMedia, NodeServices.layer])), {
+    excludeTestServices: true,
+  })((it) => {
+    it.effect("gives a viewer who reconnects after the format changed a new run", () =>
+      Effect.gen(function* () {
+        const broadcast = yield* Broadcast;
+        const first = yield* broadcast.viewer.pipe(Stream.runCollect, Effect.result);
+        assert.isTrue(Result.isFailure(first));
+        const next = yield* broadcast.viewer.pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.timeout("10 seconds"),
+        );
+        assert.strictEqual(boxType(next[0] ?? new Uint8Array(8)), "ftyp");
+      }),
+    );
+  });
 });

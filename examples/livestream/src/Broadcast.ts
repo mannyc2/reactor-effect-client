@@ -116,7 +116,7 @@ export class ChannelMedia extends Context.Service<
     readonly video: Stream.Stream<VideoFrame, ReactorError>;
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
   }
->()("reactor-effect-example-livestream/ChannelMedia") {}
+>()("reactor-effect-example-livestream/Broadcast/ChannelMedia") {}
 
 export class Broadcast extends Context.Service<
   Broadcast,
@@ -142,8 +142,8 @@ export class Broadcast extends Context.Service<
       yield* spawner
         .string(ChildProcess.make("ffmpeg", ["-hide_banner", "-version"]))
         .pipe(
-          Effect.mapError(
-            () => new BroadcastError({ message: "the broadcast needs ffmpeg on PATH" }),
+          Effect.mapError(() =>
+            BroadcastError.make({ message: "the broadcast needs ffmpeg on PATH" }),
           ),
         );
     }),
@@ -161,7 +161,7 @@ export class Broadcast extends Context.Service<
       const ended = (kind: string) => (cause: Cause.Cause<unknown>) =>
         Effect.logWarning(`channel ${kind} ended`, cause).pipe(
           Effect.andThen(
-            Deferred.fail(offAir, new BroadcastError({ message: "the channel is off air" })),
+            Deferred.fail(offAir, BroadcastError.make({ message: "the channel is off air" })),
           ),
         );
 
@@ -206,7 +206,7 @@ export class Broadcast extends Context.Service<
           const audio = yield* Queue.bounded<Uint8Array, Cause.Done>(24);
           const failed = yield* Deferred.make<never, BroadcastError>();
           const fail = (message: string) =>
-            Deferred.fail(failed, new BroadcastError({ message })).pipe(Effect.asVoid);
+            Deferred.fail(failed, BroadcastError.make({ message })).pipe(Effect.asVoid);
           // The writers are detached, not scoped. Effect's Node spawner leaves
           // the child's stdin, and any input fd, with no error listener once
           // its writer is interrupted, so a write still buffered when the
@@ -251,7 +251,7 @@ export class Broadcast extends Context.Service<
       ).pipe(
         Stream.mapError((error) =>
           error._tag === "PlatformError"
-            ? new BroadcastError({ message: "the encoder process failed" })
+            ? BroadcastError.make({ message: "the encoder process failed" })
             : error,
         ),
       );

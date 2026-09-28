@@ -11,8 +11,10 @@ export const WebCrypto = Layer.sync(Crypto.Crypto, () =>
     randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
     digest: (algorithm, bytes) =>
       Effect.tryPromise({
-        try: async () =>
-          new Uint8Array(await globalThis.crypto.subtle.digest(algorithm, Uint8Array.from(bytes))),
+        try: () =>
+          globalThis.crypto.subtle
+            .digest(algorithm, Uint8Array.from(bytes))
+            .then((digest) => new Uint8Array(digest)),
         catch: (cause) =>
           PlatformError.systemError({ _tag: "Unknown", module: "Crypto", method: "digest", cause }),
       }),

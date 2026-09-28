@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
+import { DateTime, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as Coordinator from "reactor-effect-client/Coordinator";
@@ -24,17 +24,22 @@ const runtime = ManagedRuntime.make(
   ),
 );
 
-const element = (id: string): HTMLElement => {
+/** The page's element with this id, checked to be the kind the page uses it as. */
+const element = <E extends HTMLElement>(id: string, kind: new () => E): E => {
   const found = document.getElementById(id);
-  if (found === null) throw new Error(`the page has no #${id}`);
+  if (!(found instanceof kind)) throw new Error(`the page has no ${kind.name} #${id}`);
   return found;
 };
-const video = element("video") as HTMLVideoElement;
-const audio = element("audio") as HTMLAudioElement;
-const log = (line: string) => {
-  element("log").textContent =
-    `${new Date().toLocaleTimeString()}  ${line}\n${element("log").textContent ?? ""}`;
-};
+const video = element("video", HTMLVideoElement);
+const audio = element("audio", HTMLAudioElement);
+/** Puts a line, stamped with the local time, at the top of the page's log. */
+const logLine = Effect.fnUntraced(function* (line: string) {
+  const time = DateTime.formatLocal(yield* DateTime.now, { timeStyle: "medium" });
+  const entries = element("log", HTMLElement);
+  entries.textContent = `${time}  ${line}\n${entries.textContent}`;
+});
+/** The same, from the page's event handlers. */
+const log = (line: string): void => Effect.runSync(logLine(line));
 /** What a failure says about itself: its reason and, for a command, whether it may have applied. */
 const describe = (error: unknown) =>
   isReactorFailure(error)
@@ -59,7 +64,7 @@ type State =
   | { readonly _tag: "Starting"; stopRequested: boolean }
   | { readonly _tag: "Live"; readonly live: Live };
 let state: State = { _tag: "Idle" };
-const startButton = element("start") as HTMLButtonElement;
+const startButton = element("start", HTMLButtonElement);
 
 /**
  * Asks the server for a token, then allocates and connects a session from
@@ -103,14 +108,14 @@ const send = Effect.fn("send")(function* (provider: H3.Provider, prompt: string)
   const submission = yield* provider.prepare({ prompt, seconds: 8 });
   const acceptance = yield* submission.submit;
   const clip = acceptance.clip.clip_id.slice(-8);
-  log(`clip ${clip} accepted`);
+  yield* logLine(`clip ${clip} accepted`);
   const operation = yield* provider.operation(submission);
   yield* operation.reached("generated");
-  log(`clip ${clip} generated`);
+  yield* logLine(`clip ${clip} generated`);
   yield* operation.reached("started");
-  log(`clip ${clip} playing`);
+  yield* logLine(`clip ${clip} playing`);
   yield* operation.ended;
-  log(`clip ${clip} ended`);
+  yield* logLine(`clip ${clip} ended`);
 }, Effect.scoped);
 
 startButton.addEventListener("click", () => {
@@ -135,7 +140,7 @@ startButton.addEventListener("click", () => {
 
 // Audio needs its own user gesture: browsers refuse unmuted playback that
 // starts seconds after the click that asked for it.
-element("sound").addEventListener("click", () => {
+element("sound", HTMLButtonElement).addEventListener("click", () => {
   if (state._tag !== "Live") return;
   const { media, scope } = state.live;
   runtime
@@ -147,9 +152,9 @@ element("sound").addEventListener("click", () => {
     .catch((error: unknown) => log(`no sound: ${describe(error)}`));
 });
 
-element("form").addEventListener("submit", (event) => {
+element("form", HTMLFormElement).addEventListener("submit", (event) => {
   event.preventDefault();
-  const input = element("prompt") as HTMLInputElement;
+  const input = element("prompt", HTMLInputElement);
   if (state._tag !== "Live" || input.value.trim() === "") return;
   runtime
     .runPromise(send(state.live.provider, input.value.trim()))
@@ -181,7 +186,7 @@ const stop = (): Promise<void> => {
       startButton.disabled = false;
     });
 };
-element("stop").addEventListener("click", () => void stop());
+element("stop", HTMLButtonElement).addEventListener("click", () => void stop());
 
 // Leaving the page closes what it can; the token's five-minute cap bounds
 // anything a closing tab cannot finish.
