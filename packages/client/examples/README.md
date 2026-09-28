@@ -1,6 +1,6 @@
-# Rundown: an application over the orchestration engine
+# Rundown: an application over a playout
 
-`reactor-effect-client` is the portable core: sessions, the H3 provider, orchestration and an offline simulation, with no host of its own. This example is the part of an application that belongs there: a service that plays an ordered list of prompts on any orchestration `Engine`, and its tests, which run it against the simulation on Effect's test clock.
+`reactor-effect-client` is the portable core: sessions, the H3 provider, the `Playout` service and `ReactorTest`, a simulated Reactor, with no host of its own. This example is the part of an application that belongs there: a service that plays an ordered list of prompts on any `Playout`, and its tests, which run it against the simulated Reactor on Effect's test clock.
 
 ```sh
 bun install && bun run build                     # from the repository root
@@ -10,16 +10,15 @@ cd packages/client/examples && npx vitest run    # the tests, in about a second
 
 ## What it shows
 
-- **Code written against a service, not a session.** `Rundown` asks for `Orchestration.Engine` and nothing else. `main.ts` provides the simulation (`Simulation.layerSim`); a paid deployment provides `Orchestration.layer({ open: Orchestration.openH3({ mint }) })` instead, and the Rundown does not change.
-- **Gap-free observation.** `engine.observe()` subscribes before it reads the state, so no clip's start or end can fall between an enqueue and the events after it. The Rundown applies events on the same fiber that enqueues, in order.
-- **Retrying only what is safe to retry.** A failure's `isRetryable` is true for backpressure (`QueueFull`, `SessionRecovering`, a local `Overflow`), a connection lost before sending, and a coordinator refusal that asks for a retry, and never when `context.outcome` is `unknown`. The Rundown retries the first with a `Schedule` (doubling from 250 ms, capped at 5 seconds with `Schedule.min`) and reports the second as `Unknown`: that clip may still play, so it is never resent. Events wait in the observation while an enqueue retries, so the Rundown observes with a larger buffer; an observation that still overflows fails the play.
-- **Outcomes as data.** Each segment ends `Played`, `Failed`, `Refused` (with its reason's tag) or `Unknown`, a `Schema` union.
-- **Testing without paying or waiting.** The simulation reads Effect's `Clock`, so under `@effect/vitest`'s `it.effect` the test clock drives it: five minutes of programme take milliseconds. Its faults stand in for a failed build (`buildFails`) and a session lost after an enqueue was sent (`sessionFails`).
+- **Code written against a service, not a session.** `Rundown` asks for `Playout.Playout` and nothing else. `main.ts` provides a playout whose sessions come from `H3Source.open` over `Reactor.layer()`, with `ReactorTest.layer` beneath them in place of an HTTP client and a host. A paid deployment swaps `ReactorTest.layer` for `FetchHttpClient.layer` and a host's `PeerFactory`, and mints its tokens with its own API key; the Rundown does not change.
+- **The playout owns the hard parts.** Order, build pacing, retries and never resending a request whose outcome is unknown are the playout's job. The Rundown submits each segment under its own key in one `show` lane and waits on each handle's `outcome`.
+- **Outcomes as data.** Each segment ends `Played` (with its aired seconds), `Failed` (a failed build, a clip dropped or stopped before its end), `Refused` (the submission's error tag, before anything was sent) or `Unknown` (sent, but whether it aired is unknown), a `Schema` union read from the as-run status.
+- **Testing without paying or waiting.** `ReactorTest` makes every delay an Effect sleep, so under `@effect/vitest`'s `layer` and `it.effect`, with `ReactorTest.flow` moving the test clock, the test runs on `ReactorTest.Timing.fixed` timing in milliseconds. A `FailBuild` fault stands in for a failed build. `main.ts` plays in real time on `ReactorTest.Timing.hosted`, the timing paid runs measured.
 
-| File                   | What it is                                                           |
-| ---------------------- | -------------------------------------------------------------------- |
-| `src/Rundown.ts`       | The service; portable, it runs on Node, Bun and in browsers          |
-| `src/main.ts`          | Runs a show against the simulation with `NodeRuntime.runMain`        |
-| `test/Rundown.test.ts` | In order; a full generation queue; a failed clip; an unknown outcome |
+| File                   | What it is                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `src/Rundown.ts`       | The service; portable, it runs on Node, Bun and in browsers                        |
+| `src/main.ts`          | Runs a show against the simulated Reactor with `NodeRuntime.runMain`               |
+| `test/Rundown.test.ts` | Every segment played in order; a failed build reported as `Failed`, the rest aired |
 
-`bun run test:pack` also compiles `Rundown.ts` inside clean installs of the packed archive, with and without DOM types, and runs it on the simulation under Node and Bun.
+`bun run test:pack` also compiles `Rundown.ts` inside clean installs of the packed archive, with and without DOM types, and runs it on the installed `ReactorTest` under Node and Bun.
