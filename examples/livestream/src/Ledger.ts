@@ -50,7 +50,7 @@ export class Ledger extends Context.Service<
         );
         yield* Effect.logInfo("session allocated", {
           sessionId: allocation.sessionId,
-          expiresAt: allocation.expiresAt,
+          endsAt: allocation.endsAt,
         });
       });
 

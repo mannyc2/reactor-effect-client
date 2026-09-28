@@ -117,6 +117,57 @@ export const admit = (input: {
   return Effect.succeed(worst);
 };
 
+/** A token's claims, as hosted tokens have carried them; Reactor documents only its reply's echo. */
+const Claims = Schema.StringFromBase64Url.pipe(
+  Schema.decodeTo(
+    Schema.fromJsonString(
+      Schema.Struct({
+        authorization_details: Schema.Tuple([
+          Schema.Struct({
+            constraints: Schema.Struct({
+              max_sessions: Schema.Int,
+              max_session_duration_seconds: Schema.Int,
+            }),
+          }),
+        ]),
+      }),
+    ),
+  ),
+);
+
+/**
+ * What a token provably grants: Reactor's echo of the grant, else the token's
+ * own claims. The SDK reads only the echo; a paid check needs its cap proven
+ * either way, so a token that proves neither is refused before anything is allocated.
+ */
+export const provenGrant = (grant: {
+  readonly jwt: string;
+  readonly granted?:
+    | {
+        readonly maxSessions: number | undefined;
+        readonly maxSessionSeconds: number | "unlimited" | undefined;
+      }
+    | undefined;
+}): Effect.Effect<
+  { readonly maxSessions: number; readonly maxSessionSeconds: number },
+  Refused
+> => {
+  const echoed = grant.granted;
+  if (echoed?.maxSessions !== undefined && typeof echoed.maxSessionSeconds === "number")
+    return Effect.succeed({
+      maxSessions: echoed.maxSessions,
+      maxSessionSeconds: echoed.maxSessionSeconds,
+    });
+  const payload = grant.jwt.split(".")[1] ?? "";
+  return Schema.decodeEffect(Claims)(payload).pipe(
+    Effect.map(({ authorization_details: [entry] }) => ({
+      maxSessions: entry.constraints.max_sessions,
+      maxSessionSeconds: entry.constraints.max_session_duration_seconds,
+    })),
+    Effect.catch(() => refuse("the token proves neither its session count nor its cap")),
+  );
+};
+
 /** Refuses a token granting more than one session, or a longer one than a check may hold. */
 export const acceptGrant = (input: {
   readonly check: Check;

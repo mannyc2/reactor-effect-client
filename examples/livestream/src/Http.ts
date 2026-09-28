@@ -24,6 +24,20 @@ const phases: Record<
   Unknown: "Failed",
 };
 
+/** The session a playout session event is about, where it names one. */
+const sessionOf = (event: Playout.SessionEvent): string | null => {
+  switch (event._tag) {
+    case "Opened":
+    case "Moderated":
+      return event.sessionId;
+    case "SetupFailed":
+      return null;
+    case "Switched":
+    case "Replaced":
+      return event.from;
+  }
+};
+
 /** Prompts in; status and the playout's events out. Failures are the contract's errors. */
 const ChannelHandlers = HttpApiBuilder.group(
   Api,
@@ -76,12 +90,7 @@ const ChannelHandlers = HttpApiBuilder.group(
                 {
                   _tag: "Renewal",
                   phase: session._tag,
-                  session:
-                    session._tag === "Opened"
-                      ? session.sessionId
-                      : session._tag === "SetupFailed"
-                        ? null
-                        : session.from,
+                  session: sessionOf(session),
                   lostClips: session._tag === "Replaced" ? session.carried : null,
                 } satisfies ChannelEvent,
               ];

@@ -41,7 +41,11 @@ const record = Effect.fn("record")(function* (options: {
   readonly out: string;
 }) {
   const reactor = yield* Reactor.Reactor;
-  const session = yield* reactor.create({ model: H3.modelName, jwt: options.grant.jwt });
+  // The token outlives the one-minute session, so it is never refreshed.
+  const session = yield* reactor.create({
+    model: H3.modelName,
+    tokens: Coordinator.fixedTokens(options.grant),
+  });
   yield* Console.log(`session ${session.id} connected`);
   // However the capture ends (done, failed or interrupted), close the session
   // and say whether its termination was confirmed. The scope's own release

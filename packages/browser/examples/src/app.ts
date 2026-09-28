@@ -3,7 +3,7 @@ import { HttpApiClient } from "effect/unstable/httpapi";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Session from "reactor-effect-client/Session";
-import { isReactorFailure } from "reactor-effect-client/ReactorError";
+import { isReactorFailure, ReactorError } from "reactor-effect-client/ReactorError";
 import * as H3 from "reactor-effect-client/H3";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import { Api } from "./Api.ts";
@@ -68,13 +68,23 @@ const startButton = element("start") as HTMLButtonElement;
  * releases all of it and terminates the paid session.
  */
 const start = Effect.gen(function* () {
-  const token = yield* (yield* HttpApiClient.make(Api)).token();
+  const api = yield* HttpApiClient.make(Api);
+  // The session asks for a token bound to it before its first one expires.
+  const token = (session?: string) =>
+    api.token({ payload: session === undefined ? {} : { session } }).pipe(
+      Effect.map((reply) => ({
+        jwt: Redacted.make(reply.jwt),
+        expiresAt: reply.expiresAt,
+        maxSessionSeconds: reply.maxSessionSeconds,
+      })),
+      Effect.mapError(() => ReactorError.fromCode("Http", "the server gave no session token")),
+    );
   const scope = yield* Scope.make();
   return yield* Effect.gen(function* () {
     const client = yield* Reactor.Reactor;
     const session = yield* client.create({
       model: H3.modelName,
-      jwt: Redacted.make(token.jwt),
+      tokens: { create: token(), bind: token },
     });
     const provider = yield* H3.make(session);
     // H3 changes no playback policy on its own: ask it to play clips as they are ready.

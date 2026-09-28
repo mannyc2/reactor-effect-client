@@ -10,11 +10,12 @@ import { Api, TokenUnavailable } from "./Api.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
- * Mints one short session token per request. The token caps the session it
- * starts at five minutes, so a page closed without cleanup leaves it running
- * no longer than that; Reactor bills it by the minute. A real deployment
- * authenticates and rate-limits this endpoint: every token it hands out can
- * start a paid session.
+ * Mints one token per request. A token that creates a session caps it at five
+ * minutes, so a page closed without cleanup leaves it running no longer than
+ * that; Reactor bills it by the minute. A bound token lets that session go on
+ * past its first token. A real deployment authenticates and rate-limits this
+ * endpoint, and binds only sessions the caller created: every token it hands
+ * out can start or act on a paid session.
  */
 const SessionHandlers = HttpApiBuilder.group(
   Api,
@@ -25,28 +26,27 @@ const SessionHandlers = HttpApiBuilder.group(
       Config.withDefault("https://api.reactor.inc"),
     );
     const coordinator = yield* Coordinator.make({ apiUrl });
+    const tokens = coordinator.tokens({
+      apiKey,
+      modelName: H3.modelName,
+      maxSessionDuration: "5 minutes",
+      expiresAfter: "6 minutes",
+    });
     return handlers.handleAll({
-      token: () =>
-        coordinator
-          .mintToken({
-            apiKey,
-            modelName: H3.modelName,
-            maxSessionDuration: "5 minutes",
-            expiresAfter: "6 minutes",
-          })
-          .pipe(
-            Effect.map((grant) => ({
-              jwt: Redacted.value(grant.jwt),
-              expiresAt: grant.expiresAt,
-              maxSessionSeconds: grant.granted.maxSessionSeconds,
-            })),
-            Effect.tapError((error) =>
-              Effect.logWarning("token refused", { reason: error.reason._tag }),
-            ),
-            Effect.mapError(
-              () => new TokenUnavailable({ message: "No session token is available" }),
-            ),
+      token: ({ payload }) =>
+        (payload.session === undefined ? tokens.create : tokens.bind(payload.session)).pipe(
+          Effect.map((grant) => ({
+            jwt: Redacted.value(grant.jwt),
+            expiresAt: grant.expiresAt,
+            ...(grant.maxSessionSeconds === undefined
+              ? {}
+              : { maxSessionSeconds: grant.maxSessionSeconds }),
+          })),
+          Effect.tapError((error) =>
+            Effect.logWarning("token refused", { reason: error.reason._tag }),
           ),
+          Effect.mapError(() => new TokenUnavailable({ message: "No session token is available" })),
+        ),
     });
   }),
 );

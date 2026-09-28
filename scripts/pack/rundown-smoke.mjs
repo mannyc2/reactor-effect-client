@@ -27,19 +27,21 @@ const webCrypto = Layer.sync(Crypto.Crypto, () =>
   }),
 );
 
-const mint = Effect.gen(function* () {
+const open = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
   const coordinator = yield* Coordinator.Coordinator;
-  return yield* coordinator.mintToken({
-    apiKey: test.apiKey,
-    modelName: H3.modelName,
-    maxSessionDuration: "10 minutes",
-    expiresAfter: "15 minutes",
+  return yield* H3Source.open({
+    tokens: coordinator.tokens({
+      apiKey: test.apiKey,
+      modelName: H3.modelName,
+      maxSessionDuration: "10 minutes",
+      expiresAfter: "15 minutes",
+    }),
   });
 });
 
 const simulated = Rundown.layer.pipe(
-  Layer.provideMerge(Playout.layer({ open: H3Source.open({ mint }), lanes: [{ name: "show" }] })),
+  Layer.provideMerge(Playout.layer({ open, lanes: [{ name: "show" }] })),
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(Coordinator.layer()),
   Layer.provideMerge(

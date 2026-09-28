@@ -31,7 +31,7 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
-import { workSeconds } from "./Spend.js";
+import { sessionSeconds, workSeconds } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
 
@@ -95,7 +95,7 @@ export const own = (input: {
       const { grant, marker, announce } = input;
       const recorded = yield* Deferred.make<H3Source.Allocation>();
       const source = yield* H3Source.open({
-        mint: Effect.succeed(grant),
+        tokens: Coordinator.fixedTokens(grant),
         onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
       });
       const allocation = yield* Deferred.await(recorded);
@@ -153,7 +153,7 @@ export const paid = (input: {
             const text = yield* Schema.encodeEffect(Schema.fromJsonString(OwnerGrant))({
               jwt: Redacted.value(grant.jwt),
               expiresAt: grant.expiresAt,
-              maxSessionSeconds: grant.granted.maxSessionSeconds,
+              maxSessionSeconds: grant.maxSessionSeconds ?? sessionSeconds,
               marker,
             });
             yield* Stream.make(new TextEncoder().encode(`${text}\n`)).pipe(
@@ -200,7 +200,7 @@ export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
     const grant: Coordinator.TokenGrant = {
       jwt: Redacted.make(input.jwt),
       expiresAt: input.expiresAt,
-      granted: { maxSessions: 1, maxSessionSeconds: input.maxSessionSeconds },
+      maxSessionSeconds: input.maxSessionSeconds,
     };
     return yield* own({
       grant,
