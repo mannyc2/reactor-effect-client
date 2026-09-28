@@ -311,6 +311,12 @@ export class VideoReader {
     return this.arrivals.findLast((at) => at <= atMs);
   }
 
+  /** How many frames arriving between `fromMs` and `toMs` were dark, however short. */
+  dark(fromMs: number, toMs: number): number {
+    return this.seen.filter((frame) => frame.atMs >= fromMs && frame.atMs <= toMs && !frame.lit)
+      .length;
+  }
+
   /**
    * The longest stretch between `fromMs` and `toMs` with no new picture: from
    * a frame that differed from the one before it to the next that did. Frames

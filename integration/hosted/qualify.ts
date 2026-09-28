@@ -1283,6 +1283,7 @@ const measureSeam = (
   const fromMs = endedMs - seamBefore;
   const toMs = startedMs + seamAfter;
   const pause = session.video.pause(fromMs, toMs);
+  const darkFrames = session.video.dark(fromMs, toMs);
   const jump = session.seams.jump(fromMs, toMs);
   const frames =
     window === undefined || jump === undefined
@@ -1296,6 +1297,7 @@ const measureSeam = (
     endedMs,
     startedMs,
     ...(pause === undefined ? {} : { pause }),
+    darkFrames,
     ...(jump === undefined ? {} : { jump }),
     ...(frames.length === 0 ? {} : { frames }),
   };

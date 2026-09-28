@@ -156,6 +156,8 @@ export const ItemSeam = Schema.Struct({
   endedMs: Schema.optionalKey(Ms),
   startedMs: Schema.optionalKey(Ms),
   pause: Schema.optionalKey(SeamPause),
+  /** Dark frames anywhere around the boundary, including single ones that are no pause. */
+  darkFrames: Schema.optionalKey(Schema.Int),
   jump: Schema.optionalKey(SeamJump),
   /** Names of the frames either side, written beside the run, never into this file. */
   frames: Schema.optionalKey(Schema.Array(Schema.String)),

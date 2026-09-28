@@ -222,7 +222,7 @@ const section = (evidence: Evidence): string => {
       seam.pause === undefined
         ? "pause not measured"
         : `pause ${seconds(seam.pause.durationMs)} (${seam.pause.frames} frames, ${seam.pause.dark} dark)`
-    }; ${
+    }; ${seam.darkFrames === undefined ? "" : `${seam.darkFrames} dark frames around it; `}${
       seam.jump === undefined
         ? "join not measured"
         : `join change ${seam.jump.change.toFixed(1)} against ${seam.jump.typical.toFixed(1)} within the clip (x${seam.jump.ratio.toFixed(1)})`
