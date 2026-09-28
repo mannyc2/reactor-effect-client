@@ -118,8 +118,13 @@ export type Output =
   | { readonly _tag: "Ack"; readonly requestId: string }
   | { readonly _tag: "Unknown"; readonly requestId: string; readonly command: string }
   | { readonly _tag: "Broadcast"; readonly message: Message }
-  /** Build the clip; the runner finishes, fails or stalls it. */
-  | { readonly _tag: "Build"; readonly token: number; readonly seconds: number }
+  /** Build the clip, continuing another or not; the runner finishes, fails or stalls it. */
+  | {
+      readonly _tag: "Build";
+      readonly token: number;
+      readonly seconds: number;
+      readonly continued: boolean;
+    }
   /** Start the first ready clip once the seam has passed. */
   | { readonly _tag: "Arm"; readonly token: number }
   /** An acknowledged stop takes effect after its lag. */
@@ -279,16 +284,12 @@ export const step: {
         continue;
       }
       const from = s.continuations.get(next.clip_id);
+      const continued = from !== undefined && s.generated.has(from) && !s.dropped.has(from);
       if (from !== undefined)
-        emit({
-          _tag: "Continuation",
-          clipId: next.clip_id,
-          from,
-          applied: s.generated.has(from) && !s.dropped.has(from),
-        });
+        emit({ _tag: "Continuation", clipId: next.clip_id, from, applied: continued });
       const t = token();
       set({ building: { clipId: next.clip_id, token: t, discarded: false } });
-      emit({ _tag: "Build", token: t, seconds: next.seconds });
+      emit({ _tag: "Build", token: t, seconds: next.seconds, continued });
       return;
     }
   };

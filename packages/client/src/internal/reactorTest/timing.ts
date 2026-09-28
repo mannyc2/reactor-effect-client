@@ -14,6 +14,8 @@ export interface Sampler {
   readonly delay: (which: Delay) => Effect.Effect<number>;
   /** Seconds of video built per second of build time. */
   readonly buildSpeed: Effect.Effect<number>;
+  /** The same for a clip that continues another. */
+  readonly continuedBuildSpeed: Effect.Effect<number>;
 }
 
 export const make = Effect.fnUntraced(function* (timing: Timing) {
@@ -28,6 +30,7 @@ export const make = Effect.fnUntraced(function* (timing: Timing) {
     delay: (which) =>
       between(Duration.toMillis(timing[which].min), Duration.toMillis(timing[which].max)),
     buildSpeed: between(timing.buildSpeed.min, timing.buildSpeed.max),
+    continuedBuildSpeed: between(timing.continuedBuildSpeed.min, timing.continuedBuildSpeed.max),
   };
   return sampler;
 });

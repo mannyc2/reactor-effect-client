@@ -7,7 +7,7 @@
  * It models what H3 does, not how fast it does it: every delay comes from the
  * `timing` the caller chooses. A scenario test states the timing it relies on
  * with `Timing.fixed`; a simulation test draws from wide ranges with
- * `Timing.random`, reproducibly for its seed; `Timing.hosted` replays what two
+ * `Timing.random`, reproducibly for its seed; `Timing.hosted` replays what
  * paid runs measured, for demos. Every delay is an `Effect.sleep`: under
  * `TestClock`, fork `flow()` and the run is deterministic; on the live clock
  * it plays in real time.
@@ -99,6 +99,8 @@ export interface Timing {
   readonly stop: Range;
   /** Seconds of video built per second of build time; below 1 the queue starves. */
   readonly buildSpeed: { readonly min: number; readonly max: number };
+  /** The same for a clip built continuing from another, which hosted H3 built slower. */
+  readonly continuedBuildSpeed: { readonly min: number; readonly max: number };
 }
 
 const point = (input: Duration.Input | undefined): Range => {
@@ -117,6 +119,8 @@ export const Timing = {
    */
   fixed: (input: {
     readonly buildSpeed: number;
+    /** `buildSpeed` unless named. */
+    readonly continuedBuildSpeed?: number;
     readonly http?: Duration.Input;
     readonly channel?: Duration.Input;
     readonly allocation?: Duration.Input;
@@ -135,6 +139,10 @@ export const Timing = {
     seam: point(input.seam),
     stop: point(input.stop),
     buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
+    continuedBuildSpeed: {
+      min: input.continuedBuildSpeed ?? input.buildSpeed,
+      max: input.continuedBuildSpeed ?? input.buildSpeed,
+    },
   }),
   /**
    * Every delay drawn from a range, deliberately wider than anything measured
@@ -153,6 +161,7 @@ export const Timing = {
     readonly seam?: readonly [Duration.Input, Duration.Input];
     readonly stop?: readonly [Duration.Input, Duration.Input];
     readonly buildSpeed?: readonly [number, number];
+    readonly continuedBuildSpeed?: readonly [number, number];
   }): Timing => ({
     label: `random seed ${input.seed}`,
     seed: input.seed,
@@ -167,17 +176,22 @@ export const Timing = {
       min: input.buildSpeed?.[0] ?? 0.25,
       max: input.buildSpeed?.[1] ?? 10,
     },
+    continuedBuildSpeed: {
+      min: input.continuedBuildSpeed?.[0] ?? 0.25,
+      max: input.continuedBuildSpeed?.[1] ?? 10,
+    },
   }),
   /**
    * What two paid hosted H3 runs measured on 2026-09-27 (0.6.0 evidence):
    * connect steps of 0.2–0.9 s, eleven 5 s clips built about every 2.1 s
    * while playing, five seams of 30–110 ms and command round trips of 60–90
-   * ms; and a stop landing about 20 ms after its acknowledgement, from 0.7.0's
-   * `scheduler-cut` run on 2026-09-28. These are small samples: use them for
-   * demos and realism checks, not as what a test depends on.
+   * ms; and, from 0.7.0's two runs on 2026-09-28, a stop landing about 20 ms
+   * after its acknowledgement and one continued 5 s clip built in 5.45 s.
+   * These are small samples: use them for demos and realism checks, not as
+   * what a test depends on.
    */
   hosted: {
-    label: "hosted H3, 2 paid runs, 2026-09-27",
+    label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28",
     seed: 1,
     http: range(["200 millis", "300 millis"]),
     channel: range(["30 millis", "45 millis"]),
@@ -187,6 +201,7 @@ export const Timing = {
     seam: range(["30 millis", "110 millis"]),
     stop: point("20 millis"),
     buildSpeed: { min: 2.3, max: 2.6 },
+    continuedBuildSpeed: { min: 0.92, max: 0.92 },
   } satisfies Timing,
 };
 
