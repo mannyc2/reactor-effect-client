@@ -465,23 +465,49 @@ describe("PlayoutPolicy", () => {
     );
   });
 
-  // A session going down refuses what it is sent before its source can say so.
-  it("sends an enqueue again that a provider not ready for commands refused unsent", () => {
-    const { actions, state } = run([
-      ...opened(),
-      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("a") }], batch: false },
-      { _tag: "Result", id: 2, result: failed("not-submitted") },
-    ]);
-    assert.deepStrictEqual(statuses(actions, "a"), ["Accepted"]);
-    const again = Policy.step(config, state, { _tag: "Tick" }, { mono: 5_000, wall: 5_000 });
-    assert.isTrue(
-      commands(again.actions).some(
-        (action) =>
-          action.command._tag === "Enqueue" &&
-          action.command.tag._tag === "Item" &&
-          action.command.tag.key === "a",
-      ),
+  // A session going down refuses what it is sent before its source can say so. Only a change in
+  // what the session reports can mend that, so a timer would resend it forever.
+  it("sends an enqueue refused unsent again once, when its session's availability changes", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    const enqueues = () =>
+      commands(policy.actions).filter((action) => action.command._tag === "Enqueue").length;
+    policy.reply(failed("not-submitted"));
+    policy.tick(5_000);
+    policy.tick(60_000);
+    assert.strictEqual(enqueues(), 1);
+    policy.event({ _tag: "Reconnecting" });
+    policy.event({ _tag: "Reconnected", afterMillis: 900 });
+    policy.observe({});
+    assert.deepStrictEqual(policy.busy(), {
+      _tag: "Enqueue",
+      request: spec("a").request,
+      tag: item("a"),
+      continueFrom: undefined,
+    });
+    assert.strictEqual(enqueues(), 2);
+  });
+
+  it("fails an item refused unsent again while its session reports itself available", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.reply(failed("not-submitted"));
+    policy.event({ _tag: "Reconnecting" });
+    policy.observe({});
+    policy.reply(failed("not-submitted"));
+    assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted", "Failed"]);
+    const settled = policy.actions.findLast(
+      (action) => action._tag === "Emit" && action.event._tag === "AsRun",
     );
+    const status =
+      settled?._tag === "Emit" && settled.event._tag === "AsRun"
+        ? settled.event.event.status
+        : undefined;
+    assert.strictEqual(status?._tag === "Failed" ? status.reason._tag : status?._tag, "Command");
   });
 
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {

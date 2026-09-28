@@ -158,7 +158,12 @@ export type FailureReason =
       readonly message: string;
       readonly provider: Redacted.Redacted<string>;
     }
-  /** A command for it failed in a way a retry would not mend. */
+  /**
+   * A command for it failed in a way a retry would not mend. An enqueue its
+   * session refused unsent, not ready for it, is sent there again once what the
+   * session reports has changed, as after a reconnect; refused again while the
+   * session reports itself ready, it fails here.
+   */
   | { readonly _tag: "Command"; readonly cause: CommandFailure }
   /** Its session was lost while it played, or before it was built on two sessions in a row. */
   | { readonly _tag: "Lost"; readonly sessionId: string }

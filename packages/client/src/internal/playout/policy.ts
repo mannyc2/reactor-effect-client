@@ -92,13 +92,12 @@ export type CommandResult =
   | { readonly _tag: "Died" };
 
 /**
- * Whether an enqueue that failed may be sent again: a failure for now, or one
- * never sent because the session was not in a state to take it, as when its
- * connection drops before its source can say so.
+ * Whether a command was refused unsent because its session was not in a state
+ * to take it, as when its connection drops before its source can say so. Only a
+ * change in what the session reports can mend that, so it waits for one.
  */
-const sendAgain = (cause: CommandFailure): boolean =>
-  cause.isRetryable ||
-  (cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState");
+const unready = (cause: CommandFailure): boolean =>
+  cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState";
 
 /** Whether a command that failed may have taken effect unseen. */
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
@@ -239,6 +238,12 @@ interface Item {
   /** The source state a refused remove saw; it is retried once that changes. */
   readonly blockedRemove?: string | undefined;
   /**
+   * The session that last refused its enqueue unsent, not ready for it, and
+   * that session's availability changes then: it is sent there again only after
+   * another change.
+   */
+  readonly unsent?: { readonly sessionId: string; readonly changes: number } | undefined;
+  /**
    * A clip of its own taken off because it was Ready too early: never adopted
    * again as queued, though if it plays anyway, it aired.
    */
@@ -252,6 +257,8 @@ interface Session {
   readonly openedAt: number;
   readonly lifetimeMs: number;
   readonly source: SourceState | undefined;
+  /** How often its source's `available` has changed: a reconnect changes it twice. */
+  readonly changes: number;
   readonly autoplay: boolean | undefined;
   readonly wantAutoplay: boolean;
   readonly retiring: boolean;
@@ -500,6 +507,12 @@ export const step: {
       ...state,
       sessions: state.sessions.map((value) => (value.id === id ? { ...value, ...patch } : value)),
     };
+  };
+  /** Records what a session's source reports, counting each change in whether it takes commands. */
+  const report = (id: string, source: SourceState): void => {
+    const previous = session(id);
+    const changed = (previous?.source?.available ?? false) !== source.available;
+    updateSession(id, { source, changes: (previous?.changes ?? 0) + (changed ? 1 : 0) });
   };
   /** The session new work goes to: the newest one that is live and not retiring. */
   const preferred = (): Session | undefined => preferredOf(state.sessions);
@@ -1204,7 +1217,7 @@ export const step: {
   };
   /** Reads a session's queues back into the plan: adoption by key, Ready, and clips that vanished. */
   const observe = (sessionId: string, source: SourceState): void => {
-    updateSession(sessionId, { source });
+    report(sessionId, source);
     // What plays is what the provider reports; a clip seen playing without its start event
     // started no later than now.
     if (source.playing === undefined) updateSession(sessionId, { playing: undefined });
@@ -1419,7 +1432,9 @@ export const step: {
         }
         const item = items.get(command.tag.key);
         if (item === undefined || item.phase === "Settled") return;
+        const owner = session(busy.sessionId);
         if (result._tag === "Done") {
+          set(item.spec.key, { unsent: undefined });
           if (item.clipId === undefined)
             set(item.spec.key, { clipId: result.clipId, sessionId: busy.sessionId });
           if (item.phase === "Unknown")
@@ -1437,12 +1452,24 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result._tag === "Failed" && sendAgain(result.cause))
+        } else if (result._tag === "Failed" && result.cause.isRetryable)
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
             dispatchedAt: undefined,
             retryAt: now.mono + retryDelayMs,
+          });
+        else if (
+          result._tag === "Failed" &&
+          unready(result.cause) &&
+          // Refused again while the session says it takes commands, nothing is left to wait for.
+          !(item.unsent?.sessionId === busy.sessionId && owner?.source?.available === true)
+        )
+          set(item.spec.key, {
+            phase: "Accepted",
+            sessionId: undefined,
+            dispatchedAt: undefined,
+            unsent: { sessionId: busy.sessionId, changes: owner?.changes ?? 0 },
           });
         else if (result._tag === "Failed")
           settle(item.spec.key, {
@@ -1530,6 +1557,7 @@ export const step: {
             openedAt: now.mono,
             lifetimeMs: input.lifetimeMs,
             source: undefined,
+            changes: 0,
             autoplay: undefined,
             wantAutoplay: first,
             retiring: false,
@@ -1592,8 +1620,7 @@ export const step: {
         case "Reconnecting": {
           // It takes no commands until its source reports a state again.
           const source = session(input.sessionId)?.source;
-          if (source !== undefined)
-            updateSession(input.sessionId, { source: { ...source, available: false } });
+          if (source !== undefined) report(input.sessionId, { ...source, available: false });
           emit({ _tag: "Session", event: { _tag: "Reconnecting", sessionId: input.sessionId } });
           break;
         }
@@ -2114,6 +2141,7 @@ export const step: {
   function eligible(): ReadonlyArray<Item> {
     const room = runway();
     const floorSeconds = fillerFloor();
+    const target = preferred();
     return [...items.values()]
       .filter(
         (item) =>
@@ -2121,6 +2149,10 @@ export const step: {
           item.withdraw === undefined &&
           previousAdmitted(item) &&
           (item.retryAt ?? -Infinity) <= now.mono &&
+          // A session that refused it unsent gets it again only once what it reports has changed.
+          (item.unsent === undefined ||
+            item.unsent.sessionId !== target?.id ||
+            item.unsent.changes !== target.changes) &&
           (item.notBefore ?? -Infinity) <= now.mono &&
           // Autoplay cannot hold a Ready clip: build a future anchor once air ahead covers the wait.
           ((atMono(item) ?? -Infinity) <= now.mono ||
