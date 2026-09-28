@@ -1,11 +1,11 @@
 /**
  * H3 over one Reactor session as a playout `Source`: `open` mints a token,
  * allocates, lets a supervisor record the owner, connects and sets the
- * session up; `resume` adopts a session a dead owner recorded. Both set every
- * session default the playout depends on explicitly, since H3's defaults are
- * not what a playout wants: autoplay is off until the playout turns it on,
- * `flush_on_clip_end` is set as asked, and the canvas is set before the first
- * enqueue, the only moment H3 accepts it.
+ * session up; `resume` adopts a session a dead owner recorded. Both make sure of
+ * every session default the playout depends on, since H3's defaults are not
+ * what a playout wants: autoplay is off until the playout turns it on,
+ * `flush_on_clip_end` is set as asked when the session has it otherwise, and
+ * the canvas is set before the first enqueue, the only moment H3 accepts it.
  */
 import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
@@ -121,7 +121,14 @@ const stateOf = (snapshot: H3.ProviderSnapshot): SourceState => {
     available: snapshot._tag === "Ready",
     building: (facts?.queue.generation ?? []).map(clipOf),
     ready: (facts?.queue.playout ?? []).map(clipOf),
-    playing: playing === undefined ? undefined : clipOf(playing),
+    // H3 keeps no history: a clip that started before this provider attached is known by its
+    // id alone until its end message brings its metadata and length.
+    playing:
+      playingId === null
+        ? undefined
+        : playing === undefined
+          ? { clipId: playingId, tag: undefined, seconds: undefined }
+          : clipOf(playing),
     continuable: snapshot.clips
       .filter((entry) => entry.clip.ready && entry.lifecycle !== "clip_failed")
       .sort((a, b) =>
@@ -152,7 +159,10 @@ const fromSession = Effect.fnUntraced(function* (
   options: Options & { readonly lifetime: Duration.Duration; readonly resumed: boolean },
 ) {
   const provider = yield* H3.make(session, options.provider);
-  yield* provider.setFlushOnClipEnd(!(options.holdLastFrame ?? true));
+  // A resumed session usually has the setting its owner gave it, so resuming only reads.
+  const flush = !(options.holdLastFrame ?? true);
+  if (factsOf(yield* provider.snapshot)?.state.flush_on_clip_end !== flush)
+    yield* provider.setFlushOnClipEnd(flush);
   if (options.canvas !== undefined && !options.resumed) yield* provider.setCanvas(options.canvas);
   // `seconds_sent` is the session's running total, so a clip's air is the difference from its start.
   const sent = yield* Ref.make<{

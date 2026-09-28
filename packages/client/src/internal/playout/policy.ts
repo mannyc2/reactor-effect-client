@@ -16,6 +16,7 @@ import type {
   ClipTag,
   Event,
   FillContext,
+  PlayingClip,
   SourceClip,
   SourceEvent,
   SourceState,
@@ -374,10 +375,13 @@ const continuedBuildRate = (samples: State["samples"]): number | undefined => {
 const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
   [...sessions].reverse().find((value) => !value.retiring && value.source?.available === true);
 
-/** What is left of `value`'s playing clip at `mono`, counted from its observed start. */
+/**
+ * What is left of `value`'s playing clip at `mono`, counted from its observed start. A clip
+ * of unknown length may end at any moment, so nothing is counted for it and the plan builds ahead.
+ */
 const playingRestOf = (value: Session | undefined, mono: number): number => {
   const playing = value?.source?.playing;
-  if (playing === undefined) return 0;
+  if (playing?.seconds === undefined) return 0;
   const since = value?.playing?.clipId === playing.clipId ? value.playing.at : undefined;
   return since === undefined
     ? playing.seconds * 1000
@@ -487,7 +491,7 @@ export const step: {
   const live = (item: Item | undefined): item is Item =>
     item !== undefined && item.phase !== "Settled";
   const readyOf = (value: Session): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
-  const itemOf = (clip: SourceClip | undefined): Item | undefined =>
+  const itemOf = (clip: PlayingClip | undefined): Item | undefined =>
     clip?.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
 
   // Ranks: lexicographic places in a session's Ready order and in the build order.
@@ -698,7 +702,8 @@ export const step: {
       }
       if (edit._tag === "Insert") {
         const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side);
-        if (!live(anchor) || anchor.phase === "Started")
+        // After the playing item is the next boundary; before it is already past.
+        if (!live(anchor) || (anchor.phase === "Started" && edit.side === "before"))
           return refuse({
             _tag: "InvalidItem",
             key: edit.spec.key,
@@ -788,9 +793,15 @@ export const step: {
               edit.side === "before"
                 ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
                 : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
+            // A playing anchor's start is spent: the insert follows it at the next boundary.
+            const playing = anchor.phase === "Started";
             put(
               newItem(
-                { ...edit.spec, lane: anchor.spec.lane, start: anchor.spec.start },
+                {
+                  ...edit.spec,
+                  lane: anchor.spec.lane,
+                  start: playing ? { _tag: "Follow" } : anchor.spec.start,
+                },
                 {
                   order: (anchor.order + neighbour) / 2,
                   group:
@@ -798,7 +809,7 @@ export const step: {
                       ? undefined
                       : { key: anchor.group.key, index: anchor.group.index },
                   inserted: true,
-                  mode: anchor.mode,
+                  mode: playing ? "follow" : anchor.mode,
                 },
               ),
             );
@@ -905,7 +916,7 @@ export const step: {
     return side === "before" ? parts[0] : parts[parts.length - 1];
   }
 
-  const started = (sessionId: string, clip: SourceClip): void => {
+  const started = (sessionId: string, clip: PlayingClip): void => {
     if (session(sessionId)?.playing?.clipId !== clip.clipId)
       updateSession(sessionId, {
         startedAny: true,
@@ -927,7 +938,8 @@ export const step: {
       _tag: "Started",
       at: now.wall,
       sessionId,
-      seconds: clip.seconds,
+      // A clip the provider named without its length is counted at the length requested.
+      seconds: clip.seconds ?? item.spec.seconds,
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
   };
@@ -1876,7 +1888,7 @@ export const view: {
   (state: State, now: Now): (config: Config) => PublicState;
   (config: Config, state: State, now: Now): PublicState;
 } = dual(3, (config: Config, state: State, now: Now): PublicState => {
-  const own = (clip: SourceClip): ItemKey | "filler" | "other" =>
+  const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
   const playing = air?.source?.playing;

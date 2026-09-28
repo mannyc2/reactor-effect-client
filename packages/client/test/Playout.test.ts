@@ -1,6 +1,6 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, Ref, Stream } from "effect";
+import { Deferred, Duration, Effect, Exit, Ref, Scope, Stream } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
 import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
@@ -166,6 +166,22 @@ layer(hosted)("edits", (it) => {
       yield* replacement.outcome;
       assert.deepStrictEqual(yield* starts, ["a", "b2"]);
       assert.deepStrictEqual((yield* statuses("b")).at(-1), "Dropped");
+    }),
+  );
+
+  it.effect("airs a clip inserted after the playing one at the next boundary", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const first = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      const queued = yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      yield* first.started;
+      const refused = yield* Effect.flip(
+        playout.insert({ key: key("early"), request: clip("early"), before: key("a") }),
+      );
+      assert.strictEqual(refused._tag, "InvalidItem");
+      yield* playout.insert({ key: key("next"), request: clip("next"), after: key("a") });
+      yield* queued.outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "next", "b"]);
     }),
   );
 
@@ -357,6 +373,54 @@ layer(hosted)("the cut's fence", (it) => {
       yield* Effect.sleep("12 seconds");
       // Autoplay stayed off: the second clip, Ready all along, waits for a play.
       assert.deepStrictEqual(yield* Ref.get(started), [first]);
+    }),
+  );
+});
+
+layer(hosted)("resume", (it) => {
+  // H3 keeps no history: the process that adopts a session learns the playing clip's id
+  // from the state alone. The rehearsed `resume` check found that id dropped.
+  it.effect("names the clip already playing, and adopts the session by reading it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      const grant = yield* mint("10 minutes");
+      const recorded = yield* Deferred.make<H3Source.Allocation>();
+      // The owner's scope stays open, as a crashed process's would.
+      const owned = yield* Scope.make();
+      const owner = yield* H3Source.open({
+        mint: Effect.succeed(grant),
+        onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+      }).pipe(Scope.provide(owned));
+      yield* owner.setAutoplay(true);
+      const playing = yield* owner.enqueue(clip("playing", 15), {
+        _tag: "Item",
+        key: key("playing"),
+      });
+      yield* owner.events.pipe(
+        Stream.filter((event) => event._tag === "State" && event.state.playing?.clipId === playing),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const before = (yield* test.log).length;
+      const source = yield* H3Source.resume({
+        allocation: yield* Deferred.await(recorded),
+        jwt: grant.jwt,
+      });
+      const first = yield* source.events.pipe(Stream.runHead, Effect.flatMap(Effect.fromOption));
+      assert.deepStrictEqual(first._tag === "State" ? first.state.playing : undefined, {
+        clipId: playing,
+        tag: undefined,
+        seconds: undefined,
+      });
+      const sent = (yield* test.log)
+        .slice(before)
+        .flatMap((entry) => (entry.kind === "command" ? [entry.name] : []));
+      assert.deepStrictEqual(
+        sent.filter((name) => name !== "get_state" && name !== "get_queue"),
+        [],
+      );
+      yield* Scope.close(owned, Exit.void);
     }),
   );
 });
