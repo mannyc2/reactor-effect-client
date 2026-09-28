@@ -1452,8 +1452,9 @@ const check = (script: Script): void => {
       if (action.outcome === "not-found")
         assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
     }
-  // An item is dropped as withdrawn only when a withdrawal or a drain named it, or an
-  // earlier part of its group failed or was dropped; a replaced part keeps those after it.
+  // An item is dropped as withdrawn only when a withdrawal or a drain named it, an earlier
+  // part of its group failed or was dropped (a replaced part keeps those after it), or it is
+  // a replacement whose item started first, as 0.7.0 withdrew it.
   if (drains.length === 0) {
     const reasons = (name: string) =>
       (history.get(name) ?? []).flatMap((action) =>
@@ -1471,6 +1472,9 @@ const check = (script: Script): void => {
       const from = Math.min(...broken.map((part) => part.place));
       for (const part of parts) if (part.place > from) allowed.add(part.key);
     }
+    for (const next of replaced.keys())
+      for (let old = replaced.get(next); old !== undefined; old = replaced.get(old))
+        if (tags(old).includes("Started")) allowed.add(next);
     for (const name of history.keys())
       if (reasons(name).includes("withdrawn"))
         assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
@@ -1534,6 +1538,8 @@ const counterexamples: ReadonlyArray<Script> = [
   ["batch", "open", "done", "batch"],
   ["batch", "withdraw", "fail", "batch"],
   ["urgent", "withdraw", "lost", "batch"],
+  // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
+  ["submit", "open", "done", "done", "ready", "replace", "start"],
 ];
 
 describe("PlayoutPolicy, any script", () => {

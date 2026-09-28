@@ -532,7 +532,8 @@ export class Playout extends Context.Service<
     readonly insert: (spec: InsertSpec) => Effect.Effect<ItemHandle, SubmitError>;
     /**
      * Builds `next` for the item's place, lane and group position. Once `next`
-     * is Ready the item goes as `replaced`; if the item starts first, `next` goes.
+     * is Ready the item goes as `replaced`; if the item starts first, `next`
+     * is dropped as `withdrawn`.
      */
     readonly replace: (
       key: ItemKey,
