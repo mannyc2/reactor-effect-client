@@ -263,9 +263,7 @@ export class FarPeer extends Context.Service<
     /** One session's stats as far_peer.rs reports them: pacing, encoder and path. */
     readonly stats: (id: string) => Effect.Effect<Message>;
     /** Frames the far peer's encoder actually sent, and their size. */
-    readonly sent: (
-      id: string,
-    ) => Effect.Effect<{
+    readonly sent: (id: string) => Effect.Effect<{
       readonly frames: number;
       readonly width: number;
       readonly height: number;
