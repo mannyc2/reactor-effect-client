@@ -12,7 +12,7 @@ import type { Capabilities, Descriptor, Transport } from "./Coordinator.js";
 import { Termination } from "./Coordinator.js";
 import type { Correlation } from "./internal/correlator.js";
 import type { Statistics } from "./internal/stats.js";
-import type * as Wire from "./internal/wire.generated.js";
+import type * as Wire from "./internal/wire.js";
 import type { DecodedMedia, TrackMedia } from "./Media.js";
 import type { CommandFailure, ReactorError } from "./ReactorError.js";
 import { FailureSummary } from "./ReactorError.js";
@@ -22,7 +22,12 @@ export type { Statistics } from "./internal/stats.js";
 /** A recording the session prepared, with the playlist to download it from. */
 export type ClipReady = Wire.ClipReady;
 /** An uploaded file, as a command refers to it. */
-export type UploadReference = Wire.UploadReference;
+export interface UploadReference {
+  readonly uploadId: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: bigint;
+}
 
 export type Status =
   | "idle"
@@ -119,11 +124,11 @@ export interface UploadProgress {
   readonly allocation: "not-requested" | "unknown" | "confirmed";
   readonly transfer: "not-requested" | "unknown" | "confirmed";
   readonly notification: "not-submitted" | "unknown" | "submitted";
-  readonly file?: Wire.UploadReference;
+  readonly file?: UploadReference;
 }
 
 export interface Uploaded {
-  readonly file: Wire.UploadReference;
+  readonly file: UploadReference;
   readonly transfer: "confirmed";
   readonly notification: "submitted";
 }
@@ -176,7 +181,7 @@ export interface CommandOptions {
   /** 10 seconds by default. */
   readonly replyTimeout?: Duration.Input | undefined;
   /** Uploaded files the command refers to, by the name the command uses. */
-  readonly uploads?: ReadonlyMap<string, Wire.UploadReference> | undefined;
+  readonly uploads?: ReadonlyMap<string, UploadReference> | undefined;
 }
 
 export interface UploadOptions {

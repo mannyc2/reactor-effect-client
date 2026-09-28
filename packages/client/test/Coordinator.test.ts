@@ -5,7 +5,8 @@ import { TestClock } from "effect/testing";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import { Coordinator } from "../src/index.js";
-import type { ClipReady } from "../src/Session.js";
+import { create } from "@bufbuild/protobuf";
+import { ClipReadySchema } from "../src/wire.js";
 
 const api = "https://api.fixture";
 const cdn = "https://cdn.fixture";
@@ -83,15 +84,13 @@ describe("recordings", () => {
     assert.strictEqual(refusal("#EXTM3U\na.ts\nb.ts", 1), "Overflow");
   });
 
-  const clip: ClipReady = {
-    session_id: "session-1",
+  const clip = create(ClipReadySchema, {
+    sessionId: "session-1",
     kind: "recording",
-    start_marker: 0,
-    end_marker: 2,
-    now_marker: 2,
-    predicted_ready_at_ms: 0n,
-    playlist_url: `${api}/clips/c.m3u8`,
-  };
+    endMarker: 2,
+    nowMarker: 2,
+    playlistUrl: `${api}/clips/c.m3u8`,
+  });
   const recordings = (pending: number, segmentBytes = 4) => {
     let waiting = pending;
     return origin((_method, url) => {

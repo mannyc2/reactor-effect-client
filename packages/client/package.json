@@ -82,6 +82,8 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.15.0",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
@@ -94,11 +96,14 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
-    "generate:wire": "python3 wire/generate.py",
-    "generate:check": "python3 wire/generate.py --check"
+    "generate:wire": "buf generate --template wire/buf.gen.yaml",
+    "generate:check": "buf generate --template wire/buf.gen.yaml --output node_modules/.wire-check && diff -r node_modules/.wire-check/src/internal/proto src/internal/proto"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0"
   }
 }

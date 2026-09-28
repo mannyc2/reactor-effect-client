@@ -23,7 +23,6 @@ import {
   requestSeconds,
 } from "../h3/profile.js";
 import type { CanvasAspect } from "../h3/profile.js";
-import type { JsonObject } from "../../json.js";
 
 export interface H3 {
   readonly generation: ReadonlyArray<Clip>;
@@ -91,7 +90,7 @@ export type Input =
       readonly _tag: "Command";
       readonly requestId: string;
       readonly name: string;
-      readonly args: JsonObject;
+      readonly args: Schema.JsonObject;
       /** A fault's refusal, returned in place of the command. */
       readonly refuse?: string;
     }
@@ -333,7 +332,7 @@ export const step: {
     broadcast({ type: "state_update", data: state() });
   };
 
-  const enqueue = (id: string, args: JsonObject): void => {
+  const enqueue = (id: string, args: Schema.JsonObject): void => {
     const decoded = Schema.decodeResult(Commands.enqueue.args)({
       prompt: "",
       reference_images: null,
@@ -382,7 +381,7 @@ export const step: {
     build();
   };
 
-  const move = (id: string, args: JsonObject): void => {
+  const move = (id: string, args: Schema.JsonObject): void => {
     const decoded = Schema.decodeUnknownResult(Commands.move.args)(args);
     if (Result.isFailure(decoded) || decoded.success.position < 0)
       return refuse(id, "move", "position must be a natural number");
@@ -404,7 +403,7 @@ export const step: {
     changed(false);
   };
 
-  const pop = (id: string, args: JsonObject): void => {
+  const pop = (id: string, args: Schema.JsonObject): void => {
     const decoded = Schema.decodeUnknownResult(Commands.pop.args)(args);
     const wanted = Result.isSuccess(decoded) ? decoded.success.clip_id : undefined;
     const clip = [...s.generation, ...s.playout].find((entry) => entry.clip_id === wanted);
@@ -422,7 +421,7 @@ export const step: {
     build();
   };
 
-  const play = (id: string, args: JsonObject): void => {
+  const play = (id: string, args: Schema.JsonObject): void => {
     const decoded = Schema.decodeResult(Commands.play.args)({ clip_id: "", ...args });
     if (Result.isFailure(decoded)) return refuse(id, "play", "invalid arguments");
     if (s.playing !== undefined || s.arming !== undefined)
@@ -464,7 +463,7 @@ export const step: {
     broadcast({ type: "clip_stopped", data: { clip: stopped, seconds_sent: s.secondsSent } });
   };
 
-  const command = (id: string, name: string, args: JsonObject): void => {
+  const command = (id: string, name: string, args: Schema.JsonObject): void => {
     switch (name) {
       case "enqueue":
         return enqueue(id, args);

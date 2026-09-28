@@ -201,7 +201,7 @@ An item, group part, insert or replacement can carry up to 32 `cues`, secondary 
 
 ## Wire module
 
-`reactor-effect-client/wire` is generated from the tracked canonical protocol sources under [`wire/`](./wire/README.md) by `wire/generate.py` (CPython 3.13, standard library only). `bun run generate:check` fails on any byte difference; `bun run generate:wire` rewrites the module. Do not format the generated file or edit it independently of its inputs.
+`reactor-effect-client/wire` is the protobuf-es code that `buf generate` (with `protoc-gen-es`, both pinned devDependencies) builds from the tracked canonical protocol sources under [`wire/`](./wire/README.md), plus a bounded `decode`/`encode`. `bun run generate:wire` rewrites `src/internal/proto`; `bun run generate:check` regenerates into `node_modules/.wire-check` and fails on any difference. Do not format or edit the generated files.
 
 ## Declarations without DOM types
 

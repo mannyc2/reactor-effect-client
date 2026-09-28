@@ -14,7 +14,7 @@
     "**/dist/**",
     ".check/**",
     "**/notices/**",
-    "packages/client/src/internal/wire.generated.ts",
+    "packages/client/src/internal/proto/**",
     "packages/client/wire/**",
     "packages/native/lib/**",
     "packages/native/rust/**",

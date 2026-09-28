@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ReactorError } from "../../ReactorError.js";
-import type { UploadReference } from "../wire.generated.js";
+import type { UploadReference } from "../../Session.js";
 import {
   audioMimeTypes,
   audioReferenceLimits,
@@ -311,9 +311,9 @@ export const materialOf = (
 
 const uploadedFile = (mimeTypes: ReadonlyArray<string>, maxBytes: number) =>
   Schema.Struct({
-    upload_id: Schema.String.check(Schema.isUUID()),
+    uploadId: Schema.String.check(Schema.isUUID()),
     name: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(1024)),
-    mime_type: Schema.String.check(
+    mimeType: Schema.String.check(
       Schema.makeFilter((type) => mimeTypes.includes(type) || "an unsupported MIME type"),
     ),
     size: Schema.BigInt.check(Schema.isBetweenBigInt({ minimum: 1n, maximum: BigInt(maxBytes) })),
@@ -328,9 +328,9 @@ export const Reference = Schema.Union([
   Schema.TaggedStruct("Bytes", { bytes: Schema.Uint8Array }),
   Schema.TaggedStruct("Uploaded", {
     file: Schema.Struct({
-      upload_id: Schema.String,
+      uploadId: Schema.String,
       name: Schema.String,
-      mime_type: Schema.String,
+      mimeType: Schema.String,
       size: Schema.BigInt,
     }),
   }),
@@ -350,7 +350,7 @@ const image = (reference: Reference): Result.Result<ValidatedImage, string> => {
       onSuccess: (file) =>
         new ValidatedImage(
           // The Schema admitted only the image types.
-          file.mime_type as ImageMimeType,
+          file.mimeType as ImageMimeType,
           Number(file.size),
           null,
           null,
@@ -384,7 +384,7 @@ const audio = (reference: Reference): Result.Result<ValidatedAudio, string> => {
       onSuccess: (file) =>
         new ValidatedAudio(
           // The Schema admitted only the audio types.
-          file.mime_type as AudioMimeType,
+          file.mimeType as AudioMimeType,
           Number(file.size),
           null,
           null,

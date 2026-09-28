@@ -1,6 +1,6 @@
 /** An H3 clip request, and its projection onto the `enqueue` command's arguments. */
 import * as Schema from "effect/Schema";
-import type { UploadReference } from "../wire.generated.js";
+import type { UploadReference } from "../../Session.js";
 import type { CommandArgs } from "./commands.js";
 import {
   audioReferenceLimits,
@@ -97,9 +97,9 @@ export interface Captured extends Omit<Request, "references" | "audio"> {
 }
 
 const wireUpload = (file: UploadReference) => ({
-  upload_id: file.upload_id,
+  upload_id: file.uploadId,
   name: file.name,
-  mime_type: file.mime_type,
+  mime_type: file.mimeType,
   size: Number(file.size),
 });
 

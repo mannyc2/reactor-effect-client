@@ -7,8 +7,13 @@ The canonical wire definitions and selected protocol behavior derive from:
 - reactor-runtime, commit 8e98536c6daedca298700dc45cbb5fd9e3676f16
 Their upstream licenses and notices are retained under notices/.
 The repository's packages/client/wire/proto directory contains the selected
-canonical protocol sources. The generated wire module also incorporates
-Google's protobuf Struct descriptor; see notices/google-protobuf-LICENSE.
+canonical protocol sources; protoc-gen-es generates the wire module from them.
+
+The wire module runs on @bufbuild/protobuf, a runtime dependency licensed
+Apache-2.0 AND BSD-3-Clause: Buf Technologies' Apache terms are retained in
+notices/bufbuild-protobuf-LICENSE, and the BSD terms of the Google protobuf
+code it incorporates, including the Struct descriptor, in
+notices/google-protobuf-LICENSE.
 
 Session, correlation and observation implementations incorporate the
 user-supplied reactor-effect-client reference source. Reusable H3, coordinator,

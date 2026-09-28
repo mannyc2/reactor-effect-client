@@ -9,7 +9,6 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import type { ReactorFailure } from "reactor-effect-client/ReactorError";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import * as W from "reactor-effect-client/wire";
-import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
 
 /** The canonical factory over the browser peer, its host layer built in the caller's scope. */
 const browserClient = (settings: Coordinator.Options & Reactor.Options) =>
@@ -156,68 +155,73 @@ const providerChannels = (peer: RTCPeerConnection) => {
         assert(event.data instanceof ArrayBuffer, "provider received a nonbinary SCTP message");
         const bytes = new Uint8Array(event.data);
         if (channel.label === "control") {
-          const request = W.ControlClientMessage.decode(bytes);
-          if (request.kind !== 1 || request.payload === undefined) return;
+          const request = Effect.runSync(W.decode(W.ControlClientMessageSchema, bytes));
+          if (request.kind !== W.MessageKind.REQUEST || request.payload.case === undefined) return;
           const type = request.payload.case;
           requests.push({
             channel: "control",
             type,
-            requestId: request.request_id,
+            requestId: request.requestId,
             bytes: bytes.byteLength,
           });
-          if (type === "request_schema")
+          if (type === "requestSchema")
             channel.send(
-              W.ControlServerMessage.encode({
-                request_id: request.request_id,
-                kind: 2,
-                payload: {
-                  case: "model_schema",
-                  value: { openapi: structFromObject({ openapi: "3.1.0", paths: {} }) },
-                },
-              }),
+              Effect.runSync(
+                W.encode(W.ControlServerMessageSchema, {
+                  requestId: request.requestId,
+                  kind: W.MessageKind.RESPONSE,
+                  payload: {
+                    case: "modelSchema",
+                    value: { openapi: { openapi: "3.1.0", paths: {} } },
+                  },
+                }),
+              ),
             );
-          else if (request.payload.case === "publish_track")
+          else if (request.payload.case === "publishTrack")
             channel.send(
-              W.ControlServerMessage.encode({
-                request_id: request.request_id,
-                kind: 2,
-                payload: { case: "publish_track", value: { name: request.payload.value.name } },
-              }),
+              Effect.runSync(
+                W.encode(W.ControlServerMessageSchema, {
+                  requestId: request.requestId,
+                  kind: W.MessageKind.RESPONSE,
+                  payload: { case: "publishTrack", value: { name: request.payload.value.name } },
+                }),
+              ),
             );
         } else if (channel.label === "data") {
-          const request = W.DataClientMessage.decode(bytes);
+          const request = Effect.runSync(W.decode(W.DataClientMessageSchema, bytes));
           assert(
-            request.kind === 1 && request.payload?.case === "command",
+            request.kind === W.MessageKind.REQUEST && request.payload.case === "command",
             "provider received an invalid model command",
           );
           const command = request.payload.value;
           requests.push({
             channel: "data",
             type: command.type,
-            requestId: request.request_id,
+            requestId: request.requestId,
             bytes: bytes.byteLength,
           });
           channel.send(
-            W.DataServerMessage.encode({
-              request_id: request.request_id,
-              kind: 2,
-              ...(command.type === "ack"
-                ? {}
-                : {
-                    payload: {
-                      case: "message" as const,
-                      value: {
-                        type: command.type,
-                        ...(command.data === undefined ? {} : { data: command.data }),
+            Effect.runSync(
+              W.encode(W.DataServerMessageSchema, {
+                requestId: request.requestId,
+                kind: W.MessageKind.RESPONSE,
+                ...(command.type === "ack"
+                  ? {}
+                  : {
+                      payload: {
+                        case: "message" as const,
+                        value: {
+                          type: command.type,
+                          ...(command.data === undefined ? {} : { data: command.data }),
+                        },
                       },
-                    },
-                  }),
-            }),
+                    }),
+              }),
+            ),
           );
           if (command.type === "echo")
             assert(
-              JSON.stringify(objectFromStruct(command.data!)) ===
-                JSON.stringify({ bytes: [0xa2, 0x20, 0x21, 0x22] }),
+              JSON.stringify(command.data) === JSON.stringify({ bytes: [0xa2, 0x20, 0x21, 0x22] }),
               "provider command data changed in transit",
             );
         } else throw new Error("provider received an unknown data channel");
@@ -659,7 +663,7 @@ const browserNativeCheck = async (): Promise<{
       () =>
         protocol.failure !== undefined ||
         (protocol.requests.some(
-          (request) => request.channel === "control" && request.type === "request_schema",
+          (request) => request.channel === "control" && request.type === "requestSchema",
         ) &&
           protocol.requests.filter((request) => request.channel === "data").length >= 2),
       7000,
