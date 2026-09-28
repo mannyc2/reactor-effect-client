@@ -58,28 +58,34 @@ const echoOf = (body: unknown): NonNullable<Probe["echo"]> => {
   };
 };
 
+/** A reply's status, and its JSON body when it had one. */
+interface Reply {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/** One request's reply: status 0 when none came within 8 s. */
+const exchange = (request: HttpClientRequest.HttpClientRequest) =>
+  Effect.flatMap(HttpClient.HttpClient, (client) =>
+    client.execute(request).pipe(
+      Effect.flatMap((response) =>
+        Effect.map(
+          Effect.orElseSucceed(response.json, () => undefined),
+          (body): Reply => ({ status: response.status, body }),
+        ),
+      ),
+      Effect.timeout("8 seconds"),
+      Effect.orElseSucceed((): Reply => ({ status: 0, body: undefined })),
+    ),
+  );
+
 /** Every probe, in order; each failure to reach the coordinator is recorded as status 0. */
 export const run = (input: {
   readonly apiUrl: string;
   readonly apiKey: Redacted.Redacted<string>;
 }): Effect.Effect<ReadonlyArray<Probe>, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
     const base = input.apiUrl.replace(/\/$/, "");
-    const send = (request: HttpClientRequest.HttpClientRequest) =>
-      client.execute(request).pipe(
-        Effect.flatMap((response) =>
-          response.json.pipe(
-            Effect.orElseSucceed(() => undefined),
-            Effect.map((body): { readonly status: number; readonly body: unknown } => ({
-              status: response.status,
-              body,
-            })),
-          ),
-        ),
-        Effect.timeout("8 seconds"),
-        Effect.orElseSucceed(() => ({ status: 0, body: undefined })),
-      );
     const token = (
       name: string,
       authorization: Record<string, unknown>,
@@ -88,7 +94,7 @@ export const run = (input: {
     ) =>
       Effect.gen(function* () {
         const sentAt = yield* Clock.currentTimeMillis;
-        const reply = yield* send(
+        const reply = yield* exchange(
           HttpClientRequest.post(`${base}/tokens`).pipe(
             HttpClientRequest.setHeader("reactor-api-key", Redacted.value(input.apiKey)),
             HttpClientRequest.setHeader("reactor-api-version", "1"),
@@ -119,7 +125,7 @@ export const run = (input: {
       });
     const withKey = (name: string, method: "GET" | "DELETE") =>
       Effect.gen(function* () {
-        const reply = yield* send(
+        const reply = yield* exchange(
           HttpClientRequest.make(method)(`${base}/sessions/${unknownSession}`).pipe(
             HttpClientRequest.bearerToken(input.apiKey),
             HttpClientRequest.setHeader("reactor-api-version", "1"),
@@ -170,38 +176,20 @@ export const readSession = (input: {
   readonly sessionId: string;
   readonly credential: Redacted.Redacted<string>;
 }) =>
-  Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const reply = yield* client
-      .execute(
-        HttpClientRequest.get(
-          `${input.apiUrl.replace(/\/$/, "")}/sessions/${encodeURIComponent(input.sessionId)}`,
-        ).pipe(
-          HttpClientRequest.bearerToken(input.credential),
-          HttpClientRequest.setHeader("reactor-api-version", "1"),
-        ),
-      )
-      .pipe(
-        Effect.flatMap((response) =>
-          Effect.map(
-            Effect.orElseSucceed(response.json, () => undefined),
-            (body): { readonly status: number; readonly body: unknown } => ({
-              status: response.status,
-              body,
-            }),
-          ),
-        ),
-        Effect.timeout("8 seconds"),
-        Effect.orElseSucceed(() => ({ status: 0, body: undefined })),
-      );
-    return summarize(reply);
-  });
+  exchange(
+    HttpClientRequest.get(
+      `${input.apiUrl.replace(/\/$/, "")}/sessions/${encodeURIComponent(input.sessionId)}`,
+    ).pipe(
+      HttpClientRequest.bearerToken(input.credential),
+      HttpClientRequest.setHeader("reactor-api-version", "1"),
+    ),
+  ).pipe(Effect.map(summarize));
 
 /**
  * A session reply as evidence may keep it: the status, top-level key names, the
  * state, and identifier-like values under keys that may say why it ended.
  */
-export const summarize = (reply: { readonly status: number; readonly body: unknown }) => {
+export const summarize = (reply: Reply) => {
   const body = Predicate.isObject(reply.body) ? reply.body : {};
   const codes: Record<string, string> = {};
   const note = (key: string, value: unknown) => {
