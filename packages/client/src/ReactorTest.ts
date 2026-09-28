@@ -65,6 +65,8 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("NoAudio", {}),
   /** An enqueue with reference images is refused because one of them is invalid. */
   Schema.TaggedStruct("InvalidImage", nth),
+  /** `POST /tokens` grants a longer session than was asked for. */
+  Schema.TaggedStruct("OverGrant", nth),
 ]);
 export type Fault = typeof Fault.Type;
 
@@ -199,6 +201,13 @@ export const Options = Schema.Struct({
   /** Decoded frame size. */
   width: count(16),
   height: count(16),
+  /**
+   * The local candidate type of the pair a peer's statistics report carrying
+   * its media: `relay` stands for a connection through TURN.
+   */
+  candidate: Schema.Literals(["host", "srflx", "relay"]).pipe(
+    Schema.withConstructorDefault(Effect.succeed("host" as const)),
+  ),
   /** Whether the deployment's `enqueue` declares `reference_audios`. */
   referenceAudio: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(true))),
   faults: Schema.Array(Fault).pipe(Schema.withConstructorDefault(Effect.succeed([]))),

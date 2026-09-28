@@ -78,6 +78,7 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     bytes: (frame) => frame.samples.byteLength,
   });
   const delivered = { video: 0n, audio: 0n };
+  let receivedBytes = 0;
 
   const signal = (event: PeerEvent): void => {
     if (!closed) emit?.(event);
@@ -91,6 +92,7 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
       if (closed || track === undefined) return Effect.void;
       if (delivered[kind]++ === 0n)
         signal({ type: "decoded", kind, name: track.name, mid: track.mid });
+      receivedBytes += value._tag === "VideoFrame" ? value.data.byteLength : value.samples.byteLength;
       return value._tag === "VideoFrame" ? video.publish(value) : audio.publish(value);
     });
   const stream = <A>(
@@ -238,6 +240,25 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     close,
     direction: () => Effect.void,
     maxBitrate: () => Effect.void,
-    stats: Effect.succeed([]),
+    // One selected pair, as a browser reports it, carrying every byte the peer received.
+    stats: Effect.sync(() =>
+      opened
+        ? [
+            { type: "transport", id: "T", selectedCandidatePairId: "P" },
+            {
+              type: "candidate-pair",
+              id: "P",
+              localCandidateId: "L",
+              remoteCandidateId: "R",
+              state: "succeeded",
+              nominated: true,
+              bytesSent: 0,
+              bytesReceived: receivedBytes,
+            },
+            { type: "local-candidate", id: "L", candidateType: sessions.options.candidate },
+            { type: "remote-candidate", id: "R", candidateType: "host" },
+          ]
+        : [],
+    ),
   } satisfies Peer;
 });
