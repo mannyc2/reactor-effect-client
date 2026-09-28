@@ -105,8 +105,9 @@ const route = (
       return ok(yield* sessions.create(jwt, body.model.name, webrtc));
     }
     if (rest.length === 0 && method === "GET") return ok(yield* sessions.read(jwt, id));
+    // Paid runs saw a DELETE answered 200, by token and by API key alike.
     if (rest.length === 0 && method === "DELETE")
-      return yield* Effect.as(sessions.remove(jwt, id), { status: 202 });
+      return yield* Effect.as(sessions.remove(jwt, id), { status: 200 });
     if (rest.length === 1 && rest[0] === "uploads" && method === "POST") {
       const body = yield* decode(UploadRequest, request);
       const slot = yield* sessions.upload(jwt, id, body.name, body.size);

@@ -291,7 +291,6 @@ export type Output =
       readonly token: number;
       readonly seconds: number;
       readonly continued: boolean;
-      readonly prompt: string;
     }
   /** Start the first ready clip once the seam has passed. */
   | { readonly _tag: "Arm"; readonly token: number }
@@ -459,7 +458,7 @@ export const step: {
         emit({ _tag: "Continuation", clipId: next.clip_id, from, applied: continued });
       const t = token();
       set({ building: { clipId: next.clip_id, token: t, discarded: false } });
-      emit({ _tag: "Build", token: t, seconds: next.seconds, continued, prompt: next.prompt });
+      emit({ _tag: "Build", token: t, seconds: next.seconds, continued });
       return;
     }
   };

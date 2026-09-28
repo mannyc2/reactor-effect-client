@@ -74,10 +74,11 @@ export const Fault = Schema.Union([
   /** `POST /tokens` grants a longer session than was asked for. */
   Schema.TaggedStruct("OverGrant", nth),
   /**
-   * Content moderation flags a clip, every one or those with `prompt`: as its
-   * build ends the model sends its verdict on the control channel and, for
-   * `terminate` (the default), ends the session instead of making the clip
-   * Ready, as Reactor documents; `warn` only reports it.
+   * Content moderation flags an enqueue, every one or those with `prompt`.
+   * The enqueue is answered as usual; `timing.moderation` later the verdict
+   * arrives on the control channel naming no category, input, command or
+   * request, as it did in a paid run, and on `terminate` (the default) the
+   * session ends, as Reactor documents. `warn` only reports it.
    */
   Schema.TaggedStruct("Moderate", {
     ...nth,
@@ -85,7 +86,6 @@ export const Fault = Schema.Union([
     action: Schema.optionalKey(Schema.Literals(["terminate", "warn"])),
     /** False ends the session with no verdict sent, which Reactor's docs allow. */
     verdict: Schema.optionalKey(Schema.Boolean),
-    categories: Schema.String.pipe(Schema.Array, Schema.optionalKey),
   }),
 ]);
 export type Fault = typeof Fault.Type;
@@ -119,6 +119,8 @@ export interface Timing {
   readonly seam: Range;
   /** From a `stop`'s acknowledgement until it takes effect and its clip ends. */
   readonly stop: Range;
+  /** From a flagged enqueue until content moderation's verdict, and the session's end on `terminate`. */
+  readonly moderation: Range;
   /** Seconds of video built per second of build time; below 1 the queue starves. */
   readonly buildSpeed: { readonly min: number; readonly max: number };
   /** The same for a clip built continuing from another, which hosted H3 built slower. */
@@ -150,6 +152,7 @@ export const Timing = {
     readonly connect?: Duration.Input;
     readonly seam?: Duration.Input;
     readonly stop?: Duration.Input;
+    readonly moderation?: Duration.Input;
   }): Timing => ({
     label: "fixed",
     seed: 1,
@@ -160,6 +163,7 @@ export const Timing = {
     connect: point(input.connect),
     seam: point(input.seam),
     stop: point(input.stop),
+    moderation: point(input.moderation),
     buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
     continuedBuildSpeed: {
       min: input.continuedBuildSpeed ?? input.buildSpeed,
@@ -182,6 +186,7 @@ export const Timing = {
     readonly connect?: readonly [Duration.Input, Duration.Input];
     readonly seam?: readonly [Duration.Input, Duration.Input];
     readonly stop?: readonly [Duration.Input, Duration.Input];
+    readonly moderation?: readonly [Duration.Input, Duration.Input];
     readonly buildSpeed?: readonly [number, number];
     readonly continuedBuildSpeed?: readonly [number, number];
   }): Timing => ({
@@ -194,6 +199,7 @@ export const Timing = {
     connect: range(input.connect ?? [0, "2 seconds"]),
     seam: range(input.seam ?? [0, "500 millis"]),
     stop: range(input.stop ?? [0, "1 second"]),
+    moderation: range(input.moderation ?? [0, "2 seconds"]),
     buildSpeed: {
       min: input.buildSpeed?.[0] ?? 0.25,
       max: input.buildSpeed?.[1] ?? 10,
@@ -222,6 +228,7 @@ export const Timing = {
     connect: range(["600 millis", "900 millis"]),
     seam: range(["30 millis", "110 millis"]),
     stop: point("20 millis"),
+    moderation: point("1 second"),
     buildSpeed: { min: 2.3, max: 2.6 },
     continuedBuildSpeed: { min: 0.92, max: 0.92 },
   } satisfies Timing,
@@ -237,10 +244,10 @@ export const Options = Schema.Struct({
   generationCapacity: count(20),
   playoutCapacity: count(10),
   /**
-   * The rate the pricing API publishes, in credits a minute: 7,500 at 10,000
-   * a dollar is $0.75 a minute.
+   * The rate the pricing API publishes, in credits a second, as it stated
+   * H3's for the paid runs: 125 at 10,000 a dollar is $0.0125 a second.
    */
-  creditsPerMinute: count(7_500),
+  creditsPerSecond: count(125),
   creditsPerDollar: count(10_000),
   /** Sessions the account may run at once, as Reactor's default quota; more are refused with 429. */
   concurrentSessions: count(5),
@@ -269,7 +276,7 @@ export interface SessionInfo {
   readonly id: string;
   /** INACTIVE: its last connection dropped; it ends 30 s later unless one returns. */
   readonly state: "PENDING" | "ACTIVE" | "INACTIVE" | "STOPPING" | "CLOSED";
-  /** A peer is bound and both its channels are open. */
+  /** One of its connections at least is connected with both channels open. */
   readonly connected: boolean;
   /** DELETE requests received, repeats and ignored ones included. */
   readonly deletes: number;
@@ -277,11 +284,10 @@ export interface SessionInfo {
   readonly grant: { readonly maxSessionSeconds: number | undefined; readonly expiresAt: number };
 }
 
+/** What the sessions cost, billed per second as the pricing API states H3's rate. */
 export interface Billing {
-  /** From ACTIVE until the session ended, or now. */
+  /** From ACTIVE until each session ended, or now. */
   readonly seconds: number;
-  /** Whole billed minutes, counted per session. */
-  readonly minutes: number;
   readonly usd: number;
 }
 

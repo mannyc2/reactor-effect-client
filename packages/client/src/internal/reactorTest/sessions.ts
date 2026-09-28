@@ -81,19 +81,36 @@ interface Grant {
   readonly bound: ReadonlySet<string>;
 }
 
+/**
+ * A registered connection slot. Several can carry one session at once; an
+ * offer on a slot binds its transport, and a later offer on the same slot,
+ * a reconnect, replaces it.
+ */
+export interface Slot {
+  /** Once offered, the answer and when it is ready. */
+  readonly answer: { readonly at: number; readonly sdp: string } | undefined;
+  /** The transport the slot's last offer named. */
+  readonly link: Link | undefined;
+  /** Its transport is connected and both its channels are open. */
+  readonly open: boolean;
+}
+
 interface State {
   readonly phase: Phase;
-  /** Connections lost with none left, so a 30 s window closes on the latest. */
+  /** Times the session lost its last open connection, so a 30 s window closes on the latest. */
   readonly drops: number;
   readonly activeAt: number | undefined;
   readonly endedAt: number | undefined;
   readonly deletes: number;
-  /** The peer the last SDP offer named, open or not. */
-  readonly bound: Link | undefined;
-  readonly connected: boolean;
-  /** Each registered connection and, once offered, when its answer is ready. */
-  readonly connections: ReadonlyMap<number, { readonly at: number; readonly sdp: string }>;
+  readonly connections: ReadonlyMap<number, Slot>;
 }
+
+const withSlot = (state: State, cid: number, slot: Slot): State => ({
+  ...state,
+  connections: new Map(state.connections).set(cid, slot),
+});
+const anyOpen = (state: State): boolean =>
+  [...state.connections.values()].some((slot) => slot.open);
 
 interface Session {
   readonly id: string;
@@ -135,7 +152,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   const grants = yield* Ref.make<ReadonlyMap<string, Grant>>(new Map());
   const sessions = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
   const peers = yield* Ref.make<ReadonlyMap<string, Link>>(new Map());
-  const bindings = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
+  /** The session and slot each test peer's last offer bound it to. */
+  const bindings = yield* Ref.make<
+    ReadonlyMap<string, { readonly session: Session; readonly cid: number }>
+  >(new Map());
   const counts = yield* Ref.make({ grants: 0, sessions: 0, connections: 1000, peers: 0 });
   /** The account's session-creation bucket: `burst` at once, refilled at the per-minute rate. */
   const bucket = yield* Ref.make({ tokens: burst, at: 0 });
@@ -155,27 +175,43 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     );
   const later = (ms: number, effect: Effect.Effect<void>) =>
     FiberSet.run(lifetimes, Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(effect)));
-  const setBinding = (peerId: string, session: Session | undefined) =>
+  const setBinding = (
+    peerId: string,
+    binding: { readonly session: Session; readonly cid: number } | undefined,
+  ) =>
     Ref.update(bindings, (all) => {
       const next = new Map(all);
-      if (session !== undefined) next.set(peerId, session);
+      if (binding !== undefined) next.set(peerId, binding);
       else next.delete(peerId);
       return next;
     });
 
-  /** A session token, or the API key, which acts on every session of the account. */
-  const authorize = (jwt: string | undefined) =>
+  /**
+   * A session token, or the API key where Reactor takes it as the bearer:
+   * reading a session and ending one. Paid run tokens 7bc779d4 read an
+   * unknown session with the key (404) and ended a live one (200); Reactor's
+   * docs name the key for `DELETE` only, so its other calls refuse it.
+   */
+  const authorize = (jwt: string | undefined, access: "token" | "key") =>
     Effect.gen(function* () {
-      if (jwt !== undefined && jwt === options.apiKey) return "key" as const;
+      if (jwt !== undefined && jwt === options.apiKey && access === "key") return "key" as const;
       const grant = jwt === undefined ? undefined : (yield* Ref.get(grants)).get(jwt);
       if (grant === undefined || grant.expiresAt * 1000 <= (yield* Clock.currentTimeMillis))
-        return yield* refuse(401, "unauthorized", "a valid bearer token is required");
+        return yield* refuse(401, "unauthorized", "a valid session token is required");
       return grant;
     });
-  /** `live` refuses a session not ACTIVE, or not ACTIVE or INACTIVE when a connection may return. */
-  const owned = (jwt: string | undefined, id: string, live?: "active" | "connectable") =>
+  /**
+   * A session the bearer may act on. `live` refuses one not ACTIVE, or not
+   * ACTIVE or INACTIVE when a connection may return; `key` admits the API key.
+   */
+  const owned = (
+    jwt: string | undefined,
+    id: string,
+    live?: "active" | "connectable",
+    access: "token" | "key" = "token",
+  ) =>
     Effect.gen(function* () {
-      const grant = yield* authorize(jwt);
+      const grant = yield* authorize(jwt, access);
       const session = (yield* Ref.get(sessions)).get(id);
       if (session === undefined) return yield* refuse(404, "not_found", "no such session");
       if (grant !== "key" && session.creator !== grant.jwt && !grant.bound.has(id))
@@ -193,41 +229,49 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       return session;
     });
   const connection = (session: Session, cid: number) =>
-    Effect.flatMap(Ref.get(session.state), (state) =>
-      state.connections.has(cid)
-        ? Effect.succeed(state.connections.get(cid))
-        : Effect.fail(refuse(404, "not_found", "no such connection")),
-    );
+    Effect.flatMap(Ref.get(session.state), (state) => {
+      const slot = state.connections.get(cid);
+      return slot === undefined
+        ? Effect.fail(refuse(404, "not_found", "no such connection"))
+        : Effect.succeed(slot);
+    });
 
-  /** The link stops carrying the session: it closes, or the session moves on. */
+  /** The slot's transport stops carrying the session: it closes, or another replaces it. */
   const unlink = (
     session: Session,
+    cid: number,
     link: Link,
     reason: "ended" | "replaced" | "disconnected",
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const previous = yield* Ref.getAndUpdate(session.state, (state) =>
-        state.bound === link ? { ...state, bound: undefined, connected: false } : state,
-      );
-      if (previous.bound !== link) return;
+      const unbound = yield* Ref.modify(session.state, (state) => {
+        const slot = state.connections.get(cid);
+        return slot?.link === link
+          ? ([true, withSlot(state, cid, { ...slot, link: undefined, open: false })] as const)
+          : ([false, state] as const);
+      });
+      if (!unbound) return;
       yield* setBinding(link.id, undefined);
-      yield* session.playout.disconnect(link);
+      yield* session.playout.disconnect(cid);
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* link.drop(reason);
       if (reason !== "disconnected") return;
       // Reactor ends a session 30 s after its last connection drops, unless one returns.
       // Meanwhile hosted Reactor reads it INACTIVE (paid run tokens 83d17eb7), still billing.
-      const { drops } = yield* Ref.updateAndGet(session.state, (state) => ({
-        ...state,
-        phase: state.phase === "ACTIVE" ? ("INACTIVE" as const) : state.phase,
-        drops: state.drops + 1,
-      }));
+      const drops = yield* Ref.modify(session.state, (state) => {
+        if (anyOpen(state)) return [undefined, state] as const;
+        const next = {
+          ...state,
+          phase: state.phase === "ACTIVE" ? ("INACTIVE" as const) : state.phase,
+          drops: state.drops + 1,
+        };
+        return [next.drops, next] as const;
+      });
+      if (drops === undefined) return;
       yield* later(
         reconnectWindowMs,
         Effect.flatMap(Ref.get(session.state), (state) =>
-          state.bound === undefined && state.drops === drops
-            ? end(session, "abandoned")
-            : Effect.void,
+          !anyOpen(state) && state.drops === drops ? end(session, "abandoned") : Effect.void,
         ),
       );
     });
@@ -238,7 +282,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         state.phase === "CLOSED" ? state : { ...state, phase: "CLOSED" as const, endedAt: now },
       );
       if (previous.phase === "CLOSED") return;
-      if (previous.bound !== undefined) yield* unlink(session, previous.bound, "ended");
+      for (const [cid, slot] of previous.connections)
+        if (slot.link !== undefined) yield* unlink(session, cid, slot.link, "ended");
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* Scope.close(session.scope, Exit.void);
     });
@@ -257,18 +302,21 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       const lifetime = Math.min(cap, early);
       if (Number.isFinite(lifetime)) yield* later(lifetime, end(session, "expired"));
     });
-  /** Connectivity succeeded for the peer the session is bound to. */
-  const open = (session: Session, link: Link) =>
+  /** Connectivity succeeded for the transport a slot is bound to. */
+  const open = (session: Session, cid: number, link: Link) =>
     Effect.gen(function* () {
       const state = yield* Ref.get(session.state);
-      if (state.phase !== "ACTIVE" || state.bound !== link) return;
+      const slot = state.connections.get(cid);
+      if (state.phase !== "ACTIVE" || slot?.link !== link) return;
       yield* link.open;
-      yield* Ref.update(session.state, (current) => ({ ...current, connected: true }));
+      yield* Ref.update(session.state, (current) =>
+        withSlot(current, cid, { ...slot, open: true }),
+      );
       yield* log({ sessionId: session.id, kind: "session", name: "connected" });
-      yield* session.playout.connect(link);
+      yield* session.playout.connect(cid, link);
       const fault = yield* faults.trip((candidate) => candidate._tag === "Disconnect");
       if (fault?._tag === "Disconnect")
-        yield* later(Duration.toMillis(fault.after), unlink(session, link, "disconnected"));
+        yield* later(Duration.toMillis(fault.after), unlink(session, cid, link, "disconnected"));
     });
 
   return {
@@ -280,24 +328,24 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     detach: (peerId: string) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
+        const bound = (yield* Ref.get(bindings)).get(peerId);
         yield* Ref.update(peers, (all) => new Map([...all].filter(([key]) => key !== peerId)));
-        if (link !== undefined && session !== undefined)
-          yield* unlink(session, link, "disconnected");
+        if (link !== undefined && bound !== undefined)
+          yield* unlink(bound.session, bound.cid, link, "disconnected");
       }),
     answered: (peerId: string) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
-        if (link !== undefined && session !== undefined)
-          yield* later(yield* timing.delay("connect"), open(session, link));
+        const bound = (yield* Ref.get(bindings)).get(peerId);
+        if (link !== undefined && bound !== undefined)
+          yield* later(yield* timing.delay("connect"), open(bound.session, bound.cid, link));
       }),
     receive: (peerId: string, channel: "control" | "data", bytes: Uint8Array) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
-        if (link !== undefined && session !== undefined)
-          yield* session.playout.receive(link, channel, bytes);
+        const bound = (yield* Ref.get(bindings)).get(peerId);
+        if (link !== undefined && bound !== undefined)
+          yield* bound.session.playout.receive(bound.cid, link, channel, bytes);
       }),
 
     // Coordinator
@@ -307,9 +355,9 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         {
           name: documented.modelName.slice(documented.modelName.lastIndexOf("/") + 1),
           rate: {
-            amount_per_min: options.creditsPerMinute,
+            amount_per_sec: options.creditsPerSecond,
             unit: "credits",
-            denomination: "minute",
+            denomination: "second",
           },
         },
       ],
@@ -375,9 +423,9 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       }),
     create: (jwt: string | undefined, model: string, webrtc: boolean) =>
       Effect.gen(function* () {
-        const grant = yield* authorize(jwt);
+        const grant = yield* authorize(jwt, "token");
         if (grant === "key")
-          return yield* refuse(403, "forbidden", "sessions are created with a session token");
+          return yield* refuse(401, "unauthorized", "a session token is required");
         if (model !== documented.modelName)
           return yield* refuse(404, "unknown_model", "ReactorTest serves H3 only");
         if (!grant.models.includes(model))
@@ -429,8 +477,6 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             activeAt: undefined,
             endedAt: undefined,
             deletes: 0,
-            bound: undefined,
-            connected: false,
             connections: new Map(),
           }),
           playout: yield* Playout.make(id, {
@@ -439,9 +485,9 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             timing,
             openapi,
             log,
-            // The session a moderation verdict ends is this one, built just below.
-            terminate: (afterMs) =>
-              Effect.suspend(() => Effect.asVoid(later(afterMs, end(session, "moderated")))),
+            // The session a moderation verdict ends is this one, built just below. It ends
+            // outside its own scope, which the ending closes.
+            terminate: Effect.suspend(() => Effect.asVoid(later(0, end(session, "moderated")))),
           }).pipe(Scope.provide(sessionScope)),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
@@ -450,7 +496,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return descriptor(id, "PENDING");
       }),
     read: (jwt: string | undefined, id: string) =>
-      Effect.flatMap(owned(jwt, id), (session) =>
+      Effect.flatMap(owned(jwt, id, undefined, "key"), (session) =>
         Effect.map(Ref.get(session.state), (state) => descriptor(id, state.phase)),
       ),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
@@ -470,7 +516,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       }),
     remove: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
-        const session = yield* owned(jwt, id);
+        const session = yield* owned(jwt, id, undefined, "key");
         const state = yield* Ref.updateAndGet(session.state, (current) => ({
           ...current,
           deletes: current.deletes + 1,
@@ -494,41 +540,42 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if ((yield* faults.trip((fault) => fault._tag === "RefuseConnect")) !== undefined)
           return yield* refuse(403, "connect_refused", "connection refused");
         const cid = yield* count("connections");
-        yield* Ref.update(session.state, (state) => ({
-          ...state,
-          connections: new Map(state.connections).set(cid, { at: Infinity, sdp: "" }),
-        }));
+        yield* Ref.update(session.state, (state) =>
+          withSlot(state, cid, { answer: undefined, link: undefined, open: false }),
+        );
         return { connection_id: cid };
       }),
     offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
-        yield* connection(session, cid);
+        const previous = (yield* connection(session, cid)).link;
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);
         if (link === undefined)
           return yield* refuse(400, "invalid_offer", "the offer names no peer");
-        const previous = (yield* Ref.get(session.state)).bound;
         if (previous !== undefined && previous !== link)
-          yield* unlink(session, previous, "replaced");
-        yield* setBinding(peerId, session);
+          yield* unlink(session, cid, previous, "replaced");
+        yield* setBinding(peerId, { session, cid });
         const at = (yield* Playout.monotonic) + (yield* timing.delay("negotiation"));
         const answer = `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=reactor-test\r\na=ice-ufrag:${peerId}\r\n`;
         // A connection returning to an INACTIVE session makes it ACTIVE again.
-        yield* Ref.update(session.state, (state) => ({
-          ...state,
-          phase: state.phase === "INACTIVE" ? ("ACTIVE" as const) : state.phase,
-          bound: link,
-          connected: false,
-          connections: new Map(state.connections).set(cid, { at, sdp: answer }),
-        }));
+        yield* Ref.update(session.state, (state) =>
+          withSlot(
+            {
+              ...state,
+              phase: state.phase === "INACTIVE" ? ("ACTIVE" as const) : state.phase,
+            },
+            cid,
+            { answer: { at, sdp: answer }, link, open: false },
+          ),
+        );
       }),
     answer: (jwt: string | undefined, id: string, cid: number) =>
       Effect.gen(function* () {
-        const negotiation = yield* connection(yield* owned(jwt, id), cid);
+        const { answer } = yield* connection(yield* owned(jwt, id), cid);
         const now = yield* Playout.monotonic;
-        return negotiation !== undefined && negotiation.at <= now
-          ? Option.some({ sdp_answer: negotiation.sdp, connection_id: cid })
+        return answer !== undefined && answer.at <= now
+          ? Option.some({ sdp_answer: answer.sdp, connection_id: cid })
           : Option.none();
       }),
     candidates: (jwt: string | undefined, id: string, cid: number) =>
@@ -540,7 +587,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         Effect.map(Ref.get(session.state), (state): SessionInfo => ({
           id: session.id,
           state: state.phase,
-          connected: state.connected,
+          connected: anyOpen(state),
           deletes: state.deletes,
           grant: {
             maxSessionSeconds: session.maxSessionSeconds,
@@ -556,11 +603,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           state.activeAt === undefined ? 0 : ((state.endedAt ?? now) - state.activeAt) / 1000,
         ),
       );
-      const minutes = billed.reduce((sum, seconds) => sum + Math.ceil(seconds / 60), 0);
+      const seconds = billed.reduce((sum, each) => sum + each, 0);
       return {
-        seconds: billed.reduce((sum, seconds) => sum + seconds, 0),
-        minutes,
-        usd: (minutes * options.creditsPerMinute) / options.creditsPerDollar,
+        seconds,
+        usd: (seconds * options.creditsPerSecond) / options.creditsPerDollar,
       } satisfies Billing;
     }),
     log: Ref.get(entries),
