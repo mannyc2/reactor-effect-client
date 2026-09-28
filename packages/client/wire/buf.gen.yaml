@@ -1,11 +1,19 @@
-# `bun run generate:wire` runs this from packages/client.
+# `bun run generate:wire` runs this from packages/client into a scratch directory
+# and installs each output at its path from the repository root: the client's
+# codec, and the integration's browser far side's own.
 version: v2
 clean: true
 inputs:
   - directory: wire/proto
 plugins:
   - local: node_modules/.bin/protoc-gen-es
-    out: src/internal/proto
+    out: packages/client/src/internal/proto
+    opt:
+      - target=ts
+      - import_extension=js
+    include_imports: false
+  - local: node_modules/.bin/protoc-gen-es
+    out: integration/browser/proto
     opt:
       - target=ts
       - import_extension=js

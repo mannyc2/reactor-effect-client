@@ -109,7 +109,8 @@ export const toMp4 = Effect.fn("Recording.toMp4")(function* <E>(options: {
       read(track, 200, silence, (count) => (filledBlocks += count)).pipe(Effect.asSome),
   });
   const video = yield* opened(videoQueue);
-  if (Option.isNone(video)) return yield* new RecordingError({ message: "no video frame arrived" });
+  if (Option.isNone(video))
+    return yield* RecordingError.make({ message: "no video frame arrived" });
   const audio = Option.flatten(
     yield* Option.match(audioQueue, {
       onNone: () => Effect.succeedNone,
@@ -158,6 +159,6 @@ export const toMp4 = Effect.fn("Recording.toMp4")(function* <E>(options: {
     );
   const code = yield* encoder.exitCode;
   if (code !== ChildProcessSpawner.ExitCode(0))
-    return yield* new RecordingError({ message: `ffmpeg exited with ${code}` });
+    return yield* RecordingError.make({ message: `ffmpeg exited with ${code}` });
   return { frames, filledFrames, filledBlocks } satisfies Written;
 });

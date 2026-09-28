@@ -17,4 +17,4 @@ if grep -Eq 'reactor-effect-native|(^|[^[:alnum:]_])(takeVideo|buildIdentity)([^
   exit 1
 fi
 
-"$node_binary" "$root/scripts/browser-native.mjs" "$output/browser.js"
+"$node_binary" "$root/scripts/browser-native.ts" "$output/browser.js"

@@ -39,7 +39,7 @@ export class Settings extends Context.Service<
       );
       const clipSeconds = yield* Config.Finite("CHANNEL_CLIP_SECONDS").pipe(Config.withDefault(8));
       if (!H3.isRequestableSeconds(H3.h3ReferenceTurboRealtime, clipSeconds))
-        return yield* new SettingsError({
+        return yield* SettingsError.make({
           message: `CHANNEL_CLIP_SECONDS must be ${H3.requestSeconds.min} to ${H3.requestSeconds.max} seconds`,
         });
       // Admission keeps at most the lead, less one clip, committed, so the
@@ -48,7 +48,7 @@ export class Settings extends Context.Service<
         Duration.toSeconds(lead) < 2 * clipSeconds ||
         Duration.isGreaterThanOrEqualTo(lead, sessionLength)
       )
-        return yield* new SettingsError({
+        return yield* SettingsError.make({
           message: "CHANNEL_RENEWAL_LEAD must hold two clips and be shorter than a session",
         });
       return Settings.of({ mode, sessionLength, lead, clipSeconds });

@@ -5,6 +5,7 @@
   "description": "Real local browser/native WebRTC qualification over the public host packages",
   "type": "module",
   "devDependencies": {
+    "@bufbuild/protobuf": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/bun": "catalog:",

@@ -16,6 +16,7 @@
     "**/notices/**",
     "packages/client/src/internal/proto/**",
     "packages/client/wire/**",
+    "integration/browser/proto/**",
     "packages/native/src/internal/binding.ts",
     "packages/native/npm/*/native-identity.json",
     "packages/native/rust/**",

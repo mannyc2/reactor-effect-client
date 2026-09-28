@@ -9,7 +9,6 @@
   },
   "rules": {
     "typescript/no-explicit-any": "error",
-    "typescript/no-this-alias": "off",
     // Type-aware (oxlint-tsgolint): typescript-eslint's recommended type-checked set.
     "typescript/await-thenable": "error",
     "typescript/no-array-delete": "error",
@@ -62,6 +61,7 @@
     "typescript/no-unnecessary-qualifier": "error",
     "typescript/prefer-readonly": "error",
     "typescript/require-array-sort-compare": "error",
+    "typescript/strict-boolean-expressions": "error",
     // A `default` clause marks a switch over a union as deliberately partial.
     "typescript/switch-exhaustiveness-check": [
       "error",
@@ -81,33 +81,17 @@
       }
     },
     {
-      // JavaScript has no declared types, so every value it reads is `any`.
-      "files": ["**/*.mjs", "**/*.js"],
-      "rules": {
-        "typescript/no-unsafe-argument": "off",
-        "typescript/no-unsafe-assignment": "off",
-        "typescript/no-unsafe-call": "off",
-        "typescript/no-unsafe-member-access": "off",
-        "typescript/no-unsafe-return": "off"
-      }
-    },
-    {
-      // Async test doubles stand in for promise-returning APIs without awaiting.
-      "files": ["**/test/**", "integration/**", "scripts/pack/**"],
-      "rules": {
-        "typescript/require-await": "off"
-      }
-    },
-    {
-      // These consumers resolve their imports only inside the pack smoke's installs.
-      "files": ["scripts/pack/*-consumer.mts"],
+      // The pack smoke's consumer fixtures resolve their imports and Node's types only inside
+      // its isolated installs, where it type-checks them against the installed packages.
+      "files": ["scripts/pack/**"],
       "rules": {
         "typescript/no-unsafe-argument": "off",
         "typescript/no-unsafe-assignment": "off",
         "typescript/no-unsafe-call": "off",
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-return": "off",
-        "typescript/no-redundant-type-constituents": "off"
+        "typescript/no-redundant-type-constituents": "off",
+        "typescript/strict-boolean-expressions": "off"
       }
     }
   ],
