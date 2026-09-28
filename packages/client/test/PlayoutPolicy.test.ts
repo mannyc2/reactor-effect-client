@@ -215,6 +215,83 @@ describe("PlayoutPolicy", () => {
     );
   });
 
+  // 0.7.0 took an insert after the playing clip as the next boundary; the rehearsed `edits`
+  // check found the playout refusing it.
+  it("inserts after the playing item at the next boundary, and refuses one before it", () => {
+    const edit = (id: number, name: string, side: "before" | "after"): Policy.Input => ({
+      _tag: "Edit",
+      id,
+      edits: [{ _tag: "Insert", spec: spec(name), anchor: key("p1"), side }],
+      batch: false,
+    });
+    const { state, actions } = run([
+      ...opened(),
+      { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("p1") }], batch: false },
+      { _tag: "Edit", id: 3, edits: [{ _tag: "Submit", spec: spec("p2") }], batch: false },
+      { _tag: "Result", id: 2, result: { _tag: "Done", clipId: "c1" } },
+      { _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: clip("c1", item("p1")) } },
+      { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "c2" } },
+      {
+        _tag: "Source",
+        sessionId: "s1",
+        event: {
+          _tag: "State",
+          state: source({ playing: clip("c1", item("p1")), ready: [clip("c2", item("p2"))] }),
+        },
+      },
+      edit(10, "before", "before"),
+      edit(11, "next", "after"),
+    ]);
+    const refused = actions.flatMap((action) => (action._tag === "Refused" ? [action.id] : []));
+    assert.deepStrictEqual(refused, [10]);
+    assert.strictEqual(state.items.get(key("next"))?.mode, "follow");
+    const build = commands(actions).at(-1)?.command;
+    assert.deepStrictEqual(build?._tag === "Enqueue" ? build.tag : undefined, item("next"));
+    // Once the anchor has ended, the insert still airs ahead of the item that followed it.
+    const after = run(
+      [
+        { _tag: "Result", id: state.busy?.id ?? -1, result: { _tag: "Done", clipId: "cn" } },
+        {
+          _tag: "Source",
+          sessionId: "s1",
+          event: { _tag: "Ended", clip: clip("c1", item("p1")), termination: "finished" },
+        },
+        {
+          _tag: "Source",
+          sessionId: "s1",
+          event: {
+            _tag: "State",
+            state: source({ ready: [clip("c2", item("p2")), clip("cn", item("next"))] }),
+          },
+        },
+      ],
+      state,
+      100,
+    );
+    const move = commands(after.actions).find((action) => action.command._tag === "Move");
+    assert.deepStrictEqual(move?.command, { _tag: "Move", clipId: "cn", position: 0 });
+  });
+
+  it("counts no air left for a playing clip the provider named without its length", () => {
+    const { state } = run([
+      ...opened(),
+      {
+        _tag: "Source",
+        sessionId: "s1",
+        event: {
+          _tag: "State",
+          state: source({
+            playing: { clipId: "adopted", tag: undefined, seconds: undefined },
+            ready: [clip("next")],
+          }),
+        },
+      },
+    ]);
+    const view = Policy.view(config, state, { mono: 10, wall: 10 });
+    assert.strictEqual(view.runwaySeconds, 5);
+    assert.strictEqual(view.playing, "other");
+  });
+
   it("refuses a changed spec under a used key, and a batch with one refused edit changes nothing", () => {
     const { actions, state } = run([
       { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("a") }], batch: false },

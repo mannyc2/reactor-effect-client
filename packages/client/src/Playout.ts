@@ -123,7 +123,10 @@ export interface GroupSpec {
   readonly window?: Window | undefined;
 }
 
-/** A clip that airs immediately before or after an anchor. Give exactly one of the two. */
+/**
+ * A clip that airs immediately before or after an anchor. Give exactly one of the two.
+ * `after` an item already playing airs at the next boundary; `before` one refuses.
+ */
 export interface InsertSpec extends ClipSpec {
   readonly before?: ItemKey | undefined;
   readonly after?: ItemKey | undefined;
@@ -290,6 +293,15 @@ export interface SourceClip {
   readonly seconds: number;
 }
 
+/**
+ * The clip playing, or armed to play. A provider may name one it never
+ * reported starting, such as H3 for a clip playing before the source attached:
+ * its tag and length are then unknown until it ends.
+ */
+export interface PlayingClip extends Omit<SourceClip, "seconds"> {
+  readonly seconds: number | undefined;
+}
+
 /** One session's queues, as its provider last reported them. */
 export interface SourceState {
   /** The provider accepts commands. */
@@ -298,7 +310,7 @@ export interface SourceState {
   readonly building: ReadonlyArray<SourceClip>;
   /** Built and waiting to play, in playout order. */
   readonly ready: ReadonlyArray<SourceClip>;
-  readonly playing: SourceClip | undefined;
+  readonly playing: PlayingClip | undefined;
   /** Clips a new build can continue from. */
   readonly continuable: ReadonlyArray<string>;
 }
