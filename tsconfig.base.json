@@ -284,7 +284,8 @@
               "**/packages/browser/test/**/*.ts",
               "**/packages/native/src/**/*.ts",
               "**/packages/native/test/peer.test.ts",
-              "**/packages/native/test/fixtures/*.mts"
+              "**/packages/native/test/fixtures/*.mts",
+              "**/integration/hosted/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

@@ -16,9 +16,9 @@ file does not repeat them.
   instructions.
 - Authorization doesn't carry over. Planning isn't approval to implement, and implementing isn't
   approval to spend money, release, publish, deploy or substitute a provider or model.
-- Paid Reactor sessions run only through `integration/hosted/qualify.ts`, and only when a maintainer
-  authorizes that run's spend. It refuses without `--i-authorize-paid-sessions` and a budget. CI
-  never allocates a paid session.
+- Paid Reactor sessions run only through `integration/hosted/main.ts run`, and only when a
+  maintainer authorizes that run's spend. It refuses without `--i-authorize-paid-sessions` and a
+  budget. CI rehearses every check on `ReactorTest` and never allocates a paid session.
 - Parallel agents own disjoint files. Shared schemas, error unions and public exports have one
   integrator, who reviews the combined diff and runs the checks.
 - Keep credentials, JWTs, API keys, session exports, generated media, native build output and npm
