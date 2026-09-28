@@ -31,7 +31,7 @@ import type {
   Termination,
   Track,
 } from "../Coordinator.js";
-import { notTerminated } from "../Coordinator.js";
+import { notTerminated, terminationAttributes } from "../Coordinator.js";
 import type { DecodedMedia, TrackMedia } from "../Media.js";
 import type { MediaTrack, Peer, PeerEvent, PeerFactory } from "../Peer.js";
 import type { CommandContext } from "../ReactorError.js";
@@ -176,6 +176,9 @@ const CommandInput = Schema.Struct({
   ),
 });
 
+const unsupported = (message: string) =>
+  ReactorError.fromCode("UnsupportedCapability", message, { outcome: "not-submitted" });
+
 const deadline = <A, R>(
   effect: Effect.Effect<A, ReactorError, R>,
   duration: Duration.Duration,
@@ -261,9 +264,18 @@ export const make = Effect.fnUntraced(function* (input: {
       yield* publish({ _tag: "Status", status });
     });
 
-  // -------------------------------------------------------------------------
-  // Generations
-  // -------------------------------------------------------------------------
+  /** Adds what a known remote session has learned; an unknown one stays as it is. */
+  const learn = (patch: Partial<Omit<Known, "ownership" | "id">>) =>
+    SubscriptionRef.update(state, (current): State => ({
+      ...current,
+      remote: isKnown(current.remote) ? { ...current.remote, ...patch } : current.remote,
+    }));
+
+  /** An allocation interrupted or failed without a verdict leaves an unknown session. */
+  const allocationUnknown = SubscriptionRef.update(state, (current): State => ({
+    ...current,
+    remote: current.remote?.ownership === "allocating" ? { ownership: "unknown" } : current.remote,
+  }));
 
   /** Fails when `c` is not the live generation, preserving its own failure. */
   const current = (c: Connection): Effect.Effect<void, ReactorError> =>
@@ -352,25 +364,20 @@ export const make = Effect.fnUntraced(function* (input: {
   const background = (c: Connection, body: Effect.Effect<void, ReactorError>) =>
     body.pipe(
       Effect.raceFirst(Deferred.await(c.failed)),
-      Effect.catchCause((cause) => {
-        const error = Cause.findError(cause);
-        return fail(
+      Effect.catchCause((cause) =>
+        fail(
           c,
-          error._tag === "Success"
-            ? error.success
-            : ReactorError.fromCode("Protocol", "session task failed", {
-                detail: cause,
-                generation: c.generation,
-              }),
-        );
-      }),
+          failureOf(cause, () =>
+            ReactorError.fromCode("Protocol", "session task failed", {
+              detail: cause,
+              generation: c.generation,
+            }),
+          ),
+        ),
+      ),
       Effect.forkIn(c.scope),
       Effect.asVoid,
     );
-
-  // -------------------------------------------------------------------------
-  // Peer events
-  // -------------------------------------------------------------------------
 
   const readyGate = (c: Connection) =>
     Ref.get(c.link).pipe(
@@ -470,7 +477,7 @@ export const make = Effect.fnUntraced(function* (input: {
           // Remote ownership is recorded even after the publisher stops waiting.
           yield* Ref.update(c.link, (link): Link => ({
             ...link,
-            claimed: new Set(link.claimed).add(claim),
+            claimed: toggled(link.claimed, claim, true),
             claims: withoutKey(link.claims, message.requestId),
           }));
         else if (payload.case === "error")
@@ -569,7 +576,7 @@ export const make = Effect.fnUntraced(function* (input: {
         case "track":
           yield* SubscriptionRef.update(state, (current): State => ({
             ...current,
-            received: new Set(current.received).add(event.name),
+            received: toggled(current.received, event.name, true),
           }));
           return yield* publish(
             event.type === "decoded"
@@ -607,10 +614,6 @@ export const make = Effect.fnUntraced(function* (input: {
         if (batch.final) yield* Ref.update(c.link, (link): Link => ({ ...link, finalSent: true }));
       }
     });
-
-  // -------------------------------------------------------------------------
-  // Allocation and connection
-  // -------------------------------------------------------------------------
 
   const allocate: Effect.Effect<string, ReactorError> = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
@@ -656,15 +659,7 @@ export const make = Effect.fnUntraced(function* (input: {
                   : { ownership: "unknown" },
           })),
         ),
-        Effect.onInterrupt(() =>
-          SubscriptionRef.update(state, (current): State => ({
-            ...current,
-            remote:
-              current.remote?.ownership === "allocating"
-                ? { ownership: "unknown" }
-                : current.remote,
-          })),
-        ),
+        Effect.onInterrupt(() => allocationUnknown),
       );
       // Ownership rests on the id alone: a reply that cannot describe the
       // session still names one its owner must terminate.
@@ -774,10 +769,7 @@ export const make = Effect.fnUntraced(function* (input: {
           c,
           signaling.ready(known.id, reconnect ? undefined : known.descriptor),
         );
-        yield* SubscriptionRef.update(state, (current): State => ({
-          ...current,
-          remote: isKnown(current.remote) ? { ...current.remote, descriptor } : current.remote,
-        }));
+        yield* learn({ descriptor });
         yield* phase("described");
         const capabilities = descriptor.capabilities;
         const transport = descriptor.selected_transport;
@@ -813,10 +805,7 @@ export const make = Effect.fnUntraced(function* (input: {
         const previousId = known.connectionId;
         const connectionId = previousId ?? (yield* guard(c, signaling.register(known.id)));
         yield* Ref.update(c.link, (link): Link => ({ ...link, connectionId }));
-        yield* SubscriptionRef.update(state, (current): State => ({
-          ...current,
-          remote: isKnown(current.remote) ? { ...current.remote, connectionId } : current.remote,
-        }));
+        yield* learn({ connectionId });
         yield* phase("registered");
         // Registration, then buffered ICE (the empty final batch included), then offer, then answer.
         yield* flushIce(c);
@@ -835,12 +824,7 @@ export const make = Effect.fnUntraced(function* (input: {
         const answer = yield* guard(c, signaling.answer(known.id, connectionId));
         const negotiatedId = answer.connection_id ?? connectionId;
         yield* Ref.update(c.link, (link): Link => ({ ...link, connectionId: negotiatedId }));
-        yield* SubscriptionRef.update(state, (current): State => ({
-          ...current,
-          remote: isKnown(current.remote)
-            ? { ...current.remote, connectionId: negotiatedId }
-            : current.remote,
-        }));
+        yield* learn({ connectionId: negotiatedId });
         yield* guard(c, c.peer.answer(answer.sdp_answer));
         yield* phase("answered");
         yield* deadline(
@@ -887,19 +871,12 @@ export const make = Effect.fnUntraced(function* (input: {
           Exit.isSuccess(exit)
             ? Effect.void
             : Effect.gen(function* () {
-                yield* SubscriptionRef.update(state, (current): State => ({
-                  ...current,
-                  remote:
-                    current.remote?.ownership === "allocating"
-                      ? { ownership: "unknown" }
-                      : current.remote,
-                }));
-                const error = Cause.findError(exit.cause);
+                yield* allocationUnknown;
                 yield* fail(
                   c,
-                  error._tag === "Success"
-                    ? error.success
-                    : ReactorError.fromCode("Aborted", "connection attempt interrupted"),
+                  failureOf(exit.cause, () =>
+                    ReactorError.fromCode("Aborted", "connection attempt interrupted"),
+                  ),
                 );
                 yield* Scope.close(c.scope, Exit.void);
               }),
@@ -912,10 +889,6 @@ export const make = Effect.fnUntraced(function* (input: {
         { captureStackTrace: false },
       ),
     );
-
-  // -------------------------------------------------------------------------
-  // Requests
-  // -------------------------------------------------------------------------
 
   const request = <A>(
     c: Connection,
@@ -996,16 +969,12 @@ export const make = Effect.fnUntraced(function* (input: {
             Effect.gen(function* () {
               // A submitted request stays attributable until a late reply or its
               // generation retires; its slot is not released by the deadline.
-              if (!(yield* correlator.isSubmitted(pending))) yield* forget;
-              else if (Exit.isFailure(exit)) yield* correlator.abandon(pending);
-            }),
-          ),
-          // The span covers the owned execution, which ends with the request's
-          // own outcome even after its caller stops waiting.
-          Effect.onExit((exit) =>
-            Effect.gen(function* () {
-              const error = Exit.findError(exit);
               const submitted = yield* correlator.isSubmitted(pending);
+              if (!submitted) yield* forget;
+              else if (Exit.isFailure(exit)) yield* correlator.abandon(pending);
+              // The span covers the owned execution, which ends with the request's
+              // own outcome even after its caller stops waiting.
+              const error = Exit.findError(exit);
               yield* Effect.annotateCurrentSpan(
                 Exit.isSuccess(exit)
                   ? { "reactor.command.outcome": "replied" }
@@ -1171,10 +1140,6 @@ export const make = Effect.fnUntraced(function* (input: {
       }),
     );
 
-  // -------------------------------------------------------------------------
-  // Tracks
-  // -------------------------------------------------------------------------
-
   const trackOperation = <A>(
     name: string,
     body: (c: Connection, track: Track) => Effect.Effect<A, ReactorError>,
@@ -1191,7 +1156,7 @@ export const make = Effect.fnUntraced(function* (input: {
         const free = yield* Ref.modify(c.link, (current) =>
           current.busy.has(name)
             ? ([false, current] as const)
-            : ([true, { ...current, busy: new Set(current.busy).add(name) }] as const),
+            : ([true, { ...current, busy: toggled(current.busy, name, true) }] as const),
         );
         if (!free)
           return yield* ReactorError.fromCode(
@@ -1202,11 +1167,7 @@ export const make = Effect.fnUntraced(function* (input: {
       }),
       ({ c, track }) => guard(c, body(c, track)),
       ({ c }) =>
-        Ref.update(c.link, (link) => {
-          const busy = new Set(link.busy);
-          busy.delete(name);
-          return { ...link, busy };
-        }),
+        Ref.update(c.link, (link): Link => ({ ...link, busy: toggled(link.busy, name, false) })),
     );
 
   const setTrackActive = (name: string, active: boolean, expected?: Connection) =>
@@ -1215,12 +1176,10 @@ export const make = Effect.fnUntraced(function* (input: {
       (c) =>
         c.peer.direction(name, active).pipe(
           Effect.andThen(
-            Ref.update(c.link, (link) => {
-              const paused = new Set(link.paused);
-              if (active) paused.delete(name);
-              else paused.add(name);
-              return { ...link, paused };
-            }),
+            Ref.update(c.link, (link): Link => ({
+              ...link,
+              paused: toggled(link.paused, name, !active),
+            })),
           ),
           Effect.andThen(
             notification(
@@ -1243,14 +1202,7 @@ export const make = Effect.fnUntraced(function* (input: {
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const media = c.peer.media;
-        if (media._tag !== "Tracks")
-          return yield* ReactorError.fromCode(
-            "UnsupportedCapability",
-            "this peer publishes no tracks",
-            {
-              outcome: "not-submitted",
-            },
-          );
+        if (media._tag !== "Tracks") return yield* unsupported("this peer publishes no tracks");
         yield* current(c);
         const clone = source === null ? null : source.clone();
         const invoked = yield* Ref.make(false);
@@ -1337,7 +1289,7 @@ export const make = Effect.fnUntraced(function* (input: {
               return yield* unexpected("publisher claim reply mismatch");
             yield* Ref.update(c.link, (link): Link => ({
               ...link,
-              claimed: new Set(link.claimed).add(name),
+              claimed: toggled(link.claimed, name, true),
             }));
           }
           yield* replaceSender(c, name, source);
@@ -1352,11 +1304,10 @@ export const make = Effect.fnUntraced(function* (input: {
         replaceSender(c, name, null).pipe(
           Effect.andThen(notification(c, { case: "unpublishTrack", value: { name } })),
           Effect.andThen(
-            Ref.update(c.link, (link) => {
-              const claimed = new Set(link.claimed);
-              claimed.delete(name);
-              return { ...link, claimed };
-            }),
+            Ref.update(c.link, (link): Link => ({
+              ...link,
+              claimed: toggled(link.claimed, name, false),
+            })),
           ),
         ),
       expected,
@@ -1376,10 +1327,6 @@ export const make = Effect.fnUntraced(function* (input: {
         ),
       expected,
     );
-
-  // -------------------------------------------------------------------------
-  // Close
-  // -------------------------------------------------------------------------
 
   const releasePublications = (c: Connection | undefined) =>
     Effect.gen(function* () {
@@ -1405,16 +1352,14 @@ export const make = Effect.fnUntraced(function* (input: {
           ),
         );
         if (Exit.isSuccess(sent)) submitted.push(name);
-        else {
-          const error = Cause.findError(sent.cause);
+        else
           errors.push(
-            error._tag === "Success"
-              ? error.success
-              : ReactorError.fromCode("Shutdown", "publication cleanup failed", {
-                  detail: sent.cause,
-                }),
+            failureOf(sent.cause, () =>
+              ReactorError.fromCode("Shutdown", "publication cleanup failed", {
+                detail: sent.cause,
+              }),
+            ),
           );
-        }
       }
       return { submitted, errors };
     });
@@ -1470,7 +1415,7 @@ export const make = Effect.fnUntraced(function* (input: {
         yield* Effect.annotateCurrentSpan({
           "reactor.close.local_closed": report.localClosed,
           "reactor.close.allocation": report.allocation,
-          ...terminationAttributesOf(report.remote),
+          ...terminationAttributes(report.remote),
         });
         return report;
       }).pipe(
@@ -1478,10 +1423,6 @@ export const make = Effect.fnUntraced(function* (input: {
       );
     }),
   );
-
-  // -------------------------------------------------------------------------
-  // Views
-  // -------------------------------------------------------------------------
 
   const snapshot: Effect.Effect<Snapshot> = Effect.gen(function* () {
     const session = yield* SubscriptionRef.get(state);
@@ -1557,14 +1498,7 @@ export const make = Effect.fnUntraced(function* (input: {
   const decoded: Effect.Effect<DecodedMedia, ReactorError> = Effect.gen(function* () {
     const { c, negotiated } = yield* currentReady;
     const media = c.peer.media;
-    if (media._tag !== "Decoded")
-      return yield* ReactorError.fromCode(
-        "UnsupportedCapability",
-        "this peer has no decoded media",
-        {
-          outcome: "not-submitted",
-        },
-      );
+    if (media._tag !== "Decoded") return yield* unsupported("this peer has no decoded media");
     return {
       generation: c.generation,
       tracks: negotiated.descriptor.capabilities.tracks,
@@ -1578,14 +1512,7 @@ export const make = Effect.fnUntraced(function* (input: {
   const tracks: Effect.Effect<TrackMedia, ReactorError> = Effect.gen(function* () {
     const { c, negotiated } = yield* currentReady;
     const media = c.peer.media;
-    if (media._tag !== "Tracks")
-      return yield* ReactorError.fromCode(
-        "UnsupportedCapability",
-        "this peer has no platform tracks",
-        {
-          outcome: "not-submitted",
-        },
-      );
+    if (media._tag !== "Tracks") return yield* unsupported("this peer has no platform tracks");
     return {
       generation: c.generation,
       tracks: negotiated.descriptor.capabilities.tracks,
@@ -1605,6 +1532,8 @@ export const make = Effect.fnUntraced(function* (input: {
         transfer: "not-requested",
         notification: "not-submitted",
       });
+      const reach = (patch: Partial<UploadProgress>) =>
+        Ref.update(progress, (p): UploadProgress => ({ ...p, ...patch }));
       const operation = Effect.gen(function* () {
         const { c } = yield* currentReady;
         const known = (yield* SubscriptionRef.get(state)).remote;
@@ -1622,7 +1551,7 @@ export const make = Effect.fnUntraced(function* (input: {
             { outcome: "not-submitted" },
           );
         const copy = new Uint8Array(bytes);
-        yield* Ref.update(progress, (p): UploadProgress => ({ ...p, allocation: "unknown" }));
+        yield* reach({ allocation: "unknown" });
         const slot = yield* guard(
           c,
           signaling.allocateUpload(known.id, name, mimeType, copy.length),
@@ -1633,29 +1562,17 @@ export const make = Effect.fnUntraced(function* (input: {
           mimeType,
           size: BigInt(copy.length),
         };
-        yield* Ref.update(progress, (p): UploadProgress => ({
-          ...p,
-          allocation: "confirmed",
-          file,
-          transfer: "unknown",
-        }));
+        yield* reach({ allocation: "confirmed", file, transfer: "unknown" });
         yield* guard(c, signaling.putUpload(slot, copy, mimeType));
-        yield* Ref.update(progress, (p): UploadProgress => ({
-          ...p,
-          transfer: "confirmed",
-          notification: "unknown",
-        }));
+        yield* reach({ transfer: "confirmed", notification: "unknown" });
         yield* notification(c, { case: "fileUploaded", value: file }).pipe(
           Effect.tapError((error) =>
             error.context.outcome === "not-submitted"
-              ? Ref.update(progress, (p): UploadProgress => ({
-                  ...p,
-                  notification: "not-submitted",
-                }))
+              ? reach({ notification: "not-submitted" })
               : Effect.void,
           ),
         );
-        yield* Ref.update(progress, (p): UploadProgress => ({ ...p, notification: "submitted" }));
+        yield* reach({ notification: "submitted" });
         return { file, transfer: "confirmed", notification: "submitted" } satisfies Uploaded;
       });
       const wait =
@@ -1763,10 +1680,19 @@ const withoutKey = <K, V>(map: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> => 
   return next;
 };
 
-const terminationAttributesOf = (termination: Termination): Record<string, unknown> => ({
-  "reactor.termination.attempted": termination.attempted,
-  "reactor.termination.confirmed": termination.confirmed,
-  ...(termination.evidence === null
-    ? {}
-    : { "reactor.termination.evidence": termination.evidence }),
-});
+/** `set` with `value` in it or not. */
+const toggled = <A>(set: ReadonlySet<A>, value: A, present: boolean): ReadonlySet<A> => {
+  const next = new Set(set);
+  if (present) next.add(value);
+  else next.delete(value);
+  return next;
+};
+
+/** The typed failure in `cause`, or `fallback` for a defect or an interruption. */
+const failureOf = (
+  cause: Cause.Cause<ReactorError>,
+  fallback: () => ReactorError,
+): ReactorError => {
+  const error = Cause.findError(cause);
+  return error._tag === "Success" ? error.success : fallback();
+};
