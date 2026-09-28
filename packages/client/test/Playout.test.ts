@@ -32,14 +32,13 @@ const start = (options: Partial<Options<never>> & { readonly lifetime?: Duration
       ...options,
     });
     const events = yield* Ref.make<ReadonlyArray<Playout.Event>>([]);
+    // Started at once, so it subscribes before anything is submitted. The playout publishes an
+    // event before it resolves a handle, so a handle's caller finds the event recorded.
     yield* playout.events.pipe(
       Stream.runForEach((event) => Ref.update(events, (all) => [...all, event])),
-      Effect.forkScoped,
+      Effect.forkScoped({ startImmediately: true }),
     );
-    // Let the recorder subscribe before anything is submitted.
-    yield* Effect.sleep("20 millis");
-    // Recorded events trail a resolved handle by a turn of the recorder.
-    const recorded = Effect.andThen(Effect.sleep("200 millis"), Ref.get(events));
+    const recorded = Ref.get(events);
     const starts = Effect.map(recorded, (all) =>
       all.flatMap((event) =>
         event._tag === "AsRun" && event.event.status._tag === "Started"
@@ -54,6 +53,22 @@ const start = (options: Partial<Options<never>> & { readonly lifetime?: Duration
         ),
       );
     return { playout, events: recorded, starts, statuses };
+  });
+
+/** Checks `effect` until `done` holds, on the virtual clock, failing after `within`. */
+const eventually = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  done: (value: A) => boolean,
+  within: Duration.Input = "1 minute",
+) =>
+  Effect.gen(function* () {
+    const deadline = Duration.toMillis(Duration.fromInputUnsafe(within));
+    for (let waited = 0; waited <= deadline; waited += 100) {
+      const value = yield* effect;
+      if (done(value)) return value;
+      yield* Effect.sleep("100 millis");
+    }
+    return yield* Effect.die(`not within ${String(deadline)} ms`);
   });
 
 /**
@@ -504,12 +519,16 @@ layer(hosted)("renewal", (it) => {
           yield* starts,
           Array.from({ length: 16 }, (_, index) => `n${index}`),
         );
-        const sessions = (yield* events).flatMap((event) =>
-          event._tag === "Session" ? [event.event._tag] : [],
+        // The switch waits for the retiring session's last clip to end and the grace to pass.
+        const sessions = yield* eventually(
+          Effect.map(events, (all) =>
+            all.flatMap((event) => (event._tag === "Session" ? [event.event._tag] : [])),
+          ),
+          (all) => all.includes("Switched"),
         );
         assert.deepStrictEqual(sessions.slice(0, 3), ["Opened", "Opened", "Switched"]);
-        const cleanup = yield* playout.cleanup;
-        assert.isTrue(cleanup.sessions >= 1);
+        // The retired session closes after the switch, confirmed by its own read.
+        yield* eventually(playout.cleanup, (cleanup) => cleanup.sessions >= 1);
       }),
     { timeout: 60_000 },
   );
@@ -902,6 +921,121 @@ layer(hosted)("resume after the owner's token expired", (it) => {
       );
       const source = yield* H3Source.resume({ allocation, tokens: sessionTokens });
       assert.strictEqual(source.sessionId, allocation.sessionId);
+    }),
+  );
+});
+
+// What 0.7.0 guaranteed when a scheduler closed or failed, found missing by an independent critique.
+layer(hosted)("closing and failing", (it) => {
+  // 0.7.0 SchedulerEdits:220.
+  it.effect("a batch pending when the playout closes fails its commit as closed", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
+        lanes: [{ name: "line" }],
+      }).pipe(Scope.provide(scope));
+      const batch = yield* playout.edit([
+        {
+          _tag: "Submit",
+          item: {
+            key: key("later"),
+            lane: "line",
+            request: clip("later"),
+            window: { notBefore: "1 hour", firm: false },
+          },
+        },
+      ]);
+      yield* Scope.close(scope, Exit.void);
+      const committed = yield* batch.committed.pipe(
+        Effect.flip,
+        Effect.timeoutOption("10 seconds"),
+      );
+      assert.deepStrictEqual(
+        Option.map(committed, (error) => error._tag),
+        Option.some("PlayoutClosed"),
+      );
+    }),
+  );
+
+  // 0.7.0 SchedulerFates:182.
+  it.effect("a key forgotten past maxHistory and submitted again gets a handle of its own", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({ maxHistory: 1 });
+      const first = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const ended = yield* first.outcome;
+      const other = yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      yield* other.outcome;
+      const again = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const outcome = yield* again.outcome;
+      assert.isTrue(
+        outcome._tag === "Ended" && ended._tag === "Ended" && outcome.at > ended.at,
+        `${outcome._tag} again, first ${ended._tag}`,
+      );
+    }),
+  );
+
+  it.effect("a defect in the plan fails the playout and closes its sessions, never hanging", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index }) => {
+            if (index > 0) throw new Error("the filler generator broke");
+            return clip("filler 0");
+          },
+        },
+      });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
+      assert.isTrue(Option.isSome(failure));
+      const refused = yield* playout
+        .submit({ key: key("after"), lane: "line", request: clip("after") })
+        .pipe(Effect.flip, Effect.timeoutOption("10 seconds"));
+      assert.deepStrictEqual(
+        Option.map(refused, (error) => error._tag),
+        Option.some("PlayoutClosed"),
+      );
+      yield* eventually(test.sessions, (all) => all.every((value) => value.state === "CLOSED"));
+    }),
+  );
+
+  it.effect("a withdrawal after the playout closed answers what became of the item", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
+        lanes: [{ name: "line" }],
+      }).pipe(Scope.provide(scope));
+      const aired = yield* playout.submit({ key: key("aired"), lane: "line", request: clip("a") });
+      yield* aired.outcome;
+      yield* Scope.close(scope, Exit.void);
+      const answers = yield* Effect.forEach(["aired", "never"], (name) =>
+        playout.withdraw(key(name)),
+      ).pipe(Effect.timeoutOption("10 seconds"));
+      assert.deepStrictEqual(answers, Option.some(["already-started", "not-found"]));
+    }),
+  );
+});
+
+// Its faults stay armed for the rest of a block, so it has one of its own.
+layer(hosted)("failing after a recovered open", (it) => {
+  it.effect("reports why it failed, not an open failure it had recovered from", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseAllocation", nth: 1 });
+      yield* test.inject({ _tag: "Expire", after: Duration.seconds(1) });
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index }) => clip(`filler ${String(index)}`),
+        },
+      });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("5 minutes"));
+      assert.isTrue(Option.isSome(failure));
+      if (Option.isSome(failure)) assert.notStrictEqual(failure.value._tag, "AcquisitionFailure");
     }),
   );
 });

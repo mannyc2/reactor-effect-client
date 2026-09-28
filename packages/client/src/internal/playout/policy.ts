@@ -142,7 +142,18 @@ export type Action =
       readonly outcome: WithdrawOutcome;
     }
   | { readonly _tag: "Drained"; readonly id: number }
-  | { readonly _tag: "Fail"; readonly reason: string; readonly moderated?: boolean };
+  /**
+   * The playout fails for good: `open` when sessions could not be opened, `lost`
+   * when they were lost before playing, `moderation` when content moderation
+   * ended too many.
+   */
+  | {
+      readonly _tag: "Fail";
+      readonly reason: string;
+      readonly cause: "open" | "lost" | "moderation";
+    }
+  /** Settled keys the history bound dropped: they may be submitted afresh. */
+  | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
 
 export interface Config {
   readonly lanes: ReadonlyArray<{
@@ -1061,7 +1072,7 @@ export const step: {
       actions.push({
         _tag: "Fail",
         reason: `content moderation ended ${String(moderations)} sessions`,
-        moderated: true,
+        cause: "moderation",
       });
   };
   const failed = (clip: SourceClip, reason: string): void => {
@@ -1227,7 +1238,8 @@ export const step: {
           consecutive,
         },
       });
-      if (consecutive >= config.maxSetupFailures) actions.push({ _tag: "Fail", reason });
+      if (consecutive >= config.maxSetupFailures)
+        actions.push({ _tag: "Fail", reason, cause: "lost" });
     }
     state = {
       ...state,
@@ -1425,7 +1437,7 @@ export const step: {
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
       if (input.fatal || consecutive >= config.maxSetupFailures)
-        actions.push({ _tag: "Fail", reason: input.reason });
+        actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
       break;
     }
     case "Source": {
@@ -1689,6 +1701,7 @@ export const step: {
   if (state.settled.length > config.maxHistory) {
     const drop = state.settled.slice(0, state.settled.length - config.maxHistory);
     for (const key of drop) items.delete(key);
+    actions.push({ _tag: "Forget", keys: drop });
     for (const [group, value] of groups)
       if (value.parts.every((part) => !items.has(part))) groups.delete(group);
     state = { ...state, settled: state.settled.slice(drop.length) };
