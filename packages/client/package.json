@@ -18,62 +18,11 @@
     "README.md"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./Coordinator": {
-      "types": "./dist/Coordinator.d.ts",
-      "import": "./dist/Coordinator.js"
-    },
-    "./H3": {
-      "types": "./dist/H3.d.ts",
-      "import": "./dist/H3.js"
-    },
-    "./H3Source": {
-      "types": "./dist/H3Source.d.ts",
-      "import": "./dist/H3Source.js"
-    },
-    "./LocalSource": {
-      "types": "./dist/LocalSource.d.ts",
-      "import": "./dist/LocalSource.js"
-    },
-    "./Media": {
-      "types": "./dist/Media.d.ts",
-      "import": "./dist/Media.js"
-    },
-    "./Peer": {
-      "types": "./dist/Peer.d.ts",
-      "import": "./dist/Peer.js"
-    },
-    "./Playout": {
-      "types": "./dist/Playout.d.ts",
-      "import": "./dist/Playout.js"
-    },
-    "./Reactor": {
-      "types": "./dist/Reactor.d.ts",
-      "import": "./dist/Reactor.js"
-    },
-    "./ReactorError": {
-      "types": "./dist/ReactorError.d.ts",
-      "import": "./dist/ReactorError.js"
-    },
-    "./ReactorTest": {
-      "types": "./dist/ReactorTest.d.ts",
-      "import": "./dist/ReactorTest.js"
-    },
-    "./Session": {
-      "types": "./dist/Session.d.ts",
-      "import": "./dist/Session.js"
-    },
-    "./wire": {
-      "types": "./dist/wire.d.ts",
-      "import": "./dist/wire.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js"
-    }
+    "./package.json": "./package.json",
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js",
+    "./internal/*": null,
+    "./index": null
   },
   "engines": {
     "node": ">=22"
@@ -89,7 +38,6 @@
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "effect": "catalog:",
-    "reactor-effect-test-kit": "workspace:*",
     "vitest": "catalog:"
   },
   "scripts": {

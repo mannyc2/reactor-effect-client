@@ -8,7 +8,10 @@ import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { ReactorFailure } from "reactor-effect-client/ReactorError";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
-import * as W from "reactor-effect-client/wire";
+// The far side plays Reactor, so it speaks the wire protocol with the client's own
+// internal codec, from the same build. Everything under test is imported through
+// its public entry point.
+import * as W from "../../packages/client/dist/internal/wire.js";
 
 /** The canonical factory over the browser peer, its host layer built in the caller's scope. */
 const browserClient = (settings: Coordinator.Options & Reactor.Options) =>

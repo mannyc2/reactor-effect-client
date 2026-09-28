@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { inflateSync } from "node:zlib";
-import { dataUri, pngBytes } from "../src/testing/Png.js";
+import { pngBytes } from "../src/ReactorTest.js";
 
-describe("portable PNG fixtures", () => {
+describe("ReactorTest.pngBytes", () => {
   for (const [width, height] of [
     [1, 1],
     [32, 24],
@@ -39,10 +39,4 @@ describe("portable PNG fixtures", () => {
       expect(types).toEqual(["IHDR", "IDAT", "IEND"]);
       expect(cursor).toBe(bytes.length);
     });
-
-  test("base64 encodes a byte view without including its backing-buffer neighbors", () => {
-    const bytes = Uint8Array.of(255, 1, 2, 3, 4, 255);
-    expect(dataUri(bytes.subarray(1, 5))).toBe("data:image/png;base64,AQIDBA==");
-    expect(dataUri(new Uint8Array())).toBe("data:image/png;base64,");
-  });
 });
