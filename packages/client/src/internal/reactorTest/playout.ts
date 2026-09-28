@@ -74,18 +74,31 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   const connections = yield* Ref.make<ReadonlyMap<number, Connection>>(new Map());
   /**
    * Each command not yet answered: the slot it came from, which its answer
-   * goes back to whenever it is sent, and whether a fault withholds it.
+   * goes back to whenever it is sent, and whether a fault withholds or delays it.
    */
   const requests = yield* Ref.make<
-    ReadonlyMap<string, { readonly from: number; readonly withheld: boolean }>
+    ReadonlyMap<
+      string,
+      { readonly from: number; readonly withheld: boolean; readonly lateMs: number }
+    >
   >(new Map());
-  /** The slot a command came from, forgotten as its answer is sent; none when withheld. */
-  const answering = (requestId: string) =>
-    Ref.modify(requests, (all) => {
-      const request = all.get(requestId);
-      const next = new Map(all);
-      next.delete(requestId);
-      return [request?.withheld === false ? request.from : undefined, next] as const;
+  /**
+   * Sends a command's answer back to the slot it came from, at once or as late
+   * as a fault says, and forgets the command; a withheld answer is never sent.
+   */
+  const answer = (requestId: string, reply: (to: number) => Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const request = yield* Ref.modify(requests, (all) => {
+        const next = new Map(all);
+        next.delete(requestId);
+        return [all.get(requestId), next] as const;
+      });
+      if (request === undefined || request.withheld) return;
+      if (request.lateMs === 0) return yield* reply(request.from);
+      yield* FiberSet.run(
+        timers,
+        Effect.sleep(Duration.millis(request.lateMs)).pipe(Effect.andThen(reply(request.from))),
+      );
     });
 
   /**
@@ -225,25 +238,21 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   const perform = (output: H3.Output, greeting: number | undefined) =>
     Effect.gen(function* () {
       switch (output._tag) {
-        case "Reply": {
-          const to = yield* answering(output.requestId);
-          if (to === undefined) return;
-          return yield* data(to, output.requestId, Wire.MessageKind.RESPONSE, output.message);
-        }
+        case "Reply":
+          return yield* answer(output.requestId, (to) =>
+            data(to, output.requestId, Wire.MessageKind.RESPONSE, output.message),
+          );
         case "Broadcast":
           return yield* data(greeting ?? "all", "", Wire.MessageKind.NOTIFICATION, output.message);
-        case "Ack": {
-          const to = yield* answering(output.requestId);
-          return to === undefined ? undefined : yield* respond(to, output.requestId);
-        }
-        case "Unknown": {
-          const to = yield* answering(output.requestId);
-          if (to === undefined) return;
-          return yield* respond(to, output.requestId, {
-            case: "error",
-            value: { code: "unknown_command", message: output.command },
-          });
-        }
+        case "Ack":
+          return yield* answer(output.requestId, (to) => respond(to, output.requestId));
+        case "Unknown":
+          return yield* answer(output.requestId, (to) =>
+            respond(to, output.requestId, {
+              case: "error",
+              value: { code: "unknown_command", message: output.command },
+            }),
+          );
         case "Build": {
           const fault = yield* faults.trip(
             (candidate) => candidate._tag === "StallBuild" || candidate._tag === "FailBuild",
@@ -402,8 +411,12 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         name === "enqueue" && Array.isArray(images) && images.length > 0
           ? yield* faults.trip((candidate) => candidate._tag === "InvalidImage")
           : undefined;
+      const late = yield* faults.trip(
+        (candidate) => candidate._tag === "LateReply" && candidate.command === name,
+      );
+      const lateMs = late?._tag === "LateReply" ? Duration.toMillis(late.after) : 0;
       yield* Ref.update(requests, (all) =>
-        new Map(all).set(requestId, { from, withheld: applied }),
+        new Map(all).set(requestId, { from, withheld: applied, lateMs }),
       );
       const flagged =
         name === "enqueue"
