@@ -365,6 +365,38 @@ describe("PlayoutPolicy", () => {
     });
   });
 
+  it("keeps what plays from a start or an end over a report older than it", () => {
+    const filler = (index: number) => clip(`f${String(index)}`, { _tag: "Filler", index });
+    const on = (event: SourceEvent): Policy.Input => ({ _tag: "Source", sessionId: "s1", event });
+    // H3 answers a start or an end with the facts it held before it, and says they are not current.
+    const stale = (playing: SourceClip | undefined) =>
+      on({ _tag: "State", state: source({ available: false, playing }) });
+    const { actions, state } = run([
+      ...opened(),
+      on({ _tag: "Started", clip: filler(0) }),
+      stale(undefined),
+      on({ _tag: "Ended", clip: filler(0), termination: "finished" }),
+      stale(filler(0)),
+      on({ _tag: "Started", clip: filler(1) }),
+      stale(undefined),
+      on({ _tag: "State", state: source({ playing: filler(1) }) }),
+    ]);
+    assert.deepStrictEqual(
+      actions.flatMap((action) =>
+        action._tag === "Emit" && action.event._tag === "Filler"
+          ? [`${action.event.phase} ${String(action.event.index)}`]
+          : [],
+      ),
+      ["Started 0", "Ended 0", "Started 1"],
+    );
+    // Filler 1 started at the eighth input, and a current report of it changes nothing.
+    assert.deepStrictEqual(Policy.view(config, state, { mono: 20, wall: 20 }).playing, {
+      key: "filler",
+      startedAt: 7,
+      seconds: 5,
+    });
+  });
+
   it("refuses a changed spec under a used key, and a batch with one refused edit changes nothing", () => {
     const { actions, state } = run([
       { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("a") }], batch: false },
