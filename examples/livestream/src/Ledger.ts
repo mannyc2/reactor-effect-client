@@ -1,19 +1,20 @@
 import { Config, Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { ReactorError } from "reactor-effect-client/ReactorError";
-import * as Orchestration from "reactor-effect-client/orchestration";
+import { H3Source, Session } from "reactor-effect-client";
+import type { Playout } from "reactor-effect-client";
 
 /**
  * The channel's durable evidence, as JSON lines in `CHANNEL_EVIDENCE_DIR`:
  * every paid session's owner record, written after allocation and before the
- * session connects, and the cleanup report the orchestration returns at
+ * session connects, and the cleanup report the playout keeps at
  * shutdown. After a crash, the owner records name the sessions an operator
  * must still confirm terminated. Neither record holds a token.
  */
 export class Ledger extends Context.Service<
   Ledger,
   {
-    readonly allocated: (allocation: Orchestration.Allocation) => Effect.Effect<void, ReactorError>;
-    readonly closed: (report: Orchestration.CleanupReport) => Effect.Effect<void>;
+    readonly allocated: (allocation: H3Source.Allocation) => Effect.Effect<void, ReactorError>;
+    readonly closed: (report: Playout.Cleanup) => Effect.Effect<void>;
   }
 >()("reactor-effect-example-livestream/Ledger") {
   static readonly layer = Layer.effect(
@@ -29,14 +30,16 @@ export class Ledger extends Context.Service<
         fs.writeFileString(path.join(directory, file), `${JSON.stringify(value)}\n`, {
           flag: "a",
         });
-      const encodeAllocation = Schema.encodeEffect(Schema.toCodecJson(Orchestration.Allocation));
-      const encodeReport = Schema.encodeEffect(Schema.toCodecJson(Orchestration.CleanupReport));
+      const encodeAllocation = Schema.encodeEffect(Schema.toCodecJson(H3Source.Allocation));
+      const encodeReport = Schema.encodeEffect(
+        Schema.toCodecJson(
+          Schema.Struct({ sessions: Schema.Int, retained: Schema.Array(Session.CloseReport) }),
+        ),
+      );
 
       // An owner that cannot be recorded fails the open, so the SDK closes the
       // session it just allocated instead of connecting an unrecorded one.
-      const allocated = Effect.fn("Ledger.allocated")(function* (
-        allocation: Orchestration.Allocation,
-      ) {
+      const allocated = Effect.fn("Ledger.allocated")(function* (allocation: H3Source.Allocation) {
         yield* encodeAllocation(allocation).pipe(
           Effect.flatMap((encoded) => append("allocations.jsonl", encoded)),
           Effect.mapError((cause) =>
@@ -51,15 +54,15 @@ export class Ledger extends Context.Service<
         });
       });
 
-      const closed = Effect.fn("Ledger.closed")(function* (report: Orchestration.CleanupReport) {
+      const closed = Effect.fn("Ledger.closed")(function* (report: Playout.Cleanup) {
         // A session that may have been allocated and was not confirmed
         // terminated may still be billing: name it.
-        const unconfirmed = report.sessions
-          .filter((entry) => entry.lease.allocation !== "none" && !entry.lease.remote.confirmed)
-          .map((entry) => entry.lease.sessionId ?? "unknown");
+        const unconfirmed = report.retained
+          .filter((entry) => entry.allocation !== "none" && !entry.remote.confirmed)
+          .map((entry) => entry.sessionId ?? "unknown");
         if (unconfirmed.length > 0)
           yield* Effect.logWarning("sessions not confirmed terminated", { sessions: unconfirmed });
-        yield* Effect.logInfo("channel closed", { sessions: report.sessions.length });
+        yield* Effect.logInfo("channel closed", { sessions: report.sessions });
         yield* encodeReport(report).pipe(
           Effect.flatMap((encoded) => append("cleanup.jsonl", encoded)),
           Effect.catch((cause) => Effect.logError("could not record the cleanup report", cause)),

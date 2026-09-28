@@ -1,7 +1,7 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Layer } from "effect";
-import * as Simulation from "reactor-effect-client/simulation";
+import { Coordinator, H3, H3Source, Playout, Reactor, ReactorTest } from "reactor-effect-client";
 import { Rundown } from "./Rundown.ts";
 import type { Segment } from "./Rundown.ts";
 
@@ -12,16 +12,39 @@ const show: ReadonlyArray<Segment> = [
   { prompt: "A curtain rising on a painted forest", seconds: 8 },
 ];
 
+/** Mints a session token with the simulated Reactor's key; a paid deployment uses its own. */
+const mint = Effect.gen(function* () {
+  const test = yield* ReactorTest.ReactorTest;
+  const coordinator = yield* Coordinator.Coordinator;
+  return yield* coordinator.mintToken({
+    apiKey: test.apiKey,
+    modelName: H3.modelName,
+    maxSessionDuration: "10 minutes",
+    expiresAfter: "15 minutes",
+  });
+});
+
 /**
- * Offline and unpaid: the SDK's simulation stands in for the model, with the
- * same Engine contract a paid orchestration provides (`Orchestration.layer`
- * with `Orchestration.openH3`), so the Rundown runs unchanged against either.
+ * Offline and unpaid, in real time: the simulated Reactor plays the timing two
+ * paid runs measured. A paid deployment swaps `ReactorTest.layer` for an HTTP
+ * client and a host, and the Rundown does not change.
  */
-const Engine = Simulation.layerSim({ buildRatio: 0.2 }).pipe(Layer.provide(NodeServices.layer));
+const Offline = Rundown.layer.pipe(
+  Layer.provide(Playout.layer({ open: H3Source.open({ mint }), lanes: [{ name: "show" }] })),
+  Layer.provideMerge(Reactor.layer()),
+  Layer.provideMerge(Coordinator.layer()),
+  Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted })),
+  Layer.provide(NodeCrypto.layer),
+);
 
 Effect.gen(function* () {
   const rundown = yield* Rundown;
   const outcomes = yield* rundown.play(show);
   for (const [index, outcome] of outcomes.entries())
     yield* Console.log(`${index + 1}. ${outcome._tag.padEnd(8)} ${show[index]?.prompt ?? ""}`);
-}).pipe(Effect.provide(Rundown.layer().pipe(Layer.provide(Engine))), NodeRuntime.runMain);
+}).pipe(
+  // The program's entry point, the one place a layer is provided.
+  // @effect-diagnostics-next-line strictEffectProvide:off
+  Effect.provide(Offline),
+  NodeRuntime.runMain,
+);

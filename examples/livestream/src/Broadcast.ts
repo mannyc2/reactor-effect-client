@@ -15,7 +15,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import * as Orchestration from "reactor-effect-client/orchestration";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { AudioFrame, VideoFrame } from "reactor-effect-native";
 import * as Fmp4 from "./Fmp4.ts";
 
@@ -29,7 +29,7 @@ export class BroadcastError extends Schema.TaggedError<BroadcastError>()("Broadc
 }) {}
 
 /**
- * Mono PCM between the orchestration and the encoder: at most 200 ms, the
+ * Mono PCM between the playout and the encoder: at most 200 ms, the
  * oldest dropped past that. A take shorter than what is held is padded with
  * silence, so the encoder always receives exactly one frame's worth.
  */
@@ -109,6 +109,15 @@ const ticks: Stream.Stream<void> = Stream.unwrap(
   }),
 );
 
+/** The channel's picture and sound, continuing across session renewals. */
+export class ChannelMedia extends Context.Service<
+  ChannelMedia,
+  {
+    readonly video: Stream.Stream<VideoFrame, ReactorError>;
+    readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  }
+>()("reactor-effect-example-livestream/ChannelMedia") {}
+
 export class Broadcast extends Context.Service<
   Broadcast,
   {
@@ -119,13 +128,13 @@ export class Broadcast extends Context.Service<
      * changed, or ffmpeg failed); a viewer that reconnects joins a new run.
      */
     readonly viewer: Stream.Stream<Uint8Array, BroadcastError | Fmp4.Fmp4Error>;
-    /** Fails once the channel is off air: its media ended with the orchestration's terminal failure. */
+    /** Fails once the channel is off air: its media ended with the playout's terminal failure. */
     readonly onAir: Effect.Effect<void, BroadcastError>;
   }
 >()("reactor-effect-example-livestream/Broadcast") {
   /**
    * Fails when ffmpeg is not on PATH. The application builds it before the
-   * orchestration, so a host without an encoder never opens a paid session.
+   * playout, so a host without an encoder never opens a paid session.
    */
   static readonly preflight = Layer.effectDiscard(
     Effect.gen(function* () {
@@ -143,7 +152,7 @@ export class Broadcast extends Context.Service<
   static readonly layer = Layer.effect(
     Broadcast,
     Effect.gen(function* () {
-      const media = yield* Orchestration.Media;
+      const media = yield* ChannelMedia;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const latest = yield* Ref.make(Option.none<VideoFrame>());
       const firstFrame = yield* Deferred.make<void>();
@@ -156,11 +165,8 @@ export class Broadcast extends Context.Service<
           ),
         );
 
-      // Consumption is mandatory: the orchestration fails with Overflow once
-      // its output holds four seconds nobody took. So both outputs are drained
-      // for the channel's whole life, watched or not, each by its one reader.
-      // A renewal worker's defect ends them with its Cause rather than a
-      // failure, so each drain handles the whole Cause.
+      // Both outputs are read for the channel's whole life, watched or not, so
+      // the encoder always has the newest frame and a steady supply of audio.
       yield* media.video.pipe(
         Stream.runForEach((frame) =>
           Ref.set(latest, Option.some(frame)).pipe(

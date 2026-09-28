@@ -24,10 +24,9 @@ import type {
   ProviderEvent,
   Reply,
 } from "../../H3.js";
-import type { PolicyFailure } from "../../orchestration/policy.js";
 import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
 import type { CommandReply, Session, SessionEvent, UploadReference } from "../../Session.js";
-import * as Submission from "../../Submission.js";
+import * as Submission from "./submission.js";
 import * as Hub from "../hub.js";
 import { Commands, deploymentContract } from "./commands.js";
 import type {
@@ -86,9 +85,7 @@ const localFailure = (operation: string, cause: ReactorError | CommandFailure): 
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
 
 /** A caller's own refusal already proves no dispatch; any other failure becomes one. */
-const preparationFailure = <E extends PolicyFailure>(
-  cause: ReactorError | CommandFailure | E,
-): CommandFailure | E =>
+const preparationFailure = <E>(cause: ReactorError | CommandFailure | E): CommandFailure | E =>
   ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure("enqueue", cause) : cause;
 
 const uncertain = (
@@ -748,7 +745,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       ),
     );
 
-  const observeResult = <E extends PolicyFailure>(
+  const observeResult = <E>(
     id: string,
     hooks: PrepareHooks<E>,
     result: Result.Result<Acceptance, CommandFailure | E>,
@@ -776,7 +773,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ),
         );
 
-  const prepared = <E extends PolicyFailure>(
+  const prepared = <E>(
     id: string,
     input: Effect.Effect<
       { readonly request: Captured; readonly metadata: string },
@@ -864,10 +861,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       ),
     );
 
-  const prepare: Provider["prepare"] = <E extends PolicyFailure = never>(
-    input: Request,
-    hooks: PrepareHooks<E> = {},
-  ) =>
+  const prepare: Provider["prepare"] = <E = never>(input: Request, hooks: PrepareHooks<E> = {}) =>
     Effect.gen(function* () {
       yield* active("enqueue", true);
       const id = yield* nextId;
@@ -875,7 +869,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       return yield* prepared(id, Effect.succeed(captured), hooks);
     });
 
-  const prepareFrom: Provider["prepareFrom"] = <E extends PolicyFailure = never>(
+  const prepareFrom: Provider["prepareFrom"] = <E = never>(
     preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
     hooks: PrepareHooks<E> = {},
   ) =>

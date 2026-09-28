@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { Deferred, Effect, Exit, Fiber, Scope } from "effect";
-import * as Submission from "../src/Submission.js";
+import * as Submission from "../src/internal/h3/submission.js";
 
 const run = <A, E>(program: Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(Effect.scoped(program));

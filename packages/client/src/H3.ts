@@ -26,10 +26,9 @@ import type { Request } from "./internal/h3/request.js";
 import type { ValidatedAudioReference, ValidatedReference } from "./internal/h3/references.js";
 import type { Acceptance, ProviderSnapshot } from "./internal/h3/state.js";
 import type { CanvasAspect } from "./internal/h3/profile.js";
-import type { PolicyFailure } from "./orchestration/policy.js";
 import type { CommandFailure, ReactorError } from "./ReactorError.js";
 import type { CommandReply, Session, SessionEvent } from "./Session.js";
-import type { Submission } from "./Submission.js";
+import type { Submission } from "./internal/h3/submission.js";
 
 export {
   alignFrames,
@@ -101,10 +100,10 @@ export interface ProviderObservation {
 }
 
 /**
- * A commit hook may refuse locally with a `PolicyFailure` (`E`); the submission
+ * A commit hook may refuse locally with its own error (`E`); the submission
  * fails with it unchanged, since nothing was dispatched.
  */
-export interface PrepareHooks<E extends PolicyFailure = never> {
+export interface PrepareHooks<E = never> {
   readonly commit?: (submissionId: string) => Effect.Effect<void, CommandFailure | E>;
   /** Observes the result; its failure is diagnostic and never replaces the result. */
   readonly result?: (
@@ -156,16 +155,16 @@ export interface Provider {
   readonly operation: (
     submission: Pick<Submission<Acceptance, unknown>, "id">,
   ) => Effect.Effect<ClipOperation, ReactorError, Scope.Scope>;
-  readonly prepare: <E extends PolicyFailure = never>(
+  readonly prepare: <E = never>(
     request: Request,
     hooks?: PrepareHooks<E>,
   ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
   /**
    * Prepares from host work in the same provisional scope and commit owner. A
-   * `PolicyFailure` from the preparation fails the submission unchanged; any
+   * caller's own error from the preparation fails the submission unchanged; any
    * other failure becomes a not-submitted `CommandFailure`.
    */
-  readonly prepareFrom: <E extends PolicyFailure = never>(
+  readonly prepareFrom: <E = never>(
     preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
     hooks?: PrepareHooks<E>,
   ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
