@@ -620,123 +620,6 @@ describe("PlayoutPolicy", () => {
     assert.deepStrictEqual(state().samples.build.length, 2);
     assert.deepStrictEqual(state().samples.continued, [0.4]);
   });
-
-  // Any sequence of edits and provider answers keeps the plan's promises.
-  it.effect.prop(
-    "one command at a time, no enqueue sent twice for a key, one terminal status each",
-    [
-      Schema.Array(
-        Schema.Literals(["submit", "withdraw", "done", "unknown", "refused", "ready", "lost"]),
-      ).check(Schema.isMaxLength(40)),
-    ],
-    ([script]) =>
-      Effect.sync(() => {
-        let state = run(opened()).state;
-        const actions: Array<Policy.Action> = [];
-        let clock = 10;
-        script.forEach((step, index) => {
-          const busy = state.busy;
-          const input: Policy.Input =
-            step === "submit"
-              ? {
-                  _tag: "Edit",
-                  id: 100 + index,
-                  edits: [{ _tag: "Submit", spec: spec(`k${index % 5}`) }],
-                  batch: false,
-                }
-              : step === "withdraw"
-                ? {
-                    _tag: "Edit",
-                    id: 100 + index,
-                    edits: [{ _tag: "Withdraw", key: key(`k${index % 5}`) }],
-                    batch: false,
-                  }
-                : step === "lost"
-                  ? { _tag: "Lost", sessionId: state.sessions[0]?.id ?? "s1", reason: "gone" }
-                  : step === "ready"
-                    ? {
-                        _tag: "Source",
-                        sessionId: state.sessions[0]?.id ?? "s1",
-                        event: { _tag: "State", state: source() },
-                      }
-                    : busy === undefined
-                      ? { _tag: "Tick" }
-                      : {
-                          _tag: "Result",
-                          id: busy.id,
-                          result:
-                            step === "done"
-                              ? { _tag: "Done", clipId: `c${index}` }
-                              : {
-                                  _tag: "Failed",
-                                  outcome: step === "unknown" ? "unknown" : "not-submitted",
-                                  retryable: step === "refused",
-                                  reason: step,
-                                },
-                        };
-          const result = Policy.step(config, state, input, { mono: clock, wall: clock });
-          clock += 7;
-          state = result.state;
-          actions.push(...result.actions);
-        });
-        const sent = commands(actions);
-        // A command is issued only when none is in flight: ids strictly increase.
-        for (let index = 1; index < sent.length; index++)
-          assert.isAbove(sent[index]!.id, sent[index - 1]!.id);
-        const byKey = new Map<string, Array<string>>();
-        for (const action of actions)
-          if (action._tag === "Emit" && action.event._tag === "AsRun")
-            byKey.set(action.event.event.key, [
-              ...(byKey.get(action.event.event.key) ?? []),
-              action.event.event.status._tag,
-            ]);
-        for (const [name, history] of byKey) {
-          assert.strictEqual(history[0], "Accepted", name);
-          const terminal = history.filter((status) =>
-            ["Ended", "Dropped", "Failed", "Unobserved"].includes(status),
-          );
-          assert.isAtMost(terminal.length, 1, `${name}: ${history.join(",")}`);
-        }
-        // An enqueue whose outcome is unknown is never sent again.
-        const unknown = new Set(
-          actions.flatMap((action) =>
-            action._tag === "Emit" &&
-            action.event._tag === "AsRun" &&
-            action.event.event.status._tag === "Unknown"
-              ? [action.event.event.key]
-              : [],
-          ),
-        );
-        for (const name of unknown) {
-          const after = actions.findIndex(
-            (action) =>
-              action._tag === "Emit" &&
-              action.event._tag === "AsRun" &&
-              action.event.event.key === name &&
-              action.event.event.status._tag === "Unknown",
-          );
-          const again = actions
-            .slice(after)
-            .some(
-              (action) =>
-                action._tag === "Command" &&
-                action.command._tag === "Enqueue" &&
-                action.command.tag._tag === "Item" &&
-                action.command.tag.key === name,
-            );
-          const carried = actions
-            .slice(after)
-            .some(
-              (action) =>
-                action._tag === "Emit" &&
-                action.event._tag === "AsRun" &&
-                action.event.event.key === name &&
-                action.event.event.status._tag === "Accepted",
-            );
-          assert.isFalse(again && !carried, `${name} was sent again after an unknown outcome`);
-        }
-      }),
-  );
 });
 
 const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
@@ -1004,4 +887,454 @@ describe("PlayoutPolicy, time", () => {
       policy.actions.some((action) => action._tag === "Emit" && action.event._tag === "Starved"),
     );
   });
+});
+
+/**
+ * A provider for the property below: it answers the command in flight as the
+ * script says, builds and plays clips when told, and loses sessions.
+ */
+const steps = [
+  "submit",
+  "urgent",
+  "withdraw",
+  "replace",
+  "insert",
+  "batch",
+  "group",
+  "drain",
+  "done",
+  "unknown",
+  "refused",
+  "ready",
+  "fail",
+  "start",
+  "end",
+  "lost",
+  "open",
+  "tick",
+] as const;
+type Script = ReadonlyArray<(typeof steps)[number]>;
+
+const simulate = (script: Script) => {
+  const settings: Policy.Config = {
+    ...config,
+    filler: {
+      floor: 5,
+      target: 10,
+      clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
+      lengths: { min: 5, max: 15 },
+    },
+  };
+  let state = Policy.initial;
+  let clock = 0;
+  let clips = 0;
+  let opened = 0;
+  let wanted = 0;
+  const actions: Array<Policy.Action> = [];
+  const inputs: Array<Policy.Input> = [];
+  const sessions = new Map<
+    string,
+    { building: Array<SourceClip>; ready: Array<SourceClip>; playing: SourceClip | undefined }
+  >();
+  const lanes = new Map<string, number>();
+  const edits = new Map<number, { readonly batch: boolean; readonly keys: Map<number, string> }>();
+  const drains: Array<number> = [];
+  const problems: Array<string> = [];
+  /** Keys submitted so far, groups by key, and what a withdrawal may drop. */
+  const known: Array<string> = [];
+  const groups = new Map<string, ReadonlyArray<string>>();
+  const named = new Set<string>();
+  /** Each replacement's key, and the key it replaces. */
+  const replaced = new Map<string, string>();
+  let outstanding: { readonly id: number; readonly sessionId: string } | undefined;
+
+  const send = (input: Policy.Input) => {
+    clock += 7;
+    inputs.push(input);
+    if (input._tag === "Result" && outstanding?.id === input.id) outstanding = undefined;
+    if (input._tag === "Lost" && outstanding?.sessionId === input.sessionId)
+      outstanding = undefined;
+    const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
+    state = result.state;
+    for (const action of result.actions) {
+      actions.push(action);
+      if (action._tag === "Command") {
+        if (outstanding !== undefined)
+          problems.push(
+            `command ${String(action.id)} sent while ${String(outstanding.id)} was unsettled`,
+          );
+        outstanding = { id: action.id, sessionId: action.sessionId };
+        // A cut stops only filler, a clip the plan does not own, or a strictly lower lane's clip.
+        const command = action.command;
+        if (command._tag === "Cut") {
+          const value = sessions.get(action.sessionId);
+          const cutter = value?.ready.find((clip) => clip.clipId === command.next)?.tag;
+          const cut = value?.playing?.clipId === command.clipId ? value.playing.tag : undefined;
+          if (
+            cutter?._tag === "Item" &&
+            cut?._tag === "Item" &&
+            !((lanes.get(cut.key) ?? -1) > (lanes.get(cutter.key) ?? -1))
+          )
+            problems.push(`${cutter.key} cut ${cut.key}, which is not of a lower lane`);
+        }
+      }
+      if (action._tag === "Close") {
+        sessions.delete(action.sessionId);
+        if (outstanding?.sessionId === action.sessionId) outstanding = undefined;
+      }
+      if (action._tag === "Open") wanted++;
+    }
+  };
+  const observe = (sessionId: string) => {
+    const value = sessions.get(sessionId);
+    if (value === undefined) return;
+    send({
+      _tag: "Source",
+      sessionId,
+      event: {
+        _tag: "State",
+        state: source({
+          building: [...value.building],
+          ready: [...value.ready],
+          playing: value.playing,
+          continuable: value.ready.map((clip) => clip.clipId),
+        }),
+      },
+    });
+  };
+  const onAir = () => sessions.get(state.air ?? "");
+  const edit = (index: number, list: ReadonlyArray<Policy.EditInput>, batch = false) => {
+    const id = 100 + index;
+    const keys = new Map<number, string>();
+    list.forEach((value, position) => {
+      if (value._tag === "Withdraw") {
+        keys.set(position, value.key);
+        // A group key withdraws its parts; a part key, that part and those after it.
+        const parts = groups.get(value.key);
+        const group = [...groups.values()].find((all) => all.includes(value.key));
+        for (const part of parts ?? group?.slice(group.indexOf(value.key)) ?? [value.key])
+          named.add(part);
+      }
+      if (value._tag === "Submit" || value._tag === "Insert" || value._tag === "Replace") {
+        lanes.set(value.spec.key, value.spec.lane);
+        known.push(value.spec.key);
+      }
+      if (value._tag === "Replace") replaced.set(value.spec.key, value.key);
+      if (value._tag === "SubmitGroup") {
+        groups.set(
+          value.key,
+          value.parts.map((part) => part.key),
+        );
+        for (const part of value.parts) {
+          lanes.set(part.key, part.lane);
+          known.push(part.key);
+        }
+      }
+    });
+    edits.set(id, { batch, keys });
+    send({ _tag: "Edit", id, edits: list, batch });
+  };
+  const cued = (name: string, lane: number, index: number): Policy.Spec => ({
+    ...spec(name, lane, 5 + (index % 3) * 5),
+    cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
+  });
+
+  send({ _tag: "Tick" });
+  script.forEach((step, index) => {
+    // Edits name keys already submitted, group parts among them, as often as fresh ones.
+    const name =
+      index % 2 === 0 || known.length === 0
+        ? `k${String(index % 5)}`
+        : known[(index * 7) % known.length]!;
+    const busy = state.busy;
+    switch (step) {
+      case "submit":
+        return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
+      case "urgent":
+        return edit(index, [{ _tag: "Submit", spec: cued(`u${String(index)}`, 0, index) }]);
+      case "withdraw":
+        return edit(index, [{ _tag: "Withdraw", key: key(name) }]);
+      case "replace":
+        return edit(index, [
+          { _tag: "Replace", key: key(name), spec: cued(`r${String(index)}`, 1, index) },
+        ]);
+      case "insert":
+        return edit(index, [
+          {
+            _tag: "Insert",
+            spec: cued(`i${String(index)}`, 1, index),
+            anchor: key(name),
+            side: index % 2 === 0 ? "after" : "before",
+          },
+        ]);
+      case "batch":
+        return edit(
+          index,
+          [
+            { _tag: "Withdraw", key: key(name) },
+            { _tag: "Submit", spec: cued(`b${String(index)}`, 1, index) },
+          ],
+          true,
+        );
+      case "group":
+        return edit(index, [
+          {
+            _tag: "SubmitGroup",
+            key: key(`g${String(index)}`),
+            lane: 1,
+            parts: [cued(`g${String(index)}a`, 1, index), cued(`g${String(index)}b`, 1, index + 1)],
+            fingerprint: `g${String(index)}`,
+          },
+        ]);
+      case "drain":
+        drains.push(100 + index);
+        return send({
+          _tag: "Drain",
+          id: 100 + index,
+          finish: index % 2 === 0 ? "accepted" : "playing",
+        });
+      case "done": {
+        if (busy === undefined) return send({ _tag: "Tick" });
+        const value = sessions.get(busy.sessionId);
+        const command = busy.command;
+        let clipId: string | undefined;
+        if (value !== undefined)
+          switch (command._tag) {
+            case "Enqueue":
+              clipId = `c${String(clips++)}`;
+              value.building.push({
+                clipId,
+                tag: command.tag,
+                seconds: command.request.seconds ?? 5,
+              });
+              break;
+            case "Remove":
+              value.building = value.building.filter((clip) => clip.clipId !== command.clipId);
+              value.ready = value.ready.filter((clip) => clip.clipId !== command.clipId);
+              break;
+            case "Move": {
+              const moved = value.ready.find((clip) => clip.clipId === command.clipId);
+              if (moved !== undefined) {
+                value.ready = value.ready.filter((clip) => clip !== moved);
+                value.ready.splice(command.position, 0, moved);
+              }
+              break;
+            }
+            case "Cut": {
+              const next = value.ready.find((clip) => clip.clipId === command.next);
+              if (value.playing?.clipId === command.clipId) {
+                const cut = value.playing;
+                value.playing = undefined;
+                send({
+                  _tag: "Source",
+                  sessionId: busy.sessionId,
+                  event: { _tag: "Ended", clip: cut, termination: "stopped" },
+                });
+              }
+              if (next !== undefined && value.playing === undefined) {
+                value.ready = value.ready.filter((clip) => clip !== next);
+                value.playing = next;
+                send({
+                  _tag: "Source",
+                  sessionId: busy.sessionId,
+                  event: { _tag: "Started", clip: next },
+                });
+              }
+              break;
+            }
+            case "Autoplay":
+              break;
+          }
+        send({ _tag: "Result", id: busy.id, result: { _tag: "Done", clipId } });
+        return observe(busy.sessionId);
+      }
+      case "unknown":
+      case "refused":
+        if (busy === undefined) return send({ _tag: "Tick" });
+        return send({
+          _tag: "Result",
+          id: busy.id,
+          result: {
+            _tag: "Failed",
+            outcome: step === "unknown" ? "unknown" : "replied",
+            retryable: false,
+            reason: step,
+          },
+        });
+      case "fail": {
+        const [sessionId, value] =
+          [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
+        if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
+        const failed = value.building.shift()!;
+        send({
+          _tag: "Source",
+          sessionId,
+          event: { _tag: "Failed", clip: failed, reason: "the build failed" },
+        });
+        return observe(sessionId);
+      }
+      case "ready": {
+        const [sessionId, value] =
+          [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
+        if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
+        value.ready.push(value.building.shift()!);
+        return observe(sessionId);
+      }
+      case "start": {
+        const value = onAir();
+        if (value === undefined || value.playing !== undefined || value.ready.length === 0)
+          return send({ _tag: "Tick" });
+        const next = value.ready.shift()!;
+        value.playing = next;
+        send({ _tag: "Source", sessionId: state.air!, event: { _tag: "Started", clip: next } });
+        return observe(state.air!);
+      }
+      case "end": {
+        const value = onAir();
+        if (value?.playing === undefined) return send({ _tag: "Tick" });
+        const ended = value.playing;
+        value.playing = undefined;
+        send({
+          _tag: "Source",
+          sessionId: state.air!,
+          event: { _tag: "Ended", clip: ended, termination: "finished" },
+        });
+        return observe(state.air!);
+      }
+      case "lost": {
+        const sessionId = [...sessions.keys()][0];
+        if (sessionId === undefined) return send({ _tag: "Tick" });
+        sessions.delete(sessionId);
+        return send({ _tag: "Lost", sessionId, reason: "gone" });
+      }
+      case "open": {
+        if (wanted === 0) return send({ _tag: "Tick" });
+        wanted--;
+        const sessionId = `s${String(++opened)}`;
+        sessions.set(sessionId, { building: [], ready: [], playing: undefined });
+        send({ _tag: "Opened", sessionId, lifetimeMs: 120_000 });
+        return observe(sessionId);
+      }
+      case "tick":
+        clock += 5_000;
+        return send({ _tag: "Tick" });
+    }
+  });
+  send({ _tag: "Close" });
+  return { actions, inputs, edits, drains, problems, groups, named, replaced };
+};
+
+describe("PlayoutPolicy, any script", () => {
+  // Any sequence of edits, provider answers, builds, plays and losses keeps the plan's promises,
+  // the invariants #64's review pinned among them.
+  it.effect.prop(
+    "keeps every promise of the plan",
+    [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
+    ([script]) =>
+      Effect.sync(() => {
+        const { actions, edits, drains, problems, groups, named, replaced } = simulate(script);
+        // One provider command at a time, so a refusal is always attributable.
+        assert.deepStrictEqual(problems, []);
+        const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
+        for (const action of actions)
+          if (action._tag === "Emit" && action.event._tag === "AsRun")
+            history.set(action.event.event.key, [
+              ...(history.get(action.event.event.key) ?? []),
+              action,
+            ]);
+        const tags = (name: string) =>
+          (history.get(name) ?? []).flatMap((action) =>
+            action.event._tag === "AsRun" ? [action.event.event.status._tag] : [],
+          );
+        const terminal = ["Ended", "Dropped", "Failed", "Unobserved"];
+        for (const name of history.keys()) {
+          const statuses = tags(name);
+          assert.strictEqual(statuses[0], "Accepted", name);
+          const ends = statuses.filter((status) => terminal.includes(status));
+          // At most one terminal status, and nothing after it.
+          assert.isAtMost(ends.length, 1, `${name}: ${statuses.join(",")}`);
+          if (ends.length === 1)
+            assert.strictEqual(statuses.at(-1), ends[0], `${name}: ${statuses.join(",")}`);
+        }
+        // An enqueue whose outcome is unknown is never sent again, unless its session was lost
+        // and the item carried to another.
+        for (const name of history.keys()) {
+          const events = actions.filter(
+            (action) =>
+              (action._tag === "Emit" &&
+                action.event._tag === "AsRun" &&
+                action.event.event.key === name) ||
+              (action._tag === "Command" &&
+                action.command._tag === "Enqueue" &&
+                action.command.tag._tag === "Item" &&
+                action.command.tag.key === name),
+          );
+          let uncertain = false;
+          for (const action of events) {
+            if (action._tag === "Command")
+              assert.isFalse(uncertain, `${name} was sent again after an unknown outcome`);
+            else if (action._tag === "Emit" && action.event._tag === "AsRun") {
+              const status = action.event.event.status;
+              if (status._tag === "Unknown") uncertain = true;
+              if (status._tag === "Accepted") uncertain = false;
+            }
+          }
+        }
+        // A withdrawal answers what became of its item.
+        for (const action of actions)
+          if (action._tag === "Withdrawn") {
+            const name = edits.get(action.id)?.keys.get(action.index);
+            if (name === undefined) continue;
+            const statuses = tags(name);
+            if (action.outcome === "withdrawn")
+              assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);
+            if (action.outcome === "already-started")
+              assert.include(statuses, "Started", `${name} already started: ${statuses.join(",")}`);
+            if (action.outcome === "not-found")
+              assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
+          }
+        // An item is dropped as withdrawn only when a withdrawal or a drain named it, or an
+        // earlier part of its group failed or was dropped; a replaced part keeps those after it.
+        if (drains.length === 0) {
+          const reasons = (name: string) =>
+            (history.get(name) ?? []).flatMap((action) =>
+              action.event._tag === "AsRun" && action.event.event.status._tag === "Dropped"
+                ? [action.event.event.status.reason]
+                : [],
+            );
+          const allowed = new Set(named);
+          for (const parts of groups.values()) {
+            const first = parts.findIndex(
+              (part) =>
+                tags(part).includes("Failed") ||
+                reasons(part).some((reason) => reason !== "replaced"),
+            );
+            if (first >= 0) for (const part of parts.slice(first + 1)) allowed.add(part);
+          }
+          for (const name of history.keys())
+            if (reasons(name).includes("withdrawn"))
+              assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
+        }
+        // An item and its replacement never both air.
+        for (const [next, old] of replaced)
+          assert.isFalse(
+            tags(next).includes("Started") && tags(old).includes("Started"),
+            `${old} and its replacement ${next} both aired`,
+          );
+        // Every batch and drain is answered once the playout closes.
+        const answered = new Set(
+          actions.flatMap((action) =>
+            action._tag === "Committed" || action._tag === "Refused" ? [action.id] : [],
+          ),
+        );
+        for (const [id, value] of edits)
+          if (value.batch) assert.isTrue(answered.has(id), `batch ${String(id)} never answered`);
+        const drained = new Set(
+          actions.flatMap((action) => (action._tag === "Drained" ? [action.id] : [])),
+        );
+        for (const id of drains)
+          assert.isTrue(drained.has(id), `drain ${String(id)} never finished`);
+      }),
+    { arbitrary: { runs: 3000 } },
+  );
 });

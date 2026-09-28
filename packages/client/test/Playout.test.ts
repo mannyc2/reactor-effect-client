@@ -808,6 +808,84 @@ for (const seed of [1, 2, 3, 4, 5, 6])
     },
   );
 
+// Edits, faults and a renewal under the same wide timing: a lost reply, a failed build, a
+// replacement, a withdrawal and an insert while a capped session hands over to the next.
+for (const seed of [1, 2, 3, 4])
+  layer(environment({ timing: ReactorTest.Timing.random({ seed }) }))(
+    `edits, faults and renewal, seed ${seed}`,
+    (it) => {
+      it.effect(
+        "every item settles once, edits keep their word, and every session ends",
+        () =>
+          Effect.gen(function* () {
+            const test = yield* ReactorTest.ReactorTest;
+            yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 3 });
+            yield* test.inject({ _tag: "FailBuild", nth: 5 });
+            const scope = yield* Scope.make();
+            const { playout, events } = yield* start({
+              lifetime: "90 seconds",
+              renewal: { lead: "30 seconds" },
+              unknownTimeout: "20 seconds",
+            }).pipe(Scope.provide(scope));
+            const submit = (name: string, lane = "line", seconds = 5) =>
+              playout.submit({ key: key(name), lane, request: clip(name, seconds) });
+            const handles = yield* Effect.forEach(
+              Array.from({ length: 10 }, (_, index) => `e${index}`),
+              (name, index) =>
+                submit(name, index % 4 === 0 ? "urgent" : "line", 5 + (index % 3) * 3),
+            );
+            yield* handles[1]!.started;
+            const replacement = yield* playout
+              .replace(key("e6"), { key: key("e6b"), request: clip("e6b") })
+              .pipe(Effect.option);
+            const withdrawn = yield* playout.withdraw(key("e8"));
+            const inserted = yield* playout
+              .insert({ key: key("ins"), request: clip("ins"), after: key("e7") })
+              .pipe(Effect.option);
+            const all = [...handles, ...Option.toArray(replacement), ...Option.toArray(inserted)];
+            const outcomes = yield* Effect.forEach(all, (handle) =>
+              Effect.map(handle.outcome, (status) => [handle.key as string, status] as const),
+            ).pipe(Effect.timeoutOption("10 minutes"));
+            assert.isTrue(Option.isSome(outcomes), `seed ${seed}: an outcome never came`);
+            const recorded = yield* events;
+            const history = new Map<string, ReadonlyArray<string>>();
+            for (const event of recorded)
+              if (event._tag === "AsRun")
+                history.set(event.event.key, [
+                  ...(history.get(event.event.key) ?? []),
+                  event.event.status._tag,
+                ]);
+            for (const [name, statuses] of history) {
+              const terminal = statuses.filter((status) =>
+                ["Ended", "Dropped", "Failed", "Unobserved"].includes(status),
+              );
+              assert.isAtMost(terminal.length, 1, `seed ${seed} ${name}: ${statuses.join(",")}`);
+              if (terminal.length === 1) assert.strictEqual(statuses.at(-1), terminal[0]);
+            }
+            // A withdrawal answers what happened; a replaced item never airs after its replacement.
+            const e8 = history.get("e8") ?? [];
+            if (withdrawn === "withdrawn") assert.notInclude(e8, "Started", `seed ${seed}`);
+            if (withdrawn === "already-started") assert.include(e8, "Started", `seed ${seed}`);
+            const starts = recorded.flatMap((event) =>
+              event._tag === "AsRun" && event.event.status._tag === "Started"
+                ? [event.event.key as string]
+                : [],
+            );
+            if (starts.includes("e6b")) assert.notInclude(starts, "e6", `seed ${seed}`);
+            assert.deepStrictEqual(stopProblems(yield* test.log), [], `seed ${seed}`);
+            // Closing retires every session, lost and replaced ones included.
+            yield* Scope.close(scope, Exit.void);
+            yield* eventually(
+              test.sessions,
+              (sessions) => sessions.every((value) => value.state === "CLOSED"),
+              "5 minutes",
+            );
+          }),
+        { timeout: 120_000 },
+      );
+    },
+  );
+
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
 // SDK "observes the session leaving the ready state"; a verdict may or may not come first.
 layer(hosted)("moderation with a verdict", (it) => {
