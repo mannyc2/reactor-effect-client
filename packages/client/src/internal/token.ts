@@ -11,13 +11,19 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import type { TokenGrant, Tokens } from "../Coordinator.js";
 import { ReactorError } from "../ReactorError.js";
 
-/** How long before expiry the next token is minted, as Reactor's own guidance does. */
+/**
+ * How long before expiry the next token is minted, as Reactor's own guidance
+ * does: a minute, or a quarter of a shorter token's life, so a short token is
+ * refreshed once near its end rather than on every call.
+ */
 const refreshMarginMs = 60_000;
 /** After a failed refresh, how long calls keep the current token before minting again. */
 const retryMs = 10_000;
 
 interface State {
   readonly grant: TokenGrant | undefined;
+  /** When `grant` was minted, in epoch milliseconds. */
+  readonly mintedAt: number;
   readonly sessionId: string | undefined;
   readonly retryAt: number;
 }
@@ -40,6 +46,7 @@ export const make = Effect.fnUntraced(function* (input: {
   const { tokens, onRefreshFailure } = input;
   const state = yield* SynchronizedRef.make<State>({
     grant: undefined,
+    mintedAt: 0,
     sessionId: input.sessionId,
     retryAt: 0,
   });
@@ -61,14 +68,19 @@ export const make = Effect.fnUntraced(function* (input: {
                   ));
             if (held === undefined) {
               const grant = yield* mint;
-              return [grant.jwt, { ...value, grant }] as const;
+              return [grant.jwt, { ...value, grant, mintedAt: now }] as const;
             }
-            const valid = held.expiresAt * 1000 > now;
-            if (held.expiresAt * 1000 - now > refreshMarginMs || (valid && now < value.retryAt))
+            const expiresAt = held.expiresAt * 1000;
+            const valid = expiresAt > now;
+            const margin = Math.min(refreshMarginMs, (expiresAt - value.mintedAt) / 4);
+            if (expiresAt - now > margin || (valid && now < value.retryAt))
               return [held.jwt, value] as const;
             const next = yield* Effect.result(mint);
             if (next._tag === "Success" && next.success.expiresAt > held.expiresAt)
-              return [next.success.jwt, { ...value, grant: next.success, retryAt: 0 }] as const;
+              return [
+                next.success.jwt,
+                { ...value, grant: next.success, mintedAt: now, retryAt: 0 },
+              ] as const;
             if (next._tag === "Failure") {
               if (!valid) return yield* next.failure;
               yield* onRefreshFailure(next.failure);
