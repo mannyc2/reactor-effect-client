@@ -2,7 +2,6 @@
 //! each frame libwebrtc decodes into them.
 
 use super::Shared;
-use crate::ffi::{ReactorEffectAudioHeader, ReactorEffectVideoHeader};
 use crate::protocol::TrackKind;
 use crate::sync::QueueItem;
 use reactor_webrtc::{AudioFrame, RemoteTrack, VideoFrame};
@@ -51,20 +50,6 @@ impl VideoItem {
             metadata,
         }
     }
-
-    pub(crate) fn header(&self) -> ReactorEffectVideoHeader {
-        ReactorEffectVideoHeader {
-            width: self.width,
-            height: self.height,
-            data_len: queued_len(self.bgra.len()),
-            metadata_len: queued_len(self.metadata.len()),
-            frame_id: self.frame_id,
-            timestamp_us: self.timestamp_us,
-            track: self.track,
-            reserved: 0,
-            sequence: self.sequence,
-        }
-    }
 }
 
 impl QueueItem for VideoItem {
@@ -96,29 +81,12 @@ impl AudioItem {
             pcm: frame.pcm.to_vec(),
         }
     }
-
-    pub(crate) fn header(&self) -> ReactorEffectAudioHeader {
-        ReactorEffectAudioHeader {
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            samples: queued_len(self.pcm.len()),
-            track: self.track,
-            sequence: self.sequence,
-        }
-    }
 }
 
 impl QueueItem for AudioItem {
     fn byte_len(&self) -> usize {
         size_of_val(self.pcm.as_slice())
     }
-}
-
-/// A length for a C header. Only queued items get headers, and a queue refuses
-/// any item over its byte bound, which `Shared` keeps within `u32`: the
-/// saturation never happens.
-fn queued_len(len: usize) -> u32 {
-    u32::try_from(len).unwrap_or(u32::MAX)
 }
 
 pub(crate) fn kind_of(track: &RemoteTrack) -> TrackKind {
@@ -172,50 +140,5 @@ mod tests {
         };
         assert_eq!(video.byte_len(), 11);
         assert_eq!(audio.byte_len(), 960, "samples are two bytes each");
-    }
-
-    #[test]
-    fn headers_describe_the_queued_payload() {
-        let video = VideoItem {
-            track: 3,
-            width: 2,
-            height: 1,
-            frame_id: u64::MAX,
-            timestamp_us: 9_007_199_254_740_993,
-            sequence: 41,
-            bgra: vec![0x21; 8],
-            metadata: b"meta".to_vec(),
-        };
-        assert_eq!(
-            video.header(),
-            ReactorEffectVideoHeader {
-                width: 2,
-                height: 1,
-                data_len: 8,
-                metadata_len: 4,
-                frame_id: u64::MAX,
-                timestamp_us: 9_007_199_254_740_993,
-                track: 3,
-                reserved: 0,
-                sequence: 41,
-            }
-        );
-        let audio = AudioItem {
-            track: 1,
-            sample_rate: 48_000,
-            channels: 2,
-            sequence: 7,
-            pcm: vec![0; 960],
-        };
-        assert_eq!(
-            audio.header(),
-            ReactorEffectAudioHeader {
-                sample_rate: 48_000,
-                channels: 2,
-                samples: 960,
-                track: 1,
-                sequence: 7,
-            }
-        );
     }
 }

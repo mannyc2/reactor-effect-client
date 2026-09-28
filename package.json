@@ -12,6 +12,7 @@
   "workspaces": {
     "packages": [
       "packages/*",
+      "packages/native/npm/*",
       "packages/*/examples",
       "examples/*",
       "integration"

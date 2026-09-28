@@ -1,51 +1,62 @@
-//! A peer driven through its handle, the way the host drives it.
+//! A peer driven through its handle, the way the addon drives it.
 
 use super::*;
-use crate::protocol::{Direction, Event, Mapping};
-use crate::sync::Taken;
-use crate::test_support::{Defer, parse_packet, wait_until, with_candidates};
+use crate::protocol::{Direction, Mapping, TrackKind, TrackSpec};
+use crate::test_support::{wait_until, with_candidates};
 use reactor_webrtc::{
     AudioFrame, AudioTrack, AudioTrackOptions, AudioTrackSource, DataChannel, DataChannelState,
     IceCandidate, IceGatheringState, PeerConnection, PeerConnectionObserver, PeerConnectionState,
     RtcConfiguration, SdpType, SessionDescription, TransceiverDirection, VideoFrame, VideoTrack,
 };
-use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const MEDIA_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn call(peer: &ReactorEffectPeer, operation: Operation, request: &[u8]) -> Value {
-    let response = peer
-        .call(operation as u32, request)
-        .unwrap_or_else(|error| panic!("{operation:?} failed: {error}"));
-    serde_json::from_slice(&response).expect("a JSON response")
+/// Submit a call and wait for its answer, as the addon's promise would.
+fn wait<T: Send + 'static>(submit: impl FnOnce(Done<T>)) -> Result<T, BridgeError> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    submit(Box::new(move |result| {
+        sender.send(result).expect("the test waits for the answer");
+    }));
+    receiver
+        .recv_timeout(MEDIA_TIMEOUT)
+        .expect("every call is answered")
 }
 
-fn json_request(request: &Value) -> Vec<u8> {
-    serde_json::to_vec(request).unwrap()
+fn track(name: &str, kind: TrackKind, direction: Direction) -> TrackSpec {
+    TrackSpec {
+        name: name.into(),
+        kind,
+        direction,
+    }
 }
 
 #[test]
-fn a_closed_peer_refuses_calls_and_sends_before_parsing_them() {
-    let peer = ReactorEffectPeer::create(None).expect("a peer");
+fn a_closed_peer_refuses_calls_and_sends_before_queueing_them() {
+    let peer = Peer::create().expect("a peer");
     peer.close();
-    assert_eq!(peer.call(99, b"").unwrap_err(), BridgeError::closed());
-    assert_eq!(peer.send(99, b"").unwrap_err(), BridgeError::closed());
+    assert_eq!(
+        wait(|done| peer.stats(done)).unwrap_err(),
+        BridgeError::closed()
+    );
+    assert_eq!(
+        wait(|done| peer.send(Channel::Data, b"late".to_vec(), done)).unwrap_err(),
+        BridgeError::closed()
+    );
     peer.shutdown().expect("shutdown");
 }
 
 #[test]
-fn a_send_is_checked_for_channel_then_open_state() {
-    let peer = ReactorEffectPeer::create(None).expect("a peer");
+fn a_send_over_the_message_bound_or_before_the_channel_opens_is_refused() {
+    let peer = Peer::create().expect("a peer");
+    let error =
+        wait(|done| peer.send(Channel::Data, vec![0; MAX_MESSAGE_BYTES + 1], done)).unwrap_err();
+    assert_eq!(error.class, FailureClass::Overflow);
     assert_eq!(
-        peer.send(99, b"").unwrap_err(),
-        BridgeError::invalid("unknown data channel")
-    );
-    assert_eq!(
-        peer.send(Channel::Control as u32, b"early").unwrap_err(),
+        wait(|done| peer.send(Channel::Control, b"early".to_vec(), done)).unwrap_err(),
         BridgeError::new(FailureClass::ChannelClosed, "control channel is not open")
     );
     peer.shutdown().expect("shutdown");
@@ -53,7 +64,7 @@ fn a_send_is_checked_for_channel_then_open_state() {
 
 #[test]
 fn shutdown_is_idempotent_and_leaves_every_queue_closed() {
-    let peer = ReactorEffectPeer::create(None).expect("a peer");
+    let peer = Peer::create().expect("a peer");
     peer.shutdown().expect("first shutdown");
     peer.shutdown().expect("second shutdown");
     let shared = peer.shared();
@@ -63,32 +74,27 @@ fn shutdown_is_idempotent_and_leaves_every_queue_closed() {
 }
 
 #[test]
-fn shutdown_waits_for_a_notifier_still_inside_the_host_callback() {
-    static ENTERED: AtomicBool = AtomicBool::new(false);
-    static RELEASED: AtomicBool = AtomicBool::new(false);
-    extern "C" fn blocking_host(_ready: u32) {
-        ENTERED.store(true, Ordering::Release);
-        while !RELEASED.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
+fn an_event_wakes_the_host_once_until_it_takes_the_readiness() {
+    let peer = Peer::create().expect("a peer");
+    let wakes = Arc::new(AtomicUsize::new(0));
+    peer.set_wake(Box::new({
+        let wakes = Arc::clone(&wakes);
+        move || {
+            wakes.fetch_add(1, Ordering::SeqCst);
         }
-    }
-
-    let peer = ReactorEffectPeer::create(Some(blocking_host)).expect("a peer");
-    peer.shared().emit(&Event::Ice { candidate: None });
-    wait_until("the host callback", TIMEOUT, || {
-        ENTERED.load(Ordering::Acquire)
-    });
-    thread::scope(|scope| {
-        let release_host = Defer(|| RELEASED.store(true, Ordering::Release));
-        let shutdown = scope.spawn(|| peer.shutdown());
-        thread::sleep(Duration::from_millis(30));
-        assert!(
-            !shutdown.is_finished(),
-            "shutdown returned while the host callback could still run"
-        );
-        drop(release_host);
-        assert_eq!(shutdown.join().unwrap(), Ok(()));
-    });
+    }));
+    peer.shared().emit(Event::Ice { candidate: None });
+    peer.shared().emit(Event::Ice { candidate: None });
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(peer.take_ready(), crate::sync::Ready::Events.bit());
+    assert_eq!(peer.take_event(), Some(Event::Ice { candidate: None }));
+    peer.shutdown().expect("shutdown");
+    peer.shared().emit(Event::Ice { candidate: None });
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        1,
+        "a closed peer wakes no one"
+    );
 }
 
 /// What the remote end of a loopback observed.
@@ -163,7 +169,7 @@ struct Sources {
 /// its offer, as Reactor's media server would. Fields drop in order: the
 /// sources before the remote connection, and that before its channels.
 struct Loopback {
-    bridge: ReactorEffectPeer,
+    bridge: Peer,
     mapping: Vec<Mapping>,
     sources: Sources,
     remote: PeerConnection,
@@ -176,29 +182,27 @@ impl Loopback {
     /// send track, answer from a remote peer publishing into them, and wait
     /// until both ends are connected with both channels open.
     fn connect() -> Self {
-        let bridge = ReactorEffectPeer::create(None).expect("a bridge peer");
-        let prepared = call(
-            &bridge,
-            Operation::Prepare,
-            &json_request(&json!({
-                "servers": [],
-                "tracks": [
-                    { "name": "video-a", "kind": "video", "direction": "recvonly" },
-                    { "name": "video-b", "kind": "video", "direction": "recvonly" },
-                    { "name": "audio-a", "kind": "audio", "direction": "recvonly" },
-                    { "name": "outgoing-video", "kind": "video", "direction": "sendonly" },
-                ],
-            })),
-        );
+        let bridge = Peer::create().expect("a bridge peer");
+        let request = PrepareRequest::new(
+            vec![],
+            vec![
+                track("video-a", TrackKind::Video, Direction::RecvOnly),
+                track("video-b", TrackKind::Video, Direction::RecvOnly),
+                track("audio-a", TrackKind::Audio, Direction::RecvOnly),
+                track("outgoing-video", TrackKind::Video, Direction::SendOnly),
+            ],
+        )
+        .expect("a request within the bounds");
+        let prepared = wait(|done| bridge.prepare(request, done)).expect("prepare");
         let offer = SessionDescription {
             kind: SdpType::Offer,
-            sdp: prepared["sdp"].as_str().expect("an offer").to_owned(),
+            sdp: prepared.sdp,
         };
         assert!(
             offer.declares_frame_metadata(),
             "the offer must negotiate frame metadata"
         );
-        let mapping: Vec<Mapping> = serde_json::from_value(prepared["mapping"].clone()).unwrap();
+        let mapping: Vec<Mapping> = prepared.mapping;
 
         // The remote peer shares the bridge's process-wide factory, as
         // reactor-webrtc requires of every peer in one process.
@@ -251,7 +255,7 @@ impl Loopback {
             signals.gathered.load(Ordering::Acquire)
         });
         let answer = with_candidates(&answer.sdp, &lock(&signals.candidates));
-        call(&bridge, Operation::Answer, answer.as_bytes());
+        wait(|done| bridge.answer(answer, done)).expect("the bridge applies the answer");
 
         let mut loopback = Self {
             bridge,
@@ -278,35 +282,43 @@ impl Loopback {
     /// Take the bridge's events as the host would: forward its candidates to
     /// the remote peer and record what the events report.
     fn pump_events(&mut self) {
-        while let Taken::Item(packet) = self.bridge.shared().events.take(|_| true) {
-            let (header, payload) = parse_packet(&packet);
-            let text = |key: &str| header[key].as_str().unwrap_or_default().to_owned();
-            match header["type"].as_str() {
-                Some("state") => self.host.connected = header["state"] == "connected",
-                Some("channel") if header["open"] == true => {
-                    self.host.open_channels.insert(text("channel"));
-                }
-                Some("channel") => {
-                    self.host.open_channels.remove(&text("channel"));
-                }
-                Some("ice") => {
-                    if let Some(candidate) = header.get("candidate") {
-                        let candidate = IceCandidate {
-                            candidate: candidate["candidate"].as_str().unwrap().to_owned(),
-                            sdp_mid: candidate["sdp_mid"].as_str().map(str::to_owned),
-                            sdp_mline_index: candidate["sdp_mline_index"]
-                                .as_u64()
-                                .map(|index| u16::try_from(index).unwrap()),
-                        };
-                        self.remote
-                            .add_ice_candidate(&candidate)
-                            .expect("the remote accepts the bridge's candidate");
+        while let Some(event) = self.bridge.take_event() {
+            match event {
+                Event::State { state } => self.host.connected = state == "connected",
+                Event::Channel { channel, open } => {
+                    let label = channel.label().to_owned();
+                    if open {
+                        self.host.open_channels.insert(label);
+                    } else {
+                        self.host.open_channels.remove(&label);
                     }
                 }
-                Some("decoded") => self.host.decoded.push((text("kind"), text("name"))),
-                Some("message") => self.host.messages.push((text("channel"), payload.to_vec())),
-                Some("error") => panic!("the bridge failed: {header}"),
-                _ => {}
+                Event::Ice {
+                    candidate: Some(candidate),
+                } => {
+                    let candidate = IceCandidate {
+                        candidate: candidate.candidate,
+                        sdp_mid: candidate.sdp_mid,
+                        sdp_mline_index: candidate.sdp_mline_index,
+                    };
+                    self.remote
+                        .add_ice_candidate(&candidate)
+                        .expect("the remote accepts the bridge's candidate");
+                }
+                Event::Decoded { kind, name, .. } => {
+                    let kind = match kind {
+                        TrackKind::Video => "video",
+                        TrackKind::Audio => "audio",
+                    };
+                    self.host.decoded.push((kind.to_owned(), name));
+                }
+                Event::Message { channel, bytes } => {
+                    self.host.messages.push((channel.label().to_owned(), bytes));
+                }
+                Event::Error { class, message } => {
+                    panic!("the bridge failed: {class:?} {message}")
+                }
+                Event::Ice { candidate: None } | Event::Track { .. } => {}
             }
         }
     }
@@ -398,9 +410,7 @@ impl Sources {
 fn messages_cross_a_loopback_connection_in_order_both_ways() {
     let mut loopback = Loopback::connect();
     for message in [b"one".as_slice(), b"two", b"three"] {
-        loopback
-            .bridge
-            .send(Channel::Data as u32, message)
+        wait(|done| loopback.bridge.send(Channel::Data, message.to_vec(), done))
             .expect("the bridge sends");
     }
     wait_until("three messages at the remote", TIMEOUT, || {
@@ -427,7 +437,7 @@ fn messages_cross_a_loopback_connection_in_order_both_ways() {
 fn each_receive_lane_decodes_real_media_with_its_own_metadata() {
     let mut loopback = Loopback::connect();
     let audio_track = loopback.track_index("audio-a");
-    let shared = Arc::clone(&loopback.bridge.shared);
+    let shared = Arc::clone(loopback.bridge.shared());
     let mut video = HashMap::new();
     let mut audio_blocks = 0;
     wait_until("decoded media on every receive lane", MEDIA_TIMEOUT, || {
@@ -476,7 +486,7 @@ fn each_receive_lane_decodes_real_media_with_its_own_metadata() {
     assert_eq!(decoded, HashSet::from(expected));
 
     wait_until("stats for the live streams", TIMEOUT, || {
-        let stats = call(&loopback.bridge, Operation::Stats, b"");
+        let stats = wait(|done| loopback.bridge.stats(done)).expect("stats");
         let entries = stats.as_array().expect("a stats array");
         let inbound = |kind: &str| {
             entries
@@ -495,7 +505,7 @@ fn each_receive_lane_decodes_real_media_with_its_own_metadata() {
 #[test]
 fn closing_a_live_connection_fences_late_frames() {
     let loopback = Loopback::connect();
-    let shared = Arc::clone(&loopback.bridge.shared);
+    let shared = Arc::clone(loopback.bridge.shared());
     wait_until("a decoded frame", MEDIA_TIMEOUT, || {
         loopback.sources.push();
         thread::sleep(Duration::from_millis(30));

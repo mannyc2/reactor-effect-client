@@ -1,35 +1,28 @@
-//! The native WebRTC transport of `reactor-effect-native`, exported as a C ABI.
+//! The native WebRTC transport of `reactor-effect-native`, a Node-API addon.
 //!
-//! `include/reactor_effect_native.h` is the contract and [`ffi`] implements
-//! it. Each peer runs on three kinds of threads:
+//! [`binding`] is the surface Node.js and Bun load. Each peer runs on two
+//! kinds of threads:
 //!
 //! - its **owner thread** holds the libwebrtc peer connection and runs the
-//!   host's calls and sends one at a time;
+//!   host's calls and sends one at a time, answering each through a promise;
 //! - **libwebrtc threads** run callbacks, which only copy into bounded queues
-//!   and set readiness bits: they never call or wait on the host;
-//! - its **notifier thread** is the one thread that calls the host, passing
-//!   it those readiness bits.
+//!   and raise readiness: they never call or wait on JavaScript. The first
+//!   readiness bit queues a non-blocking wake on the JavaScript thread, where
+//!   the host takes the items.
 //!
-//! The host drains the queues with nonblocking takes. Closing a peer fences
-//! callback admission at once; shutting it down joins the owner thread, every
-//! admitted callback and the notifier thread.
+//! Closing a peer fences callback admission at once; shutting it down joins
+//! the owner thread and every admitted callback, off the JavaScript thread.
 //!
 //! The source tree follows those roles:
 //!
-//! - `ffi`: the exported functions and C structs;
-//! - `abi`: the header's constants, checked against it by a test;
+//! - `binding`: the Node-API classes, objects and conversions;
 //! - `peer`: the peer handle, its owner thread and its libwebrtc callbacks;
-//! - `protocol`: the JSON of requests, responses and event headers;
-//! - `sync`: the queues, callback gate and notifier the threads share;
-//! - `error`: failures and the ABI failure class of each.
+//! - `protocol`: requests and their bounds, events and statistics;
+//! - `sync`: the queues, callback gate and readiness the threads share;
+//! - `error`: failures and their classes.
 
-mod abi;
+pub mod binding;
 mod error;
-#[expect(
-    unsafe_code,
-    reason = "the C ABI exports symbols and turns caller pointers into checked views"
-)]
-pub mod ffi;
 mod peer;
 mod protocol;
 mod sync;

@@ -10,9 +10,17 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+napi = { version = "=3.13.0", default-features = false, features = ["napi6", "dyn-symbols", "serde-json"] }
+napi-derive = "=3.6.9"
 reactor-webrtc = { git = "https://github.com/reactor-team/reactor-webrtc.git", rev = "bebf63e42624ee440e066b692494dd3229d29ae7", version = "0.18.0" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+# The far peer example reads and writes JSON lines.
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+napi-build = "=2.5.0"
 
 [lints.rust]
 missing_docs = "warn"
@@ -26,9 +34,8 @@ trivial_numeric_casts = "warn"
 unused_lifetimes = "warn"
 # A foreign function that may unwind must not be called as if it cannot.
 ffi_unwind_calls = "warn"
-# unsafe code lives only behind the C ABI: `ffi` is the one module that
-# expects this lint.
-unsafe_code = "warn"
+# Node-API calls live in napi's generated glue; this crate has no unsafe code.
+unsafe_code = "deny"
 
 # pedantic, plus restriction and nursery lints chosen one at a time. Lints
 # that never fire still guard against the pattern arriving later.
@@ -36,8 +43,7 @@ unsafe_code = "warn"
 pedantic = { level = "warn", priority = -1 }
 
 # Don't panic. reactor-webrtc runs callbacks behind `extern "C"` trampolines,
-# where a panic aborts the host process, and an entry point can at best report
-# one as a native failure. Library code returns errors instead; clippy.toml
+# where a panic aborts the host process. Library code returns errors instead; clippy.toml
 # exempts tests, and pedantic adds unchecked_duration_subtraction.
 unwrap_used = "warn"
 expect_used = "warn"

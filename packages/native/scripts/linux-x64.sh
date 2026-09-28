@@ -1,4 +1,5 @@
 #!/bin/sh
+# Builds and checks the linux-x64 addon in Docker, then stages it here.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -18,4 +19,5 @@ docker --context "$context" build \
   --output "type=local,dest=$output" \
   "$root"
 
-"$root/scripts/stage.sh" "$output/libreactor_effect_native.so" linux-x64
+"${NODE_BINARY:-node}" "$root/scripts/stage.mjs" \
+  "$output/reactor-effect-native.linux-x64-gnu.node" linux-x64-gnu "$output/binding.d.ts"
