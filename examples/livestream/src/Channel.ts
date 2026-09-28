@@ -4,7 +4,7 @@ import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/h3";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Simulation from "reactor-effect-client/simulation";
-import * as Native from "reactor-effect-native";
+import { NativePeer } from "reactor-effect-native";
 import { Ledger } from "./Ledger.ts";
 import { Settings } from "./Settings.ts";
 import * as TestCard from "./TestCard.ts";
@@ -66,7 +66,7 @@ const live = ({ sessionLength, lead }: Settings["Service"]) =>
         Layer.provide(Reactor.layer().pipe(Layer.provide(Coordinator.layer({ apiUrl })))),
         // Each connection's native peer runs in a child process of its own, so a
         // crash in libwebrtc ends that connection, not the server (Node only).
-        Layer.provide(Native.Isolated.layer()),
+        Layer.provide(NativePeer.layerIsolated()),
       );
     }),
   );

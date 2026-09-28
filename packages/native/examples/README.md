@@ -13,10 +13,10 @@ It prints the most the session can cost before it starts: the token caps the ses
 
 ## What it shows
 
-- **A session from start to close in one scope.** The CLI mints a token with the key it holds, then `createConnected`, `H3.make` and `Native.media`, all in one scope; closing it terminates the paid session. A finalizer registered as soon as the session exists prints whether termination was confirmed, however the capture ends: done, failed or interrupted.
+- **A session from start to close in one scope.** The CLI mints a token with the key it holds, then `create`, `H3.make` and `session.decoded`, all in one scope; closing it terminates the paid session. A finalizer registered as soon as the session exists prints whether termination was confirmed, however the capture ends: done, failed or interrupted.
 - **A clip followed by its facts.** `provider.operation(submission)` resolves `generated`, then `started`, then `ended`. The recording keeps what arrives between the clip's start and its end. Both readers, video and audio, are started and subscribed before the clip is submitted (`Effect.forkScoped({ startImmediately: true })`), so neither misses the clip's opening.
 - **Loss made visible.** `recorder(stream)` turns each track into its frames plus a `Lost { after, count }` wherever the host dropped frames. The recorder fills each lost frame with the one before it and each lost audio block with silence, so the file keeps the source's timing, and reports how many it filled; `media.snapshot` gives the host's own totals.
-- **Crash containment on request.** `--isolated` swaps `Native.layer()` for `Native.Isolated.layer()`: the same `PeerFactory`, with the native peer in a child process.
+- **Crash containment on request.** `--isolated` swaps `NativePeer.layer()` for `NativePeer.layerIsolated()`: the same `PeerFactory`, with the native peer in a child process.
 - **Effect's CLI and child processes.** Flags are declared with `effect/unstable/cli`, and ffmpeg runs through `ChildProcessSpawner`, with the video on its stdin and the audio on a third pipe.
 
 | File                     | What it is                                                                        |

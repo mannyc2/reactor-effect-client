@@ -17,10 +17,19 @@ import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { IceCandidate } from "reactor-effect-client/Coordinator";
 import type { MediaPressure } from "reactor-effect-client/Media";
 import type { PeerEvent } from "reactor-effect-client/Peer";
-import { assertExactFrames } from "reactor-effect-test-kit/frames";
-import { checkNativeBridge } from "../src/_internal/bridge.js";
-import { NativePeer, defaultShutdownTimeout } from "../src/_internal/peer.js";
-import { FarPeer, libraryPath, nativeClient, record, until } from "./support.js";
+import * as Library from "../src/internal/library.js";
+import { defaultShutdownTimeout } from "../src/internal/peer.js";
+import type { NativePeer } from "../src/internal/peer.js";
+import {
+  assertExactFrames,
+  decoded,
+  FarPeer,
+  libraryPath,
+  nativeClient,
+  nativePeer,
+  record,
+  until,
+} from "./support.js";
 
 /*
  * The shipped library under the load the decision record measured: a real
@@ -124,7 +133,7 @@ const run = <A>(effect: Effect.Effect<A, ReactorError>): Promise<A> => Effect.ru
 /** Open one receiving peer on its own scope and wait until both channels are open. */
 const open = async (far: FarPeer, id: string): Promise<Receiver> => {
   const scope = await run(Scope.make());
-  const peer = new NativePeer(libraryPath);
+  const peer = await run(nativePeer(libraryPath).pipe(Scope.provide(scope)));
   const receiver: Receiver = {
     id,
     peer,
@@ -141,7 +150,6 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
   try {
     await run(
       Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => peer.shutdown.pipe(Effect.orDie));
         const prepared = yield* peer.prepare([], tracks, (event) => {
           if (event.type === "ice" && event.candidate !== undefined)
             far.candidate(id, event.candidate);
@@ -156,27 +164,31 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
         });
         // Subscribe before the answer: every frame the far peer encodes is counted.
         yield* Effect.forkScoped(
-          peer.rawMedia.video("main_video").pipe(
-            Stream.runForEach((frame) =>
-              Effect.sync(() => {
-                const sent = new DataView(frame.metadata.buffer, frame.metadata.byteOffset);
-                receiver.frames.push({
-                  at: performance.now(),
-                  latencyMs: wallMs() - Number(sent.getBigUint64(0, true)) / 1000,
-                  sequence: frame.sequence,
-                });
-                const size = `${frame.width}x${frame.height}`;
-                receiver.sizes.set(size, (receiver.sizes.get(size) ?? 0) + 1);
-              }),
+          decoded(peer)
+            .video("main_video")
+            .pipe(
+              Stream.runForEach((frame) =>
+                Effect.sync(() => {
+                  const sent = new DataView(frame.metadata.buffer, frame.metadata.byteOffset);
+                  receiver.frames.push({
+                    at: performance.now(),
+                    latencyMs: wallMs() - Number(sent.getBigUint64(0, true)) / 1000,
+                    sequence: frame.sequence,
+                  });
+                  const size = `${frame.width}x${frame.height}`;
+                  receiver.sizes.set(size, (receiver.sizes.get(size) ?? 0) + 1);
+                }),
+              ),
+              Effect.catch((error) => Effect.sync(() => receiver.failures.push(error))),
             ),
-            Effect.catch((error) => Effect.sync(() => receiver.failures.push(error))),
-          ),
         );
         yield* Effect.forkScoped(
-          peer.rawMedia.audio("main_audio").pipe(
-            Stream.runForEach(() => Effect.sync(() => receiver.audio++)),
-            Effect.catch((error) => Effect.sync(() => receiver.failures.push(error))),
-          ),
+          decoded(peer)
+            .audio("main_audio")
+            .pipe(
+              Stream.runForEach(() => Effect.sync(() => receiver.audio++)),
+              Effect.catch((error) => Effect.sync(() => receiver.failures.push(error))),
+            ),
         );
         yield* Effect.yieldNow;
         const answer = yield* Effect.promise(() => far.answer(id, prepared.sdp));
@@ -196,7 +208,7 @@ const open = async (far: FarPeer, id: string): Promise<Receiver> => {
 };
 
 const pressure = (receiver: Receiver): Promise<MediaPressure> =>
-  run(receiver.peer.rawMedia.snapshot);
+  run(decoded(receiver.peer).pressure);
 
 /** Frames that entered a receiver's native video queue, whatever became of them. */
 const arrived = (snapshot: MediaPressure): number =>
@@ -388,7 +400,7 @@ const ping = (receiver: Receiver): Promise<void> => {
 describe("native media under load", () => {
   let far: FarPeer;
   beforeAll(async () => {
-    await checkNativeBridge(libraryPath);
+    await run(Library.resolve(undefined));
     far = await FarPeer.start();
   });
   afterAll(async () => {
@@ -669,14 +681,13 @@ describe("native media under load", () => {
 
   test("reports a real ICE failure as IceFailed with its candidate-pair detail through the events pump", async () => {
     const id = "ice-failure";
-    const peer = new NativePeer(libraryPath);
     const scope = await run(Scope.make());
+    const peer = await run(nativePeer(libraryPath).pipe(Scope.provide(scope)));
     const errors: ReactorError[] = [];
     const states: string[] = [];
     try {
       const checking = await run(
         Effect.gen(function* () {
-          yield* Effect.addFinalizer(() => peer.shutdown.pipe(Effect.orDie));
           // The bridge's own candidates never reach the far peer, so it cannot
           // reach the bridge either and teach it a peer-reflexive candidate.
           const prepared = yield* peer.prepare([], tracks, (event: PeerEvent) => {

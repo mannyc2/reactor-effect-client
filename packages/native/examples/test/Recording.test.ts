@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, FileSystem, Option, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import type { AudioFrame, VideoFrame } from "reactor-effect-native";
+import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import { toMp4 } from "../src/Recording.ts";
 
 const frame = (sequence: number): VideoFrame => ({

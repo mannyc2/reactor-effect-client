@@ -293,7 +293,8 @@
               "**/packages/client/src/internal/stats.ts",
               "**/packages/client/test/ReactorTest.test.ts",
               "**/packages/browser/src/**/*.ts",
-              "**/packages/browser/test/**/*.ts"
+              "**/packages/browser/test/**/*.ts",
+              "**/packages/native/src/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

@@ -13,11 +13,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import koffi from "koffi";
 import { describe, expect, test, vi } from "vitest";
 import type { ReactorFailure } from "reactor-effect-client/ReactorError";
-import { assertExactFrames } from "reactor-effect-test-kit/frames";
-import { checkNativeBridge, NativeBridge } from "../src/_internal/bridge.js";
-import type { NativeVideo } from "../src/_internal/bridge.js";
+import { NativeBridge } from "../src/internal/bridge.js";
+import type { NativeVideo } from "../src/internal/bridge.js";
+import * as Library from "../src/internal/library.js";
 import { compileFrameFixture, expectedPixel } from "./frame-fixture.js";
-import { compileFixture, nativeClient } from "./support.js";
+import { assertExactFrames, compileFixture, nativeClient } from "./support.js";
 
 /*
  * The allocation budget for decoded video on the JavaScript side. The native
@@ -109,8 +109,11 @@ describe("decoded video allocation budget", () => {
     ) as (width: number, height: number, metadata: number, count: number) => void;
     let bridge: NativeBridge | undefined;
     try {
-      await checkNativeBridge(fixture.path);
-      bridge = new NativeBridge(fixture.path, () => undefined);
+      bridge = await Effect.runPromise(
+        Effect.flatMap(Library.load(fixture.path), (loaded) =>
+          NativeBridge.make(loaded, () => undefined),
+        ),
+      );
       const ownedBridge = bridge;
       // First frame, two steady frames (one without metadata), a resolution
       // drop, a steady frame at the smaller size, then a resolution rise.
@@ -183,7 +186,7 @@ describe("decoded video allocation budget", () => {
         );
       });
     } finally {
-      if (bridge !== undefined) await bridge.shutdown();
+      if (bridge !== undefined) await Effect.runPromise(bridge.shutdown);
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });
@@ -220,7 +223,7 @@ describe("decoded video allocation budget", () => {
         .filter((value): value is NativeVideo => value !== undefined && value !== null);
       expect(taken).toHaveLength(1);
       const [source] = taken;
-      // Identity, not equality: bridge -> peer -> Observations -> Queue ->
+      // Identity, not equality: bridge -> peer -> track feed -> Queue ->
       // Stream -> generation guard adds no copy.
       expect(video.data).toBe(source?.data);
       expect(video.metadata).toBe(source?.metadata);

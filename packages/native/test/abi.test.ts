@@ -3,37 +3,34 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
-import { revealed } from "./support.js";
 import * as Effect from "effect/Effect";
+import { encodeText, NativeBridge, NativeCall } from "../src/internal/bridge.js";
+import * as Library from "../src/internal/library.js";
 import {
-  checkNativeBridge,
-  encodeNativeJson,
-  encodeNativeText,
-  NativeBridge,
-  NativeCall,
-  resolveNativeBridge,
-  verifyStagedNativeBridge,
-} from "../src/_internal/bridge.js";
-import { NativePeer } from "../src/_internal/peer.js";
-import { compileFixture, compileLibrary, libraryName, libraryPath } from "./support.js";
+  compileFixture,
+  compileLibrary,
+  libraryName,
+  libraryPath,
+  nativePeer,
+  revealed,
+} from "./support.js";
 
-/** The ReactorError a bridge promise rejects with. */
-const rejection = (promise: Promise<unknown>): Promise<ReactorError> =>
-  promise.then(
-    () => Promise.reject(new Error("expected a rejection")),
-    (error: unknown) => error as ReactorError,
-  );
+const run = <A>(effect: Effect.Effect<A, ReactorError>): Promise<A> => Effect.runPromise(effect);
+/** The ReactorError an Effect fails with. */
+const rejection = (effect: Effect.Effect<unknown, ReactorError>): Promise<ReactorError> =>
+  Effect.runPromise(Effect.flip(effect));
+const json = (value: unknown) => encodeText(JSON.stringify(value));
 
 describe("native C ABI", () => {
   test("uses the same source-identified staged artifact as installed-package preflight", async () => {
-    const manifest = await verifyStagedNativeBridge(libraryPath);
+    const manifest = await run(Library.verifyStaged(libraryPath));
     expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(manifest.build).toMatchObject({
       abiVersion: 4,
       profile: "release",
       sourceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(await resolveNativeBridge()).toBe(libraryPath);
+    expect((await run(Library.resolve(undefined))).path).toBe(libraryPath);
   });
 
   test("rejects a staged binary replaced after loading even when its embedded source/build identity is unchanged", async () => {
@@ -65,7 +62,7 @@ describe("native C ABI", () => {
     };
     try {
       writeFileSync(sidecar, JSON.stringify(manifest));
-      await verifyStagedNativeBridge(path);
+      await run(Library.verifyStaged(path));
       const replaced = Buffer.concat([binary, Buffer.from([0])]);
       // Atomic replacement preserves the already mapped image's inode. Never
       // truncate a library that is mapped into the running test process.
@@ -78,7 +75,7 @@ describe("native C ABI", () => {
           sha256: createHash("sha256").update(replaced).digest("hex"),
         }),
       );
-      await expect(verifyStagedNativeBridge(path)).rejects.toMatchObject({
+      await expect(run(Library.verifyStaged(path))).rejects.toMatchObject({
         reason: { _tag: "Native" },
         context: { outcome: "not-submitted" },
       });
@@ -88,25 +85,24 @@ describe("native C ABI", () => {
   });
 
   test("rejects ambiguous same-kind receive mappings before native negotiation in either order", async () => {
-    await checkNativeBridge(libraryPath);
     const first = { name: "video-a", kind: "video" as const, direction: "recvonly" as const };
     const second = { name: "video-b", kind: "video" as const, direction: "recvonly" as const };
     for (const tracks of [
       [first, second],
       [second, first],
     ] as const) {
-      const peer = new NativePeer(libraryPath);
-      try {
-        await expect(
-          Effect.runPromise(Effect.scoped(peer.prepare([], tracks, () => undefined))),
-        ).rejects.toMatchObject({
-          reason: { _tag: "UnsupportedCapability" },
-          context: expect.objectContaining({ outcome: "not-submitted" }),
-        });
-      } finally {
-        peer.close();
-        await Effect.runPromise(peer.shutdown);
-      }
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.flatMap(nativePeer(libraryPath), (peer) =>
+              peer.prepare([], tracks, () => undefined),
+            ),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        reason: { _tag: "UnsupportedCapability" },
+        context: expect.objectContaining({ outcome: "not-submitted" }),
+      });
     }
   });
 
@@ -119,7 +115,7 @@ describe("native C ABI", () => {
         "abi_three",
       );
       fixtures.push(previous.directory);
-      await expect(checkNativeBridge(previous.path)).rejects.toMatchObject({
+      await expect(run(Library.load(previous.path))).rejects.toMatchObject({
         reason: { _tag: "Native" },
         message: "native WebRTC ABI mismatch: expected 4, received 3",
         context: expect.objectContaining({ outcome: "not-submitted" }),
@@ -130,7 +126,7 @@ describe("native C ABI", () => {
         "missing_symbols",
       );
       fixtures.push(missing.directory);
-      await expect(checkNativeBridge(missing.path)).rejects.toMatchObject({
+      await expect(run(Library.load(missing.path))).rejects.toMatchObject({
         reason: { _tag: "Native" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
@@ -140,8 +136,11 @@ describe("native C ABI", () => {
   });
 
   test("negotiates an offer, reports typed failure classes, fences takes, and joins idempotently", async () => {
-    await checkNativeBridge(libraryPath);
-    const bridge = new NativeBridge(libraryPath, () => undefined);
+    const bridge = await run(
+      Effect.flatMap(Library.load(libraryPath), (library) =>
+        NativeBridge.make(library, () => undefined),
+      ),
+    );
     try {
       // These errors came back after entering the ABI. A native failure class
       // alone cannot establish execution history, unlike the local fence below.
@@ -152,12 +151,14 @@ describe("native C ABI", () => {
           detail: expect.objectContaining({ channel: "data" }),
         }),
       });
-      const prepared = (await bridge.call(
-        NativeCall.Prepare,
-        encodeNativeJson({
-          servers: [],
-          tracks: [{ name: "video", kind: "video", direction: "recvonly" }],
-        }),
+      const prepared = (await run(
+        bridge.call(
+          NativeCall.Prepare,
+          json({
+            servers: [],
+            tracks: [{ name: "video", kind: "video", direction: "recvonly" }],
+          }),
+        ),
       )) as { readonly sdp?: unknown; readonly mapping?: unknown };
       expect(typeof prepared.sdp).toBe("string");
       expect(prepared.sdp).toContain("m=video");
@@ -166,9 +167,7 @@ describe("native C ABI", () => {
       ]);
       expect(
         revealed(
-          await rejection(
-            bridge.call(NativeCall.Answer, encodeNativeText("v=0\r\nnot an answer\r\n")),
-          ),
+          await rejection(bridge.call(NativeCall.Answer, encodeText("v=0\r\nnot an answer\r\n"))),
         ),
       ).toMatchObject({
         reason: { _tag: "SdpRejected" },
@@ -177,32 +176,32 @@ describe("native C ABI", () => {
           detail: expect.objectContaining({ status: -5 }),
         }),
       });
-      await expect(bridge.call(NativeCall.Prepare, encodeNativeJson({}))).rejects.toMatchObject({
+      await expect(run(bridge.call(NativeCall.Prepare, json({})))).rejects.toMatchObject({
         reason: { _tag: "InvalidInput" },
       });
 
-      const snapshot = (await bridge.call(NativeCall.MediaSnapshot)) as {
+      const snapshot = (await run(bridge.call(NativeCall.MediaSnapshot))) as {
         readonly closed?: unknown;
       };
       expect(snapshot.closed).toBe(false);
       expect(bridge.takeEvent()).not.toBeNull();
 
       bridge.close();
-      await expect(bridge.call(NativeCall.MediaSnapshot)).rejects.toMatchObject({
+      await expect(run(bridge.call(NativeCall.MediaSnapshot))).rejects.toMatchObject({
         reason: { _tag: "Closed" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
-      await expect(bridge.send("data", Uint8Array.of(1))).rejects.toMatchObject({
+      await expect(run(bridge.send("data", Uint8Array.of(1)))).rejects.toMatchObject({
         reason: { _tag: "Closed" },
         context: expect.objectContaining({ outcome: "not-submitted" }),
       });
       expect(bridge.takeEvent()).toBeNull();
       expect(bridge.takeVideo()).toBeNull();
       expect(bridge.takeAudio()).toBeNull();
-      await bridge.shutdown();
-      await bridge.shutdown();
+      await run(bridge.shutdown);
+      await run(bridge.shutdown);
     } finally {
-      await bridge.shutdown();
+      await run(bridge.shutdown);
     }
   });
 });
