@@ -8,6 +8,7 @@ import {
   Effect,
   Fiber,
   FileSystem,
+  Inspectable,
   Layer,
   Redacted,
   Result,
@@ -222,6 +223,20 @@ layer(recorder([{ _tag: "LateRecording", nth: 2, by: Duration.minutes(1) }]))(
           service.downloadClip(yield* session.recording, { downloadTimeout: "5 seconds" }),
         );
         assert.strictEqual(late.reason._tag, "Timeout");
+        // A deadline `Duration` cannot parse, a NaN it reads as zero, and a negative.
+        const clip = yield* session.recording;
+        const huge: number = 10 ** 999;
+        const bad: ReadonlyArray<Duration.Input> = [`${huge} seconds`, Number.NaN, -5];
+        for (const input of bad) {
+          const refused = yield* Effect.flip(
+            service.downloadClip(clip, { downloadTimeout: input }),
+          );
+          assert.deepStrictEqual(
+            [refused.reason._tag, refused.context.outcome],
+            ["InvalidInput", "not-submitted"],
+            Inspectable.toStringUnknown(input),
+          );
+        }
       }),
     );
   },
