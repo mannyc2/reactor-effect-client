@@ -18,14 +18,11 @@
     "README.md"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./NativePeer": {
-      "types": "./dist/NativePeer.d.ts",
-      "import": "./dist/NativePeer.js"
-    }
+    "./package.json": "./package.json",
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js",
+    "./internal/*": null,
+    "./index": null
   },
   "engines": {
     "node": ">=22"

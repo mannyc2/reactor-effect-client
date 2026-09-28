@@ -4,7 +4,6 @@ import { Effect, Fiber, Ref, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, H3Source, Playout, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
-import { pngBytes, wavBytes } from "../src/testing/index.js";
 import { connect, environment, mint } from "./fixtures/Simulated.js";
 
 const frameMs = 1000 / 24;
@@ -223,7 +222,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
         const refused = yield* Effect.flip(
           provider.enqueue({
             prompt: "a voice alone",
-            audio: [{ _tag: "Bytes", bytes: wavBytes({ seconds: 3 }) }],
+            audio: [{ _tag: "Bytes", bytes: ReactorTest.wavBytes({ seconds: 3 }) }],
             continueFrom: unknown,
           }),
         );
@@ -288,7 +287,10 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
         const test = yield* ReactorTest.ReactorTest;
         const { provider } = yield* watch;
         yield* test.inject({ _tag: "InvalidImage", nth: 1 });
-        const image = { _tag: "Bytes", bytes: pngBytes({ width: 64, height: 64 }) } as const;
+        const image = {
+          _tag: "Bytes",
+          bytes: ReactorTest.pngBytes({ width: 64, height: 64 }),
+        } as const;
         const refused = yield* Effect.flip(
           provider.enqueue({ prompt: "one", references: [image] }),
         );

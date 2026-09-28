@@ -336,3 +336,9 @@ export const frameOf = (
  */
 export const flow = (step: Duration.Input = "5 millis"): Effect.Effect<never> =>
   Effect.forever(TestClock.adjust(step));
+
+/**
+ * Reference media H3's local checks accept, for tests and demos:
+ * `pngBytes({ width, height })` is a black PNG, `wavBytes({ seconds })` a WAV tone.
+ */
+export { pngBytes, wavBytes, type WavOptions } from "./internal/reactorTest/references.js";

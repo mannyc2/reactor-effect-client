@@ -46,7 +46,7 @@ interface Manifest {
   readonly name: string;
   readonly version: string;
   /** Absent from a platform package, which only carries its addon. */
-  readonly exports: Readonly<Record<string, string | Readonly<Record<string, string>>>>;
+  readonly exports?: Readonly<Record<string, string | null>>;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly peerDependencies?: Readonly<Record<string, string>>;
   readonly optionalDependencies?: Readonly<Record<string, string>>;
@@ -122,6 +122,25 @@ const fail = (message: string): never => {
   throw new Error(`pack smoke: ${message}`);
 };
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+/** Every public package's export map, as Effect's packages write theirs. */
+const exportMap = {
+  "./package.json": "./package.json",
+  ".": "./dist/index.js",
+  "./*": "./dist/*.js",
+  "./internal/*": null,
+  "./index": null,
+};
+/** The modules `"./*"` reaches: each top-level `dist/<Module>.js`, `index` included. */
+const publicModules = (files: ReadonlySet<string>): readonly string[] =>
+  [...files]
+    .filter((path) => /^dist\/[^/]+\.js$/.test(path))
+    .map((path) => path.slice("dist/".length, -".js".length))
+    .sort();
+/** The public entries a release reviews: `.` and `./<Module>` for every other module. */
+const publicEntries = (archive: Archive): readonly string[] =>
+  isPlatformPackage(archive.manifest.name)
+    ? []
+    : publicModules(archive.files).map((module) => (module === "index" ? "." : `./${module}`));
 const execute = (
   command: string,
   args: readonly string[],
@@ -291,22 +310,15 @@ const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): voi
     }
   if (manifest.peerDependencies?.effect !== requirements.effect)
     fail(`${manifest.name} must declare the Effect peer range ${requirements.effect}`);
-  for (const [name, value] of Object.entries(manifest.exports)) {
-    if (name.includes("*")) fail(`package export is not explicit: ${name}`);
-    const conditions =
-      typeof value === "string"
-        ? fail(`export ${name} must provide explicit types/import conditions`)
-        : value;
-    if (!("types" in conditions) || !("import" in conditions))
-      fail(`export ${name} must provide both types and import targets`);
-    for (const target of Object.values(conditions)) {
-      if (!target.startsWith("./")) fail(`export ${name} has a non-package target: ${target}`);
-      if (!files.has(target.slice(2)))
-        fail(`export ${name} points at missing tarball file ${target}`);
-    }
-    if (!conditions.types?.endsWith(".d.ts"))
-      fail(`export ${name} types target is not a declaration file: ${conditions.types}`);
-  }
+  // Effect's shape: the index, one subpath per top-level module, internals and the
+  // index's own path closed. TypeScript finds each module's declarations beside it.
+  if (JSON.stringify(manifest.exports) !== JSON.stringify(exportMap))
+    fail(`${manifest.name} export map differs from ${JSON.stringify(exportMap)}`);
+  const modules = publicModules(files);
+  if (!modules.includes("index")) fail(`${manifest.name} tarball omitted dist/index.js`);
+  for (const module of modules)
+    if (!files.has(`dist/${module}.d.ts`))
+      fail(`${manifest.name} module ${module} has no declarations`);
   const dependencies = new Set([
     ...Object.keys(manifest.dependencies ?? {}),
     ...Object.keys(manifest.peerDependencies ?? {}),
@@ -763,21 +775,7 @@ try {
   );
   if (!portableOutput.includes("portable-import-ok"))
     fail("portable import smoke did not complete");
-  copyFileSync(fixture("simulation-smoke.mjs"), join(portable, "simulation-smoke.mjs"));
-  const simulationOutput = run(
-    node,
-    ["--experimental-loader", "./resolution-guard.mjs", "./simulation-smoke.mjs"],
-    portable,
-    guarded(portable, true),
-  );
-  if (!simulationOutput.includes("simulation-smoke-ok"))
-    fail("installed production simulation did not complete");
-  console.log(simulationOutput.trim());
-  checkRuntimeFixtures(portable, [
-    "portable-import.mjs",
-    "simulation-smoke.mjs",
-    "resolution-guard.mjs",
-  ]);
+  checkRuntimeFixtures(portable, ["portable-import.mjs", "resolution-guard.mjs"]);
   typecheck(
     portable,
     "node-consumer.mts",
@@ -931,7 +929,7 @@ try {
               version: archive.manifest.version,
               tarball: relative(packDirectory, archive.tarball),
               sha256: archive.sha256,
-              exports: Object.keys(archive.manifest.exports ?? {}).sort(),
+              exports: [...publicEntries(archive)].sort(),
               files: [...archive.files].sort(),
               fileSha256: archive.fileSha256,
             },

@@ -73,11 +73,10 @@ export class Remote extends Schema.Error<Remote>("reactor-effect-client/ReactorE
   body: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
 }) {}
 
-/** A native bridge failure; `status` is the ABI's failure class when one was returned. */
+/** A failure of the native WebRTC addon or its host process. */
 export class Native extends Schema.Error<Native>("reactor-effect-client/ReactorError/Native")({
   _tag: Schema.tag("Native"),
   message: Schema.String,
-  status: Schema.optionalKey(Schema.Int),
   /** libwebrtc's own text; it can contain peer SDP or signaling material. */
   backendMessage: Schema.optionalKey(Schema.Redacted(Schema.String, { disallowJsonEncode: true })),
 }) {}

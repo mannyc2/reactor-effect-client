@@ -97,15 +97,31 @@ const workspace = {
     directory: "packages/client",
     exports: {
       ".": entry("index"),
-      "./h3": entry("h3/index"),
-      "./host": entry("host"),
-      "./orchestration": entry("orchestration/index"),
-      "./simulation": entry("simulation/index"),
-      "./testing": entry("testing/index"),
-      "./wire": entry("wire"),
+      ...Object.fromEntries(
+        [
+          "Coordinator",
+          "H3",
+          "H3Source",
+          "LocalSource",
+          "Media",
+          "Peer",
+          "Playout",
+          "Reactor",
+          "ReactorError",
+          "ReactorTest",
+          "Session",
+        ].map((module) => [`./${module}`, entry(module)]),
+      ),
     },
   },
-  "reactor-effect-browser": { directory: "packages/browser", exports: { ".": entry("index") } },
+  "reactor-effect-browser": {
+    directory: "packages/browser",
+    exports: {
+      ".": entry("index"),
+      "./BrowserMedia": entry("BrowserMedia"),
+      "./BrowserPeer": entry("BrowserPeer"),
+    },
+  },
   "reactor-effect-native-linux-x64-gnu": {
     directory: "packages/native/npm/linux-x64-gnu",
     exports: {},
@@ -114,7 +130,10 @@ const workspace = {
     directory: "packages/native/npm/darwin-arm64",
     exports: {},
   },
-  "reactor-effect-native": { directory: "packages/native", exports: { ".": entry("index") } },
+  "reactor-effect-native": {
+    directory: "packages/native",
+    exports: { ".": entry("index"), "./NativePeer": entry("NativePeer") },
+  },
 };
 
 /**

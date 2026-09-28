@@ -15,6 +15,7 @@
         "reactor-effect-client": "workspace:*",
         "reactor-effect-native": "workspace:*",
         "typescript": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "examples/livestream": {
@@ -44,7 +45,6 @@
         "reactor-effect-browser": "workspace:*",
         "reactor-effect-client": "workspace:*",
         "reactor-effect-native": "workspace:*",
-        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
     },
@@ -89,7 +89,6 @@
         "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
         "effect": "catalog:",
-        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
       "peerDependencies": {
@@ -153,10 +152,6 @@
     },
     "packages/native/npm/linux-x64-gnu": {
       "name": "reactor-effect-native-linux-x64-gnu",
-      "version": "0.7.0",
-    },
-    "packages/test-kit": {
-      "name": "reactor-effect-test-kit",
       "version": "0.7.0",
     },
   },
@@ -701,8 +696,6 @@
     "reactor-effect-native-examples": ["reactor-effect-native-examples@workspace:packages/native/examples"],
 
     "reactor-effect-native-linux-x64-gnu": ["reactor-effect-native-linux-x64-gnu@workspace:packages/native/npm/linux-x64-gnu"],
-
-    "reactor-effect-test-kit": ["reactor-effect-test-kit@workspace:packages/test-kit"],
 
     "redis": ["redis@6.2.1", "", { "dependencies": { "@redis/bloom": "6.2.1", "@redis/client": "6.2.1", "@redis/json": "6.2.1", "@redis/search": "6.2.1", "@redis/time-series": "6.2.1" } }, "sha512-Z9VHtgYs48PiQC77X9O2Er8Hj4T+5BtFjT91/vi5Is1D04N72cA946ZslM1ImJw8ZctFBZWAVjM7S5wJNeHMpg=="],
 

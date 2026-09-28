@@ -4,6 +4,7 @@
  * claimed with the run's worst case before any token exists. From that point a
  * failure is a failed run, never a refusal, and the session is still closed.
  */
+import { createRequire } from "node:module";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -43,6 +44,53 @@ const Manifest = Schema.fromJsonString(
   Schema.Struct({ name: Schema.String, version: Schema.String }),
 );
 
+/** What the native addon's platform package says it was built from; staging writes it. */
+const NativeIdentity = Schema.fromJsonString(
+  Schema.Struct({
+    platform: Schema.String,
+    file: Schema.String,
+    sha256: Schema.String,
+    build: Schema.Struct({
+      sourceSha256: Schema.String,
+      target: Schema.String,
+      webrtcPrebuilt: Schema.String,
+    }),
+  }),
+);
+
+/** The platform packages the native peer loads, by Node's platform and architecture. */
+const addonPlatforms: Readonly<Record<string, string>> = {
+  "darwin-arm64": "darwin-arm64",
+  "linux-x64": "linux-x64-gnu",
+};
+
+/**
+ * The identity of the addon the native peer loads here: its platform package's
+ * `native-identity.json`, found as the binding finds the package. None when no
+ * platform package is installed.
+ */
+const nativeIdentity = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = addonPlatforms[`${process.platform}-${process.arch}`];
+  if (platform === undefined) return yield* Effect.fail("no addon for this host");
+  const binding = yield* path.fromFileUrl(new URL(import.meta.resolve("reactor-effect-native")));
+  const manifest = yield* Effect.try(() =>
+    createRequire(binding).resolve(`reactor-effect-native-${platform}/package.json`),
+  );
+  const identity = yield* fs
+    .readFileString(path.join(path.dirname(manifest), "native-identity.json"))
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(NativeIdentity)));
+  return {
+    platform: identity.platform,
+    file: identity.file,
+    sha256: identity.sha256,
+    sourceSha256: identity.build.sourceSha256,
+    target: identity.build.target,
+    webrtcPrebuilt: identity.build.webrtcPrebuilt,
+  };
+}).pipe(Effect.option);
+
 /** Where the run happens: runtime, commit and the packages as they resolve from here. */
 const environment = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -77,6 +125,7 @@ const environment = Effect.gen(function* () {
   }
   const commit = yield* git("rev-parse", "HEAD");
   const status = yield* git("status", "--porcelain", "--untracked-files=no");
+  const native = yield* nativeIdentity;
   return {
     runtime:
       process.versions.bun === undefined
@@ -86,6 +135,7 @@ const environment = Effect.gen(function* () {
     ...(Option.isSome(commit) ? { commit: commit.value.trim() } : {}),
     ...(Option.isSome(status) ? { dirty: status.value.trim().length > 0 } : {}),
     packages,
+    ...(Option.isSome(native) ? { native: native.value } : {}),
     network: target.network,
     apiOrigin: new URL(target.apiUrl).origin,
   } satisfies Evidence["environment"];

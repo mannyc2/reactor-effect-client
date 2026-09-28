@@ -18,7 +18,7 @@ describe("native peer over the addon's queues", () => {
   it.live("fails existing and future decoded-media readers with the source's failure", () =>
     Effect.gen(function* () {
       const addon = yield* fakeAddon;
-      const peer = yield* nativePeer(addon.module);
+      const peer = yield* nativePeer({ addon: addon.module });
       const media = decoded(peer);
       const errors: Array<ReactorError> = [];
       yield* peer.prepare([], tracks, (event) => {
@@ -42,7 +42,7 @@ describe("native peer over the addon's queues", () => {
   it.live("ends media readers on shutdown, and refuses tracks it does not receive", () =>
     Effect.gen(function* () {
       const addon = yield* fakeAddon;
-      const peer = yield* nativePeer(addon.module);
+      const peer = yield* nativePeer({ addon: addon.module });
       const media = decoded(peer);
       yield* peer.prepare([], tracks, () => {});
       for (const name of ["missing", "main_audio", "input_audio"]) {
@@ -65,7 +65,7 @@ describe("native peer over the addon's queues", () => {
     () =>
       Effect.gen(function* () {
         const addon = yield* fakeAddon;
-        const peer = yield* nativePeer(addon.module);
+        const peer = yield* nativePeer({ addon: addon.module });
         const errors: Array<ReactorError> = [];
         yield* peer.prepare([], tracks, (event) => {
           if (event.type === "error") errors.push(event.error);
@@ -80,7 +80,11 @@ describe("native peer over the addon's queues", () => {
         assert.deepStrictEqual(errors, []);
         yield* TestClock.adjust("2 seconds");
         yield* TestClock.withLive(
-          eventually(() => errors.length > 0, "no classification", "1 second"),
+          eventually({
+            condition: () => errors.length > 0,
+            message: "no classification",
+            timeout: "1 second",
+          }),
         );
         assert.strictEqual(errors.length, 1);
         expect(errors[0] === undefined ? undefined : revealed(errors[0])).toMatchObject({

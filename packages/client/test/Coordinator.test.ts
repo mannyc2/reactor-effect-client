@@ -6,7 +6,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import { Coordinator } from "../src/index.js";
 import { create } from "@bufbuild/protobuf";
-import { ClipReadySchema } from "../src/wire.js";
+import { ClipReadySchema } from "../src/internal/wire.js";
 
 const api = "https://api.fixture";
 const cdn = "https://cdn.fixture";
