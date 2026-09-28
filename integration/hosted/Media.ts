@@ -156,8 +156,14 @@ export const videoLog = () => {
       if (since.some((frame) => frame.format !== "BGRA")) return "a frame was not BGRA";
       if (!since.some((frame) => frame.lit)) return "every frame was black";
       if (new Set(since.map((frame) => frame.digest)).size < 2) return "the frames never changed";
-      const recent = since.slice(-motionFrames).filter((frame) => frame.lit);
-      if (recent.length < motionFrames) return "fewer than eight recent lit frames arrived";
+      // A clip ends on one black frame unless the session holds its last frame (H3's
+      // `flush_on_clip_end`, on by default), so one of the latest frames may be dark.
+      const recent = since
+        .slice(-(motionFrames + 1))
+        .filter((frame) => frame.lit)
+        .slice(-motionFrames);
+      if (recent.length < motionFrames)
+        return "fewer than eight of the latest nine frames were lit";
       let changes = 0;
       for (let index = 1; index < recent.length; index++)
         if (recent[index]?.digest !== recent[index - 1]?.digest) changes++;

@@ -68,8 +68,6 @@ export class Target extends Context.Service<
     readonly apiKey: Redacted.Redacted<string>;
     readonly apiUrl: string;
     readonly network: string;
-    /** How long a clip's media is read once it started, and fresh frames after an attach. */
-    readonly windowMs: number;
     /** Where seam frames are written for a person to look at; none in rehearsal. */
     readonly seams: string | undefined;
     /**
@@ -150,7 +148,6 @@ export const paid = (input: {
         apiKey: input.apiKey,
         apiUrl: input.apiUrl,
         network: input.network,
-        windowMs: 6_000,
         adoptAfterMs: undefined,
         seams: input.seams,
         moderationPrompt: input.moderationPrompt,
@@ -250,7 +247,6 @@ export const rehearsal = (input: {
         apiKey: test.apiKey,
         apiUrl: Coordinator.defaultApiUrl,
         network: "rehearsal against ReactorTest",
-        windowMs: 1_500,
         adoptAfterMs: input.adoptAfterMs,
         seams: undefined,
         moderationPrompt: input.moderationPrompt,
