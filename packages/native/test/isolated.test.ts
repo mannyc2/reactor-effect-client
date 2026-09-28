@@ -696,9 +696,17 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
                 .audio("main_audio")
                 .pipe(Stream.take(8), Stream.runCollect);
               const pressure = yield* media.pressure;
+              const statistics = yield* client.stats;
               const started = performance.now();
               const report = yield* client.close;
-              return { video, audio, pressure, report, closeMs: performance.now() - started };
+              return {
+                video,
+                audio,
+                pressure,
+                statistics,
+                report,
+                closeMs: performance.now() - started,
+              };
             }),
           ).pipe(Effect.provideService(HttpClient.HttpClient, relay.client));
           expect(result.video).toHaveLength(8);
@@ -718,6 +726,8 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
             expect(new Set(sequences).size).toBe(sequences.length);
           }
           expect(result.pressure.deliveredVideo).toBeGreaterThanOrEqual(8n);
+          // The child's statistics cross the hop whole: they name the pair in use.
+          expect(result.statistics.pair).toBeDefined();
           expect(result.report.localClosed).toBe(true);
           expect(result.report.localErrors).toEqual([]);
           expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
