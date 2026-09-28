@@ -400,6 +400,95 @@ describe("PlayoutPolicy", () => {
     assert.strictEqual(state.samples.build.length, 1);
   });
 
+  /**
+   * `p1` plays while `p2` builds, each build taking `buildMs`, and `xc`, inserted before `p2`
+   * to continue from the clip before it, waits for the build slot. With no continued build
+   * measured, its build is projected at 2.5 times the longest independent one.
+   */
+  const continuing = (buildMs: number) => {
+    let state = run(opened()).state;
+    const actions: Array<Policy.Action> = [];
+    const send = (input: Policy.Input, time: number) => {
+      const result = at(state, input, time);
+      state = result.state;
+      actions.push(...result.actions);
+    };
+    const observed = (time: number, partial: Partial<SourceState>) =>
+      send(
+        {
+          _tag: "Source",
+          sessionId: "s1",
+          event: { _tag: "State", state: source({ continuable: ["c1", "c2"], ...partial }) },
+        },
+        time,
+      );
+    const c1 = clip("c1", item("p1"));
+    const c2 = clip("c2", item("p2"));
+    for (const name of ["p1", "p2"])
+      send(
+        { _tag: "Edit", id: 0, edits: [{ _tag: "Submit", spec: spec(name) }], batch: false },
+        10,
+      );
+    send(answer(state, { _tag: "Done", clipId: "c1" }), 20);
+    const played = 10 + buildMs + 40;
+    observed(10 + buildMs, { ready: [c1] });
+    send({ _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: c1 } }, played);
+    observed(played, { playing: c1 });
+    send(answer(state, { _tag: "Done", clipId: "c2" }), played + 10);
+    send(
+      {
+        _tag: "Edit",
+        id: 0,
+        edits: [
+          {
+            _tag: "Insert",
+            spec: { ...spec("xc"), continuity: true },
+            anchor: key("p2"),
+            side: "before",
+          },
+        ],
+        batch: false,
+      },
+      played + 50,
+    );
+    const dispatched = 10 + 2 * buildMs;
+    observed(dispatched, { playing: c1, ready: [c2] });
+    const build = commands(actions).at(-1)?.command;
+    return { state: () => state, actions, send, observed, build, dispatched, c1 };
+  };
+
+  // The 0.7.0 scheduler-edits paid run: a continued insert waited behind a build in flight,
+  // took 5.45 s to build against about 2.2 s, missed the playing clip's end, and aired after
+  // the next clip, which it did not continue from.
+  it("continues a build projected to miss its predecessor's end from the clip airing by then", () => {
+    // Builds of 2 s: xc is projected Ready 6 s after it is sent, after p1 ends.
+    const late = continuing(2_000);
+    assert.deepStrictEqual(late.build, {
+      _tag: "Enqueue",
+      request: spec("xc").request,
+      tag: item("xc"),
+      continueFrom: "c2",
+    });
+    // Builds of half a second: xc is projected Ready before p1 ends, so it continues from p1.
+    const early = continuing(500);
+    assert.strictEqual(early.build?._tag === "Enqueue" && early.build.continueFrom, "c1");
+  });
+
+  it("holds a clip continued from the clip after its place behind that clip, and measures it apart", () => {
+    const { state, actions, send, observed, dispatched, c1 } = continuing(2_000);
+    send(answer(state(), { _tag: "Done", clipId: "cx" }), dispatched + 10);
+    // xc is Ready 2 s later, before p1 ends, but it continues from p2 and so airs after it.
+    const readyAt = dispatched + 2_000;
+    const seen = actions.length;
+    observed(readyAt, { playing: c1, ready: [clip("c2", item("p2")), clip("cx", item("xc"))] });
+    send({ _tag: "Tick" }, readyAt + 1);
+    const moves = commands(actions.slice(seen)).filter((action) => action.command._tag === "Move");
+    assert.deepStrictEqual(moves, []);
+    assert.strictEqual(state().items.get(key("xc"))?.phase, "Ready");
+    assert.deepStrictEqual(state().samples.build.length, 2);
+    assert.deepStrictEqual(state().samples.continued, [0.4]);
+  });
+
   // Any sequence of edits and provider answers keeps the plan's promises.
   it.effect.prop(
     "one command at a time, no enqueue sent twice for a key, one terminal status each",

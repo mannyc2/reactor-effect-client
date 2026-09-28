@@ -190,6 +190,14 @@ interface Item {
   readonly notBefore?: number | undefined;
   readonly startBy?: number | undefined;
   readonly dispatchedAt?: number | undefined;
+  /** Its build in flight continues from another clip, so its build time is measured apart. */
+  readonly continued?: boolean | undefined;
+  /**
+   * The Ready clip it continues from when that clip airs after its place: it
+   * was projected Ready only after the clip before its place ended. It waits
+   * behind that clip until the clip starts.
+   */
+  readonly follows?: string | undefined;
   readonly everUnknown: boolean;
   readonly unknownSince?: number | undefined;
   readonly retryAt?: number | undefined;
@@ -258,8 +266,13 @@ export interface State {
   readonly drains: ReadonlyArray<{ readonly id: number; readonly finish: "playing" | "accepted" }>;
   readonly accepting: boolean;
   readonly closed: boolean;
+  /**
+   * Recent builds, in build seconds per requested second, of independent
+   * clips and of clips continued from another; and actual over requested length.
+   */
   readonly samples: {
     readonly build: ReadonlyArray<number>;
+    readonly continued: ReadonlyArray<number>;
     readonly length: ReadonlyArray<number>;
   };
   readonly blockedMove: string | undefined;
@@ -306,7 +319,7 @@ export const initial: State = {
   drains: [],
   accepting: true,
   closed: false,
-  samples: { build: [], length: [] },
+  samples: { build: [], continued: [], length: [] },
   blockedMove: undefined,
   cut: undefined,
   starving: false,
@@ -323,6 +336,38 @@ const minimumSamples = 3;
 const quantile = (values: ReadonlyArray<number>, q: number): number => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+};
+
+const spreadOf = (samples: ReadonlyArray<number>) =>
+  samples.length < minimumSamples
+    ? undefined
+    : { median: quantile(samples, 0.5), p95: quantile(samples, 0.95) };
+
+const estimatesOf = (samples: State["samples"]): PublicState["estimates"] => ({
+  build: spreadOf(samples.build),
+  continuedBuild: spreadOf(samples.continued),
+  length: samples.length.length === 0 ? 1 : quantile(samples.length, 0.5),
+});
+
+/**
+ * Until a continued build is measured, one is projected at this multiple of an
+ * independent build: on hosted H3 a continued 5 s clip took 5.45 s to build,
+ * against 2.1 to 2.2 s for independent ones (0.7.0 scheduler-edits run).
+ */
+const continuedBuildFactor = 2.5;
+
+/**
+ * Build seconds per requested second a continued build is projected at, erring
+ * long: the p95 of measured continued builds, or their longest below three
+ * samples; failing those, the same of independent builds times
+ * `continuedBuildFactor`. Undefined before any build was measured.
+ */
+const continuedBuildRate = (samples: State["samples"]): number | undefined => {
+  const long = (values: ReadonlyArray<number>) =>
+    values.length >= minimumSamples ? quantile(values, 0.95) : Math.max(...values);
+  if (samples.continued.length > 0) return long(samples.continued);
+  if (samples.build.length > 0) return long(samples.build) * continuedBuildFactor;
+  return undefined;
 };
 
 type Rank = readonly [number, number, number, number];
@@ -457,6 +502,18 @@ export const step: {
     const at = atMono(item);
     if (item.mode === "held" || (at !== undefined && now.mono < at) || item.batch !== undefined)
       return [lanes + 1, 1, item.order, item.generation];
+    // Its build continues the Ready clip it follows, so it airs right behind that clip until
+    // that clip starts. An item accepted again for a rebuild follows nothing yet.
+    const followed =
+      item.follows === undefined || item.phase === "Accepted"
+        ? undefined
+        : state.sessions
+            .flatMap((value) => readyOf(value))
+            .find((clip) => clip.clipId === item.follows);
+    if (followed !== undefined) {
+      const behind = rankClip(followed);
+      return [behind[0], behind[1], behind[2], behind[3] + 0.5];
+    }
     if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
     const displaced = [...items.values()].some(
       (other) =>
@@ -514,13 +571,7 @@ export const step: {
   // ---------------------------------------------------------------------------
   // Runway and projection
   // ---------------------------------------------------------------------------
-  const estimates = (): PublicState["estimates"] => ({
-    build:
-      state.samples.build.length < minimumSamples
-        ? undefined
-        : { median: quantile(state.samples.build, 0.5), p95: quantile(state.samples.build, 0.95) },
-    length: state.samples.length.length === 0 ? 1 : quantile(state.samples.length, 0.5),
-  });
+  const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
   const playingRestMs = (value: Session | undefined): number => {
     const playing = value?.source?.playing;
     if (playing === undefined) return 0;
@@ -971,17 +1022,18 @@ export const step: {
       const waiting =
         item.phase === "Accepted" || item.phase === "Building" || item.phase === "Unknown";
       if (where === "Ready" && waiting) {
-        if (item.dispatchedAt !== undefined && !item.everUnknown)
+        if (item.dispatchedAt !== undefined && !item.everUnknown) {
+          // A continued build takes longer, so it is measured apart from independent ones.
+          const kind = item.continued === true ? "continued" : "build";
+          const sample = (now.mono - item.dispatchedAt) / 1000 / item.spec.seconds;
           state = {
             ...state,
             samples: {
               ...state.samples,
-              build: [
-                ...state.samples.build,
-                (now.mono - item.dispatchedAt) / 1000 / item.spec.seconds,
-              ].slice(-maxSamples),
+              [kind]: [...state.samples[kind], sample].slice(-maxSamples),
             },
           };
+        }
         set(item.spec.key, {
           phase: "Ready",
           clipId: clip.clipId,
@@ -1659,13 +1711,15 @@ export const step: {
     for (const item of eligible) {
       const from = item.spec.continuity
         ? continuation(item, target)
-        : { _tag: "from" as const, clipId: undefined };
+        : { _tag: "from" as const, clipId: undefined, follows: undefined };
       if (from._tag === "wait") continue;
       set(item.spec.key, {
         phase: "Building",
         sessionId: target.id,
         dispatchedAt: now.mono,
         retryAt: undefined,
+        continued: from.clipId !== undefined,
+        follows: from.follows,
       });
       return queueCommand(target.id, {
         _tag: "Enqueue",
@@ -1711,13 +1765,20 @@ export const step: {
   }
   /**
    * What a continuing item continues from: the clip that airs just before it on
-   * the same session, if the provider still offers it. It waits while that
+   * the same session, or the one that will by the time it is built
+   * (`airsBefore`), if the provider still offers it. It waits while that
    * predecessor is an item not built yet; there is nothing to continue across sessions.
    */
   function continuation(
     item: Item,
     target: Session,
-  ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
+  ):
+    | { readonly _tag: "wait" }
+    | {
+        readonly _tag: "from";
+        readonly clipId: string | undefined;
+        readonly follows?: string | undefined;
+      } {
     const place = rankItem(item);
     const before = (rank: Rank) => compareRank(rank, place) < 0;
     let best: { readonly rank: Rank; readonly clipId: string | undefined } | undefined;
@@ -1744,15 +1805,51 @@ export const step: {
           best = { rank, clipId: undefined };
       }
     if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
-    const clipId =
+    const predecessor =
       best?.clipId ?? (target.id === state.air ? target.source?.playing?.clipId : undefined);
-    return {
-      _tag: "from",
-      clipId:
-        clipId !== undefined && target.source?.continuable.includes(clipId) === true
-          ? clipId
-          : undefined,
-    };
+    if (predecessor === undefined) return { _tag: "from", clipId: undefined };
+    const from = airsBefore(item, predecessor, target);
+    return target.source?.continuable.includes(from.clipId) === true
+      ? { _tag: "from", ...from }
+      : { _tag: "from", clipId: undefined };
+  }
+  /**
+   * The clip that airs just before `item` if its continued build starts now:
+   * `predecessor`, unless that build is projected Ready only after
+   * `predecessor` ends. The Ready clips behind it then air first, and the item
+   * continues from, and follows, the one that will be playing when it is Ready,
+   * or the last of them. A clip still to be built is never chosen: H3 continues
+   * only from a clip that finished generating.
+   */
+  function airsBefore(
+    item: Item,
+    predecessor: string,
+    target: Session,
+  ): { readonly clipId: string; readonly follows?: string | undefined } {
+    const rate = continuedBuildRate(state.samples);
+    if (rate === undefined) return { clipId: predecessor };
+    const readyAt = now.mono + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000;
+    const onAir = target.id === state.air ? target.source?.playing : undefined;
+    const queued = readyOf(target)
+      .filter(airs)
+      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    const after =
+      onAir?.clipId === predecessor
+        ? 0
+        : queued.findIndex((clip) => clip.clipId === predecessor) + 1;
+    if (after === 0 && onAir?.clipId !== predecessor) return { clipId: predecessor };
+    let end =
+      now.mono +
+      (onAir === undefined ? 0 : playingRestMs(target)) +
+      queued.slice(0, after).reduce((total, clip) => total + clip.seconds * 1000, 0);
+    if (readyAt <= end) return { clipId: predecessor };
+    const behind = queued.slice(after);
+    for (const [index, clip] of behind.entries()) {
+      end += clip.seconds * 1000;
+      if (readyAt <= end || index === behind.length - 1)
+        return { clipId: clip.clipId, follows: clip.clipId };
+    }
+    return { clipId: predecessor };
   }
   function wake(): number | undefined {
     const times: Array<number> = [];
@@ -1815,8 +1912,6 @@ export const view: {
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
   const playing = air?.source?.playing;
-  const build = state.samples.build;
-  const quantile2 = (q: number) => quantile(build, q);
   const target =
     [...state.sessions]
       .reverse()
@@ -1847,13 +1942,7 @@ export const view: {
       ready: (value.source?.ready ?? []).map(own),
     })),
     starved: state.starved,
-    estimates: {
-      build:
-        build.length < minimumSamples
-          ? undefined
-          : { median: quantile2(0.5), p95: quantile2(0.95) },
-      length: state.samples.length.length === 0 ? 1 : quantile(state.samples.length, 0.5),
-    },
+    estimates: estimatesOf(state.samples),
   };
 });
 

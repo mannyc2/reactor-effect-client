@@ -188,7 +188,10 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
             (candidate) => candidate._tag === "StallBuild" || candidate._tag === "FailBuild",
           );
           if (fault?._tag === "StallBuild") return;
-          const ms = (output.seconds / (yield* environment.timing.buildSpeed)) * 1000;
+          const speed = output.continued
+            ? environment.timing.continuedBuildSpeed
+            : environment.timing.buildSpeed;
+          const ms = (output.seconds / (yield* speed)) * 1000;
           return yield* later(
             ms,
             fault?._tag === "FailBuild"

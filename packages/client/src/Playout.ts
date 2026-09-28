@@ -97,9 +97,11 @@ interface ClipSpec {
   readonly cues?: ReadonlyArray<Cue> | undefined;
   /**
    * Build it continuing from the clip that airs just before it, when that clip
-   * is on the same session and the provider still offers it. The provider
-   * falls back to an independent clip without saying so, so as-run never
-   * claims continuity.
+   * is on the same session and the provider still offers it. A continued build
+   * takes longer: if it would be Ready only after that clip ends, it continues
+   * instead from the clip that will be playing by then, and airs right behind
+   * that one. The provider falls back to an independent clip without saying
+   * so, so as-run never claims continuity.
    */
   readonly continuity?: "previous" | undefined;
 }
@@ -265,10 +267,12 @@ export interface State {
   readonly starved: number;
   /**
    * Learned from this playout's own builds: build seconds per requested second
-   * (median and p95, once three were measured), and actual over requested length.
+   * (median and p95, once three were measured), apart for clips built
+   * continuing from another, which take longer; and actual over requested length.
    */
   readonly estimates: {
     readonly build: { readonly median: number; readonly p95: number } | undefined;
+    readonly continuedBuild: { readonly median: number; readonly p95: number } | undefined;
     readonly length: number;
   };
 }

@@ -281,6 +281,59 @@ layer(
   );
 });
 
+// The 0.7.0 scheduler-edits paid run: a continued 5 s clip took 5.45 s to build against about
+// 2.2 s for an independent one. Here a continued build runs at 0.9 times real time.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      continuedBuildSpeed: 0.9,
+      seam: "70 millis",
+      http: "40 millis",
+      channel: "20 millis",
+    }),
+  }),
+)("continuity", (it) => {
+  it.effect(
+    "a continued insert that would miss its place continues from, and airs after, the clip before it then",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const { playout, starts } = yield* start();
+        const group = yield* playout.submitGroup({
+          key: key("line"),
+          lane: "line",
+          parts: [
+            { key: key("p1"), request: clip("p1") },
+            { key: key("p2"), request: clip("p2") },
+            { key: key("p3"), request: clip("p3") },
+          ],
+        });
+        const [first, , last] = group.parts;
+        yield* first.started;
+        // p2 is building, so xc waits for the build slot, then builds far slower than p1 plays.
+        yield* Effect.sleep("200 millis");
+        yield* playout.insert({
+          key: key("xc"),
+          request: clip("xc"),
+          before: key("p2"),
+          continuity: "previous",
+        });
+        yield* (last ?? first).outcome;
+        assert.deepStrictEqual(yield* starts, ["p1", "p2", "xc", "p3"]);
+        const log = yield* test.log;
+        const started = log.flatMap((entry) =>
+          entry.kind === "message" && entry.name === "clip_started" ? [entry.clipId] : [],
+        );
+        const continued = log.filter((entry) => entry.kind === "build");
+        assert.deepStrictEqual(
+          continued.map((entry) => [entry.name, entry.clipId, entry.continuedFrom]),
+          [["continued", started[2], started[1]]],
+        );
+      }),
+  );
+});
+
 layer(hosted)("the cut's fence", (it) => {
   it.effect("puts back the autoplay the playout asked for, not always on", () =>
     Effect.gen(function* () {
