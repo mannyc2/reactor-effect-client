@@ -5,6 +5,7 @@
  * step asks. Provider commands go through one worker, one at a time; session
  * opens and closes run in their own fibers and report back through the inbox.
  */
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -94,15 +95,23 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const events = yield* PubSub.unbounded<Playout.Event>();
   const state = yield* Ref.make(Policy.initial);
   const ids = yield* Ref.make(0);
+  // What callers wait for, each resolved once and then forgotten: an edit's reply, a batch's
+  // commit, a batch withdrawal's outcome, a drain.
   const replies = yield* Ref.make(new Map<number, Deferred.Deferred<Reply>>());
-  const signals = yield* Ref.make(new Map<string, Deferred.Deferred<void>>());
+  const commits = yield* Ref.make(new Map<number, Deferred.Deferred<void, PlayoutClosed>>());
+  const withdrawals = yield* Ref.make(
+    new Map<string, Deferred.Deferred<Playout.WithdrawOutcome>>(),
+  );
+  const drains = yield* Ref.make(new Map<number, Deferred.Deferred<void>>());
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
   const sources = yield* Ref.make(
     new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
   const failure = yield* Deferred.make<ReactorFailure>();
+  // Why the latest open failed while no open has succeeded since, and why the latest session was lost.
   const lastOpenError = yield* Ref.make<ReactorFailure | undefined>(undefined);
+  const lastLostError = yield* Ref.make<ReactorError | undefined>(undefined);
   const cleanup = yield* Ref.make<Playout.Cleanup>({ sessions: 0, retained: [] });
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
@@ -126,16 +135,34 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       started: Deferred.await(value.started),
       outcome: Deferred.await(value.outcome),
     }));
-  const signal = (name: string): Effect.Effect<Deferred.Deferred<void>> =>
-    Effect.gen(function* () {
-      const existing = (yield* Ref.get(signals)).get(name);
-      if (existing !== undefined) return existing;
-      const created = yield* Deferred.make<void>();
-      yield* Ref.update(signals, (all) => new Map(all).set(name, created));
-      return created;
+  /** Registers `deferred` under `id` until it is taken, once, to be resolved. */
+  const register = <K, D>(registry: Ref.Ref<Map<K, D>>, id: K, deferred: D) =>
+    Ref.update(registry, (all) => new Map(all).set(id, deferred));
+  const claim = <K, D>(registry: Ref.Ref<Map<K, D>>, id: K): Effect.Effect<D | undefined> =>
+    Ref.modify(registry, (all) => {
+      const found = all.get(id);
+      if (found === undefined) return [undefined, all] as const;
+      const next = new Map(all);
+      next.delete(id);
+      return [found, next] as const;
     });
-  const complete = (name: string) =>
-    Effect.flatMap(signal(name), (value) => Deferred.succeed(value, undefined));
+  /**
+   * Waits for `deferred`, or ends with `closed` once the playout has stopped
+   * without resolving it; what it resolved first still wins.
+   */
+  const unlessStopped = <A, E, E2>(
+    deferred: Deferred.Deferred<A, E>,
+    closed: Effect.Effect<A, E2>,
+  ): Effect.Effect<A, E | E2> => {
+    const settled: Effect.Effect<A, E> = Deferred.await(deferred);
+    const stopped: Effect.Effect<A, E | E2> = Effect.andThen(
+      Deferred.await(failure),
+      Effect.flatMap(Deferred.isDone(deferred), (done): Effect.Effect<A, E | E2> =>
+        done ? settled : closed,
+      ),
+    );
+    return Effect.raceFirst(settled, stopped);
+  };
 
   const record = (report: CloseReport): Effect.Effect<void> =>
     Ref.update(cleanup, (value) => {
@@ -185,6 +212,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       });
     }
     const source = opened.value;
+    yield* Ref.set(lastOpenError, undefined);
     yield* Ref.update(sources, (all) =>
       new Map(all).set(source.sessionId, { source, scope: child }),
     );
@@ -197,16 +225,22 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     yield* source.events.pipe(
       Stream.runForEach((event) => offer({ _tag: "Source", sessionId: source.sessionId, event })),
       Effect.exit,
-      Effect.flatMap((exit) =>
-        offer({
-          _tag: "Lost",
-          sessionId: source.sessionId,
-          reason: Exit.isSuccess(exit)
-            ? "the session ended"
-            : (Exit.findErrorOption(exit).pipe(Option.getOrUndefined)?.message ??
-              "the session failed"),
-        }),
-      ),
+      Effect.flatMap((exit) => {
+        const error = Exit.isSuccess(exit)
+          ? undefined
+          : Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
+        return Ref.set(lastLostError, error).pipe(
+          Effect.andThen(
+            offer({
+              _tag: "Lost",
+              sessionId: source.sessionId,
+              reason: Exit.isSuccess(exit)
+                ? "the session ended"
+                : (error?.message ?? "the session failed"),
+            }),
+          ),
+        );
+      }),
       Effect.forkIn(child),
     );
   });
@@ -272,6 +306,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           return yield* SubscriptionRef.set(onAir, entry?.source);
         }
         case "Emit": {
+          // Published before any handle resolves, so a subscriber has the event queued by the
+          // time a caller waiting on the handle carries on.
+          yield* PubSub.publish(events, action.event);
           if (action.event._tag === "AsRun") {
             const { key, status } = action.event.event;
             const value = yield* handle(key);
@@ -279,34 +316,49 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             if (decided.started) yield* Deferred.succeed(value.started, status);
             if (decided.outcome) yield* Deferred.succeed(value.outcome, status);
           }
-          return yield* PubSub.publish(events, action.event);
+          return;
         }
         case "Accepted":
         case "Refused": {
-          const reply = (yield* Ref.get(replies)).get(action.id);
-          if (reply === undefined) return;
+          const reply = yield* claim(replies, action.id);
           const answer: Reply =
             action._tag === "Accepted"
               ? { _tag: "Accepted", results: action.results }
               : { _tag: "Refused", refusal: action.refusal };
-          yield* Deferred.succeed(reply, answer);
-          if (action._tag === "Refused") yield* complete(`committed:${action.id}`);
+          if (reply !== undefined) yield* Deferred.succeed(reply, answer);
+          // A batch refused, at admission or when the playout closes, never commits.
+          const commit = action._tag === "Refused" ? yield* claim(commits, action.id) : undefined;
+          if (commit !== undefined) yield* Deferred.fail(commit, PlayoutClosed.make({}));
           return;
         }
-        case "Committed":
-          return yield* complete(`committed:${action.id}`);
-        case "Withdrawn": {
-          const outcome = yield* signal(`withdrawn:${action.id}:${action.index}:${action.outcome}`);
-          yield* Deferred.succeed(outcome, undefined);
-          return yield* complete(`withdrawn:${action.id}:${action.index}`);
+        case "Committed": {
+          const commit = yield* claim(commits, action.id);
+          if (commit !== undefined) yield* Deferred.succeed(commit, undefined);
+          return;
         }
-        case "Drained":
-          return yield* complete(`drained:${action.id}`);
+        case "Withdrawn": {
+          const waiting = yield* claim(withdrawals, `${action.id}:${action.index}`);
+          if (waiting !== undefined) yield* Deferred.succeed(waiting, action.outcome);
+          return;
+        }
+        case "Drained": {
+          const drain = yield* claim(drains, action.id);
+          if (drain !== undefined) yield* Deferred.succeed(drain, undefined);
+          return;
+        }
+        case "Forget":
+          return yield* Ref.update(handles, (all) => {
+            const next = new Map(all);
+            for (const key of action.keys) next.delete(key);
+            return next;
+          });
         case "Fail": {
-          const error =
-            action.moderated === true
+          const error: ReactorFailure =
+            action.cause === "moderation"
               ? ReactorError.fromCode("Moderated", action.reason)
-              : ((yield* Ref.get(lastOpenError)) ??
+              : ((action.cause === "open"
+                  ? yield* Ref.get(lastOpenError)
+                  : yield* Ref.get(lastLostError)) ??
                 ReactorError.fromCode("InvalidState", action.reason));
           yield* Deferred.succeed(failure, error);
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
@@ -341,6 +393,25 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       for (const sessionId of (yield* Ref.get(sources)).keys()) yield* closeSource(sessionId);
     }),
   );
+  /**
+   * The loop died of a defect, such as a throwing `filler.clip`: the playout
+   * fails, settles what it can, and closes every session, so nothing waits on a
+   * loop that is gone and no owned session bills on.
+   */
+  const crashed = (cause: Cause.Cause<never>) =>
+    Effect.gen(function* () {
+      yield* Deferred.succeed(
+        failure,
+        ReactorError.fromCode("InvalidState", `the playout's plan failed: ${Cause.pretty(cause)}`),
+      );
+      yield* apply({ _tag: "Close" }).pipe(Effect.catchCause(() => Effect.void));
+      const unsettled: Playout.AsRunStatus = { _tag: "Unknown", terminal: true };
+      for (const value of (yield* Ref.get(handles)).values()) {
+        yield* Deferred.succeed(value.started, unsettled);
+        yield* Deferred.succeed(value.outcome, unsettled);
+      }
+      yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, { discard: true });
+    });
   yield* Effect.gen(function* () {
     let wake = yield* apply({ _tag: "Tick" });
     while (true) {
@@ -351,7 +422,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           : yield* take(inbox).pipe(Effect.timeoutOption(Math.max(0, wake - mono)));
       wake = yield* apply(Option.getOrElse(input, (): Policy.Input => ({ _tag: "Tick" })));
     }
-  }).pipe(Effect.forkIn(scope));
+  }).pipe(
+    Effect.catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause), crashed),
+    Effect.forkIn(scope),
+  );
 
   // ---------------------------------------------------------------------------
   // Caller operations
@@ -453,28 +527,52 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       return result;
     });
 
+  const closed = Effect.fail(PlayoutClosed.make({}));
+  /**
+   * Sends one edit batch. Its commit and each withdrawal's outcome are
+   * registered first, since the policy may settle them in the step that accepts it.
+   */
   const submitEdits = (edits: ReadonlyArray<Policy.EditInput>, batch: boolean) =>
     Effect.gen(function* () {
       const id = yield* nextId;
       const reply = yield* Deferred.make<Reply>();
-      yield* Ref.update(replies, (all) => new Map(all).set(id, reply));
+      yield* register(replies, id, reply);
+      const commit = yield* Deferred.make<void, PlayoutClosed>();
+      if (batch) yield* register(commits, id, commit);
+      const outcomes = new Map<number, Deferred.Deferred<Playout.WithdrawOutcome>>();
+      for (const [index, edit] of edits.entries())
+        if (edit._tag === "Withdraw") {
+          const outcome = yield* Deferred.make<Playout.WithdrawOutcome>();
+          outcomes.set(index, outcome);
+          yield* register(withdrawals, `${id}:${index}`, outcome);
+        }
+      // A refused or unanswered batch will settle none of what was registered for it.
+      const forget = Effect.forEach(
+        [...outcomes.keys()],
+        (index) => claim(withdrawals, `${id}:${index}`),
+        { discard: true },
+      ).pipe(Effect.andThen(claim(commits, id)));
       yield* offer({ _tag: "Edit", id, edits, batch });
-      const answer = yield* Deferred.await(reply);
-      yield* Ref.update(replies, (all) => {
-        const next = new Map(all);
-        next.delete(id);
-        return next;
-      });
-      if (answer._tag === "Refused") return yield* refusal(answer.refusal);
-      return { id, results: answer.results };
+      const answer = yield* unlessStopped(reply, closed).pipe(
+        Effect.ensuring(claim(replies, id)),
+        Effect.onError(() => forget),
+      );
+      if (answer._tag === "Refused") {
+        yield* forget;
+        return yield* refusal(answer.refusal);
+      }
+      return { commit, outcomes, results: answer.results };
     });
-  const withdrawal = (id: number, index: number): Effect.Effect<Playout.WithdrawOutcome> =>
+  /** What a withdrawal of `key` would have found once the playout stopped: its recorded fate. */
+  const stoppedOutcome = (key: ItemKey): Effect.Effect<Playout.WithdrawOutcome> =>
     Effect.gen(function* () {
-      yield* Deferred.await(yield* signal(`withdrawn:${id}:${index}`));
-      for (const outcome of ["withdrawn", "already-started", "not-found"] as const)
-        if (yield* Deferred.isDone(yield* signal(`withdrawn:${id}:${index}:${outcome}`)))
-          return outcome;
-      return "not-found";
+      const value = (yield* Ref.get(handles)).get(key);
+      if (value === undefined || !(yield* Deferred.isDone(value.started))) return "not-found";
+      const started = yield* Deferred.await(value.started);
+      if (started._tag === "Dropped") return "withdrawn";
+      return started._tag === "Started" || started._tag === "Ended"
+        ? "already-started"
+        : "not-found";
     });
   const toEdit = (edit: Playout.Edit): Effect.Effect<Policy.EditInput, InvalidItem> =>
     Effect.gen(function* () {
@@ -534,7 +632,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const edit = (input: ReadonlyArray<Playout.Edit>, batch: boolean) =>
     Effect.gen(function* () {
       const edits = yield* Effect.forEach(input, toEdit);
-      const { id, results } = yield* submitEdits(edits, batch);
+      const { commit, outcomes, results } = yield* submitEdits(edits, batch);
       const mapped = yield* Effect.forEach(
         results,
         (result, index): Effect.Effect<Playout.EditResult> => {
@@ -555,12 +653,20 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
                   ],
                 },
               }));
-            case "Withdrawal":
-              return Effect.succeed({ _tag: "Withdrawal", outcome: withdrawal(id, index) });
+            case "Withdrawal": {
+              const outcome = outcomes.get(index);
+              const key = edits[index]?._tag === "Withdraw" ? edits[index].key : undefined;
+              const stopped =
+                key === undefined ? Effect.succeed("not-found" as const) : stoppedOutcome(key);
+              return Effect.succeed({
+                _tag: "Withdrawal",
+                outcome: outcome === undefined ? stopped : unlessStopped(outcome, stopped),
+              });
+            }
           }
         },
       );
-      return { id, results: mapped };
+      return { commit, results: mapped };
     });
 
   const service: Playout.Playout["Service"] = {
@@ -593,47 +699,50 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         : yield* Effect.die("a replace returned no handle");
     }),
     edit: Effect.fn("Playout.edit")(function* (edits: ReadonlyArray<Playout.Edit>) {
-      const { id, results } = yield* edit(edits, true);
-      const committed = yield* signal(`committed:${id}`);
-      return {
-        results,
-        committed: Effect.flatMap(Deferred.await(committed), () =>
-          Effect.flatMap(Deferred.isDone(failure), (closed) =>
-            closed ? Effect.fail(PlayoutClosed.make({})) : Effect.void,
-          ),
-        ),
-      };
+      const { commit, results } = yield* edit(edits, true);
+      return { results, committed: unlessStopped(commit, closed) };
     }),
     release: Effect.fn("Playout.release")(function* (key: ItemKey) {
       const id = yield* nextId;
       const reply = yield* Deferred.make<Reply>();
-      yield* Ref.update(replies, (all) => new Map(all).set(id, reply));
+      yield* register(replies, id, reply);
       yield* offer({ _tag: "Release", id, key });
-      const answer = yield* Deferred.await(reply);
+      const answer = yield* unlessStopped(
+        reply,
+        Effect.fail(InvalidItem.make({ key, message: "the playout has stopped" })),
+      ).pipe(Effect.ensuring(claim(replies, id)));
       if (answer._tag === "Refused")
         return yield* InvalidItem.make({
           key,
           message: answer.refusal._tag === "InvalidItem" ? answer.refusal.message : "not released",
         });
     }),
-    withdraw: (key: ItemKey) =>
-      edit([{ _tag: "Withdraw", key }], false).pipe(
-        Effect.flatMap(({ results }) => {
-          const [first] = results;
-          return first?._tag === "Withdrawal"
-            ? first.outcome
-            : Effect.succeed("not-found" as const);
+    withdraw: Effect.fn("Playout.withdraw")(function* (key: ItemKey) {
+      const none = Effect.succeed({ results: [] as ReadonlyArray<Playout.EditResult> });
+      const { results } = yield* edit([{ _tag: "Withdraw", key }], false).pipe(
+        // A malformed key names nothing; a stopped playout answers from the item's recorded
+        // fate. A withdrawal admits nothing, so no other refusal can come back.
+        Effect.catchTags({
+          InvalidItem: () => none,
+          PlayoutClosed: () => none,
+          KeyMismatch: Effect.die,
+          LaneBusy: Effect.die,
+          WouldMissDeadline: Effect.die,
         }),
-        Effect.orElseSucceed(() => "not-found" as const),
-      ),
+      );
+      const [first] = results;
+      if (first?._tag === "Withdrawal") return yield* first.outcome;
+      return yield* stoppedOutcome(key);
+    }),
     drain: Effect.fn("Playout.drain")(function* (drainOptions?: {
       readonly finish?: "playing" | "accepted";
     }) {
       if (yield* Deferred.isDone(failure)) return yield* PlayoutClosed.make({});
       const id = yield* nextId;
-      const drained = yield* signal(`drained:${id}`);
+      const drained = yield* Deferred.make<void>();
+      yield* register(drains, id, drained);
       yield* offer({ _tag: "Drain", id, finish: drainOptions?.finish ?? "playing" });
-      yield* Deferred.await(drained);
+      yield* unlessStopped(drained, closed).pipe(Effect.ensuring(claim(drains, id)));
     }),
     state: Effect.flatMap(Ref.get(state), (value) =>
       Effect.map(now, (at) => Policy.view(config, value, at)),

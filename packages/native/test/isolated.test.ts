@@ -627,8 +627,9 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
                 { startImmediately: true },
               );
               yield* peer.answer(yield* far.answer(id, prepared.sdp));
+              // Long enough for the stalled reader to pass its 24-frame bound.
               yield* eventually({
-                condition: () => counted.fast >= 24,
+                condition: () => counted.fast >= 72,
                 message: "no frames reached the reader",
                 timeout: "20 seconds",
               });
