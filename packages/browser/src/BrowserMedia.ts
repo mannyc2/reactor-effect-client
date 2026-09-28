@@ -35,7 +35,7 @@ export interface PlayOptions {
  */
 export const play = Effect.fnUntraced(function* (
   track: MediaStreamTrack,
-  element: HTMLMediaElement,
+  element: Pick<HTMLMediaElement, "srcObject" | "getAttribute" | "play" | "pause">,
   options: PlayOptions = {},
 ): Effect.fn.Return<void, ReactorError, Scope.Scope> {
   const timeout = yield* Effect.fromOption(

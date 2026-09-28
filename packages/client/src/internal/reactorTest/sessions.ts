@@ -12,17 +12,37 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import type { IceServersReply, Registered, SdpAnswer } from "../../Coordinator.js";
-import type { Descriptor } from "../../Coordinator.js";
-import type { SessionAuthorization } from "../../Coordinator.js";
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
 import * as Wire from "../wire.js";
 import * as Faults from "./faults.js";
-import { deployment } from "./h3.js";
+import { deployment, documented } from "./h3.js";
 import type { Link } from "./peer.js";
 import * as Playout from "./playout.js";
 import type { Sampler } from "./timing.js";
+
+const Id = Schema.String.check(Schema.isNonEmpty());
+/**
+ * A session-scoped token request, as Reactor's authentication docs state it:
+ * one `session` entry naming at least one model, optionally sessions to bind,
+ * up to 500 sessions and sessions of one second to a day.
+ */
+export const Authorization = Schema.Struct({
+  type: Schema.Literal("session"),
+  resources: Schema.Struct({
+    models: Schema.Struct({ match: Schema.NonEmptyArray(Id) }),
+    sessions: Schema.optionalKey(Schema.Struct({ bind: Schema.NonEmptyArray(Id) })),
+  }),
+  constraints: Schema.optionalKey(
+    Schema.Struct({
+      max_sessions: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 })),
+      ),
+      max_session_duration_seconds: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86_400 })),
+      ),
+    }),
+  ),
+});
 
 /** A request the simulated coordinator refuses, with the status a client sees. */
 export class Refusal extends Schema.TaggedError<Refusal>(
@@ -40,6 +60,21 @@ const refuse = (status: number, code: string, reason: string) =>
 
 /** Reactor's ceiling on a token's life: a longer one is clamped without a word. */
 const maxTokenSeconds = 21_600;
+/** Reactor caps a clip of a session's last seconds at five minutes by default. */
+const maxClipSeconds = 300;
+/** A recording's segments, each two seconds of it. */
+const segmentSeconds = 2;
+const segmentBytes = 1_024;
+/** Where a recording's segments are served: another origin, as a CDN's would be. */
+export const clips = "https://clips.reactor.test";
+
+/** A clip or recording the recorder holds. */
+interface Recording {
+  readonly sessionId: string;
+  /** Monotonic milliseconds from which its playlist is served. */
+  readonly readyAt: number;
+  readonly segments: number;
+}
 /** How long Reactor keeps a session that lost its last connection. */
 const reconnectWindowMs = 30_000;
 /** Sessions an account may create back to back before the per-minute rate applies. */
@@ -61,23 +96,42 @@ interface Grant {
   readonly bound: ReadonlySet<string>;
 }
 
+/**
+ * A registered connection slot. Several can carry one session at once; an
+ * offer on a slot binds its transport, and a later offer on the same slot,
+ * a reconnect, replaces it.
+ */
+export interface Slot {
+  /** Once offered, the answer and when it is ready. */
+  readonly answer: { readonly at: number; readonly sdp: string } | undefined;
+  /** The transport the slot's last offer named. */
+  readonly link: Link | undefined;
+  /** Its transport is connected and both its channels are open. */
+  readonly open: boolean;
+}
+
 interface State {
   readonly phase: Phase;
-  /** Connections lost with none left, so a 30 s window closes on the latest. */
+  /** Times the session lost its last open connection, so a 30 s window closes on the latest. */
   readonly drops: number;
   readonly activeAt: number | undefined;
   readonly endedAt: number | undefined;
   readonly deletes: number;
-  /** The peer the last SDP offer named, open or not. */
-  readonly bound: Link | undefined;
-  readonly connected: boolean;
-  /** Each registered connection and, once offered, when its answer is ready. */
-  readonly connections: ReadonlyMap<number, { readonly at: number; readonly sdp: string }>;
+  readonly connections: ReadonlyMap<number, Slot>;
 }
+
+const withSlot = (state: State, cid: number, slot: Slot): State => ({
+  ...state,
+  connections: new Map(state.connections).set(cid, slot),
+});
+const anyOpen = (state: State): boolean =>
+  [...state.connections.values()].some((slot) => slot.open);
 
 interface Session {
   readonly id: string;
   readonly model: string;
+  /** The SDK that created it, as it named itself. */
+  readonly client: SessionInfo["client"];
   /** The token that created it, which acts on it without a bind. */
   readonly creator: string;
   readonly maxSessionSeconds: number | undefined;
@@ -87,27 +141,26 @@ interface Session {
   readonly playout: Playout.Playout;
 }
 
-const descriptor = (id: string, phase: Phase) =>
-  ({
-    session_id: id,
-    state: phase,
-    // Whether hosted Reactor still describes an INACTIVE session's capabilities and
-    // transport is unobserved (paid run tokens 83d17eb7 saw only the state), so the
-    // most permissive reading is modelled: they stay, and a reconnect can use them.
-    ...(phase === "ACTIVE" || phase === "INACTIVE"
-      ? {
-          capabilities: {
-            protocol_version: "1.0",
-            tracks: [
-              { name: profile.tracks.video, kind: "video", direction: "recvonly" },
-              { name: profile.tracks.audio, kind: "audio", direction: "recvonly" },
-            ],
-            emission_fps: profile.fps,
-          },
-          selected_transport: { protocol: "webrtc", version: "1.0" },
-        }
-      : {}),
-  }) satisfies (typeof Descriptor)["Encoded"];
+const descriptor = (id: string, phase: Phase) => ({
+  session_id: id,
+  state: phase,
+  // Whether hosted Reactor still describes an INACTIVE session's capabilities and
+  // transport is unobserved (paid run tokens 83d17eb7 saw only the state), so the
+  // most permissive reading is modelled: they stay, and a reconnect can use them.
+  ...(phase === "ACTIVE" || phase === "INACTIVE"
+    ? {
+        capabilities: {
+          protocol_version: "1.0",
+          tracks: [
+            { name: documented.tracks.video, kind: "video", direction: "recvonly" },
+            { name: documented.tracks.audio, kind: "audio", direction: "recvonly" },
+          ],
+          emission_fps: documented.fps,
+        },
+        selected_transport: { protocol: "webrtc", version: "1.0" },
+      }
+    : {}),
+});
 
 export const make = Effect.fnUntraced(function* (options: Options, timing: Sampler) {
   const scope = yield* Effect.scope;
@@ -116,19 +169,29 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   const grants = yield* Ref.make<ReadonlyMap<string, Grant>>(new Map());
   const sessions = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
   const peers = yield* Ref.make<ReadonlyMap<string, Link>>(new Map());
-  const bindings = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
-  const counts = yield* Ref.make({ grants: 0, sessions: 0, connections: 1000, peers: 0 });
+  /** The session and slot each test peer's last offer bound it to. */
+  const bindings = yield* Ref.make<
+    ReadonlyMap<string, { readonly session: Session; readonly cid: number }>
+  >(new Map());
+  const counts = yield* Ref.make({
+    grants: 0,
+    sessions: 0,
+    connections: 1000,
+    peers: 0,
+    recordings: 0,
+  });
   /** The account's session-creation bucket: `burst` at once, refilled at the per-minute rate. */
   const bucket = yield* Ref.make({ tokens: burst, at: 0 });
   const entries = yield* Ref.make<ReadonlyArray<Entry>>([]);
   /** Upload slots handed out and not yet filled, with the session that asked for each. */
   const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
   const uploads = yield* Ref.make(0);
+  const recordings = yield* Ref.make<ReadonlyMap<string, Recording>>(new Map());
   const openapi = yield* Schema.decodeUnknownEffect(Wire.StructJson)(
     deployment(options.referenceAudio),
   ).pipe(Effect.orDie);
 
-  const count = (key: "grants" | "sessions" | "connections" | "peers") =>
+  const count = (key: "grants" | "sessions" | "connections" | "peers" | "recordings") =>
     Ref.modify(counts, (all) => [all[key] + 1, { ...all, [key]: all[key] + 1 }] as const);
   const log = (entry: Omit<Entry, "at">) =>
     Effect.flatMap(Playout.monotonic, (at) =>
@@ -136,27 +199,43 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     );
   const later = (ms: number, effect: Effect.Effect<void>) =>
     FiberSet.run(lifetimes, Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(effect)));
-  const setBinding = (peerId: string, session: Session | undefined) =>
+  const setBinding = (
+    peerId: string,
+    binding: { readonly session: Session; readonly cid: number } | undefined,
+  ) =>
     Ref.update(bindings, (all) => {
       const next = new Map(all);
-      if (session !== undefined) next.set(peerId, session);
+      if (binding !== undefined) next.set(peerId, binding);
       else next.delete(peerId);
       return next;
     });
 
-  /** A session token, or the API key, which acts on every session of the account. */
-  const authorize = (jwt: string | undefined) =>
+  /**
+   * A session token, or the API key where Reactor takes it as the bearer:
+   * reading a session and ending one. Paid run tokens 7bc779d4 read an
+   * unknown session with the key (404) and ended a live one (200); Reactor's
+   * docs name the key for `DELETE` only, so its other calls refuse it.
+   */
+  const authorize = (jwt: string | undefined, access: "token" | "key") =>
     Effect.gen(function* () {
-      if (jwt !== undefined && jwt === options.apiKey) return "key" as const;
+      if (jwt !== undefined && jwt === options.apiKey && access === "key") return "key" as const;
       const grant = jwt === undefined ? undefined : (yield* Ref.get(grants)).get(jwt);
       if (grant === undefined || grant.expiresAt * 1000 <= (yield* Clock.currentTimeMillis))
-        return yield* refuse(401, "unauthorized", "a valid bearer token is required");
+        return yield* refuse(401, "unauthorized", "a valid session token is required");
       return grant;
     });
-  /** `live` refuses a session not ACTIVE, or not ACTIVE or INACTIVE when a connection may return. */
-  const owned = (jwt: string | undefined, id: string, live?: "active" | "connectable") =>
+  /**
+   * A session the bearer may act on. `live` refuses one not ACTIVE, or not
+   * ACTIVE or INACTIVE when a connection may return; `key` admits the API key.
+   */
+  const owned = (
+    jwt: string | undefined,
+    id: string,
+    live?: "active" | "connectable",
+    access: "token" | "key" = "token",
+  ) =>
     Effect.gen(function* () {
-      const grant = yield* authorize(jwt);
+      const grant = yield* authorize(jwt, access);
       const session = (yield* Ref.get(sessions)).get(id);
       if (session === undefined) return yield* refuse(404, "not_found", "no such session");
       if (grant !== "key" && session.creator !== grant.jwt && !grant.bound.has(id))
@@ -174,41 +253,49 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       return session;
     });
   const connection = (session: Session, cid: number) =>
-    Effect.flatMap(Ref.get(session.state), (state) =>
-      state.connections.has(cid)
-        ? Effect.succeed(state.connections.get(cid))
-        : Effect.fail(refuse(404, "not_found", "no such connection")),
-    );
+    Effect.flatMap(Ref.get(session.state), (state) => {
+      const slot = state.connections.get(cid);
+      return slot === undefined
+        ? Effect.fail(refuse(404, "not_found", "no such connection"))
+        : Effect.succeed(slot);
+    });
 
-  /** The link stops carrying the session: it closes, or the session moves on. */
+  /** The slot's transport stops carrying the session: it closes, or another replaces it. */
   const unlink = (
     session: Session,
+    cid: number,
     link: Link,
     reason: "ended" | "replaced" | "disconnected",
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const previous = yield* Ref.getAndUpdate(session.state, (state) =>
-        state.bound === link ? { ...state, bound: undefined, connected: false } : state,
-      );
-      if (previous.bound !== link) return;
+      const unbound = yield* Ref.modify(session.state, (state) => {
+        const slot = state.connections.get(cid);
+        return slot?.link === link
+          ? ([true, withSlot(state, cid, { ...slot, link: undefined, open: false })] as const)
+          : ([false, state] as const);
+      });
+      if (!unbound) return;
       yield* setBinding(link.id, undefined);
-      yield* session.playout.disconnect(link);
+      yield* session.playout.disconnect(cid);
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* link.drop(reason);
       if (reason !== "disconnected") return;
       // Reactor ends a session 30 s after its last connection drops, unless one returns.
       // Meanwhile hosted Reactor reads it INACTIVE (paid run tokens 83d17eb7), still billing.
-      const { drops } = yield* Ref.updateAndGet(session.state, (state) => ({
-        ...state,
-        phase: state.phase === "ACTIVE" ? ("INACTIVE" as const) : state.phase,
-        drops: state.drops + 1,
-      }));
+      const drops = yield* Ref.modify(session.state, (state) => {
+        if (anyOpen(state)) return [undefined, state] as const;
+        const next = {
+          ...state,
+          phase: state.phase === "ACTIVE" ? ("INACTIVE" as const) : state.phase,
+          drops: state.drops + 1,
+        };
+        return [next.drops, next] as const;
+      });
+      if (drops === undefined) return;
       yield* later(
         reconnectWindowMs,
         Effect.flatMap(Ref.get(session.state), (state) =>
-          state.bound === undefined && state.drops === drops
-            ? end(session, "abandoned")
-            : Effect.void,
+          !anyOpen(state) && state.drops === drops ? end(session, "abandoned") : Effect.void,
         ),
       );
     });
@@ -219,10 +306,42 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         state.phase === "CLOSED" ? state : { ...state, phase: "CLOSED" as const, endedAt: now },
       );
       if (previous.phase === "CLOSED") return;
-      if (previous.bound !== undefined) yield* unlink(session, previous.bound, "ended");
+      for (const [cid, slot] of previous.connections)
+        if (slot.link !== undefined) yield* unlink(session, cid, slot.link, "ended");
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* Scope.close(session.scope, Exit.void);
     });
+  /**
+   * A clip of the session's last `seconds`, or a recording of all of it so
+   * far: its playlist is ready as the clip predicts, unless a fault makes it late.
+   */
+  const record = (session: Session, kind: "snap" | "recording", seconds: number) =>
+    Effect.gen(function* () {
+      const now = yield* Playout.monotonic;
+      const { activeAt } = yield* Ref.get(session.state);
+      const elapsed = activeAt === undefined ? 0 : (now - activeAt) / 1000;
+      const start = kind === "snap" ? Math.max(0, elapsed - Math.min(seconds, maxClipSeconds)) : 0;
+      const late = yield* faults.trip((fault) => fault._tag === "LateRecording");
+      const id = `rec_reactor_test_${yield* count("recordings")}`;
+      yield* Ref.update(recordings, (all) =>
+        new Map(all).set(id, {
+          sessionId: session.id,
+          readyAt: now + (late?._tag === "LateRecording" ? Duration.toMillis(late.by) : 0),
+          segments: Math.max(1, Math.ceil((elapsed - start) / segmentSeconds)),
+        }),
+      );
+      yield* log({ sessionId: session.id, kind: "session", name: `${kind} ${id}` });
+      return {
+        sessionId: session.id,
+        kind,
+        startMarker: start,
+        endMarker: elapsed,
+        nowMarker: elapsed,
+        predictedReadyAtMs: BigInt(yield* Clock.currentTimeMillis),
+        playlistUrl: `/clips/${id}.m3u8`,
+      };
+    });
+
   const activate = (session: Session) =>
     Effect.gen(function* () {
       const now = yield* Playout.monotonic;
@@ -238,18 +357,21 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       const lifetime = Math.min(cap, early);
       if (Number.isFinite(lifetime)) yield* later(lifetime, end(session, "expired"));
     });
-  /** Connectivity succeeded for the peer the session is bound to. */
-  const open = (session: Session, link: Link) =>
+  /** Connectivity succeeded for the transport a slot is bound to. */
+  const open = (session: Session, cid: number, link: Link) =>
     Effect.gen(function* () {
       const state = yield* Ref.get(session.state);
-      if (state.phase !== "ACTIVE" || state.bound !== link) return;
+      const slot = state.connections.get(cid);
+      if (state.phase !== "ACTIVE" || slot?.link !== link) return;
       yield* link.open;
-      yield* Ref.update(session.state, (current) => ({ ...current, connected: true }));
+      yield* Ref.update(session.state, (current) =>
+        withSlot(current, cid, { ...slot, open: true }),
+      );
       yield* log({ sessionId: session.id, kind: "session", name: "connected" });
-      yield* session.playout.connect(link);
+      yield* session.playout.connect(cid, link);
       const fault = yield* faults.trip((candidate) => candidate._tag === "Disconnect");
       if (fault?._tag === "Disconnect")
-        yield* later(Duration.toMillis(fault.after), unlink(session, link, "disconnected"));
+        yield* later(Duration.toMillis(fault.after), unlink(session, cid, link, "disconnected"));
     });
 
   return {
@@ -261,24 +383,24 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     detach: (peerId: string) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
+        const bound = (yield* Ref.get(bindings)).get(peerId);
         yield* Ref.update(peers, (all) => new Map([...all].filter(([key]) => key !== peerId)));
-        if (link !== undefined && session !== undefined)
-          yield* unlink(session, link, "disconnected");
+        if (link !== undefined && bound !== undefined)
+          yield* unlink(bound.session, bound.cid, link, "disconnected");
       }),
     answered: (peerId: string) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
-        if (link !== undefined && session !== undefined)
-          yield* later(yield* timing.delay("connect"), open(session, link));
+        const bound = (yield* Ref.get(bindings)).get(peerId);
+        if (link !== undefined && bound !== undefined)
+          yield* later(yield* timing.delay("connect"), open(bound.session, bound.cid, link));
       }),
     receive: (peerId: string, channel: "control" | "data", bytes: Uint8Array) =>
       Effect.gen(function* () {
         const link = (yield* Ref.get(peers)).get(peerId);
-        const session = (yield* Ref.get(bindings)).get(peerId);
-        if (link !== undefined && session !== undefined)
-          yield* session.playout.receive(link, channel, bytes);
+        const bound = (yield* Ref.get(bindings)).get(peerId);
+        if (link !== undefined && bound !== undefined)
+          yield* bound.session.playout.receive(bound.cid, link, channel, bytes);
       }),
 
     // Coordinator
@@ -286,18 +408,18 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       settings: { currency_code: "USD", credits_per_dollar: options.creditsPerDollar },
       models: [
         {
-          name: profile.modelName.slice(profile.modelName.lastIndexOf("/") + 1),
+          name: documented.modelName.slice(documented.modelName.lastIndexOf("/") + 1),
           rate: {
-            amount_per_min: options.creditsPerMinute,
+            amount_per_sec: options.creditsPerSecond,
             unit: "credits",
-            denomination: "minute",
+            denomination: "second",
           },
         },
       ],
     },
     mint: (
       key: string | undefined,
-      authorization: (typeof SessionAuthorization)["Type"],
+      authorization: (typeof Authorization)["Type"],
       expiresAfter: number | undefined,
     ) =>
       Effect.gen(function* () {
@@ -316,28 +438,42 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const n = yield* count("grants");
         const issuedAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         const asked = authorization.constraints?.max_session_duration_seconds;
-        // An over-granting token lets its sessions run twice as long as was asked.
-        const overGrant = (yield* faults.trip((fault) => fault._tag === "OverGrant")) !== undefined;
-        const cap = asked !== undefined && overGrant ? asked * 2 : asked;
+        const misgrant = yield* faults.trip((fault) => fault._tag === "OverGrant");
+        const how = misgrant?._tag === "OverGrant" ? (misgrant.grant ?? "longer") : undefined;
+        // An over-granting token lets its sessions run twice as long as was asked, or uncapped.
+        const cap =
+          asked === undefined || how === "uncapped"
+            ? undefined
+            : how === "longer"
+              ? asked * 2
+              : asked;
+        const granted = how === "bound" ? [...bind, `sess_reactor_test_unasked_${n}`] : bind;
         const grant: Grant = {
           jwt: "",
           models,
           maxSessions:
             authorization.constraints?.max_sessions ?? (bind.length > 0 ? bind.length : 5),
           maxSessionSeconds: cap,
-          expiresAt: issuedAt + Math.min(expiresAfter ?? 3_600, maxTokenSeconds),
+          expiresAt:
+            how === "expired"
+              ? issuedAt - 1
+              : issuedAt + Math.min(expiresAfter ?? 3_600, maxTokenSeconds),
           created: 0,
-          bound: new Set(bind),
+          bound: new Set(granted),
         };
         const echo = {
           type: "session" as const,
           resources: {
             models: { match: models },
-            ...(bind.length > 0 ? { sessions: { bind } } : {}),
+            ...(granted.length > 0 ? { sessions: { bind: granted } } : {}),
           },
           constraints: {
             max_sessions: grant.maxSessions,
-            ...(cap === undefined ? {} : { max_session_duration_seconds: cap }),
+            ...(cap === undefined
+              ? how === "uncapped"
+                ? { max_session_duration_seconds: null }
+                : {}
+              : { max_session_duration_seconds: cap }),
           },
         };
         // Bound sessions live on the server, not in the token's claims.
@@ -352,14 +488,23 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           .map((part) => Encoding.encodeBase64Url(JSON.stringify(part)))
           .join(".");
         yield* Ref.update(grants, (current) => new Map(current).set(jwt, { ...grant, jwt }));
-        return { jwt, expires_at: grant.expiresAt, authorization_details: [echo] };
+        return {
+          jwt,
+          expires_at: grant.expiresAt,
+          ...(how === "silent" ? {} : { authorization_details: [echo] }),
+        };
       }),
-    create: (jwt: string | undefined, model: string, webrtc: boolean) =>
+    create: (
+      jwt: string | undefined,
+      model: string,
+      webrtc: boolean,
+      client: SessionInfo["client"],
+    ) =>
       Effect.gen(function* () {
-        const grant = yield* authorize(jwt);
+        const grant = yield* authorize(jwt, "token");
         if (grant === "key")
-          return yield* refuse(403, "forbidden", "sessions are created with a session token");
-        if (model !== profile.modelName)
+          return yield* refuse(401, "unauthorized", "a session token is required");
+        if (model !== documented.modelName)
           return yield* refuse(404, "unknown_model", "ReactorTest serves H3 only");
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
@@ -400,6 +545,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const session: Session = {
           id,
           model,
+          client,
           creator: grant.jwt,
           maxSessionSeconds: grant.maxSessionSeconds,
           expiresAt: grant.expiresAt,
@@ -410,8 +556,6 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             activeAt: undefined,
             endedAt: undefined,
             deletes: 0,
-            bound: undefined,
-            connected: false,
             connections: new Map(),
           }),
           playout: yield* Playout.make(id, {
@@ -420,9 +564,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             timing,
             openapi,
             log,
-            // The session a moderation verdict ends is this one, built just below.
-            terminate: (afterMs) =>
-              Effect.suspend(() => Effect.asVoid(later(afterMs, end(session, "moderated")))),
+            // The session a moderation verdict ends is this one, built just below. It ends
+            // outside its own scope, which the ending closes.
+            terminate: Effect.suspend(() => Effect.asVoid(later(0, end(session, "moderated")))),
+            record: (kind, seconds) => record(session, kind, seconds),
           }).pipe(Scope.provide(sessionScope)),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
@@ -431,7 +576,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return descriptor(id, "PENDING");
       }),
     read: (jwt: string | undefined, id: string) =>
-      Effect.flatMap(owned(jwt, id), (session) =>
+      Effect.flatMap(owned(jwt, id, undefined, "key"), (session) =>
         Effect.map(Ref.get(session.state), (state) => descriptor(id, state.phase)),
       ),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
@@ -451,7 +596,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       }),
     remove: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
-        const session = yield* owned(jwt, id);
+        const session = yield* owned(jwt, id, undefined, "key");
         const state = yield* Ref.updateAndGet(session.state, (current) => ({
           ...current,
           deletes: current.deletes + 1,
@@ -468,55 +613,93 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     iceServers: (jwt: string | undefined, id: string) =>
       Effect.as(owned(jwt, id), {
         ice_servers: [{ uris: ["stun:stun.reactor.test:3478"], credentials: null }],
-      } satisfies (typeof IceServersReply)["Encoded"]),
+      }),
     register: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
         if ((yield* faults.trip((fault) => fault._tag === "RefuseConnect")) !== undefined)
           return yield* refuse(403, "connect_refused", "connection refused");
         const cid = yield* count("connections");
-        yield* Ref.update(session.state, (state) => ({
-          ...state,
-          connections: new Map(state.connections).set(cid, { at: Infinity, sdp: "" }),
-        }));
-        return { connection_id: cid } satisfies (typeof Registered)["Encoded"];
+        yield* Ref.update(session.state, (state) =>
+          withSlot(state, cid, { answer: undefined, link: undefined, open: false }),
+        );
+        return { connection_id: cid };
       }),
     offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
-        yield* connection(session, cid);
+        const previous = (yield* connection(session, cid)).link;
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);
         if (link === undefined)
           return yield* refuse(400, "invalid_offer", "the offer names no peer");
-        const previous = (yield* Ref.get(session.state)).bound;
         if (previous !== undefined && previous !== link)
-          yield* unlink(session, previous, "replaced");
-        yield* setBinding(peerId, session);
+          yield* unlink(session, cid, previous, "replaced");
+        yield* setBinding(peerId, { session, cid });
         const at = (yield* Playout.monotonic) + (yield* timing.delay("negotiation"));
         const answer = `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=reactor-test\r\na=ice-ufrag:${peerId}\r\n`;
         // A connection returning to an INACTIVE session makes it ACTIVE again.
-        yield* Ref.update(session.state, (state) => ({
-          ...state,
-          phase: state.phase === "INACTIVE" ? ("ACTIVE" as const) : state.phase,
-          bound: link,
-          connected: false,
-          connections: new Map(state.connections).set(cid, { at, sdp: answer }),
-        }));
+        yield* Ref.update(session.state, (state) =>
+          withSlot(
+            {
+              ...state,
+              phase: state.phase === "INACTIVE" ? ("ACTIVE" as const) : state.phase,
+            },
+            cid,
+            { answer: { at, sdp: answer }, link, open: false },
+          ),
+        );
       }),
     answer: (jwt: string | undefined, id: string, cid: number) =>
       Effect.gen(function* () {
-        const negotiation = yield* connection(yield* owned(jwt, id), cid);
+        const { answer } = yield* connection(yield* owned(jwt, id), cid);
         const now = yield* Playout.monotonic;
-        return negotiation !== undefined && negotiation.at <= now
-          ? Option.some({
-              sdp_answer: negotiation.sdp,
-              connection_id: cid,
-            } satisfies (typeof SdpAnswer)["Encoded"])
+        return answer !== undefined && answer.at <= now
+          ? Option.some({ sdp_answer: answer.sdp, connection_id: cid })
           : Option.none();
       }),
     candidates: (jwt: string | undefined, id: string, cid: number) =>
       Effect.flatMap(owned(jwt, id), (session) => connection(session, cid)),
+
+    /** A recording's HLS playlist for a bearer that acts on its session; none until it is ready. */
+    playlist: (jwt: string | undefined, id: string) =>
+      Effect.gen(function* () {
+        const recording = (yield* Ref.get(recordings)).get(id);
+        if (recording === undefined) return yield* refuse(404, "not_found", "no such clip");
+        yield* owned(jwt, recording.sessionId);
+        if ((yield* Playout.monotonic) < recording.readyAt) return Option.none();
+        const media = Array.from(
+          { length: recording.segments },
+          (_, index) => `#EXTINF:${segmentSeconds.toFixed(3)},\n${clips}/${id}/${index}.m4s`,
+        );
+        return Option.some(
+          [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            `#EXT-X-TARGETDURATION:${segmentSeconds}`,
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            `#EXT-X-MAP:URI="${clips}/${id}/init.mp4"`,
+            ...media,
+            "#EXT-X-ENDLIST",
+            "",
+          ].join("\n"),
+        );
+      }),
+    /** A recording's segment, served to whoever holds its URL, as a CDN would. */
+    segment: (id: string, file: string) =>
+      Effect.gen(function* () {
+        const recording = (yield* Ref.get(recordings)).get(id);
+        const index = file === "init.mp4" ? -1 : Number.parseInt(file, 10);
+        if (
+          recording === undefined ||
+          (yield* Playout.monotonic) < recording.readyAt ||
+          !(file === "init.mp4" || (file === `${index}.m4s` && index < recording.segments))
+        )
+          return yield* refuse(404, "not_found", "no such segment");
+        // Each segment's bytes name it, so a joined download shows its order.
+        const bytes = new Uint8Array(index < 0 ? 8 : segmentBytes).fill(index < 0 ? 255 : index);
+        return bytes;
+      }),
 
     // Control
     info: Effect.flatMap(Ref.get(sessions), (all) =>
@@ -524,12 +707,13 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         Effect.map(Ref.get(session.state), (state): SessionInfo => ({
           id: session.id,
           state: state.phase,
-          connected: state.connected,
+          connected: anyOpen(state),
           deletes: state.deletes,
           grant: {
             maxSessionSeconds: session.maxSessionSeconds,
             expiresAt: session.expiresAt,
           },
+          client: session.client,
         })),
       ),
     ),
@@ -540,14 +724,15 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           state.activeAt === undefined ? 0 : ((state.endedAt ?? now) - state.activeAt) / 1000,
         ),
       );
-      const minutes = billed.reduce((sum, seconds) => sum + Math.ceil(seconds / 60), 0);
+      const seconds = billed.reduce((sum, each) => sum + each, 0);
       return {
-        seconds: billed.reduce((sum, seconds) => sum + seconds, 0),
-        minutes,
-        usd: (minutes * options.creditsPerMinute) / options.creditsPerDollar,
+        seconds,
+        usd: (seconds * options.creditsPerSecond) / options.creditsPerDollar,
       } satisfies Billing;
     }),
     log: Ref.get(entries),
+    /** Adds to the log, as the coordinator does for each request it serves. */
+    note: log,
     inject: faults.arm,
   };
 });

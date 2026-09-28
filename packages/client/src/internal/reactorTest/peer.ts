@@ -8,10 +8,10 @@ import * as Stream from "effect/Stream";
 import { take } from "../queue.js";
 import type { Mapping } from "../../Coordinator.js";
 import { ReactorError } from "../../ReactorError.js";
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import { trackFeed } from "../../Peer.js";
 import type { Channel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
+import { documented } from "./h3.js";
 import { monotonic, until } from "./playout.js";
 import type { Sessions } from "./sessions.js";
 
@@ -26,7 +26,11 @@ export interface Link {
   readonly id: string;
   /** Connectivity succeeded: the peer is connected and both channels are open. */
   readonly open: Effect.Effect<void>;
-  /** The remote ended the connection. */
+  /**
+   * The remote ended the connection. An ended or replaced one closes after
+   * what was already sent to it, as the platform tells clients why a session
+   * ended before their connection closes; a lost one drops at once.
+   */
   readonly drop: (reason: "ended" | "replaced" | "disconnected") => Effect.Effect<void>;
   /** A channel message, delivered after the channel latency. */
   readonly deliver: (channel: Channel, bytes: Uint8Array<ArrayBuffer>) => Effect.Effect<void>;
@@ -39,6 +43,11 @@ interface Delivery {
   readonly bytes: Uint8Array<ArrayBuffer>;
   readonly due: number;
 }
+
+/** What reaches the peer in order: a channel message, or its channels closing. */
+type Inbound =
+  | (Delivery & { readonly _tag: "Message" })
+  | { readonly _tag: "End"; readonly due: 0 };
 
 const offer = (peerId: string, mapping: ReadonlyArray<Mapping>): string =>
   [
@@ -65,7 +74,7 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
   let emit: ((event: PeerEvent) => void) | undefined;
   let id: string | undefined;
   let mapping: ReadonlyArray<Mapping> = [];
-  let inbound: Queue.Queue<Delivery> | undefined;
+  let inbound: Queue.Queue<Inbound> | undefined;
   let outbound: Queue.Queue<Delivery> | undefined;
   let opened = false;
   let closed = false;
@@ -114,6 +123,11 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     opened = false;
     return Effect.andThen(video.end, audio.end);
   });
+  /** An ended session closes both channels, as when SCTP ends. */
+  const ended = Effect.sync(() => {
+    for (const channel of ["control", "data"] as const)
+      signal({ type: "channel", channel, open: false });
+  }).pipe(Effect.andThen(close));
   const link = (peerId: string): Link => ({
     id: peerId,
     open: Effect.sync(() => {
@@ -126,22 +140,26 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
           signal({ type: "track", name: track.name, mid: track.mid });
     }),
     drop: (reason) =>
-      Effect.sync(() => {
-        if (reason === "disconnected") signal({ type: "state", state: "disconnected" });
-        // An ended session closes both channels, as when SCTP ends.
-        else
-          for (const channel of ["control", "data"] as const)
-            signal({ type: "channel", channel, open: false });
-      }).pipe(Effect.andThen(close)),
+      Effect.suspend(() => {
+        if (reason === "disconnected")
+          return Effect.sync(() => signal({ type: "state", state: "disconnected" })).pipe(
+            Effect.andThen(close),
+          );
+        return inbound === undefined
+          ? ended
+          : Effect.asVoid(Queue.offer(inbound, { _tag: "End", due: 0 }));
+      }),
     deliver: (channel, bytes) =>
       Effect.gen(function* () {
         const due = (yield* monotonic) + (yield* sessions.timing.delay("channel"));
-        return inbound === undefined ? false : yield* Queue.offer(inbound, { channel, bytes, due });
+        return inbound === undefined
+          ? false
+          : yield* Queue.offer(inbound, { _tag: "Message", channel, bytes, due });
       }),
     video: (frame) =>
       publish({
         _tag: "VideoFrame",
-        track: receiving("video")?.name ?? profile.tracks.video,
+        track: receiving("video")?.name ?? documented.tracks.video,
         width: sessions.options.width,
         height: sessions.options.height,
         frameId: frame.frameId,
@@ -154,17 +172,17 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     audio: (samples) =>
       publish({
         _tag: "AudioFrame",
-        track: receiving("audio")?.name ?? profile.tracks.audio,
-        sampleRate: profile.audio.sampleRate,
-        channels: profile.audio.channels,
+        track: receiving("audio")?.name ?? documented.tracks.audio,
+        sampleRate: documented.soundtrack.sampleRate,
+        channels: documented.soundtrack.channels,
         sequence: delivered.audio,
         samples,
       }),
   });
   /** Deliver each queued message in order, once its latency has passed. */
-  const drain = (
-    queue: Queue.Queue<Delivery>,
-    deliver: (delivery: Delivery) => Effect.Effect<void>,
+  const drain = <A extends { readonly due: number }>(
+    queue: Queue.Queue<A>,
+    deliver: (delivery: A) => Effect.Effect<void>,
   ) =>
     take(queue).pipe(
       Effect.flatMap((delivery) => until(delivery.due).pipe(Effect.andThen(deliver(delivery)))),
@@ -200,11 +218,15 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
         id = peerId;
         emit = onEvent;
         mapping = tracks.map((track, index) => ({ ...track, mid: String(index) }));
-        inbound = yield* Queue.unbounded<Delivery>();
+        inbound = yield* Queue.unbounded<Inbound>();
         outbound = yield* Queue.unbounded<Delivery>();
         yield* Effect.acquireRelease(sessions.attach(link(peerId)), () => sessions.detach(peerId));
-        yield* drain(inbound, ({ channel, bytes }) =>
-          Effect.sync(() => signal({ type: "message", channel, bytes })),
+        yield* drain(inbound, (delivery) =>
+          delivery._tag === "End"
+            ? ended
+            : Effect.sync(() =>
+                signal({ type: "message", channel: delivery.channel, bytes: delivery.bytes }),
+              ),
         );
         yield* drain(outbound, ({ channel, bytes }) => sessions.receive(peerId, channel, bytes));
         signal({

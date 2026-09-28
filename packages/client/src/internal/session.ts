@@ -416,20 +416,11 @@ export const make = Effect.fnUntraced(function* (input: {
       }
     });
 
+  /** A task of `c`'s whose failure fails `c`; a defect is a bug and stays one. */
   const background = (c: Connection, body: Effect.Effect<void, ReactorError>) =>
     body.pipe(
       Effect.raceFirst(Deferred.await(c.failed)),
-      Effect.catchCause((cause) =>
-        fail(
-          c,
-          failureOf(cause, () =>
-            ReactorError.fromCode("Protocol", "session task failed", {
-              detail: cause,
-              generation: c.generation,
-            }),
-          ),
-        ),
-      ),
+      Effect.catch((error) => fail(c, error)),
       Effect.forkIn(c.scope),
       Effect.asVoid,
     );
@@ -447,8 +438,8 @@ export const make = Effect.fnUntraced(function* (input: {
   const remoteError = (value: { readonly code: string; readonly message: string }) =>
     Remote.make({
       _tag: "Remote",
-      message: `remote command error ${value.code}`,
-      remoteCode: value.code,
+      message: "remote command error",
+      remoteCode: Redacted.make(value.code),
       body: Redacted.make(value.message),
     });
 
