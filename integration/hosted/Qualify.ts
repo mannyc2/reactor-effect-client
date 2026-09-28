@@ -5,7 +5,6 @@
  * failure is a failed run, never a refusal, and the session is still closed.
  */
 import { createRequire } from "node:module";
-import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -18,7 +17,6 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/H3";
-import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import { checks } from "./Checks.js";
 import type { Evidence } from "./Evidence.js";
 import { format, judged } from "./Evidence.js";
@@ -27,18 +25,6 @@ import * as Run from "./Run.js";
 import type { Authorization } from "./Spend.js";
 import { admit, admitRelay, Refused } from "./Spend.js";
 import { Target } from "./Target.js";
-
-/** A failure as the evidence states it: the library's own message, never provider text. */
-export const describe = (cause: Cause.Cause<unknown>): string => {
-  if (Cause.hasInterruptsOnly(cause)) return "the run was interrupted";
-  const error = Cause.squash(cause);
-  if (Schema.is(Refused)(error)) return error.message;
-  if (Cause.isTimeoutError(error)) return "a step ran past its deadline";
-  if (isReactorFailure(error))
-    return `${error.reason._tag}: ${error.message}${error.context.outcome === undefined ? "" : ` (outcome ${error.context.outcome})`}`;
-  if (Schema.is(Ledger.SaveFailed)(error)) return error.message;
-  return `unexpected: ${String(error).slice(0, 300)}`;
-};
 
 const Manifest = Schema.fromJsonString(
   Schema.Struct({ name: Schema.String, version: Schema.String }),
@@ -212,7 +198,7 @@ export const execute = (input: {
       const finishedAt = DateTime.formatIso(yield* DateTime.now);
       const evidence = judged({
         evidence: { ...(yield* run.evidence), finishedAt },
-        failure: Exit.isFailure(exit) ? describe(exit.cause) : undefined,
+        failure: Exit.isFailure(exit) ? Run.describe(exit.cause) : undefined,
       });
       yield* run.update(() => evidence);
       yield* run.flush.pipe(

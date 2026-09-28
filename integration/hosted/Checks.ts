@@ -2227,6 +2227,7 @@ const pieces = {
   readFresh,
   readInto,
   recordPlayout,
+  round,
   sampleStats,
   seamMs,
   sessionEventText,

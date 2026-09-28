@@ -1,7 +1,10 @@
 /**
  * The adoption check's paid owner runs under Node from this harness's
  * TypeScript sources. Only a paid run spawns it, and a rehearsal runs its owner
- * in process, so nothing else would notice a module Node cannot load.
+ * in process, so nothing else would notice a module Node cannot load. It stops
+ * at the help: past that the owner builds the isolated native peer, which needs
+ * the staged addon the portable gate does not have. `preflight` goes that far,
+ * for free, on the machine that pays.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";

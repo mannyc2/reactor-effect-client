@@ -5,17 +5,19 @@
  * save and writes only the last: its clock runs ahead while real I/O waits,
  * so a write mid-check would move the simulated session's time.
  */
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import type { Evidence, Outcome, Span } from "./Evidence.js";
-import type { SaveFailed } from "./Ledger.js";
-import { writer } from "./Ledger.js";
+import { SaveFailed, writer } from "./Ledger.js";
+import { Refused } from "./Spend.js";
 
 export class Run extends Context.Service<
   Run,
@@ -136,3 +138,15 @@ export const recorded = <A, E, R>(command: Effect.Effect<A, E, R>): Effect.Effec
       yield* run.update((evidence) => ({ ...evidence, outcomes: [...evidence.outcomes, outcome] }));
     }),
   );
+
+/** A failure as the evidence states it: the library's own message, never provider text. */
+export const describe = (cause: Cause.Cause<unknown>): string => {
+  if (Cause.hasInterruptsOnly(cause)) return "the run was interrupted";
+  const error = Cause.squash(cause);
+  if (Schema.is(Refused)(error)) return error.message;
+  if (Cause.isTimeoutError(error)) return "a step ran past its deadline";
+  if (isReactorFailure(error))
+    return `${error.reason._tag}: ${error.message}${error.context.outcome === undefined ? "" : ` (outcome ${error.context.outcome})`}`;
+  if (Schema.is(SaveFailed)(error)) return error.message;
+  return `unexpected: ${String(error).slice(0, 300)}`;
+};

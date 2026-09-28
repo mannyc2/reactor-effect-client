@@ -206,6 +206,22 @@ rehearse("adoption records a refused clip and still ends the session it resumed"
   },
 });
 
+// The owner allocates and then cannot connect, so it never streams: the session it allocated
+// must still be known, and ended with the key, rather than left to run to its cap.
+rehearse("adoption ends the session of an owner that fails before it streams", {
+  check: "adoption",
+  faults: [{ _tag: "RefuseConnect" }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.strictEqual(evidence.sessions.length, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed, evidence.reasons.join("; "));
+    assert.isTrue(
+      evidence.criteria.find((criterion) => criterion.name === "confirmed termination")?.passed,
+      evidence.reasons.join("; "),
+    );
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

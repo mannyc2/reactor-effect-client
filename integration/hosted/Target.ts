@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -32,7 +33,7 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
-import { sessionSeconds } from "./Spend.js";
+import { Refused, sessionSeconds } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
 
@@ -41,10 +42,15 @@ export const Streaming = Schema.Struct({
   allocation: H3Source.Allocation,
   playing: Schema.String,
   queued: Schema.String,
-  /** The owner's runtime and native peer, when it reports them. */
-  host: Schema.optionalKey(Schema.String),
 });
 export type Streaming = typeof Streaming.Type;
+
+/** What the owner process reports once it can run, before it reads its grant: its runtime and native peer. */
+const Started = Schema.Struct({ started: Schema.String });
+/** What the owner process reports as soon as it allocates, before it connects. */
+const Allocated = Schema.Struct({ allocated: H3Source.Allocation });
+/** A line of the owner process's output that its parent reads; any other line is ignored. */
+const OwnerLine = Schema.fromJsonString(Schema.Union([Started, Allocated, Streaming]));
 
 /** The grant the owner runs under, handed to it without the API key. */
 const OwnerGrant = Schema.Struct({
@@ -60,8 +66,26 @@ export class OwnerFailed extends Schema.TaggedError<OwnerFailed>(
 )("OwnerFailed", { message: Schema.String }) {}
 
 export interface Owner extends Streaming {
+  /** Where the owner ran, as it reported it: its runtime and native peer. */
+  readonly host: string | undefined;
   /** Ends the owner as a crash does: nothing it holds is closed or terminated. */
   readonly kill: Effect.Effect<void>;
+}
+
+export interface OwnerOptions {
+  /**
+   * A paid owner runs under Node (`node` on the PATH, 22.18 or newer) with each
+   * connection's native peer in a child process of its own; a rehearsal's
+   * owner runs in this process on ReactorTest's peers either way.
+   */
+  readonly isolated?: boolean;
+  /** How long the clip queued behind the 15 s one asks for: 5 s unless given. */
+  readonly queuedSeconds?: number;
+  /**
+   * Runs as soon as the owner allocates, before it connects, so a session
+   * whose owner fails before streaming is still known and can be ended.
+   */
+  readonly onAllocated?: (allocation: H3Source.Allocation) => Effect.Effect<void>;
 }
 
 export class Target extends Context.Service<
@@ -84,17 +108,11 @@ export class Target extends Context.Service<
      * the creating token expired.
      */
     readonly adoptAfterMs: number | undefined;
-    /**
-     * Starts the takeover's owner on the grant; it returns once the owner
-     * streams. With `isolated`, a paid owner runs under Node (`node` on the
-     * PATH, 22.18 or newer) with each connection's native peer in a child
-     * process of its own; a rehearsal's owner runs in this process on
-     * ReactorTest's peers either way.
-     */
+    /** Starts the takeover's owner on the grant; it returns once the owner streams. */
     readonly owner: (
       grant: Coordinator.TokenGrant,
       marker: string,
-      options?: { readonly isolated?: boolean },
+      options?: OwnerOptions,
     ) => Effect.Effect<Owner, OwnerFailed, Scope.Scope | Crypto.Crypto>;
     /**
      * Drops every live connection at once, as a network fault would: each
@@ -166,14 +184,73 @@ export const nodeOwnerArgs = (script: string): ReadonlyArray<string> => [
   "--isolated",
 ];
 
+/** How long a killed owner may take to exit before the check stops waiting for it. */
+const ownerExitWait = Duration.seconds(5);
+
+/** The oldest Node that runs this harness from its TypeScript sources. */
+const nodeMinimum = { major: 22, minor: 18 };
+
+/**
+ * What a paid `adoption` needs of this machine, checked for free: Node 22.18
+ * or newer, and the isolated owner command, which given no grant must report
+ * that it runs (its native peer's probe child forked and opened a peer) and
+ * then exit on the missing grant. Its error output is never read.
+ */
+export const probeOwner = Effect.fnUntraced(function* (script: string) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const refuse = (message: string) => Refused.make({ message });
+  const node = (yield* spawner
+    .string(ChildProcess.make("node", ["--version"]))
+    .pipe(Effect.mapError(() => refuse("adoption's owner needs node on the PATH")))).trim();
+  const [, major = 0, minor = 0] = /^v(\d+)\.(\d+)\./.exec(node)?.map(Number) ?? [];
+  if (major < nodeMinimum.major || (major === nodeMinimum.major && minor < nodeMinimum.minor))
+    return yield* refuse(
+      `adoption's owner needs node ${nodeMinimum.major}.${nodeMinimum.minor} or newer; the PATH has ${node}`,
+    );
+  const { lines, exitCode } = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(
+        ChildProcess.make("node", nodeOwnerArgs(script), {
+          env: { REACTOR_API_KEY: undefined },
+          extendEnv: true,
+          stdin: "ignore",
+          stderr: "ignore",
+          killSignal: "SIGKILL",
+        }),
+      );
+      return yield* Effect.all(
+        {
+          lines: handle.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runCollect),
+          exitCode: handle.exitCode,
+        },
+        { concurrency: "unbounded" },
+      );
+    }),
+  ).pipe(
+    Effect.timeout(Duration.seconds(30)),
+    Effect.mapError((error) => refuse(`the isolated owner did not exit: ${error.message}`)),
+  );
+  const started = lines
+    .map((line) => Option.getOrUndefined(Schema.decodeOption(Schema.fromJsonString(Started))(line)))
+    .find(Predicate.isNotUndefined);
+  if (started === undefined)
+    return yield* refuse(
+      `the isolated owner exited ${exitCode} before it could run: its modules or its native peer failed under ${node}`,
+    );
+  if (exitCode === 0) return yield* refuse("the isolated owner exited 0 without a grant");
+  return { node, host: started.started, exitCode };
+});
+
 /**
  * The owner's whole life: open an H3 source, play a 15 s clip with a 5 s one
- * queued behind it, stream, report, and wait to be killed. It holds the grant,
- * never the API key.
+ * (or `queuedSeconds`) queued behind it, stream, report, and wait to be
+ * killed. It holds the grant, never the API key.
  */
 export const own = (input: {
   readonly grant: Coordinator.TokenGrant;
   readonly marker: string;
+  readonly queuedSeconds?: number | undefined;
+  readonly allocated?: ((allocation: H3Source.Allocation) => Effect.Effect<void>) | undefined;
   readonly announce: (streaming: Streaming) => Effect.Effect<void>;
 }) =>
   Effect.scoped(
@@ -182,7 +259,10 @@ export const own = (input: {
       const recorded = yield* Deferred.make<H3Source.Allocation>();
       const source = yield* H3Source.open({
         tokens: Coordinator.fixedTokens(grant),
-        onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+        onAllocated: ({ allocation }) =>
+          Deferred.succeed(recorded, allocation).pipe(
+            Effect.andThen(input.allocated?.(allocation) ?? Effect.void),
+          ),
       });
       const allocation = yield* Deferred.await(recorded);
       yield* source.setAutoplay(true);
@@ -193,7 +273,7 @@ export const own = (input: {
         { _tag: "Item", key: ItemKey.make("playing") },
       );
       const queued = yield* source.enqueue(
-        { prompt, seconds: 5, metadata: `${marker}:queued` },
+        { prompt, seconds: input.queuedSeconds ?? 5, metadata: `${marker}:queued` },
         { _tag: "Item", key: ItemKey.make("queued") },
       );
       yield* source.events.pipe(
@@ -234,10 +314,22 @@ export const paid = (input: {
         owner: (grant, marker, options) =>
           Effect.gen(function* () {
             const environment = { env: { REACTOR_API_KEY: undefined }, extendEnv: true };
+            const queued =
+              options?.queuedSeconds === undefined
+                ? []
+                : ["--queued-seconds", String(options.queuedSeconds)];
             const handle = yield* spawner.spawn(
               options?.isolated === true
-                ? ChildProcess.make("node", nodeOwnerArgs(input.script), environment)
-                : ChildProcess.make(process.execPath, [input.script, "owner"], environment),
+                ? // A signal it could handle would let it close what it holds, as a crash does not.
+                  ChildProcess.make("node", [...nodeOwnerArgs(input.script), ...queued], {
+                    ...environment,
+                    killSignal: "SIGKILL",
+                  })
+                : ChildProcess.make(
+                    process.execPath,
+                    [input.script, "owner", ...queued],
+                    environment,
+                  ),
             );
             const text = yield* Schema.encodeEffect(Schema.fromJsonString(OwnerGrant))({
               jwt: Redacted.value(grant.jwt),
@@ -248,14 +340,20 @@ export const paid = (input: {
             yield* Stream.make(new TextEncoder().encode(`${text}\n`)).pipe(
               Stream.run(handle.stdin),
             );
+            const host = yield* Ref.make<string | undefined>(undefined);
             const streaming = yield* handle.stdout.pipe(
               Stream.decodeText(),
               Stream.splitLines,
-              Stream.mapEffect((line) =>
-                Effect.option(Schema.decodeEffect(Schema.fromJsonString(Streaming))(line)),
-              ),
+              Stream.mapEffect((line) => Effect.option(Schema.decodeEffect(OwnerLine)(line))),
               Stream.filter(Option.isSome),
               Stream.map((line) => line.value),
+              Stream.tap((line) => {
+                if ("started" in line) return Ref.set(host, line.started);
+                if ("allocated" in line)
+                  return options?.onAllocated?.(line.allocated) ?? Effect.void;
+                return Effect.void;
+              }),
+              Stream.filter(Schema.is(Streaming)),
               Stream.runHead,
               Effect.timeout(Duration.seconds((grant.maxSessionSeconds ?? sessionSeconds) + 5)),
             );
@@ -263,7 +361,10 @@ export const paid = (input: {
               return yield* OwnerFailed.make({ message: "the owner exited before streaming" });
             return {
               ...streaming.value,
-              kill: Effect.ignore(handle.kill({ killSignal: "SIGKILL" })),
+              host: yield* Ref.get(host),
+              kill: handle
+                .kill({ killSignal: "SIGKILL" })
+                .pipe(Effect.timeout(ownerExitWait), Effect.ignore),
             };
           }).pipe(
             Effect.mapError((cause) =>
@@ -280,35 +381,38 @@ export const paid = (input: {
     Layer.provideMerge(FetchHttpClient.layer),
   );
 
-/** The owner process's side of a paid takeover: read its grant, then own the session. */
-export const ownerProcess = <E>({
-  lines,
-  host,
-}: {
+/**
+ * The owner process's side of a paid takeover: report that it runs, read its
+ * grant, then own the session, reporting its allocation and then its record.
+ */
+export const ownerProcess = <E>(input: {
   readonly lines: Stream.Stream<string, E>;
-  /** Its runtime and native peer, reported with its record when given. */
-  readonly host?: string | undefined;
+  /** Its runtime and native peer. */
+  readonly host: string;
+  readonly queuedSeconds?: number | undefined;
 }) =>
   Effect.gen(function* () {
-    const first = yield* Stream.runHead(lines);
-    const input = yield* Schema.decodeEffect(Schema.fromJsonString(OwnerGrant))(
+    const report = (line: typeof OwnerLine.Type) =>
+      Schema.encodeEffect(OwnerLine)(line).pipe(
+        Effect.flatMap((text) => Console.log(text)),
+        Effect.orDie,
+      );
+    yield* report({ started: input.host });
+    const first = yield* Stream.runHead(input.lines);
+    const owned = yield* Schema.decodeEffect(Schema.fromJsonString(OwnerGrant))(
       Option.getOrElse(first, () => ""),
     );
     const grant: Coordinator.TokenGrant = {
-      jwt: Redacted.make(input.jwt),
-      expiresAt: input.expiresAt,
-      maxSessionSeconds: input.maxSessionSeconds,
+      jwt: Redacted.make(owned.jwt),
+      expiresAt: owned.expiresAt,
+      maxSessionSeconds: owned.maxSessionSeconds,
     };
     return yield* own({
       grant,
-      marker: input.marker,
-      announce: (streaming) =>
-        Schema.encodeEffect(Schema.fromJsonString(Streaming))(
-          host === undefined ? streaming : { ...streaming, host },
-        ).pipe(
-          Effect.flatMap((text) => Console.log(text)),
-          Effect.orDie,
-        ),
+      marker: owned.marker,
+      queuedSeconds: input.queuedSeconds,
+      allocated: (allocation) => report({ allocated: allocation }),
+      announce: report,
     });
   });
 
@@ -344,7 +448,7 @@ export const rehearsal = (input: {
         seams: undefined,
         moderationPrompt: input.moderationPrompt,
         sever: (yield* Severable).sever,
-        owner: (grant, marker) =>
+        owner: (grant, marker, options) =>
           Effect.gen(function* () {
             const cut = yield* Ref.make(false);
             const gone = (message: string) => ReactorError.fromCode("ChannelClosed", message);
@@ -387,6 +491,8 @@ export const rehearsal = (input: {
             const fiber = yield* own({
               grant,
               marker,
+              queuedSeconds: options?.queuedSeconds,
+              allocated: options?.onAllocated,
               announce: (streaming) => Deferred.succeed(announced, streaming),
             }).pipe(
               Effect.provideService(Reactor.Reactor, reactor),

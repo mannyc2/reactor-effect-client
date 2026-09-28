@@ -223,6 +223,12 @@ const preflight = Command.make(
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);
     yield* Console.log("the native library loads");
+    // adoption's paid owner runs under Node on the isolated native peer.
+    const path = yield* Path.Path;
+    const owner = yield* Target.probeOwner(yield* path.fromFileUrl(new URL(import.meta.url)));
+    yield* Console.log(
+      `node ${owner.node} runs adoption's owner: it started on ${owner.host} and exited ${owner.exitCode} without a grant`,
+    );
     // Free questions about tokens and the key: each allocates nothing.
     for (const probe of yield* Probes.run({ apiUrl: coordinator.apiUrl, apiKey: yield* apiKey }))
       yield* Console.log(
@@ -239,7 +245,9 @@ const preflight = Command.make(
       }),
     ),
   ),
-  Command.withDescription("Check the rate, the ledger, a token and the native library, for free"),
+  Command.withDescription(
+    "Check the rate, the ledger, a token, the native library and adoption's owner, for free",
+  ),
 );
 
 const summarizeRuns = Command.make(
@@ -267,6 +275,10 @@ const owner = Command.make(
       Flag.withDescription("give each connection's native peer a child process; needs Node"),
       Flag.withDefault(false),
     ),
+    queuedSeconds: Flag.Int("queued-seconds").pipe(
+      Flag.withDescription("how long the clip queued behind the 15 s one asks for"),
+      Flag.optional,
+    ),
   },
   Effect.fnUntraced(function* (input) {
     const stdio = yield* Stdio.Stdio;
@@ -275,7 +287,8 @@ const owner = Command.make(
       "bun" in process.versions ? `bun ${process.versions.bun}` : `node ${process.version}`;
     return yield* Target.ownerProcess({
       lines: stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines),
-      host: input.isolated ? `${runtime}, the isolated native peer` : undefined,
+      host: `${runtime}, ${input.isolated ? "the isolated native peer" : "the native peer in process"}`,
+      queuedSeconds: Option.getOrUndefined(input.queuedSeconds),
     });
   }),
 ).pipe(

@@ -1,7 +1,7 @@
 /**
  * `adoption`: three ways a process takes over one session, in turn. An owner
  * on the isolated native host (under Node, when paid) creates the session on a
- * token that lives 20 s, plays a 15 s clip with a 5 s clip queued behind it,
+ * token that lives 20 s, plays a 15 s clip with another queued behind it,
  * and is killed 12 s after it allocated. A raw attach, which does not adopt,
  * names the playing clip, reads the queued clip's metadata, receives fresh
  * frames and closes without ending the session. The session is read while
@@ -13,17 +13,20 @@
  * resumed source ends the session.
  *
  * The owner's clips decide when the resume may come: its frames must arrive
- * while one of them still plays. From the owner's allocation A, at the timing
- * paid runs measured (an attach ready in 2.7 to 2.9 s, a 15 s clip built in
- * about 6.5 s, the refresh a quarter of a token's life before it expires):
+ * while one of them still plays. Paid `tokens` found the owner's 5 s queued
+ * clip already playing 24 s into its run, so here the queued clip lasts 15 s
+ * too. From the owner's allocation A, at the timing paid runs measured (an
+ * attach ready in 2.7 to 2.9 s, a 15 s clip built in about 6.5 s, the refresh
+ * a quarter of a token's life before it expires):
  *
- *   A+10    the 15 s clip starts, and plays until about A+25; the 5 s clip follows
+ *   A+10    the first 15 s clip starts, and plays until about A+25.5; the second
+ *           then plays until about A+41
  *   A+12    the owner is killed
  *   A+15    the raw attach is ready; it reads 2 s of frames and closes
  *   A+17.5  the session is read every half second while nothing is connected
- *   A+20.5  the creating token has expired and nothing was connected for 3 s: the resume starts
- *   A+23.5  it is ready, and reads 2 s of frames while one of the owner's clips plays
- *   A+30    past the first bound token's refresh point, the clip with references
+ *   A+20    the creating token has expired and nothing was connected for 1 s: the resume starts
+ *   A+23    it is ready, and reads 2 s of frames while one of the owner's clips plays
+ *   A+29.5  past the first bound token's refresh point, the clip with references
  *   A+31    the clip is accepted; the refusals are read
  *   A+32    closing the resumed source ends the session, 33 s inside the work deadline
  *
@@ -50,18 +53,16 @@ import * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { ItemKey } from "reactor-effect-client/Playout";
 import * as Reactor from "reactor-effect-client/Reactor";
-import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import type * as Session from "reactor-effect-client/Session";
 import type { Pieces } from "../Checks.js";
 import type { AdoptionRecord } from "../Evidence.js";
 import * as Media from "../Media.js";
 import * as Probes from "../Probes.js";
-import { recorded, Run } from "../Run.js";
+import { describe, recorded, Run } from "../Run.js";
 import { acceptGrant, provenGrant, tokenSecondsFor } from "../Spend.js";
 import { Target } from "../Target.js";
 
 const tracks = H3.h3ReferenceTurboRealtime.tracks;
-const round = (value: number) => Math.round(value * 10) / 10;
 
 /** How long the creating token lives: past the raw attach, not the session. */
 const createSeconds = 20;
@@ -69,6 +70,8 @@ const createSeconds = 20;
 const boundSeconds = 12;
 /** The owner is killed this long after it allocated, with its 15 s clip playing. */
 const killAfterMs = 12_000;
+/** How long the owner's queued clip asks for: its clips must still play when the resume attaches. */
+const queuedSeconds = 15;
 /** How long after the run starts the owner must be streaming. */
 const ownerWithinMs = 30_000;
 /** Each takeover's time from its start: an attach ready within 5 s, then a few seconds of frames. */
@@ -80,17 +83,10 @@ const gapReadMs = 500;
  * it allocates, which moves the creating token's expiry toward the attached
  * close, so the reads while nothing is connected cannot rest on that expiry alone.
  */
-const gapMs = 3_000;
+const gapMs = 1_000;
 
 /** H3's reply to an enqueue: the clip, as H3 accepted it. */
 const ClipQueued = Schema.Struct({ clip: H3.Clip });
-
-/** What a failed phase says: the library's reason, or the error's tag, and a short message. */
-const failure = (error: { readonly _tag: string; readonly message: string }) => {
-  const tag = isReactorFailure(error) ? error.reason._tag : error._tag;
-  const message = error.message.length > 160 ? `${error.message.slice(0, 157)}...` : error.message;
-  return `${tag}: ${message}`;
-};
 
 /**
  * Runs one phase until `endsAt`, a Clock time. Whatever it fails with, running
@@ -98,28 +94,25 @@ const failure = (error: { readonly _tag: string; readonly message: string }) => 
  * check goes on without its result. A save that failed is no phase's own: it
  * stops the run.
  */
-const phase = Effect.fnUntraced(function* <
-  A,
-  E extends { readonly _tag: string; readonly message: string },
-  R,
->(name: string, endsAt: number, body: Effect.Effect<A, E, R>) {
+const phase = Effect.fnUntraced(function* <A, E extends { readonly _tag: string }, R>(
+  name: string,
+  endsAt: number,
+  body: Effect.Effect<A, E, R>,
+) {
   const run = yield* Run;
   const left = Math.max(0, endsAt - (yield* Clock.currentTimeMillis));
   return yield* body.pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.millis(left),
-      orElse: () =>
-        Effect.fail(new Cause.TimeoutError(`${name} ran past its ${round(left / 1000)} s`)),
-    }),
+    Effect.timeout(Duration.millis(left)),
     Effect.asSome,
     Effect.catchIf(
       (error) => error._tag !== "SaveFailed",
-      (error) => Effect.as(run.judge(name, failure(error)), Option.none<A>()),
+      (error) => Effect.as(run.judge(name, describe(Cause.fail(error))), Option.none<A>()),
     ),
   );
 });
 
 export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
+  const { round } = pieces;
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* Coordinator.Coordinator;
@@ -171,18 +164,39 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
   yield* pieces.withSessions(
     (grants) =>
       Effect.gen(function* () {
+        // The session is held from the moment the owner allocates it, so an owner that fails
+        // before it streams still leaves a session the key can end.
+        const held = yield* Deferred.make<{
+          readonly sessionId: string;
+          readonly allocatedAt: number;
+          readonly deadline: number;
+        }>();
+        const onAllocated = (allocation: H3Source.Allocation) =>
+          Effect.gen(function* () {
+            const cap = pieces.capMs(grant);
+            const endsAt =
+              allocation.endsAt === undefined
+                ? (yield* Clock.currentTimeMillis) + cap
+                : allocation.endsAt * 1000;
+            grants.set(allocation.sessionId, grant);
+            const deadline = yield* pieces.holding(allocation.sessionId, endsAt - cap, endsAt);
+            yield* Deferred.succeed(held, {
+              sessionId: allocation.sessionId,
+              allocatedAt: endsAt - cap,
+              deadline,
+            });
+          }).pipe(Effect.provideService(Run, run));
         const started = yield* phase(
           "the owner",
           run.origin + ownerWithinMs,
           Effect.gen(function* () {
-            const owner = yield* target.owner(grant, marker, { isolated: true });
-            const sessionId = owner.allocation.sessionId;
-            grants.set(sessionId, grant);
-            const cap = pieces.capMs(grant);
-            const endsAt =
-              owner.allocation.endsAt ?? ((yield* Clock.currentTimeMillis) + cap) / 1000;
-            const allocatedAt = endsAt * 1000 - cap;
-            const deadline = yield* pieces.holding(sessionId, allocatedAt, endsAt * 1000);
+            const owner = yield* target.owner(grant, marker, {
+              isolated: true,
+              queuedSeconds,
+              onAllocated,
+            });
+            // The owner reports its allocation before it streams.
+            const { sessionId, allocatedAt, deadline } = yield* Deferred.await(held);
             const ownerStreamingMs = yield* run.now;
             yield* record((adoption) => ({
               ...adoption,
@@ -207,7 +221,8 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
         yield* record((adoption) => ({ ...adoption, killedMs, createExpiresMs }));
         yield* run.mark("owner killed", owner.playing);
 
-        // The session as its coordinator describes it, with nothing of this check connected.
+        // The session as its coordinator describes it, with nothing of this check connected. A
+        // read that gets no reply is recorded as status 0, so a read never fails.
         let lastConnectionMs = killedMs;
         const gapRead = Effect.gen(function* () {
           const read = yield* Probes.readSession({
@@ -324,21 +339,16 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
         }
 
         // Nothing is connected until the creating token has expired, and for the gap at least.
+        // Nothing here can fail, so nothing cuts the wait for that expiry short.
         const gapEndsAt = Math.min(
           Math.max(grant.expiresAt * 1000 + 500, run.origin + lastConnectionMs + gapMs),
           deadline,
         );
-        yield* phase(
-          "the gap",
-          deadline,
-          Effect.gen(function* () {
-            while ((yield* Clock.currentTimeMillis) + gapReadMs <= gapEndsAt) {
-              yield* Effect.sleep(Duration.millis(gapReadMs));
-              yield* gapRead;
-            }
-            yield* pieces.sleepUntil(gapEndsAt - run.origin, deadline);
-          }),
-        );
+        while ((yield* Clock.currentTimeMillis) + gapReadMs <= gapEndsAt) {
+          yield* Effect.sleep(Duration.millis(gapReadMs));
+          yield* gapRead;
+        }
+        yield* pieces.sleepUntil(gapEndsAt - run.origin, deadline);
 
         // The resume: it adopts the session from the owner's record, and then owns it.
         const resumeEndsAt = Math.min((yield* Clock.currentTimeMillis) + takeoverMs, deadline);
