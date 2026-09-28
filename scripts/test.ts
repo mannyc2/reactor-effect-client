@@ -4,9 +4,10 @@ import { join } from "node:path";
 
 /**
  * Runtime projects discover their own files; there is no test filename registry.
- *   portable    Vitest in packages/client and packages/browser, each on Node then Bun,
- *               then Bun discovery from the workspace root for the integration
- *               modeled-host and script tests (bunfig.toml excludes the others)
+ *   portable    Vitest in packages/client, packages/browser and integration/hosted,
+ *               each on Node then Bun, then Bun discovery from the workspace root
+ *               for the integration modeled-host and script tests (bunfig.toml
+ *               excludes the others)
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  */
@@ -29,18 +30,20 @@ const nodeAndBun = (directory: string): readonly Run[] => [
   [bun, ["--bun", vitest(directory), "run"], directory],
 ];
 const packages = join(root, "packages");
+const integration = join(root, "integration");
 const runs: readonly Run[] =
   project === "portable"
     ? [
         ...nodeAndBun(join(packages, "client")),
         ...nodeAndBun(join(packages, "browser")),
-        // Both renewal constructors run the bounded fault matrix; this aggregate
-        // budget covers their measured wall time without extending any scenario.
-        [bun, ["--no-env-file", "test"], root, 600_000],
+        // The hosted qualification's gates, ledger and a rehearsal of every check.
+        [node, [vitest(integration), "run", "--root", "hosted"], integration],
+        [bun, ["--bun", vitest(integration), "run", "--root", "hosted"], integration],
+        [bun, ["--no-env-file", "test"], root],
       ]
     : project === "native"
       ? nodeAndBun(join(packages, "native"))
-      : [[node, [vitest(join(root, "integration")), "run"], join(root, "integration")]];
+      : [[node, [vitest(integration), "run"], integration]];
 for (const [command, args, cwd, timeout = 180_000] of runs) {
   const result = spawnSync(command, args, { cwd, env, stdio: "inherit", timeout });
   if (result.error !== undefined) throw result.error;
