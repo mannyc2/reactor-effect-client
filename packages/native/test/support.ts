@@ -37,7 +37,7 @@ export const eventually = (
   message: string,
   timeout: Duration.Input = "5 seconds",
 ) =>
-  Effect.suspend(() => (condition() ? Effect.void : Effect.fail(new Error(message)))).pipe(
+  Effect.suspend(() => (condition() ? Effect.void : Effect.fail(message))).pipe(
     Effect.retry({ schedule: Schedule.spaced("5 millis") }),
     Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error(message)) }),
     Effect.orDie,
