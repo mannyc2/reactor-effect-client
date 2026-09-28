@@ -32,6 +32,7 @@ import {
 import {
   dueCues,
   estimatesFrom,
+  continuedBuildRate,
   plan,
   projectedStartMs,
   runwaySeconds,
@@ -109,7 +110,9 @@ export interface ItemSpec {
   /**
    * `"previous"` builds the clip continuing from the clip that airs just before it, so
    * motion, camera and audio carry across the boundary. It waits for that clip to be built,
-   * and takes at most two audio references of its own.
+   * and takes at most two audio references of its own. If it would be Ready only after that
+   * clip ends, it continues instead from the clip that will be playing by then, and airs
+   * right behind that one.
    */
   readonly continuity?: "previous";
   /** Relative to admission, measured on the monotonic clock. */
@@ -318,10 +321,12 @@ export interface SchedulerState {
   /**
    * What the scheduler has measured from its own recent builds: seconds from sending a
    * build to its clip being Ready, per requested second of clip (absent until three builds
-   * were measured), and a built clip's actual length over its requested length.
+   * were measured), separately for clips built continuing from another, and a built clip's
+   * actual length over its requested length.
    */
   readonly estimates: {
     readonly build: { readonly median: number; readonly p95: number } | undefined;
+    readonly continuedBuild?: { readonly median: number; readonly p95: number } | undefined;
     readonly length: number;
   };
 }
@@ -396,6 +401,9 @@ interface Entry extends PlannedItem {
   held?: boolean;
   asap?: boolean;
   dispatchedAtMs?: number;
+  /** Whether its build in flight continues from another clip, which is measured apart. */
+  continued?: boolean;
+  follows?: ClipId;
   retryAtMs?: number;
   atMs?: number;
   clipId?: ClipId;
@@ -1262,22 +1270,24 @@ export const makeScheduler = (
     let blockedCut: ClipId | undefined;
     // Recent measured builds: build seconds per requested second, and actual over requested length.
     const buildSamples: number[] = [];
+    const continuedSamples: number[] = [];
     const lengthSamples: number[] = [];
     const maxSamples = 32;
     let lastFillerSeconds: number | undefined;
     /** Filler builds sent and not yet Ready, by filler index. */
     const fillerDispatch = new Map<number, { readonly atMs: number; readonly seconds: number }>();
-    const measure = (atMs: number, requested: number, actual: number): void => {
+    const measure = (atMs: number, requested: number, actual: number, continued = false): void => {
       if (!(requested > 0)) return;
-      buildSamples.push((monotonicMillis(clock) - atMs) / 1000 / requested);
+      const samples = continued ? continuedSamples : buildSamples;
+      samples.push((monotonicMillis(clock) - atMs) / 1000 / requested);
       lengthSamples.push(actual / requested);
-      if (buildSamples.length > maxSamples) buildSamples.shift();
+      if (samples.length > maxSamples) samples.shift();
       if (lengthSamples.length > maxSamples) lengthSamples.shift();
     };
     /** An item's build is measured once, when its clip is first seen Ready. */
     const measureItem = (item: Entry, actual: number): void => {
       if (item.dispatchedAtMs === undefined) return;
-      measure(item.dispatchedAtMs, item.request.durationSeconds, actual);
+      measure(item.dispatchedAtMs, item.request.durationSeconds, actual, item.continued === true);
       delete item.dispatchedAtMs;
     };
 
@@ -1665,7 +1675,7 @@ export const makeScheduler = (
         })),
         sessions,
         starved,
-        estimates: estimatesFrom(buildSamples, lengthSamples),
+        estimates: estimatesFrom(buildSamples, lengthSamples, continuedSamples),
       });
     };
 
@@ -2202,6 +2212,9 @@ export const makeScheduler = (
               });
               break;
             }
+            item.continued = action.continueFrom !== undefined;
+            if (action.follows === undefined) delete item.follows;
+            else item.follows = action.follows;
             yield* sendCommand({
               _tag: "Build",
               key: item.key,
@@ -2592,7 +2605,8 @@ export const makeScheduler = (
           dispatched: pendingBuilds,
           brokenGroups,
           batches: pendingBatches(),
-          estimates: estimatesFrom(buildSamples, lengthSamples),
+          estimates: estimatesFrom(buildSamples, lengthSamples, continuedSamples),
+          continuedBuildRate: continuedBuildRate(buildSamples, continuedSamples),
           ...fillerView(),
           cutLanes,
           fillLengths,
@@ -2926,7 +2940,7 @@ export const makeScheduler = (
             playingStartedMs,
             nowMs,
             batches: pendingBatches(),
-            estimates: estimatesFrom(buildSamples, lengthSamples),
+            estimates: estimatesFrom(buildSamples, lengthSamples, continuedSamples),
             ...fillerView(),
             withdrawing: new Set([...pendingWithdrawals.keys(), ...excluding]),
           },

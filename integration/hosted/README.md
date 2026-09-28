@@ -76,9 +76,9 @@ Billing and presented output need separate dashboard or output evidence.
 
 0.7.0's scheduler inserts clips, applies edit batches, cuts from a lane and continues a clip from the one before it. `scheduler` showed that `move` and `pop` decide the next clip close to a boundary; these two checks put the scheduler's own edits on hosted H3, at $0.75 each. Both run the public renewing owner over one capped `openH3` source that it never renews, with filler off. The source holds the last frame at boundaries (`holdLastFrame: true`), as a show does; by default H3 flushes to black there, as its schema documents.
 
-`scheduler-edits` turns autoplay on and submits a group of three 5 s beats, `p1` to `p3`, and a fourth clip `w1` behind it. Once `p1` plays, it inserts `xc` before `p2` with `continuity: "previous"`, so `xc` continues from `p1`, and `xn` before `p3`, built on its own. Once `p3` plays, it sends one `edit` batch that withdraws `w1` and inserts `y` after `p3`. The batch goes one measured build plus a second before `p3` ends, so it should take effect about a second before that boundary. It passes only if:
+`scheduler-edits` turns autoplay on and submits a group of three 5 s beats, `p1` to `p3`, and a fourth clip `w1` behind it. Once `p1` plays, it inserts `xc` after `p2` with `continuity: "previous"`, so `xc` continues from `p2`, and `xn` before `p3`, built on its own. A continued build took 5.45 s on hosted H3, so `xc` needs `p2`'s whole length to build in; the 0.7.0 run put it before `p2`, where it missed its place. Once `p3` plays, it sends one `edit` batch that withdraws `w1` and inserts `y` after `p3`. The batch goes one measured build plus a second before `p3` ends, so it should take effect about a second before that boundary. It passes only if:
 
-- the clips start in the order `p1`, `xc`, `p2`, `xn`, `p3`, `y`;
+- the clips start in the order `p1`, `p2`, `xc`, `xn`, `p3`, `y`;
 - the batch takes effect before `p3` ends;
 - `w1` never starts, and is dropped as withdrawn;
 - every one of the five seams has its pause and picture change measured.

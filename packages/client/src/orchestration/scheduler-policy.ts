@@ -41,6 +41,11 @@ export interface PlannedItem {
   readonly asap?: boolean;
   /** Built continuing from the clip that airs just before it. */
   readonly continuity?: "previous";
+  /**
+   * The clip it was built to continue from, when that clip airs after its place: it would
+   * not be Ready before the clip ahead of it ended. It waits behind that clip until it starts.
+   */
+  readonly follows?: ClipId;
 }
 
 /**
@@ -90,6 +95,8 @@ const exposureMarginSeconds = 1.5;
 export interface Estimates {
   /** Seconds of build per requested second of clip, once a few builds were measured. */
   readonly build: { readonly median: number; readonly p95: number } | undefined;
+  /** The same for clips built continuing from another, which take longer. */
+  readonly continuedBuild?: { readonly median: number; readonly p95: number } | undefined;
   /** A built clip's actual length over its requested length. */
   readonly length: number;
 }
@@ -102,17 +109,51 @@ const quantile = (values: ReadonlyArray<number>, q: number): number => {
   return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
 };
 
-/** Estimates from recent samples: build seconds per requested second, and actual over requested length. */
+const spreadOf = (samples: ReadonlyArray<number>) =>
+  samples.length < minimumSamples
+    ? undefined
+    : { median: quantile(samples, 0.5), p95: quantile(samples, 0.95) };
+
+/**
+ * Estimates from recent samples: build seconds per requested second, of independent and of
+ * continued clips, and actual over requested length.
+ */
 export const estimatesFrom = (
   build: ReadonlyArray<number>,
   length: ReadonlyArray<number>,
-): Estimates => ({
-  build:
-    build.length < minimumSamples
-      ? undefined
-      : { median: quantile(build, 0.5), p95: quantile(build, 0.95) },
-  length: length.length === 0 ? 1 : quantile(length, 0.5),
-});
+  continued: ReadonlyArray<number> = [],
+): Estimates => {
+  const continuedBuild = spreadOf(continued);
+  return {
+    build: spreadOf(build),
+    ...(continuedBuild === undefined ? {} : { continuedBuild }),
+    length: length.length === 0 ? 1 : quantile(length, 0.5),
+  };
+};
+
+/**
+ * Until a continued build is measured, one is projected at this multiple of an independent
+ * build. On hosted H3 a continued 5 s clip took 5.45 s to build, against 2.1 to 2.2 s for
+ * independent ones (the 0.7.0 `scheduler-edits` run).
+ */
+const continuedBuildFactor = 2.5;
+
+/**
+ * Build seconds per requested second that a continued build is projected at, erring long:
+ * the p95 of measured continued builds, or their longest while there are fewer than three;
+ * failing those, the same of independent builds times `continuedBuildFactor`. Undefined
+ * before any build was measured.
+ */
+export const continuedBuildRate = (
+  build: ReadonlyArray<number>,
+  continued: ReadonlyArray<number>,
+): number | undefined => {
+  const long = (samples: ReadonlyArray<number>) =>
+    samples.length >= minimumSamples ? quantile(samples, 0.95) : Math.max(...samples);
+  if (continued.length > 0) return long(continued);
+  if (build.length > 0) return long(build) * continuedBuildFactor;
+  return undefined;
+};
 
 /**
  * Seconds added to the measured p95 build time before a refill counts as early enough: the
@@ -169,6 +210,8 @@ export interface PolicySnapshot {
   readonly brokenGroups: ReadonlyMap<ItemKey, number>;
   readonly batches: ReadonlyArray<PendingBatch>;
   readonly estimates: Estimates;
+  /** What a continued build is projected at, per requested second; see `continuedBuildRate`. */
+  readonly continuedBuildRate: number | undefined;
   /** When the filler build in flight on the preferred source was sent, if one is. */
   readonly fillerDispatchedAtMs: number | undefined;
   /** The requested length of the next filler clip, if known. */
@@ -191,6 +234,8 @@ export type PolicyAction =
       readonly key: ItemKey;
       /** The generated clip it continues from, for an item that asks for continuity. */
       readonly continueFrom?: ClipId;
+      /** Set when that clip airs after the item's place, so the item must wait behind it. */
+      readonly follows?: ClipId;
     }
   | { readonly _tag: "Cut"; readonly clipId: ClipId }
   | {
@@ -309,6 +354,9 @@ const ordering = (
   lanes: ReadonlyArray<string>,
   nowMs: number,
   superseded: ReadonlySet<ItemKey>,
+  owned: ReadonlyMap<ClipId, OwnedClip>,
+  /** Ready clips that have not started: an item following one of them waits behind it. */
+  waiting: ReadonlySet<ClipId>,
 ) => {
   // A group's parts in order. A part already pruned has settled, so it counts as admitted.
   const groups = new Map<ItemKey, PlannedItem[]>();
@@ -359,6 +407,7 @@ const ordering = (
           readonly key?: ItemKey;
           readonly held?: boolean;
           readonly asap?: boolean;
+          readonly follows?: ClipId;
         })
       | undefined,
   ): Rank => {
@@ -366,6 +415,11 @@ const ordering = (
       item?.key !== undefined && replacedReady.has(item.key) ? Infinity : (item?.generation ?? 0);
     if (item?.held === true || (item?.atMs !== undefined && nowMs < item.atMs))
       return [lanes.length + 1, 1, item.admission, generation];
+    // It continues the clip it follows, so it airs right behind that clip until that starts.
+    if (item?.follows !== undefined && waiting.has(item.follows)) {
+      const behind = rankClip(item.follows);
+      return [behind[0], behind[1], behind[2], behind[3] + 0.5];
+    }
     if (item?.asap === true) return [-0.5, 0, item.admission, generation];
     return [
       Math.max(0, lanes.indexOf(item?.lane ?? "")),
@@ -374,7 +428,7 @@ const ordering = (
       generation,
     ];
   };
-  const rankClip = (clipId: ClipId, owned: ReadonlyMap<ClipId, OwnedClip>): Rank => {
+  const rankClip = (clipId: ClipId): Rank => {
     const clip = owned.get(clipId);
     if (clip === undefined) return [-1, 0, 0, 0];
     if (clip._tag === "Filler") return [lanes.length, 1, clip.index, 0];
@@ -446,12 +500,14 @@ export const projectedStartMs = (view: ProjectionView, place: ProjectedPlace): n
     view.lanes,
     nowMs,
     supersededBy(view.batches),
+    owned,
+    new Set(engine.ready.map((clip) => clip.clipId)),
   );
   const rank = rankItem(place);
   const preferred = preferredSession(engine);
   const withdrawing = view.withdrawing ?? new Set<ItemKey>();
   const aheadMs = engine.ready.reduce((total, record) => {
-    if (record.sessionId !== preferred || compareRank(rankClip(record.clipId, owned), rank) >= 0)
+    if (record.sessionId !== preferred || compareRank(rankClip(record.clipId), rank) >= 0)
       return total;
     const owner = owned.get(record.clipId);
     if (owner?._tag === "Item" && withdrawing.has(owner.key)) return total;
@@ -504,16 +560,69 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
     snapshot.lanes,
     nowMs,
     supersededBy(snapshot.batches),
+    owned,
+    new Set(engine.ready.map((clip) => clip.clipId)),
   );
   /**
+   * The clip that airs just before `item` if its continued build starts now: `predecessor`,
+   * unless that build is projected to be Ready only after `predecessor` ends. The clips Ready
+   * behind it then air first, and the item continues from, and follows, the one that will be
+   * playing when it is Ready, or the last of them. A clip it continues from must already be
+   * generated, so none that is still to be built is chosen.
+   */
+  const airsBefore = (
+    item: PlannedItem,
+    predecessor: ClipId,
+    gone: ReadonlySet<ItemKey>,
+  ): { readonly clipId: ClipId; readonly follows?: ClipId } => {
+    const rate = snapshot.continuedBuildRate;
+    if (rate === undefined || item.seconds === undefined) return { clipId: predecessor };
+    const readyAtMs = nowMs + (rate * item.seconds + lookaheadMarginSeconds) * 1000;
+    const playing = Option.getOrUndefined(engine.playing);
+    const record = playing === undefined ? undefined : Option.getOrUndefined(playing.record);
+    const since = playingSince(playing, snapshot.playingStartedMs);
+    if (playing !== undefined && (record === undefined || since === undefined))
+      return { clipId: predecessor };
+    let endMs =
+      record === undefined || since === undefined ? nowMs : since + record.durationSeconds * 1000;
+    // The preferred source's Ready clips in the order they air; held and future ones wait.
+    const queued = engine.ready
+      .filter((clip) => {
+        const owner = owned.get(clip.clipId);
+        return (
+          clip.sessionId === preferredSession(engine) &&
+          !(owner?._tag === "Item" && gone.has(owner.key)) &&
+          rankClip(clip.clipId)[0] <= snapshot.lanes.length
+        );
+      })
+      .sort((a, b) => compareRank(rankClip(a.clipId), rankClip(b.clipId)));
+    const after =
+      playing?.clipId === predecessor
+        ? 0
+        : queued.findIndex((clip) => clip.clipId === predecessor) + 1;
+    if (after === 0 && playing?.clipId !== predecessor) return { clipId: predecessor };
+    for (const clip of queued.slice(0, after)) endMs += clip.durationSeconds * 1000;
+    if (readyAtMs <= endMs) return { clipId: predecessor };
+    const behind = queued.slice(after);
+    for (const [index, clip] of behind.entries()) {
+      endMs += clip.durationSeconds * 1000;
+      if (readyAtMs <= endMs || index === behind.length - 1)
+        return { clipId: clip.clipId, follows: clip.clipId };
+    }
+    return { clipId: predecessor };
+  };
+  /**
    * What an item continuing from its predecessor continues from: the Ready clip or waiting
-   * item that airs just before it on the preferred source, else the clip playing there.
-   * `wait` while that predecessor is not built yet; no clip when there is none, or when
-   * the provider no longer offers it for continuation.
+   * item that airs just before it on the preferred source, else the clip playing there, or
+   * the one that will be by the time it is built (`airsBefore`). `wait` while that predecessor
+   * is not built yet; no clip when there is none, or when the provider no longer offers it
+   * for continuation.
    */
   const continuation = (
     item: PlannedItem,
-  ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId?: ClipId } => {
+  ):
+    | { readonly _tag: "wait" }
+    | { readonly _tag: "from"; readonly clipId?: ClipId; readonly follows?: ClipId } => {
     const place = rankItem(item);
     // What will not air before it is no predecessor: the item it replaces, and what a batch
     // or a withdrawal is taking off.
@@ -531,7 +640,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
         clip.sessionId === preferredSession(engine) &&
         !(owner?._tag === "Item" && gone.has(owner.key))
       )
-        consider(rankClip(clip.clipId, owned), clip.clipId);
+        consider(rankClip(clip.clipId), clip.clipId);
     }
     for (const other of items)
       if (
@@ -541,10 +650,10 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       )
         consider(rankItem(other), undefined);
     if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
-    const clipId = best?.clipId ?? Option.getOrUndefined(engine.playing)?.clipId;
-    return clipId !== undefined && engine.continuable.includes(clipId)
-      ? { _tag: "from", clipId }
-      : { _tag: "from" };
+    const predecessor = best?.clipId ?? Option.getOrUndefined(engine.playing)?.clipId;
+    if (predecessor === undefined) return { _tag: "from" };
+    const from = airsBefore(item, predecessor, gone);
+    return engine.continuable.includes(from.clipId) ? { _tag: "from", ...from } : { _tag: "from" };
   };
   const runway = runwaySeconds(engine, nowMs, snapshot.playingStartedMs, owned, items);
   const nextAnchorMs = items
@@ -696,9 +805,7 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       continue;
     }
     if (actual.length === 0) continue;
-    const desired = [...actual].sort((a, b) =>
-      compareRank(rankClip(a.clipId, owned), rankClip(b.clipId, owned)),
-    );
+    const desired = [...actual].sort((a, b) => compareRank(rankClip(a.clipId), rankClip(b.clipId)));
     for (let index = 0; index < actual.length; index++) {
       if (actual[index]?.clipId === desired[index]?.clipId) continue;
       const wanted = desired[index]!;
@@ -857,7 +964,12 @@ export const plan = (snapshot: PolicySnapshot): PolicyDecision => {
       ...base,
       action:
         from?._tag === "from" && from.clipId !== undefined
-          ? { _tag: "Build", key: next.key, continueFrom: from.clipId }
+          ? {
+              _tag: "Build",
+              key: next.key,
+              continueFrom: from.clipId,
+              ...(from.follows === undefined ? {} : { follows: from.follows }),
+            }
           : { _tag: "Build", key: next.key },
     };
   }
