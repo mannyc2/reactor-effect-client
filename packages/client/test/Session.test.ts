@@ -58,8 +58,20 @@ layer(environment({ timing }))("replies", (it) => {
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow());
         const session = yield* connect;
+        const observed = yield* session.events().pipe(
+          Stream.filter((event) => event._tag === "Control"),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
         const failure = yield* Effect.flip(session.requestRecordingClip(5));
         assert.strictEqual(failure.reason._tag, "RecorderDisabled");
+        // Observers see the reply too, its provider text kept out of what logs print.
+        const control = Option.getOrThrow(yield* Fiber.join(observed));
+        assert.isTrue(control._tag === "Control" && control.message._tag === "ClipFailed");
+        if (control._tag !== "Control" || control.message._tag !== "ClipFailed") return;
+        assert.strictEqual(Redacted.value(control.message.reason), "recorder disabled");
+        assert.notInclude(Inspectable.toStringUnknown(control), "recorder disabled");
       }),
   );
 });

@@ -1473,7 +1473,7 @@ const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionI
         verdict: event,
       };
     case "Control":
-      return { event: `control ${event.message.payload.case ?? "unknown"}` };
+      return { event: `control ${event.message._tag}` };
     case "CommandError":
       return { event: `command error ${event.error.reason._tag}` };
     case "Diagnostic":

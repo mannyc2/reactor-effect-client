@@ -26,7 +26,7 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as Recording from "./internal/recording.js";
-import type { ClipReady } from "./internal/wire.js";
+import type { ClipReady } from "./Session.js";
 import { FailureSummary, Http, ReactorError, summarize } from "./ReactorError.js";
 
 export const defaultApiUrl = "https://api.reactor.inc";
