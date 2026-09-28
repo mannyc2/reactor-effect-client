@@ -1,15 +1,17 @@
 /**
  * One simulated H3 session at work: its model takes one input at a time, what
- * it sends goes over the session's open connection, and its timers and media
+ * it sends goes over the session's open connections, and its timers and media
  * run in the session's scope until the session ends.
  */
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FiberMap from "effect/FiberMap";
 import * as FiberSet from "effect/FiberSet";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { Entry, Fault, Options } from "../../ReactorTest.js";
@@ -35,43 +37,70 @@ export interface Environment {
   readonly timing: Sampler;
   readonly openapi: typeof Wire.StructJson.Type;
   readonly log: (entry: Omit<Entry, "at">) => Effect.Effect<void>;
-  /** Ends the session this many milliseconds from now, as a moderation verdict does. */
-  readonly terminate: (afterMs: number) => Effect.Effect<void>;
+  /** Ends the session, as a moderation verdict does. */
+  readonly terminate: Effect.Effect<void>;
+}
+
+/**
+ * An open connection. Its media arrives at one latency, drawn when it opens,
+ * so frames keep their order across a boundary as a track does, and it
+ * receives only the tracks it has resumed.
+ */
+interface Connection {
+  readonly link: Link;
+  readonly paused: ReadonlySet<string>;
+  readonly latency: number;
+  /** The clips playing to it, by their start tokens: a stop ends one, a boundary none. */
+  readonly players: FiberMap.FiberMap<number, void>;
+  /** Closes with the connection, and its media with it. */
+  readonly scope: Scope.Closeable;
 }
 
 const range = (count: number) => Array.from({ length: Math.max(0, count) }, (_, index) => index);
+const tracks = [H3.documented.tracks.video, H3.documented.tracks.audio];
 
 export const make = Effect.fnUntraced(function* (sessionId: string, environment: Environment) {
   const { options, faults, log } = environment;
   const model = yield* Ref.make(H3.initial);
   const lock = yield* Semaphore.make(1);
+  const scope = yield* Effect.scope;
   const timers = yield* FiberSet.make<void>();
-  /** Each playing clip's media, by its start token: a stop ends one, a boundary none. */
-  const players = yield* FiberMap.make<number, void>();
+  /** The open connections, by the id of the slot each was registered as. */
+  const connections = yield* Ref.make<ReadonlyMap<number, Connection>>(new Map());
   /**
-   * The open connection. Its media arrives at one latency, drawn when it
-   * opens, so frames keep their order across a boundary as a track does.
+   * Each command not yet answered: the slot it came from, which its answer
+   * goes back to whenever it is sent, and whether a fault withholds it.
    */
-  const connection = yield* Ref.make<
-    | { readonly link: Link; readonly paused: ReadonlySet<string>; readonly latency: number }
-    | undefined
-  >(undefined);
+  const requests = yield* Ref.make<
+    ReadonlyMap<string, { readonly from: number; readonly withheld: boolean }>
+  >(new Map());
+  /** The slot a command came from, forgotten as its answer is sent; none when withheld. */
+  const answering = (requestId: string) =>
+    Ref.modify(requests, (all) => {
+      const request = all.get(requestId);
+      const next = new Map(all);
+      next.delete(requestId);
+      return [request?.withheld === false ? request.from : undefined, next] as const;
+    });
 
-  /** The simulation encodes only messages it built, so a failure is a defect. */
+  /**
+   * Sends to one connection, or to every open one. The simulation encodes only
+   * messages it built, so a failure is a defect.
+   */
   const send = <Desc extends DescMessage>(
+    to: number | "all",
     channel: "control" | "data",
     schema: Desc,
     message: MessageInitShape<Desc>,
   ) =>
-    Effect.flatMap(Ref.get(connection), (open) =>
-      open === undefined
-        ? Effect.void
-        : Wire.encode(schema, message).pipe(
-            Effect.orDie,
-            Effect.flatMap((bytes) => open.link.deliver(channel, bytes)),
-          ),
-    );
-  const data = (requestId: string, kind: Wire.MessageKind, message: Message) =>
+    Effect.gen(function* () {
+      const open = yield* Ref.get(connections);
+      const targets = to === "all" ? [...open.values()] : [open.get(to)];
+      const bytes = yield* Effect.orDie(Wire.encode(schema, message));
+      for (const target of targets)
+        if (target !== undefined) yield* target.link.deliver(channel, bytes);
+    });
+  const data = (to: number | "all", requestId: string, kind: Wire.MessageKind, message: Message) =>
     Effect.gen(function* () {
       if (message.type !== "queue_update" && message.type !== "state_update")
         yield* log({
@@ -81,34 +110,42 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           ...("clip" in message.data ? { clipId: message.data.clip.clip_id } : {}),
         });
       const json = yield* Effect.orDie(Schema.decodeUnknownEffect(Wire.StructJson)(message.data));
-      yield* send("data", Wire.DataServerMessageSchema, {
+      yield* send(to, "data", Wire.DataServerMessageSchema, {
         requestId,
         kind,
         payload: { case: "message", value: { type: message.type, data: json } },
       });
     });
   const respond = (
+    to: number,
     requestId: string,
     payload?: MessageInitShape<typeof Wire.DataServerMessageSchema>["payload"],
   ) =>
-    send("data", Wire.DataServerMessageSchema, {
+    send(to, "data", Wire.DataServerMessageSchema, {
       requestId,
       kind: Wire.MessageKind.RESPONSE,
       ...(payload && { payload }),
     });
   const later = (ms: number, input: H3.Input) =>
     FiberSet.run(timers, Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(apply(input))));
-  /** Media reaches the open connection on a track it has resumed. */
-  const media = (track: string, deliver: (link: Link) => Effect.Effect<void>) =>
-    Effect.flatMap(Ref.get(connection), (open) =>
-      open === undefined || open.paused.has(track) ? Effect.void : deliver(open.link),
-    );
-  const latency = Effect.map(Ref.get(connection), (open) => open?.latency ?? 0);
+  /** Media reaches a connection, while it is open, on a track it has resumed. */
+  const media = (
+    to: number,
+    link: Link,
+    track: string,
+    deliver: (link: Link) => Effect.Effect<void>,
+  ) =>
+    Effect.flatMap(Ref.get(connections), (open) => {
+      const connection = open.get(to);
+      return connection?.link !== link || connection.paused.has(track)
+        ? Effect.void
+        : deliver(link);
+    });
   /** One black frame, sent `at` a boundary: the flush H3 documents for `flush_on_clip_end`. */
-  const flush = (clip: Clip, at: number) =>
+  const flush = (to: number, link: Link, clip: Clip, at: number) =>
     until(at).pipe(
       Effect.andThen(
-        media(H3.documented.tracks.video, (link) =>
+        media(to, link, H3.documented.tracks.video, () =>
           link.video({
             data: Media.render({
               clipId: clip.clip_id,
@@ -123,18 +160,23 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         ),
       ),
     );
-  /** One clip's frames and audio, each at its own time, until the clip ends or stops. */
-  const play = (clip: Clip, startedAt: number) =>
+  /**
+   * One clip's frames and audio to one connection, each at its own time, until
+   * it ends or stops. A connection that opens while it plays joins it there.
+   */
+  const play = (to: number, connection: Connection, clip: Clip, startedAt: number) =>
     Effect.gen(function* () {
       const video = yield* faults.standing((fault) => fault._tag === "Video");
       const silent = yield* faults.standing((fault) => fault._tag === "NoAudio");
       const picture = video?._tag === "Video" ? video.video : "live";
-      const delay = yield* latency;
+      const { link, latency: delay } = connection;
       const frameMs = 1000 / H3.documented.fps;
+      const past = (yield* monotonic) - startedAt - delay;
+      const from = (step: number) => Math.max(0, Math.ceil(past / step));
       const frame = (index: number) =>
         until(startedAt + delay + index * frameMs).pipe(
           Effect.andThen(
-            media(H3.documented.tracks.video, (link) =>
+            media(to, link, H3.documented.tracks.video, () =>
               link.video({
                 data: Media.render({
                   clipId: clip.clip_id,
@@ -152,7 +194,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       const block = (index: number) =>
         until(startedAt + delay + index * Media.audioBlockMs).pipe(
           Effect.andThen(
-            media(H3.documented.tracks.audio, (link) =>
+            media(to, link, H3.documented.tracks.audio, () =>
               link.audio(
                 Media.tone({ clipId: clip.clip_id, first: index * Media.samplesPerBlock }),
               ),
@@ -160,30 +202,43 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           ),
         );
       const blocks = Math.floor((clip.seconds * 1000) / Media.audioBlockMs);
+      const frames = picture === "absent" ? 0 : clip.frames;
       yield* Effect.all(
         [
-          Effect.forEach(range(picture === "absent" ? 0 : clip.frames), frame, { discard: true }),
-          Effect.forEach(range(silent === undefined ? blocks : 0), block, { discard: true }),
+          Effect.forEach(range(frames).slice(from(frameMs)), frame, { discard: true }),
+          Effect.forEach(
+            range(silent === undefined ? blocks : 0).slice(from(Media.audioBlockMs)),
+            block,
+            { discard: true },
+          ),
         ],
         { concurrency: 2, discard: true },
       );
     });
 
-  const perform = (output: H3.Output, withheld: string | undefined) =>
+  /** `greeting` is a connection that just opened, which alone hears the state and queue. */
+  const perform = (output: H3.Output, greeting: number | undefined) =>
     Effect.gen(function* () {
-      if ("requestId" in output && output.requestId === withheld) return;
       switch (output._tag) {
-        case "Reply":
-          return yield* data(output.requestId, Wire.MessageKind.RESPONSE, output.message);
+        case "Reply": {
+          const to = yield* answering(output.requestId);
+          if (to === undefined) return;
+          return yield* data(to, output.requestId, Wire.MessageKind.RESPONSE, output.message);
+        }
         case "Broadcast":
-          return yield* data("", Wire.MessageKind.NOTIFICATION, output.message);
-        case "Ack":
-          return yield* respond(output.requestId);
-        case "Unknown":
-          return yield* respond(output.requestId, {
+          return yield* data(greeting ?? "all", "", Wire.MessageKind.NOTIFICATION, output.message);
+        case "Ack": {
+          const to = yield* answering(output.requestId);
+          return to === undefined ? undefined : yield* respond(to, output.requestId);
+        }
+        case "Unknown": {
+          const to = yield* answering(output.requestId);
+          if (to === undefined) return;
+          return yield* respond(to, output.requestId, {
             case: "error",
             value: { code: "unknown_command", message: output.command },
           });
+        }
         case "Build": {
           const fault = yield* faults.trip(
             (candidate) => candidate._tag === "StallBuild" || candidate._tag === "FailBuild",
@@ -192,22 +247,8 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           const speed = output.continued
             ? environment.timing.continuedBuildSpeed
             : environment.timing.buildSpeed;
-          const ms = (output.seconds / (yield* speed)) * 1000;
-          const moderated = yield* faults.trip(
-            (candidate) =>
-              candidate._tag === "Moderate" &&
-              (candidate.prompt === undefined || candidate.prompt === output.prompt),
-          );
-          if (moderated?._tag === "Moderate") {
-            yield* FiberSet.run(
-              timers,
-              Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(moderate(moderated))),
-            );
-            // A warning lets the build finish.
-            if ((moderated.action ?? "terminate") === "terminate") return;
-          }
           return yield* later(
-            ms,
+            (output.seconds / (yield* speed)) * 1000,
             fault?._tag === "FailBuild"
               ? { _tag: "BuildFailed", token: output.token, reason: fault.reason ?? "build failed" }
               : { _tag: "Built", token: output.token },
@@ -223,12 +264,25 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         }
         case "Play":
           yield* later(output.clip.seconds * 1000, { _tag: "Finish", token: output.token });
-          return yield* FiberMap.run(players, output.token, play(output.clip, output.startedAt));
+          for (const [to, connection] of yield* Ref.get(connections))
+            yield* FiberMap.run(
+              connection.players,
+              output.token,
+              play(to, connection, output.clip, output.startedAt),
+            );
+          return;
         case "Halt":
-          return yield* FiberMap.remove(players, output.token);
+          for (const connection of (yield* Ref.get(connections)).values())
+            yield* FiberMap.remove(connection.players, output.token);
+          return;
         case "Flush": {
-          const at = (yield* monotonic) + (yield* latency);
-          return yield* FiberSet.run(timers, flush(output.clip, at));
+          const now = yield* monotonic;
+          for (const [to, connection] of yield* Ref.get(connections))
+            yield* FiberSet.run(
+              timers,
+              flush(to, connection.link, output.clip, now + connection.latency),
+            );
+          return;
         }
         case "Continuation":
           return yield* log({
@@ -242,33 +296,25 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     }).pipe(Effect.asVoid);
 
   /**
-   * Screening flags a clip as its build ends: the verdict goes out on the
-   * control channel, unless the fault withholds it, and on `terminate` the
-   * session ends once it has arrived, instead of the clip becoming Ready.
+   * Content moderation screens an enqueue while the model takes it: the
+   * verdict follows the reply by the moderation delay, naming no category,
+   * input, command or request, as hosted H3's did; on `terminate` the session
+   * then ends. A fault may withhold the verdict and end the session all the same.
    */
-  function moderate(fault: Extract<Fault, { readonly _tag: "Moderate" }>): Effect.Effect<void> {
-    return Effect.gen(function* () {
+  const moderate = (fault: Extract<Fault, { readonly _tag: "Moderate" }>) =>
+    Effect.gen(function* () {
       const action = fault.action ?? "terminate";
       yield* log({ sessionId, kind: "session", name: `moderation ${action}` });
       if (fault.verdict !== false)
-        yield* send("control", Wire.ControlServerMessageSchema, {
+        yield* send("all", "control", Wire.ControlServerMessageSchema, {
           requestId: "",
           kind: Wire.MessageKind.NOTIFICATION,
-          payload: {
-            case: "moderation",
-            value: {
-              action,
-              inputKind: "prompt",
-              command: "enqueue",
-              categories: [...(fault.categories ?? ["violence"])],
-            },
-          },
+          payload: { case: "moderation", value: { action, categories: [] } },
         });
-      if (action === "terminate") yield* environment.terminate((yield* latency) + 100);
+      if (action === "terminate") yield* environment.terminate;
     });
-  }
 
-  function apply(input: H3.Input, withheld?: string): Effect.Effect<void> {
+  function apply(input: H3.Input, greeting?: number): Effect.Effect<void> {
     return lock.withPermit(
       Effect.gen(function* () {
         const [next, outputs] = H3.step(yield* Ref.get(model), input, {
@@ -277,27 +323,28 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           playoutCapacity: options.playoutCapacity,
         });
         yield* Ref.set(model, next);
-        for (const output of outputs) yield* perform(output, withheld);
+        for (const output of outputs) yield* perform(output, greeting);
       }),
     );
   }
 
-  const control = (message: Wire.ControlClientMessage) => {
+  const control = (from: number, message: Wire.ControlClientMessage) => {
     const answer = (
       payload: NonNullable<MessageInitShape<typeof Wire.ControlServerMessageSchema>["payload"]>,
     ) =>
-      send("control", Wire.ControlServerMessageSchema, {
+      send(from, "control", Wire.ControlServerMessageSchema, {
         requestId: message.requestId,
         kind: Wire.MessageKind.RESPONSE,
         payload,
       });
     const pause = (name: string, paused: boolean) =>
-      Ref.update(connection, (open) => {
-        if (open === undefined) return open;
-        const next = new Set(open.paused);
+      Ref.update(connections, (open) => {
+        const connection = open.get(from);
+        if (connection === undefined) return open;
+        const next = new Set(connection.paused);
         if (paused) next.add(name);
         else next.delete(name);
-        return { ...open, paused: next };
+        return new Map(open).set(from, { ...connection, paused: next });
       });
     switch (message.payload.case) {
       case "requestSchema":
@@ -325,7 +372,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     }
   };
 
-  const command = (message: Wire.DataClientMessage) =>
+  const command = (from: number, message: Wire.DataClientMessage) =>
     Effect.gen(function* () {
       if (message.payload.case !== "command") return;
       const { type: name, data: args } = message.payload.value;
@@ -343,36 +390,73 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         name === "enqueue" && Array.isArray(images) && images.length > 0
           ? yield* faults.trip((candidate) => candidate._tag === "InvalidImage")
           : undefined;
-      yield* apply(
-        {
-          _tag: "Command",
-          requestId,
-          name,
-          args: input,
-          ...(invalid === undefined ? {} : { refuse: "a reference image is invalid" }),
-        },
-        applied ? requestId : undefined,
+      yield* Ref.update(requests, (all) =>
+        new Map(all).set(requestId, { from, withheld: applied }),
       );
+      const flagged =
+        name === "enqueue"
+          ? yield* faults.trip(
+              (candidate) =>
+                candidate._tag === "Moderate" &&
+                (candidate.prompt === undefined || candidate.prompt === input.prompt),
+            )
+          : undefined;
+      yield* apply({
+        _tag: "Command",
+        requestId,
+        name,
+        args: input,
+        ...(invalid === undefined ? {} : { refuse: "a reference image is invalid" }),
+      });
+      if (flagged?._tag === "Moderate")
+        yield* FiberSet.run(
+          timers,
+          Effect.flatMap(environment.timing.delay("moderation"), (delay) =>
+            Effect.sleep(Duration.millis(delay)).pipe(Effect.andThen(moderate(flagged))),
+          ),
+        );
     });
 
   return {
-    /** The connection's channels opened: hosted Reactor holds its media until it resumes the tracks. */
-    connect: (link: Link) =>
-      Effect.flatMap(environment.timing.delay("channel"), (latency) =>
-        Ref.set(connection, {
-          link,
-          paused: new Set([H3.documented.tracks.video, H3.documented.tracks.audio]),
-          latency,
-        }),
-      ).pipe(Effect.andThen(apply({ _tag: "Connected" }))),
-    disconnect: (link: Link) =>
-      Ref.update(connection, (open) => (open?.link === link ? undefined : open)),
-    receive: (link: Link, channel: "control" | "data", bytes: Uint8Array) =>
+    /**
+     * A connection's channels opened: hosted Reactor holds its media until it
+     * resumes the tracks, and a clip already playing plays on to it.
+     */
+    connect: (to: number, link: Link) =>
       Effect.gen(function* () {
-        if ((yield* Ref.get(connection))?.link !== link) return;
+        const own = yield* Scope.fork(scope);
+        const connection: Connection = {
+          link,
+          paused: new Set(tracks),
+          latency: yield* environment.timing.delay("channel"),
+          players: yield* FiberMap.make<number, void>().pipe(Scope.provide(own)),
+          scope: own,
+        };
+        yield* Ref.update(connections, (open) => new Map(open).set(to, connection));
+        const playing = (yield* Ref.get(model)).playing;
+        if (playing !== undefined)
+          yield* FiberMap.run(
+            connection.players,
+            playing.token,
+            play(to, connection, playing.clip, playing.startedAt),
+          );
+        yield* apply({ _tag: "Connected" }, to);
+      }),
+    disconnect: (from: number) =>
+      Effect.gen(function* () {
+        const closed = yield* Ref.modify(connections, (open) => {
+          const next = new Map(open);
+          next.delete(from);
+          return [open.get(from), next] as const;
+        });
+        if (closed !== undefined) yield* Scope.close(closed.scope, Exit.void);
+      }),
+    receive: (from: number, link: Link, channel: "control" | "data", bytes: Uint8Array) =>
+      Effect.gen(function* () {
+        if ((yield* Ref.get(connections)).get(from)?.link !== link) return;
         if (channel === "control")
-          yield* control(yield* Wire.decode(Wire.ControlClientMessageSchema, bytes));
-        else yield* command(yield* Wire.decode(Wire.DataClientMessageSchema, bytes));
+          yield* control(from, yield* Wire.decode(Wire.ControlClientMessageSchema, bytes));
+        else yield* command(from, yield* Wire.decode(Wire.DataClientMessageSchema, bytes));
       }).pipe(Effect.ignore),
   };
 });

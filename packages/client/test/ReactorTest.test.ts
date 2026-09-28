@@ -1,9 +1,10 @@
 /** The simulated Reactor behind the real client, the H3 provider and a playout. */
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, Fiber, Ref, Stream } from "effect";
+import { Clock, Duration, Effect, Fiber, Option, Ref, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, H3Source, Playout, Reactor, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
+import type { Session } from "../src/Session.js";
 import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
 const frameMs = 1000 / 24;
@@ -91,7 +92,8 @@ layer(environment({ timing: ReactorTest.Timing.hosted }))("the hosted trace", (i
 });
 
 layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("billing", (it) => {
-  it.effect("bills whole minutes from ready until close confirms termination", () =>
+  // The live pricing endpoint states H3's rate per second, and the paid runs were billed by it.
+  it.effect("bills each second from ready until close confirms termination", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
@@ -101,8 +103,8 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("b
       assert.isTrue(report.remote.confirmed);
       assert.strictEqual(report.remote.evidence, "terminal");
       const billing = yield* test.billing;
-      assert.strictEqual(billing.minutes, 2);
-      assert.strictEqual(billing.usd, 1.5);
+      assert.isTrue(billing.seconds >= 61 && billing.seconds < 62, `${billing.seconds} s`);
+      assert.strictEqual(billing.usd, (billing.seconds * 125) / 10_000);
       assert.deepStrictEqual(
         (yield* test.sessions).map((info) => [info.state, info.deletes]),
         [["CLOSED", 1]],
@@ -316,11 +318,15 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
       }),
     );
 
-    it.effect("publishes its rate in credits a minute, as the pricing API does", () =>
+    it.effect("publishes its rate in credits a second, as the pricing API does", () =>
       Effect.gen(function* () {
         const coordinator = yield* Coordinator.Coordinator;
         const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
-        assert.strictEqual((rate.creditsPerSecond * 60) / rate.creditsPerDollar, 0.75);
+        assert.deepStrictEqual(rate, {
+          creditsPerSecond: 125,
+          creditsPerDollar: 10_000,
+          per: "second",
+        });
       }),
     );
   },
@@ -447,3 +453,155 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("q
     }),
   );
 });
+
+/** Whether `session` hears the model broadcast its queue, from now on. */
+const hearsQueue = (session: Session) =>
+  Effect.gen(function* () {
+    const observed = yield* session.observe();
+    return yield* observed.events.pipe(
+      Stream.filter(
+        (event) =>
+          event._tag === "Model" &&
+          event.kind === "message" &&
+          event.type === "queue_update" &&
+          event.correlation === "unsolicited",
+      ),
+      Stream.runHead,
+      Effect.forkScoped,
+    );
+  });
+
+// Reactor's docs: "Several WebRTC connections can attach to one session at the same time", and each
+// subscribes to its own tracks.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+  "several connections",
+  (it) => {
+    it.effect("a viewer attaching leaves the owner connected, and both hear the model", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const reactor = yield* Reactor.Reactor;
+        const owner = yield* connect;
+        const viewer = yield* reactor.attach({ sessionId: owner.id, tokens: yield* tokens });
+        const ownerHears = yield* hearsQueue(owner);
+        const viewerHears = yield* hearsQueue(viewer);
+        yield* owner.command("enqueue", { prompt: "for everyone", seconds: 5 });
+        assert.isTrue(Option.isSome(yield* Fiber.join(ownerHears)));
+        assert.isTrue(Option.isSome(yield* Fiber.join(viewerHears)));
+        assert.deepStrictEqual(
+          [(yield* owner.snapshot).status, (yield* viewer.snapshot).status],
+          ["ready", "ready"],
+        );
+        // The viewer leaving leaves the owner's connection, and the session, as they were.
+        yield* viewer.close;
+        yield* owner.command("get_state", {});
+        const test = yield* ReactorTest.ReactorTest;
+        assert.deepStrictEqual(
+          (yield* test.sessions).map((info) => [info.state, info.connected]),
+          [["ACTIVE", true]],
+        );
+      }),
+    );
+  },
+);
+
+// Paid run tokens 7bc779d4: the API key as the bearer read an unknown session with 404, and ended a
+// live one with 200 that then read CLOSED. Reactor's docs name the key for DELETE; the session's other
+// calls take a session token.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+  "the API key",
+  (it) => {
+    it.effect("reads and ends a session as the bearer, and is refused elsewhere", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const test = yield* ReactorTest.ReactorTest;
+        const session = yield* connect;
+        const server = yield* Coordinator.make({ credential: Effect.succeed(test.apiKey) });
+        const unknown = yield* Effect.flip(server.inspect("no-such-session"));
+        const elsewhere = yield* Effect.flip(
+          server.signaling(Effect.succeed(test.apiKey)).iceServers(session.id),
+        );
+        assert.deepStrictEqual(
+          [unknown, elsewhere].map((error) =>
+            error.reason._tag === "Http" ? error.reason.status : error.reason._tag,
+          ),
+          [404, 401],
+        );
+        const ended = yield* (yield* Coordinator.make({ apiKey: test.apiKey })).terminate(
+          session.id,
+        );
+        assert.deepStrictEqual(
+          [ended.confirmed, ended.deleteStatus, ended.state],
+          [true, 200, "CLOSED"],
+        );
+      }),
+    );
+  },
+);
+
+/** Every event `session` publishes until it disconnects, and when each came; subscribed at once. */
+const untilDisconnected = (session: Session) =>
+  Effect.gen(function* () {
+    const observed = yield* session.observe();
+    return yield* observed.events.pipe(
+      Stream.mapEffect((event) => Effect.map(Clock.currentTimeMillis, (at) => ({ event, at }))),
+      Stream.takeUntil(({ event }) => event._tag === "Status" && event.status === "disconnected"),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
+  });
+
+const moderated = (faults: ReadonlyArray<ReactorTest.Fault>) =>
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, moderation: "1 second" }),
+    faults,
+  });
+
+// Paid run cut c1796473: a flagged prompt's enqueue was answered in 22 ms, and the verdict,
+// `terminate`, came 1.01 s after the submission naming no category, input, command or request; then
+// the session closed. Reactor's docs allow a session to end without one.
+layer(moderated([{ _tag: "Moderate", prompt: "flagged" }]))("a moderation verdict", (it) => {
+  it.effect("follows the enqueue's answer by its delay, names nothing, and ends the session", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      const observed = yield* untilDisconnected(session);
+      const sent = yield* Clock.currentTimeMillis;
+      const reply = yield* session.command("enqueue", { prompt: "flagged", seconds: 5 });
+      assert.strictEqual(reply.kind === "message" ? reply.type : reply.kind, "clip_queued");
+      const verdicts = (yield* Fiber.join(observed)).flatMap(({ event, at }) =>
+        event._tag === "Moderation"
+          ? [[event.action, event.categories, event.inputKind, event.command, event.requestId, at]]
+          : [],
+      );
+      assert.deepStrictEqual(
+        verdicts.map((verdict) => verdict.slice(0, 5)),
+        [["terminate", [], undefined, undefined, undefined]],
+      );
+      // Within a step of the simulation's clock, which carries the enqueue.
+      assert.approximately(Number(verdicts[0]?.[5]) - sent, 1_000, 10);
+      assert.deepStrictEqual(
+        (yield* test.sessions).map((info) => info.state),
+        ["CLOSED"],
+      );
+    }),
+  );
+});
+
+layer(moderated([{ _tag: "Moderate", prompt: "flagged", verdict: false }]))(
+  "moderation without a verdict",
+  (it) => {
+    it.effect("ends the session at the verdict's delay, saying nothing", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const session = yield* connect;
+        const observed = yield* untilDisconnected(session);
+        const sent = yield* Clock.currentTimeMillis;
+        yield* session.command("enqueue", { prompt: "flagged", seconds: 5 });
+        const events = yield* Fiber.join(observed);
+        assert.isFalse(events.some(({ event }) => event._tag === "Moderation"));
+        assert.approximately((events.at(-1)?.at ?? 0) - sent, 1_000, 10);
+      }),
+    );
+  },
+);
