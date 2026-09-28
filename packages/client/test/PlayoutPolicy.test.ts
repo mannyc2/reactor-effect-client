@@ -814,6 +814,33 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(policy.busy(), undefined);
   });
 
+  // 0.7.0 answered a group key's withdrawal `withdrawn` if any part was; the first Playout
+  // answered with the first part's outcome.
+  it("answers withdrawn for a group whose first part aired and whose next part it drops", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    built(policy, ["p1", "p2"]);
+    const first = clip("c-p1", item("p1"));
+    policy.event({ _tag: "Started", clip: first });
+    policy.observe({ playing: first, ready: [clip("c-p2", item("p2"))] });
+    policy.edit([{ _tag: "Withdraw", key: key("g") }]);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-p2" });
+    assert.deepStrictEqual(withdrawn(policy.actions), []);
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(statuses(policy.actions, "p2").at(-1), "Dropped");
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+  });
+
   // A drain stops admissions, not withdrawals: the critique's withdraw during a drain answered
   // not-found and the item then aired.
   it("withdraws during a drain", () => {
@@ -940,7 +967,7 @@ const simulate = (script: Script) => {
   const edits = new Map<number, { readonly batch: boolean; readonly keys: Map<number, string> }>();
   const drains: Array<number> = [];
   const problems: Array<string> = [];
-  /** Keys submitted so far, groups by key, and what a withdrawal may drop. */
+  /** Keys submitted so far, group keys among them, and what a withdrawal may drop. */
   const known: Array<string> = [];
   /**
    * Each group's parts by place, replacements included: a replacement takes
@@ -1040,6 +1067,7 @@ const simulate = (script: Script) => {
           value.key,
           value.parts.map((part, place) => ({ key: part.key, place })),
         );
+        known.push(value.key);
         value.parts.forEach((part, place) => {
           lanes.set(part.key, part.lane);
           known.push(part.key);
@@ -1302,11 +1330,31 @@ const check = (script: Script): void => {
           1,
           `the withdrawal of ${value.keys.get(position) ?? ""} was answered other than once`,
         );
-  // A withdrawal answers what became of its item.
+  // A withdrawal answers what became of its item. A group key's answers `withdrawn` if any
+  // part was dropped by then, else `already-started` if any started, else `not-found`.
+  const seen = new Map<string, ReadonlyArray<string>>();
+  for (const action of actions) {
+    if (action._tag === "Emit" && action.event._tag === "AsRun")
+      seen.set(action.event.event.key, [
+        ...(seen.get(action.event.event.key) ?? []),
+        action.event.event.status._tag,
+      ]);
+    if (action._tag !== "Withdrawn") continue;
+    const name = edits.get(action.id)?.keys.get(action.index);
+    const parts = name === undefined ? undefined : groups.get(name);
+    if (parts === undefined) continue;
+    const so = parts.flatMap((part) => seen.get(part.key) ?? []);
+    const expected = so.includes("Dropped")
+      ? "withdrawn"
+      : so.includes("Started")
+        ? "already-started"
+        : "not-found";
+    assert.strictEqual(action.outcome, expected, `group ${name ?? ""}: ${so.join(",")}`);
+  }
   for (const action of actions)
     if (action._tag === "Withdrawn") {
       const name = edits.get(action.id)?.keys.get(action.index);
-      if (name === undefined) continue;
+      if (name === undefined || groups.has(name)) continue;
       const statuses = tags(name);
       if (action.outcome === "withdrawn")
         assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);

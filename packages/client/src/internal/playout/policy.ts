@@ -296,6 +296,14 @@ export interface State {
     readonly refilling: boolean;
   };
   readonly batches: ReadonlyArray<Batch>;
+  /**
+   * Withdrawals of a group key still waiting on some of its parts, by edit and
+   * position: the parts not answered yet, and whether any was withdrawn.
+   */
+  readonly joins: ReadonlyMap<
+    string,
+    { readonly left: number; readonly outcomes: ReadonlyArray<WithdrawOutcome> }
+  >;
   readonly drains: ReadonlyArray<{ readonly id: number; readonly finish: "playing" | "accepted" }>;
   readonly accepting: boolean;
   readonly closed: boolean;
@@ -349,6 +357,7 @@ export const initial: State = {
     refilling: false,
   },
   batches: [],
+  joins: new Map(),
   drains: [],
   accepting: true,
   closed: false,
@@ -466,6 +475,34 @@ export const step: {
   const atMono = (item: Item): number | undefined =>
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
 
+  /**
+   * Answers a withdrawal waiting on one item. A group key's withdrawal waits on
+   * each part and answers once all have: `withdrawn` if any part was, else
+   * `already-started` if any started, as 0.7.0 answered it.
+   */
+  const answer = (
+    waiter: { readonly id: number; readonly index: number },
+    outcome: WithdrawOutcome,
+  ): void => {
+    const id = `${String(waiter.id)}:${String(waiter.index)}`;
+    const join = state.joins.get(id);
+    if (join === undefined) {
+      actions.push({ _tag: "Withdrawn", id: waiter.id, index: waiter.index, outcome });
+      return;
+    }
+    const outcomes = [...join.outcomes, outcome];
+    const joins = new Map(state.joins);
+    if (join.left > 1) joins.set(id, { left: join.left - 1, outcomes });
+    else joins.delete(id);
+    state = { ...state, joins };
+    if (join.left > 1) return;
+    const combined = outcomes.includes("withdrawn")
+      ? "withdrawn"
+      : outcomes.includes("already-started")
+        ? "already-started"
+        : "not-found";
+    actions.push({ _tag: "Withdrawn", id: waiter.id, index: waiter.index, outcome: combined });
+  };
   /** What a withdrawal waiting on an item learns from how it settled. */
   const outcomeOf = (item: Item, status: AsRunStatus): WithdrawOutcome =>
     status._tag === "Dropped"
@@ -477,11 +514,11 @@ export const step: {
   const settle = (key: ItemKey, status: AsRunStatus): void => {
     const item = items.get(key);
     if (item === undefined || item.phase === "Settled") return;
-    const outcome = outcomeOf(item, status);
-    for (const wait of item.waiting)
-      actions.push({ _tag: "Withdrawn", id: wait.id, index: wait.index, outcome });
+    // The as-run goes out first, so a withdrawal's caller finds it already published.
     set(key, { phase: "Settled", waiting: [], withdraw: undefined });
     asRun(key, status);
+    const outcome = outcomeOf(item, status);
+    for (const wait of item.waiting) answer(wait, outcome);
     state = { ...state, settled: [...state.settled, key] };
     // A part that fails or is dropped takes the parts after it with it; a replaced one does not,
     // since its replacement takes its place.
@@ -507,19 +544,17 @@ export const step: {
     waiter?: { readonly id: number; readonly index: number },
   ): void => {
     const item = items.get(key);
-    if (item === undefined) return;
+    if (item === undefined) {
+      if (waiter !== undefined) answer(waiter, "not-found");
+      return;
+    }
     if (item.phase === "Started" || (item.phase === "Settled" && item.startedAt !== undefined)) {
-      if (waiter !== undefined)
-        actions.push({ _tag: "Withdrawn", ...waiter, outcome: "already-started" });
+      if (waiter !== undefined) answer(waiter, "already-started");
       return;
     }
     if (item.phase === "Settled") {
       if (waiter !== undefined)
-        actions.push({
-          _tag: "Withdrawn",
-          ...waiter,
-          outcome: item.status?._tag === "Dropped" ? "withdrawn" : "not-found",
-        });
+        answer(waiter, item.status?._tag === "Dropped" ? "withdrawn" : "not-found");
       return;
     }
     const waiting = waiter === undefined ? item.waiting : [...item.waiting, waiter];
@@ -787,6 +822,8 @@ export const step: {
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
     const targets: Array<Batch["targets"][number]> = [];
+    /** Group-key withdrawals by position, and how many parts each waits on. */
+    const joined: Array<{ readonly index: number; readonly parts: number }> = [];
     const put = (item: Item): void => {
       items.set(item.spec.key, item);
       adds.push(item.spec.key);
@@ -904,12 +941,12 @@ export const step: {
           const keys = group === undefined ? [edit.key] : group.parts;
           const known = keys.some((key) => items.has(key));
           if (!known) actions.push({ _tag: "Withdrawn", id, index, outcome: "not-found" });
-          else if (
-            group === undefined &&
-            items.get(edit.key)?.group !== undefined &&
-            !items.get(edit.key)!.inserted
-          ) {
-            // A part key withdraws that part and every part after it.
+          else if (group !== undefined) {
+            // A group key withdraws every part, and answers once each part has.
+            joined.push({ index, parts: group.parts.length });
+            for (const key of group.parts) targets.push({ key, index, reason: "withdrawn" });
+          } else if (items.get(edit.key)?.group !== undefined && !items.get(edit.key)!.inserted) {
+            // A part key withdraws that part and every part after it, and answers for that part.
             const part = items.get(edit.key)!;
             for (const other of groups.get(part.group!.key)?.parts ?? [])
               if ((items.get(other)?.group?.index ?? -1) >= part.group!.index)
@@ -918,9 +955,7 @@ export const step: {
                   index: other === edit.key ? index : -1,
                   reason: "withdrawn",
                 });
-          } else
-            for (const key of keys)
-              targets.push({ key, index: key === keys[0] ? index : -1, reason: "withdrawn" });
+          } else targets.push({ key: edit.key, index, reason: "withdrawn" });
           results.push({ _tag: "Withdrawal" });
           break;
         }
@@ -945,6 +980,12 @@ export const step: {
           if (value.parts.some((part) => adds.includes(part))) groups.delete(group);
         return refuse({ _tag: "WouldMissDeadline", key });
       }
+    }
+    if (joined.length > 0) {
+      const joins = new Map(state.joins);
+      for (const join of joined)
+        joins.set(`${String(id)}:${String(join.index)}`, { left: join.parts, outcomes: [] });
+      state = { ...state, joins };
     }
     const pending = batched && (adds.length > 0 || targets.length > 0);
     for (const key of adds) {
@@ -995,14 +1036,6 @@ export const step: {
         : at !== undefined && now.mono > at
           ? now.mono - at
           : undefined;
-    // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
-    for (const wait of item.waiting)
-      actions.push({
-        _tag: "Withdrawn",
-        id: wait.id,
-        index: wait.index,
-        outcome: "already-started",
-      });
     set(clip.tag.key, {
       phase: "Started",
       startedAt: now.mono,
@@ -1020,6 +1053,8 @@ export const step: {
       seconds: clip.seconds ?? item.spec.seconds,
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
+    // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
+    for (const wait of item.waiting) answer(wait, "already-started");
   };
   const forgetFiller = (clipId: string): void => {
     state = { ...state, fillers: new Map([...state.fillers].filter(([id]) => id !== clipId)) };

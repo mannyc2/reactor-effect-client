@@ -467,7 +467,11 @@ export class Playout extends Context.Service<
     readonly edit: (edits: ReadonlyArray<Edit>) => Effect.Effect<EditHandle, SubmitError>;
     /** Releases a held `Manual` item to air at the next boundary. */
     readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
-    /** A group key withdraws its unstarted parts; a part key, that part and those after it. */
+    /**
+     * A group key withdraws its unstarted parts, and answers `withdrawn` if any
+     * part was, else `already-started` if any started; a part key withdraws that
+     * part and those after it, and answers for that part.
+     */
     readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
     /** Admits nothing more and completes once the chosen work has aired or settled. */
     readonly drain: (options?: {
