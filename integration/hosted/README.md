@@ -90,7 +90,7 @@ After a failure, read its reasons and fix the cause before running it again. To 
 
 ### 0.8.0 from a checkout
 
-Before 0.8.0 is published, three runs qualify it from a built checkout, in a ledger of their own (`evidence/0.8.0-dev/`; `evidence/0.8.0/` stays for the published bytes). Stage the linux-x64 addon as above. At H3's per-second rate, the three capped sessions reserve $1.875 of a $2.00 total, and a fourth is refused.
+Before 0.8.0 is published, runs from a built checkout go in a ledger of their own (`evidence/0.8.0-dev/`; `evidence/0.8.0/` stays for the published bytes). Stage the linux-x64 addon as above. At H3's per-second rate a capped session reserves $0.625. The maintainer approved $2.00 for `tokens`, `cut` and `edits`; `tokens` ran twice, which left no room for `edits`. $1.25 more, a $3.25 total, then ran `vertical` and `edits` on the rewrite's final head, and the ledger now holds $3.125 of it.
 
 ```sh
 bun run build
@@ -106,7 +106,11 @@ bun --no-env-file integration/hosted/main.ts run tokens --budget-usd 0.75 --tota
   --ledger $L --network "$N" --i-authorize-paid-sessions
 bun --no-env-file integration/hosted/main.ts run cut --budget-usd 0.75 --total-budget-usd 2.00 \
   --ledger $L --network "$N" --i-authorize-paid-sessions --moderation-prompt-file <file outside the repository>
-bun --no-env-file integration/hosted/main.ts run edits --budget-usd 0.75 --total-budget-usd 2.00 \
+
+# The final head, under the later $3.25 total.
+bun --no-env-file integration/hosted/main.ts run vertical --budget-usd 0.625 --total-budget-usd 3.25 \
+  --ledger $L --network "$N" --i-authorize-paid-sessions
+bun --no-env-file integration/hosted/main.ts run edits --budget-usd 0.625 --total-budget-usd 3.25 \
   --ledger $L --network "$N" --i-authorize-paid-sessions
 
 bun --no-env-file integration/hosted/main.ts summarize $L > $L/summary.md

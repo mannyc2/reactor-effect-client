@@ -1,8 +1,9 @@
 # 0.8.0 paid checks from a checkout (September 28, 2026)
 
-Three one-session runs from checkouts of `claude/effect-native`, approved by the maintainer at $2 in
-total. The ledger reserved $1.875; the runs' estimates at the published per-second rate total
-$0.925. The account balance before the first run read $5.38.
+Five one-session runs from checkouts of `claude/effect-native`. The maintainer approved $2 for the
+first three, then $1.25 more for `vertical` and `edits` on the rewrite's final head: $3.25 in
+total. The ledger reserved $3.125; the runs' estimates at the published per-second rate total
+$1.513. The account balance before the first run read $5.38.
 
 What they found:
 
@@ -30,12 +31,31 @@ What they found:
   went closing, then `CLOSED`. `Playout` blamed the latest enqueue, which was the flagged item,
   settled it `Failed` as moderated and, with `maxModerations: 1`, failed rather than open another
   session. The prompt text appears nowhere in this ledger.
+- **The rewritten stack works end to end.** `vertical` ran on 69f34e9, after the session,
+  coordinator, H3 and native host changes that followed the first three runs. It minted a token,
+  allocated, connected 2.7 s later, had its clip accepted and correlated in 30 ms, saw it generated
+  and started, received all 124 of its frames at 24.2 fps with none lost, heard audio, saw its
+  metadata echoed and confirmed the termination. It failed one criterion of the check's own making:
+  "live video" required the latest eight frames all lit, but H3 ends a clip on one black frame
+  unless the session holds its last frame (`flush_on_clip_end`, on by default), and a 6 s window
+  over a 5 s clip always reads that frame. Rehearsals read for 1.5 s and never reached it. The rule
+  now allows that one frame, and rehearsals read as long as paid runs (3539ed4); without the rule
+  change the `vertical`, `audio` and `turn` rehearsals fail as this run did. It was not run again.
+- **`Playout`'s edits work on hosted H3.** `edits` ran on 3539ed4, whose library is 69f34e9's. The
+  group's three beats, the insert continuing from the second, the insert before the third and the
+  batch's insert after it aired in the planned order (p1, p2, xc, xn, p3, y). The batch took effect
+  2.12 s after it was sent and 1.05 s before its boundary, and the clip it withdrew never started.
+  The seams paused 58–169 ms with no dark frame. The continued join changed 5.8× the clip's own
+  motion, against 13–19× at the independent joins, and its seam frames show the same glasses and
+  plate shifted a little, where the independent joins cut to a new picture.
 
-| Run      | Check  | Mode | Verdict | Started                  | Worst case | Estimated |
-| -------- | ------ | ---- | ------- | ------------------------ | ---------- | --------- |
-| 83d17eb7 | tokens | paid | fail    | 2026-09-28T04:51:39.053Z | $0.625     | $0.275    |
-| 7bc779d4 | tokens | paid | fail    | 2026-09-28T05:12:10.312Z | $0.625     | $0.400    |
-| c1796473 | cut    | paid | pass    | 2026-09-28T05:14:31.589Z | $0.625     | $0.250    |
+| Run      | Check    | Mode | Verdict | Started                  | Worst case | Estimated |
+| -------- | -------- | ---- | ------- | ------------------------ | ---------- | --------- |
+| 83d17eb7 | tokens   | paid | fail    | 2026-09-28T04:51:39.053Z | $0.625     | $0.275    |
+| 7bc779d4 | tokens   | paid | fail    | 2026-09-28T05:12:10.312Z | $0.625     | $0.400    |
+| c1796473 | cut      | paid | pass    | 2026-09-28T05:14:31.589Z | $0.625     | $0.250    |
+| d56fd1ee | vertical | paid | fail    | 2026-09-28T12:03:07.569Z | $0.625     | $0.150    |
+| 3ae36b29 | edits    | paid | pass    | 2026-09-28T12:11:19.747Z | $0.625     | $0.438    |
 
 ### tokens: fail (paid, run 83d17eb7, 2026-09-28T04:51:39.053Z)
 
@@ -95,3 +115,34 @@ What they found:
 - **Afterwards:** session moderation terminate > status closing > status closed; playout moderated d9530be0-47e3-4671-bcb0-1a1ca397490d blaming flagged > failed Moderated; read 200 CLOSED (keys session_id, cluster, zone, state, server_info, model, origin_country, region)
 - **Termination:** d9530be0-47e3-4671-bcb0-1a1ca397490d confirmed (trail CLOSED)
 - **Criteria:** ✓ a cut lane's clip stops a lower lane's playing clip · ✓ confirmed termination
+
+### vertical: fail (paid, run d56fd1ee, 2026-09-28T12:03:07.569Z)
+
+- **Environment:** reactor-effect-client 0.7.1, reactor-effect-native 0.7.1, effect 4.0.0-rc.117, @effect/platform-node 4.0.0-rc.117, bun 1.4.2, linux x64, commit 69f34e9f
+- **Native addon:** linux-x64-gnu sha256 4fdccf92, source 1da0d5fb, webrtc-7907-a5ddff60-p9
+- **Network:** maintainer's Linux workstation, network not described
+- **Cost:** worst case $0.625, estimated $0.150 at 125 credits/s, billed per second, and 10000 credits/$
+- **Timeline:** admitted 0.00 s · minted 0.08 s · allocated 0.51 s · connected 3.16 s · accepted 3.65 s · clip started 5.86 s · closed 12.30 s · settled 12.52 s
+- **Clip:** accepted correlated in 0.03 s, generated at 5.85 s, started at 5.86 s
+- **Video:** 124 frames at 24.2 fps, 123 lit, 124 distinct, 0 lost; audio 638 blocks, peak RMS 0.0214
+- **Pair:** prflx
+- **Termination:** ba3df1cc-4cf5-4f3c-b0dd-00e1c9c5c26a confirmed (trail CLOSED)
+- **Criteria:** ✓ correlated acceptance · ✓ lifecycle progression · ✗ live video · ✓ audio when offered · ✓ metadata preserved · ✓ ICE pair selected · ✓ confirmed termination
+  - live video: fewer than eight recent lit frames arrived
+
+### edits: pass (paid, run 3ae36b29, 2026-09-28T12:11:19.747Z)
+
+- **Environment:** reactor-effect-client 0.7.1, reactor-effect-native 0.7.1, effect 4.0.0-rc.117, @effect/platform-node 4.0.0-rc.117, bun 1.4.2, linux x64, commit 3539ed45
+- **Native addon:** linux-x64-gnu sha256 4fdccf92, source 1da0d5fb, webrtc-7907-a5ddff60-p9
+- **Network:** maintainer's Linux workstation, network not described
+- **Cost:** worst case $0.625, estimated $0.438 at 125 credits/s, billed per second, and 10000 credits/$
+- **Timeline:** admitted 0.00 s · opened 0.00 s · line submitted 0.01 s · minted 0.22 s · allocated 0.86 s · inserted 5.66 s · batch submitted 28.42 s · edits observed 35.10 s · closed 35.70 s · settled 35.91 s
+- **Order:** started p1, p2, xc, xn, p3, y
+- **Seam p1 to p2:** pause 169 ms (0 frames, 0 dark); 0 dark frames; join change 49.4 against 3.41 (×14.47)
+- **Seam p2 to xc (continued):** pause 86 ms (0 frames, 0 dark); 0 dark frames; join change 25.06 against 4.31 (×5.81)
+- **Seam xc to xn:** pause 61 ms (0 frames, 0 dark); 0 dark frames; join change 51.71 against 2.79 (×18.52)
+- **Seam xn to p3:** pause 58 ms (0 frames, 0 dark); 0 dark frames; join change 50.98 against 3.86 (×13.21)
+- **Seam p3 to y:** pause 82 ms (0 frames, 0 dark); 0 dark frames; join change 48.3 against 2.88 (×16.79)
+- **Batch:** took effect 2.12 s after it was sent, 1.05 s before its boundary
+- **Termination:** 1f84da65-7428-4a85-a70a-e922e90273c0 confirmed (trail CLOSED)
+- **Criteria:** ✓ inserts and the batch air in their planned places · ✓ a batch takes effect before its boundary · ✓ a batch's withdrawn clip never starts · ✓ every seam measured · ✓ confirmed termination
