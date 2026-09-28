@@ -397,6 +397,8 @@ const TourMint = Schema.Struct({
   /** How many sessions it names, and whether it names exactly the session's own id. */
   bound: Schema.Int,
   ownSession: Schema.Boolean,
+  /** Why proving or accepting it failed: a grant refused is never used. */
+  refused: Schema.optionalKey(Schema.String),
 });
 
 /** A session call the tour made either side of the creating token's expiry. */
@@ -405,6 +407,8 @@ const TourCall = Schema.Struct({
   startedMs: Ms,
   endedMs: Schema.optionalKey(Ms),
   ok: Schema.Boolean,
+  /** The reason it failed with. */
+  failure: Schema.optionalKey(Schema.String),
 });
 
 const Canvas = Schema.Struct({ aspect: Schema.String, width: Schema.Int, height: Schema.Int });
@@ -491,7 +495,7 @@ export const TourRecord = Schema.Struct({
   /** When the creating token expired, and from when the session refreshes it. */
   createExpiresMs: Schema.optionalKey(Ms),
   refreshDueMs: Schema.optionalKey(Ms),
-  /** The session's first call from the refresh point on, and one after the creating token expired. */
+  /** The upload at the refresh point on the session's token, and the reconnect after its expiry. */
   refreshCall: Schema.optionalKey(TourCall),
   afterExpiryCall: Schema.optionalKey(TourCall),
   /** The commands the tour sends that the deployment does not offer. */
@@ -538,23 +542,29 @@ export const TourRecord = Schema.Struct({
       pops: Schema.Array(
         Schema.Struct({
           name: Schema.String,
-          /** It headed the generation queue when popped: the build in flight. */
-          building: Schema.Boolean,
+          /**
+           * It headed the generation queue when popped. H3 lists the clip it is building
+           * first, and a clip waiting to be built first too, so this is the build in flight
+           * only by inference.
+           */
+          headOfGeneration: Schema.Boolean,
           sentMs: Ms,
           repliedMs: Ms,
-          /** Whether it was built, or started, after the pop's reply; read once the session reset. */
+          /** Whether it was built, or started, after the pop's reply; read before the end. */
           generatedAfter: Schema.optionalKey(Schema.Boolean),
           startedAfter: Schema.optionalKey(Schema.Boolean),
         }),
       ),
-      /** The reads after the edits. */
+      /** When clip 2, built after the moved clip, was generated, from the moved clip's pop. */
+      clip2GeneratedAfterPopMs: Schema.optionalKey(Ms),
+      /** The reads after the edits, and `refreshed` or the reason H3's refresh failed with. */
       after: Schema.optionalKey(
         Schema.Struct({
           generation: Schema.Array(Schema.String),
           playout: Schema.Array(Schema.String),
           generationQueued: Schema.Int,
           playoutQueued: Schema.Int,
-          refreshed: Schema.Boolean,
+          refresh: Schema.String,
         }),
       ),
       /** Each queue command's round trip, in milliseconds. */
@@ -635,8 +645,9 @@ export const TourRecord = Schema.Struct({
       /** How attaching to the ended session failed, and the HTTP status if one came. */
       attach: Schema.String,
       attachStatus: Schema.optionalKey(Schema.Int),
-      /** The API key reading an unknown session: its HTTP status, or 0 if none came. */
-      inspectUnknown: Schema.Int,
+      /** The API key reading an unknown session: `found`, or the reason it failed with. */
+      inspectUnknown: Schema.String,
+      inspectStatus: Schema.optionalKey(Schema.Int),
       terminateUnknown: Schema.optionalKey(Termination),
     }),
   ),

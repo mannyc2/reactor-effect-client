@@ -12,10 +12,10 @@ const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> =
   const lines: Array<string> = [];
   const expires = tour.createExpiresMs;
   lines.push(
-    `**Tokens:** ${tour.mints.map((mint) => `${mint.kind}${mint.ownSession ? " (its own id)" : ""} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s`).join("; ")}${expires === undefined ? "" : `; the creating token expired at ${seconds(expires)}, refresh due at ${seconds(tour.refreshDueMs ?? expires)}`}`,
+    `**Tokens:** ${tour.mints.map((mint) => `${mint.kind}${mint.ownSession ? " (its own id)" : ""} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s${mint.refused === undefined ? "" : `, refused: ${mint.refused}`}`).join("; ")}${expires === undefined ? "" : `; the creating token expired at ${seconds(expires)}, refresh due at ${seconds(tour.refreshDueMs ?? expires)}`}`,
   );
   const call = (label: string, value: NonNullable<typeof tour.refreshCall>) =>
-    `${label} ${value.what} at ${seconds(value.startedMs)}, ${value.ok ? "succeeded" : "failed"}`;
+    `${label} ${value.what} at ${seconds(value.startedMs)}, ${value.ok ? "succeeded" : `failed with ${value.failure ?? "?"}`}`;
   if (tour.refreshCall !== undefined || tour.afterExpiryCall !== undefined)
     lines.push(
       `**Calls:** ${[
@@ -41,7 +41,7 @@ const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> =
   const queue = tour.queue;
   if (queue !== undefined)
     lines.push(
-      `**Queue:** generation ${listed(queue.enqueued)}${queue.move === undefined ? "" : `; moved to ${queue.move.queue} ${queue.move.position}, then ${listed(queue.move.generation)}`}; pops ${queue.pops.map((pop) => `${pop.name}${pop.building ? " (building)" : ""}${pop.generatedAfter === true ? " generated after" : ""}${pop.startedAfter === true ? " started after" : ""}`).join(", ") || "none"}; round trips ${Object.entries(
+      `**Queue:** generation ${listed(queue.enqueued)}${queue.move === undefined ? "" : `; moved to ${queue.move.queue} ${queue.move.position}, then ${listed(queue.move.generation)}`}; pops ${queue.pops.map((pop) => `${pop.name}${pop.headOfGeneration ? " (heading the generation queue)" : ""}${pop.generatedAfter === true ? " generated after" : ""}${pop.startedAfter === true ? " started after" : ""}`).join(", ") || "none"}${queue.clip2GeneratedAfterPopMs === undefined ? "" : `; clip 2 generated ${seconds(queue.clip2GeneratedAfterPopMs)} after the moved clip's pop`}${queue.after === undefined ? "" : `; refresh ${queue.after.refresh}`}; round trips ${Object.entries(
         queue.replies,
       )
         .map(([name, ms]) => `${name} ${ms} ms`)
@@ -83,7 +83,7 @@ const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> =
   const afterEnd = tour.afterEnd;
   if (afterEnd !== undefined)
     lines.push(
-      `**After the end:** attaching ${afterEnd.attach}${afterEnd.attachStatus === undefined ? "" : ` ${afterEnd.attachStatus}`}; the key reading an unknown session ${afterEnd.inspectUnknown}, ending it ${afterEnd.terminateUnknown === undefined ? "unsent" : termination(afterEnd.terminateUnknown)}`,
+      `**After the end:** attaching ${afterEnd.attach}${afterEnd.attachStatus === undefined ? "" : ` ${afterEnd.attachStatus}`}; the key reading an unknown session ${afterEnd.inspectUnknown}${afterEnd.inspectStatus === undefined ? "" : ` ${afterEnd.inspectStatus}`}, ending it ${afterEnd.terminateUnknown === undefined ? "unsent" : termination(afterEnd.terminateUnknown)}`,
     );
   if (tour.freeMints.length > 0)
     lines.push(

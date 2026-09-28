@@ -183,6 +183,49 @@ rehearse("tour goes on after clip 1 is refused, and still ends its session", {
   },
 });
 
+// The refresh runs on its own: clip 1's build never finishes, which holds every phase after it
+// up past the refresh point, and the session still refreshes its token in time.
+rehearse("tour refreshes its token on time while a stalled build holds up its phases", {
+  check: "tour",
+  faults: [{ _tag: "StallBuild", nth: 1 }],
+  judge: (evidence) => {
+    const passed = (name: string) =>
+      evidence.criteria.find((criterion) => criterion.name === name)?.passed;
+    const heldUntil = evidence.milestones.find(
+      (milestone) => milestone.step === "clip 1 on air failed",
+    )?.atMs;
+    const tour = evidence.tour;
+    assert.deepStrictEqual(
+      [
+        passed("clip 1 on air"),
+        passed("the session refreshes to a token bound to itself before its token expires"),
+      ],
+      [false, true],
+      evidence.reasons.join("; "),
+    );
+    assert.isBelow(tour?.refreshDueMs ?? Infinity, heldUntil ?? 0);
+    assert.isBelow(tour?.refreshCall?.startedMs ?? Infinity, tour?.createExpiresMs ?? 0);
+  },
+});
+
+// A session whose end was not confirmed may still be live: nothing probes it as ended, and the
+// check's cleanup ends it.
+rehearse("tour probes nothing after an end it could not confirm", {
+  check: "tour",
+  faults: [{ _tag: "IgnoreDelete" }],
+  judge: (evidence) => {
+    const passed = (name: string) =>
+      evidence.criteria.find((criterion) => criterion.name === name)?.passed;
+    assert.deepStrictEqual(
+      [passed("the API key ends the session"), passed("after the end")],
+      [false, false],
+      evidence.reasons.join("; "),
+    );
+    assert.isUndefined(evidence.tour?.afterEnd);
+    assert.isFalse(evidence.sessions[0]?.close?.confirmed ?? true);
+  },
+});
+
 // A phase that fails is a failed criterion, and the phases after it still run: the refusals are
 // still read, and closing the resumed source still ends the session.
 rehearse("adoption records a refused clip and still ends the session it resumed", {

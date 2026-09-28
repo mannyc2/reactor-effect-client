@@ -17,21 +17,24 @@
  *           accepted once both upload; clip 2 reuses those uploads
  *   A+5.5   a clip enqueued at position zero, one moved to the front, the first
  *           popped while it waits
- *   A+7.5   clip 1 is built and starts; the moved clip, now building, is popped;
- *           a clip to play by hand and one past H3's text budget are enqueued
- *   A+12.7  clip 2 starts; autoplay goes off, clip 2 is stopped and the waiting clip played
- *   A+14    a recording of the last 5 s is asked for, and downloaded if one comes
- *   A+22.2  past the token's refresh point, a 10 s clip uploads a reference: the
- *           session mints a token bound to itself
- *   A+29.7  the creating token has expired; the session reconnects, plays the
- *           10 s clip on its new connection, and reads its state
- *   A+36    the session resets while that clip plays
+ *   A+7.5   clip 1 is built and starts; the moved clip, now heading the queue, is
+ *           popped; a clip past H3's text budget, then one to play by hand, are enqueued
+ *   A+12.7  clip 2 starts; autoplay goes off, clip 2 is stopped and the waiting clip
+ *           played, and the session resets while it plays
+ *   A+14.5  with autoplay off, a 10 s clip is enqueued for the reconnect to play; a
+ *           recording of the last 5 s is asked for, and downloaded if one comes
+ *   A+22.45 at the token's refresh point, whatever the phases have reached, the
+ *           session uploads a picture on its own token and so mints one bound to itself
+ *   A+31.7  2 s after the creating token expired, the session reconnects, reads its
+ *           state, and plays the 10 s clip on its new connection
  *   A+37    the API key ends the session, and the session's own close follows
- *   A+38    attaching to the ended session, and the key on an unknown one, are refused
+ *   A+38    once the end is confirmed, an attach to the ended session and the key
+ *           on an unknown one
  *
  * That ends about 40 s inside the 80 s work deadline. Hosted build latency
- * moves the steps before A+22, never the token's times; the free mints come
- * before the session.
+ * moves the phases before A+22, never the refresh, which runs on its own from
+ * the session's creation, or the reconnect; the free mints come before the
+ * session.
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -39,6 +42,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
@@ -51,7 +55,7 @@ import * as H3 from "reactor-effect-client/H3";
 import type { AudioFrame, DecodedMedia, Recorded, VideoFrame } from "reactor-effect-client/Media";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { isReactorFailure, ReactorError } from "reactor-effect-client/ReactorError";
-import type { ReactorErrorReason } from "reactor-effect-client/ReactorError";
+import type { CommandFailure, ReactorErrorReason } from "reactor-effect-client/ReactorError";
 import type * as Session from "reactor-effect-client/Session";
 import type { Pieces } from "../Checks.js";
 import type * as Evidence from "../Evidence.js";
@@ -79,6 +83,10 @@ const snapSeconds = 5;
 const freeSeconds = 15;
 /** How long frames are read on the new connection. */
 const freshMs = 3_000;
+/** The reconnect waits this long past the creating token's expiry, for clocks a little apart. */
+const afterExpiryMs = 2_000;
+/** The name of the upload that refreshes the session's token: it is no clip's. */
+const refreshName = "refresh.png";
 /**
  * A prompt about twice H3's text budget of about 2,000 tokens, which its
  * prompt guide puts at roughly 8,000 characters of English prose: 220 beats
@@ -134,22 +142,18 @@ const failureOf = (cause: Cause.Cause<unknown>): string => {
 };
 
 /** What H3's state and queue said, the playing clip by the tour's name for it. */
-const settingsOf = (facts: H3.Facts | null, nameOf: (clipId: string) => string) =>
-  facts === null
-    ? undefined
-    : ({
-        aspect: facts.state.aspect,
-        width: facts.state.width,
-        height: facts.state.height,
-        autoplay: facts.state.autoplay,
-        flushOnClipEnd: facts.state.flush_on_clip_end,
-        seed: facts.state.seed,
-        clipSeconds: facts.state.clip_seconds,
-        playing: facts.state.playing,
-        playingClip:
-          facts.state.playing_clip_id === null ? null : nameOf(facts.state.playing_clip_id),
-        queued: facts.queue.generation.length + facts.queue.playout.length,
-      } satisfies Settings);
+const settingsOf = (facts: H3.Facts, nameOf: (clipId: string) => string): Settings => ({
+  aspect: facts.state.aspect,
+  width: facts.state.width,
+  height: facts.state.height,
+  autoplay: facts.state.autoplay,
+  flushOnClipEnd: facts.state.flush_on_clip_end,
+  seed: facts.state.seed,
+  clipSeconds: facts.state.clip_seconds,
+  playing: facts.state.playing,
+  playingClip: facts.state.playing_clip_id === null ? null : nameOf(facts.state.playing_clip_id),
+  queued: facts.queue.generation.length + facts.queue.playout.length,
+});
 
 /** What a clip reports of the references it was sent, beside what the tour sent and uploaded. */
 const referencesOf = (
@@ -289,30 +293,34 @@ export const tour = (pieces: Pieces) =>
             | undefined;
           /** The session's latest grant, for the calls made on its behalf and after its end. */
           let latest: Coordinator.TokenGrant | undefined;
-          /** Proves, accepts and records a grant; `bound` is the session a bind is for. */
+          /**
+           * Proves, accepts and records a grant; `bound` is the session a bind is for. A grant
+           * refused is recorded with its refusal, and never used.
+           */
           const admit = Effect.fnUntraced(
             function* (grant: Coordinator.TokenGrant, sentAt: number, bound: string | undefined) {
               yield* run.secret(grant.jwt);
-              const granted =
-                bound === undefined
-                  ? yield* provenGrant({ jwt: Redacted.value(grant.jwt), granted: grant.granted })
-                  : created === undefined
-                    ? yield* Refused.make({ message: "a bind came before its session's cap" })
-                    : yield* provenBind({
-                        sessionId: bound,
-                        sessionSeconds: created.cap,
-                        granted: grant.granted,
-                      });
-              yield* acceptGrant({ check: "tour", granted });
-              if (bound === undefined) created = { grant, sentAt, cap: granted.maxSessionSeconds };
-              else grants.set(bound, grant);
-              latest = grant;
+              const proven = yield* Effect.result(
+                Effect.gen(function* () {
+                  const granted =
+                    bound === undefined
+                      ? yield* provenGrant({
+                          jwt: Redacted.value(grant.jwt),
+                          granted: grant.granted,
+                        })
+                      : created === undefined
+                        ? yield* Refused.make({ message: "a bind came before its session's cap" })
+                        : yield* provenBind({
+                            sessionId: bound,
+                            sessionSeconds: created.cap,
+                            granted: grant.granted,
+                          });
+                  yield* acceptGrant({ check: "tour", granted });
+                  return granted;
+                }),
+              );
               const named = grant.granted?.bound ?? [];
               const atMs = yield* run.now;
-              yield* run.update((evidence) => ({
-                ...evidence,
-                grants: [...evidence.grants, { ...granted, expiresAt: grant.expiresAt }],
-              }));
               yield* record((tour) => ({
                 ...tour,
                 mints: [
@@ -325,8 +333,18 @@ export const tour = (pieces: Pieces) =>
                     echoed: grant.granted !== undefined,
                     bound: named.length,
                     ownSession: bound !== undefined && named.length === 1 && named[0] === bound,
+                    ...(Result.isFailure(proven) ? { refused: proven.failure.message } : {}),
                   },
                 ],
+              }));
+              if (Result.isFailure(proven)) return yield* proven.failure;
+              const granted = proven.success;
+              if (bound === undefined) created = { grant, sentAt, cap: granted.maxSessionSeconds };
+              else grants.set(bound, grant);
+              latest = grant;
+              yield* run.update((evidence) => ({
+                ...evidence,
+                grants: [...evidence.grants, { ...granted, expiresAt: grant.expiresAt }],
               }));
             },
             Effect.mapError((error) => ReactorError.fromCode("InvalidState", error.message)),
@@ -396,7 +414,13 @@ export const tour = (pieces: Pieces) =>
             Effect.ignore,
             Effect.forkScoped,
           );
-          /** How many uploads the session made from `fromMs` to `toMs`. */
+          /** When the refresh's own upload ran, from its start to its end. */
+          let refreshWindow: { readonly startedMs: number; readonly endedMs?: number } | undefined;
+          const byRefresh = (atMs: number) =>
+            refreshWindow !== undefined &&
+            atMs >= refreshWindow.startedMs &&
+            atMs <= (refreshWindow.endedMs ?? Number.POSITIVE_INFINITY);
+          /** How many uploads the session made for its clips from `fromMs` to `toMs`. */
           const uploadsBetween = (fromMs: number, toMs: number) =>
             Effect.map(
               run.evidence,
@@ -405,7 +429,8 @@ export const tour = (pieces: Pieces) =>
                   (span) =>
                     span.name === "Session.upload" &&
                     span.startMs >= fromMs &&
-                    span.startMs <= toMs,
+                    span.startMs <= toMs &&
+                    !byRefresh(span.startMs),
                 ).length,
             );
           const video = Media.videoLog();
@@ -504,6 +529,29 @@ export const tour = (pieces: Pieces) =>
           );
           yield* listen;
 
+          // The refresh, on its own from here: past the refresh point the session's next call on
+          // its token mints one bound to itself, whatever the phases have reached. An upload is
+          // such a call, and touches nothing H3 holds.
+          const refreshing = yield* Effect.gen(function* () {
+            yield* pieces.sleepUntil(refreshDueMs + 250, deadline);
+            const startedMs = yield* run.now;
+            refreshWindow = { startedMs };
+            const upload = yield* session
+              .upload(refreshName, "image/png", Media.grayPng({ width: 320, height: 180 }))
+              .pipe(recorded, Effect.result);
+            const endedMs = yield* run.now;
+            refreshWindow = { startedMs, endedMs };
+            const call = {
+              what: "an upload",
+              startedMs,
+              endedMs,
+              ok: Result.isSuccess(upload),
+              ...(Result.isFailure(upload) ? { failure: reasonOf(upload.failure) } : {}),
+            };
+            yield* record((tour) => ({ ...tour, refreshCall: call }));
+            return call;
+          }).pipe(Effect.forkScoped);
+
           // H3's clip lifecycle as it arrives, and the reasons clips failed with, by length only.
           const observed = yield* SubscriptionRef.make<ReadonlyArray<Seen>>([]);
           const failedReasons = new Map<string, number>();
@@ -559,21 +607,28 @@ export const tour = (pieces: Pieces) =>
                 missing.length === 0,
                 `it does not offer ${missing.join(", ")}`,
               ]);
-              const inspection = yield* (yield* pieces.withToken(create.grant.jwt)).inspect(
-                session.id,
+              // Where the session runs, when the coordinator says: a read that fails is noted only.
+              const inspected = yield* pieces.withToken(create.grant.jwt).pipe(
+                Effect.flatMap((coordinator) => coordinator.inspect(session.id)),
+                Effect.result,
               );
-              yield* run.update((evidence) => ({
-                ...evidence,
-                server: {
-                  cluster: inspection.cluster,
-                  zone: inspection.zone,
-                  serverVersion: inspection.serverVersion,
-                  transport:
-                    inspection.selectedTransport === null
-                      ? null
-                      : `${inspection.selectedTransport.protocol}/${inspection.selectedTransport.version}`,
-                },
-              }));
+              if (Result.isFailure(inspected))
+                yield* run.mark("server unread", reasonOf(inspected.failure));
+              else {
+                const inspection = inspected.success;
+                yield* run.update((evidence) => ({
+                  ...evidence,
+                  server: {
+                    cluster: inspection.cluster,
+                    zone: inspection.zone,
+                    serverVersion: inspection.serverVersion,
+                    transport:
+                      inspection.selectedTransport === null
+                        ? null
+                        : `${inspection.selectedTransport.protocol}/${inspection.selectedTransport.version}`,
+                  },
+                }));
+              }
               yield* run.mark("H3 ready");
               return made;
             }),
@@ -581,6 +636,10 @@ export const tour = (pieces: Pieces) =>
           if (Option.isNone(setup)) return;
           const h3 = setup.value;
           const facts = Effect.map(h3.snapshot, pieces.factsOf);
+          /** H3's state and queue as its replies give them now, ahead of its next messages. */
+          const fresh = Effect.all([recorded(h3.getState), recorded(h3.getQueue)]).pipe(
+            Effect.map(([state, queue]): H3.Facts => ({ state: state.value, queue: queue.value })),
+          );
 
           /** Enqueues a clip under `name`, which queue reads then use for it. */
           const submit = Effect.fnUntraced(function* (
@@ -715,8 +774,9 @@ export const tour = (pieces: Pieces) =>
               });
               tally.watch(submitted.clipId, `${marker}:clip 1`);
               const { operation, lifecycle } = yield* follow(submitted);
-              // Its own window: from its start until it ends, or the media window closes.
-              const closed = yield* Deferred.make<Window>();
+              // Its own window: from its start until it ends, or the media window closes. A clip
+              // that fails before it starts fails the window too.
+              const closed = yield* Deferred.make<Window, ReactorError | CommandFailure>();
               yield* Effect.gen(function* () {
                 yield* operation.reached("started");
                 clip1StartedMs = yield* run.now;
@@ -726,11 +786,14 @@ export const tour = (pieces: Pieces) =>
                   Effect.ignore,
                 );
                 windows.delete(window);
-                yield* Deferred.succeed(closed, window);
-              }).pipe(Effect.ignore, Effect.forkScoped);
+                return window;
+              }).pipe(Deferred.into(closed), Effect.forkScoped);
               const files = yield* pieces.waitFor(
                 uploads,
-                (all) => (all.length >= known + 2 ? all.slice(known) : undefined),
+                (all) => {
+                  const made = all.slice(known).filter((file) => file.name !== refreshName);
+                  return made.length >= 2 ? made : undefined;
+                },
                 deadline,
               );
               const defaultAfter = (yield* facts)?.state.seed ?? null;
@@ -784,9 +847,15 @@ export const tour = (pieces: Pieces) =>
                 audio: [{ _tag: "Uploaded", file: sound }],
               });
               const made = yield* uploadsBetween(fromMs, yield* run.now);
+              const { operation, lifecycle } = yield* follow(submitted);
               const clip = submitted.acceptance.clip;
               const references = referencesOf(clip, { images: 1, audio: 1, uploads: made });
-              yield* record((tour) => ({ ...tour, clip2: clipRecord(submitted, {}, references) }));
+              /** What the clip shows, its lifecycle as far as it has gone. */
+              const write = record((tour) => ({
+                ...tour,
+                clip2: clipRecord(submitted, lifecycle, references),
+              }));
+              yield* write;
               yield* pieces.judge(
                 "clip 2 is accepted on clip 1's uploads",
                 [
@@ -800,7 +869,7 @@ export const tour = (pieces: Pieces) =>
                 `the clip reports ${String(references.reportedImages ?? "no")} image and ${String(references.reportedAudio ?? "no")} audio reference(s) for one of each`,
               ]);
               yield* run.mark("clip 2 accepted");
-              return submitted;
+              return { submitted, operation, lifecycle, write };
             }),
           );
 
@@ -851,13 +920,13 @@ export const tour = (pieces: Pieces) =>
                 move.queue === "generation" && ahead("position zero") && ahead("clip 2"),
                 `after moving it to the front, the generation queue read ${afterMove.join(", ")}`,
               ]);
-              const pop = Effect.fnUntraced(function* (clip: Submitted, building: boolean) {
+              const pop = Effect.fnUntraced(function* (clip: Submitted, headOfGeneration: boolean) {
                 const sentMs = yield* run.now;
                 yield* timed(`pop ${clip.name}`, h3.pop(clip.clipId));
                 const repliedMs = yield* run.now;
                 popped.push({ name: clip.name, clipId: clip.clipId, repliedMs });
                 yield* save({
-                  pops: [...queue.pops, { name: clip.name, building, sentMs, repliedMs }],
+                  pops: [...queue.pops, { name: clip.name, headOfGeneration, sentMs, repliedMs }],
                 });
               });
               yield* pop(zero, false);
@@ -873,41 +942,52 @@ export const tour = (pieces: Pieces) =>
               yield* run.mark("queue edited");
               const after = yield* timed("get_queue", h3.getQueue);
               const state = yield* timed("get_state", h3.getState);
-              const refreshed = yield* Effect.as(timed("refresh", h3.refresh), true);
+              // A refresh fails when H3's snapshots change between its two reads: kept, not judged.
+              const refreshed = yield* Effect.result(timed("refresh", h3.refresh));
+              const refresh = Result.isSuccess(refreshed)
+                ? "refreshed"
+                : reasonOf(refreshed.failure);
               yield* save({
                 after: {
                   generation: after.value.generation.map((clip) => nameOf(clip.clip_id)),
                   playout: after.value.playout.map((clip) => nameOf(clip.clip_id)),
                   generationQueued: state.value.generation_queued,
                   playoutQueued: state.value.playout_queued,
-                  refreshed,
+                  refresh,
                 },
               });
             }),
           );
 
-          // 7. A clip to play by hand, and one whose prompt is past H3's text budget.
-          const later = yield* phase(
-            "later clips",
+          // 7. A clip whose prompt is past H3's text budget, about 16 KB of it.
+          const over = yield* phase(
+            "over budget",
             10,
             Effect.gen(function* () {
-              const byHand = yield* submit("by hand");
-              const handFollowed = yield* follow(byHand);
-              const over = yield* submit("over budget", { prompt: overBudget });
-              const overFollowed = yield* follow(over);
+              const submitted = yield* submit("over budget", { prompt: overBudget });
+              const followed = yield* follow(submitted);
               // What waiting for it to generate ends with: nothing, or the failure's reason.
               const generatedFailure = yield* Deferred.make<ReactorErrorReason | undefined>();
-              yield* overFollowed.operation.reached("generated").pipe(
+              yield* followed.operation.reached("generated").pipe(
                 Effect.as(undefined),
                 Effect.catch((error) => Effect.succeed(error.reason)),
                 Effect.flatMap((reason) => Deferred.succeed(generatedFailure, reason)),
                 Effect.forkScoped,
               );
-              yield* run.mark("later clips accepted");
-              return {
-                byHand: { submitted: byHand, ...handFollowed },
-                over: { submitted: over, ...overFollowed, generatedFailure },
-              };
+              yield* run.mark("over budget accepted");
+              return { submitted, ...followed, generatedFailure };
+            }),
+          );
+
+          // 8. A clip to play by hand once autoplay is off.
+          const byHand = yield* phase(
+            "by hand",
+            10,
+            Effect.gen(function* () {
+              const submitted = yield* submit("by hand");
+              const followed = yield* follow(submitted);
+              yield* run.mark("by hand accepted");
+              return { submitted, ...followed };
             }),
           );
 
@@ -949,21 +1029,23 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 8. Stop and play: autoplay off while clip 2 plays, a stop, then the clip by hand.
+          // 9. Stop and play: autoplay off while clip 2 plays, a stop, then the clip by hand.
           yield* phase(
             "stop and play",
             20,
             Effect.gen(function* () {
-              if (Option.isNone(clip2) || Option.isNone(later))
+              if (Option.isNone(clip2) || Option.isNone(byHand))
                 return yield* ReactorError.fromCode(
                   "InvalidState",
                   "clip 2 or the clip by hand is missing",
                 );
-              const byHand = later.value.byHand;
-              yield* seen("clip_started", clip2.value.clipId);
+              const hand = byHand.value;
+              // A clip 2 that fails first ends the wait with ClipEnded.
+              yield* clip2.value.operation.reached("started");
               yield* recorded(h3.setAutoplay(false));
-              yield* byHand.operation.reached("generated");
-              const playing = (yield* facts)?.state.playing_clip_id ?? null;
+              yield* hand.operation.reached("generated");
+              // What plays now, from H3's reply rather than its last messages.
+              const playing = (yield* recorded(h3.getState)).value.playing_clip_id;
               const stopSentMs = yield* run.now;
               const stop = yield* recorded(h3.stop);
               const stopped = playing === null ? undefined : yield* seen("clip_stopped", playing);
@@ -971,8 +1053,8 @@ export const tour = (pieces: Pieces) =>
               yield* Effect.sleep("500 millis");
               const playSentMs = yield* run.now;
               const startedBetween = yield* startsBetween(stopSentMs, playSentMs);
-              const play = yield* recorded(h3.play(byHand.submitted.clipId));
-              const started = yield* seen("clip_started", byHand.submitted.clipId);
+              const play = yield* recorded(h3.play(hand.submitted.clipId));
+              const started = yield* seen("clip_started", hand.submitted.clipId);
               yield* record((tour) => ({
                 ...tour,
                 stopPlay: {
@@ -981,7 +1063,7 @@ export const tour = (pieces: Pieces) =>
                   stop: stop._tag,
                   ...(stopped === undefined ? {} : { stoppedMs: stopped.atMs }),
                   startedBetween,
-                  played: byHand.submitted.name,
+                  played: hand.submitted.name,
                   playSentMs,
                   play: play._tag,
                   playStartedMs: started.atMs,
@@ -990,7 +1072,7 @@ export const tour = (pieces: Pieces) =>
               yield* pieces.judge(
                 "stop cuts the playing clip",
                 [
-                  playing === clip2.value.clipId,
+                  playing === clip2.value.submitted.clipId,
                   `${playing === null ? "nothing" : nameOf(playing)} was playing, not clip 2`,
                 ],
                 [
@@ -1011,14 +1093,58 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 9. The build that fails: H3 documents `clip_failed` past its text budget.
+          // 10. Reset while the clip by hand plays.
+          yield* phase(
+            "reset",
+            10,
+            Effect.gen(function* () {
+              const read = yield* fresh;
+              const before = settingsOf(read, nameOf);
+              const playing = read.state.playing_clip_id;
+              const sentMs = yield* run.now;
+              const reply = (yield* recorded(h3.reset)).value;
+              const stopped =
+                playing === null
+                  ? Option.none()
+                  : yield* seen("clip_stopped", playing).pipe(
+                      Effect.timeout("3 seconds"),
+                      Effect.option,
+                    );
+              const after = settingsOf(yield* fresh, nameOf);
+              yield* record((tour) => ({
+                ...tour,
+                reset: {
+                  before,
+                  sentMs,
+                  clearedClips: reply.cleared_clips,
+                  wasPlaying: reply.was_playing,
+                  ...(Option.isSome(stopped) ? { stoppedMs: stopped.value.atMs } : {}),
+                  after,
+                },
+              }));
+              yield* pieces.judge(
+                "reset stops the playing clip",
+                [playing !== null, "nothing was playing when the session reset"],
+                [reply.was_playing, "session_reset says nothing was playing"],
+                [Option.isSome(stopped), "no clip_stopped followed"],
+              );
+              yield* pieces.judge("reset leaves both queues empty and nothing playing", [
+                after.queued === 0 && !after.playing,
+                `after the reset ${after.queued} clip(s) were queued and ${after.playingClip ?? "nothing"} playing`,
+              ]);
+              yield* run.mark("reset");
+            }),
+          );
+
+          // 11. The build that fails: H3 documents `clip_failed` past its text budget. It failed
+          // long before now, so the wait is short.
           yield* phase(
             "a build that fails",
-            15,
+            5,
             Effect.gen(function* () {
-              if (Option.isNone(later))
+              if (Option.isNone(over))
                 return yield* ReactorError.fromCode("InvalidState", "the clip was not accepted");
-              const { submitted, operation, lifecycle, generatedFailure } = later.value.over;
+              const { submitted, operation, lifecycle, generatedFailure } = over.value;
               const ended = yield* operation.ended;
               const reason = yield* Deferred.await(generatedFailure);
               const clipEnded = reason?._tag === "ClipEnded" ? reason : undefined;
@@ -1062,10 +1188,24 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 10. Recordings, which Reactor leaves to each deployment: recorded, never judged. Each
-          // request and the download end before the refresh point, and running out of time is
-          // recorded too.
-          const recordingEndMs = refreshDueMs - 750;
+          // 12. A 10 s clip for the reconnect to play, built now and held: autoplay goes off
+          // first, whatever the phases before left it at.
+          const long = yield* phase(
+            "long clip",
+            10,
+            Effect.gen(function* () {
+              yield* recorded(h3.setAutoplay(false));
+              const submitted = yield* submit("long", { seconds: longSeconds });
+              const followed = yield* follow(submitted);
+              yield* run.mark("long clip accepted");
+              return { submitted, ...followed };
+            }),
+          );
+
+          // 13. Recordings, which Reactor leaves to each deployment: recorded, never judged. Each
+          // request and the download end by the creating token's expiry, so the reconnect after
+          // it keeps its time, and running out of time is recorded too.
+          const recordingEndMs = createExpiresMs;
           /** `effect`'s result, or `TimeoutError` once the recordings' time is up. */
           const inTime = <A, E extends { readonly reason: { readonly _tag: string } }>(
             effect: Effect.Effect<A, E>,
@@ -1133,53 +1273,37 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 11. Past the refresh point, a call the session makes on its own token: the upload of
-          // the long clip's reference mints a token bound to the session.
-          const long = yield* phase(
+          // 14. The refresh, judged once its upload is back: a token bound to the session, minted
+          // before the creating one expired, and the call it carried answered.
+          yield* phase(
             "refresh",
-            Math.max(1, (createExpiresMs - (yield* run.now)) / 1000),
+            Math.max(1, (createExpiresMs + afterExpiryMs - (yield* run.now)) / 1000),
             Effect.gen(function* () {
-              yield* pieces.sleepUntil(refreshDueMs + 250, deadline);
-              const startedMs = yield* run.now;
-              const submitted = yield* submit("long", {
-                prompt: `Picture 1 is a plain gray backdrop. ${prompt}`,
-                seconds: longSeconds,
-                // A picture clip 1 did not send: H3 reuses an upload of the same bytes.
-                references: [{ _tag: "Bytes", bytes: Media.grayPng({ width: 320, height: 180 }) }],
-              });
-              const endedMs = yield* run.now;
-              const made = yield* uploadsBetween(startedMs, endedMs);
-              yield* record((tour) => ({
-                ...tour,
-                refreshCall: {
-                  what: `${made} upload(s) for the long clip`,
-                  startedMs,
-                  endedMs,
-                  ok: true,
-                },
-              }));
+              const call = yield* Fiber.join(refreshing);
               const mints = (yield* run.evidence).tour?.mints ?? [];
-              const refreshed = mints.find((mint) => mint.kind === "bind" && mint.ownSession);
+              const refreshed = mints.find(
+                (mint) => mint.kind === "bind" && mint.ownSession && mint.refused === undefined,
+              );
               yield* pieces.judge(
                 "the session refreshes to a token bound to itself before its token expires",
-                [refreshed !== undefined, "no token bound to the session was minted"],
+                [refreshed !== undefined, "no token bound to the session was accepted"],
                 [
                   refreshed !== undefined && refreshed.atMs < createExpiresMs,
                   `the bound token came ${round(((refreshed?.atMs ?? 0) - createExpiresMs) / 1000)} s after the creating token expired`,
                 ],
-                [made > 0, "the long clip's reference did not upload"],
+                [call.ok, `the upload at the refresh point failed with ${call.failure ?? "?"}`],
               );
               yield* run.mark("token refreshed");
-              return { submitted, ...(yield* follow(submitted)) };
             }),
           );
+          yield* Fiber.interrupt(refreshing);
 
-          // 12. Once the creating token expired, a reconnect: a new generation on the refreshed token.
+          // 15. Once the creating token expired, a reconnect: a new generation on the refreshed token.
+          yield* pieces.sleepUntil(createExpiresMs + afterExpiryMs, deadline);
           yield* phase(
             "reconnect",
             20,
             Effect.gen(function* () {
-              yield* pieces.sleepUntil(createExpiresMs + 250, deadline);
               const generationBefore = (yield* session.ready).generation;
               const startedMs = yield* run.now;
               const reconnected = yield* Effect.exit(session.reconnect);
@@ -1191,6 +1315,9 @@ export const tour = (pieces: Pieces) =>
                   startedMs,
                   endedMs: readyMs,
                   ok: Exit.isSuccess(reconnected),
+                  ...(Exit.isFailure(reconnected)
+                    ? { failure: reconnected.cause.pipe(Cause.squash, reasonOf) }
+                    : {}),
                 },
                 reconnect: { startedMs, generationBefore: String(generationBefore) },
               }));
@@ -1254,50 +1381,6 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 13. Reset while the long clip plays.
-          yield* phase(
-            "reset",
-            10,
-            Effect.gen(function* () {
-              const before = settingsOf(yield* facts, nameOf);
-              const playing = (yield* facts)?.state.playing_clip_id ?? null;
-              if (before === undefined)
-                return yield* ReactorError.fromCode("InvalidState", "H3 reported no state");
-              const sentMs = yield* run.now;
-              const reply = (yield* recorded(h3.reset)).value;
-              const stopped =
-                playing === null
-                  ? Option.none()
-                  : yield* seen("clip_stopped", playing).pipe(
-                      Effect.timeout("3 seconds"),
-                      Effect.option,
-                    );
-              const after = settingsOf(yield* facts, nameOf);
-              yield* record((tour) => ({
-                ...tour,
-                reset: {
-                  before,
-                  sentMs,
-                  clearedClips: reply.cleared_clips,
-                  wasPlaying: reply.was_playing,
-                  ...(Option.isSome(stopped) ? { stoppedMs: stopped.value.atMs } : {}),
-                  ...(after === undefined ? {} : { after }),
-                },
-              }));
-              yield* pieces.judge(
-                "reset stops the playing clip",
-                [playing !== null, "nothing was playing when the session reset"],
-                [reply.was_playing, "session_reset says nothing was playing"],
-                [Option.isSome(stopped), "no clip_stopped followed"],
-              );
-              yield* pieces.judge("reset leaves both queues empty and nothing playing", [
-                after?.queued === 0 && !after.playing,
-                `after the reset ${after?.queued ?? "?"} clip(s) were queued and ${after?.playingClip ?? "nothing"} playing`,
-              ]);
-              yield* run.mark("reset");
-            }),
-          );
-
           // Popped clips, judged once long enough has passed for their builds to have finished.
           yield* phase(
             "popped clips",
@@ -1310,6 +1393,12 @@ export const tour = (pieces: Pieces) =>
                   startedAfter: after.some((entry) => entry.type === "clip_started"),
                 })),
               );
+              // Clip 2 builds after the moved clip: when it was built says when that build ended.
+              const movedPop = popped.find((clip) => clip.name === "moved");
+              const clip2Generated = Option.isSome(clip2)
+                ? clip2.value.lifecycle.generatedMs
+                : undefined;
+              if (Option.isSome(clip2)) yield* clip2.value.write;
               yield* record((tour) =>
                 tour.queue === undefined
                   ? tour
@@ -1317,6 +1406,11 @@ export const tour = (pieces: Pieces) =>
                       ...tour,
                       queue: {
                         ...tour.queue,
+                        ...(movedPop === undefined || clip2Generated === undefined
+                          ? {}
+                          : {
+                              clip2GeneratedAfterPopMs: round(clip2Generated - movedPop.repliedMs),
+                            }),
                         pops: tour.queue.pops.map((entry) => {
                           const outcome = outcomes.find((clip) => clip.name === entry.name);
                           return outcome === undefined
@@ -1331,30 +1425,21 @@ export const tour = (pieces: Pieces) =>
                     },
               );
               const pops = (yield* run.evidence).tour?.queue?.pops ?? [];
+              const after = outcomes
+                .filter((clip) => clip.generatedAfter || clip.startedAfter)
+                .map((clip) => `${clip.name} ${clip.startedAfter ? "started" : "was built"}`);
+              // H3 documents a waiting clip popped as removed, and a running build's result as
+              // discarded: neither is built or starts.
               yield* pieces.judge(
-                "popped clips never start",
+                "popped clips are never built or started",
                 [pops.length === 2, `${pops.length} of the two pops were sent`],
-                [
-                  !outcomes.some((clip) => clip.startedAfter),
-                  `${outcomes
-                    .filter((clip) => clip.startedAfter)
-                    .map((clip) => clip.name)
-                    .join(", ")} started after the pop`,
-                ],
-              );
-              const inFlight = pops.find((entry) => entry.name === "moved");
-              yield* pieces.judge(
-                "a build popped in flight is discarded",
-                [inFlight?.building === true, "the moved clip was not building when it was popped"],
-                [
-                  outcomes.find((clip) => clip.name === "moved")?.generatedAfter === false,
-                  "the popped build was generated after its pop",
-                ],
+                [after.length === 0, `${after.join(", ")} after the pop`],
               );
             }),
           );
 
-          // 14. The API key ends the session; the session's own close then confirms it.
+          // 16. The API key ends the session; the session's own close then confirms it. Only a
+          // confirmed end is recorded as the session's; otherwise the check's cleanup ends it.
           yield* phase(
             "end with the API key",
             15,
@@ -1362,13 +1447,20 @@ export const tour = (pieces: Pieces) =>
               const requestedMs = yield* run.now;
               const termination = yield* (yield* keyed).terminate(session.id);
               yield* record((tour) => ({ ...tour, apiKeyTermination: termination }));
-              yield* pieces.closedWith(session.id, requestedMs, { termination });
-              closeRecorded = true;
+              if (termination.confirmed) {
+                yield* pieces.closedWith(session.id, requestedMs, { termination });
+                closeRecorded = true;
+              }
+              const closeRequestedMs = yield* run.now;
               const report = yield* session.close;
               yield* record((tour) => ({ ...tour, ownedClose: report }));
+              if (!closeRecorded && report.remote.confirmed) {
+                yield* pieces.closedWith(session.id, closeRequestedMs, { report });
+                closeRecorded = true;
+              }
               grants.set(session.id, grant());
               yield* pieces.judge("the API key ends the session", [
-                termination.confirmed && termination.deleteStatus === 200,
+                termination.confirmed,
                 `DELETE answered ${String(termination.deleteStatus ?? "nothing")} and the read found ${termination.state ?? termination.evidence ?? "no terminal state"}`,
               ]);
               yield* pieces.judge("the session's own close confirms it ended", [
@@ -1379,12 +1471,17 @@ export const tour = (pieces: Pieces) =>
             }),
           );
 
-          // 15. After the end: an attach to the ended session, and the key on an unknown session.
-          // None of it allocates.
+          // 17. After a confirmed end, never against a live session: an attach to the ended
+          // session, and the key on an unknown session. None of it allocates.
           yield* phase(
             "after the end",
             15,
             Effect.gen(function* () {
+              if (!closeRecorded)
+                return yield* ReactorError.fromCode(
+                  "InvalidState",
+                  "the session's end was not confirmed",
+                );
               const attached = yield* Effect.scoped(
                 reactor.attach({ sessionId: session.id, tokens: Coordinator.fixedTokens(grant()) }),
               ).pipe(
@@ -1394,33 +1491,37 @@ export const tour = (pieces: Pieces) =>
               const attachStatus = Predicate.isString(attached)
                 ? undefined
                 : httpStatusOf(attached);
-              const inspectUnknown = yield* (yield* pieces.withToken(target.apiKey))
+              const inspected = yield* (yield* pieces.withToken(target.apiKey))
                 .inspect(unknownSession)
-                .pipe(
-                  Effect.as(200),
-                  Effect.catch((error) => Effect.succeed(pieces.statusOf(error) ?? 0)),
-                );
+                .pipe(Effect.result);
+              const inspectStatus = Result.isFailure(inspected)
+                ? pieces.statusOf(inspected.failure)
+                : undefined;
               const terminateUnknown = yield* (yield* keyed).terminate(unknownSession);
               yield* record((tour) => ({
                 ...tour,
                 afterEnd: {
                   attach: Predicate.isString(attached) ? attached : reasonOf(attached),
                   ...(attachStatus === undefined ? {} : { attachStatus }),
-                  inspectUnknown,
+                  inspectUnknown: Result.isSuccess(inspected)
+                    ? "found"
+                    : inspected.failure.reason._tag,
+                  ...(inspectStatus === undefined ? {} : { inspectStatus }),
                   terminateUnknown,
                 },
               }));
+              // The SDK documents no refusal in particular for an ended session: which one came
+              // is recorded.
               yield* pieces.judge("attaching to the ended session is refused", [
-                !Predicate.isString(attached) &&
-                  (reasonOf(attached) === "TerminalSession" || attachStatus === 404),
-                `the attach ${Predicate.isString(attached) ? "succeeded" : `failed with ${reasonOf(attached)}${attachStatus === undefined ? "" : ` ${attachStatus}`}`}`,
+                !Predicate.isString(attached),
+                "the attach succeeded",
               ]);
               yield* pieces.judge(
                 "the API key finds no unknown session",
-                [inspectUnknown === 404, `reading it answered ${inspectUnknown}`],
+                [Result.isFailure(inspected), "reading it succeeded"],
                 [
                   terminateUnknown.confirmed && terminateUnknown.evidence === "absent",
-                  `ending it answered ${String(terminateUnknown.deleteStatus ?? "nothing")}`,
+                  `ending it was ${terminateUnknown.confirmed ? `confirmed ${String(terminateUnknown.evidence)}` : "unconfirmed"} after DELETE ${String(terminateUnknown.deleteStatus ?? "unanswered")}`,
                 ],
               );
               yield* run.mark("after the end");
