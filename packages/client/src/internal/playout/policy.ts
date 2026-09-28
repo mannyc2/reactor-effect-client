@@ -370,6 +370,20 @@ const continuedBuildRate = (samples: State["samples"]): number | undefined => {
   return undefined;
 };
 
+/** The newest live session that can take work: new work goes there. */
+const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
+  [...sessions].reverse().find((value) => !value.retiring && value.source?.available === true);
+
+/** What is left of `value`'s playing clip at `mono`, counted from its observed start. */
+const playingRestOf = (value: Session | undefined, mono: number): number => {
+  const playing = value?.source?.playing;
+  if (playing === undefined) return 0;
+  const since = value?.playing?.clipId === playing.clipId ? value.playing.at : undefined;
+  return since === undefined
+    ? playing.seconds * 1000
+    : Math.max(0, playing.seconds * 1000 - (mono - since));
+};
+
 type Rank = readonly [number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
@@ -406,10 +420,7 @@ export const step: {
     };
   };
   /** The session new work goes to: the newest one that is live and not retiring. */
-  const preferred = (): Session | undefined =>
-    [...state.sessions]
-      .reverse()
-      .find((value) => !value.retiring && value.source?.available === true);
+  const preferred = (): Session | undefined => preferredOf(state.sessions);
   const atMono = (item: Item): number | undefined =>
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
 
@@ -479,9 +490,7 @@ export const step: {
   const itemOf = (clip: SourceClip | undefined): Item | undefined =>
     clip?.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
 
-  // ---------------------------------------------------------------------------
-  // Ranks: lexicographic places in a session's Ready order and in the build order
-  // ---------------------------------------------------------------------------
+  // Ranks: lexicographic places in a session's Ready order and in the build order.
   const superseded = new Set(
     state.batches.flatMap((batch) => batch.targets.map((target) => target.key)),
   );
@@ -568,18 +577,8 @@ export const step: {
     });
   };
 
-  // ---------------------------------------------------------------------------
-  // Runway and projection
-  // ---------------------------------------------------------------------------
   const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
-  const playingRestMs = (value: Session | undefined): number => {
-    const playing = value?.source?.playing;
-    if (playing === undefined) return 0;
-    const since = value?.playing?.clipId === playing.clipId ? value.playing.at : undefined;
-    return since === undefined
-      ? playing.seconds * 1000
-      : Math.max(0, playing.seconds * 1000 - (now.mono - since));
-  };
+  const playingRestMs = (value: Session | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => {
     const item = itemOf(clip);
     if (item === undefined) return true;
@@ -644,9 +643,6 @@ export const step: {
     return Math.max(playable, Math.max(now.mono, ...inFlight) + first + buildMs(item.spec.seconds));
   };
 
-  // ---------------------------------------------------------------------------
-  // Edits
-  // ---------------------------------------------------------------------------
   const newItem = (spec: Spec, place: Partial<Item> = {}): Item => ({
     spec,
     order: state.nextOrder,
@@ -909,9 +905,6 @@ export const step: {
     return side === "before" ? parts[0] : parts[parts.length - 1];
   }
 
-  // ---------------------------------------------------------------------------
-  // Evidence from sessions
-  // ---------------------------------------------------------------------------
   const started = (sessionId: string, clip: SourceClip): void => {
     if (session(sessionId)?.playing?.clipId !== clip.clipId)
       updateSession(sessionId, {
@@ -938,19 +931,16 @@ export const step: {
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
   };
+  const forgetFiller = (clipId: string): void => {
+    state = { ...state, fillers: new Map([...state.fillers].filter(([id]) => id !== clipId)) };
+  };
   const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
     const { clip } = event;
     updateSession(sessionId, {
       lastEndedAt: now.mono,
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
     });
-    if (clip.tag?._tag === "Filler") {
-      state = {
-        ...state,
-        fillers: new Map([...state.fillers].filter(([id]) => id !== clip.clipId)),
-      };
-      return;
-    }
+    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
     const item = itemOf(clip);
     if (item === undefined || item.phase === "Settled") return;
     if (item.startedAt === undefined) {
@@ -973,13 +963,7 @@ export const step: {
     };
   };
   const failed = (clip: SourceClip, reason: string): void => {
-    if (clip.tag?._tag === "Filler") {
-      state = {
-        ...state,
-        fillers: new Map([...state.fillers].filter(([id]) => id !== clip.clipId)),
-      };
-      return;
-    }
+    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
     const item = itemOf(clip);
     if (item !== undefined) settle(item.spec.key, { _tag: "Failed", reason });
   };
@@ -1189,11 +1173,7 @@ export const step: {
           (item) => item.clipId === command.clipId && item.phase !== "Settled",
         );
         if (owner === undefined) {
-          if (result._tag === "Done")
-            state = {
-              ...state,
-              fillers: new Map([...state.fillers].filter(([clipId]) => clipId !== command.clipId)),
-            };
+          if (result._tag === "Done") forgetFiller(command.clipId);
           return;
         }
         if (result._tag === "Done")
@@ -1214,9 +1194,6 @@ export const step: {
     }
   };
 
-  // ---------------------------------------------------------------------------
-  // Apply the input
-  // ---------------------------------------------------------------------------
   switch (input._tag) {
     case "Edit":
       applyEdit(input.id, input.edits, input.batch);
@@ -1344,9 +1321,6 @@ export const step: {
   }
   if (state.closed) return { state: { ...state, items }, actions, wake: undefined };
 
-  // ---------------------------------------------------------------------------
-  // Decide
-  // ---------------------------------------------------------------------------
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one.
   const boundaryLate = (item: Item): boolean => {
     const at = atMono(item);
@@ -1496,6 +1470,11 @@ export const step: {
     emit({ _tag: "Starved", at: now.wall });
   } else if (!dry && state.starving) state = { ...state, starving: false };
 
+  const fireCue = (item: Item, index: number): void =>
+    emit({
+      _tag: "Cue",
+      event: { key: item.spec.key, name: item.spec.cues[index]!.name, at: now.wall },
+    });
   // Cues of the playing item fall due on its observed start.
   for (const item of [...items.values()]) {
     if (item.phase !== "Started" || item.startedAt === undefined || item.spec.cues.length === 0)
@@ -1504,11 +1483,7 @@ export const step: {
       .map((cue, index) => ({ index, at: cueAt(item, cue) }))
       .filter(({ index, at }) => !item.fired.includes(index) && at <= now.mono)
       .sort((a, b) => a.at - b.at);
-    for (const { index } of due)
-      emit({
-        _tag: "Cue",
-        event: { key: item.spec.key, name: item.spec.cues[index]!.name, at: now.wall },
-      });
+    for (const { index } of due) fireCue(item, index);
     if (due.length > 0)
       set(item.spec.key, { fired: [...item.fired, ...due.map(({ index }) => index)] });
   }
@@ -1526,11 +1501,7 @@ export const step: {
           (index) =>
             !item.fired.includes(index) && cueAt(item, item.spec.cues[index]!) <= now.mono + 1,
         );
-      for (const index of fire)
-        emit({
-          _tag: "Cue",
-          event: { key: item.spec.key, name: item.spec.cues[index]!.name, at: now.wall },
-        });
+      for (const index of fire) fireCue(item, index);
       set(item.spec.key, { fired: item.spec.cues.map((_, index) => index) });
     }
 
@@ -1559,9 +1530,6 @@ export const step: {
 
   return { state: { ...state, items, groups }, actions, wake: wake() };
 
-  // ---------------------------------------------------------------------------
-  // Commands
-  // ---------------------------------------------------------------------------
   function queueCommand(sessionId: string, command: Command): void {
     if (state.busy !== undefined) return;
     const id = state.nextCommand;
@@ -1912,18 +1880,8 @@ export const view: {
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
   const playing = air?.source?.playing;
-  const target =
-    [...state.sessions]
-      .reverse()
-      .find((value) => !value.retiring && value.source?.available === true) ?? air;
-  const startedAt = air?.playing?.clipId === playing?.clipId ? air?.playing?.at : undefined;
-  const rest =
-    playing === undefined || target?.id !== state.air
-      ? 0
-      : Math.max(
-          0,
-          playing.seconds - (startedAt === undefined ? 0 : (now.mono - startedAt) / 1000),
-        );
+  const target = preferredOf(state.sessions) ?? air;
+  const rest = target?.id === state.air ? playingRestOf(air, now.mono) / 1000 : 0;
   return {
     accepting: state.accepting,
     runwaySeconds:
