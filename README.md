@@ -45,7 +45,6 @@ The package READMEs document the session contract, coordinator helpers, H3 provi
 packages/client      reactor-effect-client   src/, test/ (Vitest on Node and Bun), wire/ (proto inputs + generator), notices/
 packages/browser     reactor-effect-browser  src/, test/ (Vitest on Node and Bun)
 packages/native      reactor-effect-native   src/, test/ (Vitest on Node and Bun), rust/ (crate), lib/ (staged binaries), scripts/
-packages/test-kit    private                 runner-agnostic assertion helpers and host fakes shared by the suites
 examples/livestream  private                 the live channel example: one orchestration broadcast to many browsers
 packages/*/examples  private                 each package's own example
 integration          private                 real Chrome/native WebRTC qualification (Node/Vitest) and its browser bundle

@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
