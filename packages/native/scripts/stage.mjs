@@ -169,8 +169,9 @@ const program = Effect.gen(function* () {
   const source = path.isAbsolute(input) ? input : path.resolve(root, input);
 
   // The staging host runs the platform it stages, so the addon reports its own identity.
-  // Node loads an addon untyped; staging calls only this one function of it.
   const addon = /** @type {{ buildIdentity(): unknown }} */ (
+    // Node loads an addon untyped; staging calls only this one function of it.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     createRequire(import.meta.url)(source)
   );
   const reported = yield* Schema.decodeUnknownEffect(BuildJson)(addon.buildIdentity());

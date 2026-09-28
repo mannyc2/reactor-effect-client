@@ -127,10 +127,8 @@ const environment = Effect.gen(function* () {
   const status = yield* git("status", "--porcelain", "--untracked-files=no");
   const native = yield* nativeIdentity;
   return {
-    runtime:
-      process.versions.bun === undefined
-        ? `node ${process.version}`
-        : `bun ${process.versions.bun}`,
+    // Bun's types declare its version on every runtime; only Bun's process has one.
+    runtime: "bun" in process.versions ? `bun ${process.versions.bun}` : `node ${process.version}`,
     os: `${process.platform} ${process.arch}`,
     ...(Option.isSome(commit) ? { commit: commit.value.trim() } : {}),
     ...(Option.isSome(status) ? { dirty: status.value.trim().length > 0 } : {}),

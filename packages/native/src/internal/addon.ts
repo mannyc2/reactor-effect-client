@@ -50,12 +50,15 @@ const version = (manifest: unknown) =>
     ),
   );
 
-/**
- * The addon `id` names. Node types every module it loads as `any`; the
- * addon's surface is the declaration `napi build` generates from binding.rs.
- */
+/** The addon `id` names. */
 const addon = (id: string): Effect.Effect<Addon, ReactorError> =>
-  Effect.map(loaded(id, unloadable), (module) => module as Addon);
+  Effect.map(
+    loaded(id, unloadable),
+    // Node types every module it loads as `any`; the addon's surface is the declaration
+    // `napi build` generates from binding.rs.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    (module) => module as Addon,
+  );
 
 /**
  * This platform's addon, whose package must be this package's own version:
