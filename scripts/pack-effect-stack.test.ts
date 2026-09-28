@@ -1,13 +1,21 @@
 import { expect, test } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   completeQualification,
   inspectConsumerTree,
+  resolveStackPackage,
   resolveWorkspaceStack,
   selectStack,
   verifiedArchiveRequirements,
@@ -254,14 +262,21 @@ test("a scoped package named effect is not an Effect instance unless its coordin
 
 test("owner-relative resolution succeeds without an undeclared root Effect", () =>
   withWorkspace((root) => {
-    expect(() =>
-      createRequire(join(root, "package.json")).resolve("effect/package.json"),
-    ).toThrow();
+    // The workspace root declares and holds no Effect; whatever lies above the temp directory
+    // may, so each edge is checked to resolve inside the workspace, from its owner.
+    expect(existsSync(join(root, "node_modules"))).toBe(false);
     const edges = resolveWorkspaceStack(root, select());
     expect(edges).toHaveLength(11);
-    expect(edges.every((edge) => edge.version === baseline && !edge.owner.includes(root))).toBe(
-      true,
-    );
+    expect(edges.every((edge) => edge.version === baseline)).toBe(true);
+    for (const directory of ["client", "browser", "native"]) {
+      const inside = realpathSync(join(root, "packages", directory, "node_modules"));
+      const owner = join(root, "packages", directory, "package.json");
+      expect(resolveStackPackage(owner, "effect", select()).path.startsWith(inside)).toBe(true);
+      if (directory === "browser") continue;
+      const node = resolveStackPackage(owner, "@effect/platform-node", select()).path;
+      expect(node.startsWith(inside)).toBe(true);
+      expect(resolveStackPackage(node, "effect", select()).path.startsWith(inside)).toBe(true);
+    }
   }));
 
 for (const [name, value] of [
