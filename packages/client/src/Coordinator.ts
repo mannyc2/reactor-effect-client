@@ -321,7 +321,7 @@ export const fixedTokens = (token: TokenGrant): Tokens => ({
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }));
 const Seconds = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86_400 }));
 /** One `authorization_details` entry of a session-scoped token, as `POST /tokens` takes it. */
-export const SessionAuthorization = Schema.Struct({
+const SessionAuthorization = Schema.Struct({
   type: Schema.Literal("session"),
   resources: Schema.Struct({
     models: Schema.Struct({ match: Schema.NonEmptyArray(Schema.NonEmptyString) }),
