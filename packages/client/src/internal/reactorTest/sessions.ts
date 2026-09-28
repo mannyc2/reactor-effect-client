@@ -91,7 +91,10 @@ const descriptor = (id: string, phase: Phase) =>
   ({
     session_id: id,
     state: phase,
-    ...(phase === "ACTIVE"
+    // Whether hosted Reactor still describes an INACTIVE session's capabilities and
+    // transport is unobserved (paid run tokens 83d17eb7 saw only the state), so the
+    // most permissive reading is modelled: they stay, and a reconnect can use them.
+    ...(phase === "ACTIVE" || phase === "INACTIVE"
       ? {
           capabilities: {
             protocol_version: "1.0",
@@ -150,7 +153,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return yield* refuse(401, "unauthorized", "a valid bearer token is required");
       return grant;
     });
-  const owned = (jwt: string | undefined, id: string, active = false) =>
+  /** `live` refuses a session not ACTIVE, or not ACTIVE or INACTIVE when a connection may return. */
+  const owned = (jwt: string | undefined, id: string, live?: "active" | "connectable") =>
     Effect.gen(function* () {
       const grant = yield* authorize(jwt);
       const session = (yield* Ref.get(sessions)).get(id);
@@ -162,8 +166,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           "the token is not bound to this session: authorization_details.resources.sessions.bind",
         );
       const { phase } = yield* Ref.get(session.state);
-      if (active && phase !== "ACTIVE")
-        return yield* refuse(409, "session_not_active", `the session is ${phase}`);
+      const accepted =
+        live === undefined ||
+        phase === "ACTIVE" ||
+        (live === "connectable" && phase === "INACTIVE");
+      if (!accepted) return yield* refuse(409, "session_not_active", `the session is ${phase}`);
       return session;
     });
   const connection = (session: Session, cid: number) =>
@@ -190,8 +197,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       yield* link.drop(reason);
       if (reason !== "disconnected") return;
       // Reactor ends a session 30 s after its last connection drops, unless one returns.
+      // Meanwhile hosted Reactor reads it INACTIVE (paid run tokens 83d17eb7), still billing.
       const { drops } = yield* Ref.updateAndGet(session.state, (state) => ({
         ...state,
+        phase: state.phase === "ACTIVE" ? ("INACTIVE" as const) : state.phase,
         drops: state.drops + 1,
       }));
       yield* later(
@@ -427,7 +436,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       ),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
       Effect.gen(function* () {
-        yield* owned(jwt, id, true);
+        yield* owned(jwt, id, "active");
         const n = yield* Ref.updateAndGet(uploads, (value) => value + 1);
         const slot = `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
         yield* Ref.update(slots, (all) => new Map(all).set(slot, id));
@@ -462,7 +471,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       } satisfies (typeof IceServersReply)["Encoded"]),
     register: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
-        const session = yield* owned(jwt, id, true);
+        const session = yield* owned(jwt, id, "connectable");
         if ((yield* faults.trip((fault) => fault._tag === "RefuseConnect")) !== undefined)
           return yield* refuse(403, "connect_refused", "connection refused");
         const cid = yield* count("connections");
@@ -474,7 +483,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       }),
     offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
       Effect.gen(function* () {
-        const session = yield* owned(jwt, id, true);
+        const session = yield* owned(jwt, id, "connectable");
         yield* connection(session, cid);
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);
@@ -486,8 +495,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         yield* setBinding(peerId, session);
         const at = (yield* Playout.monotonic) + (yield* timing.delay("negotiation"));
         const answer = `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=reactor-test\r\na=ice-ufrag:${peerId}\r\n`;
+        // A connection returning to an INACTIVE session makes it ACTIVE again.
         yield* Ref.update(session.state, (state) => ({
           ...state,
+          phase: state.phase === "INACTIVE" ? ("ACTIVE" as const) : state.phase,
           bound: link,
           connected: false,
           connections: new Map(state.connections).set(cid, { at, sdp: answer }),

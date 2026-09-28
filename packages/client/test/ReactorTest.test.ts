@@ -2,7 +2,7 @@
 import { assert, layer } from "@effect/vitest";
 import { Duration, Effect, Fiber, Ref, Stream } from "effect";
 import * as H3 from "../src/H3.js";
-import { Coordinator, H3Source, Playout, ReactorTest } from "../src/index.js";
+import { Coordinator, H3Source, Playout, Reactor, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
 import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
@@ -379,11 +379,50 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
         yield* Effect.sleep("20 seconds");
         const state = (id: string) =>
           Effect.map(test.sessions, (all) => all.find((info) => info.id === id)?.state);
-        assert.strictEqual(yield* state(session.id), "ACTIVE");
+        assert.strictEqual(yield* state(session.id), "INACTIVE");
         yield* Effect.sleep("15 seconds");
         assert.strictEqual(yield* state(session.id), "CLOSED");
         const late = yield* Effect.flip(session.reconnect);
         assert.strictEqual(late.reason._tag, "TerminalSession");
+      }),
+    );
+
+    // Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed,
+    // and the session was still there to end. A session in its window can be reconnected.
+    it.effect("reconnects a session that reads INACTIVE inside the window", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
+        const session = yield* connect;
+        yield* Effect.sleep("10 seconds");
+        const state = Effect.map(
+          test.sessions,
+          (all) => all.find((info) => info.id === session.id)?.state,
+        );
+        assert.strictEqual(yield* state, "INACTIVE");
+        yield* session.reconnect;
+        assert.strictEqual((yield* session.snapshot).status, "ready");
+        assert.strictEqual(yield* state, "ACTIVE");
+        yield* Effect.sleep("40 seconds");
+        assert.strictEqual(yield* state, "ACTIVE");
+      }),
+    );
+
+    it.effect("adopts a session that reads INACTIVE inside the window", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
+        const owner = yield* connect;
+        yield* Effect.sleep("9 seconds");
+        const reactor = yield* Reactor.Reactor;
+        const adopter = yield* reactor.attach({
+          sessionId: owner.id,
+          adopt: true,
+          tokens: yield* tokens,
+        });
+        assert.strictEqual((yield* adopter.snapshot).status, "ready");
       }),
     );
   },
