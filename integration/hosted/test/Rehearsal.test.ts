@@ -252,6 +252,20 @@ rehearse("cut withdraws a flagged item moderation let through before it airs", {
   },
 });
 
+// Without a prompt, `show passes` above ends the second session with the API key.
+rehearse("show loses its second session to a moderation verdict, and goes on", {
+  check: "show",
+  moderationPrompt: flagged,
+  faults: [{ _tag: "Moderate", prompt: flagged }],
+  judge: (evidence) => {
+    passes(evidence);
+    assert.deepStrictEqual(
+      [evidence.show?.loss?.by, evidence.moderation?.verdict?.action, evidence.sessions.length],
+      ["moderation", "terminate", 3],
+    );
+  },
+});
+
 rehearse("a lost enqueue reply stops the check", {
   check: "vertical",
   faults: [{ _tag: "DropReply", command: "enqueue" }],

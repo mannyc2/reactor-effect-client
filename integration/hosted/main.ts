@@ -58,7 +58,7 @@ const ledger = Flag.String("ledger").pipe(
 );
 const moderationPromptFile = Flag.String("moderation-prompt-file").pipe(
   Flag.withDescription(
-    "a file holding a prompt meant to be flagged by content moderation; `cut` ends with it",
+    "a file holding a prompt meant to be flagged by content moderation; `cut` ends with it, and `show` loses its second session to it",
   ),
   Flag.optional,
 );

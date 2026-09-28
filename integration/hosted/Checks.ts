@@ -33,6 +33,7 @@ import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
+import { show } from "./checks/Show.js";
 import type * as Evidence from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
@@ -1461,7 +1462,7 @@ const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionI
 };
 
 /** What a playout check has while its playout runs. */
-interface Air {
+export interface Air {
   readonly playout: Playout.Playout["Service"];
   readonly items: SubscriptionRef.SubscriptionRef<ReadonlyMap<string, Item>>;
   /** Every as-run event, in order. */
@@ -1517,6 +1518,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
   check: Check,
   options: {
     readonly lanes: ReadonlyArray<Playout.LaneSpec>;
+    readonly filler?: Playout.Options["filler"];
     readonly sessions: number;
     readonly renewal?: Playout.Options["renewal"];
     readonly maxModerations?: number;
@@ -1599,6 +1601,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
       const playout = yield* Playout.make({
         open,
         lanes: options.lanes,
+        ...(options.filler === undefined ? {} : { filler: options.filler }),
         ...(options.renewal === undefined ? {} : { renewal: options.renewal }),
         ...(options.maxModerations === undefined ? {} : { maxModerations: options.maxModerations }),
         ...(options.maxBuildsInFlight === undefined
@@ -2211,20 +2214,27 @@ const pieces = {
   capMs,
   close,
   closedWith,
+  commandSpans,
   commandsSince,
   contractTally,
   endHeld,
   factsOf,
   holding,
+  identifier,
   judge,
   mint,
+  onAir,
   readFresh,
   readInto,
+  recordPlayout,
   sampleStats,
+  seamMs,
+  sessionEventText,
   sleepUntil,
   statusOf,
   until,
   waitFor,
+  watch,
   window,
   withReferences,
   withSessions,
@@ -2245,6 +2255,7 @@ const all = {
   tokens,
   tour: tour(pieces),
   adoption: adoption(pieces),
+  show: show(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

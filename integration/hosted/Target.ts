@@ -26,6 +26,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { PeerFactory } from "reactor-effect-client/Peer";
+import type { Peer, PeerEvent } from "reactor-effect-client/Peer";
 import { ItemKey } from "reactor-effect-client/Playout";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
@@ -95,8 +96,63 @@ export class Target extends Context.Service<
       marker: string,
       options?: { readonly isolated?: boolean },
     ) => Effect.Effect<Owner, OwnerFailed, Scope.Scope | Crypto.Crypto>;
+    /**
+     * Drops every live connection at once, as a network fault would: each
+     * session sees its connection go down, and nothing ends remotely. The
+     * number of connections dropped.
+     */
+    readonly sever: Effect.Effect<number>;
   }
 >()("reactor-effect-integration/hosted/Target") {}
+
+/** How `Target.sever` reaches the peers the check's sessions hold. */
+class Severable extends Context.Service<Severable, { readonly sever: Effect.Effect<number> }>()(
+  "reactor-effect-integration/hosted/Target/Severable",
+) {}
+
+/**
+ * The host's peers, each of which `sever` can cut off as a lost network would:
+ * the peer closes, which fences it so it emits and sends nothing more, and the
+ * session hears that its connection went down. Nothing ends remotely, and a
+ * peer that is never cut is the host's own.
+ */
+const severable = Layer.effectContext(
+  Effect.gen(function* () {
+    const host = yield* PeerFactory;
+    const live = yield* Ref.make<ReadonlySet<Effect.Effect<boolean>>>(new Set());
+    const make = Effect.gen(function* () {
+      const peer = yield* host.make;
+      const report = yield* Ref.make<((event: PeerEvent) => void) | undefined>(undefined);
+      const cut = yield* Ref.make(false);
+      const sever = Effect.gen(function* () {
+        if (yield* Ref.getAndSet(cut, true)) return false;
+        yield* peer.close;
+        const emit = yield* Ref.get(report);
+        // The session's callback, called synchronously as a host calls it.
+        yield* Effect.sync(() => emit?.({ type: "state", state: "disconnected" }));
+        return true;
+      });
+      yield* Effect.acquireRelease(
+        Ref.update(live, (all) => new Set(all).add(sever)),
+        () => Ref.update(live, (all) => new Set([...all].filter((other) => other !== sever))),
+      );
+      return {
+        ...peer,
+        prepare: (servers, tracks, emit) =>
+          Effect.andThen(Ref.set(report, emit), peer.prepare(servers, tracks, emit)),
+      } satisfies Peer;
+    });
+    const sever = Effect.flatMap(Ref.get(live), (all) =>
+      Effect.map(
+        Effect.forEach(all, (one) => one),
+        (cut) => cut.filter(Boolean).length,
+      ),
+    );
+    return Context.make(PeerFactory, PeerFactory.of({ check: host.check, make })).pipe(
+      Context.add(Severable, Severable.of({ sever })),
+    );
+  }),
+);
 
 /**
  * The isolated owner's arguments to `node`: `script`, this harness's
@@ -172,6 +228,7 @@ export const paid = (input: {
         adoptAfterMs: undefined,
         seams: input.seams,
         moderationPrompt: input.moderationPrompt,
+        sever: (yield* Severable).sever,
         // The owner is a child process, so killing it is a real crash. It gets the grant on
         // its stdin and never the API key.
         owner: (grant, marker, options) =>
@@ -218,6 +275,7 @@ export const paid = (input: {
   ).pipe(
     Layer.provideMerge(Reactor.layer()),
     Layer.provideMerge(Coordinator.layer({ apiUrl: input.apiUrl, apiKey: input.apiKey })),
+    Layer.provideMerge(severable),
     Layer.provideMerge(NativePeer.layer()),
     Layer.provideMerge(FetchHttpClient.layer),
   );
@@ -285,6 +343,7 @@ export const rehearsal = (input: {
         adoptAfterMs: input.adoptAfterMs,
         seams: undefined,
         moderationPrompt: input.moderationPrompt,
+        sever: (yield* Severable).sever,
         owner: (grant, marker) =>
           Effect.gen(function* () {
             const cut = yield* Ref.make(false);
@@ -349,6 +408,7 @@ export const rehearsal = (input: {
   ).pipe(
     Layer.provideMerge(Reactor.layer()),
     Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(severable),
     Layer.provideMerge(
       ReactorTest.layer({
         timing: ReactorTest.Timing.hosted,
