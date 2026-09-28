@@ -1,297 +1,83 @@
 /**
  * The private contract between an isolated native peer and its child process:
- * one Effect RPC group mirroring the `Peer` contract, over the child's IPC
- * channel. The worker protocols encode every message with Schema's JSON codec,
- * so the byte-carrying fields are declarations that structured clone passes on
- * as they are, where `Schema.Uint8Array` would become Base64 text.
+ * one Effect RPC group mirroring the addon's `NativePeer`, over the child's
+ * IPC channel. The child relays the addon; the parent runs the same peer over
+ * it that runs in process.
  *
- * Failures cross as a plain record and are rebuilt as `ReactorError` in the
- * parent: the Native reason's backend text is Redacted, which refuses JSON
- * encoding, and it stays Redacted on each side of the channel.
+ * The worker protocols encode every message with Schema's JSON codec. What the
+ * addon produces crosses as a declaration that structured clone passes on as
+ * it is, typed arrays and bigints included; the parent's peer checks what it
+ * uses, as it does in process.
  */
 import * as Predicate from "effect/Predicate";
-import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import {
-  ErrorCode,
-  IceFailed,
-  Native,
-  ReactorError,
-  TransportFailed,
-} from "reactor-effect-client/ReactorError";
-import { IceCandidate, Mapping, Track } from "reactor-effect-client/Coordinator";
-import type { ErrorContext } from "reactor-effect-client/ReactorError";
-import { Channel, PeerState } from "reactor-effect-client/Peer";
-import type { PeerEvent } from "reactor-effect-client/Peer";
-import { Pressure } from "../events.js";
+import { IceServer, Track } from "reactor-effect-client/Coordinator";
+import { Channel } from "reactor-effect-client/Peer";
+import type * as Binding from "../binding.js";
 
-/** A value structured clone carries unchanged, checked by its guard on each side. */
-const cloned = <T>(is: (u: unknown) => u is T, expected: string) =>
-  Schema.declare(is, { expected, toCodecJson: () => undefined });
+const cloned = <T>(expected: string, is: (u: unknown) => boolean = Predicate.isObject) =>
+  Schema.declare((u): u is T => is(u), { expected, toCodecJson: () => undefined });
 
-const Bytes = cloned((u): u is Uint8Array<ArrayBuffer> => u instanceof Uint8Array, "Uint8Array");
-const Samples = cloned((u): u is Int16Array<ArrayBuffer> => u instanceof Int16Array, "Int16Array");
-/** Statistics records hold bigint counters, which structured clone keeps. */
-const Records = cloned((u): u is readonly unknown[] => Array.isArray(u), "statistics array");
-
-const Outcome = Schema.Literals(["not-submitted", "unknown", "replied"]);
-
-/** A `ReactorError` as it crosses the channel: its reason fields and dispatch evidence. */
-export const WireFailure = Schema.Struct({
-  code: ErrorCode,
+/** The addon's failure: its class and its private diagnostic text. */
+export const Failure = Schema.Struct({
+  class: Schema.Literals([
+    "Closed",
+    "InvalidInput",
+    "Native",
+    "Overflow",
+    "Protocol",
+    "SdpRejected",
+    "ChannelClosed",
+  ] satisfies ReadonlyArray<Binding.FailureClass>),
   message: Schema.String,
-  operation: Schema.optionalKey(Schema.String),
-  outcome: Schema.optionalKey(Outcome),
-  status: Schema.optionalKey(Schema.Int),
-  backendMessage: Schema.optionalKey(Schema.String),
-  channel: Schema.optionalKey(Schema.String),
-  pairs: Schema.optionalKey(Schema.Int),
-  candidateTypes: Schema.Array(Schema.String).pipe(Schema.optionalKey),
-});
-export type WireFailure = typeof WireFailure.Type;
-
-const WireEvent = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("state"), state: PeerState }),
-  Schema.Struct({ type: Schema.Literal("channel"), channel: Channel, open: Schema.Boolean }),
-  Schema.Struct({ type: Schema.Literal("message"), channel: Channel, bytes: Bytes }),
-  Schema.Struct({ type: Schema.Literal("ice"), candidate: Schema.optionalKey(IceCandidate) }),
-  Schema.Struct({ type: Schema.Literal("track"), name: Schema.String, mid: Schema.String }),
-  Schema.Struct({
-    type: Schema.Literal("decoded"),
-    kind: Schema.Literals(["video", "audio"]),
-    name: Schema.String,
-    mid: Schema.String,
-  }),
-  Schema.Struct({ type: Schema.Literal("error"), error: WireFailure }),
-]);
-export type WireEvent = typeof WireEvent.Type;
-
-/** The prepare stream: the offer first, then the child's peer events in order. */
-export const PrepareItem = Schema.Union([
-  Schema.TaggedStruct("Prepared", { sdp: Schema.String, mapping: Schema.Array(Mapping) }),
-  Schema.TaggedStruct("Event", { event: WireEvent }),
-]);
-export type PrepareItem = typeof PrepareItem.Type;
-
-/** A frame's admission sequence, stamped natively before any queue could drop it. */
-const Sequence = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
-
-export const WireVideo = Schema.Struct({
-  width: Schema.Int,
-  height: Schema.Int,
-  frameId: Schema.BigInt,
-  timestampMicros: Schema.BigInt,
-  sequence: Sequence,
-  data: Bytes,
-  metadata: Bytes,
-});
-export type WireVideo = typeof WireVideo.Type;
-
-export const WireAudio = Schema.Struct({
-  sampleRate: Schema.Int,
-  channels: Schema.Int,
-  sequence: Sequence,
-  samples: Samples,
-});
-export type WireAudio = typeof WireAudio.Type;
-
-/** The child's transport pressure, with its own readers' overflows. */
-export const WirePressure = Schema.Struct({
-  ...Pressure.fields,
-  readerOverflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
 });
 
-const IceServer = Schema.Struct({
-  urls: Schema.Array(Schema.String),
-  username: Schema.String,
-  credential: Schema.String,
+/** Why the child could not open its peer, as the parent reports it. */
+export const OpenFailure = Schema.Struct({
+  code: Schema.Literals(["Native", "UnsupportedHost"]),
+  message: Schema.String,
 });
 
 /**
- * One child per peer. `Open` loads and verifies the library and creates the
- * child's native peer; `Shutdown` closes and joins it. Every other RPC is one
- * `Peer` operation, and `Video`/`Audio` open a track's frame stream.
+ * One child per peer. `Open` loads the addon and creates the child's peer;
+ * `Shutdown` closes and joins it. Every other RPC is one addon call, and each
+ * of `Events`, `Video` and `Audio` takes one of its queues as the parent pulls.
  */
 export class IsolatedRpcs extends RpcGroup.make(
   Rpc.make("Open", {
-    payload: { libraryPath: Schema.optionalKey(Schema.String) },
-    error: WireFailure,
+    payload: { addon: Schema.optionalKey(Schema.String) },
+    error: OpenFailure,
   }),
   Rpc.make("Prepare", {
     payload: { servers: Schema.Array(IceServer), tracks: Schema.Array(Track) },
-    success: PrepareItem,
-    error: WireFailure,
-    stream: true,
+    success: cloned<Binding.Prepared>("Prepared"),
+    error: Failure,
   }),
-  Rpc.make("Answer", { payload: { sdp: Schema.String }, error: WireFailure }),
-  Rpc.make("Send", { payload: { channel: Channel, bytes: Bytes }, error: WireFailure }),
+  Rpc.make("Answer", { payload: { sdp: Schema.String }, error: Failure }),
   Rpc.make("Direction", {
     payload: { name: Schema.String, active: Schema.Boolean },
-    error: WireFailure,
+    error: Failure,
   }),
   Rpc.make("MaxBitrate", {
-    // The child's peer rejects a value out of range, a non-finite one
-    // included, as the in-process host does, so it must reach the child.
-    // @effect-diagnostics-next-line schemaNumber:off
-    payload: { name: Schema.String, bitsPerSecond: Schema.Number },
-    error: WireFailure,
+    payload: { name: Schema.String, bitsPerSecond: Schema.Int },
+    error: Failure,
   }),
-  Rpc.make("Stats", { success: Records, error: WireFailure }),
-  Rpc.make("Snapshot", { success: WirePressure, error: WireFailure }),
-  Rpc.make("Video", {
-    payload: { name: Schema.String },
-    success: WireVideo,
-    error: WireFailure,
-    stream: true,
+  Rpc.make("Send", {
+    payload: {
+      channel: Channel,
+      bytes: cloned<Uint8Array>("Uint8Array", (u) => u instanceof Uint8Array),
+    },
+    error: Failure,
   }),
-  Rpc.make("Audio", {
-    payload: { name: Schema.String },
-    success: WireAudio,
-    error: WireFailure,
-    stream: true,
+  Rpc.make("Stats", {
+    success: cloned<ReadonlyArray<Record<string, unknown>>>("statistics", Array.isArray),
+    error: Failure,
   }),
-  Rpc.make("Shutdown", { error: WireFailure }),
+  Rpc.make("Pressure", { success: cloned<Binding.Pressure>("Pressure"), error: Failure }),
+  Rpc.make("Events", { success: cloned<Binding.PeerEvent>("PeerEvent"), stream: true }),
+  Rpc.make("Video", { success: cloned<Binding.Video>("Video"), stream: true }),
+  Rpc.make("Audio", { success: cloned<Binding.Audio>("Audio"), stream: true }),
+  Rpc.make("Shutdown", { error: Failure }),
 ) {}
-
-const nativeDetail = (
-  detail: unknown,
-): { readonly status?: number; readonly backendMessage?: string; readonly channel?: string } => {
-  if (!Predicate.isObject(detail)) return {};
-  return {
-    ...(typeof detail.status === "number" && Number.isSafeInteger(detail.status)
-      ? { status: detail.status }
-      : {}),
-    ...(Redacted.isRedacted(detail.backendMessage) &&
-    typeof Redacted.value(detail.backendMessage) === "string"
-      ? { backendMessage: Redacted.value(detail.backendMessage) as string }
-      : {}),
-    ...(typeof detail.channel === "string" ? { channel: detail.channel } : {}),
-  };
-};
-
-/**
- * A failure as the child sends it. Only the evidence the native host itself
- * attaches crosses: its failure class and backend text; any other `detail` is
- * the child's own diagnostic and stays there.
- */
-export const toWire = (error: ReactorError): WireFailure => {
-  const { reason, context } = error;
-  const base = {
-    code: reason._tag,
-    message: reason.message,
-    ...(context.operation === undefined ? {} : { operation: context.operation }),
-    ...(context.outcome === undefined ? {} : { outcome: context.outcome }),
-  };
-  switch (reason._tag) {
-    case "Native":
-      return {
-        ...base,
-        ...nativeDetail(context.detail === undefined ? undefined : Redacted.value(context.detail)),
-        ...(reason.status === undefined ? {} : { status: reason.status }),
-        ...(reason.backendMessage === undefined
-          ? {}
-          : { backendMessage: Redacted.value(reason.backendMessage) }),
-      };
-    case "IceFailed":
-      return { ...base, pairs: reason.pairs, candidateTypes: reason.candidateTypes };
-    case "TransportFailed":
-      return { ...base, pairs: reason.pairs };
-    default:
-      return {
-        ...base,
-        ...nativeDetail(context.detail === undefined ? undefined : Redacted.value(context.detail)),
-      };
-  }
-};
-
-/** The parent's `ReactorError` for a failure the child sent, as the in-process host raises it. */
-export const fromWire = (wire: WireFailure): ReactorError => {
-  const context: ErrorContext = {
-    ...(wire.operation === undefined ? {} : { operation: wire.operation }),
-    ...(wire.outcome === undefined ? {} : { outcome: wire.outcome }),
-  };
-  const backendMessage =
-    wire.backendMessage === undefined ? undefined : Redacted.make(wire.backendMessage);
-  const channel = wire.channel === undefined ? {} : { channel: wire.channel };
-  switch (wire.code) {
-    case "Native":
-      return ReactorError.make({
-        reason: Native.make({
-          message: wire.message,
-          ...(wire.status === undefined ? {} : { status: wire.status }),
-          ...(backendMessage === undefined ? {} : { backendMessage }),
-        }),
-        context:
-          wire.channel === undefined ? context : { ...context, detail: Redacted.make(channel) },
-      });
-    case "IceFailed":
-      return ReactorError.make({
-        reason: IceFailed.make({
-          message: wire.message,
-          pairs: wire.pairs ?? 0,
-          candidateTypes: wire.candidateTypes ?? [],
-        }),
-        context,
-      });
-    case "TransportFailed":
-      return ReactorError.make({
-        reason: TransportFailed.make({ message: wire.message, pairs: wire.pairs ?? 0 }),
-        context,
-      });
-    case "ClipEnded":
-      // Only an H3 provider raises it, from clip evidence no native peer has.
-      return ReactorError.fromCode(
-        "Protocol",
-        "isolated native child sent a clip failure",
-        context,
-      );
-    default:
-      return ReactorError.fromCode(
-        wire.code,
-        wire.message,
-        wire.status === undefined
-          ? context
-          : { ...context, detail: { status: wire.status, backendMessage, ...channel } },
-      );
-  }
-};
-
-/** A peer event as the child sends it. */
-export const eventToWire = (event: PeerEvent): WireEvent => {
-  switch (event.type) {
-    case "error":
-      return { type: "error", error: toWire(event.error) };
-    case "message":
-      return { ...event, bytes: event.bytes as Uint8Array<ArrayBuffer> };
-    default:
-      return event;
-  }
-};
-
-/** A peer event as the parent delivers it. */
-export const eventFromWire = (event: WireEvent): PeerEvent => {
-  switch (event.type) {
-    case "message":
-      return { type: "message", channel: event.channel, bytes: exact(event.bytes) };
-    case "error":
-      return { type: "error", error: fromWire(event.error) };
-    default:
-      return event;
-  }
-};
-
-/**
- * Bytes the parent owns. Node's advanced serialization delivers every typed
- * array of a message as a view into one shared message buffer; a frame's data
- * must be the whole of an ArrayBuffer of its own, so a view that is not is
- * copied into an exact allocation.
- */
-export function exact(view: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>;
-export function exact(view: Int16Array<ArrayBuffer>): Int16Array<ArrayBuffer>;
-export function exact(
-  view: Uint8Array<ArrayBuffer> | Int16Array<ArrayBuffer>,
-): Uint8Array<ArrayBuffer> | Int16Array<ArrayBuffer> {
-  return view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? view : view.slice();
-}
