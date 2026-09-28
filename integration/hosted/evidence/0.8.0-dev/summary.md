@@ -49,6 +49,28 @@ What they found:
   motion, against 13–19× at the independent joins, and its seam frames show the same glasses and
   plate shifted a little, where the independent joins cut to a new picture.
 
+## The dashboard
+
+The Usage page, read after the last run, lists these sessions, all `CLOSED` on cluster `5a004973-…`
+(which the page calls the region, and `vertical`'s evidence names too):
+
+| Run      | Session      | Allocated    | DELETE sent  | Dashboard duration | Estimate |
+| -------- | ------------ | ------------ | ------------ | ------------------ | -------- |
+| 7bc779d4 | `f9bca4a1-…` | 05:12:11.77Z | 05:12:42.69Z | 31 s               | $0.400   |
+| c1796473 | `d9530be0-…` | 05:14:32.10Z | 05:14:51.12Z | 19 s               | $0.250   |
+| d56fd1ee | `ba3df1cc-…` | 12:03:08.08Z | 12:03:19.43Z | 11 s               | $0.150   |
+| 3ae36b29 | `1f84da65-…` | 12:11:20.61Z | 12:11:55.45Z | 35 s               | $0.438   |
+
+The first `tokens` session (`9737e480-…`, allocated 04:51:40.41Z, 20.8 s to the DELETE) was not
+among the rows read. Each listed duration is the time from allocation to the DELETE, to the second.
+
+The page shows no charges. The balance read $5.38 at 04:01 UTC, before the first run, and $5.38 at
+12:54 UTC, after all five. At the published rate the four listed sessions' 96 s come to $1.20, and
+all five to about $1.46; a whole minute each would be $3.75. So by that reading these sessions had
+not been charged, where 0.3.0's moved the balance within minutes, by a fraction of the published
+rate ([its summary](../0.3.0-rc.0/summary.md#the-dashboard)). What Reactor bills stays a question
+for Reactor.
+
 | Run      | Check    | Mode | Verdict | Started                  | Worst case | Estimated |
 | -------- | -------- | ---- | ------- | ------------------------ | ---------- | --------- |
 | 83d17eb7 | tokens   | paid | fail    | 2026-09-28T04:51:39.053Z | $0.625     | $0.275    |
