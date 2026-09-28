@@ -1,6 +1,6 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
 import * as Policy from "../src/internal/playout/policy.js";
 import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
 import { ItemKey } from "../src/Playout.js";
@@ -942,7 +942,12 @@ const simulate = (script: Script) => {
   const problems: Array<string> = [];
   /** Keys submitted so far, groups by key, and what a withdrawal may drop. */
   const known: Array<string> = [];
-  const groups = new Map<string, ReadonlyArray<string>>();
+  /**
+   * Each group's parts by place, replacements included: a replacement takes
+   * its part's place, as 0.7.0 counted "every part's key, replacements included".
+   */
+  const groups = new Map<string, Array<{ readonly key: string; readonly place: number }>>();
+  const partOf = new Map<string, { readonly group: string; readonly place: number }>();
   const named = new Set<string>();
   /** Each replacement's key, and the key it replaces. */
   const replaced = new Map<string, string>();
@@ -1009,26 +1014,37 @@ const simulate = (script: Script) => {
     list.forEach((value, position) => {
       if (value._tag === "Withdraw") {
         keys.set(position, value.key);
-        // A group key withdraws its parts; a part key, that part and those after it.
-        const parts = groups.get(value.key);
-        const group = [...groups.values()].find((all) => all.includes(value.key));
-        for (const part of parts ?? group?.slice(group.indexOf(value.key)) ?? [value.key])
-          named.add(part);
+        // A group key withdraws its parts; a part key, the parts from its place on.
+        const part = partOf.get(value.key);
+        const reached =
+          groups.get(value.key) ??
+          (part === undefined
+            ? [{ key: value.key, place: 0 }]
+            : (groups.get(part.group) ?? []).filter((other) => other.place >= part.place));
+        for (const other of reached) named.add(other.key);
       }
       if (value._tag === "Submit" || value._tag === "Insert" || value._tag === "Replace") {
         lanes.set(value.spec.key, value.spec.lane);
         known.push(value.spec.key);
       }
-      if (value._tag === "Replace") replaced.set(value.spec.key, value.key);
-      if (value._tag === "SubmitGroup") {
+      if (value._tag === "Replace") {
+        replaced.set(value.spec.key, value.key);
+        const part = partOf.get(value.key);
+        if (part !== undefined && !partOf.has(value.spec.key)) {
+          partOf.set(value.spec.key, part);
+          groups.get(part.group)?.push({ key: value.spec.key, place: part.place });
+        }
+      }
+      if (value._tag === "SubmitGroup" && !groups.has(value.key)) {
         groups.set(
           value.key,
-          value.parts.map((part) => part.key),
+          value.parts.map((part, place) => ({ key: part.key, place })),
         );
-        for (const part of value.parts) {
+        value.parts.forEach((part, place) => {
           lanes.set(part.key, part.lane);
           known.push(part.key);
-        }
+          if (!partOf.has(part.key)) partOf.set(part.key, { group: value.key, place });
+        });
       }
     });
     edits.set(id, { batch, keys });
@@ -1224,119 +1240,178 @@ const simulate = (script: Script) => {
   return { actions, inputs, edits, drains, problems, groups, named, replaced };
 };
 
+/** The plan's promises for one script; the property and the pinned counterexamples check them. */
+const check = (script: Script): void => {
+  const { actions, edits, drains, problems, groups, named, replaced } = simulate(script);
+  // One provider command at a time, so a refusal is always attributable.
+  assert.deepStrictEqual(problems, []);
+  const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
+  for (const action of actions)
+    if (action._tag === "Emit" && action.event._tag === "AsRun")
+      history.set(action.event.event.key, [...(history.get(action.event.event.key) ?? []), action]);
+  const tags = (name: string) =>
+    (history.get(name) ?? []).flatMap((action) =>
+      action.event._tag === "AsRun" ? [action.event.event.status._tag] : [],
+    );
+  const terminal = ["Ended", "Dropped", "Failed", "Unobserved"];
+  for (const name of history.keys()) {
+    const statuses = tags(name);
+    assert.strictEqual(statuses[0], "Accepted", name);
+    const ends = statuses.filter((status) => terminal.includes(status));
+    // At most one terminal status, and nothing after it.
+    assert.isAtMost(ends.length, 1, `${name}: ${statuses.join(",")}`);
+    if (ends.length === 1)
+      assert.strictEqual(statuses.at(-1), ends[0], `${name}: ${statuses.join(",")}`);
+  }
+  // An enqueue whose outcome is unknown is never sent again, unless its session was lost
+  // and the item carried to another.
+  for (const name of history.keys()) {
+    const events = actions.filter(
+      (action) =>
+        (action._tag === "Emit" &&
+          action.event._tag === "AsRun" &&
+          action.event.event.key === name) ||
+        (action._tag === "Command" &&
+          action.command._tag === "Enqueue" &&
+          action.command.tag._tag === "Item" &&
+          action.command.tag.key === name),
+    );
+    let uncertain = false;
+    for (const action of events) {
+      if (action._tag === "Command")
+        assert.isFalse(uncertain, `${name} was sent again after an unknown outcome`);
+      else if (action._tag === "Emit" && action.event._tag === "AsRun") {
+        const status = action.event.event.status;
+        if (status._tag === "Unknown") uncertain = true;
+        if (status._tag === "Accepted") uncertain = false;
+      }
+    }
+  }
+  // Every withdrawal of an accepted edit is answered, once.
+  const accepted = new Set(
+    actions.flatMap((action) => (action._tag === "Accepted" ? [action.id] : [])),
+  );
+  for (const [id, value] of edits)
+    if (accepted.has(id))
+      for (const position of value.keys.keys())
+        assert.strictEqual(
+          actions.filter(
+            (action) =>
+              action._tag === "Withdrawn" && action.id === id && action.index === position,
+          ).length,
+          1,
+          `the withdrawal of ${value.keys.get(position) ?? ""} was answered other than once`,
+        );
+  // A withdrawal answers what became of its item.
+  for (const action of actions)
+    if (action._tag === "Withdrawn") {
+      const name = edits.get(action.id)?.keys.get(action.index);
+      if (name === undefined) continue;
+      const statuses = tags(name);
+      if (action.outcome === "withdrawn")
+        assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);
+      if (action.outcome === "already-started")
+        assert.include(statuses, "Started", `${name} already started: ${statuses.join(",")}`);
+      if (action.outcome === "not-found")
+        assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
+    }
+  // An item is dropped as withdrawn only when a withdrawal or a drain named it, or an
+  // earlier part of its group failed or was dropped; a replaced part keeps those after it.
+  if (drains.length === 0) {
+    const reasons = (name: string) =>
+      (history.get(name) ?? []).flatMap((action) =>
+        action.event._tag === "AsRun" && action.event.event.status._tag === "Dropped"
+          ? [action.event.event.status.reason]
+          : [],
+      );
+    const allowed = new Set(named);
+    for (const parts of groups.values()) {
+      const broken = parts.filter(
+        (part) =>
+          tags(part.key).includes("Failed") ||
+          reasons(part.key).some((reason) => reason !== "replaced"),
+      );
+      const from = Math.min(...broken.map((part) => part.place));
+      for (const part of parts) if (part.place > from) allowed.add(part.key);
+    }
+    for (const name of history.keys())
+      if (reasons(name).includes("withdrawn"))
+        assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
+  }
+  // An item and its replacement never both air.
+  for (const [next, old] of replaced)
+    assert.isFalse(
+      tags(next).includes("Started") && tags(old).includes("Started"),
+      `${old} and its replacement ${next} both aired`,
+    );
+  // Every batch and drain is answered once the playout closes.
+  const answered = new Set(
+    actions.flatMap((action) =>
+      action._tag === "Committed" || action._tag === "Refused" ? [action.id] : [],
+    ),
+  );
+  for (const [id, value] of edits)
+    if (value.batch) assert.isTrue(answered.has(id), `batch ${String(id)} never answered`);
+  const drained = new Set(
+    actions.flatMap((action) => (action._tag === "Drained" ? [action.id] : [])),
+  );
+  for (const id of drains) assert.isTrue(drained.has(id), `drain ${String(id)} never finished`);
+};
+
+/**
+ * The seeds the gate runs, 3,000 scripts each, so every run of it is the same.
+ * 6763954388057357 found a replacement's withdrawal leaving the replacement on
+ * air (pinned above). To explore wider, set `PLAYOUT_PROPERTY_RUNS` to a count
+ * and optionally `PLAYOUT_PROPERTY_SEED`; without a seed each run draws one and
+ * a failure reports it. A seed that finds something joins this list, and its
+ * shrunk script becomes a unit test.
+ */
+const gateSeeds: ReadonlyArray<string> = ["6763954388057357", "1", "2"];
+const explore = Effect.runSync(
+  Config.all({
+    runs: Config.Int("PLAYOUT_PROPERTY_RUNS").pipe(Config.withDefault(0)),
+    seed: Config.String("PLAYOUT_PROPERTY_SEED").pipe(Config.option),
+  }),
+);
+const propertyRuns: ReadonlyArray<{ readonly seed: string | undefined; readonly runs: number }> =
+  explore.runs > 0
+    ? [
+        {
+          seed: explore.seed.pipe(
+            Option.filter((value) => value.length > 0),
+            Option.getOrUndefined,
+          ),
+          runs: explore.runs,
+        },
+      ]
+    : gateSeeds.map((seed) => ({ seed, runs: 3_000 }));
+
+/**
+ * Scripts the property falsified, each shrunk: the plan's promises hold for
+ * them on every run, whatever the seeds explore.
+ */
+const counterexamples: ReadonlyArray<Script> = [
+  // A replacement's withdrawal left the replacement waiting and was never answered.
+  ["unknown", "group", "batch", "replace", "ready", "withdraw"],
+  // A batch's withdrawal still pending at close was never answered.
+  ["batch", "open", "done", "batch"],
+  ["batch", "withdraw", "fail", "batch"],
+  ["urgent", "withdraw", "lost", "batch"],
+];
+
 describe("PlayoutPolicy, any script", () => {
+  for (const script of counterexamples)
+    it(`keeps every promise of the plan for ${script.join(", ")}`, () => check(script));
+
   // Any sequence of edits, provider answers, builds, plays and losses keeps the plan's promises,
   // the invariants #64's review pinned among them.
-  it.effect.prop(
-    "keeps every promise of the plan",
-    [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
-    ([script]) =>
-      Effect.sync(() => {
-        const { actions, edits, drains, problems, groups, named, replaced } = simulate(script);
-        // One provider command at a time, so a refusal is always attributable.
-        assert.deepStrictEqual(problems, []);
-        const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
-        for (const action of actions)
-          if (action._tag === "Emit" && action.event._tag === "AsRun")
-            history.set(action.event.event.key, [
-              ...(history.get(action.event.event.key) ?? []),
-              action,
-            ]);
-        const tags = (name: string) =>
-          (history.get(name) ?? []).flatMap((action) =>
-            action.event._tag === "AsRun" ? [action.event.event.status._tag] : [],
-          );
-        const terminal = ["Ended", "Dropped", "Failed", "Unobserved"];
-        for (const name of history.keys()) {
-          const statuses = tags(name);
-          assert.strictEqual(statuses[0], "Accepted", name);
-          const ends = statuses.filter((status) => terminal.includes(status));
-          // At most one terminal status, and nothing after it.
-          assert.isAtMost(ends.length, 1, `${name}: ${statuses.join(",")}`);
-          if (ends.length === 1)
-            assert.strictEqual(statuses.at(-1), ends[0], `${name}: ${statuses.join(",")}`);
-        }
-        // An enqueue whose outcome is unknown is never sent again, unless its session was lost
-        // and the item carried to another.
-        for (const name of history.keys()) {
-          const events = actions.filter(
-            (action) =>
-              (action._tag === "Emit" &&
-                action.event._tag === "AsRun" &&
-                action.event.event.key === name) ||
-              (action._tag === "Command" &&
-                action.command._tag === "Enqueue" &&
-                action.command.tag._tag === "Item" &&
-                action.command.tag.key === name),
-          );
-          let uncertain = false;
-          for (const action of events) {
-            if (action._tag === "Command")
-              assert.isFalse(uncertain, `${name} was sent again after an unknown outcome`);
-            else if (action._tag === "Emit" && action.event._tag === "AsRun") {
-              const status = action.event.event.status;
-              if (status._tag === "Unknown") uncertain = true;
-              if (status._tag === "Accepted") uncertain = false;
-            }
-          }
-        }
-        // A withdrawal answers what became of its item.
-        for (const action of actions)
-          if (action._tag === "Withdrawn") {
-            const name = edits.get(action.id)?.keys.get(action.index);
-            if (name === undefined) continue;
-            const statuses = tags(name);
-            if (action.outcome === "withdrawn")
-              assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);
-            if (action.outcome === "already-started")
-              assert.include(statuses, "Started", `${name} already started: ${statuses.join(",")}`);
-            if (action.outcome === "not-found")
-              assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
-          }
-        // An item is dropped as withdrawn only when a withdrawal or a drain named it, or an
-        // earlier part of its group failed or was dropped; a replaced part keeps those after it.
-        if (drains.length === 0) {
-          const reasons = (name: string) =>
-            (history.get(name) ?? []).flatMap((action) =>
-              action.event._tag === "AsRun" && action.event.event.status._tag === "Dropped"
-                ? [action.event.event.status.reason]
-                : [],
-            );
-          const allowed = new Set(named);
-          for (const parts of groups.values()) {
-            const first = parts.findIndex(
-              (part) =>
-                tags(part).includes("Failed") ||
-                reasons(part).some((reason) => reason !== "replaced"),
-            );
-            if (first >= 0) for (const part of parts.slice(first + 1)) allowed.add(part);
-          }
-          for (const name of history.keys())
-            if (reasons(name).includes("withdrawn"))
-              assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
-        }
-        // An item and its replacement never both air.
-        for (const [next, old] of replaced)
-          assert.isFalse(
-            tags(next).includes("Started") && tags(old).includes("Started"),
-            `${old} and its replacement ${next} both aired`,
-          );
-        // Every batch and drain is answered once the playout closes.
-        const answered = new Set(
-          actions.flatMap((action) =>
-            action._tag === "Committed" || action._tag === "Refused" ? [action.id] : [],
-          ),
-        );
-        for (const [id, value] of edits)
-          if (value.batch) assert.isTrue(answered.has(id), `batch ${String(id)} never answered`);
-        const drained = new Set(
-          actions.flatMap((action) => (action._tag === "Drained" ? [action.id] : [])),
-        );
-        for (const id of drains)
-          assert.isTrue(drained.has(id), `drain ${String(id)} never finished`);
-      }),
-    { arbitrary: { runs: 3000 } },
-  );
+  for (const { seed, runs } of propertyRuns)
+    it.effect.prop(
+      `keeps every promise of the plan (seed ${seed ?? "drawn"}, ${String(runs)} scripts)`,
+      [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
+      ([script]) => Effect.sync(() => check(script)),
+      { arbitrary: { runs, ...(seed === undefined ? {} : { seed }) }, timeout: 600_000 },
+    );
 });
 
 // Claims from the critique's delegated pass, each checked here before any fix.
@@ -1421,6 +1496,46 @@ describe("PlayoutPolicy, edit claims", () => {
     ]);
     assert.isTrue(group.actions.some((action) => action._tag === "Refused"));
     assert.strictEqual(policy.state().items.get(key("p"))?.phase, "Ready");
+  });
+
+  // The property's counterexample, shrunk: ["unknown","group","batch","replace","ready","withdraw"].
+  // A replacement takes its part's place, so withdrawing it withdraws it and the parts after it,
+  // and answers with its own outcome, as 0.7.0 counted "every part's key, replacements included".
+  it("withdrawing a group part's replacement withdraws it and the parts after it, and answers", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("ga"), spec("gb")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.edit([{ _tag: "Replace", key: key("ga"), spec: spec("r") }]);
+    assert.deepStrictEqual(statuses(policy.actions, "ga").at(-1), "Dropped");
+    const withdrawal = policy.edit([{ _tag: "Withdraw", key: key("r") }]);
+    assert.deepStrictEqual(statuses(withdrawal.actions, "r"), ["Dropped"]);
+    assert.deepStrictEqual(statuses(withdrawal.actions, "gb"), ["Dropped"]);
+    assert.deepStrictEqual(withdrawn(withdrawal.actions), ["withdrawn"]);
+  });
+
+  it("an insert after a group follows its last part by place, not the replacement added last", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("ga"), spec("gb")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.edit([{ _tag: "Replace", key: key("ga"), spec: spec("r") }]);
+    policy.edit([{ _tag: "Insert", spec: spec("i"), anchor: key("g"), side: "after" }]);
+    assert.strictEqual(policy.state().items.get(key("i"))?.group?.index, 1);
   });
 
   it("a batch's cover airs only when nothing else can", () => {
