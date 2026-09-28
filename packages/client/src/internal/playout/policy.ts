@@ -142,7 +142,7 @@ export type Action =
       readonly outcome: WithdrawOutcome;
     }
   | { readonly _tag: "Drained"; readonly id: number }
-  | { readonly _tag: "Fail"; readonly reason: string };
+  | { readonly _tag: "Fail"; readonly reason: string; readonly moderated?: boolean };
 
 export interface Config {
   readonly lanes: ReadonlyArray<{
@@ -164,6 +164,7 @@ export interface Config {
   readonly leadMs: number;
   readonly graceMs: number;
   readonly maxSetupFailures: number;
+  readonly maxModerations: number;
 }
 
 export interface Now {
@@ -200,6 +201,8 @@ interface Item {
    */
   readonly follows?: string | undefined;
   readonly everUnknown: boolean;
+  /** Sessions in a row its clip was lost with before it was built. */
+  readonly unbuiltLosses: number;
   readonly unknownSince?: number | undefined;
   readonly retryAt?: number | undefined;
   readonly startedAt?: number | undefined;
@@ -224,6 +227,8 @@ interface Session {
   readonly indeterminate: boolean;
   /** The playing clip and when its start was observed, on the monotonic clock. */
   readonly playing: { readonly clipId: string; readonly at: number } | undefined;
+  /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
+  readonly lastEnqueue: ClipTag | undefined;
 }
 
 interface Batch {
@@ -249,6 +254,8 @@ export interface State {
   readonly opening: boolean;
   readonly openRetryAt: number;
   readonly setupFailures: number;
+  /** Sessions content moderation ended. */
+  readonly moderations: number;
   readonly busy:
     | { readonly id: number; readonly sessionId: string; readonly command: Command }
     | undefined;
@@ -304,6 +311,7 @@ export const initial: State = {
   opening: false,
   openRetryAt: 0,
   setupFailures: 0,
+  moderations: 0,
   busy: undefined,
   nextCommand: 1,
   fillers: new Map(),
@@ -658,6 +666,7 @@ export const step: {
       spec.window?.notBeforeMs === undefined ? undefined : now.mono + spec.window.notBeforeMs,
     startBy: spec.window?.startByMs === undefined ? undefined : now.mono + spec.window.startByMs,
     everUnknown: false,
+    unbuiltLosses: 0,
     fired: [],
     waiting: [],
     ...place,
@@ -922,6 +931,8 @@ export const step: {
         startedAny: true,
         playing: { clipId: clip.clipId, at: now.mono },
       });
+    // A clip on air ends a run of sessions that failed to set up or to play anything.
+    state = { ...state, setupFailures: 0 };
     if (clip.tag?._tag !== "Item") return;
     const item = items.get(clip.tag.key);
     if (item === undefined || item.startedAt !== undefined || item.phase === "Settled") return;
@@ -973,6 +984,46 @@ export const step: {
         length: [...state.samples.length, clip.seconds / item.spec.seconds].slice(-maxSamples),
       },
     };
+  };
+  /**
+   * A moderation verdict. On `terminate` the latest enqueue sent to the session
+   * is held to blame: it fails for good rather than be rebuilt on the next
+   * session and flagged again, and enough such endings fail the playout.
+   */
+  const moderated = (
+    sessionId: string,
+    event: Extract<SourceEvent, { readonly _tag: "Moderated" }>,
+  ): void => {
+    const terminate = event.action === "terminate";
+    const suspect = terminate ? session(sessionId)?.lastEnqueue : undefined;
+    const key = suspect?._tag === "Item" ? suspect.key : undefined;
+    emit({
+      _tag: "Session",
+      event: {
+        _tag: "Moderated",
+        sessionId,
+        action: event.action,
+        categories: event.categories,
+        ...(key === undefined ? {} : { key }),
+      },
+    });
+    if (!terminate) return;
+    if (key !== undefined)
+      settle(key, { _tag: "Failed", reason: "content moderation flagged it", moderated: true });
+    // A flagged filler request is not asked for again.
+    if (suspect?._tag === "Filler" && suspect.index === state.filler.index)
+      state = {
+        ...state,
+        filler: { ...state.filler, index: state.filler.index + 1, request: undefined },
+      };
+    const moderations = state.moderations + 1;
+    state = { ...state, moderations };
+    if (moderations >= config.maxModerations)
+      actions.push({
+        _tag: "Fail",
+        reason: `content moderation ended ${String(moderations)} sessions`,
+        moderated: true,
+      });
   };
   const failed = (clip: SourceClip, reason: string): void => {
     if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
@@ -1036,6 +1087,7 @@ export const step: {
           sessionId,
           dispatchedAt: undefined,
           unknownSince: undefined,
+          unbuiltLosses: 0,
         });
         asRun(item.spec.key, { _tag: "Ready", sessionId });
       } else if (
@@ -1071,8 +1123,15 @@ export const step: {
             : { _tag: "Unobserved" },
         );
   };
-  /** A session that is gone: its unaired clips are rebuilt from the plan, never replayed. */
-  const lose = (sessionId: string, reason: string): void => {
+  /**
+   * A session that is gone: its unaired clips are rebuilt from the plan, never
+   * replayed. Reactor ends a session over flagged content, and need not say
+   * so, so rebuilding is bounded twice. A clip lost before it was built with
+   * two sessions in a row fails: a built clip passed screening, so it is
+   * rebuilt however often it is lost, and never fails alongside a flagged one.
+   * And a session lost before any clip sent to it started counts as a failed setup.
+   */
+  const lose = (sessionId: string, reason: string, planned = false): void => {
     const lost = session(sessionId);
     if (lost === undefined) return;
     let carried = 0;
@@ -1083,6 +1142,12 @@ export const step: {
       else if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
       else if (item.withdraw !== undefined)
         settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
+      else if (!planned && item.phase === "Building" && item.unbuiltLosses + 1 >= 2)
+        settle(item.spec.key, {
+          _tag: "Failed",
+          reason: "its clip was lost before it was built on two sessions in a row",
+          lost: sessionId,
+        });
       else {
         carried++;
         set(item.spec.key, {
@@ -1090,9 +1155,25 @@ export const step: {
           clipId: undefined,
           sessionId: undefined,
           dispatchedAt: undefined,
+          ...(!planned && item.phase === "Building"
+            ? { unbuiltLosses: item.unbuiltLosses + 1 }
+            : {}),
         });
         asRun(item.spec.key, { _tag: "Accepted", carried: { sessionId } });
       }
+    }
+    if (!planned && !lost.startedAny && lost.lastEnqueue !== undefined) {
+      const consecutive = state.setupFailures + 1;
+      state = { ...state, setupFailures: consecutive };
+      emit({
+        _tag: "Session",
+        event: {
+          _tag: "SetupFailed",
+          reason: `lost before a clip sent to it started: ${reason}`,
+          consecutive,
+        },
+      });
+      if (consecutive >= config.maxSetupFailures) actions.push({ _tag: "Fail", reason });
     }
     state = {
       ...state,
@@ -1242,7 +1323,6 @@ export const step: {
       state = {
         ...state,
         opening: false,
-        setupFailures: 0,
         air: first ? input.sessionId : state.air,
         sessions: [
           ...state.sessions,
@@ -1258,6 +1338,7 @@ export const step: {
             startedAny: false,
             indeterminate: false,
             playing: undefined,
+            lastEnqueue: undefined,
           },
         ],
       };
@@ -1304,6 +1385,9 @@ export const step: {
           break;
         case "Failed":
           failed(event.clip, event.reason);
+          break;
+        case "Moderated":
+          moderated(input.sessionId, event);
           break;
       }
       break;
@@ -1454,7 +1538,7 @@ export const step: {
           decision: current.startedAny ? "grace-elapsed" : "no-observed-start",
         },
       });
-      lose(current.id, "retired");
+      lose(current.id, "retired", true);
     }
   }
   // An enqueue that stays unknown makes its session indeterminate, so a replacement takes over.
@@ -1546,6 +1630,7 @@ export const step: {
     if (state.busy !== undefined) return;
     const id = state.nextCommand;
     state = { ...state, busy: { id, sessionId, command }, nextCommand: id + 1 };
+    if (command._tag === "Enqueue") updateSession(sessionId, { lastEnqueue: command.tag });
     actions.push({ _tag: "Command", id, sessionId, command });
   }
   function signature(value: Session | undefined): string {

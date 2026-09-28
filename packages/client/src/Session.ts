@@ -154,6 +154,20 @@ export type EventPayload =
       readonly mid: string;
     }
   | { readonly _tag: "Diagnostic"; readonly error: ReactorError }
+  /**
+   * Reactor's content moderation flagged an input. `terminate` means Reactor
+   * is ending the session, and it is not reconnected; `warn` is informational.
+   * Its text stays out: the categories name what was flagged.
+   */
+  | {
+      readonly _tag: "Moderation";
+      readonly action: string;
+      readonly categories: ReadonlyArray<string>;
+      /** What was screened, such as `prompt` or `image`, when Reactor says. */
+      readonly inputKind?: string;
+      /** The command that carried it, when Reactor says. */
+      readonly command?: string;
+    }
   | { readonly _tag: "Upload"; readonly progress: UploadProgress };
 
 export type SessionEvent =

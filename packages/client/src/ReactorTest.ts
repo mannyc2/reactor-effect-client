@@ -67,6 +67,20 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("InvalidImage", nth),
   /** `POST /tokens` grants a longer session than was asked for. */
   Schema.TaggedStruct("OverGrant", nth),
+  /**
+   * Content moderation flags a clip, every one or those with `prompt`: as its
+   * build ends the model sends its verdict on the control channel and, for
+   * `terminate` (the default), ends the session instead of making the clip
+   * Ready, as Reactor documents; `warn` only reports it.
+   */
+  Schema.TaggedStruct("Moderate", {
+    ...nth,
+    prompt: Schema.optionalKey(Schema.String),
+    action: Schema.optionalKey(Schema.Literals(["terminate", "warn"])),
+    /** False ends the session with no verdict sent, which Reactor's docs allow. */
+    verdict: Schema.optionalKey(Schema.Boolean),
+    categories: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+  }),
 ]);
 export type Fault = typeof Fault.Type;
 
@@ -222,6 +236,13 @@ export const Options = Schema.Struct({
    */
   creditsPerMinute: count(7_500),
   creditsPerDollar: count(10_000),
+  /** Sessions the account may run at once, as Reactor's default quota; more are refused with 429. */
+  concurrentSessions: count(5),
+  /**
+   * Sessions the account may create a minute, three back to back, as Reactor's
+   * default quota; more are refused with 429 and a `Retry-After`.
+   */
+  sessionsPerMinute: count(10),
   /** Decoded frame size. */
   width: count(16),
   height: count(16),
@@ -245,7 +266,8 @@ export interface SessionInfo {
   readonly connected: boolean;
   /** DELETE requests received, repeats and ignored ones included. */
   readonly deletes: number;
-  readonly grant: { readonly maxSessionSeconds: number; readonly expiresAt: number };
+  /** The creating token's cap, undefined for none, and when that token expires. */
+  readonly grant: { readonly maxSessionSeconds: number | undefined; readonly expiresAt: number };
 }
 
 export interface Billing {
@@ -256,12 +278,12 @@ export interface Billing {
   readonly usd: number;
 }
 
-/** A command the model received, a message it sent, or a session's lifecycle step. */
+/** A command the model received, a message it sent, a track paused or resumed, or a session's lifecycle step. */
 export interface Entry {
   /** Monotonic milliseconds. */
   readonly at: number;
   readonly sessionId: string;
-  readonly kind: "session" | "command" | "message" | "upload" | "build";
+  readonly kind: "session" | "command" | "message" | "upload" | "build" | "track";
   readonly name: string;
   readonly clipId?: string;
   /**

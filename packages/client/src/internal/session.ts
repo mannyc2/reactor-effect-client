@@ -24,11 +24,12 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type {
+  Coordinator,
   Descriptor,
   IceCandidate,
   Mapping,
-  Signaling,
   Termination,
+  Tokens,
   Track,
 } from "../Coordinator.js";
 import { notTerminated, terminationAttributes } from "../Coordinator.js";
@@ -58,12 +59,15 @@ import * as Correlator from "./correlator.js";
 import * as Hub from "./hub.js";
 import { take } from "./queue.js";
 import * as Stats from "./stats.js";
+import * as Token from "./token.js";
 import * as Wire from "./wire.js";
 
 export interface Settings {
   readonly replyTimeout: Duration.Duration;
   readonly uploadTimeout: Duration.Duration;
   readonly connectTimeout: Duration.Duration;
+  /** A reconnect's own deadline: Reactor ends a session 30 s after it loses its last connection. */
+  readonly reconnectTimeout: Duration.Duration;
   readonly readyTimeout: Duration.Duration;
   /** Infinite disables the heartbeat. */
   readonly heartbeat: Duration.Duration;
@@ -131,6 +135,8 @@ interface Connection {
 
 interface State {
   readonly status: Status;
+  /** Content moderation is ending the session: nothing reconnects it. */
+  readonly moderated: boolean;
   readonly generation: bigint;
   readonly remote: RemoteSession | undefined;
   readonly connection: Connection | undefined;
@@ -209,16 +215,19 @@ export interface Handle {
 
 export const make = Effect.fnUntraced(function* (input: {
   readonly intent: Intent;
-  readonly signaling: Signaling;
+  readonly coordinator: Coordinator["Service"];
+  /** Where the session's tokens come from; none sends no credential. */
+  readonly tokens: (Pick<Tokens, "bind"> & Partial<Pick<Tokens, "create">>) | undefined;
+  /** Resume receive-only tracks as each connection becomes ready; Reactor sends no media until then. */
+  readonly resumeTracks: boolean;
   readonly peers: PeerFactory["Service"];
   readonly settings: Settings;
-  /** Resolves a recording's relative playlist URL. */
-  readonly apiUrl: string;
 }) {
-  const { intent, signaling, peers, settings } = input;
+  const { intent, coordinator, peers, settings } = input;
   const root = yield* Scope.make();
   const state = yield* SubscriptionRef.make<State>({
     status: "idle",
+    moderated: false,
     generation: 0n,
     remote: undefined,
     connection: undefined,
@@ -250,6 +259,12 @@ export const make = Effect.fnUntraced(function* (input: {
       const current = generation ?? (yield* SubscriptionRef.get(state)).generation;
       yield* hub.publish({ ...payload, sequence: next, generation: current });
     });
+  const token = yield* Token.make({
+    tokens: input.tokens,
+    sessionId: intent._tag === "Attach" ? intent.sessionId : undefined,
+    onRefreshFailure: (error) => publish({ _tag: "Diagnostic", error }),
+  });
+  const signaling = coordinator.signaling(token.current);
 
   const transition = (status: Status) =>
     Effect.gen(function* () {
@@ -471,6 +486,25 @@ export const make = Effect.fnUntraced(function* (input: {
           },
           c.generation,
         );
+      // A moderation verdict answers no request. `terminate` means Reactor is ending the session.
+      if (payload.case === "moderation") {
+        const verdict = payload.value;
+        if (verdict.action === "terminate")
+          yield* SubscriptionRef.update(state, (current): State => ({
+            ...current,
+            moderated: true,
+          }));
+        return yield* publish(
+          {
+            _tag: "Moderation",
+            action: verdict.action,
+            categories: verdict.categories,
+            ...(verdict.inputKind === "" ? {} : { inputKind: verdict.inputKind }),
+            ...(verdict.command === "" ? {} : { command: verdict.command }),
+          },
+          c.generation,
+        );
+      }
       const claim = (yield* Ref.get(c.link)).claims.get(message.requestId);
       if (claim !== undefined) {
         if (payload.case === "publishTrack" && payload.value.name === claim)
@@ -648,13 +682,14 @@ export const make = Effect.fnUntraced(function* (input: {
           .pipe(Effect.raceFirst(Deferred.await(closing))),
       ).pipe(
         Effect.tapError((error) =>
-          // A refusal the coordinator answered proves nothing was allocated.
+          // A request never sent, or a refusal the coordinator answered, proves nothing was allocated.
           SubscriptionRef.update(state, (current): State => ({
             ...current,
             remote:
               current.remote?.ownership !== "allocating"
                 ? current.remote
-                : error.context.outcome === "replied" && error.reason._tag === "Http"
+                : error.context.outcome === "not-submitted" ||
+                    (error.context.outcome === "replied" && error.reason._tag === "Http")
                   ? undefined
                   : { ownership: "unknown" },
           })),
@@ -667,6 +702,7 @@ export const make = Effect.fnUntraced(function* (input: {
         ...current,
         remote: { ownership: "owned", id: allocation.sessionId },
       }));
+      yield* token.bind(allocation.sessionId);
       const descriptor = yield* signaling.describe(allocation);
       yield* SubscriptionRef.update(state, (current): State => ({
         ...current,
@@ -693,6 +729,10 @@ export const make = Effect.fnUntraced(function* (input: {
           "InvalidState",
           "cannot reconnect without a known session",
         );
+      if (reconnect && session.moderated)
+        return yield* ReactorError.fromCode("Moderated", "content moderation ended the session", {
+          outcome: "not-submitted",
+        });
       const scope = yield* Scope.fork(root);
       const peer = yield* Scope.provide(peers.make, scope).pipe(
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
@@ -847,7 +887,7 @@ export const make = Effect.fnUntraced(function* (input: {
         // Hosted Reactor holds a connection's media until that connection
         // resumes its receive-only tracks, attached or not.
         for (const track of capabilities.tracks)
-          if (track.direction === "recvonly") {
+          if (track.direction === "recvonly" && input.resumeTracks) {
             const resumed = yield* Effect.result(setTrackActive(track.name, true, c));
             if (resumed._tag === "Failure")
               yield* publish({ _tag: "Diagnostic", error: resumed.failure }, c.generation);
@@ -866,7 +906,11 @@ export const make = Effect.fnUntraced(function* (input: {
             ),
           );
       });
-      yield* deadline(work, settings.connectTimeout, reconnect ? "reconnect" : "connect").pipe(
+      yield* deadline(
+        work,
+        reconnect ? settings.reconnectTimeout : settings.connectTimeout,
+        reconnect ? "reconnect" : "connect",
+      ).pipe(
         Effect.onExit((exit) =>
           Exit.isSuccess(exit)
             ? Effect.void
@@ -1129,7 +1173,7 @@ export const make = Effect.fnUntraced(function* (input: {
           );
         if (reply.case !== "clipReady")
           return Effect.fail(unexpected(`clip reply was ${reply.case}`));
-        const playlist = URL.parse(reply.value.playlistUrl, `${input.apiUrl}/`);
+        const playlist = URL.parse(reply.value.playlistUrl, `${coordinator.apiUrl}/`);
         return playlist === null
           ? Effect.fail(
               ReactorError.fromCode("Protocol", "clip playlist URL is malformed", {

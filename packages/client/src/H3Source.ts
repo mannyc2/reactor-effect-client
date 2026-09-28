@@ -1,7 +1,8 @@
 /**
  * H3 over one Reactor session as a playout `Source`: `open` mints a token,
  * allocates, lets a supervisor record the owner, connects and sets the
- * session up; `resume` adopts a session a dead owner recorded. Both make sure of
+ * session up; `resume` adopts a session a dead owner recorded. Either keeps
+ * the session's token fresh with tokens bound to it. Both make sure of
  * every session default the playout depends on, since H3's defaults are not
  * what a playout wants: autoplay is off until the playout turns it on,
  * `flush_on_clip_end` is set as asked when the session has it otherwise, and
@@ -11,13 +12,12 @@ import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import type * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { TokenGrant } from "./Coordinator.js";
+import type { TokenGrant, Tokens } from "./Coordinator.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia } from "./Media.js";
 import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
@@ -28,22 +28,23 @@ import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError
 import type { Session } from "./Session.js";
 
 /**
- * A durable owner record of an allocated session, without its token: enough to
- * find it again and terminate it with the grant's token, stored as the
- * application decides.
+ * A durable owner record of an allocated session, without a token: enough to
+ * find it again, adopt it with a token bound to it, or terminate it with one
+ * or with the API key, stored as the application decides.
  */
 export const Allocation = Schema.Struct({
   sessionId: Schema.String,
   ownership: Schema.Literals(["owned", "attached"]),
   model: Schema.String,
-  /** When the grant's token expires, in seconds since the epoch. */
-  expiresAt: Schema.Finite,
-  /** When the session's granted length ends at the latest, in seconds since the epoch. */
-  endsAt: Schema.Finite,
+  /**
+   * When the session's cap ends it at the latest, in seconds since the epoch;
+   * absent for a session without a cap, which runs until it is terminated.
+   */
+  endsAt: Schema.optionalKey(Schema.Finite),
 });
 export type Allocation = typeof Allocation.Type;
 
-/** A session just allocated, before it connects, and the grant it runs under. */
+/** A session just allocated, before it connects, and the token that created it. */
 export interface Allocated {
   readonly session: Session;
   readonly grant: TokenGrant;
@@ -61,17 +62,21 @@ export interface Options {
 }
 
 export interface OpenOptions<E = never, R = never> extends Options {
-  /** Mints the session's token. The API key never reaches the opener. */
-  readonly mint: Effect.Effect<TokenGrant, ReactorError, R>;
+  /**
+   * The session's tokens; the API key never reaches the opener. The `create`
+   * token's cap is the session's lifetime: without one the source never
+   * expires, and the playout renews it only when it is lost.
+   */
+  readonly tokens: Tokens;
   /** Runs after allocation and before connect, so a supervisor can record the owner first. */
   readonly onAllocated?: ((allocated: Allocated) => Effect.Effect<void, E, R>) | undefined;
-  readonly create?: Omit<CreateOptions, "model" | "jwt" | "onAllocated"> | undefined;
+  readonly create?: Omit<CreateOptions, "model" | "tokens" | "onAllocated"> | undefined;
 }
 
 export interface ResumeOptions extends Omit<Options, "canvas"> {
   readonly allocation: Allocation;
-  /** The grant's token, stored beside the record. */
-  readonly jwt: Redacted.Redacted<string>;
+  /** Tokens bound to the recorded session: H3 accepts no other for a session it did not create. */
+  readonly tokens: Pick<Tokens, "bind">;
 }
 
 // Playout's identity travels inside the caller part of H3's metadata envelope,
@@ -194,6 +199,10 @@ const fromSession = Effect.fnUntraced(function* (
         yield* recover;
         return [{ _tag: "State", state: stateOf(yield* provider.snapshot) }];
       }
+      if (event._tag === "Session" && event.source._tag === "Moderation")
+        return [
+          { _tag: "Moderated", action: event.source.action, categories: event.source.categories },
+        ];
       if (event._tag !== "Message" || event.disposition !== "applied") return [];
       const message = event.message;
       const state: SourceEvent = { _tag: "State", state: stateOf(yield* provider.snapshot) };
@@ -339,24 +348,26 @@ const failAcquisition = (session: Session) => (error: ReactorError | CommandFail
 
 /**
  * Opens a paid H3 session as a playout source: mint its token, allocate it, run
- * `onAllocated`, connect, and set it up. Its lifetime is the granted length.
- * `Playout.make({ open: H3Source.open({ mint }), ... })`.
+ * `onAllocated`, connect, and set it up. Its lifetime is the token's session
+ * cap, or unending without one.
+ * `Playout.make({ open: H3Source.open({ tokens }), ... })`.
  */
 export const open = <E = never, R = never>(
   options: OpenOptions<E, R>,
 ): Effect.Effect<Source, AcquisitionFailure | E, R | Reactor | Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const reactor = yield* Reactor;
-    const grant = yield* options.mint.pipe(
+    const grant = yield* options.tokens.create.pipe(
       Effect.mapError((error) => AcquisitionFailure.from(error, noAcquisition)),
     );
+    const cap = grant.maxSessionSeconds;
     // The server starts the granted length no earlier than the request.
     const requested = yield* Clock.currentTimeMillis;
     const onAllocated = options.onAllocated;
     const session = yield* reactor.create({
       ...options.create,
       model: H3.modelName,
-      jwt: grant.jwt,
+      tokens: { create: Effect.succeed(grant), bind: options.tokens.bind },
       ...(onAllocated === undefined
         ? {}
         : {
@@ -368,15 +379,14 @@ export const open = <E = never, R = never>(
                   sessionId: allocated.id,
                   ownership: allocated.ownership,
                   model: H3.modelName,
-                  expiresAt: grant.expiresAt,
-                  endsAt: requested / 1000 + grant.granted.maxSessionSeconds,
+                  ...(cap === undefined ? {} : { endsAt: requested / 1000 + cap }),
                 },
               }),
           }),
     });
     return yield* fromSession(session, {
       ...options,
-      lifetime: Duration.seconds(grant.granted.maxSessionSeconds),
+      lifetime: cap === undefined ? Duration.infinity : Duration.seconds(cap),
       resumed: false,
     }).pipe(Effect.catch(failAcquisition(session)));
   }).pipe(
@@ -384,10 +394,10 @@ export const open = <E = never, R = never>(
   );
 
 /**
- * Adopts a session `open` allocated, from its owner record and token, after its
- * owner died: this process then owns its remote lifetime. It keeps the
- * session's canvas, queue and playback; its lifetime is what remains until the
- * record's `endsAt`.
+ * Adopts a session `open` allocated, from its owner record and a token bound
+ * to it, after its owner died: this process then owns its remote lifetime. It
+ * keeps the session's canvas, queue and playback; its lifetime is what remains
+ * until the record's `endsAt`, if it has one.
  */
 export const resume = (
   options: ResumeOptions,
@@ -404,17 +414,20 @@ export const resume = (
     const { allocation } = options;
     if (allocation.model !== H3.modelName)
       return yield* refuse("the allocation is not an H3 session");
-    const remainingMs = allocation.endsAt * 1000 - (yield* Clock.currentTimeMillis);
+    const remainingMs =
+      allocation.endsAt === undefined
+        ? Infinity
+        : allocation.endsAt * 1000 - (yield* Clock.currentTimeMillis);
     if (!(remainingMs > 0)) return yield* refuse("the allocation's granted length has ended");
     const reactor = yield* Reactor;
     const session = yield* reactor.attach({
       sessionId: allocation.sessionId,
-      jwt: options.jwt,
+      tokens: options.tokens,
       adopt: true,
     });
     return yield* fromSession(session, {
       ...options,
-      lifetime: Duration.millis(remainingMs),
+      lifetime: Number.isFinite(remainingMs) ? Duration.millis(remainingMs) : Duration.infinity,
       resumed: true,
     }).pipe(Effect.catch(failAcquisition(session)));
   }).pipe(

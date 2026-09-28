@@ -14,7 +14,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { Clip, Message } from "../h3/messages.js";
 import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
-import type { Entry, Options } from "../../ReactorTest.js";
+import type { Entry, Fault, Options } from "../../ReactorTest.js";
 import * as Wire from "../wire.js";
 import type { Faults } from "./faults.js";
 import * as H3 from "./h3.js";
@@ -36,6 +36,8 @@ export interface Environment {
   readonly timing: Sampler;
   readonly openapi: typeof Wire.StructJson.Type;
   readonly log: (entry: Omit<Entry, "at">) => Effect.Effect<void>;
+  /** Ends the session this many milliseconds from now, as a moderation verdict does. */
+  readonly terminate: (afterMs: number) => Effect.Effect<void>;
 }
 
 const range = (count: number) => Array.from({ length: Math.max(0, count) }, (_, index) => index);
@@ -192,6 +194,19 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
             ? environment.timing.continuedBuildSpeed
             : environment.timing.buildSpeed;
           const ms = (output.seconds / (yield* speed)) * 1000;
+          const moderated = yield* faults.trip(
+            (candidate) =>
+              candidate._tag === "Moderate" &&
+              (candidate.prompt === undefined || candidate.prompt === output.prompt),
+          );
+          if (moderated?._tag === "Moderate") {
+            yield* FiberSet.run(
+              timers,
+              Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(moderate(moderated))),
+            );
+            // A warning lets the build finish.
+            if ((moderated.action ?? "terminate") === "terminate") return;
+          }
           return yield* later(
             ms,
             fault?._tag === "FailBuild"
@@ -226,6 +241,33 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           });
       }
     }).pipe(Effect.asVoid);
+
+  /**
+   * Screening flags a clip as its build ends: the verdict goes out on the
+   * control channel, unless the fault withholds it, and on `terminate` the
+   * session ends once it has arrived, instead of the clip becoming Ready.
+   */
+  function moderate(fault: Extract<Fault, { readonly _tag: "Moderate" }>): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      const action = fault.action ?? "terminate";
+      yield* log({ sessionId, kind: "session", name: `moderation ${action}` });
+      if (fault.verdict !== false)
+        yield* send("control", Wire.ControlServerMessageSchema, {
+          requestId: "",
+          kind: Wire.MessageKind.NOTIFICATION,
+          payload: {
+            case: "moderation",
+            value: {
+              action,
+              inputKind: "prompt",
+              command: "enqueue",
+              categories: [...(fault.categories ?? ["violence"])],
+            },
+          },
+        });
+      if (action === "terminate") yield* environment.terminate((yield* latency) + 100);
+    });
+  }
 
   function apply(input: H3.Input, withheld?: string): Effect.Effect<void> {
     return lock.withPermit(
@@ -262,9 +304,17 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       case "requestSchema":
         return answer({ case: "modelSchema", value: { openapi: environment.openapi } });
       case "pauseTrack":
-        return pause(message.payload.value.name, true);
+        return pause(message.payload.value.name, true).pipe(
+          Effect.andThen(
+            log({ sessionId, kind: "track", name: `pause ${message.payload.value.name}` }),
+          ),
+        );
       case "resumeTrack":
-        return pause(message.payload.value.name, false);
+        return pause(message.payload.value.name, false).pipe(
+          Effect.andThen(
+            log({ sessionId, kind: "track", name: `resume ${message.payload.value.name}` }),
+          ),
+        );
       case "publishTrack":
         return answer({ case: "error", value: { code: "unknown_track", message: "no input" } });
       case "requestClip":

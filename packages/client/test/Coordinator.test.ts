@@ -1,6 +1,8 @@
 /** Reactor's HTTP API over an in-memory origin: what counts as proof, and who gets the token. */
-import { assert, describe, it } from "@effect/vitest";
-import { Effect, Encoding, Fiber, Redacted, Result, Schema } from "effect";
+import { assert, describe, it, layer } from "@effect/vitest";
+import { fileURLToPath } from "node:url";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import { Effect, Fiber, FileSystem, Redacted, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -15,6 +17,8 @@ interface Served {
   readonly method: string;
   readonly url: string;
   readonly authorized: boolean;
+  readonly bearer: string | undefined;
+  readonly body: string;
 }
 
 type Route = (method: string, url: URL) => Response;
@@ -24,10 +28,13 @@ const origin = (route: Route) => {
   const served: Array<Served> = [];
   const client = HttpClient.make((request, url) =>
     Effect.sync(() => {
+      const body = request.body;
       served.push({
         method: request.method,
         url: url.href,
         authorized: request.headers.authorization !== undefined,
+        bearer: request.headers.authorization?.replace(/^Bearer /, ""),
+        body: body._tag === "Uint8Array" ? new TextDecoder().decode(body.body) : "",
       });
       return HttpClientResponse.fromWeb(request, route(request.method, url));
     }),
@@ -91,7 +98,7 @@ describe("recordings", () => {
     nowMarker: 2,
     playlistUrl: `${api}/clips/c.m3u8`,
   });
-  const recordings = (pending: number, segmentBytes = 4) => {
+  const recordings = (pending: number, segmentBytes = 4, state = "ACTIVE") => {
     let waiting = pending;
     return origin((_method, url) => {
       if (url.pathname === "/clips/c.m3u8") {
@@ -102,7 +109,7 @@ describe("recordings", () => {
         return new Response(playlist);
       }
       if (url.pathname === "/sessions/session-1")
-        return Response.json({ session_id: "session-1", state: "ACTIVE" });
+        return Response.json({ session_id: "session-1", state });
       const marker = url.pathname.endsWith("init.mp4")
         ? 9
         : url.pathname.endsWith("seg-0.m4s")
@@ -140,6 +147,21 @@ describe("recordings", () => {
       }),
   );
 
+  // Reactor's docs: a recording is kept 24 h and plays after its session ends; it may finish then.
+  it.effect("waits for a recording of an ended session until its predicted ready time", () =>
+    Effect.gen(function* () {
+      const finishing = create(ClipReadySchema, { ...clip, predictedReadyAtMs: 5_000n });
+      const service = yield* coordinator(recordings(2, 4, "CLOSED").client);
+      const fiber = yield* Effect.forkChild(service.downloadClip(finishing));
+      yield* TestClock.adjust("2 seconds");
+      assert.strictEqual((yield* Fiber.join(fiber)).bytes.byteLength, 12);
+      const overdue = yield* coordinator(recordings(1_000, 4, "CLOSED").client);
+      const late = yield* Effect.forkChild(Effect.flip(overdue.downloadClip(finishing)));
+      yield* TestClock.adjust("20 seconds");
+      assert.strictEqual((yield* Fiber.join(late)).reason._tag, "TerminalSession");
+    }),
+  );
+
   it.effect("bounds the joined bytes and the whole download", () =>
     Effect.gen(function* () {
       const bounded = yield* coordinator(recordings(0, 8).client).pipe(
@@ -158,6 +180,28 @@ describe("recordings", () => {
 });
 
 describe("termination", () => {
+  it.effect("with no session token, a server ends a session with its API key as the bearer", () =>
+    Effect.gen(function* () {
+      const { served, client } = origin((method) =>
+        method === "DELETE"
+          ? new Response(null, { status: 202 })
+          : new Response(null, { status: 404 }),
+      );
+      const service = yield* Coordinator.make({ apiUrl: api, apiKey: Redacted.make("key") }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      const ended = yield* service.terminate("s1");
+      assert.strictEqual(ended.confirmed, true);
+      assert.deepStrictEqual(
+        served.map((entry) => [entry.method, entry.bearer]),
+        [
+          ["DELETE", "key"],
+          ["GET", "key"],
+        ],
+      );
+    }),
+  );
+
   const terminating = (removal: number, confirmation: Response) =>
     origin((method) =>
       method === "DELETE" ? new Response(null, { status: removal }) : confirmation,
@@ -197,50 +241,119 @@ describe("termination", () => {
 });
 
 describe("tokens", () => {
-  const jwt = (seconds: number, model = "reactor/model") => {
-    const claims = {
-      authorization_details: [
-        {
-          type: "session",
-          resources: { models: { match: [model] } },
-          constraints: { max_sessions: 1, max_session_duration_seconds: seconds },
-        },
-      ],
-    };
-    return `e30.${Encoding.encodeBase64Url(JSON.stringify(claims))}.sig`;
-  };
-  const issuing = (token: string, lifetimeSeconds: number) =>
-    origin(() => Response.json({ jwt: token, expires_at: lifetimeSeconds }));
+  const echo = (constraints: object, bind?: ReadonlyArray<string>) => [
+    {
+      type: "session",
+      resources: {
+        models: { match: ["reactor/model"] },
+        ...(bind === undefined ? {} : { sessions: { bind } }),
+      },
+      constraints,
+    },
+  ];
+  const issuing = (reply: object) => origin(() => Response.json({ jwt: "e30.e30.sig", ...reply }));
   const request = {
     apiKey: Redacted.make("key"),
     modelName: "reactor/model",
     maxSessionDuration: "60 seconds",
     expiresAfter: "10 minutes",
   } as const;
+  const sent = (served: ReadonlyArray<Served>): unknown => JSON.parse(served[0]?.body ?? "null");
 
-  it.effect("returns the grant the token proves, and never sends the API key as a bearer", () =>
+  it.effect("returns the grant Reactor echoes, and never sends the API key as a bearer", () =>
     Effect.gen(function* () {
-      const { served, client } = issuing(jwt(60), 3_600);
+      const { served, client } = issuing({
+        expires_at: 3_600,
+        authorization_details: echo({ max_sessions: 1, max_session_duration_seconds: 60 }),
+      });
       const grant = yield* (yield* coordinator(client)).mintToken(request);
-      assert.deepStrictEqual(grant.granted, { maxSessions: 1, maxSessionSeconds: 60 });
+      assert.deepStrictEqual(grant.granted, {
+        models: ["reactor/model"],
+        maxSessions: 1,
+        maxSessionSeconds: 60,
+        bound: [],
+      });
+      assert.strictEqual(grant.maxSessionSeconds, 60);
       assert.isFalse(served[0]?.authorized ?? true);
+      assert.deepStrictEqual(sent(served), {
+        authorization_details: echo({ max_sessions: 1, max_session_duration_seconds: 60 }),
+        expires_after: 600,
+      });
     }),
   );
 
-  it.effect("refuses a token that grants more than was asked or cannot outlive cleanup", () =>
+  // Reactor documents the reply's echo, not the token's claims; a session outlives its token.
+  it.effect("takes a token shorter than its session, and one whose reply echoes nothing", () =>
     Effect.gen(function* () {
-      const wider = yield* (yield* coordinator(issuing(jwt(120), 3_600).client))
-        .mintToken(request)
+      const brief = yield* (yield* coordinator(issuing({ expires_at: 30 }).client)).mintToken(
+        request,
+      );
+      assert.deepStrictEqual([brief.expiresAt, brief.granted], [30, undefined]);
+    }),
+  );
+
+  it.effect("refuses a grant wider than asked, and a token already expired", () =>
+    Effect.gen(function* () {
+      const refusal = (reply: object) =>
+        Effect.gen(function* () {
+          const error = yield* (yield* coordinator(issuing(reply).client))
+            .mintToken({ ...request, bind: ["s1"], maxSessions: 2 })
+            .pipe(Effect.flip);
+          return `${error.reason._tag}/${error.context.outcome ?? ""}`;
+        });
+      const refused = "Protocol/replied";
+      assert.strictEqual(
+        yield* refusal({
+          expires_at: 3_600,
+          authorization_details: echo({ max_session_duration_seconds: 120 }, ["s1"]),
+        }),
+        refused,
+      );
+      assert.strictEqual(
+        yield* refusal({
+          expires_at: 3_600,
+          authorization_details: echo({ max_session_duration_seconds: null }, ["s1"]),
+        }),
+        refused,
+      );
+      assert.strictEqual(
+        yield* refusal({ expires_at: 3_600, authorization_details: echo({}, ["s1", "s2"]) }),
+        refused,
+      );
+      assert.strictEqual(yield* refusal({ expires_at: 0 }), refused);
+    }),
+  );
+
+  it.effect("mints an uncapped session only when asked, and a bound token that creates none", () =>
+    Effect.gen(function* () {
+      const missing = yield* (yield* coordinator(issuing({ expires_at: 3_600 }).client))
+        .mintToken({ ...request, maxSessionDuration: undefined })
         .pipe(Effect.flip);
-      assert.strictEqual(wider.reason._tag, "Protocol");
-      const brief = yield* (yield* coordinator(issuing(jwt(60), 60).client))
-        .mintToken(request)
-        .pipe(Effect.flip);
-      assert.strictEqual(brief.reason._tag, "Protocol");
-      const unbounded = yield* (yield* coordinator(issuing(jwt(60), 3_600).client))
-        .mintToken({ ...request, expiresAfter: "70 seconds" })
-        .pipe(Effect.flip);
-      assert.strictEqual(unbounded.context.outcome, "not-submitted");
+      assert.deepStrictEqual(
+        [missing.reason._tag, missing.context.outcome],
+        ["InvalidInput", "not-submitted"],
+      );
+      const uncapped = issuing({ expires_at: 3_600 });
+      yield* (yield* coordinator(uncapped.client)).mintToken({
+        ...request,
+        maxSessionDuration: "unlimited",
+      });
+      assert.deepStrictEqual(sent(uncapped.served), {
+        authorization_details: echo({ max_sessions: 1 }),
+        expires_after: 600,
+      });
+      const bound = issuing({ expires_at: 3_600 });
+      const service = yield* coordinator(bound.client);
+      yield* service.tokens({ ...request, maxSessionDuration: "unlimited" }).bind("s1");
+      assert.deepStrictEqual(sent(bound.served), {
+        authorization_details: [
+          {
+            type: "session",
+            resources: { models: { match: ["reactor/model"] }, sessions: { bind: ["s1"] } },
+          },
+        ],
+        expires_after: 600,
+      });
     }),
   );
 });
@@ -265,3 +378,40 @@ it.effect(
       );
     }),
 );
+
+// Reactor's JS SDK types class a 5xx SERVER_ERROR as recoverable, and 401/403 and 409 as not.
+it.effect("a server error is retryable; a refusal of authority or a conflict is not", () =>
+  Effect.gen(function* () {
+    const retryable = (status: number) =>
+      Effect.gen(function* () {
+        const { client } = origin(() => new Response(null, { status }));
+        const error = yield* (yield* coordinator(client)).inspect("s1").pipe(Effect.flip);
+        return error.isRetryable;
+      });
+    assert.deepStrictEqual(
+      [yield* retryable(502), yield* retryable(504), yield* retryable(403), yield* retryable(409)],
+      [true, true, false, false],
+    );
+  }),
+);
+
+// Reactor's FAQ asks for the SDK version in bug reports; its logs read it from client_info.
+layer(NodeFileSystem.layer)("the SDK version", (it) => {
+  it.effect("names this package's version to Reactor", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const manifest = yield* fs.readFileString(
+        fileURLToPath(new URL("../package.json", import.meta.url)),
+      );
+      const { version } = yield* Schema.decodeEffect(
+        Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
+      )(manifest);
+      const { served, client } = origin(() =>
+        Response.json({ session_id: "s1", state: "PENDING" }),
+      );
+      const service = yield* coordinator(client);
+      yield* service.signaling(Effect.undefined).create({ name: "reactor/model" });
+      assert.include(served[0]?.body ?? "", `"sdk_version":"${version}"`);
+    }),
+  );
+});

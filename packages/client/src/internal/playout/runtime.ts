@@ -42,8 +42,6 @@ type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
 
-/** An open must finish within this, allocation and connection included. */
-const openTimeout = "30 seconds";
 /** Close reports kept beyond the unconfirmed ones. */
 const retainedReports = 8;
 
@@ -85,7 +83,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     leadMs: millis(options.renewal?.lead, 30_000),
     graceMs: millis(options.renewal?.grace, 250),
     maxSetupFailures: options.renewal?.maxSetupFailures ?? 3,
+    maxModerations: options.maxModerations ?? 2,
   };
+  /** An open must finish within this, the wait for a GPU and the connection included. */
+  const openTimeout = options.renewal?.openTimeout ?? "3 minutes";
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<R>();
   const inbox = yield* Queue.unbounded<Policy.Input>();
@@ -303,7 +304,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           return yield* complete(`drained:${action.id}`);
         case "Fail": {
           const error =
-            (yield* Ref.get(lastOpenError)) ?? ReactorError.fromCode("InvalidState", action.reason);
+            action.moderated === true
+              ? ReactorError.fromCode("Moderated", action.reason)
+              : ((yield* Ref.get(lastOpenError)) ??
+                ReactorError.fromCode("InvalidState", action.reason));
           yield* Deferred.succeed(failure, error);
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
           yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, {
