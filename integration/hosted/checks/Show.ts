@@ -1188,18 +1188,21 @@ export const show = (pieces: Pieces) =>
           yield* recordShow;
           const record = (yield* run.evidence).show;
           // A gap is the show's own doing where it reaches into the cut connection, or from the
-          // loss to the first start after it. The switch's is recorded: Playout promises only
-          // that it follows the grace.
-          const resumedMs = Math.min(
-            ...[...all.values()].flatMap((aired) =>
-              aired.startedMs !== undefined && aired.startedMs >= (lossMs ?? Infinity)
-                ? [aired.startedMs]
-                : [],
-            ),
-            ...(record?.filler ?? []).flatMap((clip) =>
-              clip.phase === "Started" && clip.atMs >= (lossMs ?? Infinity) ? [clip.atMs] : [],
-            ),
-          );
+          // loss until the lanes begin: session 3 rebuilds c1 and then builds the long clip in
+          // H3's one build slot, so no filler can cover a late build. The switch's is recorded:
+          // Playout promises only that it follows the grace.
+          const resumedMs =
+            all.get("long")?.startedMs ??
+            Math.min(
+              ...[...all.values()].flatMap((aired) =>
+                aired.startedMs !== undefined && aired.startedMs >= (lossMs ?? Infinity)
+                  ? [aired.startedMs]
+                  : [],
+              ),
+              ...(record?.filler ?? []).flatMap((clip) =>
+                clip.phase === "Started" && clip.atMs >= (lossMs ?? Infinity) ? [clip.atMs] : [],
+              ),
+            );
           const within = (gap: Evidence.ShowRecord["gaps"][number], fromMs: number, toMs: number) =>
             gap.toMs >= fromMs && gap.fromMs <= toMs;
           const openGaps = (record?.gaps ?? []).filter(

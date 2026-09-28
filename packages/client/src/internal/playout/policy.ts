@@ -287,6 +287,8 @@ interface Session {
   readonly playing: (PlayingClip & { readonly at: number; readonly wall: number }) | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
   readonly lastEnqueue: ClipTag | undefined;
+  /** Filler clips whose removal was refused, asked again only once its queues have changed. */
+  readonly refusedFiller: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
 }
 
 interface Batch {
@@ -1471,7 +1473,10 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result._tag === "Failed" && result.cause.isRetryable)
+        } else if (item.withdraw !== undefined)
+          // Refused with no clip made: the withdrawal waiting on it has nothing left to remove.
+          settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
+        else if (result._tag === "Failed" && result.cause.isRetryable)
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
@@ -1502,7 +1507,15 @@ export const step: {
           (item) => item.clipId === command.clipId && item.phase !== "Settled",
         );
         if (owner === undefined) {
-          if (result._tag === "Done") forgetFiller(command.clipId);
+          if (result._tag === "Done") return forgetFiller(command.clipId);
+          const refused = session(busy.sessionId);
+          if (refused === undefined) return;
+          const now_ = signature(refused);
+          const earlier =
+            refused.refusedFiller.signature === now_ ? refused.refusedFiller.clipIds : [];
+          updateSession(busy.sessionId, {
+            refusedFiller: { signature: now_, clipIds: [...earlier, command.clipId] },
+          });
           return;
         }
         if (result._tag === "Done")
@@ -1519,13 +1532,14 @@ export const step: {
         else if (!command.enabled) cutFailed(busy.sessionId);
         return;
       // Its clip was marked cut when the cut began; no result makes it cuttable again.
+      // One whose fiber died may not have been sent, so it fails the cut like a refusal.
       case "Stop":
-        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (result._tag !== "Done") return cutFailed(busy.sessionId);
         if (state.cutting?.sessionId === busy.sessionId && state.cutting.clipId === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "stopped" } };
         return;
       case "Play":
-        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (result._tag !== "Done") return cutFailed(busy.sessionId);
         if (state.cutting?.sessionId === busy.sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
@@ -1586,6 +1600,7 @@ export const step: {
             unknownFiller: [],
             playing: undefined,
             lastEnqueue: undefined,
+            refusedFiller: { signature: "", clipIds: [] },
           },
         ],
       };
@@ -1812,7 +1827,7 @@ export const step: {
     // The drain rule: once the replacement has an item Ready, the retiring filler goes.
     if (readyOf(next).some((clip) => clip.tag?._tag === "Item"))
       for (const clip of readyOf(current))
-        if (clip.tag?._tag === "Filler" && state.busy === undefined)
+        if (fillerRemovable(current, clip) && state.busy === undefined)
           queueCommand(current.id, { _tag: "Remove", clipId: clip.clipId });
     const idle =
       current.source !== undefined &&
@@ -1930,6 +1945,17 @@ export const step: {
     if (command._tag === "Enqueue") updateSession(sessionId, { lastEnqueue: command.tag });
     actions.push({ _tag: "Command", id, sessionId, command });
   }
+  /** A filler clip a session takes commands for, unless its removal was refused as things stand. */
+  function fillerRemovable(value: Session, clip: SourceClip): boolean {
+    return (
+      clip.tag?._tag === "Filler" &&
+      value.source?.available === true &&
+      !(
+        value.refusedFiller.signature === signature(value) &&
+        value.refusedFiller.clipIds.includes(clip.clipId)
+      )
+    );
+  }
   function signature(value: Session | undefined): string {
     const source = value?.source;
     return source === undefined
@@ -2010,7 +2036,7 @@ export const step: {
     if (state.drains.length > 0 && !fillerNeeded)
       for (const value of state.sessions)
         for (const clip of readyOf(value))
-          if (clip.tag?._tag === "Filler" && value.source?.available === true)
+          if (fillerRemovable(value, clip))
             return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
     // Order each session's Ready clips by rank. A move never ranks across sessions.
     for (const value of state.sessions) {

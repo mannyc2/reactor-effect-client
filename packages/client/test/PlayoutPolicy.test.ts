@@ -250,6 +250,27 @@ describe("PlayoutPolicy", () => {
     assert.strictEqual(stops.length, 1);
   });
 
+  it("ends a cut whose play died, so autoplay airs the cutter at the next boundary", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const playing = clip("long", item("other"), 15);
+    policy.submit(spec("other"));
+    policy.reply({ _tag: "Done", clipId: "long" });
+    policy.event({ _tag: "Started", clip: playing });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "cu" });
+    policy.observe({ playing, ready: [clip("cu", item("urgent"))] });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "long" });
+    policy.reply({ _tag: "Done" });
+    policy.event({ _tag: "Ended", clip: playing, termination: "stopped" });
+    policy.observe({ ready: [clip("cu", item("urgent"))] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Play", clipId: "cu" });
+    policy.reply({ _tag: "Died" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+  });
+
   it("withdraws what has no clip at once and removes a clip before it drops it", () => {
     const early = run([
       { _tag: "Edit", id: 1, edits: [{ _tag: "Withdraw", key: key("a") }], batch: false },
@@ -540,6 +561,61 @@ describe("PlayoutPolicy", () => {
         ? settled.event.event.status
         : undefined;
     assert.strictEqual(status?._tag === "Failed" ? status.reason._tag : status?._tag, "Command");
+  });
+
+  for (const refusal of ["InvalidState", "Disconnected"] as const)
+    it(`drops an item withdrawn while its enqueue was in flight once that fails unsent (${refusal})`, () => {
+      const policy = drive();
+      policy.tick(0);
+      policy.open();
+      policy.submit(spec("a"));
+      policy.edit([{ _tag: "Withdraw", key: key("a") }]);
+      policy.reply({
+        _tag: "Failed",
+        cause: CommandFailure.from(ReactorError.fromCode(refusal, "the provider refused it"), {
+          operation: "enqueue",
+          outcome: "not-submitted",
+        }),
+      });
+      assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted", "Dropped"]);
+      assert.deepStrictEqual(
+        policy.actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : [])),
+        ["withdrawn"],
+      );
+    });
+
+  it("removes a retiring session's filler only while it takes commands, and once per refusal", () => {
+    const policy = drive();
+    const filler = (index: number) => clip(`f${String(index)}`, { _tag: "Filler", index });
+    const retiring = { playing: filler(0), ready: [filler(1)] };
+    const removes = () =>
+      commands(policy.actions).filter(
+        (action) => action.command._tag === "Remove" && action.sessionId === "s1",
+      ).length;
+    policy.tick(0);
+    policy.open("s1");
+    policy.observe(retiring, "s1");
+    policy.open("s2");
+    policy.submit(spec("x"));
+    assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["x"]);
+    policy.reply({ _tag: "Done", clipId: "cx" });
+    policy.event({ _tag: "Reconnecting" }, "s1");
+    policy.observe({ ready: [clip("cx", item("x"))] }, "s2");
+    assert.strictEqual(removes(), 0);
+    policy.observe(retiring, "s1");
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "f1" });
+    policy.reply({
+      _tag: "Failed",
+      cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the clip is armed"), {
+        operation: "pop",
+        outcome: "replied",
+        requestId: "request",
+        generation: 1n,
+      }),
+    });
+    policy.observe(retiring, "s1");
+    policy.tick();
+    assert.strictEqual(removes(), 1);
   });
 
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {

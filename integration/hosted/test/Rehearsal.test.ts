@@ -4,11 +4,11 @@
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, FileSystem, Layer, Redacted } from "effect";
+import { Duration, Effect, FileSystem, Layer, Path, Redacted } from "effect";
 import { ReactorTest } from "reactor-effect-client";
 import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
-import { execute } from "../Qualify.js";
+import { execute, staleBuild } from "../Qualify.js";
 import type { Check } from "../Spend.js";
 import { ceilingFor, checks, maxTotalUsd } from "../Spend.js";
 import * as Target from "../Target.js";
@@ -372,4 +372,30 @@ rehearse("an over-granting token is refused before anything is allocated", {
     assert.lengthOf(evidence.grants, 0);
     assert.lengthOf(evidence.sessions, 0);
   },
+});
+
+layer(NodeServices.layer)("a build older than its sources", (it) => {
+  it.effect(
+    "counts a package built before its sources changed as stale, and one installed as built",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const directory = yield* fs.makeTempDirectoryScoped({ prefix: "stale-build-test-" });
+          const built = path.join(directory, "dist", "internal", "a.js");
+          const source = path.join(directory, "src", "internal", "a.ts");
+          yield* fs.makeDirectory(path.dirname(built), { recursive: true });
+          yield* fs.writeFileString(built, "");
+          assert.isFalse(yield* staleBuild(directory), "without sources, as installed");
+          yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+          yield* fs.writeFileString(source, "");
+          yield* fs.utimes(source, 1_000, 1_000);
+          yield* fs.utimes(built, 2_000, 2_000);
+          assert.isFalse(yield* staleBuild(directory), "built after its sources");
+          yield* fs.utimes(source, 3_000, 3_000);
+          assert.isTrue(yield* staleBuild(directory), "a source changed after the build");
+        }),
+      ),
+  );
 });
