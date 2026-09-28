@@ -806,3 +806,148 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
     );
   });
 });
+const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>
+  actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : []));
+
+describe("PlayoutPolicy, edits", () => {
+  /** Builds `names` one after another on s1, each Ready once built; returns their clip ids. */
+  const built = (policy: ReturnType<typeof drive>, names: ReadonlyArray<string>) => {
+    const current = policy.state().sessions[0]?.source;
+    const ready: Array<SourceClip> = [...(current?.ready ?? [])];
+    for (const name of names) {
+      const command = policy.busy();
+      assert.deepStrictEqual(
+        command?._tag === "Enqueue" && command.tag._tag === "Item" ? command.tag.key : command,
+        key(name),
+      );
+      policy.reply({ _tag: "Done", clipId: `c-${name}` });
+      const seconds = command?._tag === "Enqueue" ? (command.request.seconds ?? 5) : 5;
+      ready.push(clip(`c-${name}`, item(name), seconds));
+      policy.observe({ playing: current?.playing, ready: [...ready] });
+    }
+    return ready;
+  };
+
+  // 0.7.0 SchedulerReplace: replacing one part of a group keeps the parts after it.
+  it("replacing a group part keeps the parts after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2"), spec("p3")],
+        fingerprint: "g",
+      },
+    ]);
+    const ready = built(policy, ["p1", "p2", "p3"]);
+    policy.edit([{ _tag: "Replace", key: key("p2"), spec: spec("p2b") }]);
+    built(policy, ["p2b"]);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-p2" });
+    policy.reply({ _tag: "Done" });
+    policy.observe({
+      ready: [...ready.filter((value) => value.clipId !== "c-p2"), clip("c-p2b", item("p2b"))],
+    });
+    assert.deepStrictEqual(statuses(policy.actions, "p2").at(-1), "Dropped");
+    assert.isUndefined(policy.state().items.get(key("p3"))?.withdraw);
+    assert.notDeepEqual(policy.busy(), { _tag: "Remove", clipId: "c-p3" });
+  });
+
+  // 0.7.0 SchedulerWindows: an At item Ready too early is taken off and built again later.
+  it("rebuilds an At item exposed after it was Ready, rather than dropping it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const foreign = clip("x", undefined, 5);
+    policy.event({ _tag: "Started", clip: foreign }, "s1", 10);
+    policy.observe({ playing: foreign }, "s1", 10);
+    policy.submit(spec("cover", 1, 10), 20);
+    built(policy, ["cover"]);
+    policy.submit(
+      { ...spec("timed"), start: { _tag: "At", time: 12_000, late: "nextBoundary" } },
+      30,
+    );
+    built(policy, ["timed"]);
+    policy.edit([{ _tag: "Withdraw", key: key("cover") }], false, 40);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-cover" });
+    policy.reply({ _tag: "Done" }, 50);
+    policy.observe({ playing: foreign, ready: [clip("c-timed", item("timed"))] }, "s1", 60);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-timed" });
+    policy.reply({ _tag: "Done" }, 70);
+    policy.observe({ playing: foreign }, "s1", 80);
+    assert.notInclude(statuses(policy.actions, "timed"), "Dropped");
+    assert.strictEqual(policy.state().items.get(key("timed"))?.phase, "Accepted");
+  });
+
+  // 0.7.0 SchedulerFates: a withdrawal answers what became of the clip.
+  it("answers already-started for a clip that aired before its removal landed", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    built(policy, ["a"]);
+    policy.edit([{ _tag: "Withdraw", key: key("a") }]);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-a" });
+    policy.event({ _tag: "Started", clip: clip("c-a", item("a")) });
+    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "it plays" });
+    policy.event({ _tag: "Ended", clip: clip("c-a", item("a")), termination: "finished" });
+    assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
+  });
+
+  it("answers not-found for a clip whose build failed before its removal landed", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.reply({ _tag: "Done", clipId: "c-a" });
+    policy.observe({ building: [clip("c-a", item("a"))] });
+    policy.edit([{ _tag: "Withdraw", key: key("a") }]);
+    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "building" });
+    policy.event({ _tag: "Failed", clip: clip("c-a", item("a")), reason: "the build failed" });
+    assert.deepStrictEqual(withdrawn(policy.actions), ["not-found"]);
+  });
+
+  it("answers already-started for a cutter the cut in flight is playing", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const long = clip("c-long", item("long"), 15);
+    policy.submit(spec("long", 1, 15));
+    built(policy, ["long"]);
+    policy.event({ _tag: "Started", clip: long });
+    policy.observe({ playing: long });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "c-urgent" });
+    policy.observe({ playing: long, ready: [clip("c-urgent", item("urgent"))] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Cut", clipId: "c-long", next: "c-urgent" });
+    // The withdrawal waits behind the cut, which plays the cutter: it is too late.
+    policy.edit([{ _tag: "Withdraw", key: key("urgent") }]);
+    policy.event({ _tag: "Ended", clip: long, termination: "stopped" });
+    policy.event({ _tag: "Started", clip: clip("c-urgent", item("urgent")) });
+    assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), undefined);
+  });
+
+  // A drain stops admissions, not withdrawals: the critique's withdraw during a drain answered
+  // not-found and the item then aired.
+  it("withdraws during a drain", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.submit(spec("b"));
+    built(policy, ["a"]);
+    policy.send({ _tag: "Drain", id: 500, finish: "accepted" });
+    // b's enqueue is in flight: the withdrawal waits for its clip, then removes it.
+    policy.edit([{ _tag: "Withdraw", key: key("b") }]);
+    assert.isFalse(policy.actions.some((action) => action._tag === "Refused"));
+    policy.reply({ _tag: "Done", clipId: "c-b" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-b" });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(statuses(policy.actions, "b").at(-1), "Dropped");
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+  });
+});
