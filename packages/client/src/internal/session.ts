@@ -14,6 +14,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
@@ -36,7 +37,14 @@ import { notTerminated, terminationAttributes } from "../Coordinator.js";
 import type { DecodedMedia, TrackMedia } from "../Media.js";
 import type { MediaTrack, Peer, PeerEvent, PeerFactory } from "../Peer.js";
 import type { CommandContext } from "../ReactorError.js";
-import { CommandFailure, ReactorError, Remote, summarize } from "../ReactorError.js";
+import {
+  CommandFailure,
+  IceFailed,
+  ReactorError,
+  Remote,
+  summarize,
+  TransportFailed,
+} from "../ReactorError.js";
 import type {
   CloseReport,
   CommandOptions,
@@ -194,6 +202,38 @@ const deadline = <A, R>(
     duration,
     orElse: () => Effect.fail(ReactorError.fromCode("Timeout", `${operation}: deadline`)),
   });
+
+/**
+ * Why a connection failed, from its statistics: a candidate pair that
+ * succeeded or was nominated means ICE worked and the DTLS or SCTP transport
+ * above it failed; otherwise no pair worked.
+ */
+const connectionFailure = (stats: ReadonlyArray<unknown>, generation: bigint): ReactorError => {
+  const entries = stats.filter(Predicate.isObject);
+  const pairs = entries.filter((entry) => entry.type === "candidate-pair");
+  if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
+    return ReactorError.make({
+      reason: TransportFailed.make({
+        message: "peer failed after ICE connectivity succeeded",
+        pairs: pairs.length,
+      }),
+      context: { generation },
+    });
+  const candidateTypes = new Set(
+    entries
+      .filter((entry) => entry.type === "local-candidate")
+      .map((entry) => entry.candidateType)
+      .filter(Predicate.isString),
+  );
+  return ReactorError.make({
+    reason: IceFailed.make({
+      message: "peer found no working ICE candidate pair",
+      pairs: pairs.length,
+      candidateTypes: [...candidateTypes],
+    }),
+    context: { generation },
+  });
+};
 
 /** Marks a connect phase on the current span, as SqlClient marks a transaction's. */
 const phase = (name: string): Effect.Effect<void> =>
@@ -548,6 +588,25 @@ export const make = Effect.fnUntraced(function* (input: {
         yield* publish({ _tag: "Control", message, correlation }, c.generation);
     });
 
+  /**
+   * A failed connection, classified from one statistics read on the
+   * generation's event fiber, so later events wait behind it and the
+   * connection's scope owns the read. A read that fails, or outlasts 2 s on
+   * the fiber's Clock, leaves it `Disconnected`.
+   */
+  const failedConnection = (c: Connection): Effect.Effect<ReactorError> =>
+    deadline(c.peer.stats, Duration.seconds(2), "failure classification").pipe(
+      Effect.map((stats) => connectionFailure(stats, c.generation)),
+      Effect.catch((cause) =>
+        Effect.succeed(
+          ReactorError.fromCode("Disconnected", "peer state failed", {
+            generation: c.generation,
+            detail: cause,
+          }),
+        ),
+      ),
+    );
+
   const onPeer = (c: Connection, event: PeerEvent): Effect.Effect<void> =>
     Effect.gen(function* () {
       const link = yield* Ref.get(c.link);
@@ -556,11 +615,8 @@ export const make = Effect.fnUntraced(function* (input: {
         return;
       switch (event.type) {
         case "state":
-          if (
-            event.state === "failed" ||
-            event.state === "disconnected" ||
-            event.state === "closed"
-          )
+          if (event.state === "failed") return yield* fail(c, yield* failedConnection(c));
+          if (event.state === "disconnected" || event.state === "closed")
             return yield* fail(
               c,
               ReactorError.fromCode("Disconnected", `peer state ${event.state}`, {

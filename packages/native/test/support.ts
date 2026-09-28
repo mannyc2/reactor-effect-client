@@ -1,12 +1,8 @@
 /**
- * What the native tests share: the scripted fake addon, a fixture coordinator,
- * the far peer process the media tests receive from, and small assertions.
+ * What the native tests share: the scripted fake addon, a coordinator
+ * stand-in, the far peer process the media tests receive from, and small
+ * assertions.
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- the fake addon is steered through files another process reads
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- the fake addon's directory is made synchronously, beside the module it loads
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -15,18 +11,24 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
-import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
 import * as Coordinator from "reactor-effect-client/Coordinator";
-import type { IceCandidate } from "reactor-effect-client/Coordinator";
+import { IceCandidate } from "reactor-effect-client/Coordinator";
+import type { Track } from "reactor-effect-client/Coordinator";
 import type { DecodedMedia } from "reactor-effect-client/Media";
 import type { Peer } from "reactor-effect-client/Peer";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -38,9 +40,6 @@ import * as InProcess from "../src/internal/peer.js";
 import { make } from "./fixtures/addon.mjs";
 
 const fixture = fileURLToPath(new URL("./fixtures/addon.mts", import.meta.url));
-
-/** What a test that makes a canonical client needs: an HTTP client over `Fetch`, and Node's services. */
-export const clientServices = Layer.merge(FetchHttpClient.layer, NodeServices.layer);
 
 /** Poll `condition` on the live clock until it holds, or die with `message`. */
 export const eventually = (check: {
@@ -58,44 +57,48 @@ export const eventually = (check: {
   );
 
 /**
- * The scripted fake addon in a directory of its own. `path` is a module
- * another process can load; `module` is its twin in this process. Holding a
- * call keeps it from answering in either.
+ * The scripted fake addon in a directory of its own, removed with the scope.
+ * `path` is a module another process can load; `module` is its twin in this
+ * process. Holding a call keeps it from answering in either.
  */
-const makeFakeAddon = () => {
-  const directory = mkdtempSync(join(tmpdir(), "reactor-native-addon-"));
-  const path = join(directory, "addon.cjs");
-  writeFileSync(path, `module.exports = require(${JSON.stringify(fixture)}).make(__dirname);\n`);
-  const marker = (name: string) => join(directory, name);
-  const calls = (): ReadonlyArray<string> =>
-    existsSync(marker("calls.log"))
-      ? readFileSync(marker("calls.log"), "utf8")
-          .split("\n")
-          .filter((line) => line !== "")
-      : [];
+export const fakeAddon = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "reactor-native-addon-" });
+  const entry = path.join(directory, "addon.cjs");
+  const quoted = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.String))(fixture);
+  yield* fs.writeFileString(entry, `module.exports = require(${quoted}).make(__dirname);\n`);
+  const marker = (name: string) => path.join(directory, name);
+  const log = marker("calls.log");
+  /** Every call that reached the fake, in this process or a child. */
+  const calls = Effect.flatMap(fs.exists(log), (written) =>
+    written ? fs.readFileString(log) : Effect.succeed(""),
+  ).pipe(
+    Effect.map((text) => text.split("\n").filter((line) => line !== "")),
+    Effect.orDie,
+  );
   return {
-    directory,
-    path,
+    path: entry,
     module: make(directory),
-    hold: (call: "stats" | "shutdown", held: boolean): void =>
-      held
-        ? writeFileSync(marker(`hold-${call}`), "")
-        : rmSync(marker(`hold-${call}`), { force: true }),
+    hold: (call: "stats" | "shutdown", held: boolean) =>
+      (held
+        ? fs.writeFileString(marker(`hold-${call}`), "")
+        : fs.remove(marker(`hold-${call}`), { force: true })
+      ).pipe(Effect.orDie),
     calls,
-    /** Wait until `count` calls named `call` have reached the fake. */
+    /** Wait until `count` entries named `call` are in the fake's log. */
     reached: (call: string, count = 1) =>
-      eventually({
-        condition: () => calls().filter((name) => name === call).length >= count,
-        message: `${call} never reached the fake addon`,
-      }),
-    remove: () => rmSync(directory, { recursive: true, force: true }),
+      calls.pipe(
+        Effect.filterOrFail((all) => all.filter((name) => name === call).length >= count),
+        Effect.retry({ schedule: Schedule.spaced("5 millis") }),
+        Effect.timeoutOrElse({
+          duration: "5 seconds",
+          orElse: () => Effect.die(new Error(`${call} never reached the fake addon`)),
+        }),
+        Effect.asVoid,
+      ),
   };
-};
-
-/** The fake addon, removed with the scope. */
-export const fakeAddon = Effect.acquireRelease(Effect.sync(makeFakeAddon), (addon) =>
-  Effect.sync(addon.remove),
-);
+});
 
 export type FakeAddon = Effect.Success<typeof fakeAddon>;
 
@@ -103,10 +106,11 @@ export type FakeAddon = Effect.Success<typeof fakeAddon>;
 export const nativePeer = (
   options: { readonly addon?: Addon; readonly shutdownTimeout?: Duration.Duration } = {},
 ) =>
-  (options.addon === undefined ? load(undefined) : Effect.succeed(options.addon)).pipe(
-    Effect.flatMap(local),
-    Effect.flatMap((handle) => InProcess.make(handle, options.shutdownTimeout)),
-  );
+  Effect.gen(function* () {
+    const addon = options.addon ?? (yield* load(undefined));
+    const handle = yield* local(addon, yield* FiberSet.make());
+    return yield* InProcess.make(handle, options.shutdownTimeout);
+  });
 
 /**
  * The canonical factory over the native peer, with its host layer built in the
@@ -123,130 +127,111 @@ export const nativeClient = (
     Effect.flatMap((services) => Reactor.make(input.settings).pipe(Effect.provide(services))),
   );
 
-const fixtureDescriptor = (id: string, tracks: ReadonlyArray<unknown>) => ({
-  session_id: id,
-  state: "ACTIVE",
-  capabilities: {
-    protocol_version: "1.0",
-    tracks,
-    commands: [{ name: "echo", schema: {} }],
-  },
-  selected_transport: { protocol: "webrtc", version: "1.0" },
+/** A reply the coordinator stand-in sends: a status, and JSON when there is a body. */
+interface Reply {
+  readonly status: number;
+  readonly body?: unknown;
+}
+
+const Offer = Schema.Struct({ sdp_offer: Schema.String });
+const Candidates = Schema.Struct({ candidates: Schema.Array(IceCandidate) });
+
+/** A request's JSON body; the canonical client only sends ones that decode. */
+const body = <S extends Schema.Codec<unknown, unknown>>(
+  schema: S,
+  request: HttpClientRequest.HttpClientRequest,
+) =>
+  (request.body._tag === "Uint8Array"
+    ? Effect.succeed(new TextDecoder().decode(request.body.body))
+    : Effect.die(new Error(`unexpected ${request.body._tag} request body`))
+  ).pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(schema))), Effect.orDie);
+
+/**
+ * A coordinator stand-in. It allocates one session per POST, named after
+ * `sessionId`, reads a deleted session as absent, answers each offer with
+ * `answer`, a fixed SDP by default, and hands each ICE candidate the client
+ * sends to `candidate`, which drops it by default. `client` is the HTTP client
+ * the canonical client reaches it with.
+ */
+export const coordinator = Effect.fnUntraced(function* (input: {
+  readonly sessionId: string;
+  readonly tracks: ReadonlyArray<Track>;
+  readonly answer?: (offer: string) => Effect.Effect<string>;
+  readonly candidate?: (candidate: IceCandidate) => Effect.Effect<void>;
+}) {
+  const allocated = yield* Ref.make<ReadonlyArray<string>>([]);
+  const deleted = yield* Ref.make<ReadonlySet<string>>(new Set());
+  const answered = yield* Ref.make<string | undefined>(undefined);
+  const answer = input.answer ?? (() => Effect.succeed("fixture native answer"));
+  const descriptor = (id: string) => ({
+    session_id: id,
+    state: "ACTIVE",
+    capabilities: {
+      protocol_version: "1.0",
+      tracks: input.tracks,
+      commands: [{ name: "echo", schema: {} }],
+    },
+    selected_transport: { protocol: "webrtc", version: "1.0" },
+  });
+  const route = (request: HttpClientRequest.HttpClientRequest, url: URL) =>
+    Effect.gen(function* () {
+      const path = url.pathname;
+      const method = request.method;
+      const id = /^\/sessions\/([^/]+)/.exec(path)?.[1] ?? input.sessionId;
+      if (path === "/sessions" && method === "POST") {
+        const allocation = yield* Ref.modify(allocated, (all) => {
+          const next = all.length === 0 ? input.sessionId : `${input.sessionId}_${all.length}`;
+          return [next, [...all, next]] as const;
+        });
+        return { status: 200, body: descriptor(allocation) };
+      }
+      if (path === `/sessions/${id}` && method === "GET")
+        return (yield* Ref.get(deleted)).has(id)
+          ? { status: 404, body: { error: "session not found" } }
+          : { status: 200, body: descriptor(id) };
+      if (path === `/sessions/${id}` && method === "DELETE") {
+        yield* Ref.update(deleted, (all) => new Set(all).add(id));
+        return { status: 202 };
+      }
+      if (path.endsWith("/ice_servers")) return { status: 200, body: { ice_servers: [] } };
+      if (path.endsWith("/connections")) return { status: 200, body: { connection_id: 1001 } };
+      if (path.endsWith("/ice_candidates")) {
+        const sent = yield* body(Candidates, request);
+        if (input.candidate !== undefined)
+          yield* Effect.forEach(sent.candidates, input.candidate, { discard: true });
+        return { status: 204 };
+      }
+      if (path.endsWith("/sdp_params") && method === "GET") {
+        const sdp = yield* Ref.get(answered);
+        return sdp === undefined ? { status: 202 } : { status: 200, body: { sdp_answer: sdp } };
+      }
+      if (path.endsWith("/sdp_params")) {
+        const offer = yield* body(Offer, request);
+        yield* Ref.set(answered, yield* answer(offer.sdp_offer));
+        return { status: 204 };
+      }
+      return { status: 404, body: { error: `unhandled route ${path}` } };
+    });
+  const client = HttpClient.make((request, url) =>
+    Effect.map(route(request, url), (reply: Reply) =>
+      HttpServerResponse.toClientResponse(
+        reply.body === undefined
+          ? HttpServerResponse.empty({ status: reply.status })
+          : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status }),
+        { request },
+      ),
+    ),
+  );
+  return { client, allocated: Ref.get(allocated), deleted: Ref.get(deleted) };
 });
 
-/**
- * A coordinator that allocates one session per POST, named after `sessionId`,
- * and reads a deleted session as absent; its `fetch` stands in for the network.
- */
-export const fixtureCoordinator = (input: {
-  readonly sessionId: string;
-  readonly tracks: ReadonlyArray<unknown>;
-}) => {
-  const allocated: Array<string> = [],
-    deleted = new Set<string>();
-  const route = (request: Request): Response => {
-    const path = new URL(request.url).pathname;
-    const id = /^\/sessions\/([^/]+)/.exec(path)?.[1] ?? input.sessionId;
-    if (path === "/sessions" && request.method === "POST") {
-      const allocation =
-        allocated.length === 0 ? input.sessionId : `${input.sessionId}_${allocated.length}`;
-      allocated.push(allocation);
-      return Response.json(fixtureDescriptor(allocation, input.tracks));
-    }
-    if (path === `/sessions/${id}` && request.method === "GET")
-      return deleted.has(id)
-        ? Response.json({ error: "session not found" }, { status: 404 })
-        : Response.json(fixtureDescriptor(id, input.tracks));
-    if (path.endsWith("/ice_servers")) return Response.json({ ice_servers: [] });
-    if (path.endsWith("/connections")) return Response.json({ connection_id: 1001 });
-    if (path.endsWith("/ice_candidates")) return new Response(null, { status: 204 });
-    if (path.endsWith("/sdp_params"))
-      return request.method === "GET"
-        ? Response.json({ sdp_answer: "fixture native answer" })
-        : new Response(null, { status: 204 });
-    if (path === `/sessions/${id}` && request.method === "DELETE") {
-      deleted.add(id);
-      return new Response(null, { status: 202 });
-    }
-    return Response.json({ error: `unhandled fixture route ${path}` }, { status: 404 });
-  };
-  const fetch: typeof globalThis.fetch = (url, init) =>
-    Promise.resolve(route(new Request(url, init)));
-  return { fetch, allocated, deleted };
-};
-
-/**
- * A coordinator that allocates one session, `id`, and relays its signaling to
- * the far peer, which drops candidates sent before the offer; its own arrive
- * in its answer.
- */
-export const farPeerCoordinator = (input: {
-  readonly far: FarPeer["Service"];
-  readonly id: string;
-  readonly tracks: ReadonlyArray<unknown>;
-}) => {
-  const { far, id } = input;
-  const descriptor = fixtureDescriptor(id, input.tracks);
-  const state: { answer: Promise<string> | undefined; deleted: boolean } = {
-    answer: undefined,
-    deleted: false,
-  };
-  const route = (request: Request): Promise<Response> => {
-    const path = new URL(request.url).pathname;
-    if (path === "/sessions" && request.method === "POST")
-      return Promise.resolve(Response.json(descriptor));
-    if (path === `/sessions/${id}` && request.method === "GET")
-      return Promise.resolve(
-        state.deleted
-          ? Response.json({ error: "session not found" }, { status: 404 })
-          : Response.json(descriptor),
-      );
-    if (path === `/sessions/${id}` && request.method === "DELETE") {
-      state.deleted = true;
-      return Promise.resolve(new Response(null, { status: 202 }));
-    }
-    if (path.endsWith("/ice_servers")) return Promise.resolve(Response.json({ ice_servers: [] }));
-    if (path.endsWith("/connections")) return Promise.resolve(Response.json({ connection_id: 1 }));
-    if (path.endsWith("/ice_candidates"))
-      return request
-        .json()
-        .then((body: unknown) => {
-          const candidates = record(body).candidates;
-          return Effect.runPromise(
-            Effect.forEach(Array.isArray(candidates) ? candidates : [], (candidate) =>
-              far.candidate(id, candidate as IceCandidate),
-            ),
-          );
-        })
-        .then(() => new Response(null, { status: 204 }));
-    if (path.endsWith("/sdp_params"))
-      return request.method === "GET"
-        ? (state.answer ?? Promise.resolve(undefined)).then((sdp) =>
-            Response.json({ sdp_answer: sdp }),
-          )
-        : request.json().then((body: unknown) => {
-            state.answer = Effect.runPromise(far.answer(id, String(record(body).sdp_offer)));
-            return new Response(null, { status: 204 });
-          });
-    return Promise.resolve(Response.json({ error: `unhandled route ${path}` }, { status: 404 }));
-  };
-  const fetch: typeof globalThis.fetch = (url, init) => route(new Request(url, init));
-  return { fetch };
-};
-
-/** Runs `effect` with `fetch` as the network the canonical client's HTTP client uses. */
-export const withFetch =
-  (fetch: typeof globalThis.fetch) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.provideService(effect, FetchHttpClient.Fetch, fetch);
-
-export type Message = Readonly<Record<string, unknown>>;
+export type Message = { readonly [x: PropertyKey]: unknown };
 
 /** One line of the far peer's JSON protocol, either way. */
 const FarPeerMessage = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 
-export const record = (value: unknown): Message =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Message) : {};
+/** `value` when it is an object, or an empty one: a far peer or statistics entry, read loosely. */
+export const record = (value: unknown): Message => (Predicate.isObject(value) ? value : {});
 
 /**
  * The far peer process: a libwebrtc sender on the pinned reactor-webrtc that
@@ -315,7 +300,7 @@ export class FarPeer extends Context.Service<
         Stream.decodeText,
         Stream.splitLines,
         Stream.mapEffect((line) => Schema.decodeEffect(FarPeerMessage)(line)),
-        Stream.runForEach((message) => deliver(record(message))),
+        Stream.runForEach(deliver),
         Effect.forkScoped,
       );
       /** One line of JSON to the far peer. */
@@ -380,22 +365,6 @@ export const candidateRelay = (input: { readonly far: FarPeer["Service"]; readon
       Queue.offerUnsafe(candidates, candidate);
     };
   });
-
-/** An error with its Redacted diagnostic detail revealed, for assertions on what it recorded. */
-export const revealed = <E extends { readonly context: { readonly detail?: unknown } }>(
-  error: E,
-) => {
-  const detail = error.context.detail;
-  return {
-    ...error,
-    reason: (error as { readonly reason?: unknown }).reason,
-    message: (error as { readonly message?: unknown }).message,
-    context: {
-      ...error.context,
-      detail: Redacted.isRedacted(detail) ? Redacted.value(detail) : detail,
-    },
-  };
-};
 
 /** A peer's decoded media: every native peer has it. */
 export const decoded = (peer: Peer): Omit<DecodedMedia, "generation" | "tracks" | "retired"> => {

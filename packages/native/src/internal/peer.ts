@@ -2,7 +2,7 @@
  * The native peer: the client's `Peer` port over the addon's `NativePeer`,
  * whether that runs in this process or in a child process. The addon's
  * queues arrive as streams; this module names frames, fans them out to
- * bounded readers, classifies failures and bounds the owner join.
+ * bounded readers, maps the addon's failure classes and bounds the owner join.
  */
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -16,13 +16,8 @@ import * as Stream from "effect/Stream";
 import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
 import { PeerState, trackFeed } from "reactor-effect-client/Peer";
-import type { Channel, Peer, PeerEvent, TrackFeed } from "reactor-effect-client/Peer";
-import {
-  IceFailed,
-  Native,
-  ReactorError,
-  TransportFailed,
-} from "reactor-effect-client/ReactorError";
+import type { Channel, Peer, PeerEvent, Prepared, TrackFeed } from "reactor-effect-client/Peer";
+import { Native, ReactorError } from "reactor-effect-client/ReactorError";
 import type * as Binding from "./binding.js";
 
 /** What a peer drives: one addon `NativePeer`, here or in a child process. */
@@ -30,7 +25,7 @@ export interface NativeHandle {
   readonly prepare: (
     servers: ReadonlyArray<IceServer>,
     tracks: ReadonlyArray<Track>,
-  ) => Effect.Effect<Binding.Prepared, ReactorError>;
+  ) => Effect.Effect<Prepared, ReactorError>;
   readonly answer: (sdp: string) => Effect.Effect<void, ReactorError>;
   readonly direction: (name: string, active: boolean) => Effect.Effect<void, ReactorError>;
   readonly maxBitrate: (name: string, bitsPerSecond: number) => Effect.Effect<void, ReactorError>;
@@ -60,9 +55,6 @@ export interface NativePeer extends Peer {
  * require it under 2 s; the default leaves five times that bound.
  */
 export const defaultShutdownTimeout: Duration.Duration = Duration.seconds(10);
-
-/** How long reading statistics may take when classifying a failed connection. */
-const classifyTimeout = Duration.seconds(2);
 
 /** Failure classes the addon returns only when it refused a call before running it. */
 const refusals: ReadonlySet<Binding.FailureClass> = new Set([
@@ -96,32 +88,6 @@ export const nativeFailure =
 
 const protocol = (message: string): ReactorError => ReactorError.fromCode("Protocol", message);
 
-/** Report a failed connection as IceFailed or TransportFailed, from its candidate pairs. */
-export const connectionFailure = (stats: ReadonlyArray<unknown>): ReactorError => {
-  const entries = stats.filter(Predicate.isObject);
-  const pairs = entries.filter((entry) => entry.type === "candidate-pair");
-  if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
-    return ReactorError.make({
-      reason: TransportFailed.make({
-        message: "native peer failed after ICE connectivity succeeded",
-        pairs: pairs.length,
-      }),
-    });
-  const candidateTypes = new Set(
-    entries
-      .filter((entry) => entry.type === "local-candidate")
-      .map((entry) => entry.candidateType)
-      .filter(Predicate.isString),
-  );
-  return ReactorError.make({
-    reason: IceFailed.make({
-      message: "native peer found no working ICE candidate pair",
-      pairs: pairs.length,
-      candidateTypes: [...candidateTypes],
-    }),
-  });
-};
-
 const counters = new Set([
   "bytesSent",
   "bytesReceived",
@@ -132,7 +98,7 @@ const counters = new Set([
 ]);
 
 /** Statistics with the 64-bit counters the addon sends as decimal strings as bigints. */
-export const statsValue = (value: unknown): unknown => {
+const statsValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(statsValue);
   if (!Predicate.isObject(value)) return value;
   return Object.fromEntries(
@@ -157,7 +123,7 @@ const receiving = (tracks: ReadonlyArray<Track>, index: number, kind: Track["kin
     : Effect.fail(protocol(`native ${kind} was delivered without its declared receive mapping`));
 };
 
-export const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
+const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
   Effect.flatMap(receiving(tracks, taken.track, "video"), (track) =>
     taken.width === 0 ||
     taken.height === 0 ||
@@ -178,7 +144,7 @@ export const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Vide
         }),
   );
 
-export const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audio) =>
+const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audio) =>
   Effect.flatMap(receiving(tracks, taken.track, "audio"), (track) =>
     taken.sampleRate === 0 || taken.channels === 0 || taken.samples.length % taken.channels !== 0
       ? Effect.fail(protocol("native PCM format does not match its payload"))
@@ -269,27 +235,12 @@ export const make = Effect.fnUntraced(function* (
       yield* close;
     });
 
-  /** Classify a failed connection from the statistics read before the next event. */
-  const classify = native.stats.pipe(
-    Effect.map(connectionFailure),
-    Effect.timeoutOrElse({
-      duration: classifyTimeout,
-      orElse: () =>
-        Effect.fail(ReactorError.fromCode("Timeout", "native failure classification timed out")),
-    }),
-    Effect.catch((cause) =>
-      Effect.succeed(ReactorError.fromCode("Disconnected", "peer state failed", { detail: cause })),
-    ),
-    Effect.flatMap(fail),
-  );
-
   const deliver = (event: PeerEvent) =>
     Effect.flatMap(Ref.get(state), (current) => Effect.sync(() => current.emit?.(event)));
 
   const handle = (event: Binding.PeerEvent): Effect.Effect<void> => {
     switch (event.type) {
       case "state":
-        if (event.state === "failed") return classify;
         return isPeerState(event.state)
           ? deliver({ type: "state", state: event.state })
           : fail(protocol(`native peer reported an unknown state: ${event.state}`));
@@ -453,7 +404,7 @@ export const make = Effect.fnUntraced(function* (
       Number.isSafeInteger(bitsPerSecond) && bitsPerSecond >= 1 && bitsPerSecond <= 0x7fffffff
         ? native.maxBitrate(name, bitsPerSecond)
         : Effect.fail(unsupported("native max bitrate must be an integer in 1..2147483647")),
-    stats: Effect.map(native.stats, (stats) => statsValue(stats) as ReadonlyArray<unknown>),
+    stats: Effect.map(native.stats, (stats) => stats.map(statsValue)),
     close,
     shutdown: Ref.set(explicit, true).pipe(Effect.andThen(run)),
   };

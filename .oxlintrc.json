@@ -111,13 +111,6 @@
         "typescript/no-unsafe-return": "off",
         "typescript/no-redundant-type-constituents": "off"
       }
-    },
-    {
-      // Vitest types its asymmetric matchers, such as expect.objectContaining, as `any`.
-      "files": ["packages/native/test/**"],
-      "rules": {
-        "typescript/no-unsafe-assignment": "off"
-      }
     }
   ],
   "ignorePatterns": [
