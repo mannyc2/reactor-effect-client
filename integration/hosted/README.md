@@ -208,7 +208,7 @@ A run exits 0 when it passes, 1 when it fails, and 2 when it refused before clai
 - **After a failure,** read the reasons in its evidence and fix the cause before running it again. A re-run is a new paid run in the same ledger.
 - **To re-run a fix before it is released,** run from a checkout of it instead of a scratch project:
   1. `bun run build`;
-  2. stage the published candidate's native library, if the native sources are unchanged: copy its `lib/<platform>` into `packages/native/lib/` when its `sourceSha256` matches `node packages/native/scripts/stage.mjs --source-hash`;
+  2. stage the published candidate's native addon, if the native sources are unchanged: copy the addon from its platform package into `packages/native/npm/<platform>/` and run `node packages/native/scripts/stage.mjs` on it, which refuses it unless its `sourceSha256` matches the checkout;
   3. commit, and seed a new ledger with every earlier paid evidence file;
   4. run `bun integration/hosted/qualify.ts` as above. The evidence records the commit.
 - **After an unknown outcome or an unconfirmed termination,** confirm in the Reactor dashboard that the session ended. The evidence says by when its cap ends it.

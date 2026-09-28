@@ -1,7 +1,7 @@
 Reactor Effect Client
 
 This independent SDK is not an official Reactor SDK. The repository is a Bun
-workspace publishing three packages; each package ships its own NOTICE and the
+workspace publishing five packages; each package ships its own NOTICE and the
 third-party texts under its notices/ directory.
 
 The canonical wire definitions and selected protocol behavior derive from:
@@ -34,10 +34,10 @@ Native builds pin and verify the upstream binary artifact checksum.
 No reactor-ffi or reactor-core session implementation is included.
 
 Effect is MIT-licensed. Every package declares Effect as a peer dependency; its
-license is retained in each package's notices/effect-LICENSE. Koffi is an
-optional dependency of reactor-effect-native only; its installed distribution
-retains its upstream license. Development tooling and node_modules are excluded
-from the npm packages.
+license is retained in each package's notices/effect-LICENSE. The native addon
+packages, reactor-effect-native-linux-x64-gnu and -darwin-arm64, carry the
+notices of the Rust crates and libwebrtc they link. Development tooling, Rust
+sources and node_modules are excluded from the npm packages.
 
 Session, correlation and observation code carried from the effect-webrtc-standalone
 reference project keeps that project's MIT license in

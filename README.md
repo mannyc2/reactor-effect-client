@@ -1,12 +1,12 @@
 # reactor-effect
 
-An independent Effect SDK for scoped Reactor sessions, H3 provider state, host media, and explicit orchestration, published as three packages from one Bun workspace.
+An independent Effect SDK for scoped Reactor sessions, H3 provider state, host media, and explicit orchestration, published from one Bun workspace as three packages, the native one with a per-platform addon package for each supported host.
 
-| Package                                        | Purpose                                                                                                   | Runs in                |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | Canonical `Client`/`Session`, coordinator, H3 provider, orchestration, simulation, test fixtures, wire    | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks and local playback                            | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media, in process or in a child process, staged native binaries | Node and Bun           |
+| Package                                        | Purpose                                                                                                | Runs in                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | Canonical `Client`/`Session`, coordinator, H3 provider, orchestration, simulation, test fixtures, wire | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks and local playback                         | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | libwebrtc Node-API addon: decoded media, in process or in a child process; per-platform addon packages | Node and Bun           |
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
@@ -15,7 +15,7 @@ This is not an official Reactor SDK. Protocol material and native WebRTC depende
 ## Which package do I install?
 
 - Every application installs `reactor-effect-client` and Effect `4.0.0-rc.117`. Its modules (`/h3`, `/orchestration`, `/simulation`, `/testing`, `/wire`) are subpaths of one package because they share exactly one dependency set and are portable; splitting them would add installs without isolating anything.
-- A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries the optional Koffi dependency, Node-only code and the staged shared libraries. Portable and browser consumers never download native binaries.
+- A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries Node-only code and depends optionally on one package per platform, `reactor-effect-native-linux-x64-gnu` and `reactor-effect-native-darwin-arm64`, each holding only that platform's addon, so a host downloads only the addon it can run. Portable and browser consumers never download native binaries.
 - The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. Each implements the client's `Peer` port (`reactor-effect-client/Peer`), which an application needs only to write a host of its own.
 
 ```sh
@@ -68,25 +68,25 @@ bun run verify --profile portable   # generation, format, lint, build, typecheck
 | `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                |
 | `bun run typecheck`                   | Checks every workspace's tests and tooling against the built declarations                           |
 | `bun run test`                        | Client and browser Vitest suites on Node and on Bun; the `integration` helpers and `scripts` on Bun |
-| `bun run test:native`                 | Vitest tests in `packages/native` against the staged library, on Node and then on Bun               |
+| `bun run test:native`                 | Vitest tests in `packages/native` against the staged addon, on Node and then on Bun                 |
 | `bun run test:integration`            | Real local browser/native session through the public packages                                       |
 | `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                |
-| `bun run native:build`                | Builds the Rust bridge for the current host and stages it under `packages/native/lib/`              |
+| `bun run native:build`                | Builds the addon for the current host and stages it into its package under `packages/native/npm/`   |
 | `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                       |
 
-`bun run verify` runs the same profiles CI uses (`portable`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged native library can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
+`bun run verify` runs the same profiles CI uses (`portable`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged addon can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
 
 ## Continuous integration
 
-The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged library on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified library and the test far peer, runs only the JavaScript native tests (on Node and on Bun) and the integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the library it qualifies. The package job then installs the three archives into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the three archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
+The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged addon on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified addon and the test far peer, restages it against the sources, runs only the JavaScript native tests (on Node and on Bun) and the integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the addon it qualifies. The package job then installs the five archives, the two platform packages among them, into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the five archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
 
 ## Releases
 
-Publication is manual and separate from CI. The [release workflow](./.github/workflows/release.yml) never builds the SDK: a `prepare` run adopts the three archives from a successful main CI run, signs Sigstore provenance for each and retains an immutable ts-release candidate; a separate `publish` run promotes that candidate only after an operator enters the exact `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native@<version>` confirmation printed by the preparation. All three packages share one version, and `reactor-effect-client` is published first because the host packages pin it as an exact peer. npm trusted publishing (OIDC) replaces any token, and an `observe` run re-checks registry visibility without publishing. [release-tools/README.md](./release-tools/README.md) documents the npm prerequisites, the procedure and recovery.
+Publication is manual and separate from CI. The [release workflow](./.github/workflows/release.yml) never builds the SDK: a `prepare` run adopts the five archives from a successful main CI run, signs Sigstore provenance for each and retains an immutable ts-release candidate; a separate `publish` run promotes that candidate only after an operator enters the exact `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native-linux-x64-gnu@<version> reactor-effect-native-darwin-arm64@<version> reactor-effect-native@<version>` confirmation printed by the preparation. All five packages share one version; `reactor-effect-client` is published first because the host packages pin it as an exact peer, and the platform packages before `reactor-effect-native`, which pins them exactly. npm trusted publishing (OIDC) replaces any token, and an `observe` run re-checks registry visibility without publishing. [release-tools/README.md](./release-tools/README.md) documents the npm prerequisites, the procedure and recovery.
 
 ## Support and limitations
 
-The native media path was last measured with the ABI 3 bridge on September 23, 2026; ABI 4 changes only the frame and PCM headers, which now carry an admission sequence. A local libwebrtc far peer sent 1344x768 BGRA at 24 fps with its congestion controller held at 8 Mbps.
+The native media path was last measured with the C-ABI bridge on September 23, 2026, before the move to a napi-rs addon; the queues, owner thread and bounds it measured are unchanged, and the media load tests pass on the addon on linux-x64. A local libwebrtc far peer sent 1344x768 BGRA at 24 fps with its congestion controller held at 8 Mbps.
 
 - On linux-x64, in a 4 vCPU container and on GitHub's runner, every session outside the stall test received 23–24 frames per second, and the bridge never held more than one frame. Audio arrived at about 100 blocks per second with none dropped, and control round trips stayed under 21 ms at p95. End-to-end latency, which the tests print but do not assert, was 19–95 ms at p95 outside the stalls.
 - On GitHub's darwin-arm64 runner (3 cores, utility QoS), sessions received 21.6–24.3 frames per second, the bridge held at most one frame at p95 and no audio was dropped. End-to-end latency reached 332 ms at p95, and audio arrived at 50–65 blocks per second, because the far peer's pushes ran 20–60 ms late there. Neither delay is the bridge's.
