@@ -191,6 +191,7 @@ impl Shared {
         );
         MediaSnapshot {
             closed: !self.gate.is_open(),
+            pending_requests: self.in_flight.load(Ordering::Acquire),
             queued_control: events.queued,
             queued_video: video.queued,
             queued_audio: audio.queued,

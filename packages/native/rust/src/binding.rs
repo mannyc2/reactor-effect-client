@@ -269,6 +269,8 @@ pub struct Audio {
 pub struct Pressure {
     /// Whether the peer is closed.
     pub closed: bool,
+    /// Calls admitted and not yet taken up by the owner thread.
+    pub pending_requests: u32,
     /// Events waiting.
     pub queued_control: u32,
     /// Frames waiting.
@@ -466,6 +468,7 @@ impl NativePeer {
         let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
         Pressure {
             closed: snapshot.closed,
+            pending_requests: count(snapshot.pending_requests),
             queued_control: count(snapshot.queued_control),
             queued_video: count(snapshot.queued_video),
             queued_audio: count(snapshot.queued_audio),

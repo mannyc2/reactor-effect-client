@@ -20,9 +20,6 @@ const awaitAvailable = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<void, E>
     });
   });
 
-export const take = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<A, E> =>
-  Effect.suspend(() => Queue.takeUnsafe(self) ?? Effect.andThen(awaitAvailable(self), take(self)));
-
 export const takeAll = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<Arr.NonEmptyArray<A>, E> =>
   Effect.suspend(() => {
     const state: Queue.Queue.State<A, E> = self.state;

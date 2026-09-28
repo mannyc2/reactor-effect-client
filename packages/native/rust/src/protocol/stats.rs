@@ -132,10 +132,12 @@ fn decimal(value: u64) -> Value {
     Value::String(value.to_string())
 }
 
-/// What each media queue dropped, delivered and still holds.
+/// What each media queue dropped, delivered and still holds, and the calls
+/// admitted and not yet taken up by the owner thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MediaSnapshot {
     pub(crate) closed: bool,
+    pub(crate) pending_requests: usize,
     pub(crate) queued_control: usize,
     pub(crate) queued_video: usize,
     pub(crate) queued_audio: usize,

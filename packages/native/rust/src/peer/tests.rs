@@ -63,6 +63,34 @@ fn a_send_over_the_message_bound_or_before_the_channel_opens_is_refused() {
 }
 
 #[test]
+fn a_call_is_pending_from_admission_until_the_owner_takes_it_up() {
+    let peer = Peer::create().expect("a peer");
+    // The first call's answer runs on the owner thread and holds it there.
+    let (release, held) = mpsc::sync_channel::<()>(0);
+    let (answered, first) = mpsc::sync_channel(1);
+    peer.stats(Box::new(move |result| {
+        held.recv().expect("the test releases the owner");
+        answered
+            .send(result)
+            .expect("the test waits for the answer");
+    }));
+    let (queued, second) = mpsc::sync_channel(1);
+    peer.stats(Box::new(move |result| {
+        queued.send(result).expect("the test waits for the answer");
+    }));
+    wait_until("the second call to queue", TIMEOUT, || {
+        peer.snapshot().pending_requests == 1
+    });
+    release.send(()).expect("the owner is held");
+    for answer in [first, second] {
+        let refused = answer.recv_timeout(TIMEOUT).expect("answered");
+        assert_eq!(refused.expect_err("unprepared"), BridgeError::closed());
+    }
+    assert_eq!(peer.snapshot().pending_requests, 0);
+    peer.shutdown().expect("shutdown");
+}
+
+#[test]
 fn shutdown_is_idempotent_and_leaves_every_queue_closed() {
     let peer = Peer::create().expect("a peer");
     peer.shutdown().expect("first shutdown");

@@ -17,14 +17,13 @@ import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { IceCandidate } from "reactor-effect-client/Coordinator";
 import type { MediaPressure } from "reactor-effect-client/Media";
 import type { PeerEvent } from "reactor-effect-client/Peer";
-import * as Library from "../src/internal/library.js";
+import { load } from "../src/internal/addon.js";
 import { defaultShutdownTimeout } from "../src/internal/peer.js";
 import type { NativePeer } from "../src/internal/peer.js";
 import {
   assertExactFrames,
   decoded,
   FarPeer,
-  libraryPath,
   nativeClient,
   nativePeer,
   record,
@@ -32,9 +31,9 @@ import {
 } from "./support.js";
 
 /*
- * The shipped library under the load the decision record measured: a real
- * libwebrtc sender at 1344x768 BGRA, 24 fps, and 48 kHz PCM, received through
- * Koffi on whichever runtime runs this file. scripts/test.sh runs it on Node
+ * The installed addon under the load the decision record measured: a real
+ * libwebrtc sender at 1344x768 BGRA, 24 fps, and 48 kHz PCM, received on
+ * whichever runtime runs this file. scripts/test.sh runs it on Node
  * and on Bun.
  */
 const WIDTH = 1344,
@@ -133,7 +132,7 @@ const run = <A>(effect: Effect.Effect<A, ReactorError>): Promise<A> => Effect.ru
 /** Open one receiving peer on its own scope and wait until both channels are open. */
 const open = async (far: FarPeer, id: string): Promise<Receiver> => {
   const scope = await run(Scope.make());
-  const peer = await run(nativePeer(libraryPath).pipe(Scope.provide(scope)));
+  const peer = await run(nativePeer().pipe(Scope.provide(scope)));
   const receiver: Receiver = {
     id,
     peer,
@@ -400,7 +399,7 @@ const ping = (receiver: Receiver): Promise<void> => {
 describe("native media under load", () => {
   let far: FarPeer;
   beforeAll(async () => {
-    await run(Library.resolve(undefined));
+    await run(load(undefined));
     far = await FarPeer.start();
   });
   afterAll(async () => {
@@ -645,10 +644,7 @@ describe("native media under load", () => {
       const result = await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const factory = yield* nativeClient(
-              { apiUrl: "https://coordinator.far-peer" },
-              { libraryPath },
-            );
+            const factory = yield* nativeClient({ apiUrl: "https://coordinator.far-peer" }, {});
             const client = yield* factory.create({
               model: "far-peer",
               jwt: Redacted.make("far-peer-token"),
@@ -682,7 +678,7 @@ describe("native media under load", () => {
   test("reports a real ICE failure as IceFailed with its candidate-pair detail through the events pump", async () => {
     const id = "ice-failure";
     const scope = await run(Scope.make());
-    const peer = await run(nativePeer(libraryPath).pipe(Scope.provide(scope)));
+    const peer = await run(nativePeer().pipe(Scope.provide(scope)));
     const errors: ReactorError[] = [];
     const states: string[] = [];
     try {

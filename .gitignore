@@ -9,6 +9,5 @@ coverage/
 .env.*
 !.env.example
 packages/native/rust/target/
-packages/native/lib/
 *.tsbuildinfo
 .channel/
