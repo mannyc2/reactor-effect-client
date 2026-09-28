@@ -1565,9 +1565,13 @@ export const step: {
     const replacementLive = state.sessions.some(
       (value) => !value.retiring && value.id !== state.air,
     );
+    const next = air === undefined || replacementLive ? undefined : eligible()[0];
     const due =
       air === undefined ||
-      (!replacementLive && (air.indeterminate || now.mono >= expiresAt(air) - config.leadMs));
+      (!replacementLive &&
+        (air.indeterminate ||
+          now.mono >= expiresAt(air) - config.leadMs ||
+          (next !== undefined && !fits(air, next.spec.seconds))));
     if (due && state.sessions.length < 2) {
       state = { ...state, opening: true };
       actions.push({ _tag: "Open" });
@@ -1615,11 +1619,15 @@ export const step: {
   }
   // Starvation: nothing on air while the plan wants air.
   const onAir = session(state.air);
+  const taking = state.sessions.some(
+    (value) => value.id !== state.air && !value.retiring && readyOf(value).length > 0,
+  );
   const dry =
     onAir?.source !== undefined &&
     onAir.source.playing === undefined &&
     onAir.source.ready.length === 0 &&
-    onAir.startedAny;
+    onAir.startedAny &&
+    !taking;
   const owed =
     [...items.values()].some((item) => item.phase !== "Settled" && item.mode !== "held") ||
     config.filler !== undefined;
@@ -1706,7 +1714,7 @@ export const step: {
   function cueAt(item: Item, cue: Spec["cues"][number]): number {
     return cue.from === "start"
       ? item.startedAt! + cue.offsetMs
-      : item.startedAt! + item.spec.seconds * 1000 - cue.offsetMs;
+      : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
   }
   function decideCommand(): void {
     // Autoplay as each session's role wants it: off on a replacement until it takes the air.
@@ -1828,22 +1836,10 @@ export const step: {
     if (inFlight >= config.maxBuildsInFlight) return;
     const room = runway();
     const floorSeconds = fillerFloor();
-    const eligible = [...items.values()]
-      .filter(
-        (item) =>
-          item.phase === "Accepted" &&
-          item.withdraw === undefined &&
-          previousAdmitted(item) &&
-          (item.retryAt ?? -Infinity) <= now.mono &&
-          (item.notBefore ?? -Infinity) <= now.mono &&
-          // Autoplay cannot hold a Ready clip: build a future anchor once air ahead covers the wait.
-          ((atMono(item) ?? -Infinity) <= now.mono ||
-            room >= ((atMono(item) ?? 0) - now.mono) / 1000) &&
-          // A held item is built ahead only while filler keeps the runway at its floor.
-          (item.mode !== "held" || (floorSeconds > 0 && room >= floorSeconds)),
-      )
-      .sort(buildOrder);
-    for (const item of eligible) {
+    for (const item of eligible()) {
+      // What cannot air before this session's cap waits for its replacement, and so does what
+      // follows it, which would otherwise air ahead of it.
+      if (!fits(target, item.spec.seconds)) break;
       const from = item.spec.continuity
         ? continuation(item, target)
         : { _tag: "from" as const, clipId: undefined, follows: undefined };
@@ -1879,6 +1875,7 @@ export const step: {
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
     if (!refilling || room >= Math.max(targetSeconds, anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
+    if (!fits(target, seconds)) return;
     const request =
       state.filler.request ??
       filler.clip({ index: state.filler.index, runwaySeconds: room, seconds });
@@ -1888,6 +1885,63 @@ export const step: {
       request,
       tag: { _tag: "Filler", index: state.filler.index },
     });
+  }
+  /** Items that may be built now, first in build order. */
+  function eligible(): ReadonlyArray<Item> {
+    const room = runway();
+    const floorSeconds = fillerFloor();
+    return [...items.values()]
+      .filter(
+        (item) =>
+          item.phase === "Accepted" &&
+          item.withdraw === undefined &&
+          previousAdmitted(item) &&
+          (item.retryAt ?? -Infinity) <= now.mono &&
+          (item.notBefore ?? -Infinity) <= now.mono &&
+          // Autoplay cannot hold a Ready clip: build a future anchor once air ahead covers the wait.
+          ((atMono(item) ?? -Infinity) <= now.mono ||
+            room >= ((atMono(item) ?? 0) - now.mono) / 1000) &&
+          // A held item is built ahead only while filler keeps the runway at its floor.
+          (item.mode !== "held" || (floorSeconds > 0 && room >= floorSeconds)),
+      )
+      .sort(buildOrder);
+  }
+  /**
+   * Whether a clip of `seconds` built on `target` now would finish airing before
+   * the session's cap, counting everything that airs ahead of it there: the
+   * playing clip's rest, its Ready clips, its builds in flight and, for a
+   * replacement, what the session on air still has. A clip no fresh session
+   * could air whole is not held back.
+   */
+  function fits(target: Session, seconds: number): boolean {
+    if (target.lifetimeMs === Infinity) return true;
+    const ratio = estimates().length;
+    const lengthMs = seconds * ratio * 1000;
+    const marginMs = lookaheadMarginSeconds * 1000;
+    if (lengthMs > target.lifetimeMs - marginMs) return true;
+    const queuedMs = (value: Session): number =>
+      readyOf(value)
+        .filter(airs)
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+    const onAir = session(state.air);
+    const startsAt =
+      target.id === state.air || onAir === undefined
+        ? now.mono + playingRestMs(target)
+        : now.mono + playingRestMs(onAir) + queuedMs(onAir);
+    const buildingMs =
+      [...items.values()]
+        .filter(
+          (item) =>
+            item.sessionId === target.id && (item.phase === "Building" || item.phase === "Unknown"),
+        )
+        .reduce((total, item) => total + item.spec.seconds * ratio * 1000, 0) +
+      (target.source?.building ?? [])
+        .filter((clip) => clip.tag?._tag === "Filler")
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+    return (
+      startsAt + queuedMs(target) + buildingMs + lengthMs <=
+      target.openedAt + target.lifetimeMs - marginMs
+    );
   }
   function fillerFloor(): number {
     const filler = config.filler;

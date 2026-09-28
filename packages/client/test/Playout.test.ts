@@ -514,6 +514,36 @@ layer(hosted)("renewal", (it) => {
     { timeout: 60_000 },
   );
 
+  // The critique's probe: with a 60 s cap, n10 was cut mid-clip at the cap and failed as lost,
+  // and an item submitted later aired ahead of n11 to n13.
+  it.effect(
+    "a backlog longer than the cap airs whole and in order across the replacement",
+    () =>
+      Effect.gen(function* () {
+        const { playout, starts } = yield* start({
+          lifetime: "60 seconds",
+          renewal: { lead: "10 seconds" },
+        });
+        const names = Array.from({ length: 14 }, (_, index) => `n${index}`);
+        const handles = yield* Effect.forEach(names, (name) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        yield* Effect.sleep("20 seconds");
+        const late = yield* playout.submit({
+          key: key("late"),
+          lane: "line",
+          request: clip("late"),
+        });
+        const outcomes = yield* Effect.forEach([...handles, late], (handle) => handle.outcome);
+        assert.deepStrictEqual(
+          outcomes.map((status) => status._tag),
+          [...names, "late"].map(() => "Ended"),
+        );
+        assert.deepStrictEqual(yield* starts, [...names, "late"]);
+      }),
+    { timeout: 60_000 },
+  );
+
   it.effect(
     "rebuilds a lost session's unaired clips on the replacement",
     () =>
