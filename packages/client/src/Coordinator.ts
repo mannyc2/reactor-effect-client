@@ -20,9 +20,8 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Headers from "effect/unstable/http/Headers";
-import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientError from "effect/unstable/http/HttpClientError";
+import type * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as Recording from "./internal/recording.js";
@@ -418,133 +417,6 @@ export type DownloadedClip = Recording.DownloadedClip;
 export type DownloadOptions = Recording.DownloadOptions;
 export const parsePlaylist = Recording.parsePlaylist;
 
-type Auth = "session" | "signaling" | "same-origin" | "none";
-
-/** The largest response body read, unless an exchange sets its own bound. */
-const maxResponseBytes = 2_097_152;
-
-interface Exchange {
-  readonly url: string;
-  readonly operation: string;
-  readonly method?: "GET" | "POST" | "PUT" | "DELETE";
-  readonly auth?: Auth;
-  readonly body?: HttpBody.HttpBody;
-  readonly headers?: Readonly<Record<string, string>>;
-  /** Statuses answered as data rather than failures, besides 2xx. */
-  readonly accepted?: ReadonlyArray<number>;
-  readonly maxBytes?: number;
-  readonly timeout?: Duration.Duration;
-  /** Sees the status as soon as it arrives, even if reading the body then fails. */
-  readonly onStatus?: (status: number) => Effect.Effect<void>;
-}
-
-interface Reply {
-  readonly status: number;
-  readonly headers: Headers.Headers;
-  readonly bytes: Uint8Array<ArrayBuffer>;
-}
-
-const checkedUrl = (url: string, base?: string): Effect.Effect<URL, ReactorError> =>
-  Effect.try({
-    try: () => new URL(url, base),
-    catch: (cause) => ReactorError.fromCode("Protocol", "HTTP URL is malformed", { detail: cause }),
-  }).pipe(
-    Effect.filterOrFail(
-      (value) =>
-        (value.protocol === "https:" || value.protocol === "http:") &&
-        value.username === "" &&
-        value.password === "",
-      () =>
-        ReactorError.fromCode(
-          "Protocol",
-          "HTTP URL must use http(s) and contain no embedded credentials",
-        ),
-    ),
-  );
-
-/** Reads the body within the byte bound, counting every chunk, empty ones included. */
-const readBody = (response: HttpClientResponse.HttpClientResponse, maxBytes: number) =>
-  response.stream.pipe(
-    Stream.catchIf(
-      (error) => HttpClientError.isHttpClientError(error) && error.reason._tag === "EmptyBodyError",
-      () => Stream.empty,
-    ),
-    Stream.runFoldEffect(
-      () => ({ chunks: new Array<Uint8Array>(), size: 0 }),
-      (read, chunk) => {
-        read.size += chunk.byteLength;
-        read.chunks.push(chunk);
-        return read.size > maxBytes || read.chunks.length > 16_384
-          ? Effect.fail(
-              ReactorError.fromCode("Overflow", `response exceeds its ${maxBytes} byte bound`, {
-                outcome: "replied",
-              }),
-            )
-          : Effect.succeed(read);
-      },
-    ),
-    Effect.map(({ chunks, size }) => {
-      const bytes = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return bytes;
-    }),
-  );
-
-const retryAfterOf = (headers: Headers.Headers): Duration.Duration | undefined => {
-  const raw = headers["retry-after"];
-  if (raw === undefined || !/^\s*(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(raw)) return undefined;
-  const seconds = Number(raw);
-  return Number.isFinite(seconds) ? Duration.seconds(seconds) : undefined;
-};
-
-const utf8 = new TextDecoder("utf-8", { fatal: true });
-
-/** Decodes a JSON reply through its Schema; the SchemaError names a path, never the value. */
-const decodeReply = <S extends Schema.Top & { readonly DecodingServices: never }>(
-  schema: S,
-  operation: string,
-) =>
-  Effect.fnUntraced(function* (reply: Reply) {
-    const text = yield* Effect.try({
-      try: () => utf8.decode(reply.bytes),
-      catch: (cause) =>
-        ReactorError.fromCode("Protocol", `${operation} reply is not UTF-8`, {
-          operation,
-          outcome: "replied",
-          detail: cause,
-        }),
-    });
-    return yield* Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(
-      Effect.mapError((cause) =>
-        ReactorError.fromCode("Protocol", `invalid ${operation} reply`, {
-          operation,
-          outcome: "replied",
-          detail: cause,
-        }),
-      ),
-    );
-  });
-
-const jsonBody = <S extends Schema.Top & { readonly EncodingServices: never }>(
-  schema: S,
-  value: S["Type"],
-  operation: string,
-) =>
-  Schema.encodeEffect(Schema.fromJsonString(schema))(value).pipe(
-    Effect.map((text) => HttpBody.text(text, "application/json")),
-    Effect.mapError((cause) =>
-      ReactorError.fromCode("InvalidInput", `${operation} body cannot be encoded`, {
-        operation,
-        outcome: "not-submitted",
-        detail: cause,
-      }),
-    ),
-  );
-
 /** The coordinator calls one session makes, authorized by its token. */
 export interface Signaling {
   /** Resolves once the reply names the allocated session; `describe` decodes the rest. */
@@ -637,11 +509,174 @@ export class Coordinator extends Context.Service<
       options?: DownloadOptions,
     ) => Effect.Effect<DownloadedClip, ReactorError>;
     /** The calls one session makes, each with the token `credential` then gives. */
-    readonly signaling: (
-      credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
-    ) => Signaling;
+    readonly signaling: (credential: Credential) => Signaling;
   }
 >()("reactor-effect-client/Coordinator") {}
+
+/** A session's token, when it has one; failing or late, the request is never sent. */
+type Credential = Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>;
+
+/** How a call is addressed, and whether it carries the session's token. */
+type Route =
+  /** An API path with the session's token and API version. */
+  | "session"
+  /** The same, and the WebRTC signaling version. */
+  | "signaling"
+  /** An API path with neither: pricing and tokens. */
+  | "public"
+  /** A recording's URL: the token goes only to the API's own origin. */
+  | "recording"
+  /** A presigned upload URL, its own authority: no credential. */
+  | "upload";
+
+interface Call {
+  readonly operation: string;
+  /** A path under the API for its routes, an absolute URL for a recording or upload. */
+  readonly request: HttpClientRequest.HttpClientRequest;
+  /** `session` by default. */
+  readonly route?: Route;
+  /** Statuses answered as data rather than failures, besides 2xx. */
+  readonly accepted?: ReadonlyArray<number>;
+  /** The largest body read; 2 MiB by default. */
+  readonly maxBytes?: number;
+  /** 15 seconds by default. */
+  readonly timeout?: Duration.Input;
+  /** Sees the status as soon as it arrives, even if reading the body then fails. */
+  readonly onStatus?: (status: number) => Effect.Effect<void>;
+}
+
+const checkedUrl = (url: string, base?: string): Effect.Effect<URL, ReactorError> =>
+  Effect.try({
+    try: () => new URL(url, base),
+    catch: (cause) => ReactorError.fromCode("Protocol", "HTTP URL is malformed", { detail: cause }),
+  }).pipe(
+    Effect.filterOrFail(
+      (value) =>
+        (value.protocol === "https:" || value.protocol === "http:") &&
+        value.username === "" &&
+        value.password === "",
+      () =>
+        ReactorError.fromCode(
+          "Protocol",
+          "HTTP URL must use http(s) and contain no embedded credentials",
+        ),
+    ),
+  );
+
+/** A response's `Retry-After` when it names a delay in seconds; an HTTP date is not read. */
+const retryAfterOf = (headers: Headers.Headers): Duration.Duration | undefined => {
+  const raw = headers["retry-after"];
+  if (raw === undefined || !/^\s*(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(raw)) return undefined;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) ? Duration.seconds(seconds) : undefined;
+};
+
+/** The body within `maxBytes` and 16,384 chunks, since every chunk, even an empty one, costs memory. */
+const bodyWithin = (
+  response: HttpClientResponse.HttpClientResponse,
+  maxBytes: number,
+): Effect.Effect<Uint8Array, HttpClientError.HttpClientError | ReactorError> => {
+  const overflow = ReactorError.fromCode(
+    "Overflow",
+    `response exceeds its ${maxBytes} byte bound`,
+    {
+      outcome: "replied",
+    },
+  );
+  const refused: Stream.Stream<Uint8Array, HttpClientError.HttpClientError | ReactorError> =
+    Stream.fail(overflow);
+  return response.stream.pipe(
+    Stream.catchIf(
+      (error) => error.reason._tag === "EmptyBodyError",
+      () => Stream.empty,
+    ),
+    Stream.limitBytes(maxBytes, () => refused),
+    Stream.zipWithIndex,
+    Stream.mapEffect(([chunk, index]) =>
+      index < 16_384 ? Effect.succeed(chunk) : Effect.fail(overflow),
+    ),
+    Stream.mkUint8Array,
+  );
+};
+
+/** A transport failure once a request may have reached the server: its outcome is unknown. */
+const lost =
+  (operation: string, status?: number) =>
+  (cause: HttpClientError.HttpClientError | ReactorError): ReactorError =>
+    ReactorError.is(cause)
+      ? cause
+      : ReactorError.make({
+          reason: Http.make({
+            message: `${operation}: network/read failure`,
+            ...(status === undefined ? {} : { status }),
+          }),
+          context: { operation, outcome: "unknown", detail: Redacted.make(cause) },
+        });
+
+/** The reply when its call accepts the status; otherwise the failure the status says. */
+const answered = (call: Call, status: number, bytes: Uint8Array, headers: Headers.Headers) => {
+  const retryAfter = retryAfterOf(headers);
+  if ((status >= 200 && status < 300) || call.accepted?.includes(status) === true)
+    return Effect.succeed<Recording.Reply>({ status, bytes, retryAfter });
+  const message = `${call.operation}: HTTP ${String(status)}`;
+  const body = Redacted.make(new TextDecoder().decode(bytes));
+  const context = { operation: call.operation, outcome: "replied" } as const;
+  return Effect.fail(
+    status === 426 || status === 501
+      ? ReactorError.fromCode("VersionMismatch", message, { ...context, detail: { status, body } })
+      : ReactorError.make({
+          reason: Http.make({
+            message,
+            status,
+            body,
+            ...(retryAfter === undefined ? {} : { retryAfter }),
+          }),
+          context,
+        }),
+  );
+};
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Decodes a JSON reply through its Schema; the SchemaError names a path, never the value. */
+const decodeReply = <S extends Schema.Top & { readonly DecodingServices: never }>(
+  schema: S,
+  operation: string,
+) => {
+  const protocol = (message: string) => (detail: unknown) =>
+    ReactorError.fromCode("Protocol", message, { operation, outcome: "replied", detail });
+  const decode = Schema.decodeEffect(Schema.fromJsonString(schema));
+  return (reply: Recording.Reply) =>
+    Effect.try({
+      try: () => utf8.decode(reply.bytes),
+      catch: protocol(`${operation} reply is not UTF-8`),
+    }).pipe(
+      Effect.flatMap((text) =>
+        Effect.mapError(decode(text), protocol(`invalid ${operation} reply`)),
+      ),
+    );
+};
+
+/** `request` with `value` as its JSON body; a value its Schema refuses is never sent. */
+const withBody = <S extends Schema.Top & { readonly EncodingServices: never }>(
+  schema: S,
+  operation: string,
+) => {
+  const encode = HttpClientRequest.schemaBodyJson(schema);
+  return (request: HttpClientRequest.HttpClientRequest, value: S["Type"]) =>
+    Effect.mapError(encode(request, value), (cause) =>
+      ReactorError.fromCode("InvalidInput", `${operation} body cannot be encoded`, {
+        operation,
+        outcome: "not-submitted",
+        detail: cause,
+      }),
+    );
+};
+
+const sessionPath = (id: string) => `/sessions/${encodeURIComponent(id)}`;
+const transportPath = (id: string) => `${sessionPath(id)}/transport/webrtc`;
+const connectionPath = (id: string, cid: number) =>
+  `${transportPath(id)}/connections/${String(cid)}`;
 
 /** Doubling waits from 200 ms, capped: at most 20 descriptor reads. */
 const sessionPoll = Schedule.min([
@@ -651,9 +686,14 @@ const sessionPoll = Schedule.min([
 /** Doubling waits from 200 ms up to 2 s; the caller's connect deadline bounds the whole wait. */
 const sdpPoll = Schedule.min([Schedule.exponential("200 millis"), Schedule.spaced("2 seconds")]);
 
+const createBody = withBody(CreateBody, "create session");
+const offerBody = withBody(OfferBody, "SDP offer");
+const iceBody = withBody(IceBody, "ICE candidates");
+const uploadBody = withBody(UploadBody, "allocate upload");
+const tokenBody = withBody(TokenRequestBody, "token");
+
 /** A Coordinator over the current `HttpClient`. No request runs while it is built. */
 export const make = Effect.fnUntraced(function* (options: Options = {}) {
-  const client = yield* HttpClient.HttpClient;
   const base = yield* checkedUrl(options.apiUrl ?? defaultApiUrl).pipe(
     Effect.filterOrFail(
       (url) => url.search === "" && url.hash === "",
@@ -661,40 +701,62 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     ),
   );
   const apiUrl = base.href.replace(/\/$/, "");
-  const origin = base.origin;
-  const path = (rest: string) => `${apiUrl}${rest}`;
-  const sessionPath = (id: string) => path(`/sessions/${encodeURIComponent(id)}`);
-  const transportPath = (id: string) => `${sessionPath(id)}/transport/webrtc`;
-  const connectionPath = (id: string, cid: number) =>
-    `${transportPath(id)}/connections/${String(cid)}`;
+  const http = (yield* HttpClient.HttpClient).pipe(
+    // Never follow a redirect with a credential, never send ambient cookies, and trace the
+    // operations rather than each request.
+    HttpClient.transform((response) =>
+      response.pipe(
+        Effect.provideService(FetchHttpClient.RequestInit, {
+          credentials: "omit",
+          redirect: "error",
+        }),
+        Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+        Effect.updateService(Headers.CurrentRedactedNames, (names) => [
+          ...names,
+          "reactor-api-key",
+        ]),
+      ),
+    ),
+  );
+  const api = http.pipe(HttpClient.mapRequest(HttpClientRequest.prependUrl(apiUrl)));
+  const versioned = api.pipe(
+    HttpClient.mapRequest(
+      HttpClientRequest.setHeaders({
+        "reactor-api-version": "1",
+        "reactor-api-accept-version": "1",
+      }),
+    ),
+  );
+  const clients: Record<Route, HttpClient.HttpClient> = {
+    session: versioned,
+    signaling: versioned.pipe(
+      HttpClient.mapRequest(HttpClientRequest.setHeader("reactor-webrtc-version", "1.0")),
+    ),
+    public: api,
+    recording: http,
+    upload: http,
+  };
 
-  const exchange = (
-    credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
-    spec: Exchange,
-  ): Effect.Effect<Reply, ReactorError> =>
-    Effect.gen(function* () {
-      const operation = spec.operation;
-      const deadline = spec.timeout ?? Duration.seconds(15);
-      const url = yield* checkedUrl(spec.url);
-      const auth = spec.auth ?? "session";
-      const authenticate =
-        auth === "session" ||
-        auth === "signaling" ||
-        (auth === "same-origin" && url.origin === origin);
-      // A request whose token could not be had, at all or in time, was never sent. The token
-      // has its own deadline, before the request's starts: a slow mint is not a request that
-      // may have landed.
-      const token = authenticate
-        ? yield* credential.pipe(
+  const call = Effect.fnUntraced(function* (
+    credential: Credential,
+    spec: Call,
+  ): Effect.fn.Return<Recording.Reply, ReactorError> {
+    const { operation } = spec;
+    const route = spec.route ?? "session";
+    const deadline = spec.timeout ?? "15 seconds";
+    const url =
+      route === "recording" || route === "upload" ? yield* checkedUrl(spec.request.url) : base;
+    // A request whose token could not be had, at all or in time, was never sent. The token
+    // has its own deadline, before the request's starts: a slow mint is not a request that
+    // may have landed.
+    const token =
+      route === "public" || route === "upload" || url.origin !== base.origin
+        ? undefined
+        : yield* credential.pipe(
             Effect.timeoutOrElse({
               duration: deadline,
               orElse: () =>
-                Effect.fail(
-                  ReactorError.fromCode("Timeout", `${operation}: no token in time`, {
-                    operation,
-                    outcome: "not-submitted",
-                  }),
-                ),
+                Effect.fail(ReactorError.fromCode("Timeout", `${operation}: no token in time`)),
             }),
             Effect.mapError((error) =>
               ReactorError.make({
@@ -702,98 +764,42 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
                 context: { ...error.context, operation, outcome: "not-submitted" },
               }),
             ),
-          )
-        : undefined;
-      return yield* send(url, token, spec).pipe(
-        Effect.timeoutOrElse({
-          duration: deadline,
-          orElse: () =>
-            Effect.fail(
-              ReactorError.fromCode("Timeout", `${operation}: deadline`, {
-                operation,
-                outcome: "unknown",
-              }),
-            ),
-        }),
-      );
-    }).pipe(
-      // Never follow a redirect with a credential, and never send ambient cookies.
-      Effect.provideService(FetchHttpClient.RequestInit, {
-        credentials: "omit",
-        redirect: "error",
+          );
+    const request =
+      token === undefined ? spec.request : HttpClientRequest.bearerToken(spec.request, token);
+    return yield* clients[route].execute(request).pipe(
+      // Crossing execute is where a mutation may have reached the server: a transport
+      // failure after it cannot prove non-delivery.
+      Effect.mapError(lost(operation)),
+      Effect.tap((response) => spec.onStatus?.(response.status) ?? Effect.void),
+      Effect.flatMap((response) =>
+        bodyWithin(response, spec.maxBytes ?? 2_097_152).pipe(
+          Effect.mapError(lost(operation, response.status)),
+          Effect.flatMap((bytes) => answered(spec, response.status, bytes, response.headers)),
+        ),
+      ),
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: deadline,
+        orElse: () =>
+          Effect.fail(
+            ReactorError.fromCode("Timeout", `${operation}: deadline`, {
+              operation,
+              outcome: "unknown",
+            }),
+          ),
       }),
-      Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
-      Effect.updateService(Headers.CurrentRedactedNames, (names) => [...names, "reactor-api-key"]),
     );
+  });
 
-  /** One request, once its token is in hand: from here, a failure may follow its delivery. */
-  const send = (url: URL, token: Redacted.Redacted<string> | undefined, spec: Exchange) =>
-    Effect.gen(function* () {
-      const operation = spec.operation;
-      const auth = spec.auth ?? "session";
-      const versioned: Record<string, string> =
-        auth === "session" || auth === "signaling"
-          ? {
-              "reactor-api-version": "1",
-              "reactor-api-accept-version": "1",
-              ...(auth === "signaling" ? { "reactor-webrtc-version": "1.0" } : {}),
-            }
-          : {};
-      let request = HttpClientRequest.make(spec.method ?? "GET")(url.href).pipe(
-        HttpClientRequest.setHeaders({ ...versioned, ...spec.headers }),
-      );
-      if (token !== undefined) request = HttpClientRequest.bearerToken(request, token);
-      if (spec.body !== undefined) request = HttpClientRequest.setBody(request, spec.body);
-      const network = (outcome: "unknown", status?: number) => (cause: unknown) =>
-        ReactorError.is(cause)
-          ? cause
-          : ReactorError.make({
-              reason: Http.make({
-                message: `${operation}: network/read failure`,
-                ...(status === undefined ? {} : { status }),
-              }),
-              context: { operation, outcome, detail: Redacted.make(cause) },
-            });
-      // Crossing execute is where a mutation may have reached the server:
-      // a transport failure after it cannot prove non-delivery.
-      const response = yield* client.execute(request).pipe(Effect.mapError(network("unknown")));
-      if (spec.onStatus !== undefined) yield* spec.onStatus(response.status);
-      const bytes = yield* readBody(response, spec.maxBytes ?? maxResponseBytes).pipe(
-        Effect.mapError(network("unknown", response.status)),
-      );
-      const reply: Reply = { status: response.status, headers: response.headers, bytes };
-      if (
-        (response.status >= 200 && response.status < 300) ||
-        spec.accepted?.includes(response.status) === true
-      )
-        return reply;
-      const message = `${operation}: HTTP ${String(response.status)}`;
-      const body = Redacted.make(new TextDecoder().decode(bytes));
-      if (response.status === 426 || response.status === 501)
-        return yield* ReactorError.fromCode("VersionMismatch", message, {
-          operation,
-          outcome: "replied",
-          detail: { status: response.status, body },
-        });
-      const retryAfter = retryAfterOf(response.headers);
-      return yield* ReactorError.make({
-        reason: Http.make({
-          message,
-          status: response.status,
-          body,
-          ...(retryAfter === undefined ? {} : { retryAfter }),
-        }),
-        context: { operation, outcome: "replied" },
-      });
-    }).pipe(Effect.scoped);
-
-  const signaling = (
-    credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
-  ): Signaling => {
-    const request = (spec: Exchange) => exchange(credential, spec);
+  const signaling = (credential: Credential): Signaling => {
+    const request = (spec: Call) => call(credential, spec);
 
     const read = (sessionId: string) =>
-      request({ operation: "read session", url: sessionPath(sessionId) }).pipe(
+      request({
+        operation: "read session",
+        request: HttpClientRequest.get(sessionPath(sessionId)),
+      }).pipe(
         Effect.flatMap(decodeReply(Descriptor, "session descriptor")),
         Effect.filterOrFail(
           (descriptor) => descriptor.session_id === sessionId,
@@ -804,14 +810,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     const terminate = (sessionId: string): Effect.Effect<Termination> =>
       Effect.gen(function* (): Effect.fn.Return<Termination> {
         const status = yield* Ref.make<number | null>(null);
-        const url = sessionPath(sessionId);
+        const path = sessionPath(sessionId);
         const removal = yield* Effect.result(
           request({
             operation: "terminate",
-            method: "DELETE",
-            url,
+            request: HttpClientRequest.delete(path),
             accepted: [404],
-            timeout: Duration.seconds(3),
+            timeout: "3 seconds",
             onStatus: (value) => Ref.set(status, value),
           }),
         );
@@ -830,7 +835,12 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           error: summarize(error),
         });
         const confirmation = yield* Effect.result(
-          request({ operation: "terminate", url, accepted: [404], timeout: Duration.seconds(3) }),
+          request({
+            operation: "terminate",
+            request: HttpClientRequest.get(path),
+            accepted: [404],
+            timeout: "3 seconds",
+          }),
         );
         if (confirmation._tag === "Failure") return failed(confirmation.failure);
         if (confirmation.success.status === 404)
@@ -844,7 +854,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
                   context: { operation: "terminate", outcome: "replied" },
                 }),
               )
-            : { ...base, confirmed: true, evidence: "absent" as const, state: null };
+            : { ...base, confirmed: true, evidence: "absent", state: null };
         const described = yield* Effect.result(
           decodeReply(
             TerminalState,
@@ -862,7 +872,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         return {
           ...base,
           confirmed: terminal,
-          evidence: terminal ? ("terminal" as const) : null,
+          evidence: terminal ? "terminal" : null,
           state,
           ...(!terminal && removal._tag === "Failure" ? { error: summarize(removal.failure) } : {}),
         };
@@ -882,22 +892,16 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
 
     return {
       create: (model, extraArgs) =>
-        jsonBody(
-          CreateBody,
-          {
-            model: {
-              name: model.name,
-              ...(model.version === undefined ? {} : { version: model.version }),
-            },
-            client_info: clientInfo,
-            supported_transports: [{ protocol: "webrtc", version: "1.0" }],
-            ...(extraArgs === undefined ? {} : { extra_args: extraArgs }),
+        createBody(HttpClientRequest.post("/sessions"), {
+          model: {
+            name: model.name,
+            ...(model.version === undefined ? {} : { version: model.version }),
           },
-          "create session",
-        ).pipe(
-          Effect.flatMap((body) =>
-            request({ operation: "create session", method: "POST", url: path("/sessions"), body }),
-          ),
+          client_info: clientInfo,
+          supported_transports: [{ protocol: "webrtc", version: "1.0" }],
+          ...(extraArgs === undefined ? {} : { extra_args: extraArgs }),
+        }).pipe(
+          Effect.flatMap((body) => request({ operation: "create session", request: body })),
           // A refusal (4xx) proves nothing was allocated; a server error may follow an allocation.
           Effect.mapError((error) =>
             error.context.outcome === "replied" &&
@@ -910,9 +914,9 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
               : error,
           ),
           Effect.flatMap(decodeReply(Schema.Unknown, "create session")),
-          Effect.flatMap((raw) =>
-            Schema.decodeUnknownEffect(Allocated)(raw).pipe(
-              Effect.map((allocated) => ({ sessionId: allocated.session_id, reply: raw })),
+          Effect.flatMap((reply) =>
+            Schema.decodeUnknownEffect(Allocated)(reply).pipe(
+              Effect.map((allocated) => ({ sessionId: allocated.session_id, reply })),
               Effect.mapError((cause) =>
                 ReactorError.fromCode("Protocol", "create reply names no session", {
                   operation: "create session",
@@ -935,34 +939,35 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           ),
         ),
       read,
-      ready: (sessionId, initial) =>
-        Effect.gen(function* () {
-          const first = yield* Ref.make(initial);
-          const poll = Ref.getAndSet(first, undefined).pipe(
-            Effect.filterOrElse(
-              (cached): cached is Descriptor => cached !== undefined,
-              () => read(sessionId),
-            ),
-            Effect.filterOrFail(
-              (descriptor) => !isTerminal(descriptor.state),
-              (descriptor) =>
-                ReactorError.fromCode("TerminalSession", descriptor.state, { sessionId }),
-            ),
-          );
-          const ready = (descriptor: Descriptor) =>
-            descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined;
-          const found = yield* poll.pipe(Effect.repeat({ schedule: sessionPoll, until: ready }));
-          return ready(found)
-            ? found
-            : yield* ReactorError.fromCode("Timeout", "session capabilities/transport not ready", {
-                sessionId,
-              });
-        }),
+      ready: Effect.fnUntraced(function* (sessionId: string, initial?: Descriptor) {
+        const first = yield* Ref.make(initial);
+        const poll = Ref.getAndSet(first, undefined).pipe(
+          Effect.filterOrElse(
+            (cached): cached is Descriptor => cached !== undefined,
+            () => read(sessionId),
+          ),
+          Effect.filterOrFail(
+            (descriptor) => !isTerminal(descriptor.state),
+            (descriptor) =>
+              ReactorError.fromCode("TerminalSession", descriptor.state, { sessionId }),
+          ),
+        );
+        const ready = (descriptor: Descriptor) =>
+          descriptor.capabilities !== undefined && descriptor.selected_transport !== undefined;
+        return yield* poll.pipe(
+          Effect.repeat({ schedule: sessionPoll, until: ready }),
+          Effect.filterOrFail(ready, () =>
+            ReactorError.fromCode("Timeout", "session capabilities/transport not ready", {
+              sessionId,
+            }),
+          ),
+        );
+      }),
       iceServers: (sessionId) =>
         request({
           operation: "ICE servers",
-          url: `${transportPath(sessionId)}/ice_servers`,
-          auth: "signaling",
+          route: "signaling",
+          request: HttpClientRequest.get(`${transportPath(sessionId)}/ice_servers`),
         }).pipe(
           Effect.flatMap(decodeReply(IceServersReply, "ICE servers")),
           Effect.map((reply) =>
@@ -980,84 +985,75 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       register: (sessionId) =>
         request({
           operation: "register connection",
-          method: "POST",
-          url: `${transportPath(sessionId)}/connections`,
-          auth: "signaling",
-          body: HttpBody.text("{}", "application/json"),
+          route: "signaling",
+          request: HttpClientRequest.post(`${transportPath(sessionId)}/connections`).pipe(
+            HttpClientRequest.bodyText("{}", "application/json"),
+          ),
         }).pipe(
           Effect.flatMap(decodeReply(Registered, "connection")),
           Effect.map((reply) => reply.connection_id),
         ),
       offer: (sessionId, cid, sdp, mapping, replace) =>
-        jsonBody(
-          OfferBody,
+        offerBody(
+          HttpClientRequest.make(replace ? "PUT" : "POST")(
+            `${connectionPath(sessionId, cid)}/sdp_params`,
+          ),
           { sdp_offer: sdp, client_info: clientInfo, track_mapping: mapping },
-          "SDP offer",
         ).pipe(
           Effect.flatMap((body) =>
-            request({
-              operation: "SDP offer",
-              method: replace ? "PUT" : "POST",
-              auth: "signaling",
-              url: `${connectionPath(sessionId, cid)}/sdp_params`,
-              body,
-            }),
+            request({ operation: "SDP offer", route: "signaling", request: body }),
           ),
           Effect.asVoid,
         ),
       answer: (sessionId, cid) =>
         request({
           operation: "SDP answer",
-          auth: "signaling",
-          url: `${connectionPath(sessionId, cid)}/sdp_params`,
+          route: "signaling",
+          request: HttpClientRequest.get(`${connectionPath(sessionId, cid)}/sdp_params`),
         }).pipe(
           Effect.repeat({ schedule: sdpPoll, until: (reply) => reply.status !== 202 }),
           Effect.flatMap(decodeReply(SdpAnswer, "SDP answer")),
         ),
       ice: (sessionId, cid, candidates, isFinal) =>
-        jsonBody(
-          IceBody,
-          { candidates, is_final: isFinal, client_info: clientInfo },
-          "ICE candidates",
-        ).pipe(
+        iceBody(HttpClientRequest.post(`${connectionPath(sessionId, cid)}/ice_candidates`), {
+          candidates,
+          is_final: isFinal,
+          client_info: clientInfo,
+        }).pipe(
           Effect.flatMap((body) =>
-            request({
-              operation: "ICE candidates",
-              method: "POST",
-              auth: "signaling",
-              url: `${connectionPath(sessionId, cid)}/ice_candidates`,
-              body,
-            }),
+            request({ operation: "ICE candidates", route: "signaling", request: body }),
           ),
           Effect.asVoid,
         ),
       allocateUpload: (sessionId, name, mimeType, size) =>
-        jsonBody(UploadBody, { name, mime_type: mimeType, size }, "allocate upload").pipe(
-          Effect.flatMap((body) =>
-            request({
-              operation: "allocate upload",
-              method: "POST",
-              url: `${sessionPath(sessionId)}/uploads`,
-              body,
-            }),
-          ),
+        uploadBody(HttpClientRequest.post(`${sessionPath(sessionId)}/uploads`), {
+          name,
+          mime_type: mimeType,
+          size,
+        }).pipe(
+          Effect.flatMap((body) => request({ operation: "allocate upload", request: body })),
           Effect.flatMap(decodeReply(UploadSlot, "upload allocation")),
           Effect.tap((slot) => checkedUrl(slot.presigned_url)),
         ),
       putUpload: (slot, bytes, mimeType) =>
         request({
           operation: "transfer upload",
-          method: "PUT",
-          auth: "none",
-          url: slot.presigned_url,
-          body: HttpBody.uint8Array(bytes, mimeType),
+          route: "upload",
+          request: HttpClientRequest.put(slot.presigned_url).pipe(
+            HttpClientRequest.bodyUint8Array(bytes, mimeType),
+          ),
         }).pipe(Effect.asVoid),
       terminate,
       downloadClip: (clip, downloadOptions) =>
         Recording.download({
           fetcher: {
-            fetch: (operation, url, bound) =>
-              request({ operation, url, auth: "same-origin", maxBytes: bound }),
+            fetch: (operation, url, maxBytes) =>
+              request({
+                operation,
+                route: "recording",
+                request: HttpClientRequest.get(url),
+                maxBytes,
+              }),
             read,
           },
           clip,
@@ -1067,7 +1063,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   };
 
   const configured = options.credential ?? Effect.undefined;
-  const app = (spec: Exchange) => exchange(configured, spec);
+  const app = (spec: Call) => call(configured, spec);
   const appSignaling = signaling(configured);
   // A server holding the key ends any session of its account with the key as the bearer.
   const terminator = signaling(
@@ -1119,8 +1115,10 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       if (!(Number.isSafeInteger(expiresAfter) && expiresAfter >= 1))
         return yield* invalid("expiresAfter is whole seconds, at least one");
     }
-    const body = yield* jsonBody(
-      TokenRequestBody,
+    const request = yield* tokenBody(
+      HttpClientRequest.post("/tokens").pipe(
+        HttpClientRequest.setHeader("reactor-api-key", Redacted.value(apiKey)),
+      ),
       {
         authorization_details: [
           {
@@ -1141,18 +1139,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ],
         ...(expiresAfter === undefined ? {} : { expires_after: expiresAfter }),
       },
-      "token",
     );
-    const reply = yield* app({
+    const token = yield* app({
       operation: "token",
-      method: "POST",
-      url: path("/tokens"),
-      auth: "none",
-      headers: { "reactor-api-key": Redacted.value(apiKey) },
-      body,
-      timeout: Duration.seconds(8),
-    });
-    const token = yield* decodeReply(TokenReply, "token")(reply);
+      request,
+      route: "public",
+      timeout: "8 seconds",
+    }).pipe(Effect.flatMap(decodeReply(TokenReply, "token")));
     const protocol = (message: string) =>
       ReactorError.fromCode("Protocol", message, { operation: "token", outcome: "replied" });
     if (token.expires_at * 1_000 <= (yield* Clock.currentTimeMillis))
@@ -1204,9 +1197,9 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     }),
     pricing: app({
       operation: "pricing",
-      url: path("/pricing"),
-      auth: "none",
-      timeout: Duration.seconds(8),
+      request: HttpClientRequest.get("/pricing"),
+      route: "public",
+      timeout: "8 seconds",
     }).pipe(
       Effect.flatMap(decodeReply(Schema.Json, "pricing")),
       Effect.withSpan(
@@ -1216,12 +1209,11 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       ),
     ),
     inspect: Effect.fn("reactor.coordinator.inspect")(function* (sessionId: string) {
-      const reply = yield* app({
+      const value = yield* app({
         operation: "inspect",
-        url: sessionPath(sessionId),
-        timeout: Duration.seconds(1),
-      });
-      const value = yield* decodeReply(SessionDescription, "inspect")(reply);
+        request: HttpClientRequest.get(sessionPath(sessionId)),
+        timeout: "1 second",
+      }).pipe(Effect.flatMap(decodeReply(SessionDescription, "inspect")));
       if (value.session_id !== sessionId)
         return yield* ReactorError.fromCode("Protocol", "inspection names another session", {
           operation: "inspect",
