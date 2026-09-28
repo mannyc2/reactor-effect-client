@@ -264,6 +264,10 @@ export type SessionEvent =
       readonly reason: string;
       readonly carried: number;
     }
+  /** The session's connection dropped, and its source is reconnecting it. */
+  | { readonly _tag: "Reconnecting"; readonly sessionId: string }
+  /** The session is connected again, this long after the drop was seen. */
+  | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly afterMillis: number }
   /**
    * Content moderation flagged an input. On `terminate` Reactor ends the
    * session; the item whose enqueue was sent there last is held to blame, as
@@ -281,6 +285,17 @@ export type Event =
   | { readonly _tag: "AsRun"; readonly event: AsRunEvent }
   | { readonly _tag: "Cue"; readonly event: CueEvent }
   | { readonly _tag: "Session"; readonly event: SessionEvent }
+  /**
+   * A filler clip started or ended, at epoch milliseconds; `seconds` is its
+   * length as the provider built it, when known.
+   */
+  | {
+      readonly _tag: "Filler";
+      readonly index: number;
+      readonly phase: "Started" | "Ended";
+      readonly at: number;
+      readonly seconds: number | undefined;
+    }
   /** Nothing was left to play while the plan still wanted air. */
   | { readonly _tag: "Starved"; readonly at: number };
 
@@ -288,7 +303,16 @@ export interface State {
   readonly accepting: boolean;
   /** Seconds of air secured: the playing clip's rest and the Ready clips after it. */
   readonly runwaySeconds: number;
-  readonly playing: ItemKey | "filler" | "other" | null;
+  /**
+   * The clip on air: whose it is, when its start was seen in epoch
+   * milliseconds, and its length as the provider built it. The length is
+   * unknown for a clip that started before the playout attached, until it ends.
+   */
+  readonly playing: {
+    readonly key: ItemKey | "filler" | "other";
+    readonly startedAt: number;
+    readonly seconds: number | undefined;
+  } | null;
   readonly lanes: ReadonlyArray<{ readonly name: string; readonly keys: ReadonlyArray<ItemKey> }>;
   readonly sessions: ReadonlyArray<{
     readonly sessionId: string;
@@ -365,12 +389,16 @@ export type SourceEvent =
       readonly _tag: "Moderated";
       readonly action: string;
       readonly categories: ReadonlyArray<string>;
-    };
+    }
+  /** The connection dropped and the source is reconnecting; a failed reconnect fails `events`. */
+  | { readonly _tag: "Reconnecting" }
+  /** The connection is back, this long after the drop was seen. */
+  | { readonly _tag: "Reconnected"; readonly afterMillis: number };
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
  * media. `events` starts with a `State` and fails when the session is lost for
- * good; recoverable disconnects are the source's own business.
+ * good; the source recovers a dropped connection itself, and reports it.
  */
 export interface Source {
   readonly sessionId: string;

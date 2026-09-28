@@ -1892,6 +1892,10 @@ const sessionEventText = (event: Playout.SessionEvent): string => {
       return `replaced ${event.from}, ${event.carried} carried`;
     case "Moderated":
       return `moderated ${event.sessionId}${event.key === undefined ? "" : ` blaming ${event.key}`}`;
+    case "Reconnecting":
+      return `reconnecting ${event.sessionId}`;
+    case "Reconnected":
+      return `reconnected ${event.sessionId} after ${Math.round(event.afterMillis)} ms`;
   }
 };
 

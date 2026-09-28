@@ -340,7 +340,7 @@ describe("PlayoutPolicy", () => {
   });
 
   it("counts no air left for a playing clip the provider named without its length", () => {
-    const { state } = run([
+    const inputs: ReadonlyArray<Policy.Input> = [
       ...opened(),
       {
         _tag: "Source",
@@ -353,10 +353,16 @@ describe("PlayoutPolicy", () => {
           }),
         },
       },
-    ]);
+    ];
+    const { state } = run(inputs);
     const view = Policy.view(config, state, { mono: 10, wall: 10 });
     assert.strictEqual(view.runwaySeconds, 5);
-    assert.strictEqual(view.playing, "other");
+    // It was seen playing at the last input, so it started no later than that.
+    assert.deepStrictEqual(view.playing, {
+      key: "other",
+      startedAt: inputs.length - 1,
+      seconds: undefined,
+    });
   });
 
   it("refuses a changed spec under a used key, and a batch with one refused edit changes nothing", () => {
@@ -455,6 +461,25 @@ describe("PlayoutPolicy", () => {
           action._tag === "Emit" &&
           action.event._tag === "Session" &&
           action.event.event._tag === "Replaced",
+      ),
+    );
+  });
+
+  // A session going down refuses what it is sent before its source can say so.
+  it("sends an enqueue again that a provider not ready for commands refused unsent", () => {
+    const { actions, state } = run([
+      ...opened(),
+      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("a") }], batch: false },
+      { _tag: "Result", id: 2, result: failed("not-submitted") },
+    ]);
+    assert.deepStrictEqual(statuses(actions, "a"), ["Accepted"]);
+    const again = Policy.step(config, state, { _tag: "Tick" }, { mono: 5_000, wall: 5_000 });
+    assert.isTrue(
+      commands(again.actions).some(
+        (action) =>
+          action.command._tag === "Enqueue" &&
+          action.command.tag._tag === "Item" &&
+          action.command.tag.key === "a",
       ),
     );
   });

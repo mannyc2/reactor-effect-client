@@ -202,18 +202,22 @@ const fromSession = Effect.fnUntraced(function* (
         : error,
     ),
   );
+  const reconnect: Stream.Stream<SourceEvent, ReactorError> = Stream.concat(
+    Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
+    Stream.fromIterableEffect(
+      Effect.gen(function* () {
+        const [after] = yield* Effect.timed(recover);
+        return [
+          { _tag: "Reconnected", afterMillis: Duration.toMillis(after) },
+          { _tag: "State", state: stateOf(yield* provider.snapshot) },
+        ] satisfies ReadonlyArray<SourceEvent>;
+      }),
+    ),
+  );
   const translate = (
     event: H3.ProviderEvent,
   ): Effect.Effect<ReadonlyArray<SourceEvent>, ReactorError> =>
     Effect.gen(function* () {
-      if (
-        event._tag === "Session" &&
-        event.source._tag === "Status" &&
-        event.source.status === "disconnected"
-      ) {
-        yield* recover;
-        return [{ _tag: "State", state: stateOf(yield* provider.snapshot) }];
-      }
       if (event._tag === "Session" && event.source._tag === "Moderation")
         return [
           { _tag: "Moderated", action: event.source.action, categories: event.source.categories },
@@ -267,8 +271,13 @@ const fromSession = Effect.fnUntraced(function* (
       Stream.concat(
         Stream.succeed<SourceEvent>({ _tag: "State", state: stateOf(observation.initial) }),
         observation.events.pipe(
-          Stream.mapEffect(translate),
-          Stream.flatMap((translated) => Stream.fromIterable(translated)),
+          Stream.flatMap((event) =>
+            event._tag === "Session" &&
+            event.source._tag === "Status" &&
+            event.source.status === "disconnected"
+              ? reconnect
+              : Stream.fromIterableEffect(translate(event)),
+          ),
         ),
       ),
     ),

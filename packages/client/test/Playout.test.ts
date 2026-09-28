@@ -179,6 +179,81 @@ layer(hosted)("order", (it) => {
   );
 });
 
+layer(hosted)("what airs", (it) => {
+  it.effect("names the playing item, when its start was seen and its length", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const item = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const started = yield* item.started;
+      assert.strictEqual(started._tag, "Started");
+      if (started._tag === "Started")
+        assert.deepStrictEqual((yield* playout.state).playing, {
+          key: key("a"),
+          startedAt: started.at,
+          seconds: started.seconds,
+        });
+      yield* item.outcome;
+      assert.isNull((yield* eventually(playout.state, (state) => state.playing === null)).playing);
+    }),
+  );
+
+  it.effect("reports each filler clip's start and end", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start({
+        filler: {
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        },
+      });
+      const fillers = Effect.map(events, (all) =>
+        all.flatMap((event) => (event._tag === "Filler" ? [event] : [])),
+      );
+      const seen = yield* eventually(fillers, (all) =>
+        all.some((event) => event.index === 0 && event.phase === "Ended"),
+      );
+      const [first, second] = seen.filter((event) => event.index === 0);
+      assert.strictEqual(first?.phase, "Started");
+      assert.strictEqual(second?.phase, "Ended");
+      assert.isAbove(first?.seconds ?? 0, 5);
+      assert.isAbove((second?.at ?? 0) - (first?.at ?? 0), 5_000);
+      const playing = yield* eventually(playout.state, (state) => state.playing?.key === "filler");
+      assert.strictEqual(
+        playing.playing?.startedAt,
+        (yield* fillers).findLast((event) => event.phase === "Started")?.at,
+      );
+    }),
+  );
+});
+
+// Its fault stays armed for the rest of a block, so it has one of its own.
+layer(hosted)("a dropped connection", (it) => {
+  it.effect("reports the reconnect and how long it took, and airs on", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(8) });
+      const { playout, events } = yield* start();
+      const handles = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of handles) yield* handle.outcome;
+      const sessions = (yield* events).flatMap((event) =>
+        event._tag === "Session" ? [event.event] : [],
+      );
+      assert.deepStrictEqual(
+        sessions.map((event) => event._tag),
+        ["Opened", "Reconnecting", "Reconnected"],
+      );
+      const [opened, reconnecting, reconnected] = sessions;
+      assert.deepStrictEqual(reconnecting, {
+        _tag: "Reconnecting",
+        sessionId: opened?._tag === "Opened" ? opened.sessionId : "",
+      });
+      assert.isAbove(reconnected?._tag === "Reconnected" ? reconnected.afterMillis : 0, 0);
+      assert.strictEqual((yield* handles[2]?.outcome ?? Effect.die("no third item"))._tag, "Ended");
+    }),
+  );
+});
+
 layer(hosted)("edits", (it) => {
   it.effect("replaces an item make-before-break and withdraws one that waits", () =>
     Effect.gen(function* () {
@@ -1247,4 +1322,5 @@ layer(hosted)("media", (it) => {
       assert.isAbove((yield* Ref.get(frames)) - before, 24);
     }),
   );
+
 });

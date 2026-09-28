@@ -302,7 +302,7 @@ export const show = (pieces: Pieces) =>
                 Effect.map(
                   air.playout.state,
                   (state) =>
-                    state.playing === "filler" && state.runwaySeconds >= runway.target - 0.5,
+                    state.playing?.key === "filler" && state.runwaySeconds >= runway.target - 0.5,
                 ),
                 Math.min(firstDeadline, (yield* Clock.currentTimeMillis) + quietMs),
               );

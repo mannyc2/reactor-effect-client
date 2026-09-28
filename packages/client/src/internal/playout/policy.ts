@@ -91,6 +91,15 @@ export type CommandResult =
   /** It died or was interrupted, so whether the provider applied it cannot be told. */
   | { readonly _tag: "Died" };
 
+/**
+ * Whether an enqueue that failed may be sent again: a failure for now, or one
+ * never sent because the session was not in a state to take it, as when its
+ * connection drops before its source can say so.
+ */
+const sendAgain = (cause: CommandFailure): boolean =>
+  cause.isRetryable ||
+  (cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState");
+
 /** Whether a command that failed may have taken effect unseen. */
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
   result._tag === "Died" || result.cause.context.outcome === "unknown";
@@ -255,8 +264,11 @@ interface Session {
    * their clip or the session goes: each may be building here, and only here.
    */
   readonly unknownFiller: ReadonlyArray<{ readonly index: number; readonly since: number }>;
-  /** The playing clip and when its start was observed, on the monotonic clock. */
-  readonly playing: { readonly clipId: string; readonly at: number } | undefined;
+  /**
+   * The clip the provider last reported playing, and when its start was
+   * observed: `at` on the monotonic clock, `wall` in epoch milliseconds.
+   */
+  readonly playing: (PlayingClip & { readonly at: number; readonly wall: number }) | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
   readonly lastEnqueue: ClipTag | undefined;
 }
@@ -1036,12 +1048,35 @@ export const step: {
     return side === "before" ? parts[0] : parts[parts.length - 1];
   }
 
-  const started = (sessionId: string, clip: PlayingClip): void => {
-    if (session(sessionId)?.playing?.clipId !== clip.clipId)
+  /** Records the clip a session plays, and when a new one's start was seen. */
+  const nowPlaying = (sessionId: string, clip: PlayingClip): void => {
+    const playing = session(sessionId)?.playing;
+    // A later report of the same clip may name what an earlier one could not.
+    if (playing?.clipId === clip.clipId) {
       updateSession(sessionId, {
-        startedAny: true,
-        playing: { clipId: clip.clipId, at: now.mono },
+        playing: {
+          ...playing,
+          tag: clip.tag ?? playing.tag,
+          seconds: clip.seconds ?? playing.seconds,
+        },
       });
+      return;
+    }
+    updateSession(sessionId, {
+      startedAny: true,
+      playing: { ...clip, at: now.mono, wall: now.wall },
+    });
+    if (clip.tag?._tag === "Filler")
+      emit({
+        _tag: "Filler",
+        index: clip.tag.index,
+        phase: "Started",
+        at: now.wall,
+        seconds: clip.seconds,
+      });
+  };
+  const started = (sessionId: string, clip: PlayingClip): void => {
+    nowPlaying(sessionId, clip);
     // A clip on air ends a run of sessions that failed to set up or to play anything.
     state = { ...state, setupFailures: 0 };
     if (clip.tag?._tag !== "Item") return;
@@ -1084,7 +1119,16 @@ export const step: {
       lastEndedAt: now.mono,
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
     });
-    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
+    if (clip.tag?._tag === "Filler") {
+      emit({
+        _tag: "Filler",
+        index: clip.tag.index,
+        phase: "Ended",
+        at: now.wall,
+        seconds: clip.seconds,
+      });
+      return forgetFiller(clip.clipId);
+    }
     const item = itemOf(clip);
     if (item === undefined || item.phase === "Settled") return;
     if (item.startedAt === undefined) {
@@ -1161,15 +1205,10 @@ export const step: {
   /** Reads a session's queues back into the plan: adoption by key, Ready, and clips that vanished. */
   const observe = (sessionId: string, source: SourceState): void => {
     updateSession(sessionId, { source });
-    // A clip seen playing without its start event started no later than now.
-    if (
-      source.playing !== undefined &&
-      session(sessionId)?.playing?.clipId !== source.playing.clipId
-    )
-      updateSession(sessionId, {
-        startedAny: true,
-        playing: { clipId: source.playing.clipId, at: now.mono },
-      });
+    // What plays is what the provider reports; a clip seen playing without its start event
+    // started no later than now.
+    if (source.playing === undefined) updateSession(sessionId, { playing: undefined });
+    else nowPlaying(sessionId, source.playing);
     const listed = new Map<string, "Building" | "Ready" | "Playing">();
     for (const clip of source.building) listed.set(clip.clipId, "Building");
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");
@@ -1398,7 +1437,7 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result._tag === "Failed" && result.cause.isRetryable)
+        } else if (result._tag === "Failed" && sendAgain(result.cause))
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
@@ -1549,6 +1588,24 @@ export const step: {
           break;
         case "Moderated":
           moderated(input.sessionId, event);
+          break;
+        case "Reconnecting": {
+          // It takes no commands until its source reports a state again.
+          const source = session(input.sessionId)?.source;
+          if (source !== undefined)
+            updateSession(input.sessionId, { source: { ...source, available: false } });
+          emit({ _tag: "Session", event: { _tag: "Reconnecting", sessionId: input.sessionId } });
+          break;
+        }
+        case "Reconnected":
+          emit({
+            _tag: "Session",
+            event: {
+              _tag: "Reconnected",
+              sessionId: input.sessionId,
+              afterMillis: event.afterMillis,
+            },
+          });
           break;
       }
       break;
@@ -2268,14 +2325,17 @@ export const view: {
   const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
-  const playing = air?.source?.playing;
+  const playing = air?.playing;
   const target = preferredOf(state.sessions) ?? air;
   const rest = target?.id === state.air ? playingRestOf(air, now.mono) / 1000 : 0;
   return {
     accepting: state.accepting,
     runwaySeconds:
       rest + (target?.source?.ready ?? []).reduce((total, clip) => total + clip.seconds, 0),
-    playing: playing === undefined ? null : own(playing),
+    playing:
+      playing === undefined
+        ? null
+        : { key: own(playing), startedAt: playing.wall, seconds: playing.seconds },
     lanes: config.lanes.map((lane, index) => ({
       name: lane.name,
       keys: [...state.items.values()]
