@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -105,10 +106,11 @@ export type FakeAddon = Effect.Success<typeof fakeAddon>;
 export const nativePeer = (
   options: { readonly addon?: Addon; readonly shutdownTimeout?: Duration.Duration } = {},
 ) =>
-  (options.addon === undefined ? load(undefined) : Effect.succeed(options.addon)).pipe(
-    Effect.flatMap(local),
-    Effect.flatMap((handle) => InProcess.make(handle, options.shutdownTimeout)),
-  );
+  Effect.gen(function* () {
+    const addon = options.addon ?? (yield* load(undefined));
+    const handle = yield* local(addon, yield* FiberSet.make());
+    return yield* InProcess.make(handle, options.shutdownTimeout);
+  });
 
 /**
  * The canonical factory over the native peer, with its host layer built in the

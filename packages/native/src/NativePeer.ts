@@ -7,11 +7,13 @@
  */
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import { ReactorError } from "reactor-effect-client/ReactorError";
-import { load, usable } from "./internal/addon.js";
-import { local } from "./internal/local.js";
+import { load } from "./internal/addon.js";
+import { local, usable } from "./internal/local.js";
+import type { Joins } from "./internal/local.js";
 import * as Peer from "./internal/peer.js";
 
 export interface Options {
@@ -50,11 +52,12 @@ export const layer = (options: Options = {}): Layer.Layer<PeerFactory, ReactorEr
     Effect.gen(function* () {
       const timeout = yield* shutdownTimeout(options);
       const addon = yield* load(options.addon);
+      const joins: Joins = yield* FiberSet.make();
       return PeerFactory.of({
         // An owner join that outlived its deadline may have wedged the shared
         // libwebrtc factory: refuse before a session is allocated for a peer.
-        check: usable(addon),
-        make: Effect.flatMap(local(addon), (handle) => Peer.make(handle, timeout)),
+        check: usable(joins),
+        make: Effect.flatMap(local(addon, joins), (handle) => Peer.make(handle, timeout)),
       });
     }),
   );

@@ -80,32 +80,3 @@ const installed: Effect.Effect<Addon, ReactorError> = Effect.gen(function* () {
 /** Load the addon at `path`, or this platform's own. */
 export const load = (path: string | undefined): Effect.Effect<Addon, ReactorError> =>
   path === undefined ? installed : addon(path);
-
-/**
- * Peers whose owner join outlived its deadline, per addon, until each join
- * completes. The join may have wedged the shared libwebrtc threads a new peer
- * would need, so while any is retained no new peer is made.
- */
-const retained = new WeakMap<Addon, Set<object>>();
-
-/** Retain `peer` on `addon`; the returned function releases it. */
-export const retain =
-  (addon: Addon) =>
-  (peer: object): (() => void) => {
-    const peers = retained.get(addon) ?? new Set();
-    retained.set(addon, peers.add(peer));
-    return () => peers.delete(peer);
-  };
-
-/** Refuse before a session is allocated for a peer that could not work. */
-export const usable = (addon: Addon): Effect.Effect<void, ReactorError> =>
-  Effect.suspend(() =>
-    (retained.get(addon)?.size ?? 0) === 0
-      ? Effect.void
-      : Effect.fail(
-          refused(
-            "Native",
-            "native WebRTC runtime is degraded: an earlier peer's owner join exceeded its shutdown deadline and is still retained",
-          ),
-        ),
-  );
