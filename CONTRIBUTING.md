@@ -46,13 +46,15 @@ scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
 
 ## Architecture
 
-- Three packages are published with one version:
+- Three packages, and one addon package per native platform, are published with one version:
   - `reactor-effect-client` (`packages/client`) is the portable core: the coordinator's HTTP API,
     sessions, the wire protocol, the H3 provider, orchestration and the Reactor test layer. It runs
     on Node, Bun and browsers and loads no native code.
   - `reactor-effect-browser` binds the client's `Peer` port to `RTCPeerConnection` and DOM media.
-  - `reactor-effect-native` binds it to the Rust libwebrtc bridge, in process or in a child process
-    per connection.
+  - `reactor-effect-native` binds it to a libwebrtc Node-API addon, in process or in a child process
+    per connection. Each platform's addon ships in its own package,
+    `reactor-effect-native-linux-x64-gnu` or `reactor-effect-native-darwin-arm64`, an exact-version
+    optional dependency of the binding, so a host installs only the addon it can run.
 - The client owns every contract, and a host package only binds the port, as Effect's platform
   packages do. A host imports the client's public modules and never another host.
 - One session owns each allocation or attachment: its commands, connection generations and cleanup
@@ -81,8 +83,8 @@ scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
   package's public testing module. There are no private helper packages for tests.
 - Each example in `examples/` is a small workspace that typechecks against the published
   declarations.
-- Build output goes in ignored `dist/`, and staged native libraries in ignored
-  `packages/native/lib/`.
+- Build output goes in ignored `dist/`, and a staged native addon, with its identity and notices,
+  in its ignored place in its platform package under `packages/native/npm/`.
 
 ## It reads on its own
 
@@ -201,19 +203,21 @@ ordering.
 ## Native
 
 - Callbacks from libwebrtc never enter or wait for JavaScript. They copy into bounded native queues
-  and signal readiness; only a peer's notifier thread calls JavaScript. There is one libwebrtc
-  factory per process.
-- Close fences event admission synchronously. Callback storage and the Koffi callback registration
-  stay alive until shutdown has joined the notifier.
-- A native failure carries one of the ABI's failure classes. Add a class to the header, the Rust
-  bridge and the host mapping together; never match on error text.
+  and set readiness bits, which reach JavaScript as one non-blocking threadsafe-function call. There
+  is one libwebrtc factory per process.
+- Close fences callback admission and calls synchronously. Shutdown joins the owner thread and every
+  admitted callback on a thread of its own, never the JavaScript thread.
+- A native failure carries one of the addon's failure classes, and a call's outcome follows from
+  its class. Add a class to `binding.rs`, the Rust peer and the host mapping together; never match
+  on error text.
 - The native peer accepts at most one incoming video and one incoming audio track until
   `reactor-webrtc` exposes the remote track's identity. Don't widen it by assuming callback order.
 - Rust follows the lint set in `packages/native/rust/Cargo.toml`: outside tests there is no
-  `unwrap`, `expect`, panic, indexing or silently discarded error, and `unsafe` is confined to `ffi`
-  with a `// SAFETY:` comment per block. Suppress a lint only with `#[expect(lint, reason = "...")]`
+  `unwrap`, `expect`, panic, indexing or silently discarded error, and no `unsafe`: Node-API calls
+  are napi-rs's generated glue. Suppress a lint only with `#[expect(lint, reason = "...")]`
   on the narrowest item. The native README has the details.
-- Native source changes rebuild and requalify the staged library. For Linux x64, pass an explicit,
+- Native source changes rebuild and requalify the staged addon, and commit the declarations the build
+  regenerates in `src/internal/binding.ts`. For Linux x64, pass an explicit,
   existing Docker context (`DOCKER_CONTEXT=my-context bun run native:linux-x64`); never start, stop
   or switch someone's Docker daemon or context.
 
@@ -268,7 +272,7 @@ doc comments.
 
 ## Releases
 
-`.github/workflows/release.yml` is the only npm publishing workflow. It promotes the three archives
+`.github/workflows/release.yml` is the only npm publishing workflow. It promotes the five archives
 a successful main CI run qualified, through npm trusted publishing with provenance and no long-lived
 token. [release-tools/README.md](release-tools/README.md) describes preparation, publication and
 recovery. Preparing or testing a release doesn't authorize publishing one, and local tests aren't

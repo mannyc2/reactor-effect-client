@@ -1,4 +1,6 @@
 #!/bin/sh
+# Builds the addon for this host with the napi CLI, then stages it into its
+# platform package and writes the TypeScript declarations of its binding.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -7,29 +9,26 @@ cd "$root"
 if [ "$(uname -s)" = Linux ]; then
   cc=${CC:-clang-21}
   cxx=${CXX:-clang++-21}
-  command -v "$cc" >/dev/null 2>&1 || {
-    echo "native-linux-toolchain-missing: C compiler '$cc' not found; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
-    exit 2
-  }
-  command -v "$cxx" >/dev/null 2>&1 || {
-    echo "native-linux-toolchain-missing: C++ compiler '$cxx' not found; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
-    exit 2
-  }
-  "$cc" --version >/dev/null 2>&1 || { echo "native-linux-toolchain-invalid: CC '$cc' cannot execute" >&2; exit 2; }
-  "$cxx" --version >/dev/null 2>&1 || { echo "native-linux-toolchain-invalid: CXX '$cxx' cannot execute" >&2; exit 2; }
+  for compiler in "$cc" "$cxx"; do
+    "$compiler" --version >/dev/null 2>&1 || {
+      echo "native-linux-toolchain-missing: '$compiler' cannot run; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
+      exit 2
+    }
+  done
   export CC="$cc" CXX="$cxx"
 fi
 
-# Cargo discovers configuration from its working directory, not --manifest-path.
-cargo build --config "$root/rust/.cargo/config.toml" --locked --manifest-path "$root/rust/Cargo.toml" --release
-
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64) platform=darwin-arm64; library=libreactor_effect_native.dylib ;;
-  Darwin-x86_64) platform=darwin-x64; library=libreactor_effect_native.dylib ;;
-  Linux-x86_64) platform=linux-x64; library=libreactor_effect_native.so ;;
-  Linux-aarch64|Linux-arm64) platform=linux-arm64; library=libreactor_effect_native.so ;;
+  Darwin-arm64) platform=darwin-arm64 ;;
+  Linux-x86_64) platform=linux-x64-gnu ;;
   *) echo "unsupported native build host: $(uname -s)-$(uname -m)" >&2; exit 2 ;;
 esac
 
-target=${CARGO_TARGET_DIR:-$root/rust/target}
-"$root/scripts/stage.sh" "$target/release/$library" "$platform"
+out=$(mktemp -d "${TMPDIR:-/tmp}/reactor-native.XXXXXX")
+trap 'rm -rf "$out"' EXIT HUP INT TERM
+# build.rs reads the locked graph offline, which needs every platform's crates.
+cargo fetch --locked --manifest-path rust/Cargo.toml
+node_modules/.bin/napi build --platform --release --no-const-enum \
+  --manifest-path rust/Cargo.toml --package-json-path package.json \
+  --output-dir "$out" --no-js --dts binding.d.ts
+"${NODE_BINARY:-node}" scripts/stage.mjs "$out/reactor-effect-native.$platform.node" "$platform" "$out/binding.d.ts"

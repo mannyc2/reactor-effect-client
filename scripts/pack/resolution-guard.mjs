@@ -16,14 +16,12 @@ const inside = (path) => {
 
 /** @type {import("node:module").ResolveHook} */
 export async function resolve(specifier, context, nextResolve) {
-  if (denyNative && specifier === "koffi")
-    throw new Error("portable import attempted to resolve koffi");
   const resolved = await nextResolve(specifier, context);
   if (!resolved.url.startsWith("file:")) return resolved;
 
   const path = realpathSync(fileURLToPath(resolved.url));
   if (!inside(path)) throw new Error(`module resolved outside isolated consumer: ${path}`);
-  if (denyNative && /[/\\]reactor-effect-native[/\\]/.test(path)) {
+  if (denyNative && /[/\\]reactor-effect-native(?:-[a-z0-9-]+)?[/\\]/.test(path)) {
     throw new Error(`portable import reached native implementation: ${path}`);
   }
   return resolved;

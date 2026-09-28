@@ -1,16 +1,21 @@
-import { spawn, spawnSync } from "node:child_process";
+/**
+ * What the native tests share: the scripted fake addon, the far peer process
+ * the media tests receive from, and small assertions. The far peer and the
+ * load measurements are process and clock harnesses, so this module keeps
+ * the package's lenient diagnostics.
+ */
+import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
-import * as Scope from "effect/Scope";
+import * as Schedule from "effect/Schedule";
 import type * as Duration from "effect/Duration";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -18,47 +23,74 @@ import type { IceCandidate } from "reactor-effect-client/Coordinator";
 import type { DecodedMedia } from "reactor-effect-client/Media";
 import type { Peer } from "reactor-effect-client/Peer";
 import * as NativePeer from "../src/NativePeer.js";
-import * as Library from "../src/internal/library.js";
+import { load } from "../src/internal/addon.js";
+import type { Addon } from "../src/internal/addon.js";
+import { local } from "../src/internal/local.js";
 import * as InProcess from "../src/internal/peer.js";
+import { make } from "./fixtures/addon.mjs";
 
-export const libraryName =
-  process.platform === "darwin"
-    ? "libreactor_effect_native.dylib"
-    : process.platform === "win32"
-      ? "reactor_effect_native.dll"
-      : "libreactor_effect_native.so";
-export const libraryPath = fileURLToPath(
-  new URL(`../lib/${process.platform}-${process.arch}/${libraryName}`, import.meta.url),
-);
-const include = fileURLToPath(new URL("../rust/include", import.meta.url));
-const fixtureSource = fileURLToPath(new URL("./session-fixture.c", import.meta.url));
+const fixture = fileURLToPath(new URL("./fixtures/addon.mts", import.meta.url));
 
-/** Compile C source against the ABI header into a shared library in a fresh directory. */
-export const compileLibrary = (
-  source: string,
-  name: string,
-): { readonly directory: string; readonly path: string } => {
-  const directory = mkdtempSync(join(tmpdir(), "reactor-native-"));
-  const file = join(directory, `${name}.c`);
-  const path = join(directory, `lib${name}.${process.platform === "darwin" ? "dylib" : "so"}`);
-  writeFileSync(file, source);
-  const compiler = process.env.CC ?? "cc";
-  const flags = process.platform === "darwin" ? ["-dynamiclib"] : ["-shared", "-fPIC"];
-  const result = spawnSync(
-    compiler,
-    ["-std=c11", "-D_DEFAULT_SOURCE", "-pthread", `-I${include}`, ...flags, file, "-o", path],
-    { encoding: "utf8" },
+/** Poll `condition` on the live clock until it holds, or fail with `message`. */
+export const eventually = (
+  condition: () => boolean,
+  message: string,
+  timeout: Duration.Input = "5 seconds",
+) =>
+  Effect.suspend(() => (condition() ? Effect.void : Effect.fail(message))).pipe(
+    Effect.retry({ schedule: Schedule.spaced("5 millis") }),
+    Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error(message)) }),
+    Effect.orDie,
   );
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) throw new Error(`${compiler} failed: ${result.stderr}`);
-  return { directory, path };
+
+/**
+ * The scripted fake addon in a directory of its own. `path` is a module
+ * another process can load; `module` is its twin in this process. Holding a
+ * call keeps it from answering in either.
+ */
+export const makeFakeAddon = () => {
+  const directory = mkdtempSync(join(tmpdir(), "reactor-native-addon-"));
+  const path = join(directory, "addon.cjs");
+  writeFileSync(path, `module.exports = require(${JSON.stringify(fixture)}).make(__dirname);\n`);
+  const marker = (name: string) => join(directory, name);
+  const calls = (): ReadonlyArray<string> =>
+    existsSync(marker("calls.log"))
+      ? readFileSync(marker("calls.log"), "utf8")
+          .split("\n")
+          .filter((line) => line !== "")
+      : [];
+  return {
+    directory,
+    path,
+    module: make(directory),
+    hold: (call: "stats" | "shutdown", held: boolean): void =>
+      held
+        ? writeFileSync(marker(`hold-${call}`), "")
+        : rmSync(marker(`hold-${call}`), { force: true }),
+    calls,
+    /** Wait until `count` calls named `call` have reached the fake. */
+    reached: (call: string, count = 1) =>
+      eventually(
+        () => calls().filter((name) => name === call).length >= count,
+        `${call} never reached the fake addon`,
+      ),
+    remove: () => rmSync(directory, { recursive: true, force: true }),
+  };
 };
 
-/** The scripted ABI 4 fixture; `prefix` is prepended to its source. */
-export const compileFixture = (
-  prefix = "",
-): { readonly directory: string; readonly path: string } =>
-  compileLibrary(`${prefix}${readFileSync(fixtureSource, "utf8")}`, "fixture");
+/** The fake addon, removed with the scope. */
+export const fakeAddon = Effect.acquireRelease(Effect.sync(makeFakeAddon), (addon) =>
+  Effect.sync(addon.remove),
+);
+
+export type FakeAddon = Effect.Success<typeof fakeAddon>;
+
+/** A native peer on `addon`, the installed one by default, made as the layer makes it. */
+export const nativePeer = (addon?: Addon, shutdownTimeout?: Duration.Duration) =>
+  (addon === undefined ? load(undefined) : Effect.succeed(addon)).pipe(
+    Effect.flatMap(local),
+    Effect.flatMap((handle) => InProcess.make(handle, shutdownTimeout)),
+  );
 
 export const until = async (
   condition: () => boolean,
@@ -206,25 +238,6 @@ export const revealed = <E extends { readonly context: { readonly detail?: unkno
 export const decoded = (peer: Peer): Omit<DecodedMedia, "generation" | "tracks" | "retired"> => {
   if (peer.media._tag !== "Decoded") throw new Error("expected a peer with decoded media");
   return peer.media;
-};
-
-/** A native peer on the library at `path`, loaded as the layer loads it. */
-export const nativePeer = (path: string = libraryPath, shutdownTimeout?: Duration.Duration) =>
-  Effect.flatMap(Library.load(path), (library) => InProcess.make(library, shutdownTimeout));
-
-/**
- * A native peer on its own scope, for a test that drives it across awaits:
- * `close` closes the scope, whose finalizer joins the peer if nothing else did.
- */
-export const openPeer = async (path: string = libraryPath) => {
-  const scope = await Effect.runPromise(Scope.make());
-  const peer = await Effect.runPromise(nativePeer(path).pipe(Scope.provide(scope)));
-  return {
-    peer,
-    media: decoded(peer),
-    scope,
-    close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
-  };
 };
 
 /**

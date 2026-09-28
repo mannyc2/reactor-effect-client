@@ -1,0 +1,35 @@
+{
+  "name": "reactor-effect-native-linux-x64-gnu",
+  "version": "0.7.0",
+  "description": "The Linux x64 (glibc) libwebrtc addon of reactor-effect-native",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git",
+    "directory": "packages/native/npm/linux-x64-gnu"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "reactor-effect-native.linux-x64-gnu.node",
+  "files": [
+    "reactor-effect-native.linux-x64-gnu.node",
+    "native-identity.json",
+    "notices",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

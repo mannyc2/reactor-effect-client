@@ -1,12 +1,13 @@
-//! The hand-off between libwebrtc callbacks, a peer's threads and its host.
+//! The hand-off between libwebrtc callbacks, a peer's owner thread and its
+//! host.
 
 mod gate;
-mod notifier;
 mod queue;
+mod readiness;
 
 pub(crate) use gate::CallbackGate;
-pub(crate) use notifier::Notifier;
 pub(crate) use queue::{Push, Queue, QueueItem, Taken};
+pub(crate) use readiness::{Readiness, Ready, Wake};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

@@ -12,6 +12,7 @@
   "workspaces": {
     "packages": [
       "packages/*",
+      "packages/native/npm/*",
       "packages/*/examples",
       "examples/*",
       "integration"
@@ -23,7 +24,6 @@
       "@types/bun": "1.4.2",
       "@types/node": "22.20.2",
       "effect": "^4.0.0-rc.117",
-      "koffi": "3.2.1",
       "typescript": "7.0.2",
       "vitest": "5.0.0"
     }

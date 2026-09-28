@@ -282,7 +282,9 @@
               "**/packages/client/examples/**/*.ts",
               "**/packages/browser/src/**/*.ts",
               "**/packages/browser/test/**/*.ts",
-              "**/packages/native/src/**/*.ts"
+              "**/packages/native/src/**/*.ts",
+              "**/packages/native/test/peer.test.ts",
+              "**/packages/native/test/fixtures/*.mts"
             ],
             "options": {
               "diagnosticSeverity": {
