@@ -146,12 +146,23 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       next.delete(id);
       return [found, next] as const;
     });
-  /** Waits for `deferred`, or ends with `closed` once the playout has stopped. */
+  /**
+   * Waits for `deferred`, or ends with `closed` once the playout has stopped
+   * without resolving it; what it resolved first still wins.
+   */
   const unlessStopped = <A, E, E2>(
     deferred: Deferred.Deferred<A, E>,
     closed: Effect.Effect<A, E2>,
-  ): Effect.Effect<A, E | E2> =>
-    Effect.raceFirst(Deferred.await(deferred), Effect.andThen(Deferred.await(failure), closed));
+  ): Effect.Effect<A, E | E2> => {
+    const settled: Effect.Effect<A, E> = Deferred.await(deferred);
+    const stopped: Effect.Effect<A, E | E2> = Effect.andThen(
+      Deferred.await(failure),
+      Effect.flatMap(Deferred.isDone(deferred), (done): Effect.Effect<A, E | E2> =>
+        done ? settled : closed,
+      ),
+    );
+    return Effect.raceFirst(settled, stopped);
+  };
 
   const record = (report: CloseReport): Effect.Effect<void> =>
     Ref.update(cleanup, (value) => {
