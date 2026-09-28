@@ -1,8 +1,24 @@
 /** One session through its public contract, on a simulated Reactor with the timing each case states. */
 import { assert, layer } from "@effect/vitest";
-import { Deferred, Duration, Effect, Fiber, Inspectable, Option, Redacted, Stream } from "effect";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import {
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Inspectable,
+  Layer,
+  Option,
+  Path,
+  Redacted,
+  Stream,
+} from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
+import * as Wire from "../src/internal/wire.js";
+import { PeerFactory } from "../src/Peer.js";
 import type { CommandFailure } from "../src/ReactorError.js";
 import type { CommandReply, Session } from "../src/Session.js";
 import { connect, environment } from "./fixtures/Simulated.js";
@@ -289,6 +305,64 @@ layer(environment({ timing }))("a slow observer", (it) => {
       assert.strictEqual(failure.reason._tag, "Overflow");
       // The session goes on for everyone else.
       yield* session.command("get_state", {});
+    }),
+  );
+});
+
+/** Completes when a host's heartbeat ping has died. */
+class PingDied extends Context.Service<PingDied, Deferred.Deferred<void>>()(
+  "reactor-effect-client/test/Session.test/PingDied",
+) {}
+
+/** ReactorTest's peers, but sending a heartbeat ping dies, as a host with a bug would. */
+const dyingPings = Layer.effectContext(
+  Effect.gen(function* () {
+    const peers = yield* PeerFactory;
+    const died = yield* Deferred.make<void>();
+    const isPing = (bytes: Uint8Array) =>
+      Wire.decode(Wire.ControlClientMessageSchema, bytes).pipe(
+        Effect.map((message) => message.payload.case === "ping"),
+        Effect.orElseSucceed(() => false),
+      );
+    return Context.make(PingDied, died).pipe(
+      Context.add(
+        PeerFactory,
+        PeerFactory.of({
+          check: peers.check,
+          make: Effect.map(peers.make, (peer) => ({
+            ...peer,
+            send: (channel: "control" | "data", bytes: Uint8Array<ArrayBuffer>) =>
+              Effect.gen(function* () {
+                if (channel === "control" && (yield* isPing(bytes))) {
+                  yield* Deferred.succeed(died, undefined);
+                  return yield* Effect.die("a host's heartbeat bug");
+                }
+                return yield* peer.send(channel, bytes);
+              }),
+          })),
+        }),
+      ),
+    );
+  }),
+);
+
+// A bug stays a defect: it is not a Protocol failure that disconnects the session for a reconnect.
+layer(
+  Reactor.layer({ heartbeatInterval: "1 second" }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingPings),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a host's defect in the heartbeat", (it) => {
+  it.effect("does not fail the connection as a protocol error", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      yield* Deferred.await(yield* PingDied);
+      yield* session.command("get_state", {});
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual([snapshot.status, snapshot.lastError], ["ready", undefined]);
     }),
   );
 });
