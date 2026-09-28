@@ -144,7 +144,12 @@ const stateOf = (snapshot: H3.ProviderSnapshot): SourceState => {
   };
 };
 
-/** Sends each generation's decoded track, following the session across reconnects. */
+/**
+ * Sends each generation's decoded track, following the session across
+ * reconnects. A reader that falls behind its bound fails with `Overflow` and
+ * misses the rest, so it reads again from the next frame: the picture goes on,
+ * and the host counts the loss in `readerOverflows`.
+ */
 const track = <A>(
   session: Session,
   read: (media: DecodedMedia) => Stream.Stream<A, ReactorError>,
@@ -153,9 +158,17 @@ const track = <A>(
     Stream.filter((snapshot) => snapshot.status === "ready"),
     Stream.map((snapshot) => snapshot.generation),
     Stream.changes,
-    Stream.switchMap(() =>
-      Stream.unwrap(Effect.map(session.decoded, read)).pipe(Stream.catchCause(() => Stream.empty)),
-    ),
+    Stream.switchMap(() => {
+      const frames: Stream.Stream<A, ReactorError> = Stream.unwrap(
+        Effect.map(session.decoded, read),
+      ).pipe(
+        Stream.catchIf(
+          (error) => error.reason._tag === "Overflow",
+          () => frames,
+        ),
+      );
+      return frames.pipe(Stream.catchCause(() => Stream.empty));
+    }),
   );
 
 /** A connected session as a playout source that lives `lifetime`. */
