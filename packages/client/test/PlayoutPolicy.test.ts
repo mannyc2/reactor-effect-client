@@ -71,6 +71,16 @@ const opened = (id = "s1"): ReadonlyArray<Policy.Input> => [
   { _tag: "Result", id: 1, result: { _tag: "Done" } },
 ];
 
+/** Steps one input at `at` milliseconds, on both clocks. */
+const at = (state: Policy.State, input: Policy.Input, time: number) =>
+  Policy.step(config, state, input, { mono: time, wall: time });
+/** The answer to the command in flight. */
+const answer = (state: Policy.State, result: Policy.CommandResult): Policy.Input => ({
+  _tag: "Result",
+  id: state.busy?.id ?? -1,
+  result,
+});
+
 describe("PlayoutPolicy", () => {
   it("opens a session, turns autoplay on, then builds the first item in lane order", () => {
     const { actions } = run([
@@ -137,9 +147,40 @@ describe("PlayoutPolicy", () => {
       ).find((action) => action.command._tag === "Cut");
     assert.deepStrictEqual(cut(clip("filler", { _tag: "Filler", index: 0 }, 15))?.command, {
       _tag: "Cut",
+      clipId: "filler",
       next: "cu",
     });
     assert.isUndefined(cut(clip("peer", item("other"), 15)));
+  });
+
+  // The 0.7.0 scheduler-cut paid run: H3 answered the stop before it reported the clip ended,
+  // the scheduler cut the clip again, and that second stop cut the cutter 5 ms after it started.
+  it("cuts a playing clip once, though its end is reported after the cut's result", () => {
+    const playing = clip("long", item("other"), 15);
+    const stale: Policy.Input = {
+      _tag: "Source",
+      sessionId: "s1",
+      event: {
+        _tag: "State",
+        state: source({ playing, ready: [clip("cu", item("urgent"))] }),
+      },
+    };
+    const { state, actions } = run([
+      ...opened(),
+      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("other") }], batch: false },
+      { _tag: "Result", id: 2, result: { _tag: "Done", clipId: "long" } },
+      { _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: playing } },
+      { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("urgent", 0) }], batch: false },
+      { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "cu" } },
+      stale,
+    ]);
+    assert.deepStrictEqual(commands(actions).at(-1)?.command, {
+      _tag: "Cut",
+      clipId: "long",
+      next: "cu",
+    });
+    const after = run([answer(state, { _tag: "Done" }), stale, { _tag: "Tick" }], state, 10);
+    assert.isUndefined(commands(after.actions).find((action) => action.command._tag === "Cut"));
   });
 
   it("withdraws what has no clip at once and removes a clip before it drops it", () => {
@@ -272,16 +313,6 @@ describe("PlayoutPolicy", () => {
           action.event.event._tag === "Replaced",
       ),
     );
-  });
-
-  /** Steps one input at `at` milliseconds, on both clocks. */
-  const at = (state: Policy.State, input: Policy.Input, time: number) =>
-    Policy.step(config, state, input, { mono: time, wall: time });
-  /** The answer to the command in flight. */
-  const answer = (state: Policy.State, result: Policy.CommandResult): Policy.Input => ({
-    _tag: "Result",
-    id: state.busy?.id ?? -1,
-    result,
   });
 
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {

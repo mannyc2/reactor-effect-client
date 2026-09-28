@@ -52,7 +52,7 @@ export interface LaneSpec {
   /**
    * A Ready item of this lane stops a playing clip of a strictly lower lane, or
    * filler, instead of waiting for its end, unless that clip ends within a
-   * second. A stopped clip cannot resume.
+   * second. A clip is stopped at most once, and a stopped clip cannot resume.
    */
   readonly cut?: boolean | undefined;
 }
@@ -330,11 +330,11 @@ export interface Source {
   readonly move: (clipId: string, position: number) => Effect.Effect<void, CommandFailure>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
   /**
-   * Stops whatever plays and plays `next`, a Ready clip. Autoplay is off from
-   * before the stop until `next` plays, so nothing can start in between and the
-   * stop can only hit the clip that was playing.
+   * Stops `clipId` and, once the stop has taken effect, plays `next`, a Ready
+   * clip. Autoplay is off throughout, so nothing starts in between. Another
+   * clip playing by then is left alone.
    */
-  readonly cut: (next: string) => Effect.Effect<void, CommandFailure>;
+  readonly cut: (clipId: string, next: string) => Effect.Effect<void, CommandFailure>;
   readonly video: Stream.Stream<VideoFrame, ReactorError>;
   readonly audio: Stream.Stream<AudioFrame, ReactorError>;
   /** Idempotent; closing an owned session terminates it. */

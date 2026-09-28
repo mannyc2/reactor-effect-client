@@ -56,6 +56,44 @@ const start = (options: Partial<Options<never>> & { readonly lifetime?: Duration
     return { playout, events: recorded, starts, statuses };
   });
 
+/**
+ * What went wrong with the stops the simulated H3 received: a stop that found
+ * its clip already stopped once, or arrived while another stop was landing and
+ * so would stop whatever started next.
+ */
+const stopProblems = (log: ReadonlyArray<ReactorTest.Entry>): ReadonlyArray<string> => {
+  const problems: Array<string> = [];
+  const sessions = new Map<
+    string,
+    { playing?: string | undefined; landing?: string | undefined; stopped: Set<string> }
+  >();
+  for (const entry of log) {
+    const session = sessions.get(entry.sessionId) ?? { stopped: new Set<string>() };
+    sessions.set(entry.sessionId, session);
+    if (entry.kind === "message" && entry.name === "clip_started") session.playing = entry.clipId;
+    if (
+      entry.kind === "message" &&
+      (entry.name === "clip_stopped" || entry.name === "clip_finished")
+    ) {
+      if (session.playing === entry.clipId) session.playing = undefined;
+      if (session.landing === entry.clipId || entry.name === "clip_stopped")
+        session.landing = undefined;
+    }
+    if (entry.kind === "command" && entry.name === "stop") {
+      if (session.landing !== undefined)
+        problems.push(
+          `a stop at ${entry.at} ms arrived while ${session.landing} was being stopped`,
+        );
+      const playing = session.playing;
+      if (playing === undefined) continue;
+      if (session.stopped.has(playing)) problems.push(`${playing} was stopped twice`);
+      session.stopped.add(playing);
+      session.landing = playing;
+    }
+  }
+  return problems;
+};
+
 const hosted = environment({
   timing: ReactorTest.Timing.fixed({
     buildSpeed: 2.4,
@@ -198,6 +236,51 @@ layer(hosted)("cuts", (it) => {
   );
 });
 
+// The 0.7.0 scheduler-cut paid run: H3 answered a stop about 20 ms before it reported the clip
+// stopped. Here it lands 100 ms after its acknowledgement.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      seam: "70 millis",
+      http: "40 millis",
+      channel: "20 millis",
+      stop: "100 millis",
+    }),
+  }),
+)("cuts, when H3 answers a stop before the clip ends", (it) => {
+  it.effect("stop the playing clip once, and play the cutter once it has ended", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      const { playout, starts } = yield* start();
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 15),
+      });
+      yield* long.started;
+      yield* Effect.sleep("2 seconds");
+      const urgent = yield* playout.submit({
+        key: key("urgent"),
+        lane: "urgent",
+        request: clip("urgent"),
+      });
+      const aired = yield* urgent.outcome;
+      assert.deepStrictEqual(aired._tag === "Ended" ? aired.termination : aired._tag, "finished");
+      const cut = yield* long.outcome;
+      assert.deepStrictEqual(cut._tag === "Ended" ? cut.termination : cut._tag, "stopped");
+      assert.deepStrictEqual(yield* starts, ["long", "urgent"]);
+      const log = yield* test.log;
+      const named = (kind: ReactorTest.Entry["kind"], name: string) =>
+        log.filter((entry) => entry.kind === kind && entry.name === name);
+      assert.strictEqual(named("command", "stop").length, 1);
+      // The cutter's play waited for the stop to land, so H3 refused nothing.
+      assert.deepStrictEqual(named("message", "command_error"), []);
+      assert.deepStrictEqual(stopProblems(log), []);
+    }),
+  );
+});
+
 layer(hosted)("the cut's fence", (it) => {
   it.effect("puts back the autoplay the playout asked for, not always on", () =>
     Effect.gen(function* () {
@@ -216,8 +299,8 @@ layer(hosted)("the cut's fence", (it) => {
       const first = yield* source.enqueue(clip("first"), { _tag: "Filler", index: 0 });
       yield* source.enqueue(clip("second"), { _tag: "Filler", index: 1 });
       yield* Effect.sleep("6 seconds");
-      // Nothing plays, so the stop is refused; the play starts the first clip.
-      yield* source.cut(first);
+      // Nothing plays, so nothing is stopped; the play starts the first clip.
+      yield* source.cut("no-such-clip", first);
       yield* Effect.sleep("12 seconds");
       // Autoplay stayed off: the second clip, Ready all along, waits for a play.
       assert.deepStrictEqual(yield* Ref.get(started), [first]);
@@ -512,6 +595,47 @@ for (const seed of [1, 2, 3, 4, 5, 6])
               (entry) => entry.kind === "command" && entry.name === "enqueue",
             );
             assert.isAtMost(enqueues.length, names.length, `seed ${seed}`);
+          }),
+        { timeout: 120_000 },
+      );
+    },
+  );
+
+// Cuts under the same wide timing, stops landing up to a second after their acknowledgement:
+// urgent items arrive while long lower-lane clips play.
+for (const seed of [1, 2, 3, 4, 5, 6])
+  layer(environment({ timing: ReactorTest.Timing.random({ seed }) }))(
+    `cuts, seed ${seed}`,
+    (it) => {
+      it.effect(
+        "a cut stops one lower-lane clip, once, and its cutter airs next",
+        () =>
+          Effect.gen(function* () {
+            const test = yield* ReactorTest.ReactorTest;
+            const { playout, starts } = yield* start();
+            const lines = yield* Effect.forEach(["l0", "l1", "l2", "l3"], (name) =>
+              playout.submit({ key: key(name), lane: "line", request: clip(name, 14) }),
+            );
+            yield* lines[0]!.started;
+            const urgent = yield* Effect.forEach(["u0", "u1", "u2"], (name) =>
+              Effect.andThen(
+                Effect.sleep("6 seconds"),
+                playout.submit({ key: key(name), lane: "urgent", request: clip(name) }),
+              ),
+            );
+            const outcomes = yield* Effect.forEach([...lines, ...urgent], (handle) =>
+              Effect.map(handle.outcome, (status) => [handle.key as string, status] as const),
+            );
+            const aired = yield* starts;
+            const cut = outcomes.flatMap(([name, status]) =>
+              status._tag === "Ended" && status.termination === "stopped" ? [name] : [],
+            );
+            for (const name of cut) {
+              assert.isTrue(name.startsWith("l"), `seed ${seed}: ${name} was cut`);
+              const next = aired[aired.indexOf(name) + 1];
+              assert.isTrue(next?.startsWith("u"), `seed ${seed}: ${name} was cut for ${next}`);
+            }
+            assert.deepStrictEqual(stopProblems(yield* test.log), [], `seed ${seed}`);
           }),
         { timeout: 120_000 },
       );

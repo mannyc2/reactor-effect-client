@@ -236,7 +236,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
               ? source.move(command.clipId, command.position)
               : command._tag === "Autoplay"
                 ? source.setAutoplay(command.enabled)
-                : source.cut(command.next);
+                : source.cut(command.clipId, command.next);
       const exit = yield* Effect.exit(result);
       if (Exit.isSuccess(exit)) {
         const value: unknown = exit.value;
