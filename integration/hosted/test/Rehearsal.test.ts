@@ -75,6 +75,31 @@ for (const check of [
 ] as const)
   rehearse(`${check} passes`, { check, judge: passes });
 
+rehearse("tokens records the free probes and the documented refusals", {
+  check: "tokens",
+  judge: (evidence) => {
+    passes(evidence);
+    const tokens = evidence.tokens;
+    assert.deepStrictEqual(
+      tokens?.probes.map((probe) => probe.status),
+      [200, 200, 200, 200, 403, 404, 404],
+    );
+    // ReactorTest clamps a 7 h token to six hours, as Reactor documents.
+    assert.strictEqual(tokens?.probes[1]?.lifetimeSeconds, 21_600);
+    // A token is base64url JSON, so it would begin "eyJ": no probe keeps one.
+    assert.notInclude(JSON.stringify(tokens?.probes), "eyJ");
+    assert.deepStrictEqual(
+      [
+        tokens?.expiredTokenStatus,
+        tokens?.unboundTokenStatus,
+        tokens?.apiKeyTermination?.confirmed,
+      ],
+      [401, 403, true],
+    );
+    assert.isAtLeast(tokens?.mints.filter((mint) => mint.kind === "bind").length ?? 0, 2);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {
