@@ -164,6 +164,13 @@ export type Action =
       readonly reason: string;
       readonly cause: "open" | "lost" | "moderation";
     }
+  /** The filler clip at `index` asked for a request outside H3's limits, which would be refused again. */
+  | {
+      readonly _tag: "Fail";
+      readonly reason: string;
+      readonly cause: "filler";
+      readonly index: number;
+    }
   /** Settled keys the history bound dropped: they may be submitted afresh. */
   | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
 
@@ -179,6 +186,8 @@ export interface Config {
         readonly target: number;
         readonly clip: (context: FillContext) => Request;
         readonly lengths: { readonly min: number; readonly max: number };
+        /** Where the filler clip at `index` asks for more than H3 takes, or undefined. */
+        readonly invalid: (request: Request, index: number) => string | undefined;
       }
     | undefined;
   readonly maxBuildsInFlight: number;
@@ -2137,6 +2146,13 @@ export const step: {
     const request =
       state.filler.request ??
       filler.clip({ index: state.filler.index, runwaySeconds: room, seconds });
+    const invalid = filler.invalid(request, state.filler.index);
+    if (invalid !== undefined) {
+      // Skipping it would leave the air uncovered without a word, and asking again gets the same.
+      state = { ...state, filler: { ...state.filler, retryAt: Infinity } };
+      actions.push({ _tag: "Fail", reason: invalid, cause: "filler", index: state.filler.index });
+      return;
+    }
     state = { ...state, filler: { ...state.filler, request, dispatchedAt: now.mono, seconds } };
     queueCommand(target.id, {
       _tag: "Enqueue",

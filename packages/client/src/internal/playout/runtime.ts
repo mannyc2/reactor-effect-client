@@ -31,6 +31,7 @@ import { CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
 import type { CloseReport } from "../../Session.js";
 import {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
@@ -130,6 +131,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             target: millis(options.filler.runway.target, 0) / 1000,
             clip: options.filler.clip,
             lengths: options.filler.lengths ?? requestSeconds,
+            invalid: (request, index) => {
+              const issues = requestIssues(request, { _tag: "Filler", index });
+              return issues === undefined
+                ? undefined
+                : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
+            },
           },
     maxBuildsInFlight: options.maxBuildsInFlight ?? 1,
     maxHistory: options.maxHistory ?? 4096,
@@ -161,7 +168,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
-  const failure = yield* Deferred.make<ReactorFailure>();
+  const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
   // Why the latest open failed while no open has succeeded since, and why the latest session was lost.
   const lastOpenError = yield* Ref.make<ReactorFailure | undefined>(undefined);
   const lastLostError = yield* Ref.make<ReactorError | undefined>(undefined);
@@ -341,6 +348,24 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         : ({ _tag: "Died" } as const);
     });
 
+  /** Why the plan failed the playout: the error behind a failed open or a loss, when there was one. */
+  const failureOf = (
+    action: Extract<Policy.Action, { _tag: "Fail" }>,
+  ): Effect.Effect<ReactorFailure | InvalidFiller> => {
+    const otherwise = (error: ReactorFailure | undefined) =>
+      error ?? ReactorError.fromCode("InvalidState", action.reason);
+    switch (action.cause) {
+      case "filler":
+        return Effect.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
+      case "moderation":
+        return Effect.succeed(ReactorError.fromCode("Moderated", action.reason));
+      case "open":
+        return Effect.map(Ref.get(lastOpenError), otherwise);
+      case "lost":
+        return Effect.map(Ref.get(lastLostError), otherwise);
+    }
+  };
+
   const act = (action: Policy.Action): Effect.Effect<void> =>
     Effect.gen(function* () {
       switch (action._tag) {
@@ -402,14 +427,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             return next;
           });
         case "Fail": {
-          const error: ReactorFailure =
-            action.cause === "moderation"
-              ? ReactorError.fromCode("Moderated", action.reason)
-              : ((action.cause === "open"
-                  ? yield* Ref.get(lastOpenError)
-                  : yield* Ref.get(lastLostError)) ??
-                ReactorError.fromCode("InvalidState", action.reason));
-          yield* Deferred.succeed(failure, error);
+          yield* Deferred.succeed(failure, yield* failureOf(action));
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
           yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, {
             discard: true,

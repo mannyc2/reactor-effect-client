@@ -1323,6 +1323,24 @@ layer(hosted)("closing and failing", (it) => {
       assert.deepStrictEqual(answers, Option.some(["withdrawn", "already-started", "not-found"]));
     }),
   );
+
+  it.effect("a filler request outside H3's limits fails the playout, naming its index", () =>
+    Effect.gen(function* () {
+      const sent = (yield* commands("enqueue")).length;
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index, seconds }) => clip(`filler ${String(index)}`, index === 1 ? 99 : seconds),
+        },
+      });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
+      const index = Option.map(failure, (error) =>
+        error._tag === "InvalidFiller" ? error.index : error._tag,
+      );
+      assert.deepStrictEqual(index, Option.some<number | string>(1));
+      assert.strictEqual((yield* commands("enqueue")).length, sent + 1);
+    }),
+  );
 });
 
 // Its faults stay armed for the rest of a block, so it has one of its own.

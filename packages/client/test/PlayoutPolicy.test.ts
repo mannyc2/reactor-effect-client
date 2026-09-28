@@ -701,6 +701,7 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
       target: 10,
       clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
       lengths: { min: 5, max: 15 },
+      invalid: () => undefined,
     },
   };
 
@@ -1046,6 +1047,7 @@ const simulate = (script: Script) => {
       target: 10,
       clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
       lengths: { min: 5, max: 15 },
+      invalid: () => undefined,
     },
   };
   let state = Policy.initial;

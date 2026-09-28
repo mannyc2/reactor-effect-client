@@ -20,6 +20,7 @@ import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { Request } from "./H3.js";
 import type {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   PlayoutClosed,
@@ -31,6 +32,7 @@ import type { CommandFailure, ReactorError, ReactorFailure } from "./ReactorErro
 import type { CloseReport } from "./Session.js";
 
 export {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
@@ -473,7 +475,10 @@ export interface Options<R = never> {
     | {
         /** Air secured ahead: refill below `floor`, up to `target`. */
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
-        /** Called once per admitted clip; keep it pure. */
+        /**
+         * Called once per admitted clip; keep it pure. A request outside H3's
+         * documented limits fails the playout with `InvalidFiller`.
+         */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
@@ -559,8 +564,11 @@ export class Playout extends Context.Service<
     /** The on-air session's picture, continuing across renewals. */
     readonly video: Stream.Stream<VideoFrame, ReactorError>;
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
-    /** Why the playout stopped: a session could not be opened, or its scope closed. */
-    readonly failure: Effect.Effect<ReactorFailure>;
+    /**
+     * Why the playout stopped: a session could not be opened or kept, a filler
+     * request was outside H3's limits (`InvalidFiller`), or its scope closed.
+     */
+    readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
     readonly cleanup: Effect.Effect<Cleanup>;
   }
 >()("reactor-effect-client/Playout") {}

@@ -1925,7 +1925,10 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
     yield* air.playout.failure.pipe(
       Effect.flatMap((failure) =>
         Effect.map(run.now, (atMs) => {
-          playoutLog.push({ atMs, event: `failed ${failure.reason._tag}` });
+          playoutLog.push({
+            atMs,
+            event: `failed ${failure._tag === "InvalidFiller" ? failure._tag : failure.reason._tag}`,
+          });
         }),
       ),
       Effect.forkScoped,
