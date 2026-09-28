@@ -40,7 +40,7 @@ import type {
 import { decodeMessage, Payloads } from "./messages.js";
 import type { Clip } from "./messages.js";
 import * as Operations from "./operations.js";
-import { canvases, requestSeconds } from "./profile.js";
+import { canvases } from "./profile.js";
 import type { CanvasAspect } from "./profile.js";
 import { materialOf, validateAudioReference, validateReference } from "./references.js";
 import type { ValidatedAudioReference, ValidatedReference } from "./references.js";
@@ -88,10 +88,6 @@ const localFailure = (operation: string, cause: ReactorError | CommandFailure): 
 /** `operation` refused before anything was sent. */
 const refused = (operation: string, code: MessageCode, message: string): CommandFailure =>
   localFailure(operation, ReactorError.fromCode(code, message));
-
-/** A caller's own refusal already proves no dispatch; any other failure becomes one. */
-const preparationFailure = <E>(cause: ReactorError | CommandFailure | E): CommandFailure | E =>
-  ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure("enqueue", cause) : cause;
 
 const uncertain = (
   operation: string,
@@ -767,19 +763,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ),
         );
 
-  const prepared = <E>(
-    id: string,
-    input: Effect.Effect<
-      { readonly request: Captured; readonly metadata: string },
-      ReactorError | CommandFailure | E,
-      Scope.Scope
-    >,
-    hooks: PrepareHooks<E>,
-  ) =>
+  const prepared = <E>(id: string, request: Captured, metadata: string, hooks: PrepareHooks<E>) =>
     Submission.make({
       id,
       prepare: Effect.gen(function* () {
-        const { request, metadata } = yield* input.pipe(Effect.mapError(preparationFailure));
         const staged = yield* stage(request, metadata);
         const entry: Pending = {
           id,
@@ -846,31 +833,15 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         ),
     }).pipe(Scope.provide(executions));
 
-  const withMetadata = (id: string) => (input: Request) =>
-    capture(input).pipe(
-      Effect.flatMap((request) =>
-        Effect.fromResult(
-          State.encodeMetadata({ namespace, submission: id, caller: request.metadata }),
-        ).pipe(Effect.map((metadata) => ({ request, metadata }))),
-      ),
-    );
-
   const prepare: Provider["prepare"] = <E = never>(input: Request, hooks: PrepareHooks<E> = {}) =>
     Effect.gen(function* () {
       yield* active("enqueue", true);
       const id = yield* nextId;
-      const captured = yield* withMetadata(id)(input);
-      return yield* prepared(id, Effect.succeed(captured), hooks);
-    });
-
-  const prepareFrom: Provider["prepareFrom"] = <E = never>(
-    preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
-    hooks: PrepareHooks<E> = {},
-  ) =>
-    Effect.gen(function* () {
-      yield* active("enqueue", true);
-      const id = yield* nextId;
-      return yield* prepared(id, Effect.flatMap(preparation, withMetadata(id)), hooks);
+      const request = yield* capture(input);
+      const metadata = yield* Effect.fromResult(
+        State.encodeMetadata({ namespace, submission: id, caller: request.metadata }),
+      );
+      return yield* prepared(id, request, metadata, hooks);
     });
 
   const clipId = (operation: string, id: string) =>
@@ -934,9 +905,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       }),
     events: (observeOptions) => Stream.unwrap(hub.subscribe(observeOptions?.capacity)),
     failure: Deferred.await(fatal),
-    acceptances: Effect.map(SubscriptionRef.get(state), (internal) => [
-      ...internal.acceptances.values(),
-    ]),
     acceptance: (id) =>
       Effect.map(SubscriptionRef.get(state), (internal) => internal.acceptances.get(id)),
     operation: (submission) =>
@@ -973,7 +941,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         })),
       ),
     prepare,
-    prepareFrom,
     enqueue: (request) =>
       prepare(request).pipe(
         Effect.mapError((error) =>
@@ -1005,20 +972,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         Effect.flatMap((clip) => control("play", { clip_id: clip })),
       ),
     stop: control("stop", {}),
-    setSeed: (value) =>
-      natural("set_seed", "seed", value).pipe(
-        Effect.flatMap((seed) => named("set_seed", { seed })),
-      ),
-    setClipSeconds: (value) =>
-      Number.isFinite(value) && value >= requestSeconds.min && value <= requestSeconds.max
-        ? named("set_clip_seconds", { seconds: value })
-        : Effect.fail(
-            refused(
-              "set_clip_seconds",
-              "InvalidInput",
-              "Clip duration is outside the request bounds",
-            ),
-          ),
     setCanvas: (aspect: CanvasAspect) =>
       Object.hasOwn(canvases, aspect)
         ? named("set_canvas", { aspect })

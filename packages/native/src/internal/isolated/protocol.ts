@@ -16,7 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { IceServer, Track } from "reactor-effect-client/Coordinator";
-import { Channel, Prepared } from "reactor-effect-client/Peer";
+import { DataChannel, Prepared } from "reactor-effect-client/Peer";
 import type * as Binding from "../binding.js";
 
 /** Bytes, carried as the typed array they are. */
@@ -81,8 +81,8 @@ const PeerEvent = Schema.Union([
       }),
     ),
   }),
-  Schema.Struct({ type: Schema.Literal("channel"), channel: Channel, open: Schema.Boolean }),
-  Schema.Struct({ type: Schema.Literal("message"), channel: Channel, bytes: Bytes }),
+  Schema.Struct({ type: Schema.Literal("channel"), channel: DataChannel, open: Schema.Boolean }),
+  Schema.Struct({ type: Schema.Literal("message"), channel: DataChannel, bytes: Bytes }),
   Schema.Struct({ type: Schema.Literal("track"), name: Schema.String, mid: Schema.String }),
   Schema.Struct({
     type: Schema.Literal("decoded"),
@@ -138,7 +138,7 @@ export class IsolatedRpcs extends RpcGroup.make(
     payload: { name: Schema.String, bitsPerSecond: Schema.Int },
     error: Failure,
   }),
-  Rpc.make("Send", { payload: { channel: Channel, bytes: Bytes }, error: Failure }),
+  Rpc.make("Send", { payload: { channel: DataChannel, bytes: Bytes }, error: Failure }),
   Rpc.make("Stats", { success: Stats, error: Failure }),
   Rpc.make("Pressure", { success: Pressure, error: Failure }),
   Rpc.make("Events", { success: PeerEvent, error: Failure, stream: true }),

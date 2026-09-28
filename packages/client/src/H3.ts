@@ -32,10 +32,8 @@ import type { Submission } from "./internal/h3/submission.js";
 
 export {
   alignFrames,
-  alignSecondsTo,
   audioReferenceLimits,
   canvases,
-  clampSecondsTo,
   documentedVersion,
   estimateTokens,
   h3ReferenceTurboRealtime,
@@ -60,8 +58,6 @@ export type {
 export type { Acceptance, ClipObservation, Facts, ProviderSnapshot } from "./internal/h3/state.js";
 export { Reference } from "./internal/h3/references.js";
 export type { ValidatedAudioReference, ValidatedReference } from "./internal/h3/references.js";
-
-export type Aspect = CanvasAspect;
 
 export { Request } from "./internal/h3/request.js";
 
@@ -143,8 +139,6 @@ export interface Provider {
   readonly events: (options?: ObservationOptions) => Stream.Stream<ProviderEvent, ReactorError>;
   /** The error that made the provider unavailable for good. */
   readonly failure: Effect.Effect<ReactorError>;
-  /** This process's acceptances, separate from the provider's authoritative state. */
-  readonly acceptances: Effect.Effect<ReadonlyArray<Acceptance>>;
   readonly acceptance: (submissionId: string) => Effect.Effect<Acceptance | undefined>;
   /**
    * The facts of a committed submission's clip for as long as the scope holds
@@ -158,15 +152,6 @@ export interface Provider {
     request: Request,
     hooks?: PrepareHooks<E>,
   ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
-  /**
-   * Prepares from host work in the same provisional scope and commit owner. A
-   * caller's own error from the preparation fails the submission unchanged; any
-   * other failure becomes a not-submitted `CommandFailure`.
-   */
-  readonly prepareFrom: <E = never>(
-    preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
-    hooks?: PrepareHooks<E>,
-  ) => Effect.Effect<Submission<Acceptance, CommandFailure | E>, ReactorError | CommandFailure>;
   readonly enqueue: (request: Request) => Effect.Effect<Acceptance, CommandFailure>;
   readonly getState: Effect.Effect<Reply<"state_update">, CommandFailure>;
   readonly getQueue: Effect.Effect<Reply<"queue_update">, CommandFailure>;
@@ -178,11 +163,9 @@ export interface Provider {
   ) => Effect.Effect<Reply<"clip_moved">, CommandFailure>;
   readonly play: (clipId?: string) => Effect.Effect<ControlResult, CommandFailure>;
   readonly stop: Effect.Effect<ControlResult, CommandFailure>;
-  readonly setSeed: (seed: number) => Effect.Effect<Reply<"seed_accepted">, CommandFailure>;
-  readonly setClipSeconds: (
-    seconds: number,
-  ) => Effect.Effect<Reply<"clip_length_accepted">, CommandFailure>;
-  readonly setCanvas: (aspect: Aspect) => Effect.Effect<Reply<"canvas_accepted">, CommandFailure>;
+  readonly setCanvas: (
+    aspect: CanvasAspect,
+  ) => Effect.Effect<Reply<"canvas_accepted">, CommandFailure>;
   readonly setAutoplay: (
     enabled: boolean,
   ) => Effect.Effect<Reply<"autoplay_accepted">, CommandFailure>;

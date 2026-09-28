@@ -2,7 +2,7 @@
 import { assert, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Queue, Scheduler } from "effect";
 import type { Fiber } from "effect";
-import { take, takeAll } from "../src/internal/queue.js";
+import { take } from "../src/internal/queue.js";
 
 /** A synchronous scheduler that yields a fiber at the operation a test arms, then runs tasks on demand. */
 class PreemptionScheduler implements Scheduler.Scheduler {
@@ -119,24 +119,6 @@ it.effect.each([1, 2, 3, 4, 5, 6])(
     }),
 );
 
-it.effect.each([1, 2, 3, 4, 5, 6])(
-  "takeAll cannot lose an offered batch with preemption at operation %i",
-  (operation) =>
-    Effect.gen(function* () {
-      const { scheduler, fork, run } = yield* controlled;
-      const queue = yield* run(Queue.unbounded<number>());
-      scheduler.arm(operation);
-      const consumer = fork(takeAll(queue));
-
-      assert.deepStrictEqual(Queue.offerAllUnsafe(queue, [1, 2]), []);
-      scheduler.flush();
-
-      assert.deepStrictEqual(consumer.pollUnsafe(), Exit.succeed([1, 2]));
-      assert.strictEqual(Queue.sizeUnsafe(queue), 0);
-      assert.strictEqual(takers(queue), 0);
-    }),
-);
-
 it.effect("interrupting an idle take removes its waiter and leaves the next offer available", () =>
   Effect.gen(function* () {
     const { scheduler, fork, run } = yield* controlled;
@@ -227,14 +209,11 @@ it.effect("ending a queue wakes its idle taker with Done", () =>
     const { scheduler, fork, run } = yield* controlled;
     const queue = yield* run(Queue.unbounded<number, Cause.Done>());
     const consumer = fork(take(queue));
-    const batchConsumer = fork(takeAll(queue));
 
     assert.strictEqual(Queue.endUnsafe(queue), true);
     scheduler.flush();
     assert.deepStrictEqual(consumer.pollUnsafe(), Exit.fail(Cause.Done()));
-    assert.deepStrictEqual(batchConsumer.pollUnsafe(), Exit.fail(Cause.Done()));
     assert.deepStrictEqual(yield* run(Effect.exit(take(queue))), Exit.fail(Cause.Done()));
-    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail(Cause.Done()));
   }),
 );
 
@@ -250,30 +229,15 @@ it.effect("a closing queue drains its buffered value before Done", () =>
   }),
 );
 
-it.effect("takeAll drains a closing queue's buffered batch before Done", () =>
-  Effect.gen(function* () {
-    const { run } = yield* controlled;
-    const queue = yield* run(Queue.unbounded<number, Cause.Done>());
-    assert.deepStrictEqual(Queue.offerAllUnsafe(queue, [1, 2]), []);
-    assert.strictEqual(Queue.endUnsafe(queue), true);
-
-    assert.deepStrictEqual(yield* run(takeAll(queue)), [1, 2]);
-    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail(Cause.Done()));
-  }),
-);
-
 it.effect("queue failure reaches both a parked take and future takes unchanged", () =>
   Effect.gen(function* () {
     const { scheduler, fork, run } = yield* controlled;
     const queue = yield* run(Queue.unbounded<number, string>());
     const consumer = fork(take(queue));
-    const batchConsumer = fork(takeAll(queue));
 
     assert.strictEqual(Queue.failCauseUnsafe(queue, Cause.fail("disconnected")), true);
     scheduler.flush();
     assert.deepStrictEqual(consumer.pollUnsafe(), Exit.fail("disconnected"));
-    assert.deepStrictEqual(batchConsumer.pollUnsafe(), Exit.fail("disconnected"));
     assert.deepStrictEqual(yield* run(Effect.exit(take(queue))), Exit.fail("disconnected"));
-    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail("disconnected"));
   }),
 );

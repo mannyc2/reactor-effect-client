@@ -16,7 +16,7 @@ import * as Stream from "effect/Stream";
 import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
 import { PeerState, trackFeed } from "reactor-effect-client/Peer";
-import type { Channel, Peer, PeerEvent, Prepared, TrackFeed } from "reactor-effect-client/Peer";
+import type { DataChannel, Peer, PeerEvent, Prepared, TrackFeed } from "reactor-effect-client/Peer";
 import { Native, ReactorError } from "reactor-effect-client/ReactorError";
 import type * as Binding from "./binding.js";
 
@@ -29,7 +29,7 @@ export interface NativeHandle {
   readonly answer: (sdp: string) => Effect.Effect<void, ReactorError>;
   readonly direction: (name: string, active: boolean) => Effect.Effect<void, ReactorError>;
   readonly maxBitrate: (name: string, bitsPerSecond: number) => Effect.Effect<void, ReactorError>;
-  readonly send: (channel: Channel, bytes: Uint8Array) => Effect.Effect<void, ReactorError>;
+  readonly send: (channel: DataChannel, bytes: Uint8Array) => Effect.Effect<void, ReactorError>;
   readonly stats: Effect.Effect<ReadonlyArray<Readonly<Record<string, unknown>>>, ReactorError>;
   readonly pressure: Effect.Effect<Binding.Pressure, ReactorError>;
   /** Each queue's items, taken as the reader pulls, until the peer closes. */
