@@ -101,7 +101,9 @@ export const layer = Layer.unwrap(
       const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
         Config.withDefault("https://api.reactor.inc"),
       );
-      return recorded(options(Effect.succeed(apiKey))).pipe(
+      return Effect.succeed(apiKey).pipe(
+        options,
+        recorded,
         Layer.provide(Reactor.layer()),
         Layer.provideMerge(Coordinator.layer({ apiUrl })),
         // Each connection's native peer runs in a child process of its own, so a
@@ -111,13 +113,11 @@ export const layer = Layer.unwrap(
       );
     }
     // Offline: the simulated Reactor plays the timing two paid runs measured.
-    return recorded(
-      options(
-        Effect.gen(function* () {
-          return (yield* ReactorTest.ReactorTest).apiKey;
-        }),
-      ),
-    ).pipe(
+    return Effect.gen(function* () {
+      return (yield* ReactorTest.ReactorTest).apiKey;
+    }).pipe(
+      options,
+      recorded,
       Layer.provide(Reactor.layer()),
       Layer.provideMerge(Coordinator.layer()),
       Layer.provideMerge(

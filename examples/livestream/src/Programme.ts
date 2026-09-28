@@ -43,18 +43,18 @@ export class Programme extends Context.Service<
           .pipe(
             Effect.catchTags({
               WouldMissDeadline: () =>
-                new ChannelBusy({
+                ChannelBusy.make({
                   message: "The next clips are already lined up",
                   retryAfterSeconds: Math.ceil(clipSeconds),
                 }),
               InvalidItem: () =>
-                new PromptRejected({ message: "The prompt is outside the model's limits" }),
+                PromptRejected.make({ message: "The prompt is outside the model's limits" }),
               PlayoutClosed: () =>
-                new ChannelUnavailable({ message: "The channel is not taking prompts" }),
+                ChannelUnavailable.make({ message: "The channel is not taking prompts" }),
               KeyMismatch: () =>
-                new ChannelUnavailable({ message: "The channel could not take the prompt" }),
+                ChannelUnavailable.make({ message: "The channel could not take the prompt" }),
               LaneBusy: () =>
-                new ChannelBusy({
+                ChannelBusy.make({
                   message: "The channel is busy",
                   retryAfterSeconds: Math.ceil(clipSeconds),
                 }),

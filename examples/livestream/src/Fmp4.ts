@@ -62,7 +62,7 @@ export const segments = <E, R>(
             // A 32-bit size of 0 or 1 marks a box to the end of the file or a
             // 64-bit size; neither occurs in ffmpeg's live fragments.
             const size = view.getUint32(offset);
-            if (size < 8) return yield* new Fmp4Error({ message: `unsupported box size ${size}` });
+            if (size < 8) return yield* Fmp4Error.make({ message: `unsupported box size ${size}` });
             if (buffer.length - offset < size) break;
             const box = buffer.slice(offset, offset + size);
             const type = boxType(buffer, offset);

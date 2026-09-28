@@ -1,3 +1,5 @@
+// NodeHttpServer serves on a server made by Node's own http module.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -45,7 +47,9 @@ const SessionHandlers = HttpApiBuilder.group(
           Effect.tapError((error) =>
             Effect.logWarning("token refused", { reason: error.reason._tag }),
           ),
-          Effect.mapError(() => new TokenUnavailable({ message: "No session token is available" })),
+          Effect.mapError(() =>
+            TokenUnavailable.make({ message: "No session token is available" }),
+          ),
         ),
     });
   }),
