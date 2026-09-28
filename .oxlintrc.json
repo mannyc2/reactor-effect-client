@@ -81,6 +81,16 @@
       }
     },
     {
+      // The native package and the hosted harness decode what crosses their boundaries
+      // rather than assert it, and keep no condition their types already decide.
+      "files": ["packages/native/**", "integration/hosted/**"],
+      "rules": {
+        "typescript/no-non-null-assertion": "error",
+        "typescript/no-unnecessary-condition": "error",
+        "typescript/no-unsafe-type-assertion": "error"
+      }
+    },
+    {
       // release-tools builds a changed copy of a Schema class instance by spreading it into
       // the class's `make`, which checks the result again; the prototype is not wanted.
       "files": ["release-tools/**"],

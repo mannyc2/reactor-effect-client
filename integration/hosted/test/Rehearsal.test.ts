@@ -10,7 +10,7 @@ import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
 import { execute } from "../Qualify.js";
 import type { Check } from "../Spend.js";
-import { ceilingFor, maxTotalUsd } from "../Spend.js";
+import { ceilingFor, checks, maxTotalUsd } from "../Spend.js";
 import * as Target from "../Target.js";
 
 const rehearse = (
@@ -63,19 +63,7 @@ const failed = (criterion: string) => (evidence: Evidence) => {
   );
 };
 
-for (const check of [
-  "vertical",
-  "turn",
-  "audio",
-  "takeover",
-  "resume",
-  "queue",
-  "renewal",
-  "edits",
-  "cut",
-  "tokens",
-] as const)
-  rehearse(`${check} passes`, { check, judge: passes });
+for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
 
 // Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed, and the
 // session was still there. Reactor ends a session 30 s after its last connection drops.
@@ -123,7 +111,7 @@ rehearse("tokens names the owner's queued clip when the first has ended", {
     );
     const tokens = evidence.tokens;
     assert.isDefined(tokens?.ownerClipIds);
-    assert.strictEqual(tokens?.playingClipId, tokens?.ownerClipIds?.queued);
+    assert.strictEqual(tokens.playingClipId, tokens.ownerClipIds.queued);
   },
 });
 
