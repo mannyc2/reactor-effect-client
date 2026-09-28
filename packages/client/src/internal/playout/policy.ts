@@ -224,7 +224,13 @@ interface Session {
   readonly retiring: boolean;
   readonly lastEndedAt: number | undefined;
   readonly startedAny: boolean;
+  /** An enqueue here stayed unknown past the deadline: new work goes elsewhere, and a replacement takes over. */
   readonly indeterminate: boolean;
+  /**
+   * Filler enqueues sent here whose outcome is unknown, until a queue read shows
+   * their clip or the session goes: each may be building here, and only here.
+   */
+  readonly unknownFiller: ReadonlyArray<{ readonly index: number; readonly since: number }>;
   /** The playing clip and when its start was observed, on the monotonic clock. */
   readonly playing: { readonly clipId: string; readonly at: number } | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
@@ -264,7 +270,6 @@ export interface State {
   readonly filler: {
     readonly index: number;
     readonly request: Request | undefined;
-    readonly unknown: number;
     readonly retryAt: number;
     readonly dispatchedAt: number | undefined;
     readonly seconds: number | undefined;
@@ -318,7 +323,6 @@ export const initial: State = {
   filler: {
     index: 0,
     request: undefined,
-    unknown: 0,
     retryAt: 0,
     dispatchedAt: undefined,
     seconds: undefined,
@@ -379,9 +383,15 @@ const continuedBuildRate = (samples: State["samples"]): number | undefined => {
   return undefined;
 };
 
-/** The newest live session that can take work: new work goes there. */
+/**
+ * The newest live session that can take work: new work goes there. One whose
+ * enqueue stayed unknown past the deadline takes none, since what it does with
+ * a command can no longer be told.
+ */
 const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
-  [...sessions].reverse().find((value) => !value.retiring && value.source?.available === true);
+  [...sessions]
+    .reverse()
+    .find((value) => !value.retiring && !value.indeterminate && value.source?.available === true);
 
 /**
  * What is left of `value`'s playing clip at `mono`, counted from its observed start. A clip
@@ -1104,6 +1114,17 @@ export const step: {
         asRun(item.spec.key, { _tag: "Building", sessionId });
       }
     }
+    // A filler clip listed here proves where its uncertain enqueue went.
+    const listedFiller = new Set(
+      [...fillers.values()].flatMap((owner) =>
+        owner.sessionId === sessionId ? [owner.index] : [],
+      ),
+    );
+    const uncertain = session(sessionId)?.unknownFiller ?? [];
+    if (uncertain.some((entry) => listedFiller.has(entry.index)))
+      updateSession(sessionId, {
+        unknownFiller: uncertain.filter((entry) => !listedFiller.has(entry.index)),
+      });
     // A filler the provider no longer lists has aired or failed; either way it stops being ours.
     for (const [clipId, owner] of fillers)
       if (owner.sessionId === sessionId && !listed.has(clipId)) fillers.delete(clipId);
@@ -1130,10 +1151,13 @@ export const step: {
    * two sessions in a row fails: a built clip passed screening, so it is
    * rebuilt however often it is lost, and never fails alongside a flagged one.
    * And a session lost before any clip sent to it started counts as a failed setup.
+   * Whatever ended it here, it is closed: an owned session still running server-side
+   * would otherwise bill beside its replacement.
    */
   const lose = (sessionId: string, reason: string, planned = false): void => {
     const lost = session(sessionId);
     if (lost === undefined) return;
+    actions.push({ _tag: "Close", sessionId });
     let carried = 0;
     for (const item of items.values()) {
       if (item.sessionId !== sessionId || item.phase === "Settled") continue;
@@ -1214,17 +1238,20 @@ export const step: {
                       [result.clipId, { index: filler.index, sessionId: busy.sessionId }],
                     ]),
             };
-          } else if (result.outcome === "unknown")
+          } else if (result.outcome === "unknown") {
+            // Its clip may be building on that session: it holds that session's build slot until
+            // a queue read shows it, the deadline passes or the session goes.
             state = {
               ...state,
-              filler: {
-                ...filler,
-                index: filler.index + 1,
-                request: undefined,
-                unknown: filler.unknown + 1,
-              },
+              filler: { ...filler, index: filler.index + 1, request: undefined },
             };
-          else
+            updateSession(busy.sessionId, {
+              unknownFiller: [
+                ...(session(busy.sessionId)?.unknownFiller ?? []),
+                { index: filler.index, since: now.mono },
+              ],
+            });
+          } else
             state = {
               ...state,
               filler: { ...filler, retryAt: now.mono + retryDelayMs, dispatchedAt: undefined },
@@ -1337,6 +1364,7 @@ export const step: {
             lastEndedAt: undefined,
             startedAny: false,
             indeterminate: false,
+            unknownFiller: [],
             playing: undefined,
             lastEnqueue: undefined,
           },
@@ -1478,6 +1506,24 @@ export const step: {
     actions.push({ _tag: "Committed", id: batch.id });
   }
 
+  // An enqueue whose outcome stays unknown past the deadline makes its session indeterminate:
+  // it takes no new work and a replacement takes over, now rather than at the next input. One
+  // not on air has nothing to finish, so it goes at once.
+  const expired = (since: number | undefined): boolean =>
+    since !== undefined && now.mono - since >= config.unknownTimeoutMs;
+  for (const value of [...state.sessions]) {
+    if (value.indeterminate) continue;
+    const stuck =
+      value.unknownFiller.some((entry) => expired(entry.since)) ||
+      [...items.values()].some(
+        (item) =>
+          item.phase === "Unknown" && item.sessionId === value.id && expired(item.unknownSince),
+      );
+    if (!stuck) continue;
+    updateSession(value.id, { indeterminate: true });
+    if (value.id !== state.air) lose(value.id, "an enqueue's outcome stayed unknown");
+  }
+
   // Renewal.
   const air = session(state.air);
   const expiresAt = (value: Session) => value.openedAt + value.lifetimeMs;
@@ -1498,10 +1544,8 @@ export const step: {
     }
   }
   for (const value of state.sessions)
-    if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity) {
-      actions.push({ _tag: "Close", sessionId: value.id });
+    if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity)
       lose(value.id, "the session's granted length ended");
-    }
   const current = session(state.air);
   const next = state.sessions.find((value) => value.id !== state.air && !value.retiring);
   if (current !== undefined && next !== undefined && next.source?.available === true) {
@@ -1518,17 +1562,15 @@ export const step: {
       ![...items.values()].some(
         (item) =>
           item.sessionId === current.id &&
-          (item.phase === "Building" ||
-            (item.phase === "Unknown" &&
-              now.mono - (item.unknownSince ?? now.mono) < config.unknownTimeoutMs)),
-      );
+          (item.phase === "Building" || (item.phase === "Unknown" && !expired(item.unknownSince))),
+      ) &&
+      current.unknownFiller.every((entry) => expired(entry.since));
     const graceOver =
       current.lastEndedAt !== undefined && now.mono >= current.lastEndedAt + config.graceMs;
     if (idle && (!current.startedAny || graceOver)) {
       state = { ...state, air: next.id };
       updateSession(next.id, { wantAutoplay: true });
       actions.push({ _tag: "OnAir", sessionId: next.id });
-      actions.push({ _tag: "Close", sessionId: current.id });
       emit({
         _tag: "Session",
         event: {
@@ -1541,16 +1583,6 @@ export const step: {
       lose(current.id, "retired", true);
     }
   }
-  // An enqueue that stays unknown makes its session indeterminate, so a replacement takes over.
-  for (const item of items.values())
-    if (
-      item.phase === "Unknown" &&
-      item.unknownSince !== undefined &&
-      now.mono - item.unknownSince >= config.unknownTimeoutMs &&
-      item.sessionId !== undefined
-    )
-      updateSession(item.sessionId, { indeterminate: true });
-
   // Starvation: nothing on air while the plan wants air.
   const onAir = session(state.air);
   const dry =
@@ -1754,7 +1786,7 @@ export const step: {
           (item.phase === "Building" || item.phase === "Unknown") && item.sessionId === target.id,
       ).length +
       target.source!.building.filter((clip) => clip.tag?._tag === "Filler").length +
-      state.filler.unknown;
+      target.unknownFiller.length;
     if (inFlight >= config.maxBuildsInFlight) return;
     const room = runway();
     const floorSeconds = fillerFloor();
@@ -1794,7 +1826,7 @@ export const step: {
       });
     }
     const filler = config.filler;
-    if (filler === undefined || state.filler.unknown > 0 || now.mono < state.filler.retryAt) return;
+    if (filler === undefined || now.mono < state.filler.retryAt) return;
     const anchorGap = Math.max(
       0,
       ...[...items.values()].flatMap((item) => {
@@ -1940,6 +1972,7 @@ export const step: {
           if (!item.fired.includes(index)) later(cueAt(item, cue));
     }
     for (const value of state.sessions) {
+      for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
       if (value.lastEndedAt !== undefined) later(value.lastEndedAt + config.graceMs);
