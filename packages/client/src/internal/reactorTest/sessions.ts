@@ -60,6 +60,21 @@ const refuse = (status: number, code: string, reason: string) =>
 
 /** Reactor's ceiling on a token's life: a longer one is clamped without a word. */
 const maxTokenSeconds = 21_600;
+/** Reactor caps a clip of a session's last seconds at five minutes by default. */
+const maxClipSeconds = 300;
+/** A recording's segments, each two seconds of it. */
+const segmentSeconds = 2;
+const segmentBytes = 1_024;
+/** Where a recording's segments are served: another origin, as a CDN's would be. */
+export const clips = "https://clips.reactor.test";
+
+/** A clip or recording the recorder holds. */
+interface Recording {
+  readonly sessionId: string;
+  /** Monotonic milliseconds from which its playlist is served. */
+  readonly readyAt: number;
+  readonly segments: number;
+}
 /** How long Reactor keeps a session that lost its last connection. */
 const reconnectWindowMs = 30_000;
 /** Sessions an account may create back to back before the per-minute rate applies. */
@@ -115,6 +130,8 @@ const anyOpen = (state: State): boolean =>
 interface Session {
   readonly id: string;
   readonly model: string;
+  /** The SDK that created it, as it named itself. */
+  readonly client: SessionInfo["client"];
   /** The token that created it, which acts on it without a bind. */
   readonly creator: string;
   readonly maxSessionSeconds: number | undefined;
@@ -156,18 +173,25 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   const bindings = yield* Ref.make<
     ReadonlyMap<string, { readonly session: Session; readonly cid: number }>
   >(new Map());
-  const counts = yield* Ref.make({ grants: 0, sessions: 0, connections: 1000, peers: 0 });
+  const counts = yield* Ref.make({
+    grants: 0,
+    sessions: 0,
+    connections: 1000,
+    peers: 0,
+    recordings: 0,
+  });
   /** The account's session-creation bucket: `burst` at once, refilled at the per-minute rate. */
   const bucket = yield* Ref.make({ tokens: burst, at: 0 });
   const entries = yield* Ref.make<ReadonlyArray<Entry>>([]);
   /** Upload slots handed out and not yet filled, with the session that asked for each. */
   const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
   const uploads = yield* Ref.make(0);
+  const recordings = yield* Ref.make<ReadonlyMap<string, Recording>>(new Map());
   const openapi = yield* Schema.decodeUnknownEffect(Wire.StructJson)(
     deployment(options.referenceAudio),
   ).pipe(Effect.orDie);
 
-  const count = (key: "grants" | "sessions" | "connections" | "peers") =>
+  const count = (key: "grants" | "sessions" | "connections" | "peers" | "recordings") =>
     Ref.modify(counts, (all) => [all[key] + 1, { ...all, [key]: all[key] + 1 }] as const);
   const log = (entry: Omit<Entry, "at">) =>
     Effect.flatMap(Playout.monotonic, (at) =>
@@ -287,6 +311,37 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* Scope.close(session.scope, Exit.void);
     });
+  /**
+   * A clip of the session's last `seconds`, or a recording of all of it so
+   * far: its playlist is ready as the clip predicts, unless a fault makes it late.
+   */
+  const record = (session: Session, kind: "snap" | "recording", seconds: number) =>
+    Effect.gen(function* () {
+      const now = yield* Playout.monotonic;
+      const { activeAt } = yield* Ref.get(session.state);
+      const elapsed = activeAt === undefined ? 0 : (now - activeAt) / 1000;
+      const start = kind === "snap" ? Math.max(0, elapsed - Math.min(seconds, maxClipSeconds)) : 0;
+      const late = yield* faults.trip((fault) => fault._tag === "LateRecording");
+      const id = `rec_reactor_test_${yield* count("recordings")}`;
+      yield* Ref.update(recordings, (all) =>
+        new Map(all).set(id, {
+          sessionId: session.id,
+          readyAt: now + (late?._tag === "LateRecording" ? Duration.toMillis(late.by) : 0),
+          segments: Math.max(1, Math.ceil((elapsed - start) / segmentSeconds)),
+        }),
+      );
+      yield* log({ sessionId: session.id, kind: "session", name: `${kind} ${id}` });
+      return {
+        sessionId: session.id,
+        kind,
+        startMarker: start,
+        endMarker: elapsed,
+        nowMarker: elapsed,
+        predictedReadyAtMs: BigInt(yield* Clock.currentTimeMillis),
+        playlistUrl: `/clips/${id}.m3u8`,
+      };
+    });
+
   const activate = (session: Session) =>
     Effect.gen(function* () {
       const now = yield* Playout.monotonic;
@@ -383,28 +438,42 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const n = yield* count("grants");
         const issuedAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         const asked = authorization.constraints?.max_session_duration_seconds;
-        // An over-granting token lets its sessions run twice as long as was asked.
-        const overGrant = (yield* faults.trip((fault) => fault._tag === "OverGrant")) !== undefined;
-        const cap = asked !== undefined && overGrant ? asked * 2 : asked;
+        const misgrant = yield* faults.trip((fault) => fault._tag === "OverGrant");
+        const how = misgrant?._tag === "OverGrant" ? (misgrant.grant ?? "longer") : undefined;
+        // An over-granting token lets its sessions run twice as long as was asked, or uncapped.
+        const cap =
+          asked === undefined || how === "uncapped"
+            ? undefined
+            : how === "longer"
+              ? asked * 2
+              : asked;
+        const granted = how === "bound" ? [...bind, `sess_reactor_test_unasked_${n}`] : bind;
         const grant: Grant = {
           jwt: "",
           models,
           maxSessions:
             authorization.constraints?.max_sessions ?? (bind.length > 0 ? bind.length : 5),
           maxSessionSeconds: cap,
-          expiresAt: issuedAt + Math.min(expiresAfter ?? 3_600, maxTokenSeconds),
+          expiresAt:
+            how === "expired"
+              ? issuedAt - 1
+              : issuedAt + Math.min(expiresAfter ?? 3_600, maxTokenSeconds),
           created: 0,
-          bound: new Set(bind),
+          bound: new Set(granted),
         };
         const echo = {
           type: "session" as const,
           resources: {
             models: { match: models },
-            ...(bind.length > 0 ? { sessions: { bind } } : {}),
+            ...(granted.length > 0 ? { sessions: { bind: granted } } : {}),
           },
           constraints: {
             max_sessions: grant.maxSessions,
-            ...(cap === undefined ? {} : { max_session_duration_seconds: cap }),
+            ...(cap === undefined
+              ? how === "uncapped"
+                ? { max_session_duration_seconds: null }
+                : {}
+              : { max_session_duration_seconds: cap }),
           },
         };
         // Bound sessions live on the server, not in the token's claims.
@@ -419,9 +488,18 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           .map((part) => Encoding.encodeBase64Url(JSON.stringify(part)))
           .join(".");
         yield* Ref.update(grants, (current) => new Map(current).set(jwt, { ...grant, jwt }));
-        return { jwt, expires_at: grant.expiresAt, authorization_details: [echo] };
+        return {
+          jwt,
+          expires_at: grant.expiresAt,
+          ...(how === "silent" ? {} : { authorization_details: [echo] }),
+        };
       }),
-    create: (jwt: string | undefined, model: string, webrtc: boolean) =>
+    create: (
+      jwt: string | undefined,
+      model: string,
+      webrtc: boolean,
+      client: SessionInfo["client"],
+    ) =>
       Effect.gen(function* () {
         const grant = yield* authorize(jwt, "token");
         if (grant === "key")
@@ -467,6 +545,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const session: Session = {
           id,
           model,
+          client,
           creator: grant.jwt,
           maxSessionSeconds: grant.maxSessionSeconds,
           expiresAt: grant.expiresAt,
@@ -488,6 +567,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             // The session a moderation verdict ends is this one, built just below. It ends
             // outside its own scope, which the ending closes.
             terminate: Effect.suspend(() => Effect.asVoid(later(0, end(session, "moderated")))),
+            record: (kind, seconds) => record(session, kind, seconds),
           }).pipe(Scope.provide(sessionScope)),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
@@ -581,6 +661,46 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     candidates: (jwt: string | undefined, id: string, cid: number) =>
       Effect.flatMap(owned(jwt, id), (session) => connection(session, cid)),
 
+    /** A recording's HLS playlist for a bearer that acts on its session; none until it is ready. */
+    playlist: (jwt: string | undefined, id: string) =>
+      Effect.gen(function* () {
+        const recording = (yield* Ref.get(recordings)).get(id);
+        if (recording === undefined) return yield* refuse(404, "not_found", "no such clip");
+        yield* owned(jwt, recording.sessionId);
+        if ((yield* Playout.monotonic) < recording.readyAt) return Option.none();
+        const media = Array.from(
+          { length: recording.segments },
+          (_, index) => `#EXTINF:${segmentSeconds.toFixed(3)},\n${clips}/${id}/${index}.m4s`,
+        );
+        return Option.some(
+          [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            `#EXT-X-TARGETDURATION:${segmentSeconds}`,
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            `#EXT-X-MAP:URI="${clips}/${id}/init.mp4"`,
+            ...media,
+            "#EXT-X-ENDLIST",
+            "",
+          ].join("\n"),
+        );
+      }),
+    /** A recording's segment, served to whoever holds its URL, as a CDN would. */
+    segment: (id: string, file: string) =>
+      Effect.gen(function* () {
+        const recording = (yield* Ref.get(recordings)).get(id);
+        const index = file === "init.mp4" ? -1 : Number.parseInt(file, 10);
+        if (
+          recording === undefined ||
+          (yield* Playout.monotonic) < recording.readyAt ||
+          !(file === "init.mp4" || (file === `${index}.m4s` && index < recording.segments))
+        )
+          return yield* refuse(404, "not_found", "no such segment");
+        // Each segment's bytes name it, so a joined download shows its order.
+        const bytes = new Uint8Array(index < 0 ? 8 : segmentBytes).fill(index < 0 ? 255 : index);
+        return bytes;
+      }),
+
     // Control
     info: Effect.flatMap(Ref.get(sessions), (all) =>
       Effect.forEach([...all.values()], (session) =>
@@ -593,6 +713,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             maxSessionSeconds: session.maxSessionSeconds,
             expiresAt: session.expiresAt,
           },
+          client: session.client,
         })),
       ),
     ),
@@ -610,6 +731,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       } satisfies Billing;
     }),
     log: Ref.get(entries),
+    /** Adds to the log, as the coordinator does for each request it serves. */
+    note: log,
     inject: faults.arm,
   };
 });

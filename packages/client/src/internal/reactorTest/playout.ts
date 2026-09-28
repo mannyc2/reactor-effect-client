@@ -39,6 +39,11 @@ export interface Environment {
   readonly log: (entry: Omit<Entry, "at">) => Effect.Effect<void>;
   /** Ends the session, as a moderation verdict does. */
   readonly terminate: Effect.Effect<void>;
+  /** The recorder's clip of the session's last `seconds`, or its recording so far. */
+  readonly record: (
+    kind: "snap" | "recording",
+    seconds: number,
+  ) => Effect.Effect<MessageInitShape<typeof Wire.ClipReadySchema>>;
 }
 
 /**
@@ -364,8 +369,15 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       case "publishTrack":
         return answer({ case: "error", value: { code: "unknown_track", message: "no input" } });
       case "requestClip":
-      case "requestRecording":
-        return answer({ case: "clipFailed", value: { reason: "recorder disabled" } });
+      case "requestRecording": {
+        if (!options.recorder)
+          return answer({ case: "clipFailed", value: { reason: "recorder disabled" } });
+        const clip =
+          message.payload.case === "requestClip"
+            ? environment.record("snap", message.payload.value.durationSeconds)
+            : environment.record("recording", 0);
+        return Effect.flatMap(clip, (value) => answer({ case: "clipReady", value }));
+      }
       default:
         // Pings and upload or unpublish notifications need no answer.
         return Effect.void;
