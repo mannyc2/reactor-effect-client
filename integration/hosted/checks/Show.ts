@@ -29,7 +29,7 @@
  *   A1+55   the air switches to session 2 as session 1's last clip ends; X airs
  *   X airs  T is due once the air secured has played and one new filler clip
  *           has tiled 6 s more (* H3 aligns the tile up to its frame grid, so T
- *           airs up to 0.7 s after its time): about A1+77
+ *           airs up to 0.7 s and a seam after its time): about A1+77
  *   T airs  a 10 s guard and c1 (* the guard builds while T plays); once the
  *           guard airs and c1 is Ready, the flagged item goes in, or without a
  *           prompt the API key ends session 2: about A1+84, well before its own
@@ -98,6 +98,20 @@ const openMs = 180_000;
 const cueToleranceMs = 500;
 /** How early: the due time and the firing are rounded to a tenth of a millisecond apart. */
 const cueEarlyMs = 1;
+/**
+ * The longest a clip's end may go unfollowed on one session's air. Hosted
+ * clips followed each other within 40 ms, and a cut's within 150 ms.
+ */
+const gapMs = 1_500;
+/**
+ * How far apart two observers may see one moment: the session's status and
+ * the playout's report of it arrive on separate fibers.
+ */
+const observedMs = 100;
+/** How far the reconnect's measured length may stray from the time between its reports. */
+const reconnectSkewMs = 500;
+/** Less than any filler clip's length: two starts of filler closer than this are one clip's. */
+const fillerApartMs = 4_000;
 
 const fillerPrompt = "The same sunlit table seen from across the room, the light shifting slowly.";
 const item = (seconds = clipSeconds): H3.Request => ({ prompt, seconds });
@@ -159,6 +173,51 @@ const sessionEvents = (all: ReadonlyArray<Logged>) =>
     event._tag === "Session" ? [{ atMs, event: event.event }] : [],
   );
 
+/** Each reconnect the playout reported, with its session's next report of being back. */
+const reconnectsOf = (all: ReadonlyArray<Logged>): Evidence.ShowRecord["reconnects"] => {
+  const reconnects: Array<Evidence.ShowRecord["reconnects"][number]> = [];
+  for (const { atMs, event } of sessionEvents(all)) {
+    if (event._tag === "Reconnecting")
+      reconnects.push({ sessionId: event.sessionId, reconnectingMs: atMs });
+    if (event._tag !== "Reconnected") continue;
+    const index = reconnects.findLastIndex(
+      (open) => open.sessionId === event.sessionId && open.reconnectedMs === undefined,
+    );
+    const open = reconnects[index];
+    if (open !== undefined)
+      reconnects[index] = {
+        ...open,
+        reconnectedMs: atMs,
+        afterMillis: Math.round(event.afterMillis),
+      };
+  }
+  return reconnects;
+};
+
+/** A stretch on air: a clip from its reported start to its end, or its length when none came. */
+interface Aired {
+  readonly key: string;
+  readonly fromMs: number;
+  readonly toMs: number;
+}
+
+/** Every gap between one clip's end and the next one's start, in order. */
+const gapsOf = (aired: ReadonlyArray<Aired>): Evidence.ShowRecord["gaps"] => {
+  const gaps: Array<Evidence.ShowRecord["gaps"][number]> = [];
+  let covered: Aired | undefined;
+  for (const next of [...aired].sort((a, b) => a.fromMs - b.fromMs)) {
+    if (covered !== undefined && next.fromMs > covered.toMs)
+      gaps.push({
+        fromMs: covered.toMs,
+        toMs: next.fromMs,
+        ending: covered.key,
+        next: next.key,
+      });
+    if (covered === undefined || next.toMs > covered.toMs) covered = next;
+  }
+  return gaps;
+};
+
 export const show = (pieces: Pieces) =>
   Effect.gen(function* () {
     const flagged = (yield* Target).moderationPrompt;
@@ -196,14 +255,70 @@ export const show = (pieces: Pieces) =>
           const run = yield* Run;
           const target = yield* Target;
           const log = yield* SubscriptionRef.make<ReadonlyArray<Logged>>([]);
+          /** Milliseconds from the run's origin to `at`, epoch milliseconds, to a tenth. */
+          const sinceOrigin = (at: number) => Math.round((at - run.origin) * 10) / 10;
+          const playing = yield* Ref.make<Evidence.ShowRecord["playing"]>({
+            named: 0,
+            later: 0,
+            mismatched: [],
+          });
+          /**
+           * Reads the clip the state names on air as a start is reported: `own` is
+           * how the state names it, `at` the reported start and `seconds` its length.
+           */
+          const comparePlaying = (
+            key: string,
+            own: string,
+            at: number,
+            seconds: number | undefined,
+          ) =>
+            Effect.flatMap(air.playout.state, ({ playing: named }) =>
+              Ref.update(playing, (seen) => {
+                if (named?.key === own && named.startedAt === at)
+                  return { ...seen, named: seen.named + 1 };
+                // Filler clips share a name, and the next starts once one has run at least 5 s.
+                const same =
+                  named?.key === own && (own !== "filler" || named.startedAt - at < fillerApartMs);
+                if (named !== null && !same && named.startedAt > at)
+                  return { ...seen, later: seen.later + 1 };
+                return {
+                  ...seen,
+                  mismatched: [
+                    ...seen.mismatched,
+                    {
+                      key,
+                      startedMs: sinceOrigin(at),
+                      ...(seconds === undefined ? {} : { seconds }),
+                      ...(named === null
+                        ? {}
+                        : {
+                            stateKey: named.key,
+                            stateStartedMs: sinceOrigin(named.startedAt),
+                            ...(named.seconds === undefined ? {} : { stateSeconds: named.seconds }),
+                          }),
+                    },
+                  ],
+                };
+              }),
+            );
           yield* air.playout.events.pipe(
-            Stream.runForEach((event) =>
-              event._tag === "AsRun"
-                ? Effect.void
-                : Effect.flatMap(run.now, (atMs) =>
-                    SubscriptionRef.update(log, (all) => [...all, { atMs, event }]),
-                  ),
-            ),
+            Stream.runForEach((event) => {
+              if (event._tag === "AsRun") {
+                const status = event.event.status;
+                return status._tag === "Started"
+                  ? comparePlaying(event.event.key, event.event.key, status.at, status.seconds)
+                  : Effect.void;
+              }
+              const kept = Effect.flatMap(run.now, (atMs) =>
+                SubscriptionRef.update(log, (all) => [...all, { atMs, event }]),
+              );
+              return event._tag === "Filler" && event.phase === "Started"
+                ? Effect.andThen(
+                    comparePlaying(`filler ${event.index}`, "filler", event.at, event.seconds),
+                    kept,
+                  )
+                : kept;
+            }),
             Effect.forkScoped,
           );
           const shown = yield* Ref.make<Pick<Evidence.ShowRecord, "recovery" | "loss" | "at">>({});
@@ -211,6 +326,60 @@ export const show = (pieces: Pieces) =>
             const all = yield* SubscriptionRef.get(log);
             const items = yield* SubscriptionRef.get(air.items);
             const facts = yield* Ref.get(shown);
+            const readings = yield* Ref.get(playing);
+            const filler = all.flatMap(({ event }) =>
+              event._tag === "Filler"
+                ? [
+                    {
+                      index: event.index,
+                      phase: event.phase,
+                      atMs: sinceOrigin(event.at),
+                      ...(event.seconds === undefined
+                        ? {}
+                        : { seconds: Math.round(event.seconds * 1000) / 1000 }),
+                    },
+                  ]
+                : [],
+            );
+            const failures = air.asRun().flatMap(({ atMs, key, status }) =>
+              status._tag === "Failed"
+                ? [
+                    {
+                      key,
+                      atMs,
+                      reason: status.reason._tag,
+                      ...(status.reason._tag === "Lost"
+                        ? { sessionId: status.reason.sessionId }
+                        : {}),
+                    },
+                  ]
+                : [],
+            );
+            // A clip lost on air ended when it failed; one whose end never came, as a retiring
+            // session's last may not, ran its length.
+            const aired: Array<Aired> = [];
+            for (const clip of items.values())
+              if (clip.startedMs !== undefined)
+                aired.push({
+                  key: clip.key,
+                  fromMs: clip.startedMs,
+                  toMs:
+                    clip.endedMs ??
+                    failures.find((failure) => failure.key === clip.key)?.atMs ??
+                    clip.startedMs + (clip.seconds ?? clipSeconds) * 1000,
+                });
+            for (const start of filler) {
+              if (start.phase !== "Started") continue;
+              const end = filler.find(
+                (clip) =>
+                  clip.phase === "Ended" && clip.index === start.index && clip.atMs >= start.atMs,
+              );
+              aired.push({
+                key: `filler ${start.index}`,
+                fromMs: start.atMs,
+                toMs: end?.atMs ?? start.atMs + (start.seconds ?? clipSeconds) * 1000,
+              });
+            }
             const cues = all.flatMap(({ event }) => {
               if (event._tag !== "Cue") return [];
               const aired = items.get(event.event.key);
@@ -220,7 +389,7 @@ export const show = (pieces: Pieces) =>
                 {
                   key: event.event.key,
                   name: event.event.name,
-                  atMs: Math.round((event.event.at - run.origin) * 10) / 10,
+                  atMs: sinceOrigin(event.event.at),
                   ...(due === undefined
                     ? {}
                     : { lateByMs: Math.round(event.event.at - run.origin - due) }),
@@ -238,6 +407,27 @@ export const show = (pieces: Pieces) =>
                 })),
                 cues,
                 ...facts,
+                filler,
+                gaps: gapsOf(aired).map((gap) => ({
+                  ...gap,
+                  fromMs: Math.round(gap.fromMs * 10) / 10,
+                  toMs: Math.round(gap.toMs * 10) / 10,
+                })),
+                reconnects: reconnectsOf(all),
+                readerOverflows: all.flatMap(({ event }) =>
+                  event._tag === "ReaderOverflow"
+                    ? [
+                        {
+                          sessionId: event.sessionId,
+                          track: event.track,
+                          atMs: sinceOrigin(event.at),
+                          readerOverflows: Number(event.pressure.readerOverflows),
+                        },
+                      ]
+                    : [],
+                ),
+                failures,
+                playing: readings,
               },
             }));
           });
@@ -367,6 +557,47 @@ export const show = (pieces: Pieces) =>
                 [readyMs !== undefined, "the session never read ready again"],
                 [firstFrameMs !== undefined, "no frame reached the picture after the reconnect"],
                 [!replaced, "the playout replaced the session instead"],
+              );
+              // The playout's own account of the reconnect agrees with what the session published.
+              const reconnects = Effect.map(SubscriptionRef.get(log), (all) =>
+                reconnectsOf(all).filter(
+                  (reconnect) =>
+                    reconnect.sessionId === first && reconnect.reconnectingMs >= droppedMs,
+                ),
+              );
+              yield* pieces.watch(
+                Effect.map(reconnects, (all) =>
+                  all.some((reconnect) => reconnect.reconnectedMs !== undefined),
+                ),
+                Math.min(firstDeadline, give),
+              );
+              const reported = yield* reconnects;
+              const [reconnect] = reported;
+              const backMs = reconnect?.reconnectedMs;
+              const tookMs =
+                reconnect === undefined || backMs === undefined
+                  ? undefined
+                  : backMs - reconnect.reconnectingMs;
+              yield* pieces.judge(
+                "the playout reports the reconnect",
+                [
+                  reported.length === 1,
+                  `the playout reported ${reported.length} reconnects of the session, not one`,
+                ],
+                [tookMs !== undefined, "the playout never reported the session back"],
+                [
+                  readyMs === undefined ||
+                    reconnect === undefined ||
+                    (readyMs >= reconnect.reconnectingMs - observedMs &&
+                      readyMs <= (backMs ?? Infinity) + observedMs),
+                  `the session read ready at ${readyMs} ms, outside the reconnect the playout reported from ${reconnect?.reconnectingMs} to ${backMs ?? "never"} ms`,
+                ],
+                [
+                  tookMs === undefined ||
+                    reconnect?.afterMillis === undefined ||
+                    Math.abs(reconnect.afterMillis - tookMs) <= reconnectSkewMs,
+                  `the reconnect was said to take ${reconnect?.afterMillis} ms, but its reports were ${Math.round(tookMs ?? 0)} ms apart`,
+                ],
               );
             }),
           );
@@ -955,6 +1186,62 @@ export const show = (pieces: Pieces) =>
             [steady.length === 0, `the air starved at ${steady.join(", ")} ms`],
           );
           yield* recordShow;
+          const record = (yield* run.evidence).show;
+          // A gap is the show's own doing where it reaches into the cut connection, or from the
+          // loss to the first start after it. The switch's is recorded: Playout promises only
+          // that it follows the grace.
+          const resumedMs = Math.min(
+            ...[...all.values()].flatMap((aired) =>
+              aired.startedMs !== undefined && aired.startedMs >= (lossMs ?? Infinity)
+                ? [aired.startedMs]
+                : [],
+            ),
+            ...(record?.filler ?? []).flatMap((clip) =>
+              clip.phase === "Started" && clip.atMs >= (lossMs ?? Infinity) ? [clip.atMs] : [],
+            ),
+          );
+          const within = (gap: Evidence.ShowRecord["gaps"][number], fromMs: number, toMs: number) =>
+            gap.toMs >= fromMs && gap.fromMs <= toMs;
+          const openGaps = (record?.gaps ?? []).filter(
+            (gap) =>
+              gap.toMs - gap.fromMs > gapMs &&
+              !(
+                recovery !== undefined &&
+                within(gap, recovery.droppedMs, recovery.firstFrameMs ?? Infinity)
+              ) &&
+              !(switchMs !== undefined && within(gap, switchMs, switchMs)) &&
+              !(lossMs !== undefined && within(gap, lossMs, resumedMs)),
+          );
+          yield* pieces.judge("no gap on air between clips, filler included", [
+            openGaps.length === 0,
+            openGaps
+              .map(
+                (gap) =>
+                  `${gap.ending} to ${gap.next} left ${Math.round(gap.toMs - gap.fromMs)} ms at ${gap.fromMs} ms`,
+              )
+              .join(", "),
+          ]);
+          const readings = record?.playing;
+          yield* pieces.judge(
+            "the state names the clip on air as it started",
+            [(readings?.named ?? 0) > 0, "the state never named a clip as it started"],
+            [
+              (readings?.mismatched ?? []).length === 0,
+              (readings?.mismatched ?? [])
+                .map(
+                  (reading) =>
+                    `${reading.key} started at ${reading.startedMs} ms, the state named ${reading.stateKey === undefined ? "none" : `${reading.stateKey} from ${reading.stateStartedMs} ms`}`,
+                )
+                .join(", "),
+            ],
+          );
+          const overflows = record?.readerOverflows ?? [];
+          yield* pieces.judge("the show's own reader keeps up", [
+            overflows.length === 0,
+            overflows
+              .map((overflow) => `the ${overflow.track} reader fell behind at ${overflow.atMs} ms`)
+              .join(", "),
+          ]);
           yield* run.mark("show observed");
         }),
     );

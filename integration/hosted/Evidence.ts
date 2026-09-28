@@ -727,6 +727,73 @@ export const ShowRecord = Schema.Struct({
   ),
   /** The item due `At` a wall-clock instant: when, and how late its boundary came. */
   at: Schema.optionalKey(Schema.Struct({ dueMs: Ms, lateByMs: Schema.optionalKey(Schema.Finite) })),
+  /** Each filler clip's start and end on air, and its length, as the playout reported them. */
+  filler: Schema.Array(
+    Schema.Struct({
+      index: Schema.Int,
+      phase: Schema.Literals(["Started", "Ended"]),
+      atMs: Ms,
+      seconds: Schema.optionalKey(Schema.Finite),
+    }),
+  ),
+  /**
+   * Every gap on air between one clip's end and the next one's start, items
+   * and filler alike, from their reported starts and ends.
+   */
+  gaps: Schema.Array(
+    Schema.Struct({ fromMs: Ms, toMs: Ms, ending: Schema.String, next: Schema.String }),
+  ),
+  /**
+   * Each dropped connection the playout reported: its session, when the
+   * playout said it was reconnecting, when it said it was back, and how long
+   * the source measured the reconnect.
+   */
+  reconnects: Schema.Array(
+    Schema.Struct({
+      sessionId: Schema.String,
+      reconnectingMs: Ms,
+      reconnectedMs: Schema.optionalKey(Ms),
+      afterMillis: Schema.optionalKey(Schema.Finite),
+    }),
+  ),
+  /** Each reader of the on-air picture or sound that fell behind, and its session's count then. */
+  readerOverflows: Schema.Array(
+    Schema.Struct({
+      sessionId: Schema.String,
+      track: Schema.Literals(["video", "audio"]),
+      atMs: Ms,
+      readerOverflows: Schema.Int,
+    }),
+  ),
+  /** Each item that failed for good, the tag of its failure's reason, and the session it lost. */
+  failures: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      atMs: Ms,
+      reason: Schema.Literals(["Clip", "Command", "Lost", "Moderated", "Closed"]),
+      sessionId: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  /**
+   * The playout's state read as each clip's start was reported, items and
+   * filler alike: how often it named that clip with that start, how often a
+   * later clip had started by then, and every other reading.
+   */
+  playing: Schema.Struct({
+    named: Schema.Int,
+    later: Schema.Int,
+    mismatched: Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        startedMs: Ms,
+        seconds: Schema.optionalKey(Schema.Finite),
+        /** What the state named instead, and its start and length; nothing when it named none. */
+        stateKey: Schema.optionalKey(Schema.String),
+        stateStartedMs: Schema.optionalKey(Ms),
+        stateSeconds: Schema.optionalKey(Schema.Finite),
+      }),
+    ),
+  }),
 });
 export type ShowRecord = typeof ShowRecord.Type;
 

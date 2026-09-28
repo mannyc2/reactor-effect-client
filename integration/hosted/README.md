@@ -60,10 +60,12 @@ The evidence stays narrow: one sample of each edit shows it can land, not a stab
 
 `show` runs the rest of `Playout`'s provider-facing behaviour in one playout: 75 s sessions, a 30 s renewal lead, 5 to 8 s of filler runway, a cut lane above the lineup's lane, a `replace` lane and a `skip` lane below it, and `maxModerations: 2`, so the planned loss by moderation does not end the show. Each phase judges its own criteria, and a failure, or running past its session's work deadline, is a failed criterion named after it while the later phases still run.
 
-- Session 1: its connection is cut, and it must read ready again and show a fresh frame within 20 s, with no replacement opened; then the `edits` sequence and its criteria; then one planned switch to session 2.
+- Session 1: its connection is cut, and it must read ready again and show a fresh frame within 20 s, with no replacement opened. The playout must report the reconnect once, with the session's ready between its `Reconnecting` and `Reconnected`, and an `afterMillis` within 500 ms of the time between them. Then the `edits` sequence and its criteria; then one planned switch to session 2.
 - Session 2: an `Asap` item airs ahead of one waiting, cues fire within 500 ms of their offsets, and an item due `At` an instant airs, never before it. It is then ended under a playing clip, by moderation with `--moderation-prompt-file` and with the API key without: the clip on air fails as lost, a moderated item fails as moderated, and a Ready one is carried to the next session.
 - Session 3: the carried clip airs; a cut lane's clip stops a lower lane's playing clip with one `stop`, starts next and is not stopped itself; a `replace` lane's new item takes its waiting item's place; a `skip` lane refuses an item while one waits; the drain completes.
-- Throughout: each item airs on the session on air at its start, every session gives video, and filler keeps the air covered outside the cut connection and the loss.
+- Throughout: each item airs on the session on air at its start, every session gives video, and filler keeps the air covered outside the cut connection and the loss: the playout never starves, and no clip's end, filler's included, goes 1.5 s without the next start (hosted clips followed each other within 40 ms, and a cut's within 150 ms). The gap at the planned switch is recorded, not judged: `Playout` promises only that the switch follows the grace. The playout's state names each clip as its start is reported, with that start, and the show's own reader of the picture and sound never falls behind.
+
+The evidence records each filler clip's start and end, every gap between clips, each reconnect the playout reported with the length its source measured, any reader that fell behind, each failed item's reason, and how the state read at each start.
 
 The timeline is planned from paid timing, from session 1's allocation; the steps marked \* wait on hosted latency.
 
@@ -72,16 +74,16 @@ The timeline is planned from paid timing, from session 1's allocation; the steps
 | A1+3      | The playout opens on session 1; filler secures 8 s of air.                                                                                                                               | 4.4 s        |
 | A1+8      | With the runway full, nothing is in flight: every live connection is closed at the peer, as a lost network would close it.                                                               | 9.0 s        |
 | A1+11 \*  | Session 1 reads ready again and its picture resumes. No check had reconnected a hosted session before.                                                                                   | 11.3 s       |
-| A1+15–46  | The `edits` sequence, as `edits` plans it: p1 p2 xc xn p3 y. \* xc's continued build fits p2's length, and the batch goes a median build and a second before p3 ends.                    | 17.3–48.6 s  |
+| A1+15–46  | The `edits` sequence, as `edits` plans it: p1 p2 xc xn p3 y. \* xc's continued build fits p2's length, and the batch goes a median build and a second before p3 ends.                    | 17.2–48.6 s  |
 | A1+48 \*  | Session 2 opens, 30 s before session 1's grant ends, and takes L1 (cued a second after its start and a second before its end) and X at `Asap`; once X is Ready, session 1's filler goes. | 53.2 s       |
 | A1+55     | The air switches as session 1's last clip ends: X airs, then L1.                                                                                                                         | 59.3 s       |
-| A1+77 \*  | T airs at the next boundary from its time: due once the air secured has played and one new filler clip has tiled 6 s more.                                                               | 81.1 s       |
-| A1+84 \*  | With a 10 s guard on air and c1 Ready, the flagged item goes in (a verdict about 1 s later), or the API key ends session 2, 11 s before its own lead would open a replacement.           | 88.0 s       |
-| A1+90–117 | Session 3 rebuilds and airs c1; a 10 s line clip is cut 2.5 s after it starts; the `replace` and `skip` lanes' items air; the drain completes and the scope ends session 3.              | 91.8–119.9 s |
+| A1+77 \*  | T airs at the next boundary from its time: due once the air secured has played and one new filler clip has tiled 6 s more.                                                               | 76.5 s       |
+| A1+84 \*  | With a 10 s guard on air and c1 Ready, the flagged item goes in (a verdict about 1 s later), or the API key ends session 2, 11 s before its own lead would open a replacement.           | 83.1 s       |
+| A1+90–117 | Session 3 rebuilds and airs c1; a 10 s line clip is cut 2.5 s after it starts; the `replace` and `skip` lanes' items air; the drain completes and the scope ends session 3.              | 89.6–115.8 s |
 
-At about 127 s of sessions the estimate is $1.59, and the rehearsal's $1.64; the three capped sessions reserve $2.8125.
+At about 127 s of sessions the estimate is $1.59, as rehearsed; the three capped sessions reserve $2.8125.
 
-Filler tiles the gap before an `At` item with lengths the playout predicts from the ratio it learned for 5 s clips, while H3 aligns a requested length up to its frame grid (124 frames, then steps of 17). The tile before T is built a little short, so the playout adds a whole 5 s filler clip, and T airs about 5 s after its time in rehearsal. The check records that lateness and judges only that T airs, and never early.
+Filler tiles the gap before an `At` item with lengths the playout predicts from the ratio it learned for 5 s clips, and no tile asks for less than its share, while H3 aligns a requested length up to its frame grid (124 frames, then steps of 17). In rehearsal the one tile before T, asked for 6 s, ran 6.58 s, and T aired 0.77 s after its time: one 17-frame step and the seam. The check records that lateness and judges only that T airs, and never early.
 
 ## What we gather, and why
 
