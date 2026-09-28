@@ -1,10 +1,9 @@
 //! The owner thread: the one thread that holds a peer's libwebrtc objects.
 
 use super::{Shared, callbacks};
-use crate::abi::{Channel, MAX_BUFFERED_SEND_BYTES, Operation};
 use crate::error::{BridgeError, Classify, FailureClass};
 use crate::protocol::{
-    self, BitrateRequest, Direction, DirectionRequest, Mapping, PrepareRequest, PrepareResponse,
+    BitrateRequest, Channel, Direction, MAX_BUFFERED_SEND_BYTES, Mapping, PrepareRequest,
     stats_json,
 };
 use crate::sync::lock;
@@ -12,29 +11,69 @@ use reactor_webrtc::{
     DataChannel, DataChannelState, PeerConnection, PeerConnectionFactory, RtcConfiguration,
     SdpType, SessionDescription, Transceiver, TransceiverDirection,
 };
+use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests;
 
-/// Where the owner thread sends one command's result.
-pub(crate) type Reply<T> = SyncSender<Result<T, BridgeError>>;
+/// Where a command's result goes. It runs exactly once, on the owner thread,
+/// and must not wait: the addon's completion only queues a promise settlement.
+pub(crate) type Done<T> = Box<dyn FnOnce(Result<T, BridgeError>) + Send>;
+
+/// A prepared connection's local offer and each declared track's mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Prepared {
+    pub(crate) sdp: String,
+    pub(crate) mapping: Vec<Mapping>,
+}
 
 /// Work for the owner thread, which runs commands one at a time.
 pub(crate) enum Command {
-    Call {
-        operation: Operation,
-        request: Vec<u8>,
-        reply: Reply<Vec<u8>>,
+    Prepare {
+        request: PrepareRequest,
+        done: Done<Prepared>,
+    },
+    Answer {
+        sdp: String,
+        done: Done<()>,
+    },
+    Direction {
+        name: String,
+        active: bool,
+        done: Done<()>,
+    },
+    MaxBitrate {
+        request: BitrateRequest,
+        done: Done<()>,
+    },
+    Stats {
+        done: Done<Value>,
     },
     Send {
         channel: Channel,
         bytes: Vec<u8>,
-        reply: Reply<()>,
+        done: Done<()>,
     },
     Shutdown,
+}
+
+impl Command {
+    /// Refuse the command, which then never reaches the owner thread.
+    pub(crate) fn refuse(self, error: BridgeError) {
+        match self {
+            Self::Prepare { done, .. } => done(Err(error)),
+            Self::Stats { done } => done(Err(error)),
+            Self::Answer { done, .. }
+            | Self::Direction { done, .. }
+            | Self::MaxBitrate { done, .. }
+            | Self::Send { done, .. } => done(Err(error)),
+            Self::Shutdown => {}
+        }
+    }
 }
 
 /// libwebrtc's threads are process-global, so reactor-webrtc requires one
@@ -56,16 +95,6 @@ pub(crate) fn factory() -> Result<&'static PeerConnectionFactory, BridgeError> {
     let factory: &'static PeerConnectionFactory = Box::leak(Box::new(factory));
     *slot = Some(factory);
     Ok(factory)
-}
-
-/// Send a command's result to the peer that queued it.
-fn respond<T>(reply: &Reply<T>, result: Result<T, BridgeError>) {
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "the peer waits for every reply, so a failed send means a panic unwound it \
-                  and no one is waiting"
-    )]
-    let _ = reply.send(result);
 }
 
 /// A negotiated connection and the libwebrtc objects created with it.
@@ -110,23 +139,29 @@ impl Owner {
     /// wait for every admitted callback to return.
     pub(crate) fn run(mut self, commands: &Receiver<Command>) {
         while let Ok(command) = commands.recv() {
+            if !matches!(command, Command::Shutdown) {
+                // The peer counted it on submission; it is answered below.
+                self.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
+            }
             match command {
-                Command::Call {
-                    operation,
-                    request,
-                    reply,
-                } => {
-                    let result = self.unless_closed(|owner| owner.call(operation, &request));
-                    respond(&reply, result);
+                Command::Prepare { request, done } => {
+                    done(self.unless_closed(|owner| owner.prepare(request)));
                 }
+                Command::Answer { sdp, done } => {
+                    done(self.unless_closed(|owner| owner.answer(sdp)));
+                }
+                Command::Direction { name, active, done } => {
+                    done(self.unless_closed(|owner| owner.set_direction(&name, active)));
+                }
+                Command::MaxBitrate { request, done } => {
+                    done(self.unless_closed(|owner| owner.set_max_bitrate(&request)));
+                }
+                Command::Stats { done } => done(self.unless_closed(|owner| owner.stats())),
                 Command::Send {
                     channel,
                     bytes,
-                    reply,
-                } => {
-                    let result = self.unless_closed(|owner| owner.send(channel, &bytes));
-                    respond(&reply, result);
-                }
+                    done,
+                } => done(self.unless_closed(|owner| owner.send(channel, &bytes))),
                 Command::Shutdown => break,
             }
         }
@@ -145,26 +180,12 @@ impl Owner {
         }
     }
 
-    fn call(&mut self, operation: Operation, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
-        match operation {
-            Operation::Prepare => self.prepare(request),
-            Operation::Answer => self.answer(request),
-            Operation::Direction => self.set_direction(request),
-            Operation::MaxBitrate => self.set_max_bitrate(request),
-            Operation::Stats => self.stats(),
-            // The peer answers snapshots itself so they never wait behind a
-            // blocking call; answering one here as well keeps this total.
-            Operation::MediaSnapshot => protocol::encode(&self.shared.snapshot()),
-        }
-    }
-
     /// Create the connection, its data channels and a transceiver per
     /// declared track, and return the local offer with each track's MID.
-    fn prepare(&mut self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
+    fn prepare(&mut self, request: PrepareRequest) -> Result<Prepared, BridgeError> {
         if self.connection.is_some() {
             return Err(BridgeError::invalid("native peer is already prepared"));
         }
-        let request = PrepareRequest::parse(request)?;
         let config = RtcConfiguration {
             ice_servers: request.servers.iter().map(Into::into).collect(),
             ..RtcConfiguration::default()
@@ -209,10 +230,6 @@ impl Owner {
                 })
             })
             .collect::<Result<Vec<_>, BridgeError>>()?;
-        let response = protocol::encode(&PrepareResponse {
-            sdp: &offer.sdp,
-            mapping: &mapping,
-        })?;
         self.shared.set_bindings(&mapping);
 
         let tracks = request
@@ -233,32 +250,31 @@ impl Owner {
             data,
             tracks,
         });
-        Ok(response)
+        Ok(Prepared {
+            sdp: offer.sdp,
+            mapping,
+        })
     }
 
     /// Apply the remote answer, which carries the remote peer's candidates.
-    fn answer(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
-        let sdp = std::str::from_utf8(request)
-            .map_err(|error| BridgeError::invalid(format!("answer SDP is not UTF-8: {error}")))?;
+    fn answer(&self, sdp: String) -> Result<(), BridgeError> {
         if sdp.is_empty() {
             return Err(BridgeError::invalid("answer SDP is empty"));
         }
         let answer = SessionDescription {
             kind: SdpType::Answer,
-            sdp: sdp.to_owned(),
+            sdp,
         };
         self.connection()?
             .peer
             .set_remote_description(&answer)
-            .classify(FailureClass::SdpRejected, "set_remote_description")?;
-        Ok(protocol::empty_response())
+            .classify(FailureClass::SdpRejected, "set_remote_description")
     }
 
     /// Pause a declared track, or resume it in its declared direction.
-    fn set_direction(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
-        let request: DirectionRequest = protocol::decode(request)?;
-        let track = self.track(&request.name)?;
-        let direction = if request.active {
+    fn set_direction(&self, name: &str, active: bool) -> Result<(), BridgeError> {
+        let track = self.track(name)?;
+        let direction = if active {
             track.direction.into()
         } else {
             TransceiverDirection::Inactive
@@ -266,13 +282,11 @@ impl Owner {
         track
             .transceiver
             .set_direction(direction)
-            .classify(FailureClass::Native, "set_direction")?;
-        Ok(protocol::empty_response())
+            .classify(FailureClass::Native, "set_direction")
     }
 
     /// Cap an outgoing track's send bitrate.
-    fn set_max_bitrate(&self, request: &[u8]) -> Result<Vec<u8>, BridgeError> {
-        let request = BitrateRequest::parse(request)?;
+    fn set_max_bitrate(&self, request: &BitrateRequest) -> Result<(), BridgeError> {
         let track = self.track(&request.name)?;
         if track.direction != Direction::SendOnly {
             return Err(BridgeError::invalid(format!(
@@ -283,17 +297,16 @@ impl Owner {
         track
             .transceiver
             .set_send_bitrate(None, Some(request.bits_per_second))
-            .classify(FailureClass::Native, "set_send_bitrate")?;
-        Ok(protocol::empty_response())
+            .classify(FailureClass::Native, "set_send_bitrate")
     }
 
-    fn stats(&self) -> Result<Vec<u8>, BridgeError> {
+    fn stats(&self) -> Result<Value, BridgeError> {
         let report = self
             .connection()?
             .peer
             .get_stats()
             .classify(FailureClass::Native, "get_stats")?;
-        protocol::encode(&stats_json(&report))
+        Ok(stats_json(&report))
     }
 
     /// Send one binary message on an open bridge channel, unless it would

@@ -1,11 +1,10 @@
-//! Bridge failures and the ABI failure class each one reports.
+//! Bridge failures and the failure class each one reports.
 
-use crate::abi::Status;
 use std::fmt;
 use std::sync::mpsc::{RecvError, SendError};
 
-/// The failure class of a [`BridgeError`], which fixes the status the C ABI
-/// reports for it.
+/// The failure class of a [`BridgeError`]. The host maps each class to its own
+/// error reason, and never reads the message to decide what failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailureClass {
     Closed,
@@ -15,21 +14,6 @@ pub(crate) enum FailureClass {
     Protocol,
     SdpRejected,
     ChannelClosed,
-}
-
-impl FailureClass {
-    /// The status an entry point returns for this class.
-    pub(crate) const fn status(self) -> Status {
-        match self {
-            Self::Closed => Status::Closed,
-            Self::InvalidInput => Status::InvalidInput,
-            Self::Native => Status::Native,
-            Self::Overflow => Status::Overflow,
-            Self::Protocol => Status::Protocol,
-            Self::SdpRejected => Status::SdpRejected,
-            Self::ChannelClosed => Status::ChannelClosed,
-        }
-    }
 }
 
 /// A classified failure. Its message is diagnostic text for the host, which
@@ -115,23 +99,6 @@ mod tests {
             error.message,
             "set_remote_description: webrtc error: bad fingerprint"
         );
-    }
-
-    #[test]
-    fn every_failure_class_reports_a_failure_status_except_closed() {
-        let classes = [
-            FailureClass::InvalidInput,
-            FailureClass::Native,
-            FailureClass::Overflow,
-            FailureClass::Protocol,
-            FailureClass::SdpRejected,
-            FailureClass::ChannelClosed,
-        ];
-        for class in classes {
-            assert!(class.status().code() < 0, "{class:?}");
-        }
-        // Closed is an outcome the host expects, not a failure of the call.
-        assert_eq!(FailureClass::Closed.status(), Status::Closed);
     }
 
     #[test]

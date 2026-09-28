@@ -1,10 +1,10 @@
-//! Embeds the library's source and build identity and, on macOS, links the
-//! compiler-rt archive that the pinned libwebrtc needs.
+//! Sets up the Node-API addon, embeds its source and build identity and, on
+//! macOS, links the compiler-rt archive that the pinned libwebrtc needs.
 //!
-//! The identity is a JSON object that `scripts/stage.mjs` finds in the built
-//! library and checks against the checked-out sources before staging it. Its
-//! `sourceSha256` covers the same files, hashed the same way, as
-//! `stage.mjs --source-hash` and the pack check in `scripts/pack.ts`. Its
+//! The identity is a JSON object the addon returns from `buildIdentity()`, which
+//! `scripts/stage.mjs` checks against the checked-out sources before staging
+//! it. Its `sourceSha256` covers the same files, hashed the same way, as
+//! `stage.mjs --source-hash`. Its
 //! `webrtcPrebuilt` names the Reactor libwebrtc prebuilt that
 //! `reactor-webrtc-sys` links, which staging checks against the shipped SBOM.
 
@@ -19,17 +19,8 @@ use std::process::{Command, Stdio};
 /// A failed build step, which Cargo reports with the script's output.
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
-/// The C ABI version. A library test checks it against `abi::ABI_VERSION`.
-const ABI_VERSION: u32 = 4;
-
 /// The source identity's inputs outside `src/`, which it covers entirely.
-const SOURCE_FILES: [&str; 5] = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "build.rs",
-    ".cargo/config.toml",
-    "include/reactor_effect_native.h",
-];
+const SOURCE_FILES: [&str; 4] = ["Cargo.toml", "Cargo.lock", "build.rs", ".cargo/config.toml"];
 
 /// Overrides that make `reactor-webrtc-sys` link something other than its
 /// tagged prebuilt; with either set, the identity names no prebuilt.
@@ -46,6 +37,7 @@ const BUILD_ENVIRONMENT: [&str; 6] = [
 ];
 
 fn main() -> BuildResult<()> {
+    napi_build::setup();
     let root = env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .ok_or("Cargo sets CARGO_MANIFEST_DIR")?;
@@ -65,8 +57,7 @@ fn build_identity(root: &Path) -> BuildResult<String> {
     let rustc = cargo_env("RUSTC")?;
     // Each value is already JSON.
     let mut fields = vec![
-        ("schemaVersion", "1".to_owned()),
-        ("abiVersion", ABI_VERSION.to_string()),
+        ("schemaVersion", "2".to_owned()),
         ("sourceSha256", json_string(&source_sha256(root)?)),
         ("target", json_string(&cargo_env("TARGET")?)),
         ("profile", json_string(&cargo_env("PROFILE")?)),

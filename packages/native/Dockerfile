@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=linux/amd64 rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS build
+FROM --platform=linux/amd64 node:24.15.0-bookworm-slim AS node
+
+FROM --platform=linux/amd64 rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS toolchain
 
 WORKDIR /work
 COPY scripts/install-linux-toolchain.sh ./scripts/install-linux-toolchain.sh
@@ -12,18 +14,25 @@ RUN apt-get update \
         tar \
         zstd \
     && rm -rf /var/lib/apt/lists/*
-
 RUN rustup component add clippy rustfmt
 
-COPY rust-toolchain.toml ./
-COPY rust/Cargo.toml rust/Cargo.lock rust/build.rs rust/clippy.toml ./rust/
-COPY rust/.cargo/config.toml ./rust/.cargo/config.toml
-COPY rust/src ./rust/src
-COPY rust/include ./rust/include
+# The napi CLI builds the addon and writes the TypeScript declarations of its
+# binding; it runs on the same Node the SDK's CI uses.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && npm install --global @napi-rs/cli@3.10.5
 
 ENV CARGO_TARGET_DIR=/target \
     CC=clang-21 \
     CXX=clang++-21
+
+FROM toolchain AS build
+
+COPY rust-toolchain.toml package.json ./
+COPY rust/Cargo.toml rust/Cargo.lock rust/build.rs rust/clippy.toml ./rust/
+COPY rust/.cargo/config.toml ./rust/.cargo/config.toml
+COPY rust/src ./rust/src
 
 # reactor-webrtc-sys downloads the pinned Linux x64 libwebrtc prebuilt,
 # verifies its published SHA-256, and compiles its C++ glue with pinned LLVM 21.
@@ -31,10 +40,11 @@ RUN cargo fmt --manifest-path rust/Cargo.toml -- --check
 RUN cargo test --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 RUN cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 RUN RUSTDOCFLAGS="-D warnings" cargo doc --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items
-RUN cargo build --locked --manifest-path rust/Cargo.toml --release
-RUN test "$(uname -m)" = "x86_64" \
-    && file /target/release/libreactor_effect_native.so \
-    && ldd /target/release/libreactor_effect_native.so
+RUN napi build --platform --release --manifest-path rust/Cargo.toml --package-json-path package.json \
+        --no-const-enum --output-dir /out --no-js --dts binding.d.ts \
+    && test "$(uname -m)" = "x86_64" \
+    && file /out/reactor-effect-native.linux-x64-gnu.node \
+    && ldd /out/reactor-effect-native.linux-x64-gnu.node
 
 FROM scratch AS artifact
-COPY --from=build /target/release/libreactor_effect_native.so /libreactor_effect_native.so
+COPY --from=build /out/ /
