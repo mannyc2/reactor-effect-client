@@ -54,33 +54,18 @@ const failed = (criterion: string) => (evidence: Evidence) => {
   );
 };
 
-for (const check of ["vertical", "turn", "audio", "takeover", "queue", "renewal", "cut"] as const)
+for (const check of [
+  "vertical",
+  "turn",
+  "audio",
+  "takeover",
+  "resume",
+  "queue",
+  "renewal",
+  "edits",
+  "cut",
+] as const)
   rehearse(`${check} passes`, { check, judge: passes });
-
-// A resumed source's first state names no playing clip: H3Source.resume knows only the
-// clips its own provider has seen, and H3 keeps no history of the one playing.
-rehearse("resume identifies no playing clip yet", {
-  check: "resume",
-  judge: (evidence) => {
-    failed("clip identified")(evidence);
-    assert.deepStrictEqual(
-      evidence.criteria.filter((criterion) => !criterion.passed).map((criterion) => criterion.name),
-      ["clip identified"],
-    );
-  },
-});
-
-// Playout refuses an insert after a clip that has started, which 0.7.0 took as the next boundary.
-rehearse("edits cannot insert after the playing clip yet", {
-  check: "edits",
-  judge: (evidence) => {
-    assert.strictEqual(evidence.verdict, "fail");
-    assert.isTrue(
-      evidence.reasons.some((reason) => reason.includes("the anchor is not waiting to air")),
-      evidence.reasons.join("; "),
-    );
-  },
-});
 
 rehearse("a lost enqueue reply stops the check", {
   check: "vertical",
