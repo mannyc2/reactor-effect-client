@@ -191,11 +191,15 @@ export const Evidence = Schema.Struct({
     /** What earlier paid runs in the ledger had reserved when this one was admitted. */
     reservedBeforeUsd: Usd,
     rate: Schema.optionalKey(
-      Schema.Struct({ creditsPerSecond: Schema.Finite, creditsPerDollar: Schema.Finite }),
+      Schema.Struct({
+        creditsPerSecond: Schema.Finite,
+        creditsPerDollar: Schema.Finite,
+        per: Schema.Literals(["second", "minute"]),
+      }),
     ),
     /** Recorded before any token exists: what the ledger reserves for this run. */
     worstCaseUsd: Schema.optionalKey(Usd),
-    /** Allocation to confirmed end, every started minute whole, at the published rate. */
+    /** Allocation to confirmed end, every started unit of the published rate whole. */
     estimatedUsd: Schema.optionalKey(Usd),
   }),
   grants: Schema.Array(

@@ -379,6 +379,32 @@ it.effect(
     }),
 );
 
+// The billing page shows rates per minute; the live pricing endpoint states H3's per second.
+it.effect("reads a model's rate in the unit its pricing states it", () =>
+  Effect.gen(function* () {
+    const pricing = (rate: object) => ({
+      settings: { credits_per_dollar: 10_000, currency_code: "USD" },
+      models: [{ name: "h3-reference-to-video-turbo-realtime", rate }],
+    });
+    const model = "reactor/h3-reference-to-video-turbo-realtime";
+    const perSecond = yield* Coordinator.modelRate(
+      pricing({ amount_per_sec: 125, unit: "credits", denomination: "second" }),
+      model,
+    );
+    const perMinute = yield* Coordinator.modelRate(
+      pricing({ amount_per_min: 7_500, unit: "credits", denomination: "minute" }),
+      model,
+    );
+    assert.deepStrictEqual(
+      [perSecond, perMinute],
+      [
+        { creditsPerDollar: 10_000, creditsPerSecond: 125, per: "second" },
+        { creditsPerDollar: 10_000, creditsPerSecond: 125, per: "minute" },
+      ],
+    );
+  }),
+);
+
 // Reactor's JS SDK types class a 5xx SERVER_ERROR as recoverable, and 401/403 and 409 as not.
 it.effect("a server error is retryable; a refusal of authority or a conflict is not", () =>
   Effect.gen(function* () {

@@ -198,10 +198,15 @@ const CreditsRate = Schema.Union([
   }),
 ]);
 
-/** A model's price. Reactor bills by the session-minute; callers decide how time rounds. */
+/**
+ * A model's price. Reactor's billing page says it bills by the session-minute,
+ * while its pricing states some models' rates per second; `per` is the unit
+ * the pricing states, and callers decide how time rounds.
+ */
 export interface Rate {
   readonly creditsPerDollar: number;
   readonly creditsPerSecond: number;
+  readonly per: "second" | "minute";
 }
 
 /**
@@ -223,6 +228,7 @@ export const modelRate = Effect.fnUntraced(
     return {
       creditsPerDollar: decoded.settings.credits_per_dollar,
       creditsPerSecond: "amount_per_sec" in rate ? rate.amount_per_sec : rate.amount_per_min / 60,
+      per: rate.denomination,
     } satisfies Rate;
   },
   Effect.mapError((cause) =>

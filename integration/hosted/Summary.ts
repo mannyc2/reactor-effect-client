@@ -69,7 +69,7 @@ const section = (evidence: Evidence): string => {
           `- **Native addon:** ${environment.native.platform ?? "?"} sha256 ${(environment.native.sha256 ?? "").slice(0, 8)}, source ${(environment.native.sourceSha256 ?? "").slice(0, 8)}, ${environment.native.webrtcPrebuilt ?? "?"}`,
         ]),
     `- **Network:** ${environment.network}`,
-    `- **Cost:** worst case ${usd(evidence.budget.worstCaseUsd)}, estimated ${usd(evidence.budget.estimatedUsd)}${evidence.budget.rate === undefined ? "" : ` at ${evidence.budget.rate.creditsPerSecond} credits/s and ${evidence.budget.rate.creditsPerDollar} credits/$`}`,
+    `- **Cost:** worst case ${usd(evidence.budget.worstCaseUsd)}, estimated ${usd(evidence.budget.estimatedUsd)}${evidence.budget.rate === undefined ? "" : ` at ${evidence.budget.rate.creditsPerSecond} credits/s, billed per ${evidence.budget.rate.per}, and ${evidence.budget.rate.creditsPerDollar} credits/$`}`,
     `- **Timeline:** ${evidence.milestones.map((milestone) => `${milestone.step} ${seconds(milestone.atMs)}`).join(" · ")}`,
     ...measurements(evidence).map((line) => `- ${line}`),
     `- **Termination:** ${evidence.sessions.map((session) => `${session.id} ${session.close?.confirmed === true ? "confirmed" : "unconfirmed"}${session.trail.length === 0 ? "" : ` (trail ${session.trail.map((entry) => entry.state).join(" > ")})`}`).join("; ")}`,

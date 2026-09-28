@@ -162,7 +162,7 @@ const preflight = Command.make(
       reservedUsd,
     });
     yield* Console.log(
-      `rate ${rate.creditsPerSecond} credits/s at ${rate.creditsPerDollar} credits/$: a capped session bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
+      `rate ${rate.creditsPerSecond} credits/s, billed per ${rate.per}, at ${rate.creditsPerDollar} credits/$: a capped session bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
     );
     // Minting allocates nothing; a token that grants more than asked refuses here.
     const grant = yield* coordinator.mintToken({
