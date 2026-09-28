@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-28
+
+Fixes for three scheduler faults. Two were found by 0.7.0's first hosted runs of its queue edits, and one by checking the scheduler against Reactor's documentation.
+
+- A cut no longer stops the clip that replaces the one it cut.
+- A continued clip that cannot be Ready before the clip ahead of it ends now continues from the clip that will air before it, and airs right behind that clip.
+- A clip lost before it was built, with two sessions in a row, is no longer rebuilt. A prompt that gets its session terminated can no longer open session after session.
+
+`SchedulerState.estimates` gains an optional `continuedBuild`; the public API is otherwise unchanged. The native Rust sources are unchanged.
+
+Upgrading from 0.7.0:
+
+- An item whose clip is lost before it was built, with two sessions in a row, settles `Failed` instead of being rebuilt again.
+- A continued clip may air one clip later than its place, behind the clip it continues from, instead of after a clip it does not continue from.
+- Continued builds no longer count toward the independent build estimates, so a slow continued build no longer raises the runway floor or deadline projections.
+
+Qualification: the main CI run that built these archives passed the portable suites on Node and Bun, the native build and suite on linux-x64 and darwin-arm64, and the pack/install smoke of all three archives. On hosted H3, published 0.7.0's `scheduler-cut` run found the double stop, and its `scheduler-edits` run found the late continued clip. On September 28, 2026, `scheduler-edits` passed from commit `aabe52f`, which carries both fixes and holds the last frame ([record](./integration/hosted/evidence/0.7.0/summary.md)). Its continued seam changed the picture 5.8 times as much as the ending clip's own motion, against 13 to 18 times at the independent seams, and its edit batch took effect 0.92 s before its boundary. The cut fix and the rebuild bound have run only against the simulation and the twin. A provider `Started` event is not proof of encoded output.
+
 ### Added
 
 - The hosted qualification gains two one-session checks for 0.7.0's scheduler, at most $0.75 each. `scheduler-edits` inserts clips into a group with and without `continuity: "previous"` and sends an edit batch timed to take effect a second before a boundary. It records the order clips air in, when the batch took effect, and each seam's pause and picture change against the ending clip's own motion. `scheduler-cut` probes raw H3 for position zero behind a running build, how long a popped build holds the build slot, and whether a queue read sent right behind an enqueue lists the new clip, then lets a cut lane stop a playing 15 s clip and measures the cut's seam. The two frames either side of each seam are written for review outside the evidence, which still holds no frame. Their sessions hold the last frame at boundaries, as a show does. Both ran once against published 0.7.0, in `integration/hosted/evidence/0.7.0/`, for $1.50, before their sessions held the last frame, and both failed. `scheduler-edits` showed an edit batch taking effect 1.04 s before its boundary, but its continued insert missed its place: it waited behind a build in flight, its continued build took 5.45 s against about 2.2 s for an independent one, and it aired after a clip it did not continue from. `scheduler-cut` found the double stop fixed below, and listed position zero ahead of the running build. Its queue reads sent right behind an enqueue all listed the new clip. `scheduler-edits` then passed from a checkout carrying the fixes below, for $0.75. Its continued seam changed the picture 5.8 times as much as the ending clip's own motion, against 13 to 18 times at the independent seams: the same scene carried across it, shifted slightly. No frame was dark with the last frame held.
@@ -318,7 +336,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/f6d00b23d69a325f834514be5ef033801faf86c4...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/428c2b45a03450a93df4275739cb5bdf58d72f45...main
+[0.7.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.1
 [0.7.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.0
 [0.6.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.6.0
 [0.5.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.5.0
