@@ -15,15 +15,14 @@ import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { TokenGrant, Tokens } from "./Coordinator.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
-import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
-import { ItemKey } from "./internal/playout/errors.js";
+import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
+import * as Tag from "./internal/playout/tag.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
@@ -81,34 +80,9 @@ export interface ResumeOptions extends Omit<Options, "canvas"> {
   readonly tokens: Pick<Tokens, "bind">;
 }
 
-// Playout's identity travels inside the caller part of H3's metadata envelope,
-// so a resumed session's clips are recognized by key whatever process sent them.
-const Envelope = Schema.fromJsonString(
-  Schema.Struct({ reactor_effect_h3: Schema.Literal(1), caller: Schema.String }),
-);
-const Tag = Schema.fromJsonString(
-  Schema.Struct({
-    playout: Schema.Literal(1),
-    key: Schema.optionalKey(ItemKey),
-    filler: Schema.optionalKey(Schema.Int),
-    metadata: Schema.optionalKey(Schema.String),
-  }),
-);
-
-const tagOf = (metadata: string): ClipTag | undefined => {
-  const envelope = Schema.decodeResult(Envelope)(metadata);
-  if (Result.isFailure(envelope)) return undefined;
-  const tag = Schema.decodeResult(Tag)(envelope.success.caller);
-  if (Result.isFailure(tag)) return undefined;
-  if (tag.success.key !== undefined) return { _tag: "Item", key: tag.success.key };
-  return tag.success.filler === undefined
-    ? undefined
-    : { _tag: "Filler", index: tag.success.filler };
-};
-
 const clipOf = (clip: (typeof H3.Clip)["Type"]): SourceClip => ({
   clipId: clip.clip_id,
-  tag: tagOf(clip.metadata),
+  tag: Tag.decode(clip.metadata),
   seconds: clip.seconds,
 });
 
@@ -327,19 +301,12 @@ const fromSession = Effect.fnUntraced(function* (
     events,
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
-        const caller = yield* Schema.encodeResult(Tag)({
-          playout: 1,
-          ...(tag._tag === "Item" ? { key: tag.key } : { filler: tag.index }),
-          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-        }).pipe(
-          Effect.fromResult,
-          Effect.mapError(() =>
-            CommandFailure.from(
-              ReactorError.fromCode("InvalidInput", "clip metadata could not be encoded"),
-              { operation: "enqueue", outcome: "not-submitted" },
-            ),
-          ),
-        );
+        const caller = Tag.encode({ tag, metadata: request.metadata });
+        if (caller === undefined)
+          return yield* CommandFailure.from(
+            ReactorError.fromCode("InvalidInput", "clip metadata could not be encoded"),
+            { operation: "enqueue", outcome: "not-submitted" },
+          );
         const acceptance = yield* provider.enqueue({
           ...request,
           metadata: caller,

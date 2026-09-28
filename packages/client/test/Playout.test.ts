@@ -335,6 +335,30 @@ layer(hosted)("edits", (it) => {
     }),
   );
 
+  // Metadata within H3's bound on its own can pass it once the playout's key and H3's own
+  // identity wrap it, each escaping its quotes again: the enqueue would refuse it unsent.
+  it.effect("refuses metadata that fits H3's bound only before it is wrapped", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const sent = (yield* commands("enqueue")).length;
+      const refused = yield* Effect.flip(
+        playout.submit({
+          key: key("quoted"),
+          lane: "line",
+          request: { ...clip("quoted"), metadata: '"'.repeat(600) },
+        }),
+      );
+      assert.strictEqual(refused._tag, "InvalidItem");
+      const fits = yield* playout.submit({
+        key: key("plain"),
+        lane: "line",
+        request: { ...clip("plain"), metadata: "x".repeat(1_700) },
+      });
+      assert.strictEqual((yield* fits.outcome)._tag, "Ended");
+      assert.strictEqual((yield* commands("enqueue")).length, sent + 1);
+    }),
+  );
+
   it.effect("keeps keys idempotent and refuses what cannot be admitted", () =>
     Effect.gen(function* () {
       const { playout } = yield* start();

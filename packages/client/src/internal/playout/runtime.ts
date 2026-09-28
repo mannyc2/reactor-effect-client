@@ -23,7 +23,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Playout from "../../Playout.js";
-import { requestSeconds } from "../h3/profile.js";
+import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
 import { Request } from "../h3/request.js";
 import { take } from "../queue.js";
@@ -40,6 +40,7 @@ import {
 } from "./errors.js";
 import type { SubmitError } from "./errors.js";
 import * as Policy from "./policy.js";
+import * as Tag from "./tag.js";
 
 type Handle = {
   readonly started: Deferred.Deferred<Playout.AsRunStatus>;
@@ -58,11 +59,12 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
 
 /**
- * Where a request falls outside H3's documented limits, field by field, or
- * undefined within them. Each issue names its field and the limit, never the
- * value, which may be a prompt.
+ * Where a request for the clip `tag` names falls outside H3's documented
+ * limits, field by field, or undefined within them: its metadata counted as
+ * sent, wrapped with the tag and H3's own identity. Each issue names its field
+ * and the limit, never the value, which may be a prompt.
  */
-const requestIssues = (request: Request): string | undefined => {
+const requestIssues = (request: Request, tag: Playout.ClipTag): string | undefined => {
   const decoded = Schema.decodeResult(Request)(request, { errors: "all" });
   const refused = (field: string, index: number) => (error: ReactorError) => [
     { path: [field, String(index)], message: error.message },
@@ -87,6 +89,14 @@ const requestIssues = (request: Request): string | undefined => {
             onSuccess: () => [],
           }),
         ),
+        ...(Tag.fits({ tag, metadata: decoded.success.metadata })
+          ? []
+          : [
+              {
+                path: ["metadata"],
+                message: `exceeds ${String(metadataMaxChars)} characters once wrapped as sent`,
+              },
+            ]),
       ];
   if (issues.length === 0) return undefined;
   return issues
@@ -507,7 +517,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
       const bad = (message: string) => InvalidItem.make({ key, message });
-      const issues = requestIssues(input.request);
+      const issues = requestIssues(input.request, { _tag: "Item", key });
       if (issues !== undefined)
         return yield* bad(`the request is outside H3's documented limits: ${issues}`);
       const duration = (value: Duration.Input | undefined) =>

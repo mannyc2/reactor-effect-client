@@ -167,7 +167,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   yield* session.ready;
   const observation = yield* session.observe({ capacity: bounds.observation });
   const namespace = hex(
-    yield* crypto.randomBytes(16).pipe(
+    yield* crypto.randomBytes(State.namespaceBytes).pipe(
       Effect.mapError(() =>
         ReactorError.fromCode("InvalidState", "Could not allocate an H3 acceptance namespace", {
           outcome: "not-submitted",
