@@ -32,10 +32,27 @@ export const platformPackage = (platform) => `${nativePackage}-${platform}`;
 export const packages = Object.freeze([
   {
     name: "reactor-effect-client",
-    exports: [".", "./h3", "./host", "./orchestration", "./simulation", "./testing", "./wire"],
+    exports: [
+      ".",
+      "./Coordinator",
+      "./H3",
+      "./H3Source",
+      "./LocalSource",
+      "./Media",
+      "./Peer",
+      "./Playout",
+      "./Reactor",
+      "./ReactorError",
+      "./ReactorTest",
+      "./Session",
+    ],
     dependsOn: [],
   },
-  { name: "reactor-effect-browser", exports: ["."], dependsOn: ["reactor-effect-client"] },
+  {
+    name: "reactor-effect-browser",
+    exports: [".", "./BrowserMedia", "./BrowserPeer"],
+    dependsOn: ["reactor-effect-client"],
+  },
   {
     name: "reactor-effect-native-linux-x64-gnu",
     exports: [],
@@ -44,7 +61,7 @@ export const packages = Object.freeze([
   { name: "reactor-effect-native-darwin-arm64", exports: [], dependsOn: ["reactor-effect-client"] },
   {
     name: nativePackage,
-    exports: ["."],
+    exports: [".", "./NativePeer"],
     dependsOn: [
       "reactor-effect-client",
       "reactor-effect-native-linux-x64-gnu",

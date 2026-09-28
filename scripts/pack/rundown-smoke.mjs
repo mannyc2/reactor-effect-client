@@ -1,12 +1,12 @@
 import { pathToFileURL } from "node:url";
-import { Crypto, Effect, Fiber, Layer, PlatformError } from "effect";
+import { Crypto, Effect, Layer, PlatformError } from "effect";
 import { TestClock } from "effect/testing";
-import * as Simulation from "reactor-effect-client/simulation";
+import { Coordinator, H3, H3Source, Playout, Reactor, ReactorTest } from "reactor-effect-client";
 
 /**
- * Runs the compiled client example, the Rundown, against the installed
- * simulation on the test clock: no coordinator, credentials, platform
- * package or native library, and seconds of programme in milliseconds.
+ * Runs the compiled client example, the Rundown, on a Playout over the
+ * installed simulated Reactor and the test clock: no credentials, platform
+ * package or native addon, and seconds of programme in milliseconds.
  */
 const path = process.argv[2];
 if (path === undefined) throw new Error("example smoke requires the compiled Rundown module");
@@ -27,24 +27,36 @@ const webCrypto = Layer.sync(Crypto.Crypto, () =>
   }),
 );
 
-const program = Effect.gen(function* () {
-  const rundown = yield* Rundown;
-  const played = yield* rundown
-    .play([
-      { prompt: "one", seconds: 5 },
-      { prompt: "two", seconds: 5 },
-    ])
-    .pipe(Effect.forkChild);
-  yield* TestClock.adjust("5 minutes");
-  return yield* Fiber.join(played);
-}).pipe(
-  Effect.provide(
-    Rundown.layer().pipe(Layer.provide(Simulation.layerSim().pipe(Layer.provide(webCrypto)))),
+const mint = Effect.gen(function* () {
+  const test = yield* ReactorTest.ReactorTest;
+  const coordinator = yield* Coordinator.Coordinator;
+  return yield* coordinator.mintToken({
+    apiKey: test.apiKey,
+    modelName: H3.modelName,
+    maxSessionDuration: "10 minutes",
+    expiresAfter: "15 minutes",
+  });
+});
+
+const simulated = Rundown.layer.pipe(
+  Layer.provideMerge(Playout.layer({ open: H3Source.open({ mint }), lanes: [{ name: "show" }] })),
+  Layer.provideMerge(Reactor.layer()),
+  Layer.provideMerge(Coordinator.layer()),
+  Layer.provideMerge(
+    ReactorTest.layer({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "70 millis" }) }),
   ),
-  Effect.provide(TestClock.layer()),
+  Layer.provide(webCrypto),
 );
 
-const outcomes = await Effect.runPromise(program.pipe(Effect.timeout("10 seconds")));
+const program = Effect.gen(function* () {
+  yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+  return yield* (yield* Rundown).play([
+    { prompt: "one", seconds: 5 },
+    { prompt: "two", seconds: 5 },
+  ]);
+}).pipe(Effect.scoped, Effect.provide(simulated), Effect.provide(TestClock.layer()));
+
+const outcomes = await Effect.runPromise(program.pipe(Effect.timeout("30 seconds")));
 const tags = outcomes.map((outcome) => outcome._tag).join(",");
 if (tags !== "Played,Played") throw new Error(`compiled example played ${tags}`);
-console.log("compiled-example-ok offline=simulation rundown=played,played");
+console.log("compiled-example-ok offline=ReactorTest rundown=played,played");
