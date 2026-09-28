@@ -39,12 +39,23 @@ export interface H3 {
    * clip as playing: `state_update` reports it, `play` refuses and `stop` cuts it.
    */
   readonly arming: { readonly token: number; readonly clipId: string } | undefined;
+  /**
+   * A stop acknowledged and not yet landed, and the clip it cuts: hosted H3
+   * answered `stop` before the clip ended (0.7.0 `scheduler-cut` run), so for
+   * that moment the clip still plays and `play` refuses.
+   */
+  readonly stopping: { readonly token: number; readonly clipId: string } | undefined;
+  /**
+   * Stops sent while one lands. Hosted H3 handled such a stop once the next
+   * clip had started, so it stopped that clip.
+   */
+  readonly deferred: ReadonlyArray<string>;
   readonly autoplay: boolean;
   /**
    * The documented boundary: true flushes the video to black when a clip ends,
-   * false holds its last frame. The paid runs of 2026-09-27 used the default
-   * and saw no black frame at their seams; the documented rule is modelled
-   * until hosted H3 settles the conflict.
+   * false holds its last frame. 0.7.0's paid runs used the default and saw the
+   * black frame at every seam, the last of each clip; 0.6.0's reading of none
+   * came from a pause measure that passed over a single dark frame.
    */
   readonly flush: boolean;
   readonly seed: number;
@@ -70,6 +81,8 @@ export const initial: H3 = {
   building: undefined,
   playing: undefined,
   arming: undefined,
+  stopping: undefined,
+  deferred: [],
   autoplay: false,
   flush: true,
   seed: 1000,
@@ -97,7 +110,8 @@ export type Input =
   | { readonly _tag: "Built"; readonly token: number }
   | { readonly _tag: "BuildFailed"; readonly token: number; readonly reason: string }
   | { readonly _tag: "Start"; readonly token: number }
-  | { readonly _tag: "Finish"; readonly token: number };
+  | { readonly _tag: "Finish"; readonly token: number }
+  | { readonly _tag: "Landed"; readonly token: number };
 
 export type Output =
   | { readonly _tag: "Reply"; readonly requestId: string; readonly message: Message }
@@ -108,6 +122,8 @@ export type Output =
   | { readonly _tag: "Build"; readonly token: number; readonly seconds: number }
   /** Start the first ready clip once the seam has passed. */
   | { readonly _tag: "Arm"; readonly token: number }
+  /** An acknowledged stop takes effect after its lag. */
+  | { readonly _tag: "Land"; readonly token: number }
   | {
       readonly _tag: "Play";
       readonly clip: Clip;
@@ -295,6 +311,7 @@ export const step: {
     broadcast({ type: "clip_started", data: { clip } });
     changed();
     build();
+    if (s.stopping === undefined) resume();
   };
   const end = (how: "clip_finished" | "clip_stopped"): void => {
     const playing = s.playing;
@@ -312,11 +329,9 @@ export const step: {
     arm();
   };
   /** Stop cuts the armed clip before it starts, as it would cut a playing one. */
-  const cutArmed = (): boolean => {
-    const armed =
-      s.playout.find((entry) => entry.clip_id === s.arming?.clipId) ??
-      (s.arming === undefined ? undefined : s.playout[0]);
-    if (armed === undefined) return false;
+  const cutArmed = (clipId: string): void => {
+    const armed = s.playout.find((entry) => entry.clip_id === clipId);
+    if (armed === undefined) return;
     set({
       arming: undefined,
       playout: s.playout.filter((entry) => entry !== armed),
@@ -325,7 +340,29 @@ export const step: {
     broadcast({ type: "clip_stopped", data: { clip: armed, seconds_sent: s.secondsSent } });
     changed();
     arm();
-    return true;
+  };
+  /**
+   * A stop is acknowledged at once and takes effect after its lag, on the clip
+   * that played or was armed when it arrived. One sent while another lands
+   * waits for it.
+   */
+  const stop = (id: string): void => {
+    if (s.stopping !== undefined) {
+      set({ deferred: [...s.deferred, id] });
+      return;
+    }
+    const clipId = s.playing?.clip.clip_id ?? s.arming?.clipId;
+    if (clipId === undefined) return refuse(id, "stop", "nothing is playing");
+    emit({ _tag: "Ack", requestId: id });
+    const t = token();
+    set({ stopping: { token: t, clipId } });
+    emit({ _tag: "Land", token: t });
+  };
+  /** The stops that waited on a landing stop, handled now. */
+  const resume = (): void => {
+    const waiting = s.deferred;
+    set({ deferred: [] });
+    for (const id of waiting) stop(id);
   };
   const accepted = (id: string, message: Message): void => {
     reply(id, message);
@@ -366,7 +403,8 @@ export const step: {
       has_reference_audio: audios > 0,
       reference_audio_count: audios,
     };
-    // Position 0 goes ahead of every queued clip except the one building.
+    // Position 0 goes ahead of every queued clip except the one building, as documented. One
+    // hosted read (0.7.0 `scheduler-cut` run) listed it ahead of the running build as well.
     const first = s.building !== undefined && !s.building.discarded ? 1 : 0;
     const at = Math.min(Math.max(a.position ?? s.generation.length, first), s.generation.length);
     set({
@@ -434,6 +472,7 @@ export const step: {
   };
 
   const reset = (id: string): void => {
+    const waiting = s.deferred;
     const armed = s.playout.find((entry) => entry.clip_id === s.arming?.clipId);
     const stopped = s.playing?.clip ?? armed;
     const queued = [...s.generation, ...s.playout].filter((clip) => clip !== armed);
@@ -461,6 +500,8 @@ export const step: {
     // Reset always clears the tracks.
     emit({ _tag: "Flush", clip: stopped });
     broadcast({ type: "clip_stopped", data: { clip: stopped, seconds_sent: s.secondsSent } });
+    // The landing stop went with the reset; the stops waiting on it find nothing playing.
+    for (const deferred of waiting) stop(deferred);
   };
 
   const command = (id: string, name: string, args: Schema.JsonObject): void => {
@@ -474,14 +515,7 @@ export const step: {
       case "play":
         return play(id, args);
       case "stop":
-        if (s.playing !== undefined) {
-          emit({ _tag: "Ack", requestId: id });
-          return end("clip_stopped");
-        }
-        if (s.arming === undefined) return refuse(id, name, "nothing is playing");
-        emit({ _tag: "Ack", requestId: id });
-        cutArmed();
-        return;
+        return stop(id);
       case "set_seed": {
         const decoded = Schema.decodeUnknownResult(Commands.set_seed.args)(args);
         if (Result.isFailure(decoded) || decoded.success.seed < 0)
@@ -570,6 +604,16 @@ export const step: {
     case "Finish":
       if (s.playing?.token === input.token) end("clip_finished");
       break;
+    case "Landed": {
+      const landing = s.stopping;
+      if (landing?.token !== input.token) break;
+      set({ stopping: undefined });
+      if (s.playing?.clip.clip_id === landing.clipId) end("clip_stopped");
+      else if (s.arming?.clipId === landing.clipId) cutArmed(landing.clipId);
+      // The stops sent meanwhile wait for the next clip to start, if one is arming.
+      if (s.arming === undefined) resume();
+      break;
+    }
   }
   return [s, out];
 });

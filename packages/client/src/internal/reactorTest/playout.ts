@@ -200,6 +200,10 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           const seam = yield* environment.timing.delay("seam");
           return yield* later(seam, { _tag: "Start", token: output.token });
         }
+        case "Land": {
+          const lag = yield* environment.timing.delay("stop");
+          return yield* later(lag, { _tag: "Landed", token: output.token });
+        }
         case "Play":
           yield* later(output.clip.seconds * 1000, { _tag: "Finish", token: output.token });
           return yield* FiberMap.run(players, output.token, play(output.clip, output.startedAt));

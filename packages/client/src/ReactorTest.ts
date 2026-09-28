@@ -95,6 +95,8 @@ export interface Timing {
   readonly connect: Range;
   /** From `clip_finished` to the next `clip_started` under autoplay. */
   readonly seam: Range;
+  /** From a `stop`'s acknowledgement until it takes effect and its clip ends. */
+  readonly stop: Range;
   /** Seconds of video built per second of build time; below 1 the queue starves. */
   readonly buildSpeed: { readonly min: number; readonly max: number };
 }
@@ -121,6 +123,7 @@ export const Timing = {
     readonly negotiation?: Duration.Input;
     readonly connect?: Duration.Input;
     readonly seam?: Duration.Input;
+    readonly stop?: Duration.Input;
   }): Timing => ({
     label: "fixed",
     seed: 1,
@@ -130,13 +133,15 @@ export const Timing = {
     negotiation: point(input.negotiation),
     connect: point(input.connect),
     seam: point(input.seam),
+    stop: point(input.stop),
     buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
   }),
   /**
    * Every delay drawn from a range, deliberately wider than anything measured
    * so that code tuned to one provider speed fails: builds from a quarter of
    * real time to ten times it, requests and messages up to 2 s, seams up to
-   * half a second. Name a narrower range to explore one.
+   * half a second, stops landing up to a second after their acknowledgement.
+   * Name a narrower range to explore one.
    */
   random: (input: {
     readonly seed: number;
@@ -146,6 +151,7 @@ export const Timing = {
     readonly negotiation?: readonly [Duration.Input, Duration.Input];
     readonly connect?: readonly [Duration.Input, Duration.Input];
     readonly seam?: readonly [Duration.Input, Duration.Input];
+    readonly stop?: readonly [Duration.Input, Duration.Input];
     readonly buildSpeed?: readonly [number, number];
   }): Timing => ({
     label: `random seed ${input.seed}`,
@@ -156,6 +162,7 @@ export const Timing = {
     negotiation: range(input.negotiation ?? [0, "2 seconds"]),
     connect: range(input.connect ?? [0, "2 seconds"]),
     seam: range(input.seam ?? [0, "500 millis"]),
+    stop: range(input.stop ?? [0, "1 second"]),
     buildSpeed: {
       min: input.buildSpeed?.[0] ?? 0.25,
       max: input.buildSpeed?.[1] ?? 10,
@@ -165,8 +172,9 @@ export const Timing = {
    * What two paid hosted H3 runs measured on 2026-09-27 (0.6.0 evidence):
    * connect steps of 0.2–0.9 s, eleven 5 s clips built about every 2.1 s
    * while playing, five seams of 30–110 ms and command round trips of 60–90
-   * ms. Two runs are a small sample: use it for demos and realism checks, not
-   * as what a test depends on.
+   * ms; and a stop landing about 20 ms after its acknowledgement, from 0.7.0's
+   * `scheduler-cut` run on 2026-09-28. These are small samples: use them for
+   * demos and realism checks, not as what a test depends on.
    */
   hosted: {
     label: "hosted H3, 2 paid runs, 2026-09-27",
@@ -177,6 +185,7 @@ export const Timing = {
     negotiation: range(["500 millis", "650 millis"]),
     connect: range(["600 millis", "900 millis"]),
     seam: range(["30 millis", "110 millis"]),
+    stop: point("20 millis"),
     buildSpeed: { min: 2.3, max: 2.6 },
   } satisfies Timing,
 };
