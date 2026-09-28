@@ -212,6 +212,13 @@ interface Item {
   readonly waiting: ReadonlyArray<{ readonly id: number; readonly index: number }>;
   /** The source state a refused remove saw; it is retried once that changes. */
   readonly blockedRemove?: string | undefined;
+  /**
+   * A clip of its own taken off because it was Ready too early: never adopted
+   * again as queued, though if it plays anyway, it aired.
+   */
+  readonly discarded?: string | undefined;
+  /** The provider's length for its clip, once it started. */
+  readonly airSeconds?: number | undefined;
 }
 
 interface Session {
@@ -446,24 +453,29 @@ export const step: {
   const atMono = (item: Item): number | undefined =>
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
 
+  /** What a withdrawal waiting on an item learns from how it settled. */
+  const outcomeOf = (item: Item, status: AsRunStatus): WithdrawOutcome =>
+    status._tag === "Dropped"
+      ? "withdrawn"
+      : item.startedAt !== undefined || status._tag === "Ended"
+        ? "already-started"
+        : "not-found";
   /** Settles an item for good, resolving withdrawals that wait on it and recording history. */
-  const settle = (
-    key: ItemKey,
-    status: AsRunStatus,
-    outcome: WithdrawOutcome = "withdrawn",
-  ): void => {
+  const settle = (key: ItemKey, status: AsRunStatus): void => {
     const item = items.get(key);
     if (item === undefined || item.phase === "Settled") return;
+    const outcome = outcomeOf(item, status);
     for (const wait of item.waiting)
       actions.push({ _tag: "Withdrawn", id: wait.id, index: wait.index, outcome });
     set(key, { phase: "Settled", waiting: [], withdraw: undefined });
     asRun(key, status);
     state = { ...state, settled: [...state.settled, key] };
-    // A part that fails or is dropped takes the parts after it with it.
+    // A part that fails or is dropped takes the parts after it with it; a replaced one does not,
+    // since its replacement takes its place.
     if (
       item.group !== undefined &&
       !item.inserted &&
-      (status._tag === "Failed" || status._tag === "Dropped")
+      (status._tag === "Failed" || (status._tag === "Dropped" && status.reason !== "replaced"))
     )
       for (const part of groups.get(item.group.key)?.parts ?? []) {
         const other = items.get(part);
@@ -683,7 +695,8 @@ export const step: {
   });
 
   const applyEdit = (id: number, edits: ReadonlyArray<EditInput>, batched: boolean): void => {
-    if (!state.accepting || state.closed) {
+    // A drain stops admissions, not withdrawals.
+    if (state.closed || (!state.accepting && edits.some((edit) => edit._tag !== "Withdraw"))) {
       actions.push({ _tag: "Refused", id, refusal: { _tag: "PlayoutClosed" } });
       return;
     }
@@ -954,7 +967,23 @@ export const step: {
         : at !== undefined && now.mono > at
           ? now.mono - at
           : undefined;
-    set(clip.tag.key, { phase: "Started", startedAt: now.mono, clipId: clip.clipId, sessionId });
+    // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
+    for (const wait of item.waiting)
+      actions.push({
+        _tag: "Withdrawn",
+        id: wait.id,
+        index: wait.index,
+        outcome: "already-started",
+      });
+    set(clip.tag.key, {
+      phase: "Started",
+      startedAt: now.mono,
+      clipId: clip.clipId,
+      sessionId,
+      waiting: [],
+      withdraw: undefined,
+      airSeconds: clip.seconds,
+    });
     asRun(clip.tag.key, {
       _tag: "Started",
       at: now.wall,
@@ -1068,6 +1097,7 @@ export const step: {
       const item = items.get(clip.tag.key);
       if (item === undefined || item.phase === "Settled") continue;
       const where = listed.get(clip.clipId)!;
+      if (where !== "Playing" && item.discarded === clip.clipId) continue;
       if (where === "Playing") {
         if (item.startedAt === undefined) {
           if (item.clipId === undefined) set(item.spec.key, { clipId: clip.clipId, sessionId });
@@ -1768,7 +1798,15 @@ export const step: {
             ? aheadMs < exposureMarginMs
             : at !== undefined && at > now.mono && aheadMs < at - now.mono;
         if (exposed && value.source?.available === true) {
-          set(item.spec.key, { phase: "Accepted", withdraw: undefined, dispatchedAt: undefined });
+          // It goes back to the plan, to be built again once the air ahead covers its wait.
+          set(item.spec.key, {
+            phase: "Accepted",
+            withdraw: undefined,
+            dispatchedAt: undefined,
+            clipId: undefined,
+            sessionId: undefined,
+            discarded: clip.clipId,
+          });
           return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
         }
       }
