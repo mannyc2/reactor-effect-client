@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -32,7 +33,14 @@ import type { Item, Seam, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
 import { recorded, Run } from "./Run.js";
 import type { Check } from "./Spend.js";
-import { acceptGrant, billedUsd, sessionSeconds, tokenSeconds, workSeconds } from "./Spend.js";
+import {
+  acceptGrant,
+  billedUsd,
+  provenGrant,
+  sessionSeconds,
+  tokenSeconds,
+  workSeconds,
+} from "./Spend.js";
 import { prompt, Target } from "./Target.js";
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
@@ -83,10 +91,11 @@ const mint = (check: Check) =>
       expiresAfter: `${tokenSeconds} seconds`,
     });
     yield* run.secret(grant.jwt);
-    yield* acceptGrant({ check, granted: grant.granted });
+    const granted = yield* provenGrant({ jwt: Redacted.value(grant.jwt), granted: grant.granted });
+    yield* acceptGrant({ check, granted });
     yield* run.update((evidence) => ({
       ...evidence,
-      grants: [...evidence.grants, { ...grant.granted, expiresAt: grant.expiresAt }],
+      grants: [...evidence.grants, { ...granted, expiresAt: grant.expiresAt }],
     }));
     yield* run.mark("minted");
     return grant;
@@ -97,8 +106,9 @@ const allocated = (sessionId: string, grant: Coordinator.TokenGrant) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const now = yield* Clock.currentTimeMillis;
+    // The cap asked for, which the grant was proven not to exceed.
     const capEndsAt = DateTime.formatIso(
-      DateTime.makeUnsafe(now + grant.granted.maxSessionSeconds * 1000),
+      DateTime.makeUnsafe(now + (grant.maxSessionSeconds ?? sessionSeconds) * 1000),
     );
     yield* run.update((evidence) => ({
       ...evidence,
@@ -355,7 +365,7 @@ export const vertical = (check: "vertical" | "turn" | "audio") =>
         const session = yield* recorded(
           reactor.create({
             model: H3.modelName,
-            jwt: grant.jwt,
+            tokens: Coordinator.fixedTokens(grant),
             onAllocated: (allocation) =>
               Effect.map(allocated(allocation.id, grant), (at) => {
                 deadline = at;
@@ -570,7 +580,21 @@ export const takeover = (check: "takeover" | "resume") =>
   Effect.gen(function* () {
     const run = yield* Run;
     const target = yield* Target;
+    const coordinator = yield* Coordinator.Coordinator;
     const grant = yield* mint(check);
+    // The taker holds the key, as a server adopting a dead owner's session does: it mints a
+    // token bound to the session, which allocates nothing and stays out of the evidence.
+    const bound: Pick<Coordinator.Tokens, "bind"> = {
+      bind: (sessionId) =>
+        coordinator
+          .mintToken({
+            apiKey: target.apiKey,
+            modelName: H3.modelName,
+            bind: [sessionId],
+            expiresAfter: `${tokenSeconds} seconds`,
+          })
+          .pipe(Effect.tap((token) => run.secret(token.jwt))),
+    };
     const tokens = new Map<string, Coordinator.TokenGrant>();
     const marker = `hosted-qualification:${run.runId}`;
     const video = Media.videoLog();
@@ -579,7 +603,9 @@ export const takeover = (check: "takeover" | "resume") =>
         const owner = yield* target.owner(grant, marker);
         const sessionId = owner.allocation.sessionId;
         tokens.set(sessionId, grant);
-        const allocatedAt = owner.allocation.endsAt * 1000 - grant.granted.maxSessionSeconds * 1000;
+        const cap = (grant.maxSessionSeconds ?? sessionSeconds) * 1000;
+        const endsAt = owner.allocation.endsAt ?? ((yield* Clock.currentTimeMillis) + cap) / 1000;
+        const allocatedAt = endsAt * 1000 - cap;
         const deadline = allocatedAt + workSeconds * 1000;
         yield* run.update((evidence) => ({
           ...evidence,
@@ -588,7 +614,7 @@ export const takeover = (check: "takeover" | "resume") =>
             {
               id: sessionId,
               allocatedMs: allocatedAt - run.origin,
-              capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(owner.allocation.endsAt * 1000)),
+              capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(endsAt * 1000)),
               trail: [],
             },
           ],
@@ -607,7 +633,7 @@ export const takeover = (check: "takeover" | "resume") =>
           Effect.gen(function* () {
             if (check === "takeover") {
               const reactor = yield* Reactor.Reactor;
-              const session = yield* reactor.attach({ sessionId, jwt: grant.jwt });
+              const session = yield* reactor.attach({ sessionId, tokens: bound });
               const provider = yield* H3.make(session);
               const attachMs = (yield* run.now) - killedMs;
               yield* run.mark("attached");
@@ -632,7 +658,7 @@ export const takeover = (check: "takeover" | "resume") =>
                 metadataPreserved: queued?.metadata.includes(`${marker}:queued`) === true,
               };
             }
-            const source = yield* H3Source.resume({ allocation: owner.allocation, jwt: grant.jwt });
+            const source = yield* H3Source.resume({ allocation: owner.allocation, tokens: bound });
             const attachMs = (yield* run.now) - killedMs;
             yield* run.mark("resumed");
             const state = yield* source.events.pipe(
@@ -801,7 +827,7 @@ export const queue = Effect.gen(function* () {
       const session = yield* recorded(
         reactor.create({
           model: H3.modelName,
-          jwt: grant.jwt,
+          tokens: Coordinator.fixedTokens(grant),
           onAllocated: (allocation) =>
             Effect.map(allocated(allocation.id, grant), (at) => {
               deadline = at;
@@ -1142,7 +1168,7 @@ const onAir = <A, E, R>(
         ),
       );
       const source = yield* H3Source.open({
-        mint: Effect.succeed(grant),
+        tokens: Coordinator.fixedTokens(grant),
         holdLastFrame: true,
         onAllocated: ({ session }) =>
           Effect.map(allocated(session.id, grant), (at) => {

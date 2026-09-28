@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Schema } from "effect";
 import * as Spend from "../Spend.js";
 
 const rate = { creditsPerSecond: 125, creditsPerDollar: 10_000 };
@@ -78,6 +78,37 @@ describe("the spending gates", () => {
           granted: { maxSessions: 1, maxSessionSeconds: 40 },
         });
       }),
+  );
+
+  it.effect("a grant is proven by Reactor's echo, else by the token's claims, or refused", () =>
+    Effect.gen(function* () {
+      const claims = yield* Schema.encodeEffect(
+        Schema.StringFromBase64Url.pipe(Schema.decodeTo(Schema.fromJsonString(Schema.Unknown))),
+      )({
+        authorization_details: [
+          { constraints: { max_sessions: 1, max_session_duration_seconds: 50 } },
+        ],
+      });
+      const echoed = yield* Spend.provenGrant({
+        jwt: "e30.e30.sig",
+        granted: { maxSessions: 1, maxSessionSeconds: 50 },
+      });
+      const claimed = yield* Spend.provenGrant({ jwt: `e30.${claims}.sig` });
+      assert.deepStrictEqual(
+        [echoed, claimed],
+        [
+          { maxSessions: 1, maxSessionSeconds: 50 },
+          { maxSessions: 1, maxSessionSeconds: 50 },
+        ],
+      );
+      yield* refused(Spend.provenGrant({ jwt: "e30.e30.sig" }));
+      yield* refused(
+        Spend.provenGrant({
+          jwt: "e30.e30.sig",
+          granted: { maxSessions: 1, maxSessionSeconds: "unlimited" },
+        }),
+      );
+    }),
   );
 
   it.effect("turn refuses once an earlier paid run selected a relay pair", () =>

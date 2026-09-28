@@ -22,6 +22,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
@@ -169,8 +170,12 @@ const preflight = Command.make(
       maxSessionDuration: `${Spend.sessionSeconds} seconds`,
       expiresAfter: `${Spend.tokenSeconds} seconds`,
     });
-    yield* Spend.acceptGrant({ check: "vertical", granted: grant.granted });
-    yield* Console.log(`a token grants one session of ${grant.granted.maxSessionSeconds} s`);
+    const granted = yield* Spend.provenGrant({
+      jwt: Redacted.value(grant.jwt),
+      granted: grant.granted,
+    });
+    yield* Spend.acceptGrant({ check: "vertical", granted });
+    yield* Console.log(`a token grants one session of ${granted.maxSessionSeconds} s`);
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);
     yield* Console.log("the native library loads");

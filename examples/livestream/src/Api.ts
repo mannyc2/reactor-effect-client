@@ -81,17 +81,7 @@ export const ChannelEvent = Schema.Union([
   }),
   Schema.TaggedStruct("Starved", {}),
   Schema.TaggedStruct("Renewal", {
-    phase: Schema.Literals([
-      "Opened",
-      "Prepared",
-      "HandoffReady",
-      "SetupFailed",
-      "Recovering",
-      "Reconnected",
-      "Switched",
-      "Replaced",
-      "Failed",
-    ]),
+    phase: Schema.Literals(["Opened", "SetupFailed", "Switched", "Replaced", "Moderated"]),
     session: Schema.NullOr(Schema.String),
     lostClips: Schema.NullOr(Schema.Int),
   }),

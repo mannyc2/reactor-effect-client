@@ -677,7 +677,11 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
               });
               const client = yield* factory.create({
                 model: "far-peer",
-                jwt: Redacted.make("far-peer-token"),
+                tokens: Coordinator.fixedTokens({
+                  jwt: Redacted.make("far-peer-token"),
+                  expiresAt: Number.MAX_SAFE_INTEGER,
+                  maxSessionSeconds: undefined,
+                }),
               });
               const media = yield* client.decoded;
               const video = yield* media

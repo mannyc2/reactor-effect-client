@@ -51,17 +51,17 @@ const reference: Effect.Effect<H3.ValidatedAudioReference, ReactorError.ReactorE
   H3.validateAudioReference({ _tag: "Bytes", bytes: ReactorTest.wavBytes({ seconds: 3 }) });
 const image: Uint8Array = ReactorTest.pngBytes({ width: 64, height: 64 });
 
-declare const mint: H3Source.OpenOptions["mint"];
+declare const tokens: H3Source.OpenOptions["tokens"];
 const source: Effect.Effect<
   Playout.Source,
   ReactorError.AcquisitionFailure,
   Reactor.Reactor | Crypto.Crypto | Scope.Scope
-> = H3Source.open({ mint });
+> = H3Source.open({ tokens });
 declare const localOptions: LocalSource.Options;
 const local = LocalSource.open(localOptions);
 const playout: Layer.Layer<Playout.Playout, never, Reactor.Reactor | Crypto.Crypto> = Playout.layer(
   {
-    open: H3Source.open({ mint }),
+    open: H3Source.open({ tokens }),
     lanes: [{ name: "show" }, { name: "urgent", cut: true }],
   },
 );

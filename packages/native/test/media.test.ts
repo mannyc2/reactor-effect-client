@@ -19,6 +19,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
+import * as Coordinator from "reactor-effect-client/Coordinator";
 import { recorder } from "reactor-effect-client/Media";
 import type { MediaPressure } from "reactor-effect-client/Media";
 import type { PeerEvent } from "reactor-effect-client/Peer";
@@ -642,7 +643,11 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
               });
               const client = yield* factory.create({
                 model: "far-peer",
-                jwt: Redacted.make("far-peer-token"),
+                tokens: Coordinator.fixedTokens({
+                  jwt: Redacted.make("far-peer-token"),
+                  expiresAt: Number.MAX_SAFE_INTEGER,
+                  maxSessionSeconds: undefined,
+                }),
               });
               const media = yield* client.decoded;
               const frames = yield* media

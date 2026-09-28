@@ -42,18 +42,17 @@ export const layer = Layer.unwrap(
                   Reactor.noAcquisition,
                 ),
               )
-            : H3Source.open({
-                mint: Effect.gen(function* () {
-                  const coordinator = yield* Coordinator.Coordinator;
-                  return yield* coordinator.mintToken({
+            : Effect.gen(function* () {
+                const coordinator = yield* Coordinator.Coordinator;
+                // Each session starts on a token and carries on with tokens bound to it.
+                return yield* H3Source.open({
+                  tokens: coordinator.tokens({
                     apiKey: yield* apiKey,
                     modelName: H3.modelName,
                     maxSessionDuration: settings.sessionLength,
-                    // The token outlives the session, so cleanup can still terminate it.
-                    expiresAfter: Duration.sum(settings.sessionLength, Duration.minutes(2)),
-                  });
-                }),
-                onAllocated: ({ allocation }) => ledger.allocated(allocation),
+                  }),
+                  onAllocated: ({ allocation }) => ledger.allocated(allocation),
+                });
               }),
         ),
       ),

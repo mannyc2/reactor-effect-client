@@ -12,15 +12,17 @@ const show: ReadonlyArray<Segment> = [
   { prompt: "A curtain rising on a painted forest", seconds: 8 },
 ];
 
-/** Mints a session token with the simulated Reactor's key; a paid deployment uses its own. */
-const mint = Effect.gen(function* () {
+/** Opens H3 on tokens minted with the simulated Reactor's key; a paid deployment mints with its own. */
+const open = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
   const coordinator = yield* Coordinator.Coordinator;
-  return yield* coordinator.mintToken({
-    apiKey: test.apiKey,
-    modelName: H3.modelName,
-    maxSessionDuration: "10 minutes",
-    expiresAfter: "15 minutes",
+  return yield* H3Source.open({
+    tokens: coordinator.tokens({
+      apiKey: test.apiKey,
+      modelName: H3.modelName,
+      maxSessionDuration: "10 minutes",
+      expiresAfter: "15 minutes",
+    }),
   });
 });
 
@@ -30,7 +32,7 @@ const mint = Effect.gen(function* () {
  * client and a host, and the Rundown does not change.
  */
 const Offline = Rundown.layer.pipe(
-  Layer.provide(Playout.layer({ open: H3Source.open({ mint }), lanes: [{ name: "show" }] })),
+  Layer.provide(Playout.layer({ open, lanes: [{ name: "show" }] })),
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(Coordinator.layer()),
   Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted })),
