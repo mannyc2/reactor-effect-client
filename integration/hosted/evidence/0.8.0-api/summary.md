@@ -63,21 +63,31 @@ What they found:
   closed.** Recorded, not judged: the 0.8.0-dev `tokens` run first read `INACTIVE` 8.4 s after its
   owner's kill, so hosted takes some seconds to mark a session with no connection.
 
-## For the dashboard
+## The dashboard
 
-Each session from allocation to the request that ended it, as the evidence times them. The
-dashboard's Usage page and the balance have not been compared with these yet.
+The Usage page, read after the `show` run, lists the round's five sessions, all `CLOSED` on
+cluster `5a004973-…`:
 
-| Run      | Check      | Session      | Allocated    | End requested | Span   |
-| -------- | ---------- | ------------ | ------------ | ------------- | ------ |
-| af351108 | `adoption` | `2b56408f-…` | 15:51:25.21Z | 15:51:55.72Z  | 30.5 s |
-| a2382505 | `tour`     | `ef93e126-…` | 16:12:11.10Z | 16:12:47.23Z  | 36.1 s |
-| 3a197a9a | `show`     | `224ecfa3-…` | 23:37:46.17Z | 23:38:42.99Z  | 56.8 s |
-| 3a197a9a | `show`     | `afe348f1-…` | 23:38:34.07Z | 23:39:06.98Z  | 32.9 s |
-| 3a197a9a | `show`     | `ef93d110-…` | 23:39:07.50Z | 23:39:38.14Z  | 30.6 s |
+| Run      | Check      | Session      | Allocated    | End requested | Dashboard duration | Estimate |
+| -------- | ---------- | ------------ | ------------ | ------------- | ------------------ | -------- |
+| af351108 | `adoption` | `2b56408f-…` | 15:51:25.21Z | 15:51:55.72Z  | 30 s               | $0.388   |
+| a2382505 | `tour`     | `ef93e126-…` | 16:12:11.10Z | 16:12:47.23Z  | 36 s               | $0.463   |
+| 3a197a9a | `show`     | `224ecfa3-…` | 23:37:46.17Z | 23:38:42.99Z  | 57 s               | $0.725   |
+| 3a197a9a | `show`     | `afe348f1-…` | 23:38:34.07Z | 23:39:06.98Z  | 33 s               | $0.425   |
+| 3a197a9a | `show`     | `ef93d110-…` | 23:39:07.50Z | 23:39:38.14Z  | 30 s               | $0.388   |
 
-At the published rate the five spans' 187 s come to $2.34; the runs' estimates, which count each
-session to its close report and round it up to the second, total $2.388.
+Each dashboard duration matches the time from allocation to the end request to within a second.
+Each estimate counts its session to the close report, rounded up to the second, which puts it one
+second above the dashboard's every time. At the published rate the dashboard's 186 s come to
+$2.325, against estimates of $2.388.
+
+The balance then read $10.41. The maintainer had added $10 of credits during the day, and the
+0.8.0-dev round's summary read $5.38 at 12:54 UTC, so if the credits came after that reading,
+$4.97 left the account since. The only sessions since 12:54 UTC are these five. At the published
+rate they come to $2.325, and $3.775 with the 0.8.0-dev round's 116 s, which had not been charged
+at 12:54. A whole minute per session would be $7.50 for both rounds. The maintainer read billing
+as not updated yet, so the balance may not hold every session's charge, and what Reactor bills
+stays open.
 
 | Run      | Check    | Mode | Verdict | Started                  | Worst case | Estimated |
 | -------- | -------- | ---- | ------- | ------------------------ | ---------- | --------- |

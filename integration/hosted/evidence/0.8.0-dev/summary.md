@@ -76,7 +76,7 @@ The Usage page, read after the last run, lists these sessions, all `CLOSED` on c
 | 3ae36b29 | `1f84da65-…` | 12:11:20.61Z | 12:11:55.45Z | 35 s               | $0.438   |
 
 The first `tokens` session (`9737e480-…`, allocated 04:51:40.41Z, 20.8 s to the DELETE) was not
-among the rows read. Each listed duration is the time from allocation to the DELETE, to the second.
+among the rows read then; read again after the 0.8.0-api `show` run, the page lists it at 20 s. Each listed duration is the time from allocation to the DELETE, to the second.
 
 The page shows no charges. The balance read $5.38 at 04:01 UTC, before the first run, and $5.38 at
 12:54 UTC, after all five. At the published rate the four listed sessions' 96 s come to $1.20, and
