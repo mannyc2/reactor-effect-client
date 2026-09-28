@@ -88,6 +88,37 @@ layer(environment({ timing }))("tokens", (it) => {
     }),
   );
 
+  it.effect("a short token is refreshed once near its end, not on every call", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      const coordinator = yield* Coordinator.Coordinator;
+      const tokens = coordinator.tokens({
+        apiKey: test.apiKey,
+        modelName: H3.modelName,
+        maxSessionDuration: "10 minutes",
+        expiresAfter: "20 seconds",
+      });
+      let mints = 0;
+      const counted = {
+        create: Effect.tap(tokens.create, () => Effect.sync(() => mints++)),
+        bind: (sessionId: string) =>
+          Effect.tap(tokens.bind(sessionId), () => Effect.sync(() => mints++)),
+      };
+      const reactor = yield* Reactor.Reactor;
+      const session = yield* reactor.create({ model: H3.modelName, tokens: counted });
+      const connected = mints;
+      // Every upload calls the coordinator twice; none of these is near the token's end.
+      for (let upload = 0; upload < 3; upload++)
+        yield* session.upload("still.png", "image/png", png);
+      assert.strictEqual(mints, connected);
+      yield* Effect.sleep("16 seconds");
+      yield* session.upload("still.png", "image/png", png);
+      yield* session.upload("still.png", "image/png", png);
+      assert.strictEqual(mints, connected + 1);
+    }),
+  );
+
   it.effect("a token that is never refreshed stops working when it expires", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
