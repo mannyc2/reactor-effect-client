@@ -1338,3 +1338,108 @@ describe("PlayoutPolicy, any script", () => {
     { arbitrary: { runs: 3000 } },
   );
 });
+
+// Claims from the critique's delegated pass, each checked here before any fix.
+describe("PlayoutPolicy, edit claims", () => {
+  /** Builds `names` on s1 one after another, each Ready once built. */
+  const build = (policy: ReturnType<typeof drive>, names: ReadonlyArray<string>) => {
+    for (const name of names) {
+      const command = policy.busy();
+      assert.deepStrictEqual(
+        command?._tag === "Enqueue" && command.tag._tag === "Item" ? command.tag.key : command,
+        key(name),
+      );
+      policy.reply({ _tag: "Done", clipId: `c-${name}` });
+      const current = policy.state().sessions[0]?.source;
+      policy.observe({
+        playing: current?.playing,
+        ready: [...(current?.ready ?? []), clip(`c-${name}`, item(name))],
+        continuable: [...(current?.continuable ?? []), `c-${name}`],
+      });
+    }
+  };
+
+  it("a replace lane keeps its Ready item as cover until the new one is Ready", () => {
+    const policy = drive({
+      config: {
+        ...config,
+        lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+      },
+    });
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x", 2));
+    build(policy, ["x"]);
+    policy.submit(spec("y", 2));
+    assert.notInclude(statuses(policy.actions, "x"), "Dropped");
+    assert.notDeepEqual(policy.busy(), { _tag: "Remove", clipId: "c-x" });
+  });
+
+  it("a continuing replacement continues from the clip before its place, not the one it replaces", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.submit(spec("b"));
+    build(policy, ["a", "b"]);
+    policy.edit([{ _tag: "Replace", key: key("b"), spec: { ...spec("b2"), continuity: true } }]);
+    const command = policy.busy();
+    assert.deepStrictEqual(command?._tag === "Enqueue" ? command.continueFrom : command, "c-a");
+  });
+
+  it("refuses an insert under a used key with another anchor", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.submit(spec("b"));
+    policy.edit([{ _tag: "Insert", spec: spec("i"), anchor: key("a"), side: "after" }]);
+    const again = policy.edit([
+      { _tag: "Insert", spec: spec("i"), anchor: key("b"), side: "after" },
+    ]);
+    assert.isTrue(
+      again.actions.some(
+        (action) => action._tag === "Refused" && action.refusal._tag === "KeyMismatch",
+      ),
+    );
+  });
+
+  it("refuses a group whose part key another item already uses", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("p"));
+    build(policy, ["p"]);
+    const group = policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p"), spec("q")],
+        fingerprint: "g",
+      },
+    ]);
+    assert.isTrue(group.actions.some((action) => action._tag === "Refused"));
+    assert.strictEqual(policy.state().items.get(key("p"))?.phase, "Ready");
+  });
+
+  it("a batch's cover airs only when nothing else can", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.submit(spec("b"));
+    build(policy, ["a", "b"]);
+    policy.edit(
+      [
+        { _tag: "Withdraw", key: key("a") },
+        { _tag: "Submit", spec: spec("c") },
+      ],
+      true,
+    );
+    // As in 0.7.0, what a pending batch withdraws ranks after the rest of its lane.
+    policy.reply({ _tag: "Done", clipId: "c-c" });
+    const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
+    assert.deepStrictEqual(moves.at(-1)?.command, { _tag: "Move", clipId: "c-b", position: 0 });
+  });
+});
