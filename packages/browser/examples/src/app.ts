@@ -19,7 +19,8 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
  */
 const runtime = ManagedRuntime.make(
   Reactor.layer().pipe(
-    Layer.provide(Coordinator.layer({ apiUrl: window.location.origin })),
+    // The page talks to Reactor itself, with the token the example server minted for it.
+    Layer.provide(Coordinator.layer({ apiUrl: Coordinator.defaultApiUrl })),
     Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
   ),
 );

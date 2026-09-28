@@ -9,7 +9,7 @@ bun run build                                # bundles src/app.ts into dist/app.
 REACTOR_API_KEY=… node src/server.ts         # http://127.0.0.1:3000
 ```
 
-Start opens a paid session of at most five minutes (the creating token's cap), Send enqueues a prompt, Sound on plays the audio track, and Stop closes the session. Needs a browser with WebRTC and Web Crypto, on `localhost` or HTTPS. `HOST`, `PORT` and `REACTOR_API_URL` change where the server listens and which coordinator it mints from.
+Start opens a paid session of at most five minutes (the creating token's cap), Send enqueues a prompt, Sound on plays the audio track, and Stop closes the session. Needs a browser with WebRTC and Web Crypto, on `localhost` or HTTPS. `HOST` and `PORT` change where the server listens. `REACTOR_API_URL` changes which coordinator the server mints tokens from; the page always talks to `Coordinator.defaultApiUrl`, so change both together.
 
 ## What it shows
 
