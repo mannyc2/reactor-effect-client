@@ -9,7 +9,7 @@ import { take } from "../queue.js";
 import type { Mapping } from "../../Coordinator.js";
 import { ReactorError } from "../../ReactorError.js";
 import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
-import { Observations } from "../../observation.js";
+import { trackFeed } from "../../Peer.js";
 import type { Channel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
 import { monotonic, until } from "./playout.js";
@@ -54,11 +54,14 @@ const offer = (peerId: string, mapping: ReadonlyArray<Mapping>): string =>
 const unsupported = (message: string) =>
   ReactorError.fromCode("UnsupportedCapability", message, { outcome: "not-submitted" });
 
+/** Each reader holds at most this many frames and bytes before it fails, as a host's reader does. */
+const readerBounds = { capacity: 512, maxBytes: 64 * 1024 * 1024 };
+
 /**
  * One test peer. Its connection state is local to it; everything that waits
  * is an Effect.
  */
-export const make = (sessions: Sessions): Peer => {
+export const make = Effect.fnUntraced(function* (sessions: Sessions) {
   let emit: ((event: PeerEvent) => void) | undefined;
   let id: string | undefined;
   let mapping: ReadonlyArray<Mapping> = [];
@@ -66,8 +69,14 @@ export const make = (sessions: Sessions): Peer => {
   let outbound: Queue.Queue<Delivery> | undefined;
   let opened = false;
   let closed = false;
-  const video = new Observations<VideoFrame>();
-  const audio = new Observations<AudioFrame>();
+  const video = yield* trackFeed<VideoFrame>({
+    ...readerBounds,
+    bytes: (frame) => frame.data.byteLength,
+  });
+  const audio = yield* trackFeed<AudioFrame>({
+    ...readerBounds,
+    bytes: (frame) => frame.samples.byteLength,
+  });
   const delivered = { video: 0n, audio: 0n };
 
   const signal = (event: PeerEvent): void => {
@@ -75,30 +84,33 @@ export const make = (sessions: Sessions): Peer => {
   };
   const receiving = (kind: "video" | "audio") =>
     mapping.find((track) => track.kind === kind && track.direction === "recvonly");
-  const publish = (value: VideoFrame | AudioFrame, bytes: number): void => {
-    const kind = value._tag === "VideoFrame" ? "video" : "audio";
-    const track = receiving(kind);
-    if (closed || track === undefined) return;
-    if (value._tag === "VideoFrame") video.emit(value, bytes);
-    else audio.emit(value, bytes);
-    if (delivered[kind]++ === 0n)
-      signal({ type: "decoded", kind, name: track.name, mid: track.mid });
-  };
-  const stream = <A>(kind: "video" | "audio", observations: Observations<A>, name: string) =>
+  const publish = (value: VideoFrame | AudioFrame) =>
+    Effect.suspend(() => {
+      const kind = value._tag === "VideoFrame" ? "video" : "audio";
+      const track = receiving(kind);
+      if (closed || track === undefined) return Effect.void;
+      if (delivered[kind]++ === 0n)
+        signal({ type: "decoded", kind, name: track.name, mid: track.mid });
+      return value._tag === "VideoFrame" ? video.publish(value) : audio.publish(value);
+    });
+  const stream = <A>(
+    kind: "video" | "audio",
+    feed: { readonly stream: Stream.Stream<A, ReactorError> },
+    name: string,
+  ) =>
     Stream.unwrap(
       Effect.suspend(() =>
         receiving(kind)?.name === name
-          ? Effect.succeed(observations.stream({ capacity: 512, maxBytes: 64 * 1024 * 1024 }))
+          ? Effect.succeed(feed.stream)
           : Effect.fail(unsupported(`no receive ${kind} track named ${name}`)),
       ),
     );
-  const close = (): void => {
-    if (closed) return;
+  const close = Effect.suspend(() => {
+    if (closed) return Effect.void;
     closed = true;
     opened = false;
-    video.end();
-    audio.end();
-  };
+    return Effect.andThen(video.end, audio.end);
+  });
   const link = (peerId: string): Link => ({
     id: peerId,
     open: Effect.sync(() => {
@@ -117,45 +129,34 @@ export const make = (sessions: Sessions): Peer => {
         else
           for (const channel of ["control", "data"] as const)
             signal({ type: "channel", channel, open: false });
-        close();
-      }),
+      }).pipe(Effect.andThen(close)),
     deliver: (channel, bytes) =>
       Effect.gen(function* () {
         const due = (yield* monotonic) + (yield* sessions.timing.delay("channel"));
         return inbound === undefined ? false : yield* Queue.offer(inbound, { channel, bytes, due });
       }),
     video: (frame) =>
-      Effect.sync(() =>
-        publish(
-          {
-            _tag: "VideoFrame",
-            track: receiving("video")?.name ?? profile.tracks.video,
-            width: sessions.options.width,
-            height: sessions.options.height,
-            frameId: frame.frameId,
-            timestampMicros: frame.timestampMicros,
-            sequence: delivered.video,
-            format: "BGRA",
-            data: frame.data,
-            metadata: new Uint8Array(0),
-          },
-          frame.data.byteLength,
-        ),
-      ),
+      publish({
+        _tag: "VideoFrame",
+        track: receiving("video")?.name ?? profile.tracks.video,
+        width: sessions.options.width,
+        height: sessions.options.height,
+        frameId: frame.frameId,
+        timestampMicros: frame.timestampMicros,
+        sequence: delivered.video,
+        format: "BGRA",
+        data: frame.data,
+        metadata: new Uint8Array(0),
+      }),
     audio: (samples) =>
-      Effect.sync(() =>
-        publish(
-          {
-            _tag: "AudioFrame",
-            track: receiving("audio")?.name ?? profile.tracks.audio,
-            sampleRate: profile.audio.sampleRate,
-            channels: profile.audio.channels,
-            sequence: delivered.audio,
-            samples,
-          },
-          samples.byteLength,
-        ),
-      ),
+      publish({
+        _tag: "AudioFrame",
+        track: receiving("audio")?.name ?? profile.tracks.audio,
+        sampleRate: profile.audio.sampleRate,
+        channels: profile.audio.channels,
+        sequence: delivered.audio,
+        samples,
+      }),
   });
   /** Deliver each queued message in order, once its latency has passed. */
   const drain = (
@@ -173,19 +174,22 @@ export const make = (sessions: Sessions): Peer => {
       _tag: "Decoded",
       video: (name: string) => stream("video", video, name),
       audio: (name: string) => stream("audio", audio, name),
-      pressure: Effect.sync(() => ({
-        closed,
-        queuedControl: 0,
-        queuedVideo: 0,
-        queuedAudio: 0,
-        queuedBytes: 0,
-        droppedVideo: 0n,
-        droppedAudio: 0n,
-        pendingRequests: 0,
-        deliveredVideo: delivered.video,
-        deliveredAudio: delivered.audio,
-        readerOverflows: video.overflowCount + audio.overflowCount,
-      })),
+      pressure: Effect.map(
+        Effect.all([video.overflows, audio.overflows]),
+        ([videoOverflows, audioOverflows]) => ({
+          closed,
+          queuedControl: 0,
+          queuedVideo: 0,
+          queuedAudio: 0,
+          queuedBytes: 0,
+          droppedVideo: 0n,
+          droppedAudio: 0n,
+          pendingRequests: 0,
+          deliveredVideo: delivered.video,
+          deliveredAudio: delivered.audio,
+          readerOverflows: videoOverflows + audioOverflows,
+        }),
+      ),
     },
     prepare: (_servers, tracks, onEvent) =>
       Effect.gen(function* () {
@@ -231,9 +235,9 @@ export const make = (sessions: Sessions): Peer => {
           yield* Queue.offer(queue, { channel, bytes: new Uint8Array(bytes), due });
         });
       }),
-    close: Effect.sync(close),
+    close,
     direction: () => Effect.void,
     maxBitrate: () => Effect.void,
     stats: Effect.succeed([]),
-  };
-};
+  } satisfies Peer;
+});

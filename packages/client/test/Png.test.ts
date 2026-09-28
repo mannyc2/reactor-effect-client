@@ -12,7 +12,7 @@ describe("portable PNG fixtures", () => {
     [512, 128],
   ] as const)
     test(`decodes ${width}x${height} pixels with valid checksums across stored-block boundaries`, () => {
-      const bytes = pngBytes(width, height);
+      const bytes = pngBytes({ width, height });
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       expect(Array.from(bytes.subarray(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
       expect(view.getUint32(16)).toBe(width);
@@ -26,7 +26,7 @@ describe("portable PNG fixtures", () => {
         let crc = 0xffffffff;
         for (const byte of bytes.subarray(cursor + 4, cursor + 8 + length)) {
           crc ^= byte;
-          for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+          for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0);
         }
         expect(view.getUint32(cursor + 8 + length)).toBe((crc ^ 0xffffffff) >>> 0);
         if (type === "IDAT") {

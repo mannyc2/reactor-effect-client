@@ -175,7 +175,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     );
     if (Exit.isFailure(opened)) {
       yield* Scope.close(child, opened);
-      const error = Option.getOrUndefined(Exit.findErrorOption(opened));
+      const error = Exit.findErrorOption(opened).pipe(Option.getOrUndefined);
       yield* Ref.set(lastOpenError, error);
       return yield* offer({
         _tag: "OpenFailed",
@@ -202,7 +202,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           sessionId: source.sessionId,
           reason: Exit.isSuccess(exit)
             ? "the session ended"
-            : (Option.getOrUndefined(Exit.findErrorOption(exit))?.message ?? "the session failed"),
+            : (Exit.findErrorOption(exit).pipe(Option.getOrUndefined)?.message ??
+              "the session failed"),
         }),
       ),
       Effect.forkIn(child),
@@ -247,7 +248,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
               : undefined,
         } as const;
       }
-      const error = Option.getOrUndefined(Exit.findErrorOption(exit));
+      const error = Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
       return {
         _tag: "Failed",
         outcome: error?.context.outcome ?? "unknown",
@@ -354,26 +355,26 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const refusal = (refused: Policy.Refusal): SubmitError => {
     switch (refused._tag) {
       case "KeyMismatch":
-        return new KeyMismatch({ key: refused.key });
+        return KeyMismatch.make({ key: refused.key });
       case "WouldMissDeadline":
-        return new WouldMissDeadline({ key: refused.key });
+        return WouldMissDeadline.make({ key: refused.key });
       case "LaneBusy":
-        return new LaneBusy({ key: refused.key, lane: config.lanes[refused.lane]?.name ?? "" });
+        return LaneBusy.make({ key: refused.key, lane: config.lanes[refused.lane]?.name ?? "" });
       case "InvalidItem":
-        return new InvalidItem({ key: refused.key, message: refused.message });
+        return InvalidItem.make({ key: refused.key, message: refused.message });
       case "PlayoutClosed":
-        return new PlayoutClosed();
+        return PlayoutClosed.make({});
     }
   };
   const lane = (key: string, name: string) => {
     const index = config.lanes.findIndex((value) => value.name === name);
     return index < 0
-      ? Effect.fail(new InvalidItem({ key, message: `no lane is named ${name}` }))
+      ? Effect.fail(InvalidItem.make({ key, message: `no lane is named ${name}` }))
       : Effect.succeed(index);
   };
   const itemKey = (key: string) =>
     Effect.fromOption(ItemKey.makeOption(key)).pipe(
-      Effect.mapError(() => new InvalidItem({ key, message: "a key must be a nonempty string" })),
+      Effect.mapError(() => InvalidItem.make({ key, message: "a key must be a nonempty string" })),
     );
   const spec = (
     input: {
@@ -388,7 +389,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   ): Effect.Effect<Policy.Spec, InvalidItem> =>
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
-      const bad = (message: string) => new InvalidItem({ key, message });
+      const bad = (message: string) => InvalidItem.make({ key, message });
       const duration = (value: Duration.Input | undefined) =>
         value === undefined
           ? Effect.undefined
@@ -505,7 +506,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             anchor === undefined ||
             (edit.insert.before !== undefined && edit.insert.after !== undefined)
           )
-            return yield* new InvalidItem({
+            return yield* InvalidItem.make({
               key: edit.insert.key,
               message: "give exactly one of before and after",
             });
@@ -594,7 +595,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         results,
         committed: Effect.flatMap(Deferred.await(committed), () =>
           Effect.flatMap(Deferred.isDone(failure), (closed) =>
-            closed ? Effect.fail(new PlayoutClosed()) : Effect.void,
+            closed ? Effect.fail(PlayoutClosed.make({})) : Effect.void,
           ),
         ),
       };
@@ -606,7 +607,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       yield* offer({ _tag: "Release", id, key });
       const answer = yield* Deferred.await(reply);
       if (answer._tag === "Refused")
-        return yield* new InvalidItem({
+        return yield* InvalidItem.make({
           key,
           message: answer.refusal._tag === "InvalidItem" ? answer.refusal.message : "not released",
         });
@@ -624,7 +625,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     drain: Effect.fn("Playout.drain")(function* (drainOptions?: {
       readonly finish?: "playing" | "accepted";
     }) {
-      if (yield* Deferred.isDone(failure)) return yield* new PlayoutClosed();
+      if (yield* Deferred.isDone(failure)) return yield* PlayoutClosed.make({});
       const id = yield* nextId;
       const drained = yield* signal(`drained:${id}`);
       yield* offer({ _tag: "Drain", id, finish: drainOptions?.finish ?? "playing" });

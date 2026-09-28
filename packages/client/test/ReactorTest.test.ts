@@ -222,7 +222,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
         const refused = yield* Effect.flip(
           provider.enqueue({
             prompt: "a voice alone",
-            audio: [{ _tag: "Bytes", bytes: wavBytes(3) }],
+            audio: [{ _tag: "Bytes", bytes: wavBytes({ seconds: 3 }) }],
             continueFrom: unknown,
           }),
         );
@@ -287,7 +287,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
         const test = yield* ReactorTest.ReactorTest;
         const { provider } = yield* watch;
         yield* test.inject({ _tag: "InvalidImage", nth: 1 });
-        const image = { _tag: "Bytes", bytes: pngBytes(64, 64) } as const;
+        const image = { _tag: "Bytes", bytes: pngBytes({ width: 64, height: 64 }) } as const;
         const refused = yield* Effect.flip(
           provider.enqueue({ prompt: "one", references: [image] }),
         );

@@ -1,4 +1,6 @@
 export interface WavOptions {
+  /** The clip's length. */
+  readonly seconds: number;
   /** Samples a second, 16,000 by default. */
   readonly sampleRate?: number;
   /** 1 (mono, the default) or 2. */
@@ -11,7 +13,8 @@ export interface WavOptions {
  * A 16-bit PCM WAV of a steady tone, `seconds` long: an audio reference whose
  * header gives its length and channels, so H3's local checks read them.
  */
-export const wavBytes = (seconds: number, options: WavOptions = {}): Uint8Array => {
+export const wavBytes = (options: WavOptions): Uint8Array => {
+  const seconds = options.seconds;
   const sampleRate = options.sampleRate ?? 16_000;
   const channels = options.channels ?? 1;
   const frequency = options.frequency ?? 440;

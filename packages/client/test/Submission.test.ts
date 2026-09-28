@@ -170,31 +170,32 @@ test("interruption after commit abandons only the caller and retains eventual co
     }),
   ));
 
-test("session scope termination joins committed work and releases its resources", async () => {
-  let released = 0;
-  const scope = await Effect.runPromise(Scope.make());
-  const entered = Deferred.makeUnsafe<void>();
-  const operation = await Effect.runPromise(
-    Submission.make({
-      id: "scope-close",
-      prepare: Effect.acquireRelease(Effect.void, () =>
-        Effect.sync(() => {
-          released++;
-        }),
-      ),
-      execute: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
-    }).pipe(Scope.provide(scope)),
-  );
-  const caller = Effect.runFork(operation.submit);
-  await Effect.runPromise(Deferred.await(entered));
-  await Effect.runPromise(Scope.close(scope, Exit.void));
-  const exit = await Effect.runPromise(Fiber.await(caller));
-  expect(Exit.isFailure(exit)).toBe(true);
-  expect(released).toBe(1);
-  const state = await Effect.runPromise(operation.state);
-  expect(state._tag).toBe("Completed");
-  if (state._tag === "Completed") expect(Exit.isFailure(state.exit)).toBe(true);
-});
+test("session scope termination joins committed work and releases its resources", () =>
+  run(
+    Effect.gen(function* () {
+      let released = 0;
+      const scope = yield* Scope.make();
+      const entered = yield* Deferred.make<void>();
+      const operation = yield* Submission.make({
+        id: "scope-close",
+        prepare: Effect.acquireRelease(Effect.void, () =>
+          Effect.sync(() => {
+            released++;
+          }),
+        ),
+        execute: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      }).pipe(Scope.provide(scope));
+      const caller = yield* Effect.forkChild(operation.submit);
+      yield* Deferred.await(entered);
+      yield* Scope.close(scope, Exit.void);
+      const exit = yield* Fiber.await(caller);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(released).toBe(1);
+      const state = yield* operation.state;
+      expect(state._tag).toBe("Completed");
+      if (state._tag === "Completed") expect(Exit.isFailure(state.exit)).toBe(true);
+    }),
+  ));
 
 test("a defective execution is recorded and is never retried", () =>
   run(
