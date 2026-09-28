@@ -14,6 +14,7 @@ import {
   Path,
   Redacted,
   Stream,
+  Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
@@ -102,6 +103,37 @@ layer(environment({ timing }))("a per-call deadline", (it) => {
         );
       }
       assert.deepStrictEqual((yield* session.snapshot).pending, { data: 0, control: 0 });
+    }),
+  );
+});
+
+layer(environment({ timing }))("tracing", (it) => {
+  it.effect("names each operation's span after its module and operation", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const names = new Set<string>();
+      const tracer = Tracer.make({
+        span: (options) => {
+          names.add(options.name);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      yield* Effect.gen(function* () {
+        const session = yield* connect;
+        yield* session.command("get_state", {});
+        yield* session.close;
+      }).pipe(Effect.withTracer(tracer));
+      assert.includeMembers(
+        [...names],
+        [
+          "Coordinator.mintToken",
+          "Reactor.create",
+          "Session.connect",
+          "Session.command",
+          "Session.close",
+          "Coordinator.terminate",
+        ],
+      );
     }),
   );
 });

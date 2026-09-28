@@ -748,7 +748,7 @@ export const takeover = (check: "takeover" | "resume") =>
         const evidence = yield* run.evidence;
         const commands: Record<string, number> = {};
         for (const span of evidence.spans)
-          if (span.name === "reactor.session.command" && span.startMs >= takenMs)
+          if (span.name === "Session.command" && span.startMs >= takenMs)
             bump(commands, String(span.attributes["reactor.operation"]));
         const firstFreshFrameMs = video.firstAfter(taken.attachedMs);
         yield* run.update((evidence) => ({
@@ -1056,7 +1056,7 @@ export const tokens = Effect.gen(function* () {
       const evidence = yield* run.evidence;
       const commands: Record<string, number> = {};
       for (const span of evidence.spans)
-        if (span.name === "reactor.session.command" && span.startMs >= resumeStartedMs)
+        if (span.name === "Session.command" && span.startMs >= resumeStartedMs)
           bump(commands, String(span.attributes["reactor.operation"]));
       yield* record((tokens) => ({ ...tokens, commands }));
       const latest = bound.at(-1);
@@ -2029,7 +2029,7 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
         yield* Effect.sleep("250 millis");
     const enqueueSpan = (yield* run.evidence).spans.find(
       (span) =>
-        span.name === "reactor.session.command" &&
+        span.name === "Session.command" &&
         span.attributes["reactor.operation"] === "enqueue" &&
         span.startMs >= submittedMs,
     );
@@ -2173,7 +2173,7 @@ export const cut = Effect.gen(function* () {
         // H3's stop names no clip: a second one stops whatever plays by then.
         const stops = (yield* run.evidence).spans.filter(
           (span) =>
-            span.name === "reactor.session.command" &&
+            span.name === "Session.command" &&
             span.attributes["reactor.operation"] === "stop" &&
             span.startMs >= cutFromMs,
         ).length;

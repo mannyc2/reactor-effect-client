@@ -182,7 +182,7 @@ export const make = ({
             }),
           ),
           Effect.withSpan(
-            channel === "data" ? "reactor.session.command" : "reactor.session.control",
+            channel === "data" ? "Session.command" : "Session.control",
             {
               kind: "client",
               attributes: {

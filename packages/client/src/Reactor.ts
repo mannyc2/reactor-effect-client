@@ -214,7 +214,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       }),
     ).pipe(
       Effect.withSpan(
-        intent._tag === "Create" ? "reactor.session.create" : "reactor.session.attach",
+        intent._tag === "Create" ? "Reactor.create" : "Reactor.attach",
         {
           kind: "client",
           attributes:

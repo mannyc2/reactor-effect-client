@@ -85,6 +85,20 @@ const decode = <S extends Schema.Codec<unknown, unknown>>(
     Effect.mapError(() => refuse(400, "invalid_request", "the body is malformed")),
   );
 
+/** A reply as the server sends it: media bytes, JSON, or no body. */
+const responseOf = (reply: Reply, headers: Readonly<Record<string, string>>) => {
+  const status = reply.status;
+  if (reply.bytes !== undefined)
+    return HttpServerResponse.uint8Array(reply.bytes.data, {
+      status,
+      headers,
+      contentType: reply.bytes.contentType,
+    });
+  return reply.body === undefined
+    ? HttpServerResponse.empty({ status, headers })
+    : HttpServerResponse.jsonUnsafe(reply.body, { status, headers });
+};
+
 const route = (
   sessions: Sessions,
   request: HttpClientRequest.HttpClientRequest,
@@ -202,16 +216,6 @@ export const client = (sessions: Sessions): HttpClient.HttpClient =>
       );
       const headers =
         reply.retryAfter === undefined ? {} : { "retry-after": String(reply.retryAfter) };
-      const response =
-        reply.bytes !== undefined
-          ? HttpServerResponse.uint8Array(reply.bytes.data, {
-              status: reply.status,
-              headers,
-              contentType: reply.bytes.contentType,
-            })
-          : reply.body === undefined
-            ? HttpServerResponse.empty({ status: reply.status, headers })
-            : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status, headers });
-      return HttpServerResponse.toClientResponse(response, { request });
+      return HttpServerResponse.toClientResponse(responseOf(reply, headers), { request });
     }),
   );

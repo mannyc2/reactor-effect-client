@@ -118,8 +118,10 @@ const coherent = (model: Model): model is Model & Facts =>
     (clip) => clip.clip_id === model.state?.playing_clip_id,
   );
 
-export const availability = (model: Model): ProviderSnapshot["_tag"] =>
-  model.cause !== undefined ? "Unavailable" : coherent(model) ? "Ready" : "Synchronizing";
+export const availability = (model: Model): ProviderSnapshot["_tag"] => {
+  if (model.cause !== undefined) return "Unavailable";
+  return coherent(model) ? "Ready" : "Synchronizing";
+};
 
 export const snapshot = (model: Model): ProviderSnapshot => {
   const base = {
