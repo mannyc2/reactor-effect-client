@@ -180,7 +180,7 @@ export const Evidence = Schema.Struct({
     commit: Schema.optionalKey(Schema.String),
     dirty: Schema.optionalKey(Schema.Boolean),
     packages: Schema.Record(Schema.String, Schema.String),
-    /** The loaded native library's identity, as staged beside it. */
+    /** The native addon's identity, from its platform package's native-identity.json. */
     native: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     network: Schema.String,
     apiOrigin: Schema.String,

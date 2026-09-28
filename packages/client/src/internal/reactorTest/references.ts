@@ -2,6 +2,7 @@
  * Reference media for tests: a black PNG and a WAV tone that H3's local checks
  * accept, built without a compressor or a platform codec so they run anywhere.
  */
+
 /** Opaque black fixture pixels need no general-purpose compressor. Stored
  * DEFLATE blocks (RFC 1951 §3.2.4) keep this synchronous helper host-neutral. */
 const zeroPixels = (size: number): Uint8Array => {
