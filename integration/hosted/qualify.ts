@@ -1307,12 +1307,12 @@ const measureSeam = (
 };
 
 /** The inserts and batch of `scheduler-edits`, in the order they should air. */
-const plannedEdits = ["p1", "xc", "p2", "xn", "p3", "y"] as const;
+const plannedEdits = ["p1", "p2", "xc", "xn", "p3", "y"] as const;
 
 /**
  * 0.7.0's edit API on hosted H3, through the public scheduler: a line of three
- * beats, a clip inserted before the second continuing from the first, one
- * inserted before the third built on its own, and an edit batch that withdraws
+ * beats, a clip inserted after the second continuing from it, one inserted
+ * before the third built on its own, and an edit batch that withdraws
  * a queued clip and inserts one after the playing clip, timed to take effect a
  * second before that clip ends. Every boundary's pause and join are measured,
  * and its two sides kept for review outside the evidence.
@@ -1395,12 +1395,14 @@ const schedulerEdits = (target: Target, run: Run, budget: Budget) =>
       );
       yield* mark(run, "line submitted");
       yield* session.seen(() => log.items.get("p1")?.startedMs);
+      // A continued build took 5.45 s on hosted H3, so xc continues from p2, which gives it
+      // p2's whole length to build in; a place before p2 would be missed.
       yield* recorded(
         run,
         scheduler.insert({
           key: log.track("xc"),
           request: itemRequest(),
-          before: Orchestration.ItemKey.make("p2"),
+          after: Orchestration.ItemKey.make("p2"),
           continuity: "previous",
         }),
       );
