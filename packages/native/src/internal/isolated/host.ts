@@ -321,14 +321,8 @@ export const remote = Effect.fnUntraced(function* (
     events: queue((rpc) =>
       rpc.Events(undefined, { asQueue: true, streamBufferSize: buffers.events }),
     ),
-    video: Stream.map(
-      queue((rpc) => rpc.Video(undefined, { asQueue: true, streamBufferSize: buffers.media })),
-      (frame) => ({ ...frame, data: exact(frame.data), metadata: exact(frame.metadata) }),
-    ),
-    audio: Stream.map(
-      queue((rpc) => rpc.Audio(undefined, { asQueue: true, streamBufferSize: buffers.media })),
-      (block) => ({ ...block, samples: exact(block.samples) }),
-    ),
+    video: queue((rpc) => rpc.Video(undefined, { asQueue: true, streamBufferSize: buffers.media })),
+    audio: queue((rpc) => rpc.Audio(undefined, { asQueue: true, streamBufferSize: buffers.media })),
     close: Ref.set(closed, true),
     // The graceful path: the child joins its addon peer, then exits once its
     // runner closes. A child that never opened, or is gone, has none to join.
@@ -364,18 +358,6 @@ export const remote = Effect.fnUntraced(function* (
     ),
   };
 });
-
-/**
- * Bytes the parent owns. Node's advanced serialization delivers every typed
- * array of a message as a view into one shared message buffer; a frame's data
- * must be the whole of an ArrayBuffer of its own, so a view that is not is
- * copied into an exact allocation.
- */
-function exact(view: Uint8Array): Uint8Array;
-function exact(view: Int16Array): Int16Array;
-function exact(view: Uint8Array | Int16Array): Uint8Array | Int16Array {
-  return view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? view : view.slice();
-}
 
 /** An isolated peer, the child it drives and whether that child opened its addon peer. */
 export interface IsolatedPeer extends Peer.NativePeer {
