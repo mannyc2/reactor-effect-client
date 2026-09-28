@@ -8,8 +8,8 @@
  * It models what H3 does, not how fast it does it: every delay comes from the
  * `timing` the caller chooses. A scenario test states the timing it relies on
  * with `Timing.fixed`; a simulation test draws from wide ranges with
- * `Timing.random`, reproducibly for its seed; `Timing.hosted` replays what
- * paid runs measured, for demos. Every delay is an `Effect.sleep`: under
+ * `Timing.random`, reproducibly for its seed; `Timing.hosted` draws from
+ * ranges paid runs measured, for demos. Every delay is an `Effect.sleep`: under
  * `TestClock`, fork `flow()` and the run is deterministic; on the live clock
  * it plays in real time.
  */
@@ -230,10 +230,11 @@ export const Timing = {
    * What two paid hosted H3 runs measured on 2026-09-27 (0.6.0 evidence):
    * connect steps of 0.2–0.9 s, eleven 5 s clips built about every 2.1 s
    * while playing, five seams of 30–110 ms and command round trips of 60–90
-   * ms; and, from 0.7.0's two runs on 2026-09-28, a stop landing about 20 ms
-   * after its acknowledgement and one continued 5 s clip built in 5.45 s.
-   * These are small samples: use them for demos and realism checks, not as
-   * what a test depends on.
+   * ms; from 0.7.0's two runs on 2026-09-28, a stop landing about 20 ms
+   * after its acknowledgement and one continued 5 s clip built in 5.45 s; and
+   * from 0.8.0's cut run, a moderation verdict 1.01 s after its enqueue. These
+   * are small samples, drawn as ranges and not replayed as a trace: use them
+   * for demos and realism checks, not as what a test depends on.
    */
   hosted: {
     label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28",
