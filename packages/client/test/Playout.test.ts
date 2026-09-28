@@ -1,6 +1,6 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
-import { Deferred, Duration, Effect, Exit, Option, Ref, Scope, Stream } from "effect";
+import { Clock, Deferred, Duration, Effect, Exit, Option, Ref, Scope, Stream } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
 import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
@@ -626,6 +626,36 @@ layer(hosted)("filler", (it) => {
         const state = yield* playout.state;
         assert.isAbove(state.runwaySeconds, 0);
         assert.strictEqual((yield* events).filter((event) => event._tag === "Starved").length, 0);
+      }),
+    { timeout: 60_000 },
+  );
+
+  // The hosted `show` rehearsal: with 5 s clips measured at H3's 5.167 s, a 6 s gap was tiled
+  // with a 5.806 s request, H3 aligned it to 5.875 s, and the 125 ms left cost a whole clip.
+  it.effect(
+    "tiles the gap before an At item without falling short on H3's frame grid",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "5 seconds", target: "8 seconds" },
+            clip: ({ index, seconds }) => clip(`idle ${index}`, seconds),
+          },
+        });
+        const measured = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+        yield* measured.outcome;
+        const secured = yield* eventually(playout.state, (state) => state.runwaySeconds >= 8);
+        const due = (yield* Clock.currentTimeMillis) + secured.runwaySeconds * 1000 + 6_000;
+        const timed = yield* playout.submit({
+          key: key("timed"),
+          lane: "line",
+          request: clip("timed"),
+          start: { _tag: "At", time: due, late: { _tag: "nextBoundary" } },
+        });
+        const started = yield* timed.started;
+        assert.strictEqual(started._tag, "Started");
+        // One step of H3's grid is 17 frames, 708 ms: a tile may run over by less than that.
+        if (started._tag === "Started") assert.isBelow(started.lateByMillis ?? 0, 1_000);
       }),
     { timeout: 60_000 },
   );

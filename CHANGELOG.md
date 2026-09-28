@@ -169,6 +169,7 @@ Qualification: the pull request's CI at 139b9db passed all seven jobs: the porta
 - A create answered with a 5xx was taken as proof that nothing was allocated. Only a 4xx refusal proves that, so a server error now fails the create with outcome `unknown`, its allocation unknown and not retryable.
 - A command's error reply put the provider's code into the failure's message, which logs, spans and `toJSON` show. The message is now "remote command error", and the code is in the `Redacted` `Remote.remoteCode`.
 - The H3 provider failed as `Protocol` on a `state_update` whose `playing` and `playing_clip_id` disagreed, a combination H3's documentation leaves open for an armed clip. It is accepted now.
+- Filler tiling the gap before an `At` item asked for less than its share, by the actual-over-requested ratio learned on 5 s clips, which H3's frame grid does not follow: in the hosted `show` rehearsal a 6 s gap got a 5.806 s request that aired as 5.875 s, the 125 ms left cost a whole 5 s filler clip, and the item aired about 5 s late. A tile now asks for its share, which H3 only lengthens, and asks for more only from a provider that shortens clips.
 - `downloadClip` failed with `TerminalSession` as soon as a pending recording's session had ended, though Reactor keeps a recording for 24 hours and it can finish after its session. It now waits for the playlist until the clip's predicted ready time and 10 seconds more.
 
 ## [0.7.1] - 2026-09-28

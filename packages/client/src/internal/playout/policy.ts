@@ -2125,15 +2125,22 @@ export const step: {
   }
 });
 
-/** Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest. */
+/**
+ * Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest.
+ * A tile that falls short costs a whole clip more, so each asks for no less than its share. A
+ * provider that makes clips longer than asked covers the share anyway: H3 aligns a length up to
+ * its frame grid, which airs 5 s as 5.167 s but 5.806 s as 5.875 s, so a ratio learned on one
+ * length does not carry to another. Only one that makes them shorter is asked for more.
+ */
 const fillLength = (
   gapSeconds: number,
   lengths: { readonly min: number; readonly max: number },
   ratio: number,
 ): number => {
   if (!(gapSeconds > 0)) return lengths.min;
-  const pieces = Math.max(1, Math.ceil(gapSeconds / (lengths.max * ratio)));
-  return Math.min(lengths.max, Math.max(lengths.min, gapSeconds / pieces / ratio));
+  const shortfall = Math.min(1, ratio);
+  const pieces = Math.max(1, Math.ceil(gapSeconds / (lengths.max * shortfall)));
+  return Math.min(lengths.max, Math.max(lengths.min, gapSeconds / pieces / shortfall));
 };
 
 /** The public view of the plan. */

@@ -28,8 +28,8 @@
  *           end, and X at Asap; once X is Ready session 1's filler goes
  *   A1+55   the air switches to session 2 as session 1's last clip ends; X airs
  *   X airs  T is due once the air secured has played and one new filler clip
- *           has tiled 6 s more (* its length is aligned up to H3's frame grid,
- *           and a tile that falls short costs a whole 5 s clip): about A1+77
+ *           has tiled 6 s more (* H3 aligns the tile up to its frame grid, so T
+ *           airs up to 0.7 s after its time): about A1+77
  *   T airs  a 10 s guard and c1 (* the guard builds while T plays); once the
  *           guard airs and c1 is Ready, the flagged item goes in, or without a
  *           prompt the API key ends session 2: about A1+84, well before its own

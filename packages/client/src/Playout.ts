@@ -383,8 +383,9 @@ export interface FillContext {
   readonly runwaySeconds: number;
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
-   * equal clips that tile the uncovered gap; otherwise the shortest, which
-   * keeps boundaries, and so reactions, frequent.
+   * equal clips that tile the uncovered gap, none asking for less than its
+   * share; otherwise the shortest, which keeps boundaries, and so reactions,
+   * frequent.
    */
   readonly seconds: number;
 }
