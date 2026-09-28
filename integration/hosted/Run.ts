@@ -1,7 +1,9 @@
 /**
  * The run in progress: its evidence, saved after every milestone from before
  * the first token exists, the library's spans, and the secrets its evidence
- * must never hold. A save that fails stops the run.
+ * must never hold. A save that fails stops the run. A rehearsal checks each
+ * save and writes only the last: its clock runs ahead while real I/O waits,
+ * so a write mid-check would move the simulated session's time.
  */
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -27,6 +29,8 @@ export class Run extends Context.Service<
     /** Changes the evidence in memory; the next save writes it. */
     readonly update: (change: (evidence: Evidence) => Evidence) => Effect.Effect<void>;
     readonly save: Effect.Effect<void, SaveFailed>;
+    /** The last save: written in a rehearsal too. */
+    readonly flush: Effect.Effect<void, SaveFailed>;
     /** Records a step and saves. */
     readonly mark: (step: string, detail?: string) => Effect.Effect<void, SaveFailed>;
     readonly judge: (name: string, failure: string | undefined) => Effect.Effect<void>;
@@ -43,7 +47,7 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
   const origin = yield* Clock.currentTimeMillis;
   const state = yield* Ref.make(initial);
   const secrets = yield* Ref.make<ReadonlyArray<Redacted.Redacted<string>>>([]);
-  const write = yield* writer(file);
+  const write_ = yield* writer(file);
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
     span: (options) => {
@@ -74,10 +78,12 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
     });
   const now = Effect.map(Clock.currentTimeMillis, (at) => round(at - origin));
   const update = (change: (evidence: Evidence) => Evidence) => Ref.update(state, change);
-  const save = Effect.gen(function* () {
-    const evidence = { ...(yield* Ref.get(state)), spans: spanRecords() };
-    yield* write(evidence, yield* Ref.get(secrets));
-  });
+  const saving = (write: boolean) =>
+    Effect.gen(function* () {
+      const evidence = { ...(yield* Ref.get(state)), spans: spanRecords() };
+      yield* write_(evidence, yield* Ref.get(secrets), { write });
+    });
+  const save = saving(initial.mode === "paid");
   return Run.of({
     runId: initial.runId,
     origin,
@@ -85,6 +91,7 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
     evidence: Effect.map(Ref.get(state), (evidence) => ({ ...evidence, spans: spanRecords() })),
     update,
     save,
+    flush: saving(true),
     mark: (step, detail) =>
       Effect.flatMap(now, (atMs) =>
         update((evidence) => ({

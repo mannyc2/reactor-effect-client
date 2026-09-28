@@ -202,6 +202,7 @@ export const execute = (input: {
       );
       yield* run.secret(target.apiKey);
       // The first save claims the file and records the reservation; failing it spent nothing.
+      yield* run.flush.pipe(Effect.mapError((error) => Refused.make({ message: error.message })));
       yield* run
         .mark("admitted", `worst case $${worstCaseUsd.toFixed(4)}`)
         .pipe(Effect.mapError((error) => Refused.make({ message: error.message })));
@@ -216,7 +217,7 @@ export const execute = (input: {
         failure: Exit.isFailure(exit) ? describe(exit.cause) : undefined,
       });
       yield* run.update(() => evidence);
-      yield* run.save.pipe(
+      yield* run.flush.pipe(
         Effect.catch((error) =>
           Effect.logError(
             `${error.message}; the run held sessions ${evidence.sessions.map((session) => session.id).join(", ") || "none"}`,

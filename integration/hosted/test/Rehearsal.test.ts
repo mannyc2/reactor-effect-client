@@ -4,7 +4,7 @@
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, FileSystem, Layer } from "effect";
+import { Duration, Effect, FileSystem, Layer, Redacted } from "effect";
 import { ReactorTest } from "reactor-effect-client";
 import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
@@ -18,6 +18,7 @@ const rehearse = (
   input: {
     readonly check: Check;
     readonly faults?: ReadonlyArray<ReactorTest.Fault>;
+    readonly moderationPrompt?: string;
     readonly judge: (evidence: Evidence) => void;
   },
 ) =>
@@ -25,22 +26,28 @@ const rehearse = (
     Target.rehearsal({
       faults: input.faults ?? [],
       candidate: input.check === "turn" ? "relay" : "host",
+      moderationPrompt:
+        input.moderationPrompt === undefined ? undefined : Redacted.make(input.moderationPrompt),
     }).pipe(Layer.provideMerge(NodeServices.layer)),
   )(name, (it) =>
-    it.effect(name, () =>
-      Effect.gen(function* () {
-        yield* ReactorTest.flow().pipe(Effect.forkScoped);
-        const fs = yield* FileSystem.FileSystem;
-        const evidence = yield* execute({
-          authorization: {
-            check: input.check,
-            budgetUsd: ceilingFor(input.check),
-            totalUsd: maxTotalUsd,
-          },
-          ledger: yield* fs.makeTempDirectoryScoped({ prefix: "rehearsal-test-" }),
-        });
-        input.judge(evidence);
-      }),
+    it.effect(
+      name,
+      () =>
+        Effect.gen(function* () {
+          yield* ReactorTest.flow().pipe(Effect.forkScoped);
+          const fs = yield* FileSystem.FileSystem;
+          const evidence = yield* execute({
+            authorization: {
+              check: input.check,
+              budgetUsd: ceilingFor(input.check),
+              totalUsd: maxTotalUsd,
+            },
+            ledger: yield* fs.makeTempDirectoryScoped({ prefix: "rehearsal-test-" }),
+          });
+          input.judge(evidence);
+        }),
+      // A rehearsal plays a whole session at a moving test clock: moments, or more under load.
+      60_000,
     ),
   );
 
@@ -64,8 +71,55 @@ for (const check of [
   "renewal",
   "edits",
   "cut",
+  "tokens",
 ] as const)
   rehearse(`${check} passes`, { check, judge: passes });
+
+const flagged = "a prompt the rehearsal's moderation flags";
+
+rehearse("cut records a moderation verdict, and the playout ends on it", {
+  check: "cut",
+  moderationPrompt: flagged,
+  faults: [{ _tag: "Moderate", prompt: flagged }],
+  judge: (evidence) => {
+    passes(evidence);
+    const moderation = evidence.moderation;
+    assert.deepStrictEqual(
+      [moderation?.flagged, moderation?.aired, moderation?.verdict?.action],
+      [true, false, "terminate"],
+    );
+    assert.include(moderation?.statuses.at(-1)?.detail ?? "", "moderated");
+    assert.isTrue(moderation?.playout.some((entry) => entry.event.startsWith("failed")));
+  },
+});
+
+rehearse("cut records a session ended with no verdict, and opens no second one", {
+  check: "cut",
+  moderationPrompt: flagged,
+  faults: [{ _tag: "Moderate", prompt: flagged, verdict: false }],
+  judge: (evidence) => {
+    passes(evidence);
+    assert.deepStrictEqual(
+      [evidence.moderation?.flagged, evidence.moderation?.verdict, evidence.sessions.length],
+      [true, undefined, 1],
+    );
+  },
+});
+
+rehearse("cut withdraws a flagged item moderation let through before it airs", {
+  check: "cut",
+  moderationPrompt: flagged,
+  // Screening flags some other prompt, never this one.
+  faults: [{ _tag: "Moderate", prompt: "another prompt" }],
+  judge: (evidence) => {
+    passes(evidence);
+    assert.deepStrictEqual(
+      [evidence.moderation?.flagged, evidence.moderation?.aired],
+      [false, false],
+    );
+    assert.notInclude(evidence.playout?.startOrder ?? [], "flagged");
+  },
+});
 
 rehearse("a lost enqueue reply stops the check", {
   check: "vertical",
