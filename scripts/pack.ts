@@ -1,34 +1,3 @@
-import { builtinModules } from "node:module";
-import {
-  appendFileSync,
-  copyFileSync,
-  existsSync,
-  linkSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import * as pathPosix from "node:path/posix";
-import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  completeQualification,
-  inspectConsumerTree,
-  resolveStackPackage,
-  resolveWorkspaceStack,
-  selectStack,
-  verifiedArchiveRequirements,
-  verifyInstalledArchive,
-  type ConsumerResolution,
-} from "./pack-effect-stack.js";
-
 /**
  * Installed-package qualification for the public workspace packages.
  *
@@ -42,20 +11,160 @@ import {
  * and checks only the client and browser packages, for hosts without a staged
  * addon; CI and release run the full gate.
  */
-interface Manifest {
-  readonly name: string;
-  readonly version: string;
-  /** Absent from a platform package, which only carries its addon. */
-  readonly exports?: Readonly<Record<string, string | null>>;
-  readonly dependencies?: Readonly<Record<string, string>>;
-  readonly peerDependencies?: Readonly<Record<string, string>>;
-  readonly optionalDependencies?: Readonly<Record<string, string>>;
-  readonly devDependencies?: Readonly<Record<string, string>>;
-}
-interface RootManifest {
-  readonly workspaces: { readonly catalog: Readonly<Record<string, string>> };
-  readonly overrides?: Readonly<Record<string, string>>;
-}
+import { builtinModules } from "node:module";
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Config from "effect/Config";
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import {
+  ConsumerManifest,
+  QualificationStack,
+  completeQualification,
+  inspectConsumerTree,
+  resolveStackPackage,
+  resolveWorkspaceStack,
+  selectStack,
+  sha256,
+  verifiedArchiveRequirements,
+  verifyInstalledArchive,
+  type ConsumerResolution,
+} from "./pack-effect-stack.js";
+import { runtimes } from "./subprocess.js";
+
+class PackError extends Schema.TaggedError<PackError>("reactor-effect/scripts/pack/PackError")(
+  "PackError",
+  { message: Schema.String },
+) {}
+
+const failure = (message: string) => PackError.make({ message });
+
+const Dependencies = Schema.Record(Schema.String, Schema.String);
+
+/** What pack reads of the root manifest: the catalog that pins the consumers' tools. */
+const WorkspaceManifest = Schema.fromJsonString(
+  Schema.Struct({
+    workspaces: Schema.Struct({ catalog: Dependencies }),
+    overrides: Schema.optionalKey(Dependencies),
+  }),
+);
+
+/** What pack reads of a package's manifest; a platform package names its addon as `main`. */
+const PackageManifest = Schema.fromJsonString(
+  Schema.Struct({
+    name: Schema.String,
+    version: Schema.String,
+    main: Schema.optionalKey(Schema.String),
+    /** Absent from a platform package, which only carries its addon. */
+    exports: Schema.optionalKey(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
+    dependencies: Schema.optionalKey(Dependencies),
+    peerDependencies: Schema.optionalKey(Dependencies),
+    optionalDependencies: Schema.optionalKey(Dependencies),
+    devDependencies: Schema.optionalKey(Dependencies),
+  }),
+);
+type Manifest = typeof PackageManifest.Type;
+
+/** The pinned TypeScript's manifest, which declares each host's compiler package. */
+const CompilerManifest = Schema.fromJsonString(
+  Schema.Struct({ version: Schema.String, optionalDependencies: Schema.optionalKey(Dependencies) }),
+);
+
+const JsonText = Schema.fromJsonString(Schema.Json);
+
+/** What pack checks of the identity staging wrote beside a platform package's addon. */
+const NativeIdentity = Schema.Struct({
+  schemaVersion: Schema.Literal(2),
+  /** The platform package's suffix, such as `linux-x64-gnu`. */
+  platform: Schema.String,
+  /** The addon file in that package. */
+  file: Schema.String,
+  sha256: Schema.String,
+  build: Schema.Struct({
+    sourceSha256: Schema.String,
+    profile: Schema.Literal("release"),
+    webrtcPrebuilt: Schema.String.check(Schema.isPattern(/^webrtc-\d+-[0-9a-f]{8}-p\d+$/)),
+  }),
+});
+
+/** A consumer's manifest before its install. */
+const NewConsumerManifest = Schema.fromJsonString(
+  Schema.Struct({
+    private: Schema.Literal(true),
+    type: Schema.Literal("module"),
+    overrides: Schema.optionalKey(Dependencies),
+  }),
+  { space: 2 },
+);
+
+const ConsumerManifestJson = Schema.fromJsonString(ConsumerManifest, { space: 2 });
+
+/** The record of rewriting a Bun consumer's archive requirements to exact versions. */
+const Normalization = Schema.fromJsonString(
+  Schema.Struct({
+    format: Schema.Literal("reactor-pack-archive-requirements/v1"),
+    installer: Schema.Literal("bun"),
+    reason: Schema.String,
+    originalManifest: Schema.String,
+    normalizedManifest: Schema.String,
+    verification: Schema.Literal("complete-installed-archive-byte-identity"),
+    archives: Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        version: Schema.String,
+        installSpecifier: Schema.String,
+        sha256: Schema.String,
+        filesChecked: Schema.Int,
+      }),
+    ),
+  }),
+  { space: 2 },
+);
+
+const TypeScriptConfig = Schema.fromJsonString(
+  Schema.Struct({
+    compilerOptions: Schema.Record(Schema.String, Schema.Json),
+    include: Schema.Array(Schema.String),
+  }),
+  { space: 2 },
+);
+
+/**
+ * package-identity.json: every archive with its exports and file hashes, the Effect stack its
+ * consumers qualified, and each platform addon's identity. CI and release read it back.
+ */
+const PackageIdentity = Schema.fromJsonString(
+  Schema.Struct({
+    profile: Schema.Literals(["portable", "full"]),
+    installer: Schema.Literals(["npm", "bun"]),
+    effect: Schema.String,
+    qualificationStack: QualificationStack,
+    packages: Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        version: Schema.String,
+        tarball: Schema.String,
+        sha256: Schema.String,
+        exports: Schema.Array(Schema.String),
+        files: Schema.Array(Schema.String),
+        fileSha256: Schema.Record(Schema.String, Schema.String),
+      }),
+    ),
+    nativeSourceSha256: Schema.NullOr(Schema.String),
+    native: Schema.Record(Schema.String, Schema.Json),
+  }),
+  { space: 2 },
+);
+
 interface Archive {
   /** Workspace directory name under packages/. */
   readonly directory: string;
@@ -66,154 +175,53 @@ interface Archive {
   readonly files: ReadonlySet<string>;
   readonly fileSha256: Readonly<Record<string, string>>;
 }
-interface NativeIdentity {
-  readonly schemaVersion: number;
-  /** The platform package's suffix, such as `linux-x64-gnu`. */
-  readonly platform: string;
-  /** The addon file in that package. */
-  readonly file: string;
-  readonly sha256: string;
-  readonly build: Readonly<{
-    schemaVersion: number;
-    sourceSha256: string;
-    profile: string;
-    target: string;
-    webrtcPrebuilt: string;
-  }>;
-}
 
-const root = fileURLToPath(new URL("../", import.meta.url));
-const fixtureRoot = join(root, "scripts", "pack");
-/**
- * The example sources each isolated consumer compiles, by what it installs.
- * Every consumer compiles the portable Rundown; the browser consumer adds the
- * page, and the native consumer, which installs @effect/platform-node, every
- * Node program. Example tests are left out: they need Vitest.
- */
-const exampleSources = {
-  portable: ["packages/client/examples/src/Rundown.ts"],
-  browser: [
-    "packages/client/examples/src/Rundown.ts",
-    "packages/browser/examples/src/Api.ts",
-    "packages/browser/examples/src/WebCrypto.ts",
-    "packages/browser/examples/src/app.ts",
-  ],
-  node: [
-    "packages/client/examples/src/Rundown.ts",
-    "packages/client/examples/src/main.ts",
-    "packages/browser/examples/src/Api.ts",
-    "packages/browser/examples/src/server.ts",
-    "packages/native/examples/src/Recording.ts",
-    "packages/native/examples/src/capture.ts",
-    ...readdirSync(join(root, "examples/livestream/src"))
-      .filter((name) => name.endsWith(".ts"))
-      .map((name) => `examples/livestream/src/${name}`),
-  ],
-} as const;
-const portableOnly = process.argv.includes("--portable");
-for (const arg of process.argv.slice(2))
-  if (arg !== "--portable") throw new Error(`unknown pack argument: ${arg}; use --portable`);
-mkdirSync(join(root, ".check"), { recursive: true });
-const packDirectory = mkdtempSync(join(root, ".check", "pack-"));
-const workspace = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as RootManifest;
-const catalog = workspace.workspaces.catalog;
-
-const fail = (message: string): never => {
-  throw new Error(`pack smoke: ${message}`);
-};
-const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 /** Every public package's export map, as Effect's packages write theirs. */
-const exportMap = {
+const exportMap: Readonly<Record<string, string | null>> = {
   "./package.json": "./package.json",
   ".": "./dist/index.js",
   "./*": "./dist/*.js",
   "./internal/*": null,
   "./index": null,
 };
+const exportMapText = JSON.stringify(exportMap);
+/** The same entries in the same order. */
+const isExportMap = (exports: Readonly<Record<string, string | null>> | undefined): boolean => {
+  const actual = Object.entries(exports ?? {});
+  const expected = Object.entries(exportMap);
+  return (
+    actual.length === expected.length &&
+    actual.every(
+      ([key, value], index) => expected[index]?.[0] === key && expected[index][1] === value,
+    )
+  );
+};
 /** The modules `"./*"` reaches: each top-level `dist/<Module>.js`, `index` included. */
-const publicModules = (files: ReadonlySet<string>): readonly string[] =>
+const publicModules = (files: ReadonlySet<string>): ReadonlyArray<string> =>
   [...files]
     .filter((path) => /^dist\/[^/]+\.js$/.test(path))
     .map((path) => path.slice("dist/".length, -".js".length))
     .sort();
-/** The public entries a release reviews: `.` and `./<Module>` for every other module. */
-const publicEntries = (archive: Archive): readonly string[] =>
-  isPlatformPackage(archive.manifest.name)
-    ? []
-    : publicModules(archive.files).map((module) => (module === "index" ? "." : `./${module}`));
-const execute = (
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-) => spawnSync(command, [...args], { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-const run = (
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string => {
-  const result = execute(command, args, cwd, env);
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) {
-    fail(`${command} ${args.join(" ")} failed in ${cwd}\n${result.stdout}${result.stderr}`);
-  }
-  return result.stdout;
-};
-
-const typescriptVersion = catalog.typescript ?? fail("catalog must pin typescript");
-const nodeTypesVersion = catalog["@types/node"] ?? fail("catalog must pin @types/node");
-// Release qualification selects frozen bytes; archive peers keep their ranges.
-const stack = selectStack(workspace, readFileSync(join(root, "bun.lock")));
-const { requirements, selected } = stack;
-const workspaceResolution = resolveWorkspaceStack(root, stack);
-const consumers: ConsumerResolution[] = [];
-
-// TypeScript 7 ships its compiler as an optional platform package. Install that
-// exact tool explicitly so --omit=optional can still prove the SDK works without
-// the native addon. Every compiler and declaration remains inside the isolated consumer.
-const compilerManifest = JSON.parse(
-  readFileSync(join(root, "node_modules/typescript/package.json"), "utf8"),
-) as Pick<Manifest, "version" | "optionalDependencies">;
-if (compilerManifest.version !== typescriptVersion)
-  fail("workspace TypeScript version differs from the pinned consumer compiler");
-const compilerPlatform = `@typescript/typescript-${process.platform}-${process.arch}`;
-const compilerPlatformVersion =
-  compilerManifest.optionalDependencies?.[compilerPlatform] ??
-  fail(`pinned TypeScript does not declare its host compiler ${compilerPlatform}`);
-const compilerPackages = [
-  `typescript@${typescriptVersion}`,
-  `${compilerPlatform}@${compilerPlatformVersion}`,
-];
-
-// Resolve the selected Node once before entering deliberately stripped fixture
-// environments. An NVM installation must not rely on PATH surviving isolation.
-const node = realpathSync(
-  run(process.env.NODE_BINARY ?? "node", ["-p", "process.execPath"], root).trim(),
-);
-const bun = process.env.BUN_BINARY ?? process.execPath;
-const installer = process.env.PACK_INSTALLER ?? "npm";
-if (installer !== "npm" && installer !== "bun")
-  throw new Error("PACK_INSTALLER must be npm or bun");
-const keep = process.env.KEEP_PACK_TMP === "1";
-console.log(`consumer-installer ${installer} profile ${portableOnly ? "portable" : "full"}`);
-run(bun, ["--no-env-file", "run", "build"], root);
 
 /** Each published addon platform package, by the Node host it runs on. */
 const addonPlatforms: Readonly<Record<string, string>> = {
   "darwin-arm64": "darwin-arm64",
   "linux-x64": "linux-x64-gnu",
 };
-const hostAddon = addonPlatforms[`${process.platform}-${process.arch}`];
 const platformPrefix = "reactor-effect-native-";
 const isPlatformPackage = (name: string): boolean => name.startsWith(platformPrefix);
 const addonFile = (target: string): string => `reactor-effect-native.${target}.node`;
+/** The public entries a release reviews: `.` and `./<Module>` for every other module. */
+const publicEntries = (archive: Archive): ReadonlyArray<string> =>
+  isPlatformPackage(archive.manifest.name)
+    ? []
+    : publicModules(archive.files).map((module) => (module === "index" ? "." : `./${module}`));
 const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const packageName = (specifier: string): string =>
   specifier.startsWith("@")
     ? specifier.split("/").slice(0, 2).join("/")
     : (specifier.split("/", 1)[0] ?? specifier);
-const specifiers = (source: string): readonly string[] => {
+const specifiers = (source: string): ReadonlyArray<string> => {
   const found = new Set<string>();
   for (const expression of [
     /\bfrom\s+["']([^"']+)["']/g,
@@ -225,460 +233,6 @@ const specifiers = (source: string): readonly string[] => {
       if (match[1] !== undefined) found.add(match[1]);
   }
   return [...found];
-};
-
-/** Packs one workspace package and validates the archive before any consumer sees it. */
-const packArchive = (directory: string): Archive => {
-  const packageRoot = join(root, "packages", directory);
-  const source = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as Manifest;
-  const filename = `${source.name}-${source.version}.tgz`;
-  run(
-    bun,
-    ["--no-env-file", "pm", "pack", "--ignore-scripts", "--quiet", "--destination", packDirectory],
-    packageRoot,
-  );
-  const tarball = join(packDirectory, filename);
-  if (!existsSync(tarball)) fail(`bun pm pack did not produce ${filename}`);
-  console.log(`pack-created ${relative(root, tarball)}`);
-  const files = new Set(
-    run("tar", ["-tzf", tarball], root)
-      .split("\n")
-      .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
-      .map((entry) => (entry.startsWith("package/") ? entry.slice("package/".length) : entry)),
-  );
-  for (const path of files) {
-    if (isAbsolute(path) || path.split("/").some((part) => part === ".." || part.length === 0))
-      fail(`invalid tarball entry ${path}`);
-  }
-  const archiveSha256 = sha256(readFileSync(tarball));
-  let installTarball = tarball;
-  if (installer === "bun") {
-    // Stable archive names can retain stale Bun cache entries. A content-addressed
-    // alias preserves the exact bytes without copying or pruning any cache.
-    installTarball = join(packDirectory, `${source.name}-${archiveSha256}.tgz`);
-    linkSync(tarball, installTarball);
-  }
-  const unpacked = join(packDirectory, "unpacked", directory);
-  mkdirSync(unpacked, { recursive: true });
-  try {
-    run("tar", ["-xzf", tarball, "-C", unpacked], root);
-  } catch (error) {
-    // Preserve the archive and failure, but not a new partial extraction that
-    // would make the next disk-constrained qualification attempt fail sooner.
-    if (!keep) rmSync(unpacked, { recursive: true, force: true });
-    throw error;
-  }
-  const packaged = (path: string): Buffer => readFileSync(join(unpacked, "package", path));
-  const manifest = JSON.parse(packaged("package.json").toString("utf8")) as Manifest;
-  const fileSha256 = Object.fromEntries(
-    [...files].sort().map((path) => [path, sha256(packaged(path))]),
-  );
-  const archive: Archive = {
-    directory,
-    manifest,
-    tarball,
-    installTarball,
-    sha256: archiveSha256,
-    files,
-    fileSha256,
-  };
-  if (isPlatformPackage(manifest.name)) checkPlatformArchive(archive, packaged);
-  else checkArchive(archive, packaged);
-  if (manifest.name === "reactor-effect-native") checkNativeArchive(archive);
-  if (!keep) rmSync(unpacked, { recursive: true, force: true });
-  return archive;
-};
-
-const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
-  const { files, manifest } = archive;
-  // Only the native package runs on Node and loads its addon.
-  const hostBuiltins = manifest.name === "reactor-effect-native";
-  for (const required of ["package.json", "README.md", "LICENSE", "NOTICE"]) {
-    if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
-  }
-  if (![...files].some((path) => path.startsWith("notices/")))
-    fail(`${manifest.name} tarball omitted its third-party notices`);
-  for (const group of [
-    manifest.dependencies,
-    manifest.peerDependencies,
-    manifest.optionalDependencies,
-    manifest.devDependencies,
-  ])
-    for (const [name, version] of Object.entries(group ?? {})) {
-      if (/^(?:workspace|catalog):/.test(version))
-        fail(`${manifest.name}: ${name} uses unpublished dependency protocol ${version}`);
-    }
-  if (manifest.peerDependencies?.effect !== requirements.effect)
-    fail(`${manifest.name} must declare the Effect peer range ${requirements.effect}`);
-  // Effect's shape: the index, one subpath per top-level module, internals and the
-  // index's own path closed. TypeScript finds each module's declarations beside it.
-  if (JSON.stringify(manifest.exports) !== JSON.stringify(exportMap))
-    fail(`${manifest.name} export map differs from ${JSON.stringify(exportMap)}`);
-  const modules = publicModules(files);
-  if (!modules.includes("index")) fail(`${manifest.name} tarball omitted dist/index.js`);
-  for (const module of modules)
-    if (!files.has(`dist/${module}.d.ts`))
-      fail(`${manifest.name} module ${module} has no declarations`);
-  const dependencies = new Set([
-    ...Object.keys(manifest.dependencies ?? {}),
-    ...Object.keys(manifest.peerDependencies ?? {}),
-    ...Object.keys(manifest.optionalDependencies ?? {}),
-  ]);
-  for (const path of files) {
-    if (!path.startsWith("dist/") || (!path.endsWith(".js") && !path.endsWith(".d.ts"))) continue;
-    const sourcePath = join(root, "packages", archive.directory, path);
-    if (!existsSync(sourcePath)) fail(`packed ${path} is absent from build output`);
-    const source = readFileSync(sourcePath, "utf8");
-    if (source !== packaged(path).toString("utf8"))
-      fail(`packed ${path} differs from the build inspected for import closure`);
-    if (source.includes("/the-show") || source.includes("@the-show/"))
-      fail(`${path} retains a workspace-specific import/path`);
-    for (const specifier of specifiers(source)) {
-      if (specifier.startsWith(".")) {
-        const target = pathPosix.normalize(pathPosix.join(pathPosix.dirname(path), specifier));
-        if (!files.has(target)) fail(`${path} imports missing packaged file ${target}`);
-        continue;
-      }
-      if (specifier.startsWith("/") || specifier.startsWith("file:"))
-        fail(`${path} contains absolute import ${specifier}`);
-      if (builtins.has(specifier)) {
-        if (!hostBuiltins) fail(`${path} imports Node builtin ${specifier}`);
-        continue;
-      }
-      const external = packageName(specifier);
-      if (!dependencies.has(external))
-        fail(`${path} imports undeclared external dependency ${specifier}`);
-    }
-  }
-};
-
-const identities = new Map<string, NativeIdentity>();
-let nativeSource: string | undefined;
-/** Every build input's hash, as `rust/build.rs` embeds it; no Rust source ships. */
-const checkedOutSource = portableOnly
-  ? undefined
-  : run(node, ["packages/native/scripts/stage.mjs", "--source-hash"], root).trim();
-
-/** A platform package: its addon, the identity staging wrote for it, and notices. */
-const checkPlatformArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
-  const { files, manifest } = archive;
-  const target = manifest.name.slice(platformPrefix.length);
-  const addon = addonFile(target);
-  for (const required of ["package.json", "README.md", "LICENSE", "NOTICE", addon])
-    if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
-  if (![...files].some((path) => path.startsWith("notices/")))
-    fail(`${manifest.name} tarball omitted its third-party notices`);
-  for (const path of files)
-    if (
-      !path.startsWith("notices/") &&
-      !["package.json", "README.md", "LICENSE", "NOTICE", "native-identity.json", addon].includes(
-        path,
-      )
-    )
-      fail(`${manifest.name} tarball carries unexpected ${path}`);
-  if ((manifest as { readonly main?: string }).main !== addon)
-    fail(`${manifest.name} main must be ${addon}`);
-  const identity = JSON.parse(packaged("native-identity.json").toString("utf8")) as NativeIdentity;
-  if (
-    identity.schemaVersion !== 2 ||
-    identity.platform !== target ||
-    identity.file !== addon ||
-    identity.build.profile !== "release" ||
-    !/^webrtc-\d+-[0-9a-f]{8}-p\d+$/.test(identity.build.webrtcPrebuilt)
-  )
-    fail(`invalid native identity in ${manifest.name}`);
-  if (
-    !/^[a-f0-9]{64}$/.test(identity.sha256) ||
-    !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
-  )
-    fail(`invalid native hashes in ${manifest.name}`);
-  if (sha256(packaged(addon)) !== identity.sha256)
-    fail(`native tarball hash differs from qualified stage: ${manifest.name}`);
-  if (
-    sha256(readFileSync(join(root, "packages", "native", "npm", target, addon))) !== identity.sha256
-  )
-    fail(`native stage changed during packaging: ${manifest.name}`);
-  if (identity.build.sourceSha256 !== checkedOutSource)
-    fail(`${manifest.name} was built from sources other than the checked-out ones`);
-  nativeSource = identity.build.sourceSha256;
-  identities.set(target, identity);
-};
-
-/** The binding: no addon or Rust source, and every platform package pinned to its version. */
-const checkNativeArchive = (archive: Archive): void => {
-  const { files, manifest } = archive;
-  for (const path of files)
-    if (path.endsWith(".node") || /^(?:rust|npm|scripts)\//.test(path))
-      fail(`${manifest.name} tarball carries ${path}`);
-  const optional = manifest.optionalDependencies ?? {};
-  const expected = Object.values(addonPlatforms)
-    .map((target) => `${platformPrefix}${target}`)
-    .sort();
-  if (JSON.stringify(Object.keys(optional).sort()) !== JSON.stringify(expected))
-    fail(`${manifest.name} must list exactly the platform packages ${expected.join(", ")}`);
-  for (const [name, version] of Object.entries(optional))
-    if (version !== manifest.version)
-      fail(`${manifest.name} must pin ${name} to exactly ${manifest.version}, not ${version}`);
-};
-
-/** The platform addons to pack: the host's, those CI expects, and any other staged one. */
-const expectedAddons = (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
-const addonDirectories = portableOnly
-  ? []
-  : Object.values(addonPlatforms)
-      .filter((target) => {
-        const staged = existsSync(
-          join(root, "packages", "native", "npm", target, addonFile(target)),
-        );
-        if (!staged && (target === hostAddon || expectedAddons.includes(target)))
-          fail(`no staged addon for ${target}; run bun run native:build`);
-        return staged;
-      })
-      .map((target) => `native/npm/${target}`);
-const archives = new Map<string, Archive>();
-for (const directory of portableOnly
-  ? ["client", "browser"]
-  : ["client", "browser", "native", ...addonDirectories])
-  archives.set(directory, packArchive(directory));
-const client = archives.get("client") ?? fail("client archive was not produced");
-for (const archive of archives.values()) {
-  if (archive.manifest.version !== client.manifest.version)
-    fail(`${archive.manifest.name} version differs from ${client.manifest.name}`);
-  if (
-    archive !== client &&
-    !isPlatformPackage(archive.manifest.name) &&
-    archive.manifest.peerDependencies?.["reactor-effect-client"] !== client.manifest.version
-  )
-    fail(
-      `${archive.manifest.name} must pin its reactor-effect-client peer to ${client.manifest.version}`,
-    );
-}
-
-const isolated = mkdtempSync(join(tmpdir(), "reactor-effect-pack-"));
-const fixture = (name: string): string => join(fixtureRoot, name);
-
-// Compile the workspace's examples against the installed packages, never
-// against workspace source, keeping each example's own relative imports.
-const stageExamples = (
-  directory: string,
-  profile: keyof typeof exampleSources,
-): readonly string[] => {
-  const paths = [...exampleSources[profile]].sort();
-  for (const path of paths) {
-    if (!existsSync(join(root, path))) fail(`workspace lacks the example source ${path}`);
-    const destination = join(directory, path);
-    mkdirSync(dirname(destination), { recursive: true });
-    copyFileSync(join(root, path), destination);
-  }
-  return paths;
-};
-
-const releaseConsumer = (directory: string): void => {
-  // The complete checks remain independent, but need not retain their installed
-  // trees concurrently. Only this run's successful consumer is removed.
-  if (!keep) rmSync(directory, { recursive: true, force: true });
-};
-
-const initConsumer = (name: string, overrides?: Readonly<Record<string, string>>): string => {
-  const directory = join(isolated, name);
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(
-    join(directory, "package.json"),
-    JSON.stringify(
-      { private: true, type: "module", ...(overrides === undefined ? {} : { overrides }) },
-      null,
-      2,
-    ),
-  );
-  copyFileSync(fixture("resolution-guard.mjs"), join(directory, "resolution-guard.mjs"));
-  return directory;
-};
-
-const install = (
-  directory: string,
-  installed: readonly Archive[],
-  packages: readonly string[],
-  omitOptional: boolean,
-): void => {
-  const command = installer === "bun" ? bun : "npm";
-  const args =
-    installer === "bun"
-      ? [
-          "--no-env-file",
-          "add",
-          "--ignore-scripts",
-          "--exact",
-          "--linker=hoisted",
-          `--backend=${process.platform === "darwin" ? "clonefile" : "hardlink"}`,
-        ]
-      : ["install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"];
-  if (omitOptional) args.push("--omit=optional");
-  const result = execute(
-    command,
-    [
-      ...args,
-      `effect@${selected.effect}`,
-      ...installed.map((archive) => archive.installTarball),
-      ...packages,
-    ],
-    directory,
-  );
-  writeFileSync(
-    join(packDirectory, `install-${relative(isolated, directory)}.log`),
-    `${result.stdout ?? ""}${result.stderr ?? ""}`,
-  );
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0)
-    fail(`${installer} install failed in ${directory}\n${result.stdout}${result.stderr}`);
-  const verifiedArchives = installed.map((archive) => {
-    const verified = verifyInstalledArchive(directory, {
-      name: archive.manifest.name,
-      version: archive.manifest.version,
-      specifier: archive.installTarball,
-      fileSha256: archive.fileSha256,
-    });
-    console.log(
-      `installed-package-identity ${relative(isolated, directory)} ${archive.manifest.name} ${archive.files.size} files`,
-    );
-    return verified;
-  });
-  if (installer === "bun") {
-    const manifestPath = join(directory, "package.json");
-    const original = readFileSync(manifestPath, "utf8");
-    const evidencePrefix = `install-${relative(isolated, directory)}`;
-    writeFileSync(join(packDirectory, `${evidencePrefix}.manifest.json`), original);
-    const normalized =
-      JSON.stringify(verifiedArchiveRequirements(JSON.parse(original), verifiedArchives), null, 2) +
-      "\n";
-    writeFileSync(manifestPath, normalized);
-    writeFileSync(join(packDirectory, `${evidencePrefix}.normalized-manifest.json`), normalized);
-    writeFileSync(
-      join(packDirectory, `${evidencePrefix}.normalization.json`),
-      JSON.stringify(
-        {
-          format: "reactor-pack-archive-requirements/v1",
-          installer,
-          reason: "Bun omits npm local-tarball provenance metadata",
-          originalManifest: `${evidencePrefix}.manifest.json`,
-          normalizedManifest: `${evidencePrefix}.normalized-manifest.json`,
-          verification: "complete-installed-archive-byte-identity",
-          archives: installed.map((archive) => ({
-            name: archive.manifest.name,
-            version: archive.manifest.version,
-            installSpecifier: archive.installTarball,
-            sha256: archive.sha256,
-            filesChecked: archive.files.size,
-          })),
-        },
-        null,
-        2,
-      ) + "\n",
-    );
-  }
-  if (!existsSync(join(directory, "node_modules", compilerPlatform, "package.json")))
-    fail(`isolated consumer is missing its compiler platform package ${compilerPlatform}`);
-  if (
-    omitOptional &&
-    readdirSync(join(directory, "node_modules")).some((name) => isPlatformPackage(name))
-  )
-    fail("an optional native addon was installed in a portable consumer");
-  const compilerVersion = run(
-    node,
-    ["node_modules/typescript/bin/tsc", "--version"],
-    directory,
-  ).trim();
-  if (compilerVersion !== `Version ${typescriptVersion}`)
-    fail(`isolated consumer selected an unexpected compiler: ${compilerVersion}`);
-};
-
-const assertTraceInside = (trace: string, directory: string): void => {
-  const rootReal = realpathSync(directory);
-  const prefix = rootReal.endsWith(sep) ? rootReal : `${rootReal}${sep}`;
-  for (const match of trace.matchAll(/was successfully resolved to '([^']+)'/g)) {
-    const raw = match[1];
-    if (raw === undefined || !isAbsolute(raw) || !existsSync(raw)) continue;
-    const resolvedPath = realpathSync(raw);
-    if (resolvedPath !== rootReal && !resolvedPath.startsWith(prefix)) {
-      fail(`TypeScript resolved outside isolated consumer ${directory}: ${resolvedPath}`);
-    }
-  }
-};
-
-const typecheck = (
-  directory: string,
-  sourceName: string,
-  compilerOptions: Record<string, unknown>,
-  allowEffectNodeGlobal = false,
-  examples: readonly string[] = [],
-): void => {
-  copyFileSync(fixture(sourceName), join(directory, sourceName));
-  let include = [sourceName, ...examples];
-  const writeConfig = () =>
-    writeFileSync(
-      join(directory, "tsconfig.json"),
-      JSON.stringify({ compilerOptions, include }, null, 2),
-    );
-  writeConfig();
-
-  // Plain diagnostics, whatever FORCE_COLOR says, so the exception below can be recognized.
-  const bare = execute(
-    node,
-    ["node_modules/typescript/bin/tsc", "--noEmit", "--pretty", "false", "-p", "tsconfig.json"],
-    directory,
-  );
-  if (bare.error !== undefined) throw bare.error;
-  if (bare.status !== 0) {
-    const diagnostics = `${bare.stdout}${bare.stderr}`.trim().split("\n").filter(Boolean);
-    const knownEffect =
-      diagnostics.length > 0 &&
-      diagnostics.every((line) =>
-        /node_modules[/\\]effect[/\\]dist[/\\]Channel\.d\.ts\(\d+,\d+\): error TS2304: Cannot find name 'TextDecoderOptions'\./.test(
-          line,
-        ),
-      );
-    if (!allowEffectNodeGlobal || !knownEffect) {
-      fail(`isolated type consumer failed in ${directory}\n${diagnostics.join("\n")}`);
-    }
-    copyFileSync(
-      fixture("effect-node-globals.d.mts"),
-      join(directory, "effect-node-globals.d.mts"),
-    );
-    include = [...include, "effect-node-globals.d.mts"];
-    writeConfig();
-    console.log(`effect-no-dom-exception TextDecoderOptions (effect@${selected.effect})`);
-  }
-
-  run(node, ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"], directory);
-  const trace = run(
-    node,
-    ["node_modules/typescript/bin/tsc", "--noEmit", "--traceResolution", "-p", "tsconfig.json"],
-    directory,
-  );
-  assertTraceInside(trace, directory);
-  writeFileSync(join(packDirectory, `types-${relative(isolated, directory)}.trace.log`), trace);
-  if (examples.length > 0) {
-    run(
-      node,
-      [
-        "node_modules/typescript/bin/tsc",
-        "-p",
-        "tsconfig.json",
-        "--rootDir",
-        ".",
-        "--outDir",
-        "compiled-examples",
-      ],
-      directory,
-    );
-    for (const path of examples) {
-      if (!existsSync(join(directory, "compiled-examples", path.replace(/\.ts$/, ".js"))))
-        fail(`example was not emitted: ${path}`);
-    }
-    console.log(`installed-examples-compiled ${relative(isolated, directory)} ${examples.length}`);
-  }
 };
 
 /** The examples import `.ts` files, as Node's type stripping runs them; emit rewrites them. */
@@ -703,123 +257,799 @@ const nodeCompilerOptions = {
   ...exampleCompilerOptions,
 };
 
-const checkRuntimeFixtures = (directory: string, names: readonly string[]): void => {
-  run(
-    node,
-    [
-      "node_modules/typescript/bin/tsc",
-      "--ignoreConfig",
-      "--allowJs",
-      "--checkJs",
-      "--noEmit",
-      "--allowImportingTsExtensions",
-      "--target",
-      "ES2022",
-      "--module",
-      "NodeNext",
-      "--strict",
-      "--skipLibCheck",
-      "false",
-      "--exactOptionalPropertyTypes",
-      "--noUncheckedIndexedAccess",
-      "--types",
-      "node",
-      "--lib",
-      "ES2023,DOM,ESNext.Disposable",
-      ...names,
-    ],
-    directory,
-  );
-};
+/** The globals a fixture's host gives it: Node's, or a browser's and none of Node's. */
+const fixtureHosts = {
+  node: ["--types", "node", "--lib", "ES2023,DOM,ESNext.Disposable"],
+  // An empty list, so that no installed type package stands in for the browser.
+  browser: ["--types", "", "--lib", "ES2023,DOM,DOM.Iterable,ESNext.Disposable"],
+} as const;
 
-const guarded = (directory: string, denyNative: boolean): NodeJS.ProcessEnv => ({
-  ...process.env,
-  PACK_CONSUMER_ROOT: directory,
-  PACK_DENY_NATIVE: denyNative ? "1" : "0",
-  NODE_PATH: "",
+const exited = ChildProcessSpawner.ExitCode(0);
+const text = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
+  stream.pipe(Stream.decodeText(), Stream.mkString);
+
+/** Runs a tool to completion and keeps its output; `env` adds to this process's environment. */
+const execute = Effect.fnUntraced(function* (
+  command: string,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env: Readonly<Record<string, string>> = {},
+) {
+  const handle = yield* ChildProcess.make(command, args, {
+    cwd,
+    env,
+    extendEnv: true,
+    stdin: "ignore",
+  });
+  const [stdout, stderr, status] = yield* Effect.all(
+    [text(handle.stdout), text(handle.stderr), handle.exitCode],
+    { concurrency: "unbounded" },
+  );
+  return { stdout, stderr, status };
+}, Effect.scoped);
+
+/** Runs a tool that must succeed, and returns its standard output. */
+const run = Effect.fnUntraced(function* (
+  command: string,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env: Readonly<Record<string, string>> = {},
+) {
+  const { stdout, stderr, status } = yield* execute(command, args, cwd, env);
+  if (status !== exited)
+    return yield* failure(`${command} ${args.join(" ")} failed in ${cwd}\n${stdout}${stderr}`);
+  return stdout;
 });
 
-const checkConsumerStack = (
-  directory: string,
-  name: ConsumerResolution["name"],
-): ConsumerResolution => {
-  const effect = resolveStackPackage(join(directory, "package.json"), "effect", stack);
-  const resolved = relative(realpathSync(directory), effect.path);
-  if (isAbsolute(resolved) || resolved === ".." || resolved.startsWith(`..${sep}`))
-    fail(`${name}: Effect resolved outside the isolated consumer`);
-  // Keep npm's invalid-peer diagnostics even when Bun performed the install.
-  const dependencies = run(
-    "npm",
-    ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
-    directory,
+const program = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* path.fromFileUrl(new URL("../", import.meta.url));
+  const fixture = (name: string): string => path.join(root, "scripts", "pack", name);
+  /**
+   * The example sources each isolated consumer compiles, by what it installs.
+   * Every consumer compiles the portable Rundown; the browser consumer adds the
+   * page, and the native consumer, which installs @effect/platform-node, every
+   * Node program. Example tests are left out: they need Vitest.
+   */
+  const exampleSources = {
+    portable: ["packages/client/examples/src/Rundown.ts"],
+    browser: [
+      "packages/client/examples/src/Rundown.ts",
+      "packages/browser/examples/src/Api.ts",
+      "packages/browser/examples/src/WebCrypto.ts",
+      "packages/browser/examples/src/app.ts",
+    ],
+    node: [
+      "packages/client/examples/src/Rundown.ts",
+      "packages/client/examples/src/main.ts",
+      "packages/browser/examples/src/Api.ts",
+      "packages/browser/examples/src/server.ts",
+      "packages/native/examples/src/Recording.ts",
+      "packages/native/examples/src/capture.ts",
+      ...(yield* fs.readDirectory(path.join(root, "examples/livestream/src")))
+        .filter((name) => name.endsWith(".ts"))
+        .map((name) => `examples/livestream/src/${name}`),
+    ],
+  };
+  const args = yield* (yield* Stdio.Stdio).args;
+  const portableOnly = args.includes("--portable");
+  const profile = portableOnly ? "portable" : "full";
+  for (const arg of args)
+    if (arg !== "--portable")
+      return yield* failure(`unknown pack argument: ${arg}; use --portable`);
+  yield* fs.makeDirectory(path.join(root, ".check"), { recursive: true });
+  const packDirectory = yield* fs.makeTempDirectory({
+    directory: path.join(root, ".check"),
+    prefix: "pack-",
+  });
+  const workspace = yield* Schema.decodeEffect(WorkspaceManifest)(
+    yield* fs.readFileString(path.join(root, "package.json")),
   );
-  writeFileSync(
-    join(packDirectory, `${name === "portable-node" ? "portable" : name}-dependencies.json`),
-    dependencies,
+  const catalog = workspace.workspaces.catalog;
+  const typescriptVersion = catalog.typescript;
+  if (typescriptVersion === undefined) return yield* failure("catalog must pin typescript");
+  const nodeTypesVersion = catalog["@types/node"];
+  if (nodeTypesVersion === undefined) return yield* failure("catalog must pin @types/node");
+  // Release qualification selects frozen bytes; archive peers keep their ranges.
+  const stack = yield* selectStack(workspace, yield* fs.readFile(path.join(root, "bun.lock")));
+  const { requirements, selected } = stack;
+  const workspaceResolution = yield* resolveWorkspaceStack(root, stack);
+  const consumers: Array<ConsumerResolution> = [];
+
+  // TypeScript 7 ships its compiler as an optional platform package. Install that
+  // exact tool explicitly so --omit=optional can still prove the SDK works without
+  // the native addon. Every compiler and declaration remains inside the isolated consumer.
+  const compilerManifest = yield* Schema.decodeEffect(CompilerManifest)(
+    yield* fs.readFileString(path.join(root, "node_modules/typescript/package.json")),
   );
-  return inspectConsumerTree(name, installer, JSON.parse(dependencies), stack);
-};
+  if (compilerManifest.version !== typescriptVersion)
+    return yield* failure("workspace TypeScript version differs from the pinned consumer compiler");
+  const compilerPlatform = `@typescript/typescript-${process.platform}-${process.arch}`;
+  const compilerPlatformVersion = compilerManifest.optionalDependencies?.[compilerPlatform];
+  if (compilerPlatformVersion === undefined)
+    return yield* failure(
+      `pinned TypeScript does not declare its host compiler ${compilerPlatform}`,
+    );
+  const compilerPackages = [
+    `typescript@${typescriptVersion}`,
+    `${compilerPlatform}@${compilerPlatformVersion}`,
+  ];
 
-try {
-  const browserArchive = archives.get("browser") ?? fail("browser archive was not produced");
+  // Resolve the selected Node once before entering deliberately stripped fixture
+  // environments. An NVM installation must not rely on PATH surviving isolation.
+  const { node: selectedNode, bun } = yield* runtimes;
+  const node = yield* fs.realPath(
+    (yield* run(selectedNode, ["-p", "process.execPath"], root)).trim(),
+  );
+  const installer = yield* Config.String("PACK_INSTALLER").pipe(Config.withDefault("npm"));
+  if (installer !== "npm" && installer !== "bun")
+    return yield* failure("PACK_INSTALLER must be npm or bun");
+  const keep = yield* Config.String("KEEP_PACK_TMP").pipe(
+    Config.map((value) => value === "1"),
+    Config.withDefault(false),
+  );
+  yield* Console.log(`consumer-installer ${installer} profile ${profile}`);
+  yield* run(bun, ["--no-env-file", "run", "build"], root);
 
-  const portable = initConsumer("portable-node");
-  install(portable, [client], [...compilerPackages, `@types/node@${nodeTypesVersion}`], true);
-  const portableStack = checkConsumerStack(portable, "portable-node");
-  copyFileSync(fixture("portable-import.mjs"), join(portable, "portable-import.mjs"));
-  const portableOutput = run(
+  const hostAddon = addonPlatforms[`${process.platform}-${process.arch}`];
+  /** Each platform addon's identity as staging wrote it, by platform. */
+  const identities = new Map<string, Schema.Json>();
+  /** Every build input's hash, as `rust/build.rs` embeds it; no Rust source ships. */
+  const checkedOutSource = portableOnly
+    ? undefined
+    : (yield* run(node, ["packages/native/scripts/stage.mjs", "--source-hash"], root)).trim();
+
+  const checkArchive = Effect.fnUntraced(function* (archive: Archive, unpacked: string) {
+    const { files, manifest } = archive;
+    // Only the native package runs on Node and loads its addon.
+    const hostBuiltins = manifest.name === "reactor-effect-native";
+    for (const required of ["package.json", "README.md", "LICENSE", "NOTICE"]) {
+      if (!files.has(required))
+        return yield* failure(`${manifest.name} tarball omitted ${required}`);
+    }
+    if (![...files].some((file) => file.startsWith("notices/")))
+      return yield* failure(`${manifest.name} tarball omitted its third-party notices`);
+    for (const group of [
+      manifest.dependencies,
+      manifest.peerDependencies,
+      manifest.optionalDependencies,
+      manifest.devDependencies,
+    ])
+      for (const [name, version] of Object.entries(group ?? {})) {
+        if (/^(?:workspace|catalog):/.test(version))
+          return yield* failure(
+            `${manifest.name}: ${name} uses unpublished dependency protocol ${version}`,
+          );
+      }
+    if (manifest.peerDependencies?.effect !== requirements.effect)
+      return yield* failure(
+        `${manifest.name} must declare the Effect peer range ${requirements.effect}`,
+      );
+    // Effect's shape: the index, one subpath per top-level module, internals and the
+    // index's own path closed. TypeScript finds each module's declarations beside it.
+    if (!isExportMap(manifest.exports))
+      return yield* failure(`${manifest.name} export map differs from ${exportMapText}`);
+    const modules = publicModules(files);
+    if (!modules.includes("index"))
+      return yield* failure(`${manifest.name} tarball omitted dist/index.js`);
+    for (const module of modules)
+      if (!files.has(`dist/${module}.d.ts`))
+        return yield* failure(`${manifest.name} module ${module} has no declarations`);
+    const dependencies = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+    ]);
+    for (const file of files) {
+      if (!file.startsWith("dist/") || (!file.endsWith(".js") && !file.endsWith(".d.ts"))) continue;
+      const sourcePath = path.join(root, "packages", archive.directory, file);
+      if (!(yield* fs.exists(sourcePath)))
+        return yield* failure(`packed ${file} is absent from build output`);
+      const source = yield* fs.readFileString(sourcePath);
+      if (source !== (yield* fs.readFileString(path.join(unpacked, "package", file))))
+        return yield* failure(`packed ${file} differs from the build inspected for import closure`);
+      if (source.includes("/the-show") || source.includes("@the-show/"))
+        return yield* failure(`${file} retains a workspace-specific import/path`);
+      for (const specifier of specifiers(source)) {
+        if (specifier.startsWith(".")) {
+          // Archive entries are POSIX paths, as this host's are.
+          const target = path.normalize(path.join(path.dirname(file), specifier));
+          if (!files.has(target))
+            return yield* failure(`${file} imports missing packaged file ${target}`);
+          continue;
+        }
+        if (specifier.startsWith("/") || specifier.startsWith("file:"))
+          return yield* failure(`${file} contains absolute import ${specifier}`);
+        if (builtins.has(specifier)) {
+          if (!hostBuiltins) return yield* failure(`${file} imports Node builtin ${specifier}`);
+          continue;
+        }
+        if (!dependencies.has(packageName(specifier)))
+          return yield* failure(`${file} imports undeclared external dependency ${specifier}`);
+      }
+    }
+  });
+
+  /** A platform package: its addon, the identity staging wrote for it, and notices. */
+  const checkPlatformArchive = Effect.fnUntraced(function* (archive: Archive, unpacked: string) {
+    const { files, manifest } = archive;
+    const target = manifest.name.slice(platformPrefix.length);
+    const addon = addonFile(target);
+    const packaged = (file: string) => path.join(unpacked, "package", file);
+    for (const required of ["package.json", "README.md", "LICENSE", "NOTICE", addon])
+      if (!files.has(required))
+        return yield* failure(`${manifest.name} tarball omitted ${required}`);
+    if (![...files].some((file) => file.startsWith("notices/")))
+      return yield* failure(`${manifest.name} tarball omitted its third-party notices`);
+    const expectedFiles = [
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "NOTICE",
+      "native-identity.json",
+    ];
+    for (const file of files)
+      if (!file.startsWith("notices/") && !expectedFiles.includes(file) && file !== addon)
+        return yield* failure(`${manifest.name} tarball carries unexpected ${file}`);
+    if (manifest.main !== addon) return yield* failure(`${manifest.name} main must be ${addon}`);
+    const invalid = () => failure(`invalid native identity in ${manifest.name}`);
+    const recorded = yield* Schema.decodeEffect(JsonText)(
+      yield* fs.readFileString(packaged("native-identity.json")),
+    ).pipe(Effect.mapError(invalid));
+    const identity = yield* Schema.decodeUnknownEffect(NativeIdentity)(recorded).pipe(
+      Effect.mapError(invalid),
+    );
+    if (identity.platform !== target || identity.file !== addon) return yield* invalid();
+    if (
+      !/^[a-f0-9]{64}$/.test(identity.sha256) ||
+      !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
+    )
+      return yield* failure(`invalid native hashes in ${manifest.name}`);
+    if ((yield* sha256(yield* fs.readFile(packaged(addon)))) !== identity.sha256)
+      return yield* failure(`native tarball hash differs from qualified stage: ${manifest.name}`);
+    const staged = yield* fs.readFile(path.join(root, "packages", "native", "npm", target, addon));
+    if ((yield* sha256(staged)) !== identity.sha256)
+      return yield* failure(`native stage changed during packaging: ${manifest.name}`);
+    if (identity.build.sourceSha256 !== checkedOutSource)
+      return yield* failure(
+        `${manifest.name} was built from sources other than the checked-out ones`,
+      );
+    identities.set(target, recorded);
+  });
+
+  /** The binding: no addon or Rust source, and every platform package pinned to its version. */
+  const checkNativeArchive = Effect.fnUntraced(function* (archive: Archive) {
+    const { files, manifest } = archive;
+    for (const file of files)
+      if (file.endsWith(".node") || /^(?:rust|npm|scripts)\//.test(file))
+        return yield* failure(`${manifest.name} tarball carries ${file}`);
+    const optional = manifest.optionalDependencies ?? {};
+    const expected = Object.values(addonPlatforms)
+      .map((target) => `${platformPrefix}${target}`)
+      .sort();
+    const listed = Object.keys(optional).sort();
+    if (listed.length !== expected.length || listed.some((name, index) => name !== expected[index]))
+      return yield* failure(
+        `${manifest.name} must list exactly the platform packages ${expected.join(", ")}`,
+      );
+    for (const [name, version] of Object.entries(optional))
+      if (version !== manifest.version)
+        return yield* failure(
+          `${manifest.name} must pin ${name} to exactly ${manifest.version}, not ${version}`,
+        );
+  });
+
+  /** Packs one workspace package and validates the archive before any consumer sees it. */
+  const packArchive = Effect.fnUntraced(function* (directory: string) {
+    const packageRoot = path.join(root, "packages", directory);
+    const source = yield* Schema.decodeEffect(PackageManifest)(
+      yield* fs.readFileString(path.join(packageRoot, "package.json")),
+    );
+    const filename = `${source.name}-${source.version}.tgz`;
+    yield* run(
+      bun,
+      [
+        "--no-env-file",
+        "pm",
+        "pack",
+        "--ignore-scripts",
+        "--quiet",
+        "--destination",
+        packDirectory,
+      ],
+      packageRoot,
+    );
+    const tarball = path.join(packDirectory, filename);
+    if (!(yield* fs.exists(tarball)))
+      return yield* failure(`bun pm pack did not produce ${filename}`);
+    yield* Console.log(`pack-created ${path.relative(root, tarball)}`);
+    const files = new Set(
+      (yield* run("tar", ["-tzf", tarball], root))
+        .split("\n")
+        .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
+        .map((entry) => (entry.startsWith("package/") ? entry.slice("package/".length) : entry)),
+    );
+    for (const file of files) {
+      if (
+        path.isAbsolute(file) ||
+        file.split("/").some((part) => part === ".." || part.length === 0)
+      )
+        return yield* failure(`invalid tarball entry ${file}`);
+    }
+    const archiveSha256 = yield* sha256(yield* fs.readFile(tarball));
+    // Stable archive names can retain stale Bun cache entries. A content-addressed
+    // alias preserves the exact bytes without copying or pruning any cache.
+    const installTarball =
+      installer === "bun"
+        ? path.join(packDirectory, `${source.name}-${archiveSha256}.tgz`)
+        : tarball;
+    if (installer === "bun") yield* fs.link(tarball, installTarball);
+    const unpacked = path.join(packDirectory, "unpacked", directory);
+    yield* fs.makeDirectory(unpacked, { recursive: true });
+    yield* run("tar", ["-xzf", tarball, "-C", unpacked], root).pipe(
+      // Preserve the archive and failure, but not a new partial extraction that
+      // would make the next disk-constrained qualification attempt fail sooner.
+      Effect.onError(() =>
+        keep
+          ? Effect.void
+          : fs.remove(unpacked, { recursive: true, force: true }).pipe(Effect.orDie),
+      ),
+    );
+    const packaged = (file: string) => path.join(unpacked, "package", file);
+    const manifest = yield* Schema.decodeEffect(PackageManifest)(
+      yield* fs.readFileString(packaged("package.json")),
+    );
+    const fileSha256: Record<string, string> = {};
+    for (const file of [...files].sort())
+      fileSha256[file] = yield* sha256(yield* fs.readFile(packaged(file)));
+    const archive: Archive = {
+      directory,
+      manifest,
+      tarball,
+      installTarball,
+      sha256: archiveSha256,
+      files,
+      fileSha256,
+    };
+    if (isPlatformPackage(manifest.name)) yield* checkPlatformArchive(archive, unpacked);
+    else yield* checkArchive(archive, unpacked);
+    if (manifest.name === "reactor-effect-native") yield* checkNativeArchive(archive);
+    if (!keep) yield* fs.remove(unpacked, { recursive: true, force: true });
+    return archive;
+  });
+
+  /** The platform addons to pack: the host's, those CI expects, and any other staged one. */
+  const expectedAddons = (yield* Config.String("PACK_EXPECT_NATIVE_PLATFORMS").pipe(
+    Config.withDefault(""),
+  ))
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const stagedAddons = portableOnly
+    ? []
+    : yield* Effect.filter(
+        Object.values(addonPlatforms),
+        Effect.fnUntraced(function* (target) {
+          const staged = yield* fs.exists(
+            path.join(root, "packages", "native", "npm", target, addonFile(target)),
+          );
+          if (!staged && (target === hostAddon || expectedAddons.includes(target)))
+            return yield* failure(`no staged addon for ${target}; run bun run native:build`);
+          return staged;
+        }),
+      );
+  const archives = new Map<string, Archive>();
+  for (const directory of portableOnly
+    ? ["client", "browser"]
+    : ["client", "browser", "native", ...stagedAddons.map((target) => `native/npm/${target}`)])
+    archives.set(directory, yield* packArchive(directory));
+  const client = archives.get("client");
+  if (client === undefined) return yield* failure("client archive was not produced");
+  for (const archive of archives.values()) {
+    if (archive.manifest.version !== client.manifest.version)
+      return yield* failure(
+        `${archive.manifest.name} version differs from ${client.manifest.name}`,
+      );
+    if (
+      archive !== client &&
+      !isPlatformPackage(archive.manifest.name) &&
+      archive.manifest.peerDependencies?.["reactor-effect-client"] !== client.manifest.version
+    )
+      return yield* failure(
+        `${archive.manifest.name} must pin its reactor-effect-client peer to ${client.manifest.version}`,
+      );
+  }
+
+  const isolated = yield* Effect.acquireRelease(
+    fs.makeTempDirectory({ prefix: "reactor-effect-pack-" }),
+    (directory) =>
+      keep
+        ? Effect.void
+        : fs.remove(directory, { recursive: true, force: true }).pipe(Effect.orDie),
+  );
+
+  // Compile the workspace's examples against the installed packages, never
+  // against workspace source, keeping each example's own relative imports.
+  const stageExamples = Effect.fnUntraced(function* (
+    directory: string,
+    sources: ReadonlyArray<string>,
+  ) {
+    const paths = [...sources].sort();
+    for (const example of paths) {
+      if (!(yield* fs.exists(path.join(root, example))))
+        return yield* failure(`workspace lacks the example source ${example}`);
+      const destination = path.join(directory, example);
+      yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+      yield* fs.copyFile(path.join(root, example), destination);
+    }
+    return paths;
+  });
+
+  // The complete checks remain independent, but need not retain their installed
+  // trees concurrently. Only this run's successful consumer is removed.
+  const releaseConsumer = (directory: string) =>
+    keep ? Effect.void : fs.remove(directory, { recursive: true, force: true });
+
+  const initConsumer = Effect.fnUntraced(function* (
+    name: string,
+    overrides?: Readonly<Record<string, string>>,
+  ) {
+    const directory = path.join(isolated, name);
+    yield* fs.makeDirectory(directory, { recursive: true });
+    const manifest = yield* Schema.encodeEffect(NewConsumerManifest)({
+      private: true,
+      type: "module",
+      ...(overrides === undefined ? {} : { overrides }),
+    });
+    yield* fs.writeFileString(path.join(directory, "package.json"), manifest);
+    yield* fs.copyFile(
+      fixture("resolution-guard.mjs"),
+      path.join(directory, "resolution-guard.mjs"),
+    );
+    return directory;
+  });
+
+  const install = Effect.fnUntraced(function* (
+    directory: string,
+    installed: ReadonlyArray<Archive>,
+    packages: ReadonlyArray<string>,
+    omitOptional: boolean,
+  ) {
+    const consumer = path.relative(isolated, directory);
+    const command = installer === "bun" ? bun : "npm";
+    const installArgs =
+      installer === "bun"
+        ? [
+            "--no-env-file",
+            "add",
+            "--ignore-scripts",
+            "--exact",
+            "--linker=hoisted",
+            `--backend=${process.platform === "darwin" ? "clonefile" : "hardlink"}`,
+          ]
+        : ["install", "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"];
+    const result = yield* execute(
+      command,
+      [
+        ...installArgs,
+        ...(omitOptional ? ["--omit=optional"] : []),
+        `effect@${selected.effect}`,
+        ...installed.map((archive) => archive.installTarball),
+        ...packages,
+      ],
+      directory,
+    );
+    yield* fs.writeFileString(
+      path.join(packDirectory, `install-${consumer}.log`),
+      `${result.stdout}${result.stderr}`,
+    );
+    if (result.status !== exited)
+      return yield* failure(
+        `${installer} install failed in ${directory}\n${result.stdout}${result.stderr}`,
+      );
+    const verifiedArchives = [];
+    for (const archive of installed) {
+      verifiedArchives.push(
+        yield* verifyInstalledArchive(directory, {
+          name: archive.manifest.name,
+          version: archive.manifest.version,
+          specifier: archive.installTarball,
+          fileSha256: archive.fileSha256,
+        }),
+      );
+      yield* Console.log(
+        `installed-package-identity ${consumer} ${archive.manifest.name} ${archive.files.size} files`,
+      );
+    }
+    if (installer === "bun") {
+      const manifestPath = path.join(directory, "package.json");
+      const original = yield* fs.readFileString(manifestPath);
+      const evidencePrefix = `install-${consumer}`;
+      yield* fs.writeFileString(
+        path.join(packDirectory, `${evidencePrefix}.manifest.json`),
+        original,
+      );
+      const requirements = yield* verifiedArchiveRequirements(
+        yield* Schema.decodeEffect(ConsumerManifestJson)(original),
+        verifiedArchives,
+      );
+      const normalized = `${yield* Schema.encodeEffect(ConsumerManifestJson)(requirements)}\n`;
+      yield* fs.writeFileString(manifestPath, normalized);
+      yield* fs.writeFileString(
+        path.join(packDirectory, `${evidencePrefix}.normalized-manifest.json`),
+        normalized,
+      );
+      const normalization = yield* Schema.encodeEffect(Normalization)({
+        format: "reactor-pack-archive-requirements/v1",
+        installer,
+        reason: "Bun omits npm local-tarball provenance metadata",
+        originalManifest: `${evidencePrefix}.manifest.json`,
+        normalizedManifest: `${evidencePrefix}.normalized-manifest.json`,
+        verification: "complete-installed-archive-byte-identity",
+        archives: installed.map((archive) => ({
+          name: archive.manifest.name,
+          version: archive.manifest.version,
+          installSpecifier: archive.installTarball,
+          sha256: archive.sha256,
+          filesChecked: archive.files.size,
+        })),
+      });
+      yield* fs.writeFileString(
+        path.join(packDirectory, `${evidencePrefix}.normalization.json`),
+        `${normalization}\n`,
+      );
+    }
+    if (!(yield* fs.exists(path.join(directory, "node_modules", compilerPlatform, "package.json"))))
+      return yield* failure(
+        `isolated consumer is missing its compiler platform package ${compilerPlatform}`,
+      );
+    if (
+      omitOptional &&
+      (yield* fs.readDirectory(path.join(directory, "node_modules"))).some((name) =>
+        isPlatformPackage(name),
+      )
+    )
+      return yield* failure("an optional native addon was installed in a portable consumer");
+    const compilerVersion = (yield* run(
+      node,
+      ["node_modules/typescript/bin/tsc", "--version"],
+      directory,
+    )).trim();
+    if (compilerVersion !== `Version ${typescriptVersion}`)
+      return yield* failure(
+        `isolated consumer selected an unexpected compiler: ${compilerVersion}`,
+      );
+  });
+
+  const assertTraceInside = Effect.fnUntraced(function* (trace: string, directory: string) {
+    const rootReal = yield* fs.realPath(directory);
+    const prefix = rootReal.endsWith(path.sep) ? rootReal : `${rootReal}${path.sep}`;
+    const resolutions = new Set<string>();
+    for (const match of trace.matchAll(/was successfully resolved to '([^']+)'/g))
+      if (match[1] !== undefined) resolutions.add(match[1]);
+    for (const raw of resolutions) {
+      if (!path.isAbsolute(raw) || !(yield* fs.exists(raw))) continue;
+      const resolvedPath = yield* fs.realPath(raw);
+      if (resolvedPath !== rootReal && !resolvedPath.startsWith(prefix))
+        return yield* failure(
+          `TypeScript resolved outside isolated consumer ${directory}: ${resolvedPath}`,
+        );
+    }
+  });
+
+  const typecheck = Effect.fnUntraced(function* (
+    directory: string,
+    sourceName: string,
+    compilerOptions: Readonly<Record<string, Schema.Json>>,
+    allowEffectNodeGlobal: boolean,
+    examples: ReadonlyArray<string>,
+  ) {
+    const consumer = path.relative(isolated, directory);
+    const writeConfig = Effect.fnUntraced(function* (include: ReadonlyArray<string>) {
+      const config = yield* Schema.encodeEffect(TypeScriptConfig)({ compilerOptions, include });
+      yield* fs.writeFileString(path.join(directory, "tsconfig.json"), config);
+    });
+    yield* fs.copyFile(fixture(sourceName), path.join(directory, sourceName));
+    const include = [sourceName, ...examples];
+    yield* writeConfig(include);
+
+    // Plain diagnostics, whatever FORCE_COLOR says, so the exception below can be recognized.
+    const bare = yield* execute(
+      node,
+      ["node_modules/typescript/bin/tsc", "--noEmit", "--pretty", "false", "-p", "tsconfig.json"],
+      directory,
+    );
+    if (bare.status !== exited) {
+      const diagnostics = `${bare.stdout}${bare.stderr}`
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0);
+      const knownEffect =
+        diagnostics.length > 0 &&
+        diagnostics.every((line) =>
+          /node_modules[/\\]effect[/\\]dist[/\\]Channel\.d\.ts\(\d+,\d+\): error TS2304: Cannot find name 'TextDecoderOptions'\./.test(
+            line,
+          ),
+        );
+      if (!allowEffectNodeGlobal || !knownEffect)
+        return yield* failure(
+          `isolated type consumer failed in ${directory}\n${diagnostics.join("\n")}`,
+        );
+      yield* fs.copyFile(
+        fixture("effect-node-globals.d.mts"),
+        path.join(directory, "effect-node-globals.d.mts"),
+      );
+      yield* writeConfig([...include, "effect-node-globals.d.mts"]);
+      yield* Console.log(`effect-no-dom-exception TextDecoderOptions (effect@${selected.effect})`);
+    }
+
+    yield* run(
+      node,
+      ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "tsconfig.json"],
+      directory,
+    );
+    const trace = yield* run(
+      node,
+      ["node_modules/typescript/bin/tsc", "--noEmit", "--traceResolution", "-p", "tsconfig.json"],
+      directory,
+    );
+    yield* assertTraceInside(trace, directory);
+    yield* fs.writeFileString(path.join(packDirectory, `types-${consumer}.trace.log`), trace);
+    if (examples.length > 0) {
+      yield* run(
+        node,
+        [
+          "node_modules/typescript/bin/tsc",
+          "-p",
+          "tsconfig.json",
+          "--rootDir",
+          ".",
+          "--outDir",
+          "compiled-examples",
+        ],
+        directory,
+      );
+      for (const example of examples) {
+        const emitted = path.join(directory, "compiled-examples", example.replace(/\.ts$/, ".js"));
+        if (!(yield* fs.exists(emitted)))
+          return yield* failure(`example was not emitted: ${example}`);
+      }
+      yield* Console.log(`installed-examples-compiled ${consumer} ${examples.length}`);
+    }
+  });
+
+  const checkRuntimeFixtures = Effect.fnUntraced(function* (
+    directory: string,
+    names: ReadonlyArray<string>,
+    host: keyof typeof fixtureHosts,
+  ) {
+    yield* run(
+      node,
+      [
+        "node_modules/typescript/bin/tsc",
+        "--ignoreConfig",
+        "--allowJs",
+        "--checkJs",
+        "--noEmit",
+        "--allowImportingTsExtensions",
+        "--target",
+        "ES2022",
+        "--module",
+        "NodeNext",
+        "--strict",
+        "--skipLibCheck",
+        "false",
+        "--exactOptionalPropertyTypes",
+        "--noUncheckedIndexedAccess",
+        ...fixtureHosts[host],
+        ...names,
+      ],
+      directory,
+    );
+  });
+
+  const guarded = (directory: string, denyNative: boolean) => ({
+    PACK_CONSUMER_ROOT: directory,
+    PACK_DENY_NATIVE: denyNative ? "1" : "0",
+    NODE_PATH: "",
+  });
+
+  const checkConsumerStack = Effect.fnUntraced(function* (
+    directory: string,
+    name: ConsumerResolution["name"],
+  ) {
+    const effect = yield* resolveStackPackage(
+      path.join(directory, "package.json"),
+      "effect",
+      stack,
+    );
+    const resolved = path.relative(yield* fs.realPath(directory), effect.path);
+    if (path.isAbsolute(resolved) || resolved === ".." || resolved.startsWith(`..${path.sep}`))
+      return yield* failure(`${name}: Effect resolved outside the isolated consumer`);
+    // Keep npm's invalid-peer diagnostics even when Bun performed the install.
+    const dependencies = yield* run(
+      "npm",
+      ["ls", "effect", "@effect/platform-node", "@effect/platform-node-shared", "--all", "--json"],
+      directory,
+    );
+    yield* fs.writeFileString(
+      path.join(packDirectory, `${name === "portable-node" ? "portable" : name}-dependencies.json`),
+      dependencies,
+    );
+    return yield* inspectConsumerTree(name, installer, dependencies, stack);
+  });
+
+  const browserArchive = archives.get("browser");
+  if (browserArchive === undefined) return yield* failure("browser archive was not produced");
+
+  const portable = yield* initConsumer("portable-node");
+  yield* install(
+    portable,
+    [client],
+    [...compilerPackages, `@types/node@${nodeTypesVersion}`],
+    true,
+  );
+  const portableStack = yield* checkConsumerStack(portable, "portable-node");
+  yield* fs.copyFile(fixture("portable-import.mjs"), path.join(portable, "portable-import.mjs"));
+  const portableOutput = yield* run(
     node,
     ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
     portable,
     guarded(portable, true),
   );
   if (!portableOutput.includes("portable-import-ok"))
-    fail("portable import smoke did not complete");
-  checkRuntimeFixtures(portable, ["portable-import.mjs", "resolution-guard.mjs"]);
-  typecheck(
+    return yield* failure("portable import smoke did not complete");
+  yield* checkRuntimeFixtures(portable, ["portable-import.mjs", "resolution-guard.mjs"], "node");
+  yield* typecheck(
     portable,
     "node-consumer.mts",
     nodeCompilerOptions,
     true,
-    stageExamples(portable, "portable"),
+    yield* stageExamples(portable, exampleSources.portable),
   );
-  copyFileSync(fixture("rundown-smoke.mjs"), join(portable, "example-smoke.mjs"));
-  const rundownExample = join(
+  yield* fs.copyFile(fixture("rundown-smoke.mjs"), path.join(portable, "example-smoke.mjs"));
+  const rundownExample = path.join(
     portable,
     "compiled-examples/packages/client/examples/src/Rundown.js",
   );
-  for (const [runtime, command, args] of [
+  for (const [runtime, command, runtimeArgs] of [
     ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
     ["Bun", bun, ["--no-env-file"]],
   ] as const) {
-    const output = run(
+    const output = yield* run(
       command,
-      [...args, "example-smoke.mjs", rundownExample],
+      [...runtimeArgs, "example-smoke.mjs", rundownExample],
       portable,
       guarded(portable, true),
     );
     if (!output.includes("compiled-example-ok"))
-      fail(`${runtime} installed example did not complete`);
-    console.log(`${runtime} ${output.trim()}`);
+      return yield* failure(`${runtime} installed example did not complete`);
+    yield* Console.log(`${runtime} ${output.trim()}`);
   }
-  checkRuntimeFixtures(portable, ["example-smoke.mjs"]);
-  copyFileSync(fixture("browser-bundle-smoke.mjs"), join(portable, "browser-bundle-smoke.mjs"));
-  checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"]);
+  yield* checkRuntimeFixtures(portable, ["example-smoke.mjs"], "node");
+  yield* fs.copyFile(
+    fixture("browser-bundle-smoke.mjs"),
+    path.join(portable, "browser-bundle-smoke.mjs"),
+  );
+  yield* checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"], "node");
   consumers.push(portableStack);
-  releaseConsumer(portable);
+  yield* releaseConsumer(portable);
 
-  const browser = initConsumer("browser");
-  install(browser, [client, browserArchive], compilerPackages, true);
-  const browserStack = checkConsumerStack(browser, "browser");
-  copyFileSync(fixture("browser-import.mjs"), join(browser, "browser-import.mjs"));
-  const browserOutput = run(
+  const browser = yield* initConsumer("browser");
+  yield* install(browser, [client, browserArchive], compilerPackages, true);
+  const browserStack = yield* checkConsumerStack(browser, "browser");
+  yield* fs.copyFile(fixture("browser-import.mjs"), path.join(browser, "browser-import.mjs"));
+  const browserOutput = yield* run(
     node,
     ["--experimental-loader", "./resolution-guard.mjs", "browser-import.mjs"],
     browser,
     guarded(browser, true),
   );
-  if (!browserOutput.includes("browser-import-ok")) fail("browser import smoke did not complete");
-  run(
+  if (!browserOutput.includes("browser-import-ok"))
+    return yield* failure("browser import smoke did not complete");
+  yield* checkRuntimeFixtures(browser, ["browser-import.mjs"], "browser");
+  yield* run(
     bun,
     [
       "--no-env-file",
@@ -830,19 +1060,22 @@ try {
     ],
     browser,
   );
-  const browserBundle = readFileSync(join(browser, "browser-bundle.js"), "utf8");
+  const browserBundle = yield* fs.readFileString(path.join(browser, "browser-bundle.js"));
   if (/reactor-effect-native|takeVideo|buildIdentity/.test(browserBundle))
-    fail("installed browser bundle includes a native implementation");
-  copyFileSync(fixture("browser-bundle-smoke.mjs"), join(browser, "browser-bundle-smoke.mjs"));
-  const hostlessOutput = run(
+    return yield* failure("installed browser bundle includes a native implementation");
+  yield* fs.copyFile(
+    fixture("browser-bundle-smoke.mjs"),
+    path.join(browser, "browser-bundle-smoke.mjs"),
+  );
+  const hostlessOutput = yield* run(
     node,
-    ["browser-bundle-smoke.mjs", join(browser, "browser-bundle.js")],
+    ["browser-bundle-smoke.mjs", path.join(browser, "browser-bundle.js")],
     browser,
-    { ...process.env, NODE_PATH: "" },
+    { NODE_PATH: "" },
   );
   if (!hostlessOutput.includes("browser-import-ok"))
-    fail("installed browser bundle requires Node Buffer or did not complete");
-  typecheck(
+    return yield* failure("installed browser bundle requires Node Buffer or did not complete");
+  yield* typecheck(
     browser,
     "browser-consumer.mts",
     {
@@ -858,19 +1091,23 @@ try {
       ...exampleCompilerOptions,
     },
     false,
-    stageExamples(browser, "browser"),
+    yield* stageExamples(browser, exampleSources.browser),
   );
   consumers.push(browserStack);
-  releaseConsumer(browser);
+  yield* releaseConsumer(browser);
 
   const nativeArchive = archives.get("native");
   if (nativeArchive !== undefined) {
-    const addonArchive =
-      archives.get(`native/npm/${hostAddon}`) ?? fail(`no addon archive for this host`);
+    const addonArchive = archives.get(`native/npm/${hostAddon}`);
+    if (addonArchive === undefined) return yield* failure("no addon archive for this host");
+    const hostIdentity = identities.get(hostAddon ?? "");
+    if (hostIdentity === undefined) return yield* failure("no native identity for this host");
     // npm applies overrides only at the consumer root. The platform's prerelease
     // caret range otherwise admits a later shared platform and a second Effect.
-    const native = initConsumer("native", { "@effect/platform-node-shared": selected.nodeShared });
-    install(
+    const native = yield* initConsumer("native", {
+      "@effect/platform-node-shared": selected.nodeShared,
+    });
+    yield* install(
       native,
       // The binding's optional dependency on this host's package resolves to its archive.
       [client, nativeArchive, addonArchive],
@@ -881,80 +1118,81 @@ try {
       ],
       false,
     );
-    const nativeStack = checkConsumerStack(native, "native");
-    console.log(`installed-native-effect-stack ${selected.effect}`);
-    copyFileSync(fixture("native-preflight.mjs"), join(native, "native-preflight.mjs"));
-    const nativeOutput = run(
+    const nativeStack = yield* checkConsumerStack(native, "native");
+    yield* Console.log(`installed-native-effect-stack ${selected.effect}`);
+    yield* fs.copyFile(fixture("native-preflight.mjs"), path.join(native, "native-preflight.mjs"));
+    const nativeOutput = yield* run(
       node,
       ["--experimental-loader", "./resolution-guard.mjs", "native-preflight.mjs"],
       native,
       {
         ...guarded(native, false),
-        PACK_NATIVE_IDENTITY: JSON.stringify(identities.get(hostAddon ?? "")),
+        PACK_NATIVE_IDENTITY: yield* Schema.encodeEffect(JsonText)(hostIdentity),
       },
     );
     if (!nativeOutput.includes("native-preflight-ok"))
-      fail("installed native preflight did not complete");
-    checkRuntimeFixtures(native, ["native-preflight.mjs", "resolution-guard.mjs"]);
-    console.log(nativeOutput.trim());
-    typecheck(
+      return yield* failure("installed native preflight did not complete");
+    yield* checkRuntimeFixtures(native, ["native-preflight.mjs", "resolution-guard.mjs"], "node");
+    yield* Console.log(nativeOutput.trim());
+    yield* typecheck(
       native,
       "native-consumer.mts",
       nodeCompilerOptions,
       true,
-      stageExamples(native, "node"),
+      yield* stageExamples(native, exampleSources.node),
     );
     consumers.push(nativeStack);
-    releaseConsumer(native);
+    yield* releaseConsumer(native);
   }
 
-  const identityPath = join(packDirectory, "package-identity.json");
-  writeFileSync(
-    identityPath,
-    JSON.stringify(
-      {
-        profile: portableOnly ? "portable" : "full",
-        installer,
-        effect: requirements.effect,
-        qualificationStack: completeQualification(
-          stack,
-          workspaceResolution,
-          consumers,
-          portableOnly ? "portable" : "full",
-        ),
-        packages: Object.fromEntries(
-          [...archives.values()].map((archive) => [
-            archive.manifest.name,
-            {
-              version: archive.manifest.version,
-              tarball: relative(packDirectory, archive.tarball),
-              sha256: archive.sha256,
-              exports: [...publicEntries(archive)].sort(),
-              files: [...archive.files].sort(),
-              fileSha256: archive.fileSha256,
-            },
-          ]),
-        ),
-        nativeSourceSha256: nativeSource ?? null,
-        native: Object.fromEntries(identities),
-      },
-      null,
-      2,
-    ) + "\n",
-  );
+  const nativeSource = identities.size > 0 ? checkedOutSource : undefined;
+  const identityPath = path.join(packDirectory, "package-identity.json");
+  const identity = yield* Schema.encodeEffect(PackageIdentity)({
+    profile,
+    installer,
+    effect: requirements.effect,
+    qualificationStack: yield* completeQualification(
+      stack,
+      workspaceResolution,
+      consumers,
+      profile,
+    ),
+    packages: Object.fromEntries(
+      [...archives.values()].map((archive) => [
+        archive.manifest.name,
+        {
+          version: archive.manifest.version,
+          tarball: path.relative(packDirectory, archive.tarball),
+          sha256: archive.sha256,
+          exports: [...publicEntries(archive)].sort(),
+          files: [...archive.files].sort(),
+          fileSha256: archive.fileSha256,
+        },
+      ]),
+    ),
+    nativeSourceSha256: nativeSource ?? null,
+    native: Object.fromEntries(identities),
+  });
+  yield* fs.writeFileString(identityPath, `${identity}\n`);
   for (const archive of archives.values()) {
-    console.log(
-      `pack-smoke-ok ${archive.manifest.name}@${archive.manifest.version} ${relative(root, archive.tarball)} sha256=${archive.sha256}`,
+    yield* Console.log(
+      `pack-smoke-ok ${archive.manifest.name}@${archive.manifest.version} ${path.relative(root, archive.tarball)} sha256=${archive.sha256}`,
     );
   }
-  if (nativeSource !== undefined) console.log(`native-source ${nativeSource}`);
-  if (process.env.GITHUB_OUTPUT !== undefined) {
-    appendFileSync(
-      process.env.GITHUB_OUTPUT,
+  if (nativeSource !== undefined) yield* Console.log(`native-source ${nativeSource}`);
+  const githubOutput = yield* Config.String("GITHUB_OUTPUT").pipe(Config.option);
+  if (Option.isSome(githubOutput))
+    yield* fs.writeFileString(
+      githubOutput.value,
       `directory=${packDirectory}\nidentity=${identityPath}\n`,
+      { flag: "a" },
     );
-  }
-  console.log(`isolated ${keep ? isolated : "removed"}`);
-} finally {
-  if (!keep) rmSync(isolated, { recursive: true, force: true });
-}
+  yield* Console.log(`isolated ${keep ? isolated : "removed"}`);
+}).pipe(Effect.scoped);
+
+program.pipe(
+  // The script's entry point.
+  // @effect-diagnostics-next-line strictEffectProvide:off
+  Effect.provide(NodeServices.layer),
+  NodeRuntime.runMain,
+);
