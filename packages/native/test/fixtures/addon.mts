@@ -33,7 +33,10 @@ export const make = (directory: string) => {
       ).pipe(Effect.retry({ schedule: Schedule.spaced("5 millis") })),
     );
   /** In-process controls: the peers made, and a fault to inject. */
-  const controls = { peers: [] as Array<NativePeer>, fault: false };
+  const controls: { readonly peers: Array<NativePeer>; fault: boolean } = {
+    peers: [],
+    fault: false,
+  };
 
   class NativePeer implements Binding.NativePeer {
     closed = false;
