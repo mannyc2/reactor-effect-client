@@ -18,18 +18,11 @@
     "README.md"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./BrowserMedia": {
-      "types": "./dist/BrowserMedia.d.ts",
-      "import": "./dist/BrowserMedia.js"
-    },
-    "./BrowserPeer": {
-      "types": "./dist/BrowserPeer.d.ts",
-      "import": "./dist/BrowserPeer.js"
-    }
+    "./package.json": "./package.json",
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js",
+    "./internal/*": null,
+    "./index": null
   },
   "peerDependencies": {
     "effect": "catalog:",

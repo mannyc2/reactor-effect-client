@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Encoding, Result } from "effect";
-import * as Wire from "../src/wire.js";
+import * as Wire from "../src/internal/wire.js";
 
 const bytes = (hex: string): Uint8Array =>
   Result.getOrThrowWith(Encoding.decodeHex(hex), () => new globalThis.Error(`invalid hex ${hex}`));
