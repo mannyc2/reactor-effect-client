@@ -4,7 +4,7 @@ The release workflow promotes already qualified npm archives: one for each of
 `reactor-effect-client`, `reactor-effect-browser` and `reactor-effect-native`,
 all carrying one release version. It does not compile the SDK, rebuild native
 libraries, repack downloaded bytes, or create a Docker image. CI produces and
-tests the three archives once; preparation and publication consume those exact
+tests the five archives once; preparation and publication consume those exact
 archives.
 
 The private tooling workspace pins `@mannyc1/ts-release` and its npm provider to
@@ -23,19 +23,22 @@ It publishes npm only; it does not create a GitHub release or release tag.
 
 ## Setup and authentication
 
-The repository and all three packages must be public. Configure the trusted
+The repository and all five packages must be public. Configure the trusted
 publisher of **each** package name (`reactor-effect-client`,
-`reactor-effect-browser` and `reactor-effect-native`) for GitHub owner `mannyc2`,
+`reactor-effect-browser`, `reactor-effect-native-linux-x64-gnu`,
+`reactor-effect-native-darwin-arm64` and `reactor-effect-native`) for GitHub owner `mannyc2`,
 repository `reactor-effect-client`, workflow filename `release.yml`, and **no
 environment**. Enable direct `npm publish` permission: this provider does not use
 npm's staged publishing flow. No npm token or repository Actions secret is used,
 and token fallback is not supported.
 
 npm requires a package to exist before its trusted publisher can be configured.
-Each of the three packages was created once through interactive npm
-authentication with a `0.0.0-reserved.0` placeholder that carries no SDK code,
-then given this trusted publisher, and 0.2.0 of all three has been published
-through this workflow. A new package name needs the same bootstrap before its
+The client, browser and native packages were each created once through
+interactive npm authentication with a `0.0.0-reserved.0` placeholder that
+carries no SDK code, then given this trusted publisher, and 0.2.0 of all three
+has been published through this workflow. The two platform packages,
+`reactor-effect-native-linux-x64-gnu` and `reactor-effect-native-darwin-arm64`,
+still need that bootstrap before the first release that includes them. A new package name needs the same bootstrap before its
 first publish run: the client is published first, so a host package whose
 trusted publisher is missing fails its credential exchange only after the client
 publication has been dispatched. Rerunning `publish` with the same candidate
@@ -75,7 +78,7 @@ billing settings and branch protection are not changed by this tooling.
 
 First obtain a **successful CI run on this repository's main branch**. CI runs
 the portable, native and isolated-package checks, including the pack smoke for
-all three packages. Its package job stamps `qualification.json` and uploads one
+all five packages. Its package job stamps `qualification.json` and uploads one
 flat `npm-package` artifact containing:
 
 ```text
@@ -86,7 +89,7 @@ package-identity.json
 qualification.json
 ```
 
-Qualification binds all three archives to the exact main commit, source tree, CI
+Qualification binds all five archives to the exact main commit, source tree, CI
 run and attempt. Pull-request and fork artifacts are ineligible. So is a run
 whose package job did not execute in its latest attempt: **Re-run failed jobs**
 keeps the artifact stamped with the earlier attempt and preparation rejects it.
@@ -106,7 +109,7 @@ it, and retains `ts-release-candidate` containing:
 identity.json
 bundle.json
 plan.json
-content/<sha256>  # three archives, identities, qualification, three signed provenance files
+content/<sha256>  # five archives, identities, qualification, five signed provenance files
 ```
 
 Review the recorded package/version, source and Plan identities. The step summary
@@ -126,7 +129,7 @@ by the preparation run. Stable versions target `latest`; prereleases target
 `main` workflow, including publication and observation. This reviewed execution
 host supplies the application, locked dependencies and pinned Action; it has no
 arbitrary-ref input. It admits
-the original Bundle, Plan, qualification and all three archives before
+the original Bundle, Plan, qualification and all five archives before
 credentials or journal access. The Plan holds exactly three permitted npm
 publications to `https://registry.npmjs.org/`: `reactor-effect-client` first,
 then `reactor-effect-browser` and `reactor-effect-native`, each depending on the
