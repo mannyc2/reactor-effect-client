@@ -11,6 +11,7 @@ import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import { Evidence, EvidenceJson } from "./Evidence.js";
 import { ceilingFor, Refused } from "./Spend.js";
 
@@ -77,12 +78,14 @@ const encode = Schema.encodeEffect(EvidenceJson);
 /**
  * Claims a new evidence file for one run, so a run never overwrites another's;
  * each later save replaces it atomically. A save whose text holds any of the
- * run's secrets writes nothing and fails.
+ * run's secrets writes nothing and fails. Saves run one at a time: two at once
+ * would share the one pending file, and the second rename would find it gone.
  */
 export const writer = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const claimed = yield* Ref.make(false);
+    const one = yield* Semaphore.make(1);
     const failed = () => SaveFailed.make({ message: `${file} could not be written` });
     return (evidence: Evidence, secrets: ReadonlyArray<Redacted.Redacted<string>>) =>
       Effect.gen(function* () {
@@ -108,5 +111,5 @@ export const writer = (file: string) =>
         yield* fs
           .writeFileString(pending, `${text}\n`, { mode: 0o600 })
           .pipe(Effect.andThen(fs.rename(pending, file)), Effect.mapError(failed));
-      });
+      }).pipe(one.withPermit);
   });
