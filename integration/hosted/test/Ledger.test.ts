@@ -72,6 +72,25 @@ layer(NodeServices.layer)("a ledger", (it) => {
     }),
   );
 
+  it.effect("saves at once all land, and the file holds a whole save", () =>
+    Effect.gen(function* () {
+      const dir = yield* directory;
+      const fs = yield* FileSystem.FileSystem;
+      const file = (yield* Path.Path).join(dir, "run.json");
+      const save = yield* Ledger.writer(file);
+      yield* save(admitted, []);
+      // A run saves from several fibers: each milestone, and each finalizer's record.
+      yield* Effect.forEach(
+        Array.from({ length: 64 }, (_, index) => index),
+        (index) => save({ ...admitted, milestones: [{ atMs: index, step: "saved" }] }, []),
+        { concurrency: "unbounded", discard: true },
+      );
+      const kept = yield* Schema.decodeEffect(EvidenceJson)(yield* fs.readFileString(file));
+      assert.lengthOf(kept.milestones, 1);
+      assert.isFalse(yield* fs.exists(`${file}.pending`));
+    }),
+  );
+
   it.effect("earlier paid runs reserve their worst case; an unreadable file refuses", () =>
     Effect.gen(function* () {
       const dir = yield* directory;
