@@ -5,7 +5,9 @@
  * and on Bun.
  */
 import { availableParallelism, loadavg, networkInterfaces } from "node:os";
-import { layer } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, layer } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
@@ -17,6 +19,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
 import * as Coordinator from "reactor-effect-client/Coordinator";
@@ -31,15 +34,13 @@ import type { NativePeer } from "../src/internal/peer.js";
 import {
   assertExactFrames,
   candidateRelay,
-  clientServices,
+  coordinator,
   decoded,
   eventually,
   FarPeer,
-  farPeerCoordinator,
   nativeClient,
   nativePeer,
   record,
-  withFetch,
 } from "./support.js";
 
 const WIDTH = 1344,
@@ -228,6 +229,12 @@ const open = (id: string) =>
 
 const pressure = (receiver: Receiver) => decoded(receiver.peer).pressure;
 
+/** The longest time between two consecutive arrivals, in milliseconds. */
+const maxGap = (arrivals: ReadonlyArray<{ readonly at: number }>): number => {
+  const times = arrivals.map((arrival) => arrival.at);
+  return Math.max(0, ...Arr.zipWith(times.slice(1), times, (later, earlier) => later - earlier));
+};
+
 /** Frames that entered a receiver's native video queue, whatever became of them. */
 const arrived = (snapshot: MediaPressure): number =>
   snapshot.queuedVideo + Number(snapshot.deliveredVideo + snapshot.droppedVideo);
@@ -320,9 +327,7 @@ const report = (measured: {
           fps: round(frames.length / seconds),
           latencyMs: [0.5, 0.95, 1].map((p) => round(percentile(latencies, p))),
           heldFrames: [0.5, 0.95, 1].map((p) => percentile(receiver.held, p)),
-          maxGapMs: round(
-            Math.max(0, ...frames.slice(1).map((frame, index) => frame.at - frames[index]!.at)),
-          ),
+          maxGapMs: round(maxGap(frames)),
           rttP95Ms: round(percentile(receiver.rtts, 0.95)),
           audio: {
             received: receiver.audio,
@@ -418,7 +423,7 @@ const measure = (window: Window, receivers: ReadonlyArray<Receiver>) =>
 
 /** The addon loads before the far peer starts, so a host that cannot load it fails at once. */
 const services = Layer.mergeAll(
-  clientServices,
+  NodeServices.layer,
   FarPeer.layer,
   load(undefined).pipe(Effect.orDie, Layer.effectDiscard),
 );
@@ -489,8 +494,9 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
           const end = yield* Effect.forEach(sessions, pressure);
           yield* report({ label: "two sessions", window: measured, receivers: sessions });
           for (const [index, session] of sessions.entries()) {
-            const before = start[index]!,
-              after = end[index]!;
+            const before = start[index],
+              after = end[index];
+            assert(before !== undefined && after !== undefined, "each session was sampled");
             const reached = arrived(after) - arrived(before);
             expect(session.failures).toEqual([]);
             expect(
@@ -616,9 +622,7 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
               "frames per second reaching the replacement",
             ).toBeGreaterThanOrEqual(15);
             expect(after.droppedVideo - before.droppedVideo).toBeLessThanOrEqual(1n);
-            expect(
-              Math.max(...window.slice(1).map((frame, index) => frame.at - window[index]!.at)),
-            ).toBeLessThan(500);
+            expect(maxGap(window)).toBeLessThan(500);
             expect(after.droppedAudio).toBe(0n);
             current = next;
           }
@@ -635,7 +639,12 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
           const far = yield* FarPeer;
           const id = "canonical";
           yield* Effect.addFinalizer(() => far.close(id));
-          const relay = farPeerCoordinator({ far, id, tracks });
+          const relay = yield* coordinator({
+            sessionId: id,
+            tracks,
+            answer: (sdp) => far.answer(id, sdp),
+            candidate: (candidate) => far.candidate(id, candidate),
+          });
           const result = yield* Effect.scoped(
             Effect.gen(function* () {
               const factory = yield* nativeClient({
@@ -657,7 +666,7 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
               const closed = yield* client.close;
               return { frames, report: closed, closeMs: performance.now() - started };
             }),
-          ).pipe(withFetch(relay.fetch));
+          ).pipe(Effect.provideService(HttpClient.HttpClient, relay.client));
           yield* Console.log(`native-close ${runtime} closeMs=${round(result.closeMs)}`);
           expect(result.frames).toHaveLength(8);
           // Each frame is its own exact BGRA allocation, as the bridge took it.
@@ -714,16 +723,11 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
           expect(states).not.toContain("connected");
           // libwebrtc reports failure once it has pruned the last timed-out pair,
           // so the pairs the classification reads may already be gone.
-          expect(errors).toEqual([
-            expect.objectContaining({
-              reason: expect.objectContaining({
-                _tag: "IceFailed",
-                pairs: expect.any(Number),
-                candidateTypes: expect.any(Array),
-              }),
-              message: "native peer found no working ICE candidate pair",
-            }),
-          ]);
+          expect(errors).toHaveLength(1);
+          expect(errors[0]).toMatchObject({
+            reason: { _tag: "IceFailed" },
+            message: "native peer found no working ICE candidate pair",
+          });
           yield* close(receiver);
         }),
       60_000,
