@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -560,11 +561,9 @@ try {
   );
   const identity = JSON.parse(
     readFileSync(
-      join(
-        root,
-        "../packages/native/lib",
-        `${process.platform}-${process.arch}`,
-        "native-identity.json",
+      createRequire(import.meta.url).resolve(
+        `reactor-effect-native-${process.platform === "darwin" ? "darwin-arm64" : "linux-x64-gnu"}/native-identity.json`,
+        { paths: [join(root, "../packages/native")] },
       ),
       "utf8",
     ),
@@ -575,7 +574,7 @@ try {
     "browser-native-ok",
     `host ${process.platform}-${process.arch}`,
     `browser ${chrome}`,
-    `native-artifact sha256=${identity.sha256} sourceSha256=${identity.build.sourceSha256} abi=${identity.build.abiVersion}`,
+    `native-artifact sha256=${identity.sha256} sourceSha256=${identity.build.sourceSha256} target=${identity.build.target}`,
     `browser-public ${JSON.stringify(report.localPeer)}`,
     `browser-native ${JSON.stringify(report.native)}`,
     `native-public ${JSON.stringify(result, (_key, value) => (typeof value === "bigint" ? String(value) : value))}`,

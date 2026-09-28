@@ -287,7 +287,7 @@ test("npm OIDC is requested only for an admitted package's authorized PUT and ne
         { authorization: "Bearer offline-package-token" },
       );
     }
-    assert.equal(identities, 3);
-    assert.equal(exchanges, 3);
+    assert.equal(identities, packageNames.length);
+    assert.equal(exchanges, packageNames.length);
     assert.deepEqual(exchanged, [...packageNames]);
   }));

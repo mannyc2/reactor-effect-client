@@ -1,7 +1,6 @@
 //! Helpers shared by this crate's tests.
 
 use reactor_webrtc::IceCandidate;
-use serde_json::Value;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,20 +27,6 @@ impl<F: FnMut()> Drop for Defer<F> {
     }
 }
 
-/// Split an event packet into its JSON header and its payload.
-pub(crate) fn parse_packet(packet: &[u8]) -> (Value, &[u8]) {
-    let (length, rest) = packet
-        .split_first_chunk::<4>()
-        .expect("a packet starts with its header length");
-    let (header, payload) = rest
-        .split_at_checked(u32::from_le_bytes(*length) as usize)
-        .expect("the header fits in the packet");
-    (
-        serde_json::from_slice(header).expect("the header is JSON"),
-        payload,
-    )
-}
-
 /// A deterministic xorshift generator: a failing sequence reproduces from
 /// its seed.
 pub(crate) struct Rng(u64);
@@ -61,8 +46,8 @@ impl Rng {
 }
 
 /// Add gathered candidates to their m-sections of `sdp` and end each
-/// section's candidates, as an answer from Reactor arrives: the bridge's C ABI
-/// has no call for remote candidates. The far peer example has its own copy,
+/// section's candidates, as an answer from Reactor arrives: the bridge has no
+/// call for remote candidates. The far peer example has its own copy,
 /// since an example cannot use a library's test code.
 pub(crate) fn with_candidates(sdp: &str, candidates: &[IceCandidate]) -> String {
     // The session section, then one section per m-line.

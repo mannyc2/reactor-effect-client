@@ -37,13 +37,15 @@ import {
  * (public exports, declaration/import closure, declared dependencies, native
  * identity), then installed into isolated consumers: a portable Node consumer
  * without optional dependencies, a browser consumer bundled without Node
- * globals, and a native consumer that verifies the packaged library identity.
- * `--portable` packs and checks only the client and browser packages, for
- * hosts without a staged native library; CI and release run the full gate.
+ * globals, and a native consumer that verifies the installed addon's identity.
+ * Each staged platform addon is packed as its own package. `--portable` packs
+ * and checks only the client and browser packages, for hosts without a staged
+ * addon; CI and release run the full gate.
  */
 interface Manifest {
   readonly name: string;
   readonly version: string;
+  /** Absent from a platform package, which only carries its addon. */
   readonly exports: Readonly<Record<string, string | Readonly<Record<string, string>>>>;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly peerDependencies?: Readonly<Record<string, string>>;
@@ -66,13 +68,16 @@ interface Archive {
 }
 interface NativeIdentity {
   readonly schemaVersion: number;
+  /** The platform package's suffix, such as `linux-x64-gnu`. */
   readonly platform: string;
-  readonly library: string;
+  /** The addon file in that package. */
+  readonly file: string;
   readonly sha256: string;
   readonly build: Readonly<{
-    abiVersion: number;
+    schemaVersion: number;
     sourceSha256: string;
     profile: string;
+    target: string;
     webrtcPrebuilt: string;
   }>;
 }
@@ -147,7 +152,7 @@ const consumers: ConsumerResolution[] = [];
 
 // TypeScript 7 ships its compiler as an optional platform package. Install that
 // exact tool explicitly so --omit=optional can still prove the SDK works without
-// Koffi. Every compiler and declaration remains inside the isolated consumer.
+// the native addon. Every compiler and declaration remains inside the isolated consumer.
 const compilerManifest = JSON.parse(
   readFileSync(join(root, "node_modules/typescript/package.json"), "utf8"),
 ) as Pick<Manifest, "version" | "optionalDependencies">;
@@ -175,13 +180,15 @@ const keep = process.env.KEEP_PACK_TMP === "1";
 console.log(`consumer-installer ${installer} profile ${portableOnly ? "portable" : "full"}`);
 run(bun, ["--no-env-file", "run", "build"], root);
 
-const platform = `${process.platform}-${process.arch}`;
-const libraryFor = (target: string): string =>
-  target.startsWith("darwin-")
-    ? "libreactor_effect_native.dylib"
-    : target.startsWith("win32-")
-      ? "reactor_effect_native.dll"
-      : "libreactor_effect_native.so";
+/** Each published addon platform package, by the Node host it runs on. */
+const addonPlatforms: Readonly<Record<string, string>> = {
+  "darwin-arm64": "darwin-arm64",
+  "linux-x64": "linux-x64-gnu",
+};
+const hostAddon = addonPlatforms[`${process.platform}-${process.arch}`];
+const platformPrefix = "reactor-effect-native-";
+const isPlatformPackage = (name: string): boolean => name.startsWith(platformPrefix);
+const addonFile = (target: string): string => `reactor-effect-native.${target}.node`;
 const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const packageName = (specifier: string): string =>
   specifier.startsWith("@")
@@ -256,15 +263,16 @@ const packArchive = (directory: string): Archive => {
     files,
     fileSha256,
   };
-  checkArchive(archive, packaged);
-  if (manifest.name === "reactor-effect-native") checkNativeArchive(archive, packaged);
+  if (isPlatformPackage(manifest.name)) checkPlatformArchive(archive, packaged);
+  else checkArchive(archive, packaged);
+  if (manifest.name === "reactor-effect-native") checkNativeArchive(archive);
   if (!keep) rmSync(unpacked, { recursive: true, force: true });
   return archive;
 };
 
 const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
   const { files, manifest } = archive;
-  // Only the native package runs on Node and loads Koffi.
+  // Only the native package runs on Node and loads its addon.
   const hostBuiltins = manifest.name === "reactor-effect-native";
   for (const required of ["package.json", "README.md", "LICENSE", "NOTICE"]) {
     if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
@@ -326,7 +334,6 @@ const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): voi
         continue;
       }
       const external = packageName(specifier);
-      if (external === "koffi" && !hostBuiltins) fail(`${path} imports Koffi`);
       if (!dependencies.has(external))
         fail(`${path} imports undeclared external dependency ${specifier}`);
     }
@@ -335,74 +342,94 @@ const checkArchive = (archive: Archive, packaged: (path: string) => Buffer): voi
 
 const identities = new Map<string, NativeIdentity>();
 let nativeSource: string | undefined;
-const checkNativeArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
-  const { files } = archive;
-  const nativeArtifact = `lib/${platform}/${libraryFor(platform)}`;
-  if (!files.has(nativeArtifact))
-    fail(`native tarball has no artifact for current host (${nativeArtifact})`);
-  for (const path of files) {
-    if (!/^lib\/[^/]+\/native-identity\.json$/.test(path)) continue;
-    const identity = JSON.parse(packaged(path).toString("utf8")) as NativeIdentity;
+/** Every build input's hash, as `rust/build.rs` embeds it; no Rust source ships. */
+const checkedOutSource = portableOnly
+  ? undefined
+  : run(node, ["packages/native/scripts/stage.mjs", "--source-hash"], root).trim();
+
+/** A platform package: its addon, the identity staging wrote for it, and notices. */
+const checkPlatformArchive = (archive: Archive, packaged: (path: string) => Buffer): void => {
+  const { files, manifest } = archive;
+  const target = manifest.name.slice(platformPrefix.length);
+  const addon = addonFile(target);
+  for (const required of ["package.json", "README.md", "LICENSE", "NOTICE", addon])
+    if (!files.has(required)) fail(`${manifest.name} tarball omitted ${required}`);
+  if (![...files].some((path) => path.startsWith("notices/")))
+    fail(`${manifest.name} tarball omitted its third-party notices`);
+  for (const path of files)
     if (
-      identity.schemaVersion !== 1 ||
-      identity.build.abiVersion !== 4 ||
-      identity.build.profile !== "release" ||
-      !/^webrtc-\d+-[0-9a-f]{8}-p\d+$/.test(identity.build.webrtcPrebuilt)
+      !path.startsWith("notices/") &&
+      !["package.json", "README.md", "LICENSE", "NOTICE", "native-identity.json", addon].includes(
+        path,
+      )
     )
-      fail(`invalid native identity: ${path}`);
-    if (
-      !/^[a-f0-9]{64}$/.test(identity.sha256) ||
-      !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
-    )
-      fail(`invalid native hashes: ${path}`);
-    const artifact = `lib/${identity.platform}/${identity.library}`;
-    if (path !== `lib/${identity.platform}/native-identity.json` || !files.has(artifact))
-      fail(`native identity refers to an absent/wrong platform: ${path}`);
-    if (sha256(packaged(artifact)) !== identity.sha256)
-      fail(`native tarball hash differs from qualified stage: ${artifact}`);
-    if (sha256(readFileSync(join(root, "packages", "native", artifact))) !== identity.sha256)
-      fail(`native stage changed during packaging: ${artifact}`);
-    if (nativeSource !== undefined && nativeSource !== identity.build.sourceSha256)
-      fail("native platforms were built from different source identities");
-    nativeSource = identity.build.sourceSha256;
-    identities.set(identity.platform, identity);
-  }
-  if (!identities.has(platform)) fail("current host artifact has no qualified native identity");
-  if (!files.has("scripts/stage.mjs"))
-    fail("source-build package omitted the sole native staging owner");
-  const sourceHash = createHash("sha256");
-  const nativeInputs = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "build.rs",
-    ".cargo/config.toml",
-    "include/reactor_effect_native.h",
-    ...[...files]
-      .filter((path) => path.startsWith("rust/src/"))
-      .map((path) => path.slice("rust/".length)),
-  ].sort();
-  for (const path of nativeInputs)
-    sourceHash
-      .update(path)
-      .update("\0")
-      .update(packaged(`rust/${path}`))
-      .update("\0");
-  if (sourceHash.digest("hex") !== nativeSource)
-    fail(
-      "packaged native source differs from the source identity embedded in the tested artifacts",
-    );
-  for (const expected of (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean)) {
-    const artifact = `lib/${expected}/${libraryFor(expected)}`;
-    if (!files.has(artifact) || !identities.has(expected))
-      fail(`tarball omitted expected native artifact/identity ${artifact}`);
-  }
+      fail(`${manifest.name} tarball carries unexpected ${path}`);
+  if ((manifest as { readonly main?: string }).main !== addon)
+    fail(`${manifest.name} main must be ${addon}`);
+  const identity = JSON.parse(packaged("native-identity.json").toString("utf8")) as NativeIdentity;
+  if (
+    identity.schemaVersion !== 2 ||
+    identity.platform !== target ||
+    identity.file !== addon ||
+    identity.build.profile !== "release" ||
+    !/^webrtc-\d+-[0-9a-f]{8}-p\d+$/.test(identity.build.webrtcPrebuilt)
+  )
+    fail(`invalid native identity in ${manifest.name}`);
+  if (
+    !/^[a-f0-9]{64}$/.test(identity.sha256) ||
+    !/^[a-f0-9]{64}$/.test(identity.build.sourceSha256)
+  )
+    fail(`invalid native hashes in ${manifest.name}`);
+  if (sha256(packaged(addon)) !== identity.sha256)
+    fail(`native tarball hash differs from qualified stage: ${manifest.name}`);
+  if (
+    sha256(readFileSync(join(root, "packages", "native", "npm", target, addon))) !== identity.sha256
+  )
+    fail(`native stage changed during packaging: ${manifest.name}`);
+  if (identity.build.sourceSha256 !== checkedOutSource)
+    fail(`${manifest.name} was built from sources other than the checked-out ones`);
+  nativeSource = identity.build.sourceSha256;
+  identities.set(target, identity);
 };
 
+/** The binding: no addon or Rust source, and every platform package pinned to its version. */
+const checkNativeArchive = (archive: Archive): void => {
+  const { files, manifest } = archive;
+  for (const path of files)
+    if (path.endsWith(".node") || /^(?:rust|npm|scripts)\//.test(path))
+      fail(`${manifest.name} tarball carries ${path}`);
+  const optional = manifest.optionalDependencies ?? {};
+  const expected = Object.values(addonPlatforms)
+    .map((target) => `${platformPrefix}${target}`)
+    .sort();
+  if (JSON.stringify(Object.keys(optional).sort()) !== JSON.stringify(expected))
+    fail(`${manifest.name} must list exactly the platform packages ${expected.join(", ")}`);
+  for (const [name, version] of Object.entries(optional))
+    if (version !== manifest.version)
+      fail(`${manifest.name} must pin ${name} to exactly ${manifest.version}, not ${version}`);
+};
+
+/** The platform addons to pack: the host's, those CI expects, and any other staged one. */
+const expectedAddons = (process.env.PACK_EXPECT_NATIVE_PLATFORMS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const addonDirectories = portableOnly
+  ? []
+  : Object.values(addonPlatforms)
+      .filter((target) => {
+        const staged = existsSync(
+          join(root, "packages", "native", "npm", target, addonFile(target)),
+        );
+        if (!staged && (target === hostAddon || expectedAddons.includes(target)))
+          fail(`no staged addon for ${target}; run bun run native:build`);
+        return staged;
+      })
+      .map((target) => `native/npm/${target}`);
 const archives = new Map<string, Archive>();
-for (const directory of portableOnly ? ["client", "browser"] : ["client", "browser", "native"])
+for (const directory of portableOnly
+  ? ["client", "browser"]
+  : ["client", "browser", "native", ...addonDirectories])
   archives.set(directory, packArchive(directory));
 const client = archives.get("client") ?? fail("client archive was not produced");
 for (const archive of archives.values()) {
@@ -410,6 +437,7 @@ for (const archive of archives.values()) {
     fail(`${archive.manifest.name} version differs from ${client.manifest.name}`);
   if (
     archive !== client &&
+    !isPlatformPackage(archive.manifest.name) &&
     archive.manifest.peerDependencies?.["reactor-effect-client"] !== client.manifest.version
   )
     fail(
@@ -540,8 +568,11 @@ const install = (
   }
   if (!existsSync(join(directory, "node_modules", compilerPlatform, "package.json")))
     fail(`isolated consumer is missing its compiler platform package ${compilerPlatform}`);
-  if (omitOptional && existsSync(join(directory, "node_modules", "koffi")))
-    fail("optional Koffi was installed in a portable consumer");
+  if (
+    omitOptional &&
+    readdirSync(join(directory, "node_modules")).some((name) => isPlatformPackage(name))
+  )
+    fail("an optional native addon was installed in a portable consumer");
   const compilerVersion = run(
     node,
     ["node_modules/typescript/bin/tsc", "--version"],
@@ -802,7 +833,7 @@ try {
     browser,
   );
   const browserBundle = readFileSync(join(browser, "browser-bundle.js"), "utf8");
-  if (/koffi|reactor_effect_peer_|native-bridge|native-peer/.test(browserBundle))
+  if (/reactor-effect-native|takeVideo|buildIdentity/.test(browserBundle))
     fail("installed browser bundle includes a native implementation");
   copyFileSync(fixture("browser-bundle-smoke.mjs"), join(browser, "browser-bundle-smoke.mjs"));
   const hostlessOutput = run(
@@ -836,12 +867,15 @@ try {
 
   const nativeArchive = archives.get("native");
   if (nativeArchive !== undefined) {
+    const addonArchive =
+      archives.get(`native/npm/${hostAddon}`) ?? fail(`no addon archive for this host`);
     // npm applies overrides only at the consumer root. The platform's prerelease
     // caret range otherwise admits a later shared platform and a second Effect.
     const native = initConsumer("native", { "@effect/platform-node-shared": selected.nodeShared });
     install(
       native,
-      [client, nativeArchive],
+      // The binding's optional dependency on this host's package resolves to its archive.
+      [client, nativeArchive, addonArchive],
       [
         `@effect/platform-node@${selected.nodePlatform}`,
         ...compilerPackages,
@@ -858,7 +892,7 @@ try {
       native,
       {
         ...guarded(native, false),
-        PACK_NATIVE_IDENTITY: JSON.stringify(identities.get(platform)),
+        PACK_NATIVE_IDENTITY: JSON.stringify(identities.get(hostAddon ?? "")),
       },
     );
     if (!nativeOutput.includes("native-preflight-ok"))
@@ -897,7 +931,7 @@ try {
               version: archive.manifest.version,
               tarball: relative(packDirectory, archive.tarball),
               sha256: archive.sha256,
-              exports: Object.keys(archive.manifest.exports).sort(),
+              exports: Object.keys(archive.manifest.exports ?? {}).sort(),
               files: [...archive.files].sort(),
               fileSha256: archive.fileSha256,
             },

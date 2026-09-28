@@ -1,43 +1,53 @@
 use super::*;
-use crate::protocol::TrackKind;
+use crate::protocol::{TrackKind, TrackSpec};
 use crate::sync::Taken;
-use serde_json::{Value, json};
 
 fn owner() -> Owner {
     Owner::new(Arc::new(Shared::new()))
 }
 
-fn prepare_request(tracks: &Value) -> Vec<u8> {
-    serde_json::to_vec(&json!({ "servers": [], "tracks": tracks })).unwrap()
+fn request(tracks: &[(&str, TrackKind, Direction)]) -> PrepareRequest {
+    let tracks = tracks
+        .iter()
+        .map(|&(name, kind, direction)| TrackSpec {
+            name: name.into(),
+            kind,
+            direction,
+        })
+        .collect();
+    PrepareRequest::new(vec![], tracks).expect("a request within the bounds")
 }
 
 /// An owner prepared with one receive and one send track.
 fn prepared() -> Owner {
     let mut owner = owner();
     owner
-        .prepare(&prepare_request(&json!([
-            { "name": "in", "kind": "video", "direction": "recvonly" },
-            { "name": "out", "kind": "video", "direction": "sendonly" },
-        ])))
+        .prepare(request(&[
+            ("in", TrackKind::Video, Direction::RecvOnly),
+            ("out", TrackKind::Video, Direction::SendOnly),
+        ]))
         .expect("prepare");
     owner
+}
+
+fn bitrate(name: &str, bits: u32) -> BitrateRequest {
+    BitrateRequest::new(name.into(), bits).expect("a valid bitrate")
 }
 
 #[test]
 fn prepare_offers_every_track_and_maps_each_to_its_mid_in_request_order() {
     let mut owner = owner();
-    let response = owner
-        .prepare(&prepare_request(&json!([
-            { "name": "video", "kind": "video", "direction": "recvonly" },
-            { "name": "audio", "kind": "audio", "direction": "recvonly" },
-            { "name": "camera", "kind": "video", "direction": "sendonly" },
-        ])))
+    let prepared = owner
+        .prepare(request(&[
+            ("video", TrackKind::Video, Direction::RecvOnly),
+            ("audio", TrackKind::Audio, Direction::RecvOnly),
+            ("camera", TrackKind::Video, Direction::SendOnly),
+        ]))
         .expect("prepare");
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    let sdp = response["sdp"].as_str().unwrap();
+    let sdp = &prepared.sdp;
     assert!(sdp.contains("m=video") && sdp.contains("m=audio"), "{sdp}");
-    let mapping: Vec<Mapping> = serde_json::from_value(response["mapping"].clone()).unwrap();
-    let declared: Vec<_> = mapping
+    let declared: Vec<_> = prepared
+        .mapping
         .iter()
         .map(|entry| (entry.name.as_str(), entry.kind, entry.direction))
         .collect();
@@ -49,7 +59,7 @@ fn prepare_offers_every_track_and_maps_each_to_its_mid_in_request_order() {
             ("camera", TrackKind::Video, Direction::SendOnly),
         ]
     );
-    for entry in &mapping {
+    for entry in &prepared.mapping {
         assert!(sdp.contains(&format!("a=mid:{}", entry.mid)), "{entry:?}");
     }
     owner.shutdown();
@@ -58,7 +68,7 @@ fn prepare_offers_every_track_and_maps_each_to_its_mid_in_request_order() {
 #[test]
 fn a_peer_prepares_once() {
     let mut owner = prepared();
-    let error = owner.prepare(&prepare_request(&json!([]))).unwrap_err();
+    let error = owner.prepare(request(&[])).unwrap_err();
     assert_eq!(
         error,
         BridgeError::invalid("native peer is already prepared")
@@ -70,28 +80,16 @@ fn a_peer_prepares_once() {
 fn a_rejected_answer_is_classified_as_sdp_rejected() {
     let owner = prepared();
     let error = owner
-        .answer(b"v=0\r\nthis is not an answer\r\n")
+        .answer("v=0\r\nthis is not an answer\r\n".into())
         .expect_err("libwebrtc must reject a malformed answer");
     assert_eq!(error.class, FailureClass::SdpRejected);
     assert!(
         error.message.starts_with("set_remote_description: "),
         "{error}"
     );
-    owner.shutdown();
-}
-
-#[test]
-fn an_empty_or_non_utf8_answer_is_invalid_input() {
-    let owner = prepared();
     assert_eq!(
-        owner.answer(b"").unwrap_err(),
+        owner.answer(String::new()).unwrap_err(),
         BridgeError::invalid("answer SDP is empty")
-    );
-    let error = owner.answer(&[0xff, 0xfe]).unwrap_err();
-    assert_eq!(error.class, FailureClass::InvalidInput);
-    assert!(
-        error.message.starts_with("answer SDP is not UTF-8: "),
-        "{error}"
     );
     owner.shutdown();
 }
@@ -99,15 +97,17 @@ fn an_empty_or_non_utf8_answer_is_invalid_input() {
 #[test]
 fn before_prepare_each_call_fails_with_its_class() {
     let owner = owner();
-    assert_eq!(owner.answer(b"v=0").unwrap_err(), BridgeError::closed());
-    assert_eq!(owner.stats().unwrap_err(), BridgeError::closed());
-    let error = owner
-        .set_direction(br#"{"name":"out","active":false}"#)
-        .unwrap_err();
-    assert_eq!(error, BridgeError::invalid("unknown track: out"));
-    let error = owner.send(Channel::Data, b"early").unwrap_err();
     assert_eq!(
-        error,
+        owner.answer("v=0".into()).unwrap_err(),
+        BridgeError::closed()
+    );
+    assert_eq!(owner.stats().unwrap_err(), BridgeError::closed());
+    assert_eq!(
+        owner.set_direction("out", false).unwrap_err(),
+        BridgeError::invalid("unknown track: out")
+    );
+    assert_eq!(
+        owner.send(Channel::Data, b"early").unwrap_err(),
         BridgeError::new(FailureClass::ChannelClosed, "data channel is not open")
     );
     owner.shutdown();
@@ -116,40 +116,19 @@ fn before_prepare_each_call_fails_with_its_class() {
 #[test]
 fn a_declared_track_pauses_resumes_and_caps_its_bitrate() {
     let owner = prepared();
-    for request in [
-        br#"{"name":"out","active":false}"#.as_slice(),
-        br#"{"name":"out","active":true}"#,
-        br#"{"name":"in","active":false}"#,
-        br#"{"name":"in","active":true}"#,
-    ] {
-        let response = owner.set_direction(request).expect("direction");
-        assert_eq!(response, b"{}");
+    for (name, active) in [("out", false), ("out", true), ("in", false), ("in", true)] {
+        owner.set_direction(name, active).expect("direction");
     }
-    let response = owner
-        .set_max_bitrate(br#"{"name":"out","bitsPerSecond":2000000}"#)
+    owner
+        .set_max_bitrate(&bitrate("out", 2_000_000))
         .expect("bitrate");
-    assert_eq!(response, b"{}");
-    owner.shutdown();
-}
-
-#[test]
-fn only_a_declared_sending_track_takes_a_bitrate() {
-    let owner = prepared();
     assert_eq!(
-        owner
-            .set_max_bitrate(br#"{"name":"in","bitsPerSecond":1000}"#)
-            .unwrap_err(),
+        owner.set_max_bitrate(&bitrate("in", 1000)).unwrap_err(),
         BridgeError::invalid("in is not an outgoing track")
     );
     assert_eq!(
         owner
-            .set_max_bitrate(br#"{"name":"missing","bitsPerSecond":1000}"#)
-            .unwrap_err(),
-        BridgeError::invalid("unknown track: missing")
-    );
-    assert_eq!(
-        owner
-            .set_direction(br#"{"name":"missing","active":true}"#)
+            .set_max_bitrate(&bitrate("missing", 1000))
             .unwrap_err(),
         BridgeError::invalid("unknown track: missing")
     );
@@ -159,7 +138,7 @@ fn only_a_declared_sending_track_takes_a_bitrate() {
 #[test]
 fn a_prepared_peer_reports_stats_before_it_connects() {
     let owner = prepared();
-    let stats: Value = serde_json::from_slice(&owner.stats().expect("stats")).unwrap();
+    let stats = owner.stats().expect("stats");
     assert!(stats.is_array(), "{stats}");
     owner.shutdown();
 }
@@ -178,9 +157,7 @@ fn commands_queued_behind_close_are_refused() {
 fn shutdown_closes_every_queue() {
     let shared = Arc::new(Shared::new());
     let mut owner = Owner::new(Arc::clone(&shared));
-    owner
-        .prepare(&prepare_request(&json!([])))
-        .expect("prepare");
+    owner.prepare(request(&[])).expect("prepare");
     owner.shutdown();
     assert_eq!(shared.events.take(|_| true), Taken::Closed);
     assert_eq!(shared.video.take(|_| true), Taken::Closed);

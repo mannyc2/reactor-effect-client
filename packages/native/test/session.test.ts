@@ -1,20 +1,19 @@
-import { rmSync } from "node:fs";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as PlatformHttp from "effect/unstable/http/HttpClient";
 import type * as Crypto from "effect/Crypto";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import koffi from "koffi";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import type { ReactorFailure } from "reactor-effect-client/ReactorError";
 import type { UploadReference } from "reactor-effect-client/Session";
-import { compileFixture, nativeClient, until } from "./support.js";
+import { makeFakeAddon, nativeClient } from "./support.js";
 
 const sessionId = "sess_native_fixture";
 const descriptor = (id: string) => ({
@@ -79,8 +78,7 @@ const runClient = <A, E extends ReactorFailure>(
 
 describe("native canonical session boundary", () => {
   test("dispatches owned media and preserves bounded submitted requests across caller cancellation", async () => {
-    if (process.platform === "win32") return;
-    const compiled = compileFixture();
+    const addon = makeFakeAddon();
     try {
       const result = await runClient(
         Effect.scoped(
@@ -90,7 +88,7 @@ describe("native canonical session boundary", () => {
                 apiUrl: "https://coordinator.fixture",
                 maxPending: 32,
               },
-              { libraryPath: compiled.path },
+              { addon: addon.path },
             );
             const client = yield* factory.create({
               model: "fixture/native-session",
@@ -120,8 +118,8 @@ describe("native canonical session boundary", () => {
             }
             expect((yield* client.snapshot).pending.data).toBe(0);
 
-            // The fixture uses the snapshot call as an explicit test-only gate so
-            // both generation readers subscribe before native media is released.
+            // The fake addon's snapshot is a test gate: both generation readers
+            // subscribe before it releases media.
             const media = yield* client.decoded;
             expect(media.generation).toBe(ready.generation);
             const videoReader = yield* Effect.forkChild(
@@ -159,7 +157,7 @@ describe("native canonical session boundary", () => {
         height: 1,
         frameId: 18446744073709551615n,
         timestampMicros: 9007199254740993n,
-        // The admission sequence crosses the ABI as a full 64-bit value.
+        // The admission sequence crosses the binding as a full 64-bit value.
         sequence: 9007199254740993n,
       });
       expect([...result.video.data]).toEqual([1, 2, 3, 4]);
@@ -192,19 +190,14 @@ describe("native canonical session boundary", () => {
       expect(result.closeReport.localClosed).toBe(true);
       expect(result.closeReport.localErrors).toEqual([]);
     } finally {
-      rmSync(compiled.directory, { recursive: true, force: true });
+      addon.remove();
     }
   }, 15_000);
 
-  test("bounds a native owner join that never completes, retains its bridge and still terminates the remote session", async () => {
-    if (process.platform === "win32") return;
-    const compiled = compileFixture();
-    const library = koffi.load(compiled.path);
-    const hold: (held: number) => void = library.func("void fixture_shutdown_hold(int held)");
-    const stat: (which: number) => number = library.func("int fixture_lifetime_stat(int which)");
-    const unregister = vi.spyOn(koffi, "unregister");
+  test("bounds a native owner join that never completes, retains its peer and still terminates the remote session", async () => {
+    const addon = makeFakeAddon();
     const remote = coordinator();
-    const options = { libraryPath: compiled.path, shutdownTimeout: "250 millis" } as const;
+    const options = { addon: addon.path, shutdownTimeout: "250 millis" } as const;
     const create = { model: "fixture/native-session", jwt: Redacted.make("fixture-token") };
     try {
       const result = await runClient(
@@ -212,26 +205,21 @@ describe("native canonical session boundary", () => {
           Effect.gen(function* () {
             const factory = yield* nativeClient({ apiUrl: "https://coordinator.fixture" }, options);
             const client = yield* factory.create(create);
-            hold(1);
+            addon.hold("shutdown", true);
             const started = performance.now();
             const report = yield* client.close;
             const closeMs = performance.now() - started;
-            // The wedged join keeps its handle and callback, and the process
-            // admits no new owner, so nothing is allocated for one.
-            const retained = {
-              entered: stat(8),
-              destroyed: stat(9),
-              unregistered: unregister.mock.calls.length,
-            };
+            // The wedged join keeps its peer, and the process admits no new
+            // owner, so nothing is allocated for one.
             const degraded = yield* Effect.result(factory.create(create));
             const allocatedWhileDegraded = remote.allocated.length;
-            hold(0);
-            yield* Effect.promise(() =>
-              until(() => stat(9) === 1, "the released join never destroyed its handle"),
-            );
-            const recovered = yield* factory.create(create);
+            addon.hold("shutdown", false);
+            // Once the join completes, the process admits peers again.
+            const recovered = yield* factory
+              .create(create)
+              .pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 200 }));
             const recoveredReport = yield* recovered.close;
-            return { report, closeMs, retained, degraded, allocatedWhileDegraded, recoveredReport };
+            return { report, closeMs, degraded, allocatedWhileDegraded, recoveredReport };
           }),
         ),
         remote.fetch,
@@ -252,7 +240,6 @@ describe("native canonical session boundary", () => {
         evidence: "absent",
       });
       expect(remote.deleted.has(sessionId)).toBe(true);
-      expect(result.retained).toEqual({ entered: 1, destroyed: 0, unregistered: 0 });
 
       expect(result.degraded._tag).toBe("Failure");
       if (result.degraded._tag === "Failure")
@@ -261,23 +248,17 @@ describe("native canonical session boundary", () => {
           context: expect.objectContaining({ outcome: "not-submitted" }),
         });
       expect(result.allocatedWhileDegraded).toBe(1);
-
-      // Once the join completes it destroys and unregisters, and the process
-      // admits peers again.
-      expect(unregister).toHaveBeenCalledTimes(2);
       expect(result.recoveredReport.localClosed).toBe(true);
       expect(result.recoveredReport.localErrors).toEqual([]);
       expect(remote.allocated).toHaveLength(2);
     } finally {
-      hold(0);
-      unregister.mockRestore();
-      rmSync(compiled.directory, { recursive: true, force: true });
+      addon.hold("shutdown", false);
+      addon.remove();
     }
   }, 15_000);
 
   test("rejects a shutdown deadline that is not a positive duration when the layer is built", async () => {
-    if (process.platform === "win32") return;
-    const compiled = compileFixture();
+    const addon = makeFakeAddon();
     const remote = coordinator();
     try {
       for (const shutdownTimeout of [0, -1, Number.NaN, "soon"]) {
@@ -287,7 +268,7 @@ describe("native canonical session boundary", () => {
             Effect.result(
               nativeClient(
                 { apiUrl: "https://coordinator.fixture" },
-                { libraryPath: compiled.path, shutdownTimeout: shutdownTimeout as Duration.Input },
+                { addon: addon.path, shutdownTimeout: shutdownTimeout as Duration.Input },
               ),
             ),
           ),
@@ -302,18 +283,18 @@ describe("native canonical session boundary", () => {
       }
       expect(remote.allocated).toEqual([]);
     } finally {
-      rmSync(compiled.directory, { recursive: true, force: true });
+      addon.remove();
     }
   });
 
-  test("fails to build the layer, before any allocation, when the library cannot load", async () => {
+  test("fails to build the layer, before any allocation, when the addon cannot load", async () => {
     const remote = coordinator();
     const result = await runClient(
       Effect.scoped(
         Effect.result(
           nativeClient(
             { apiUrl: "https://coordinator.fixture" },
-            { libraryPath: "/nonexistent/libreactor_effect_native.so" },
+            { addon: "/nonexistent/reactor-effect-native.node" },
           ),
         ),
       ),

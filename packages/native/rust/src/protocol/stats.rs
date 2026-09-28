@@ -1,13 +1,11 @@
-//! The `Stats` and `MediaSnapshot` responses.
+//! Statistics: the `stats` reply and the queues' media snapshot.
 
-use super::DecimalU64;
 use reactor_webrtc::{
     IceCandidatePairState, IceCandidateType, RelayProtocol, StatsReport, StreamKind,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 
-/// The `Stats` response: an `RTCStatsReport`-shaped array with an entry per
+/// The `stats` reply: an `RTCStatsReport`-shaped array with an entry per
 /// inbound and outbound RTP stream and, per ICE candidate pair, the pair and
 /// its local candidate. The host reads the pairs to tell an ICE failure from
 /// a transport failure above it.
@@ -19,7 +17,7 @@ pub(crate) fn stats_json(report: &StatsReport) -> Value {
             "ssrc": entry.ssrc,
             "kind": stream_kind(entry.kind),
             "packetsReceived": entry.packets_received,
-            "bytesReceived": DecimalU64(entry.bytes_received),
+            "bytesReceived": decimal(entry.bytes_received),
             "jitter": entry.jitter_s,
             "packetsLost": entry.packets_lost,
             "nackCount": entry.nack_count,
@@ -39,14 +37,14 @@ pub(crate) fn stats_json(report: &StatsReport) -> Value {
             "type": "outbound-rtp",
             "ssrc": entry.ssrc,
             "kind": stream_kind(entry.kind),
-            "packetsSent": DecimalU64(entry.packets_sent),
-            "bytesSent": DecimalU64(entry.bytes_sent),
+            "packetsSent": decimal(entry.packets_sent),
+            "bytesSent": decimal(entry.bytes_sent),
             "targetBitrate": entry.target_bitrate_bps,
             "roundTripTime": entry.round_trip_time_s,
             "totalRoundTripTime": entry.total_round_trip_time_s,
             "fractionLost": entry.fraction_lost,
             "packetsLost": entry.packets_lost,
-            "retransmittedPacketsSent": DecimalU64(entry.retransmitted_packets_sent),
+            "retransmittedPacketsSent": decimal(entry.retransmitted_packets_sent),
             "nackCount": entry.nack_count,
             "pliCount": entry.pli_count,
             "firCount": entry.fir_count,
@@ -75,11 +73,11 @@ pub(crate) fn stats_json(report: &StatsReport) -> Value {
                     "state": pair_state(pair.state),
                     "nominated": pair.nominated,
                     "writable": pair.writable,
-                    "priority": DecimalU64(pair.priority),
-                    "bytesSent": DecimalU64(pair.bytes_sent),
-                    "bytesReceived": DecimalU64(pair.bytes_received),
-                    "packetsSent": DecimalU64(pair.packets_sent),
-                    "packetsReceived": DecimalU64(pair.packets_received),
+                    "priority": decimal(pair.priority),
+                    "bytesSent": decimal(pair.bytes_sent),
+                    "bytesReceived": decimal(pair.bytes_received),
+                    "packetsSent": decimal(pair.packets_sent),
+                    "packetsReceived": decimal(pair.packets_received),
                     "currentRoundTripTime": pair.current_round_trip_time_s,
                     "totalRoundTripTime": pair.total_round_trip_time_s,
                     "availableOutgoingBitrate": pair.available_outgoing_bitrate_bps,
@@ -128,22 +126,26 @@ fn relay_protocol(protocol: RelayProtocol) -> &'static str {
     }
 }
 
-/// The `MediaSnapshot` response: what each queue dropped, delivered and still
-/// holds.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// A `u64` for the JavaScript host, which reads JSON numbers as doubles and
+/// would round counters past 2^53, so it travels as a decimal string.
+fn decimal(value: u64) -> Value {
+    Value::String(value.to_string())
+}
+
+/// What each media queue dropped, delivered and still holds, and the calls
+/// admitted and not yet taken up by the owner thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MediaSnapshot {
     pub(crate) closed: bool,
+    pub(crate) pending_requests: usize,
     pub(crate) queued_control: usize,
     pub(crate) queued_video: usize,
     pub(crate) queued_audio: usize,
     pub(crate) queued_bytes: usize,
-    pub(crate) dropped_video: DecimalU64,
-    pub(crate) dropped_audio: DecimalU64,
-    pub(crate) delivered_video: DecimalU64,
-    pub(crate) delivered_audio: DecimalU64,
-    /// Always 0: calls wait on the owner thread, never in a native queue.
-    pub(crate) pending_requests: usize,
+    pub(crate) dropped_video: u64,
+    pub(crate) dropped_audio: u64,
+    pub(crate) delivered_video: u64,
+    pub(crate) delivered_audio: u64,
 }
 
 #[cfg(test)]
@@ -321,36 +323,5 @@ mod tests {
         ]
         .map(relay_protocol);
         assert_eq!(protocols, ["udp", "tcp", "tls", ""]);
-    }
-
-    #[test]
-    fn a_snapshot_has_the_keys_the_host_parses() {
-        let snapshot = MediaSnapshot {
-            closed: false,
-            queued_control: 1,
-            queued_video: 2,
-            queued_audio: 3,
-            queued_bytes: 4,
-            dropped_video: DecimalU64(BEYOND_DOUBLES),
-            dropped_audio: DecimalU64(5),
-            delivered_video: DecimalU64(6),
-            delivered_audio: DecimalU64(7),
-            pending_requests: 0,
-        };
-        assert_eq!(
-            serde_json::to_value(&snapshot).unwrap(),
-            json!({
-                "closed": false,
-                "queuedControl": 1,
-                "queuedVideo": 2,
-                "queuedAudio": 3,
-                "queuedBytes": 4,
-                "droppedVideo": "9007199254740993",
-                "droppedAudio": "5",
-                "deliveredVideo": "6",
-                "deliveredAudio": "7",
-                "pendingRequests": 0,
-            })
-        );
     }
 }

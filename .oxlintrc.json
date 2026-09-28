@@ -124,7 +124,6 @@
     "**/dist/**",
     "**/node_modules/**",
     ".check/**",
-    "packages/native/lib/**",
     "packages/native/rust/**",
     "release-tools/node_modules/**",
     ".release/**"

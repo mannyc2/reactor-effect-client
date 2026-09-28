@@ -63,7 +63,7 @@ for (const directory of workspaces) {
     // A page's bundle must reach neither Node nor the native host.
     for (const file of readdirSync(dist).filter((name) => name.endsWith(".js"))) {
       const bundle = readFileSync(join(dist, file), "utf8");
-      if (/koffi|reactor_effect_peer_|["']node:/.test(bundle))
+      if (/reactor-effect-native|takeVideo|["']node:/.test(bundle))
         fail(`${manifest.name} bundle ${file} reaches Node or native code`);
     }
     console.log(`examples-bundled ${manifest.name}`);

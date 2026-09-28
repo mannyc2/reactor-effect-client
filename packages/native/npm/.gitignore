@@ -1,0 +1,6 @@
+# Staged by scripts/stage.mjs
+*.node
+native-identity.json
+notices/
+LICENSE
+NOTICE

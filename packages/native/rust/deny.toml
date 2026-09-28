@@ -1,11 +1,12 @@
 # The native crate's dependency policy, which CI checks with
 # `cargo deny --manifest-path packages/native/rust/Cargo.toml --locked check`.
 #
-# Every crate the library links ships in the npm package, so its license must
-# allow Apache-2.0 redistribution and be credited in notices/native-rust/.
+# Every crate the addon links ships in its platform package, so its license
+# must allow Apache-2.0 redistribution and be credited in notices/native-rust/.
 
 [graph]
-# The hosts scripts/build.sh builds for.
+# The hosts scripts/build.sh can build for; the published platform packages
+# are x86_64-unknown-linux-gnu and aarch64-apple-darwin.
 targets = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
@@ -19,7 +20,8 @@ targets = [
 ignore = []
 
 [licenses]
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+# ISC is libloading's, which napi links to resolve Node-API symbols at load.
+allow = ["Apache-2.0", "ISC", "MIT", "Unicode-3.0"]
 confidence-threshold = 0.93
 
 [bans]

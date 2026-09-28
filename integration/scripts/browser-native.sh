@@ -12,8 +12,8 @@ output=$(mktemp -d "$workspace/.check/browser-native-XXXXXXXX")
 (cd "$workspace" && "$bun_binary" run build)
 "$bun_binary" build "$root/browser/native-connectivity.ts" --target=browser --outfile="$output/browser.js"
 
-if grep -Eq '(^|[^[:alnum:]_])(koffi|reactor_effect_abi_version|native-bridge)([^[:alnum:]_]|$)|node:buffer' "$output/browser.js"; then
-  echo "browser bundle unexpectedly retained a native/Koffi dependency" >&2
+if grep -Eq 'reactor-effect-native|(^|[^[:alnum:]_])(takeVideo|buildIdentity)([^[:alnum:]_]|$)|node:buffer' "$output/browser.js"; then
+  echo "browser bundle unexpectedly retained a native dependency" >&2
   exit 1
 fi
 
