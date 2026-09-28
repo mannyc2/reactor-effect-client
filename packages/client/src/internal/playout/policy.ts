@@ -1532,13 +1532,14 @@ export const step: {
         else if (!command.enabled) cutFailed(busy.sessionId);
         return;
       // Its clip was marked cut when the cut began; no result makes it cuttable again.
+      // One whose fiber died may not have been sent, so it fails the cut like a refusal.
       case "Stop":
-        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (result._tag !== "Done") return cutFailed(busy.sessionId);
         if (state.cutting?.sessionId === busy.sessionId && state.cutting.clipId === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "stopped" } };
         return;
       case "Play":
-        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (result._tag !== "Done") return cutFailed(busy.sessionId);
         if (state.cutting?.sessionId === busy.sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;

@@ -250,6 +250,27 @@ describe("PlayoutPolicy", () => {
     assert.strictEqual(stops.length, 1);
   });
 
+  it("ends a cut whose play died, so autoplay airs the cutter at the next boundary", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const playing = clip("long", item("other"), 15);
+    policy.submit(spec("other"));
+    policy.reply({ _tag: "Done", clipId: "long" });
+    policy.event({ _tag: "Started", clip: playing });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "cu" });
+    policy.observe({ playing, ready: [clip("cu", item("urgent"))] });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "long" });
+    policy.reply({ _tag: "Done" });
+    policy.event({ _tag: "Ended", clip: playing, termination: "stopped" });
+    policy.observe({ ready: [clip("cu", item("urgent"))] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Play", clipId: "cu" });
+    policy.reply({ _tag: "Died" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+  });
+
   it("withdraws what has no clip at once and removes a clip before it drops it", () => {
     const early = run([
       { _tag: "Edit", id: 1, edits: [{ _tag: "Withdraw", key: key("a") }], batch: false },
