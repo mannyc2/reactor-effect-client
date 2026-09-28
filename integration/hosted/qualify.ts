@@ -40,7 +40,6 @@ import { release, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
@@ -68,6 +67,8 @@ import * as Native from "reactor-effect-native";
 import {
   AudioReader,
   FrameAttribution,
+  SeamRecorder,
+  png,
   elapsedClock,
   ContractTally,
   VideoReader,
@@ -78,7 +79,14 @@ import {
   tallyReply,
   terminationTrail,
 } from "./collect.js";
-import type { Pressure, StatsSample, SchedulerBoundary, SchedulerRenewal } from "./evidence.js";
+import type {
+  ItemSeam,
+  Pressure,
+  RunItem,
+  StatsSample,
+  SchedulerBoundary,
+  SchedulerRenewal,
+} from "./evidence.js";
 import {
   Writer,
   cleanupInstructions,
@@ -125,44 +133,8 @@ const prompt = "A slow camera move across a sunlit table with a glass of water."
 const tracks = H3.h3ReferenceTurboRealtime.tracks;
 
 /** A solid mid-gray PNG: an image reference that cannot make the clip black. */
-const grayPng = (width: number, height: number): Uint8Array => {
-  const crcTable = Array.from({ length: 256 }, (_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
-  const chunk = (type: string, data: Uint8Array) => {
-    const out = new Uint8Array(12 + data.length);
-    const view = new DataView(out.buffer);
-    view.setUint32(0, data.length);
-    out.set(new TextEncoder().encode(type), 4);
-    out.set(data, 8);
-    let c = 0xffffffff;
-    for (const b of out.subarray(4, 8 + data.length)) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
-    view.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
-    return out;
-  };
-  const header = new Uint8Array(13);
-  const view = new DataView(header.buffer);
-  view.setUint32(0, width);
-  view.setUint32(4, height);
-  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
-  const rows = new Uint8Array(height * (1 + width * 3)).fill(128);
-  for (let row = 0; row < height; row++) rows[row * (1 + width * 3)] = 0; // filter: none
-  const parts = [
-    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", header),
-    chunk("IDAT", new Uint8Array(deflateSync(rows))),
-    chunk("IEND", new Uint8Array()),
-  ];
-  const png = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    png.set(part, offset);
-    offset += part.length;
-  }
-  return png;
-};
+const grayPng = (width: number, height: number): Uint8Array =>
+  png(width, height, new Uint8Array(width * height * 3).fill(128));
 
 /**
  * What the `audio` check submits: one image, because H3 takes audio only with
@@ -1088,6 +1060,691 @@ const scheduler = (target: Target, run: Run, budget: Budget) =>
     ).pipe(Effect.provide(clientLayer(target)));
     return yield* body.pipe(Effect.ensuring(afterSession(target, run, grant.jwt, rate)));
   });
+
+/** A scheduled item's request: the scheduler check's prompt and length. */
+const itemRequest = (seconds = clipSeconds) =>
+  new Orchestration.ClipRequest({ prompt, references: [], durationSeconds: seconds, metadata: {} });
+
+/**
+ * Where a boundary's frames are looked for: from before the ending clip's end
+ * to well after the next one starts, since decoded frames trail H3's messages
+ * by up to about 1.2 s on hosted Reactor.
+ */
+const seamBefore = seamWindowMs;
+const seamAfter = 2 * seamWindowMs;
+
+/** What a scenario gets from `ownedSession`. */
+interface OwnedSession {
+  readonly owner: Orchestration.HandleShape;
+  readonly provider: Orchestration.H3Source["provider"];
+  readonly video: VideoReader;
+  readonly seams: SeamRecorder;
+  /** Where boundary frames are written for review; never inside the ledger. */
+  readonly directory: string;
+  /** The first value `find` returns, waited for until the check's deadline. */
+  readonly seen: <A>(find: () => A | undefined) => Effect.Effect<A, Cause.TimeoutError>;
+  /** Waits until `atMs` after the run's start, never past the check's deadline. */
+  readonly sleepUntil: (atMs: number) => Effect.Effect<void>;
+  /** Milliseconds since the run's start. */
+  readonly now: () => number;
+}
+
+/**
+ * One capped H3 session behind the public renewal owner, which can never open
+ * a second: its one source lives as long as the grant lets it, and another open
+ * refuses before it could allocate. The owner's media is read to the end; the
+ * owner's close ends the session and is the check's termination record.
+ */
+const ownedSession = <A, E>(
+  target: Target,
+  run: Run,
+  budget: Budget,
+  check: Check,
+  scenario: (session: OwnedSession) => Effect.Effect<A, E, Scope.Scope>,
+) =>
+  Effect.gen(function* () {
+    const { grant, rate } = yield* admitted(target, run, budget, sessionsFor(check));
+    const video = new VideoReader();
+    const audio = new AudioReader();
+    const seams = new SeamRecorder();
+    const directory = join(tmpdir(), `reactor-seams-${run.evidence.runId}`);
+    let deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
+    const body = Effect.scoped(
+      Effect.gen(function* () {
+        let opens = 0;
+        let provider: Orchestration.H3Source["provider"] | undefined;
+        const open = Effect.gen(function* () {
+          if (opens++ > 0)
+            return yield* Reactor.ReactorError.fromCode(
+              "InvalidState",
+              `the ${check} check opens one session`,
+            );
+          const opened = yield* Orchestration.openH3({
+            mint: Effect.succeed(grant),
+            // H3 flushes to black at every clip boundary unless told to hold the last frame,
+            // as a show does: seams are measured as it airs them.
+            source: { holdLastFrame: true },
+            onAllocated: ({ session }) =>
+              Effect.gen(function* () {
+                deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
+                run.evidence.session = {
+                  id: session.id,
+                  allocatedMs: since(run.origin),
+                  tracks: [],
+                };
+                yield* mark(run, "allocated");
+              }),
+          });
+          provider = opened.source.provider;
+          // The grant caps the session; the owner must never plan a replacement for it.
+          return { source: opened.source, lifetime: "Infinity" as const };
+        });
+        const owner = yield* Orchestration.make({ open });
+        yield* mark(run, "opened");
+        yield* readInto(
+          Reactor.recorder(owner.media.video),
+          {
+            add: (element: Reactor.Recorded<VideoFrame>, atMs: number) => {
+              video.add(element, atMs);
+              seams.add(element, atMs);
+            },
+          },
+          run.origin,
+        ).pipe(Effect.ignore, Effect.forkScoped);
+        yield* readInto(Reactor.recorder(owner.media.audio), audio, run.origin).pipe(
+          Effect.ignore,
+          Effect.forkScoped,
+        );
+        const seen = <A>(find: () => A | undefined) =>
+          Effect.gen(function* () {
+            const left = yield* until(deadline);
+            return yield* Effect.gen(function* () {
+              for (;;) {
+                const found = find();
+                if (found !== undefined) return found;
+                yield* Effect.sleep("10 millis");
+              }
+            }).pipe(Effect.timeout(left));
+          });
+        const sleepUntil = (atMs: number) =>
+          Effect.gen(function* () {
+            const left = Duration.toMillis(yield* until(deadline));
+            yield* Effect.sleep(
+              Duration.millis(Math.min(left, Math.max(0, atMs - since(run.origin)))),
+            );
+          });
+        const result = yield* scenario({
+          owner,
+          provider: provider!,
+          video,
+          seams,
+          directory,
+          seen,
+          sleepUntil,
+          now: () => since(run.origin),
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const requestedMs = since(run.origin);
+              const report = yield* owner.close;
+              const lease = report.sessions[0]?.lease;
+              if (lease !== undefined)
+                run.evidence.termination = {
+                  requestedMs,
+                  reportedMs: since(run.origin),
+                  confirmed: lease.remote.confirmed,
+                  close: lease,
+                  trail: [],
+                };
+              yield* mark(
+                run,
+                "closed",
+                lease?.remote.confirmed === true ? "confirmed" : "unconfirmed",
+              );
+            }).pipe(Effect.ignore),
+          ),
+        );
+        return { result, media: { video: video.summary(), audio: audio.summary() } };
+      }),
+    ).pipe(Effect.provide(clientLayer(target)));
+    return yield* body.pipe(Effect.ensuring(afterSession(target, run, grant.jwt, rate)));
+  });
+
+/** The run-relative record of every item a scenario schedules, kept from as-run. */
+const itemLog = (
+  scheduler: Orchestration.SchedulerShape,
+  run: Run,
+  onStarted: (key: string, startedMs: number, seconds: number) => void = () => undefined,
+) =>
+  Effect.gen(function* () {
+    const items = new Map<string, Mutable<RunItem>>();
+    const starts: string[] = [];
+    yield* scheduler.asRun.pipe(
+      Stream.runForEach((event) =>
+        Effect.sync(() => {
+          const item = items.get(event.key);
+          if (item === undefined) return;
+          const atMs = event.at - run.origin;
+          const status = event.status;
+          item.last = status._tag;
+          switch (status._tag) {
+            case "Ready":
+              item.readyMs ??= atMs;
+              break;
+            case "Started":
+              item.startedMs = atMs;
+              item.seconds = status.durationSeconds;
+              starts.push(event.key);
+              onStarted(event.key, atMs, status.durationSeconds);
+              break;
+            case "Ended":
+              item.endedMs = atMs;
+              item.airedSeconds = round(status.airedSeconds, 3);
+              item.termination = status.termination;
+              break;
+            case "Dropped":
+              item.dropped = status.reason;
+              break;
+            default:
+              break;
+          }
+        }),
+      ),
+      Effect.forkScoped,
+    );
+    yield* Effect.yieldNow;
+    return {
+      items,
+      starts,
+      track: (key: string) => {
+        items.set(key, { key, submittedMs: since(run.origin), last: "Accepted" });
+        return Orchestration.ItemKey.make(key);
+      },
+      snapshot: () => [...items.values()].map((item) => ({ ...item })),
+    };
+  });
+
+/**
+ * A boundary between two items as the decoded picture shows it: the longest
+ * pause, the largest change and how it compares with the ending clip's own,
+ * and its two sides written out for review.
+ */
+const measureSeam = (
+  session: OwnedSession,
+  window: number | undefined,
+  ending: RunItem,
+  next: RunItem,
+  continued: boolean,
+  label: string,
+): ItemSeam => {
+  const endedMs = ending.endedMs ?? next.startedMs;
+  const startedMs = next.startedMs;
+  if (endedMs === undefined || startedMs === undefined) {
+    if (window !== undefined) session.seams.release(window);
+    return { ending: ending.key, next: next.key, continued };
+  }
+  const fromMs = endedMs - seamBefore;
+  const toMs = startedMs + seamAfter;
+  const pause = session.video.pause(fromMs, toMs);
+  const darkFrames = session.video.dark(fromMs, toMs);
+  const jump = session.seams.jump(fromMs, toMs);
+  const frames =
+    window === undefined || jump === undefined
+      ? []
+      : session.seams.save(window, jump.atMs, session.directory, label);
+  if (window !== undefined && frames.length === 0) session.seams.release(window);
+  return {
+    ending: ending.key,
+    next: next.key,
+    continued,
+    endedMs,
+    startedMs,
+    ...(pause === undefined ? {} : { pause }),
+    darkFrames,
+    ...(jump === undefined ? {} : { jump }),
+    ...(frames.length === 0 ? {} : { frames }),
+  };
+};
+
+/** The inserts and batch of `scheduler-edits`, in the order they should air. */
+const plannedEdits = ["p1", "xc", "p2", "xn", "p3", "y"] as const;
+
+/**
+ * 0.7.0's edit API on hosted H3, through the public scheduler: a line of three
+ * beats, a clip inserted before the second continuing from the first, one
+ * inserted before the third built on its own, and an edit batch that withdraws
+ * a queued clip and inserts one after the playing clip, timed to take effect a
+ * second before that clip ends. Every boundary's pause and join are measured,
+ * and its two sides kept for review outside the evidence.
+ */
+const schedulerEdits = (target: Target, run: Run, budget: Budget) =>
+  ownedSession(target, run, budget, "scheduler-edits", (session) =>
+    Effect.gen(function* () {
+      const evidence: Mutable<NonNullable<Draft["schedulerEdits"]>> = {
+        items: [],
+        plannedOrder: [...plannedEdits],
+        startOrder: [],
+        seams: [],
+      };
+      run.evidence.schedulerEdits = evidence;
+      const scheduler = yield* Orchestration.makeScheduler({
+        lanes: [{ name: "line" }],
+        filler: {
+          runway: { floor: "0 seconds", target: "1 second" },
+          clip: () => itemRequest(),
+        },
+      }).pipe(Effect.provideService(Orchestration.Engine, session.owner.engine));
+      // A window opens around each clip's expected end, so its boundary's frames are kept.
+      const windows = new Map<string, number>();
+      const log = yield* itemLog(scheduler, run, (key, startedMs, seconds) => {
+        const endMs = startedMs + seconds * 1000;
+        windows.set(key, session.seams.watch(endMs - seamBefore, endMs + seamAfter));
+      });
+      const record = () => {
+        evidence.items = log.snapshot();
+        evidence.startOrder = [...log.starts];
+        save(run);
+      };
+      // Each boundary is measured, and its frames freed, once its window has passed.
+      const measured = new Set<number>();
+      const measure = (final: boolean) =>
+        Effect.sync(() => {
+          for (let index = 0; index + 1 < log.starts.length; index++) {
+            if (measured.has(index)) continue;
+            const ending = log.items.get(log.starts[index]!)!;
+            const next = log.items.get(log.starts[index + 1]!)!;
+            if (!final && (next.startedMs ?? Infinity) + seamAfter > session.now()) continue;
+            measured.add(index);
+            evidence.seams = [
+              ...evidence.seams,
+              measureSeam(
+                session,
+                windows.get(ending.key),
+                ending,
+                next,
+                next.key === "xc",
+                `${index + 1}-${ending.key}-${next.key}`,
+              ),
+            ];
+          }
+          record();
+        });
+      yield* measure(false).pipe(
+        Effect.andThen(Effect.sleep("250 millis")),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+
+      yield* recorded(run, session.owner.engine.setAutoplay(true));
+      yield* recorded(
+        run,
+        scheduler.submitGroup({
+          key: log.track("line"),
+          lane: "line",
+          parts: [
+            { key: log.track("p1"), request: itemRequest() },
+            { key: log.track("p2"), request: itemRequest() },
+            { key: log.track("p3"), request: itemRequest() },
+          ],
+        }),
+      );
+      log.items.delete("line");
+      yield* recorded(
+        run,
+        scheduler.submit({ key: log.track("w1"), lane: "line", request: itemRequest() }),
+      );
+      yield* mark(run, "line submitted");
+      yield* session.seen(() => log.items.get("p1")?.startedMs);
+      yield* recorded(
+        run,
+        scheduler.insert({
+          key: log.track("xc"),
+          request: itemRequest(),
+          before: Orchestration.ItemKey.make("p2"),
+          continuity: "previous",
+        }),
+      );
+      yield* recorded(
+        run,
+        scheduler.insert({
+          key: log.track("xn"),
+          request: itemRequest(),
+          before: Orchestration.ItemKey.make("p3"),
+        }),
+      );
+      yield* mark(run, "inserted");
+      record();
+
+      // The batch should take effect about a second before p3 ends: its insert is
+      // sent one measured build before that.
+      const p3Started = yield* session.seen(() => log.items.get("p3")?.startedMs);
+      const p3 = log.items.get("p3")!;
+      const perSecond = (yield* scheduler.state).estimates.build?.median ?? 0.42;
+      const endsMs = p3Started + (p3.seconds ?? clipSeconds) * 1000;
+      yield* session.sleepUntil(endsMs - 1000 - perSecond * clipSeconds * 1000);
+      const submittedMs = session.now();
+      const batch = yield* recorded(
+        run,
+        scheduler.edit([
+          { _tag: "Withdraw", key: Orchestration.ItemKey.make("w1") },
+          {
+            _tag: "Insert",
+            insert: {
+              key: log.track("y"),
+              request: itemRequest(),
+              after: Orchestration.ItemKey.make("p3"),
+            },
+          },
+        ]),
+      );
+      evidence.batch = {
+        submittedMs,
+        withdrawn: ["w1"],
+        inserted: "y",
+        withdrawnStarted: false,
+      };
+      yield* batch.committed.pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            evidence.batch = { ...evidence.batch!, committedMs: session.now() };
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
+      yield* mark(run, "batch submitted");
+      const yStarted = yield* session.seen(() => log.items.get("y")?.startedMs);
+      yield* session.sleepUntil(yStarted + seamAfter + 250);
+      yield* measure(true);
+      const state = yield* scheduler.state;
+      evidence.estimates = {
+        ...(state.estimates.build === undefined
+          ? {}
+          : {
+              buildMedian: round(state.estimates.build.median, 3),
+              buildP95: round(state.estimates.build.p95, 3),
+            }),
+        length: round(state.estimates.length, 4),
+      };
+      const w1 = log.items.get("w1")!;
+      evidence.batch = {
+        ...evidence.batch,
+        ...(p3.endedMs === undefined ? {} : { boundaryMs: p3.endedMs }),
+        withdrawnStarted: w1.startedMs !== undefined,
+      };
+      record();
+
+      judge(
+        run,
+        "inserts and the batch air in their planned places",
+        evidence.startOrder.join(",") === plannedEdits.join(",")
+          ? undefined
+          : `started in the order ${evidence.startOrder.join(", ")}`,
+      );
+      judge(
+        run,
+        "a batch takes effect before its boundary",
+        evidence.batch.committedMs === undefined
+          ? "the batch never took effect"
+          : p3.endedMs !== undefined && evidence.batch.committedMs >= p3.endedMs
+            ? "the batch took effect after the playing clip ended"
+            : undefined,
+      );
+      judge(
+        run,
+        "a batch's withdrawn clip never starts",
+        w1.startedMs !== undefined
+          ? "the withdrawn clip started"
+          : w1.dropped !== "withdrawn"
+            ? `the withdrawn clip ended ${w1.last}`
+            : undefined,
+      );
+      judge(
+        run,
+        "every seam measured",
+        evidence.seams.length < plannedEdits.length - 1 ||
+          evidence.seams.some((seam) => seam.pause === undefined || seam.jump === undefined)
+          ? "a boundary has no pause or join measurement"
+          : undefined,
+      );
+      yield* mark(run, "edits observed", `seam frames in ${session.directory}`);
+    }),
+  ).pipe(
+    Effect.map(({ media }) => {
+      run.evidence.schedulerEdits = { ...run.evidence.schedulerEdits!, media };
+      save(run);
+    }),
+  );
+
+/** How many enqueue-then-read probes `scheduler-cut` sends. */
+const orderingProbes = 3;
+
+/**
+ * Raw H3 first, with autoplay off: position zero behind a build that is
+ * running, how long a popped build holds the build slot, and whether a queue
+ * read sent right behind an enqueue, before its reply, already lists the new
+ * clip. Then the public scheduler with a cut lane: a 15 s clip plays and a
+ * cut-lane clip stops it once Ready; the cut's seam is measured and kept.
+ */
+const schedulerCut = (target: Target, run: Run, budget: Budget) =>
+  ownedSession(target, run, budget, "scheduler-cut", (session) =>
+    Effect.gen(function* () {
+      const evidence: Mutable<NonNullable<Draft["schedulerCut"]>> = { ordering: [], items: [] };
+      run.evidence.schedulerCut = evidence;
+      const { provider } = session;
+      const marker = `hosted-qualification:${run.evidence.runId}:scheduler-cut`;
+      const generated = new Map<string, number>();
+      yield* provider.events({ capacity: 4096 }).pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event._tag !== "Message" || event.disposition !== "applied") return;
+            const message = event.message;
+            if (message.type === "clip_generated" && "clip" in message.data)
+              generated.set(message.data.clip.clip_id, since(run.origin));
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      // `sending` completes as the enqueue commits, just before it is written to the channel.
+      const submit = (name: string, position?: number, sending?: Deferred.Deferred<void>) =>
+        Effect.gen(function* () {
+          const submission = yield* provider.prepare(
+            {
+              prompt,
+              seconds: clipSeconds,
+              metadata: `${marker}:${name}`,
+              ...(position === undefined ? {} : { position }),
+            },
+            sending === undefined
+              ? {}
+              : { commit: () => Deferred.succeed(sending, undefined).pipe(Effect.asVoid) },
+          );
+          const submittedMs = since(run.origin);
+          const acceptance = yield* recorded(run, submission.submit);
+          run.evidence.outcomes.push("replied");
+          return {
+            clipId: acceptance.clip.clip_id,
+            submittedMs,
+            ...(acceptance.evidence.kind === "correlated"
+              ? { replySequence: acceptance.evidence.source.sequence }
+              : {}),
+          };
+        });
+      const read = Effect.gen(function* () {
+        const reply = yield* recorded(run, provider.getQueue);
+        run.evidence.outcomes.push("replied");
+        return reply;
+      });
+      const queue = Effect.map(read, (reply) => reply.value);
+      const pop = (clipId: string) =>
+        recorded(run, provider.pop(clipId)).pipe(
+          Effect.tap(() => Effect.sync(() => run.evidence.outcomes.push("replied"))),
+          Effect.ignore,
+        );
+
+      yield* recorded(run, provider.setAutoplay(false));
+      // A lone build, for comparison with one queued behind a popped build.
+      const lone = yield* submit("lone");
+      const loneReady = yield* session.seen(() => generated.get(lone.clipId));
+      yield* pop(lone.clipId);
+
+      // H3 documents position zero as next, behind the build that is running.
+      const first = yield* submit("first");
+      const zero = yield* submit("position-zero", 0);
+      const tail = yield* submit("tail");
+      const generationOrder = (yield* queue).generation.map((clip) => clip.clip_id);
+      evidence.positionZero = {
+        buildingClipId: first.clipId,
+        requestedClipId: zero.clipId,
+        tailClipId: tail.clipId,
+        generationOrder,
+      };
+      // The first clip may have finished building before the read; if it is listed, it leads.
+      const place = (clipId: string) => generationOrder.indexOf(clipId);
+      judge(
+        run,
+        "position zero goes next, behind the build that is running",
+        place(zero.clipId) < 0 || place(tail.clipId) < place(zero.clipId)
+          ? "the position-zero clip was not ahead of the clip queued after it"
+          : place(first.clipId) > place(zero.clipId)
+            ? "the position-zero clip went ahead of the build that was running"
+            : undefined,
+      );
+      yield* pop(zero.clipId);
+      yield* pop(tail.clipId);
+      const firstReady = yield* session.seen(() => generated.get(first.clipId));
+      // H3 documents the running build as unaffected: it takes one build, as the lone one did.
+      evidence.positionZero = {
+        ...evidence.positionZero,
+        buildingBuildMs: firstReady - first.submittedMs,
+      };
+      yield* pop(first.clipId);
+      save(run);
+
+      // A build popped while it runs: how long the clip queued behind it waits.
+      const popMe = yield* submit("popped-build");
+      const behind = yield* submit("behind-popped");
+      yield* pop(popMe.clipId);
+      const poppedMs = since(run.origin);
+      const behindReady = yield* session.seen(() => generated.get(behind.clipId));
+      evidence.poppedBuild = {
+        poppedMs,
+        nextSubmittedMs: behind.submittedMs,
+        nextReadyMs: behindReady,
+        nextBuildMs: behindReady - behind.submittedMs,
+        loneBuildMs: loneReady - lone.submittedMs,
+      };
+      yield* pop(behind.clipId);
+      save(run);
+
+      // An enqueue, and a queue read sent as soon as the enqueue is on its way, long before
+      // its reply can arrive.
+      const probes: string[] = [];
+      for (let index = 1; index <= orderingProbes; index++) {
+        const name = `ordering-${index}`;
+        const sending = yield* Deferred.make<void>();
+        const enqueue = yield* Effect.forkChild(Effect.result(submit(name, undefined, sending)));
+        yield* Deferred.await(sending);
+        yield* Effect.sleep("1 millis");
+        const sentMs = since(run.origin);
+        const reply = yield* read;
+        const listed = [...reply.value.generation, ...reply.value.playout].some((clip) =>
+          clip.metadata.includes(`${marker}:${name}`),
+        );
+        const accepted = yield* Fiber.join(enqueue);
+        if (Result.isSuccess(accepted)) probes.push(accepted.success.clipId);
+        const enqueueSequence = Result.isSuccess(accepted)
+          ? accepted.success.replySequence
+          : undefined;
+        evidence.ordering = [
+          ...evidence.ordering,
+          {
+            sentMs,
+            listed,
+            clipKnown: Result.isSuccess(accepted),
+            ...(enqueueSequence === undefined
+              ? {}
+              : { repliedFirst: reply.source.sequence < enqueueSequence }),
+          },
+        ];
+      }
+      for (const clipId of probes) yield* pop(clipId);
+      judge(
+        run,
+        "a queue read sent right behind an enqueue lists the new clip",
+        evidence.ordering.every((probe) => probe.listed)
+          ? undefined
+          : `${evidence.ordering.filter((probe) => !probe.listed).length} of ${evidence.ordering.length} reads did not list it`,
+      );
+      // Nothing raw may air once autoplay is on.
+      const left = yield* queue;
+      for (const clip of [...left.generation, ...left.playout]) yield* pop(clip.clip_id);
+      yield* mark(run, "raw probes done");
+      save(run);
+
+      const scheduler = yield* Orchestration.makeScheduler({
+        lanes: [{ name: "urgent", cut: true }, { name: "line" }],
+        filler: {
+          runway: { floor: "0 seconds", target: "1 second" },
+          clip: () => itemRequest(),
+        },
+      }).pipe(Effect.provideService(Orchestration.Engine, session.owner.engine));
+      const log = yield* itemLog(scheduler, run);
+      yield* recorded(run, session.owner.engine.setAutoplay(true));
+      yield* recorded(
+        run,
+        scheduler.submit({ key: log.track("long"), lane: "line", request: itemRequest(15) }),
+      );
+      const longStarted = yield* session.seen(() => log.items.get("long")?.startedMs);
+      yield* session.sleepUntil(longStarted + 2_500);
+      const cutterSubmittedMs = session.now();
+      const window = session.seams.watch(cutterSubmittedMs, cutterSubmittedMs + 5_000);
+      yield* recorded(
+        run,
+        scheduler.submit({ key: log.track("cutter"), lane: "urgent", request: itemRequest() }),
+      );
+      yield* mark(run, "cutter submitted");
+      const cutterStarted = yield* session.seen(() => log.items.get("cutter")?.startedMs);
+      yield* session.sleepUntil(cutterStarted + seamAfter + 250);
+      const long = log.items.get("long")!;
+      const cutter = log.items.get("cutter")!;
+      evidence.items = log.snapshot();
+      evidence.cut = {
+        longKey: "long",
+        cutterKey: "cutter",
+        cutterSubmittedMs,
+        seam: measureSeam(session, window, long, cutter, false, "cut-long-cutter"),
+      };
+      // H3's stop is not scoped to a clip: a second one stops whatever plays by then.
+      const stops = run.spans
+        .records()
+        .filter(
+          (span) =>
+            span.name === "reactor.session.command" &&
+            span.attributes["reactor.operation"] === "stop",
+        ).length;
+      judge(
+        run,
+        "a cut lane's clip stops a lower lane's playing clip",
+        long.termination !== "stopped"
+          ? `the long clip ended ${long.termination ?? long.last}`
+          : log.starts[log.starts.indexOf("long") + 1] !== "cutter"
+            ? "the cut-lane clip did not start next"
+            : cutter.termination === "stopped"
+              ? `the cut-lane clip was itself stopped after ${cutter.airedSeconds ?? "?"} s`
+              : stops !== 1
+                ? `${stops} stops were sent for one cut`
+                : undefined,
+      );
+      save(run);
+      yield* mark(run, "cut observed", `seam frames in ${session.directory}`);
+    }),
+  ).pipe(
+    Effect.map(({ media }) => {
+      run.evidence.schedulerCut = { ...run.evidence.schedulerCut!, media };
+      save(run);
+    }),
+  );
 
 /** The public renewal owner controls every activation; the harness only submits and observes. */
 const pressureEvidence = (value: {
@@ -2287,7 +2944,10 @@ const runClaimed = async (
   run: Run,
   file: string,
 ): Promise<number> => {
-  type CheckProgram = ReturnType<typeof schedulerRenewal> | ReturnType<typeof scheduler>;
+  type CheckProgram =
+    | ReturnType<typeof schedulerRenewal>
+    | ReturnType<typeof scheduler>
+    | ReturnType<typeof schedulerEdits>;
   const selected: Effect.Effect<
     void,
     Effect.Error<CheckProgram>,
@@ -2296,9 +2956,13 @@ const runClaimed = async (
     ? schedulerRenewal(target, run, budget)
     : check === "scheduler"
       ? scheduler(target, run, budget)
-      : check === "takeover" || check === "resume"
-        ? takeover(target, run, budget, check)
-        : vertical(target, run, budget, check);
+      : check === "scheduler-edits"
+        ? schedulerEdits(target, run, budget)
+        : check === "scheduler-cut"
+          ? schedulerCut(target, run, budget)
+          : check === "takeover" || check === "resume"
+            ? takeover(target, run, budget, check)
+            : vertical(target, run, budget, check);
   const program = selected.pipe(
     Effect.provideService(Tracer.Tracer, run.spans.tracer),
     Effect.provide(Reactor.FetchHttp.layer),

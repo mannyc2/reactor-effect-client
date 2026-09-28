@@ -1,9 +1,13 @@
 /**
  * What a check records while its session runs, each summarized as it arrives:
  * the library's own spans, stats samples, media summaries, the provider's
- * messages and the termination trail. Nothing here keeps a frame, a token or
- * provider text.
+ * messages and the termination trail. Nothing here keeps a token or provider
+ * text, and only `SeamRecorder` keeps frames, briefly, to write a boundary's
+ * two sides for a person to review outside the evidence.
  */
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -16,7 +20,14 @@ import type * as H3 from "reactor-effect-client/h3";
 import type * as Orchestration from "reactor-effect-client/orchestration";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/host";
 import { terminal } from "reactor-effect-client/host";
-import type { AudioSummary, SeamPause, SpanRecord, StatsSample, VideoSummary } from "./evidence.js";
+import type {
+  AudioSummary,
+  SeamJump,
+  SeamPause,
+  SpanRecord,
+  StatsSample,
+  VideoSummary,
+} from "./evidence.js";
 import { liveVideoMotionFrames, type ClipVideoSeen } from "./gates.js";
 
 /** Milliseconds since `origin`, a `Date.now()` reading. */
@@ -300,6 +311,12 @@ export class VideoReader {
     return this.arrivals.findLast((at) => at <= atMs);
   }
 
+  /** How many frames arriving between `fromMs` and `toMs` were dark, however short. */
+  dark(fromMs: number, toMs: number): number {
+    return this.seen.filter((frame) => frame.atMs >= fromMs && frame.atMs <= toMs && !frame.lit)
+      .length;
+  }
+
   /**
    * The longest stretch between `fromMs` and `toMs` with no new picture: from
    * a frame that differed from the one before it to the next that did. Frames
@@ -350,6 +367,199 @@ export class VideoReader {
       withFrameId: this.withFrameId,
       withTimestamp: this.withTimestamp,
     };
+  }
+}
+
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+/** An 8-bit RGB PNG of `rgb`, three bytes a pixel, row by row. */
+export const png = (width: number, height: number, rgb: Uint8Array): Uint8Array => {
+  const chunk = (type: string, data: Uint8Array) => {
+    const out = new Uint8Array(12 + data.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, data.length);
+    out.set(new TextEncoder().encode(type), 4);
+    out.set(data, 8);
+    let c = 0xffffffff;
+    for (const b of out.subarray(4, 8 + data.length)) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+    view.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
+    return out;
+  };
+  const header = new Uint8Array(13);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const stride = width * 3;
+  const rows = new Uint8Array(height * (1 + stride));
+  for (let row = 0; row < height; row++)
+    rows.set(rgb.subarray(row * stride, (row + 1) * stride), row * (1 + stride) + 1); // filter: none
+  const parts = [
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", new Uint8Array(deflateSync(rows))),
+    chunk("IEND", new Uint8Array()),
+  ];
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
+
+/** Each frame's luma on a coarse grid: enough to say how much two frames differ. */
+const thumbColumns = 64;
+const thumbRows = 36;
+
+const thumbnail = (frame: VideoFrame): Uint8Array => {
+  const out = new Uint8Array(thumbColumns * thumbRows);
+  for (let row = 0; row < thumbRows; row++) {
+    const y = Math.min(frame.height - 1, Math.floor(((row + 0.5) * frame.height) / thumbRows));
+    for (let column = 0; column < thumbColumns; column++) {
+      const x = Math.min(
+        frame.width - 1,
+        Math.floor(((column + 0.5) * frame.width) / thumbColumns),
+      );
+      const index = (y * frame.width + x) * 4;
+      // BGRA, as the native host decodes it.
+      out[row * thumbColumns + column] = Math.round(
+        0.0722 * frame.data[index]! +
+          0.7152 * frame.data[index + 1]! +
+          0.2126 * frame.data[index + 2]!,
+      );
+    }
+  }
+  return out;
+};
+
+/** Mean absolute luma difference between two thumbnails, 0 to 255. */
+const difference = (a: Uint8Array, b: Uint8Array): number => {
+  let total = 0;
+  for (let index = 0; index < a.length; index++) total += Math.abs(a[index]! - b[index]!);
+  return total / a.length;
+};
+
+/** Half resolution, as RGB, for a person to look at a seam. */
+const halfImage = (
+  frame: VideoFrame,
+): { readonly width: number; readonly height: number; readonly rgb: Uint8Array } => {
+  const width = Math.floor(frame.width / 2);
+  const height = Math.floor(frame.height / 2);
+  const rgb = new Uint8Array(width * height * 3);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const from = (y * 2 * frame.width + x * 2) * 4;
+      const to = (y * width + x) * 3;
+      rgb[to] = frame.data[from + 2]!;
+      rgb[to + 1] = frame.data[from + 1]!;
+      rgb[to + 2] = frame.data[from]!;
+    }
+  return { width, height, rgb };
+};
+
+/** Frames kept around one boundary, at most this many. */
+const maxWindowFrames = 120;
+
+/**
+ * How a clip boundary looks in the decoded picture: every frame's coarse luma,
+ * and half-resolution copies only inside windows a check opens around the
+ * boundaries it expects. The seam is the largest change between consecutive
+ * frames in the window; it is compared with the change between frames of the
+ * clip that ends, so a join that continues the picture scores near 1. The two
+ * frames either side of it can be written out for a person to review; they are
+ * never part of the evidence file.
+ */
+export class SeamRecorder {
+  private readonly thumbs: { readonly atMs: number; readonly thumb: Uint8Array }[] = [];
+  private readonly windows = new Map<
+    number,
+    {
+      readonly fromMs: number;
+      readonly toMs: number;
+      readonly frames: {
+        readonly atMs: number;
+        readonly image: ReturnType<typeof halfImage>;
+      }[];
+    }
+  >();
+  private nextWindow = 0;
+
+  add(element: Recorded<VideoFrame>, atMs: number): void {
+    if (element._tag === "Lost") return;
+    if (this.thumbs.length < 20_000) this.thumbs.push({ atMs, thumb: thumbnail(element.frame) });
+    for (const window of this.windows.values())
+      if (atMs >= window.fromMs && atMs <= window.toMs && window.frames.length < maxWindowFrames)
+        window.frames.push({ atMs, image: halfImage(element.frame) });
+  }
+
+  /** Keeps half-resolution frames arriving between `fromMs` and `toMs`; the window's id. */
+  watch(fromMs: number, toMs: number): number {
+    const id = this.nextWindow++;
+    this.windows.set(id, { fromMs, toMs, frames: [] });
+    return id;
+  }
+
+  /**
+   * The largest change between consecutive frames from `fromMs` to `toMs`, and
+   * the median change between the frames of the preceding `baselineMs` before it.
+   */
+  jump(fromMs: number, toMs: number, baselineMs = 2_000): SeamJump | undefined {
+    let best: { readonly index: number; readonly change: number } | undefined;
+    for (let index = 1; index < this.thumbs.length; index++) {
+      const frame = this.thumbs[index]!;
+      if (frame.atMs < fromMs || frame.atMs > toMs) continue;
+      const change = difference(frame.thumb, this.thumbs[index - 1]!.thumb);
+      if (best === undefined || change > best.change) best = { index, change };
+    }
+    if (best === undefined) return undefined;
+    const atMs = this.thumbs[best.index]!.atMs;
+    const changes: number[] = [];
+    for (let index = 1; index < best.index; index++) {
+      const frame = this.thumbs[index]!;
+      if (frame.atMs >= atMs - baselineMs)
+        changes.push(difference(frame.thumb, this.thumbs[index - 1]!.thumb));
+    }
+    changes.sort((a, b) => a - b);
+    const typical = changes[Math.floor(changes.length / 2)] ?? 0;
+    return {
+      atMs,
+      change: round(best.change, 2),
+      typical: round(typical, 2),
+      ratio: round(best.change / Math.max(typical, 0.25), 2),
+    };
+  }
+
+  /**
+   * Writes the kept frames on either side of `atMs` in window `id` as
+   * `<label>-before.png` and `<label>-after.png` under `directory`, then frees
+   * the window. The file names, or nothing when the window holds no such pair.
+   */
+  save(id: number, atMs: number, directory: string, label: string): readonly string[] {
+    const window = this.windows.get(id);
+    this.windows.delete(id);
+    if (window === undefined) return [];
+    const before = window.frames.findLast((frame) => frame.atMs < atMs);
+    const after = window.frames.find((frame) => frame.atMs >= atMs);
+    if (before === undefined || after === undefined) return [];
+    mkdirSync(directory, { recursive: true });
+    const names = [`${label}-before.png`, `${label}-after.png`];
+    for (const [index, frame] of [before, after].entries())
+      writeFileSync(
+        join(directory, names[index]!),
+        png(frame.image.width, frame.image.height, frame.image.rgb),
+      );
+    return names;
+  }
+
+  /** Frees a window without writing it. */
+  release(id: number): void {
+    this.windows.delete(id);
   }
 }
 

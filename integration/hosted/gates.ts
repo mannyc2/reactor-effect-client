@@ -34,8 +34,9 @@ export const workSeconds = sessionSeconds - 10;
 /**
  * The checks 0.3.0 was qualified by (`vertical`, `takeover` and `turn`), then
  * one per capability added since: `audio`, the vertical with a reference image
- * and a reference audio clip, and `resume`, the takeover through
- * `Orchestration.resumeH3`.
+ * and a reference audio clip, `resume`, the takeover through
+ * `Orchestration.resumeH3`, the scheduler's queue edits and renewal, and
+ * 0.7.0's edit API (`scheduler-edits`) and cut lanes (`scheduler-cut`).
  */
 export const checks = [
   "vertical",
@@ -45,6 +46,8 @@ export const checks = [
   "resume",
   "scheduler",
   "scheduler-renewal",
+  "scheduler-edits",
+  "scheduler-cut",
 ] as const;
 export type Check = (typeof checks)[number];
 export const sessionsFor = (check: Check): number => (check === "scheduler-renewal" ? 2 : 1);
