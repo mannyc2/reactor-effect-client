@@ -17,7 +17,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { load } from "../addon.js";
 import type * as Binding from "../binding.js";
-import { open, request, settle } from "../local.js";
+import { open } from "../local.js";
 import type { Opened } from "../local.js";
 import { IsolatedRpcs } from "./protocol.js";
 
@@ -30,9 +30,9 @@ const handlers = IsolatedRpcs.toLayer(
         (): Binding.Failure => ({ class: "Closed", message: "no native peer is open" }),
       ),
     );
-    /** One addon call on the open peer; once it reaches this process it runs. */
-    const call = (run: (peer: Binding.NativePeer) => Promise<Binding.Reply>) =>
-      Effect.flatMap(current, ({ peer }) => settle(() => run(peer)));
+    /** A command on the open peer: once it reaches this process it runs. */
+    const command = <A>(call: (peer: Opened) => Effect.Effect<A, Binding.Failure>) =>
+      Effect.flatMap(current, call).pipe(Rpc.uninterruptible);
     /** One queue, taken only as the parent pulls: a stalled parent leaves the addon's bounds to drop. */
     const queue = <A>(select: (peer: Opened) => Stream.Stream<A>) =>
       current.pipe(Effect.map(select), Stream.unwrap);
@@ -56,32 +56,14 @@ const handlers = IsolatedRpcs.toLayer(
           ),
           Rpc.uninterruptible,
         ),
-      Prepare: (payload) =>
-        call((peer) => {
-          const { servers, tracks } = request(payload);
-          return peer.prepare(servers, tracks);
-        }).pipe(
-          Effect.filterOrFail(
-            (reply): reply is Binding.Reply & { readonly prepared: Binding.Prepared } =>
-              reply.prepared !== undefined,
-            (): Binding.Failure => ({ class: "Protocol", message: "prepare answered no offer" }),
-          ),
-          Effect.map(({ prepared }) => prepared),
-          Rpc.uninterruptible,
-        ),
-      Answer: ({ sdp }) =>
-        call((peer) => peer.answer(sdp)).pipe(Effect.asVoid, Rpc.uninterruptible),
-      Direction: ({ name, active }) =>
-        call((peer) => peer.direction(name, active)).pipe(Effect.asVoid, Rpc.uninterruptible),
+      Prepare: ({ servers, tracks }) => command((peer) => peer.prepare(servers, tracks)),
+      Answer: ({ sdp }) => command((peer) => peer.answer(sdp)),
+      Direction: ({ name, active }) => command((peer) => peer.direction(name, active)),
       MaxBitrate: ({ name, bitsPerSecond }) =>
-        call((peer) => peer.maxBitrate(name, bitsPerSecond)).pipe(
-          Effect.asVoid,
-          Rpc.uninterruptible,
-        ),
-      Send: ({ channel, bytes }) =>
-        call((peer) => peer.send(channel, bytes)).pipe(Effect.asVoid, Rpc.uninterruptible),
-      Stats: () => call((peer) => peer.stats()).pipe(Effect.map(({ stats }) => stats ?? [])),
-      Pressure: () => Effect.map(current, ({ peer }) => peer.pressure()),
+        command((peer) => peer.maxBitrate(name, bitsPerSecond)),
+      Send: ({ channel, bytes }) => command((peer) => peer.send(channel, bytes)),
+      Stats: () => Effect.flatMap(current, (peer) => peer.stats),
+      Pressure: () => Effect.flatMap(current, (peer) => peer.pressure),
       Events: () => queue((peer) => peer.events),
       Video: () => queue((peer) => peer.video),
       Audio: () => queue((peer) => peer.audio),
@@ -89,11 +71,8 @@ const handlers = IsolatedRpcs.toLayer(
       Shutdown: () =>
         Ref.get(opened).pipe(
           Effect.flatMap((peer) =>
-            peer === undefined
-              ? Effect.void
-              : peer.close.pipe(Effect.andThen(settle(() => peer.peer.shutdown()))),
+            peer === undefined ? Effect.void : Effect.andThen(peer.close, peer.shutdown),
           ),
-          Effect.asVoid,
           Rpc.uninterruptible,
         ),
     };
