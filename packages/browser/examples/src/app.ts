@@ -5,7 +5,7 @@ import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Session from "reactor-effect-client/Session";
 import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import * as H3 from "reactor-effect-client/h3";
-import * as Browser from "reactor-effect-browser";
+import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import { Api } from "./Api.ts";
 import { WebCrypto } from "./WebCrypto.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -13,14 +13,14 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 /**
  * One runtime for the page, built once: the SDK's Client over the browser's
  * own WebRTC, with the fetch-based HTTP client and Web Crypto it runs on, both
- * also used by the page itself. Building `Browser.layer` checks for WebRTC, so
+ * also used by the page itself. Building `BrowserPeer.layer` checks for WebRTC, so
  * an unsupported browser fails here, before any session is paid for. The UI
  * below is ordinary DOM code that runs effects through the runtime.
  */
 const runtime = ManagedRuntime.make(
   Reactor.layer().pipe(
     Layer.provide(Coordinator.layer({ apiUrl: window.location.origin })),
-    Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, Browser.layer)),
+    Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
   ),
 );
 
@@ -45,7 +45,7 @@ interface Live {
   readonly scope: Scope.Closeable;
   readonly session: Session.Session;
   readonly provider: H3.Provider;
-  readonly media: Browser.MediaGeneration;
+  readonly media: BrowserMedia.Tracks;
 }
 
 /**
@@ -79,8 +79,8 @@ const start = Effect.gen(function* () {
     const provider = yield* H3.make(session);
     // H3 changes no playback policy on its own: ask it to play clips as they are ready.
     yield* provider.setAutoplay(true);
-    const media = yield* Browser.media(session);
-    yield* Browser.play(yield* media.track("main_video"), video);
+    const media = yield* BrowserMedia.tracks(session);
+    yield* BrowserMedia.play(yield* media.track("main_video"), video);
     return { scope, session, provider, media };
   }).pipe(
     Scope.provide(scope),
@@ -131,7 +131,7 @@ element("sound").addEventListener("click", () => {
   runtime
     .runPromise(
       Effect.gen(function* () {
-        yield* Browser.play(yield* media.track("main_audio"), audio);
+        yield* BrowserMedia.play(yield* media.track("main_audio"), audio);
       }).pipe(Scope.provide(scope)),
     )
     .catch((error: unknown) => log(`no sound: ${describe(error)}`));

@@ -291,7 +291,9 @@
               "**/packages/client/src/internal/recording.ts",
               "**/packages/client/src/internal/session.ts",
               "**/packages/client/src/internal/stats.ts",
-              "**/packages/client/test/ReactorTest.test.ts"
+              "**/packages/client/test/ReactorTest.test.ts",
+              "**/packages/browser/src/**/*.ts",
+              "**/packages/browser/test/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {
