@@ -81,6 +81,14 @@
       }
     },
     {
+      // release-tools builds a changed copy of a Schema class instance by spreading it into
+      // the class's `make`, which checks the result again; the prototype is not wanted.
+      "files": ["release-tools/**"],
+      "rules": {
+        "typescript/no-misused-spread": "off"
+      }
+    },
+    {
       // The pack smoke's consumer fixtures resolve their imports and Node's types only inside
       // its isolated installs, where it type-checks them against the installed packages.
       "files": ["scripts/pack/**"],
