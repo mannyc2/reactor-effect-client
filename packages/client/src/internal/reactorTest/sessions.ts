@@ -357,8 +357,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if (!webrtc) return yield* refuse(400, "unsupported_transport", "WebRTC 1.0 only");
         if (grant.created >= grant.maxSessions - grant.bound.size)
           return yield* refuse(403, "session_limit", "the token's sessions are used");
-        if ((yield* faults.trip((fault) => fault._tag === "RefuseAllocation")) !== undefined)
-          return yield* refuse(403, "allocation_refused", "allocation refused");
+        const refusal = yield* faults.trip((fault) => fault._tag === "RefuseAllocation");
+        if (refusal?._tag === "RefuseAllocation")
+          return yield* (refusal.status ?? 403) >= 500
+            ? refuse(refusal.status ?? 500, "server_error", "allocation failed")
+            : refuse(refusal.status ?? 403, "allocation_refused", "allocation refused");
         const running = yield* Effect.filter([...(yield* Ref.get(sessions)).values()], (session) =>
           Effect.map(Ref.get(session.state), (state) => state.phase !== "CLOSED"),
         );

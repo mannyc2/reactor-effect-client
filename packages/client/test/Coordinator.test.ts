@@ -7,6 +7,7 @@ import { TestClock } from "effect/testing";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import { Coordinator } from "../src/index.js";
+import { ReactorError } from "../src/ReactorError.js";
 import { create } from "@bufbuild/protobuf";
 import { ClipReadySchema } from "../src/internal/wire.js";
 
@@ -199,6 +200,29 @@ describe("termination", () => {
           ["GET", "key"],
         ],
       );
+    }),
+  );
+
+  it.effect("a request whose token comes too late, or not at all, was never sent", () =>
+    Effect.gen(function* () {
+      const { served, client } = origin(() => new Response(null, { status: 202 }));
+      const service = yield* coordinator(client);
+      const slow = service.signaling(
+        Effect.sleep("20 seconds").pipe(Effect.as(Redacted.make("late"))),
+      );
+      const reading = yield* Effect.forkChild(Effect.flip(slow.read("s1")));
+      const ending = yield* Effect.forkChild(slow.terminate("s1"));
+      yield* TestClock.adjust("20 seconds");
+      const late = yield* Fiber.join(reading);
+      const unminted = yield* Effect.flip(
+        service.signaling(Effect.fail(ReactorError.fromCode("Http", "token: HTTP 500"))).read("s1"),
+      );
+      assert.deepStrictEqual(
+        [late.reason._tag, late.context.outcome, unminted.context.outcome],
+        ["Timeout", "not-submitted", "not-submitted"],
+      );
+      assert.isFalse((yield* Fiber.join(ending)).attempted);
+      assert.lengthOf(served, 0);
     }),
   );
 
