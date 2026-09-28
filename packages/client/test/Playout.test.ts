@@ -209,7 +209,14 @@ layer(hosted)("what airs", (it) => {
         all.flatMap((event) => (event._tag === "Filler" ? [event] : [])),
       );
       const seen = yield* eventually(fillers, (all) =>
-        all.some((event) => event.index === 0 && event.phase === "Ended"),
+        all.some((event) => event.index === 1 && event.phase === "Ended"),
+      );
+      // Once each, though H3 answers every start and end with the facts it held before it.
+      assert.deepStrictEqual(
+        seen
+          .filter((event) => event.index <= 1)
+          .map((event) => `${event.phase} ${String(event.index)}`),
+        ["Started 0", "Ended 0", "Started 1", "Ended 1"],
       );
       const [first, second] = seen.filter((event) => event.index === 0);
       assert.strictEqual(first?.phase, "Started");

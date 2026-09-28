@@ -1234,10 +1234,13 @@ export const step: {
   /** Reads a session's queues back into the plan: adoption by key, Ready, and clips that vanished. */
   const observe = (sessionId: string, source: SourceState): void => {
     report(sessionId, source);
-    // What plays is what the provider reports; a clip seen playing without its start event
-    // started no later than now.
-    if (source.playing === undefined) updateSession(sessionId, { playing: undefined });
-    else nowPlaying(sessionId, source.playing);
+    // What plays is what the provider reports while its report is current; a clip seen playing
+    // without its start event started no later than now. H3 answers a start or an end with the
+    // facts it held before it, and says so: they would name the clip that played before.
+    if (source.available) {
+      if (source.playing === undefined) updateSession(sessionId, { playing: undefined });
+      else nowPlaying(sessionId, source.playing);
+    }
     const listed = new Map<string, "Building" | "Ready" | "Playing">();
     for (const clip of source.building) listed.set(clip.clipId, "Building");
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");

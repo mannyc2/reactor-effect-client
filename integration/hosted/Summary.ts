@@ -174,7 +174,26 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(
       `**Filler:** ${show.fills.length} clips asked for (${show.fills.map((fill) => `${fill.seconds} s at ${fill.runwaySeconds} s secured`).join(", ")}); ${show.starved.length === 0 ? "never starved" : `starved at ${show.starved.map((atMs) => seconds(atMs)).join(", ")}`}`,
     );
+    const longest = [...show.gaps]
+      .sort((a, b) => b.toMs - b.fromMs - (a.toMs - a.fromMs))
+      .slice(0, 3);
+    lines.push(
+      `**On air:** ${show.filler.filter((clip) => clip.phase === "Started").length} filler clips started and ${show.filler.filter((clip) => clip.phase === "Ended").length} ended; ${show.gaps.length} gaps between clips${longest.length === 0 ? "" : `, the longest ${longest.map((gap) => `${Math.round(gap.toMs - gap.fromMs)} ms from ${gap.ending} to ${gap.next} at ${seconds(gap.fromMs)}`).join(", ")}`}`,
+    );
+    lines.push(
+      `**State on air:** named ${show.playing.named} clips as they started, ${show.playing.later} read after a later start${show.playing.mismatched.length === 0 ? "" : `; otherwise ${show.playing.mismatched.map((reading) => `${reading.key} at ${seconds(reading.startedMs)} as ${reading.stateKey === undefined ? "none" : `${reading.stateKey} from ${reading.stateStartedMs === undefined ? "?" : seconds(reading.stateStartedMs)}`}`).join(", ")}`}`,
+    );
     lines.push(`**Sessions:** ${show.sessions.map((logged) => logged.event).join(" > ")}`);
+    lines.push(
+      `**Reconnects:** ${show.reconnects.map((reconnect) => `${reconnect.sessionId} at ${seconds(reconnect.reconnectingMs)}, ${reconnect.reconnectedMs === undefined ? "never back" : `back ${seconds(reconnect.reconnectedMs - reconnect.reconnectingMs)} later, measured ${reconnect.afterMillis ?? "?"} ms`}`).join("; ") || "none"}`,
+    );
+    lines.push(
+      `**Readers:** ${show.readerOverflows.length === 0 ? "never fell behind" : show.readerOverflows.map((overflow) => `${overflow.track} of ${overflow.sessionId} at ${seconds(overflow.atMs)} (${overflow.readerOverflows} so far)`).join(", ")}`,
+    );
+    if (show.failures.length > 0)
+      lines.push(
+        `**Failed:** ${show.failures.map((failure) => `${failure.key} ${failure.reason}${failure.sessionId === undefined ? "" : ` with ${failure.sessionId}`} at ${seconds(failure.atMs)}`).join(", ")}`,
+      );
     const recovery = show.recovery;
     if (recovery !== undefined)
       lines.push(
