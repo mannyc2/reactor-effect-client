@@ -12,6 +12,7 @@ import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
@@ -20,7 +21,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { TokenGrant, Tokens } from "./Coordinator.js";
 import * as H3 from "./H3.js";
-import type { DecodedMedia } from "./Media.js";
+import type { DecodedMedia, MediaPressure } from "./Media.js";
 import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
 import { ItemKey } from "./internal/playout/errors.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
@@ -149,11 +150,13 @@ const stateOf = (snapshot: H3.ProviderSnapshot): SourceState => {
  * Sends each generation's decoded track, following the session across
  * reconnects. A reader that falls behind its bound fails with `Overflow` and
  * misses the rest, so it reads again from the next frame: the picture goes on,
- * and the host counts the loss in `readerOverflows`.
+ * the host counts the loss in `readerOverflows`, and `overflowed` reports it
+ * with the pressure that follows.
  */
 const track = <A>(
   session: Session,
   read: (media: DecodedMedia) => Stream.Stream<A, ReactorError>,
+  overflowed: (pressure: MediaPressure) => Effect.Effect<void>,
 ) =>
   session.changes.pipe(
     Stream.filter((snapshot) => snapshot.status === "ready"),
@@ -161,11 +164,17 @@ const track = <A>(
     Stream.changes,
     Stream.switchMap(() => {
       const frames: Stream.Stream<A, ReactorError> = Stream.unwrap(
-        Effect.map(session.decoded, read),
-      ).pipe(
-        Stream.catchIf(
-          (error) => error.reason._tag === "Overflow",
-          () => frames,
+        Effect.map(session.decoded, (media) =>
+          read(media).pipe(
+            Stream.catchIf(
+              (error) => error.reason._tag === "Overflow",
+              () =>
+                Stream.concat(
+                  Stream.fromEffectDrain(Effect.flatMap(media.pressure, overflowed)),
+                  frames,
+                ),
+            ),
+          ),
         ),
       );
       // A retired generation's failure ends its frames until the next is ready; a defect stays one.
@@ -266,6 +275,10 @@ const fromSession = Effect.fnUntraced(function* (
           return [state];
       }
     });
+  // Overflow reports never hold up a reader: a slow consumer of them loses the oldest.
+  const overflows = yield* PubSub.sliding<SourceEvent>(64);
+  const overflowed = (track: "video" | "audio") => (pressure: MediaPressure) =>
+    Effect.asVoid(PubSub.publish(overflows, { _tag: "ReaderOverflow", track, pressure }));
   const events: Stream.Stream<SourceEvent, ReactorError> = Stream.unwrap(
     Effect.map(provider.observe({ capacity: 1024 }), (observation) =>
       Stream.concat(
@@ -281,7 +294,7 @@ const fromSession = Effect.fnUntraced(function* (
         ),
       ),
     ),
-  );
+  ).pipe(Stream.merge(Stream.fromPubSub(overflows), { haltStrategy: "left" }));
   const replied = (error: CommandFailure) => error.context.outcome === "replied";
   const replyTimeout = Duration.fromInputUnsafe(options.provider?.replyTimeout ?? "15 seconds");
   /**
@@ -349,8 +362,16 @@ const fromSession = Effect.fnUntraced(function* (
         );
       }),
     play: (clipId) => Effect.asVoid(provider.play(clipId)),
-    video: track(session, (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video)),
-    audio: track(session, (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio)),
+    video: track(
+      session,
+      (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video),
+      overflowed("video"),
+    ),
+    audio: track(
+      session,
+      (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio),
+      overflowed("audio"),
+    ),
     close: session.close,
   } satisfies Source;
 });

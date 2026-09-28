@@ -1607,6 +1607,15 @@ export const step: {
             },
           });
           break;
+        case "ReaderOverflow":
+          emit({
+            _tag: "ReaderOverflow",
+            sessionId: input.sessionId,
+            track: event.track,
+            at: now.wall,
+            pressure: event.pressure,
+          });
+          break;
       }
       break;
     }

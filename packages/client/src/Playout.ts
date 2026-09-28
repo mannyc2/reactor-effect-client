@@ -26,7 +26,7 @@ import type {
   SubmitError,
 } from "./internal/playout/errors.js";
 import * as Runtime from "./internal/playout/runtime.js";
-import type { AudioFrame, VideoFrame } from "./Media.js";
+import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
 import type { CommandFailure, ReactorError, ReactorFailure } from "./ReactorError.js";
 import type { CloseReport } from "./Session.js";
 
@@ -296,6 +296,18 @@ export type Event =
       readonly at: number;
       readonly seconds: number | undefined;
     }
+  /**
+   * A reader of the session's `track` fell behind its bound and missed frames;
+   * it reads on from the next one. `pressure` is the session's media pressure
+   * just after, its `readerOverflows` counting this one.
+   */
+  | {
+      readonly _tag: "ReaderOverflow";
+      readonly sessionId: string;
+      readonly track: "video" | "audio";
+      readonly at: number;
+      readonly pressure: MediaPressure;
+    }
   /** Nothing was left to play while the plan still wanted air. */
   | { readonly _tag: "Starved"; readonly at: number };
 
@@ -393,7 +405,13 @@ export type SourceEvent =
   /** The connection dropped and the source is reconnecting; a failed reconnect fails `events`. */
   | { readonly _tag: "Reconnecting" }
   /** The connection is back, this long after the drop was seen. */
-  | { readonly _tag: "Reconnected"; readonly afterMillis: number };
+  | { readonly _tag: "Reconnected"; readonly afterMillis: number }
+  /** A reader of `video` or `audio` fell behind its bound, missed frames and reads on. */
+  | {
+      readonly _tag: "ReaderOverflow";
+      readonly track: "video" | "audio";
+      readonly pressure: MediaPressure;
+    };
 
 /**
  * One session as the playout drives it: its evidence, its commands and its

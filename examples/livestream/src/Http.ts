@@ -112,6 +112,7 @@ const ChannelHandlers = HttpApiBuilder.group(
               return [{ _tag: "Starved" } satisfies ChannelEvent];
             case "Cue":
             case "Filler":
+            case "ReaderOverflow":
               return [];
           }
         }),

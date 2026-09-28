@@ -1323,4 +1323,42 @@ layer(hosted)("media", (it) => {
     }),
   );
 
+  it.effect("says which session's track a reader fell behind on", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start({
+        filler: {
+          runway: { floor: "10 seconds", target: "20 seconds" },
+          clip: ({ index }) => clip(`long ${String(index)}`, 15),
+        },
+      });
+      const frames = yield* Ref.make(0);
+      const stalled = yield* Deferred.make<void>();
+      // The first frame stalls the reader past the simulated host's 512-frame bound.
+      yield* playout.video.pipe(
+        Stream.runForEach(() =>
+          Ref.getAndUpdate(frames, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 0
+                ? Effect.andThen(Effect.sleep("40 seconds"), Deferred.succeed(stalled, undefined))
+                : Effect.void,
+            ),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(stalled);
+      const overflowed = yield* eventually(
+        Effect.map(events, (all) =>
+          all.flatMap((event) => (event._tag === "ReaderOverflow" ? [event] : [])),
+        ),
+        (all) => all.length > 0,
+      );
+      const opened = (yield* events).flatMap((event) =>
+        event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+      );
+      assert.strictEqual(overflowed[0]?.track, "video");
+      assert.strictEqual(overflowed[0]?.sessionId, opened[0]);
+      assert.isAbove(Number(overflowed[0]?.pressure.readerOverflows ?? 0n), 0);
+    }),
+  );
 });
