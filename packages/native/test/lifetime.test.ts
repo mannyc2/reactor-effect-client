@@ -6,10 +6,8 @@ import * as TestClock from "effect/testing/TestClock";
 import koffi from "koffi";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { describe, expect, test, vi } from "vitest";
-import { revealed } from "./support.js";
-import { checkNativeBridge } from "../src/_internal/bridge.js";
-import { NativePeer } from "../src/_internal/peer.js";
-import { compileFixture, until } from "./support.js";
+import type { NativePeer } from "../src/internal/peer.js";
+import { compileFixture, openPeer, revealed, until } from "./support.js";
 
 const compile = () => {
   const fixture = compileFixture();
@@ -34,10 +32,12 @@ describe("native foreign-call ownership", () => {
     const dispose = fixture.library.func("int fixture_lifetime_dispose(void)");
     const expected = 96;
     let peer: NativePeer | undefined;
+    let close: (() => Promise<void>) | undefined;
     begin(expected);
     try {
-      await checkNativeBridge(fixture.path);
-      peer = new NativePeer(fixture.path);
+      const opened = await openPeer(fixture.path);
+      peer = opened.peer;
+      close = opened.close;
       const ownedPeer = peer;
       const inputs = Array.from({ length: expected }, (_, index) =>
         Uint8Array.of(index, 255 - index),
@@ -89,12 +89,14 @@ describe("native foreign-call ownership", () => {
       expect(stat(4)).toBe(0); // Destroy with queued/active calls.
       expect(stat(5)).toBe(0); // Native access after the destruction marker.
       expect(stat(6)).toBe(0); // FFI inputs survived mutation of caller buffers.
+      await close();
       expect(dispose()).toBe(0);
       peer = undefined;
     } finally {
       release(2);
       if (peer !== undefined) {
         await Effect.runPromise(peer.shutdown);
+        await close?.();
         dispose();
       }
       rmSync(fixture.directory, { recursive: true, force: true });
@@ -114,11 +116,11 @@ describe("native foreign-call ownership", () => {
       unregister(callback);
     });
     try {
-      await checkNativeBridge(fixture.path);
+      const opened = await openPeer(fixture.path);
       const joins = stat(7);
-      const peer = new NativePeer(fixture.path);
-      await Effect.runPromise(peer.shutdown);
-      await Effect.runPromise(peer.shutdown);
+      await Effect.runPromise(opened.peer.shutdown);
+      await Effect.runPromise(opened.peer.shutdown);
+      await opened.close();
       expect(joinsAtUnregister).toEqual([joins + 1]);
     } finally {
       spy.mockRestore();
@@ -131,30 +133,29 @@ describe("native foreign-call ownership", () => {
     const fixture = compile();
     const fault = fixture.library.func("void fixture_media_fault(int enabled)");
     let peer: NativePeer | undefined;
+    let close: (() => Promise<void>) | undefined;
     try {
-      await checkNativeBridge(fixture.path);
-      peer = new NativePeer(fixture.path);
+      const opened = await openPeer(fixture.path);
+      peer = opened.peer;
+      close = opened.close;
       const ownedPeer = peer;
+      const media = opened.media;
       const errors: unknown[] = [];
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            // Finalizers have no typed error channel; a shutdown defect must still fail this test.
-            yield* Effect.addFinalizer(() => ownedPeer.shutdown.pipe(Effect.orDie));
             yield* ownedPeer.prepare([], tracks, (event) => {
               if (event.type === "error") errors.push(event.error);
             });
             const reader = yield* Effect.forkChild(
-              Effect.result(ownedPeer.rawMedia.video("main_video").pipe(Stream.runHead)),
+              Effect.result(media.video("main_video").pipe(Stream.runHead)),
             );
             yield* Effect.yieldNow;
             // The fixture's next frame names a track index that is not a video receiver.
             fault(1);
-            yield* ownedPeer.rawMedia.snapshot;
+            yield* media.pressure;
             const current = yield* Fiber.join(reader);
-            const future = yield* Effect.result(
-              ownedPeer.rawMedia.audio("main_audio").pipe(Stream.runHead),
-            );
+            const future = yield* Effect.result(media.audio("main_audio").pipe(Stream.runHead));
             expect(current).toMatchObject({
               _tag: "Failure",
               failure: { reason: { _tag: "Protocol" } },
@@ -170,6 +171,7 @@ describe("native foreign-call ownership", () => {
     } finally {
       fault(0);
       if (peer !== undefined) await Effect.runPromise(peer.shutdown);
+      await close?.();
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });
@@ -178,19 +180,19 @@ describe("native foreign-call ownership", () => {
     if (process.platform === "win32") return;
     const fixture = compile();
     let peer: NativePeer | undefined;
+    let close: (() => Promise<void>) | undefined;
     try {
-      await checkNativeBridge(fixture.path);
-      peer = new NativePeer(fixture.path);
+      const opened = await openPeer(fixture.path);
+      peer = opened.peer;
+      close = opened.close;
       const ownedPeer = peer;
+      const media = opened.media;
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            yield* Effect.addFinalizer(() => ownedPeer.shutdown.pipe(Effect.orDie));
             yield* ownedPeer.prepare([], tracks, () => {});
             for (const name of ["missing", "main_audio", "input_audio"]) {
-              const result = yield* Effect.result(
-                ownedPeer.rawMedia.video(name).pipe(Stream.runHead),
-              );
+              const result = yield* Effect.result(media.video(name).pipe(Stream.runHead));
               expect(result).toMatchObject({
                 _tag: "Failure",
                 failure: {
@@ -200,19 +202,18 @@ describe("native foreign-call ownership", () => {
               });
             }
             const reader = yield* Effect.forkChild(
-              ownedPeer.rawMedia.video("main_video").pipe(Stream.runCollect),
+              media.video("main_video").pipe(Stream.runCollect),
             );
             yield* Effect.yieldNow;
             yield* ownedPeer.shutdown;
             expect(yield* Fiber.join(reader)).toEqual([]);
-            expect(yield* ownedPeer.rawMedia.audio("main_audio").pipe(Stream.runCollect)).toEqual(
-              [],
-            );
+            expect(yield* media.audio("main_audio").pipe(Stream.runCollect)).toEqual([]);
           }),
         ),
       );
     } finally {
       if (peer !== undefined) await Effect.runPromise(peer.shutdown);
+      await close?.();
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });
@@ -226,9 +227,11 @@ describe("native foreign-call ownership", () => {
     const hold: (held: number) => void = fixture.library.func("void fixture_stats_hold(int held)");
     const failConnection: () => void = fixture.library.func("void fixture_connection_fail(void)");
     let peer: NativePeer | undefined;
+    let close: (() => Promise<void>) | undefined;
     try {
-      await checkNativeBridge(fixture.path);
-      peer = new NativePeer(fixture.path);
+      const opened = await openPeer(fixture.path);
+      peer = opened.peer;
+      close = opened.close;
       const ownedPeer = peer;
       const errors: ReactorError[] = [];
       const waited = await Effect.runPromise(
@@ -268,6 +271,7 @@ describe("native foreign-call ownership", () => {
       // The abandoned statistics call still owns its lease; shutdown drains it.
       hold(0);
       if (peer !== undefined) await Effect.runPromise(peer.shutdown);
+      await close?.();
       rmSync(fixture.directory, { recursive: true, force: true });
     }
   });

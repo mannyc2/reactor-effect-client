@@ -5,8 +5,8 @@ An independent Effect SDK for scoped Reactor sessions, H3 provider state, host m
 | Package                                        | Purpose                                                                                                   | Runs in                |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------- |
 | [`reactor-effect-client`](./packages/client)   | Canonical `Client`/`Session`, coordinator, H3 provider, orchestration, simulation, test fixtures, wire    | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks, media conversion, recording                  | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media generations, explicit file upload, staged native binaries | Node and Bun           |
+| [`reactor-effect-browser`](./packages/browser) | Built-in `RTCPeerConnection` host: generation-scoped tracks and local playback                            | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | Rust libwebrtc bridge over Koffi: decoded media, in process or in a child process, staged native binaries | Node and Bun           |
 
 One canonical `Session` owns each allocation or attachment, its commands, connection generations, and cleanup evidence. The host packages select transport capabilities beneath it. H3 consumes that same session and exposes provider state, and applications opt into orchestration and simulation when they need scheduling, sequence affinity, or renewal.
 
@@ -16,7 +16,7 @@ This is not an official Reactor SDK. Protocol material and native WebRTC depende
 
 - Every application installs `reactor-effect-client` and Effect `4.0.0-rc.117`. Its modules (`/h3`, `/orchestration`, `/simulation`, `/testing`, `/wire`) are subpaths of one package because they share exactly one dependency set and are portable; splitting them would add installs without isolating anything.
 - A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries the optional Koffi dependency, Node-only code and the staged shared libraries. Portable and browser consumers never download native binaries.
-- The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. They reach the internals they need through the published `reactor-effect-client/host` module; applications never need it.
+- The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. Each implements the client's `Peer` port (`reactor-effect-client/Peer`), which an application needs only to write a host of its own.
 
 ```sh
 npm install reactor-effect-client effect@4.0.0-rc.117
@@ -25,13 +25,15 @@ npm install reactor-effect-native @effect/platform-node@4.0.0-rc.117    # Node
 ```
 
 ```ts
-import { Effect, Layer } from "effect";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Reactor from "reactor-effect-client";
-import * as Native from "reactor-effect-native";
+import { Layer } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { NativePeer } from "reactor-effect-native";
 
-const clientLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, Native.layer())),
+const reactorLayer = Reactor.layer().pipe(
+  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(FetchHttpClient.layer),
 );
 ```
 

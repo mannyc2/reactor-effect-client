@@ -7,12 +7,19 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
+import type * as Duration from "effect/Duration";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { IceCandidate } from "reactor-effect-client/Coordinator";
-import * as Native from "../src/index.js";
+import type { DecodedMedia } from "reactor-effect-client/Media";
+import type { Peer } from "reactor-effect-client/Peer";
+import * as NativePeer from "../src/NativePeer.js";
+import * as Library from "../src/internal/library.js";
+import * as InProcess from "../src/internal/peer.js";
 
 export const libraryName =
   process.platform === "darwin"
@@ -67,14 +74,14 @@ export const until = async (
 
 /**
  * The canonical factory over the native peer, with its host layer built in the
- * caller's scope, as `Reactor.layer(configuration).pipe(Layer.provide(Native.layer(options)))`
+ * caller's scope, as `Reactor.layer(configuration).pipe(Layer.provide(NativePeer.layer(options)))`
  * does for an application.
  */
 export const nativeClient = (
   settings: Coordinator.Options & Reactor.Options = {},
-  options: Native.NativeOptions = {},
+  options: NativePeer.Options = {},
 ) =>
-  Layer.build(Layer.merge(Native.layer(options), Coordinator.layer(settings))).pipe(
+  Layer.build(Layer.merge(NativePeer.layer(options), Coordinator.layer(settings))).pipe(
     Effect.flatMap((services) => Reactor.make(settings).pipe(Effect.provide(services))),
   );
 
@@ -193,4 +200,48 @@ export const revealed = <E extends { readonly context: { readonly detail?: unkno
       detail: Redacted.isRedacted(detail) ? Redacted.value(detail) : detail,
     },
   };
+};
+
+/** A peer's decoded media: every native peer has it. */
+export const decoded = (peer: Peer): Omit<DecodedMedia, "generation" | "tracks" | "retired"> => {
+  if (peer.media._tag !== "Decoded") throw new Error("expected a peer with decoded media");
+  return peer.media;
+};
+
+/** A native peer on the library at `path`, loaded as the layer loads it. */
+export const nativePeer = (path: string = libraryPath, shutdownTimeout?: Duration.Duration) =>
+  Effect.flatMap(Library.load(path), (library) => InProcess.make(library, shutdownTimeout));
+
+/**
+ * A native peer on its own scope, for a test that drives it across awaits:
+ * `close` closes the scope, whose finalizer joins the peer if nothing else did.
+ */
+export const openPeer = async (path: string = libraryPath) => {
+  const scope = await Effect.runPromise(Scope.make());
+  const peer = await Effect.runPromise(nativePeer(path).pipe(Scope.provide(scope)));
+  return {
+    peer,
+    media: decoded(peer),
+    scope,
+    close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+  };
+};
+
+/**
+ * Each frame's bytes are the whole of an ArrayBuffer of their own: offset 0,
+ * no slack and no buffer shared with another frame, so a transfer moves only
+ * that frame.
+ */
+export const assertExactFrames = <A>(
+  frames: ReadonlyArray<A>,
+  bytes: (frame: A) => ArrayBufferView,
+): void => {
+  const seen = new Set<ArrayBufferLike>();
+  frames.forEach((frame, index) => {
+    const view = bytes(frame);
+    if (view.byteOffset !== 0 || view.buffer.byteLength !== view.byteLength)
+      throw new Error(`frame ${index} is not the whole of its buffer`);
+    if (seen.has(view.buffer)) throw new Error(`frame ${index} shares its buffer with another`);
+    seen.add(view.buffer);
+  });
 };

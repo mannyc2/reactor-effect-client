@@ -7,13 +7,13 @@ import type * as PlatformHttp from "effect/unstable/http/HttpClient";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { ReactorFailure } from "reactor-effect-client/ReactorError";
-import * as Browser from "reactor-effect-browser";
+import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import * as W from "reactor-effect-client/wire";
 import { structFromObject, objectFromStruct } from "reactor-effect-client/wire";
 
 /** The canonical factory over the browser peer, its host layer built in the caller's scope. */
 const browserClient = (settings: Coordinator.Options & Reactor.Options) =>
-  Layer.build(Layer.merge(Browser.layer, Coordinator.layer(settings))).pipe(
+  Layer.build(Layer.merge(BrowserPeer.layer, Coordinator.layer(settings))).pipe(
     Effect.flatMap((services) => Reactor.make(settings).pipe(Effect.provide(services))),
   );
 
@@ -377,7 +377,7 @@ const localBrowserPeerCheck = async (): Promise<object> => {
           const session = yield* factory.create({ model: "fixture/browser" });
           const ready = yield* session.ready;
           assert(ready.remote.ownership === "owned", "browser acquisition lost remote ownership");
-          const media = yield* Browser.media(session);
+          const media = yield* BrowserMedia.tracks(session);
           assert(
             media.generation === ready.generation && media.tracks.length === tracks.length,
             "browser media did not capture negotiated generation/tracks",
@@ -720,13 +720,13 @@ const post = async (path: string, body: unknown): Promise<void> => {
 const main = async (): Promise<void> => {
   let native: Awaited<ReturnType<typeof browserNativeCheck>> | undefined;
   try {
-    if (typeof Browser.media !== "function" || Browser.layer === undefined)
+    if (typeof BrowserMedia.tracks !== "function" || BrowserPeer.layer === undefined)
       throw new Error("bundled browser public entry did not load its host surface");
     const localPeer = await localBrowserPeerCheck();
     native = await browserNativeCheck();
     await post("/browser-report", {
       ok: true,
-      browserEntry: { media: "function", layer: "present" },
+      browserEntry: { tracks: "function", layer: "present" },
       localPeer,
       native: native.report,
     });

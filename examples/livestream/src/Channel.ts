@@ -3,7 +3,7 @@ import type { Crypto, Redacted } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { Coordinator, H3, H3Source, Playout, Reactor, ReactorTest } from "reactor-effect-client";
 import { AcquisitionFailure, ReactorError } from "reactor-effect-client/ReactorError";
-import * as Native from "reactor-effect-native";
+import { NativePeer } from "reactor-effect-native";
 import { Ledger } from "./Ledger.ts";
 import { Settings } from "./Settings.ts";
 
@@ -107,7 +107,7 @@ export const layer = Layer.unwrap(
         Layer.provideMerge(Coordinator.layer({ apiUrl })),
         // Each connection's native peer runs in a child process of its own, so a
         // crash in libwebrtc ends that connection, not the server (Node only).
-        Layer.provide(Native.Isolated.layer()),
+        Layer.provide(NativePeer.layerIsolated()),
         Layer.provide(FetchHttpClient.layer),
       );
     }

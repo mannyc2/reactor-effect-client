@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Native from "reactor-effect-native";
+import { NativePeer } from "reactor-effect-native";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -123,7 +123,7 @@ let videoFrames = 0,
   audioPackets = 0,
   maxAudioRms = 0;
 const videoHashes = new Set();
-/** @type {import("reactor-effect-native").VideoFrame | undefined} */
+/** @type {import("reactor-effect-client/Media").VideoFrame | undefined} */
 let firstVideo;
 /** @type {string | undefined} */
 let firstVideoHash;
@@ -388,7 +388,7 @@ try {
     Effect.scoped(
       Effect.gen(function* () {
         const services = yield* Layer.build(
-          Layer.merge(Native.layer(), Coordinator.layer({ apiUrl: url })),
+          Layer.merge(NativePeer.layer(), Coordinator.layer({ apiUrl: url })),
         );
         const factory = yield* Reactor.make({
           connectTimeout: "45 seconds",
