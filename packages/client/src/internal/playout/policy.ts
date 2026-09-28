@@ -1471,7 +1471,10 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result._tag === "Failed" && result.cause.isRetryable)
+        } else if (item.withdraw !== undefined)
+          // Refused with no clip made: the withdrawal waiting on it has nothing left to remove.
+          settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
+        else if (result._tag === "Failed" && result.cause.isRetryable)
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,

@@ -542,6 +542,27 @@ describe("PlayoutPolicy", () => {
     assert.strictEqual(status?._tag === "Failed" ? status.reason._tag : status?._tag, "Command");
   });
 
+  for (const refusal of ["InvalidState", "Disconnected"] as const)
+    it(`drops an item withdrawn while its enqueue was in flight once that fails unsent (${refusal})`, () => {
+      const policy = drive();
+      policy.tick(0);
+      policy.open();
+      policy.submit(spec("a"));
+      policy.edit([{ _tag: "Withdraw", key: key("a") }]);
+      policy.reply({
+        _tag: "Failed",
+        cause: CommandFailure.from(ReactorError.fromCode(refusal, "the provider refused it"), {
+          operation: "enqueue",
+          outcome: "not-submitted",
+        }),
+      });
+      assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted", "Dropped"]);
+      assert.deepStrictEqual(
+        policy.actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : [])),
+        ["withdrawn"],
+      );
+    });
+
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {
     const { actions } = run([
       ...opened(),
