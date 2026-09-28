@@ -25,7 +25,6 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import { recorder } from "reactor-effect-client/Media";
 import type { MediaPressure } from "reactor-effect-client/Media";
-import type { PeerEvent } from "reactor-effect-client/Peer";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { expect } from "vitest";
 import { load } from "../src/internal/addon.js";
@@ -682,53 +681,43 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
     );
 
     it.effect(
-      "reports a real ICE failure as IceFailed with its candidate-pair detail through the events pump",
+      "fails a canonical session whose ICE fails as IceFailed, classified from its statistics",
       () =>
         Effect.gen(function* () {
           const far = yield* FarPeer;
           const id = "ice-failure";
-          const scope = yield* Scope.make();
-          const receiver = { id, scope, closed: false };
-          yield* Effect.addFinalizer(() => (receiver.closed ? Effect.void : close(receiver)));
-          const peer = yield* nativePeer().pipe(Scope.provide(scope));
-          const errors: Array<ReactorError> = [];
-          const states: Array<string> = [];
-          const checking = yield* Effect.gen(function* () {
-            // The bridge's own candidates never reach the far peer, so it cannot
-            // reach the bridge either and teach it a peer-reflexive candidate.
-            const prepared = yield* peer.prepare([], tracks, (event: PeerEvent) => {
-              if (event.type === "state") states.push(event.state);
-              else if (event.type === "error") errors.push(event.error);
-            });
-            const answer = yield* far.answer(id, prepared.sdp);
-            yield* peer.answer(unreachableAnswer(answer, unreachable()));
-            // While ICE checks the pairs, they are there to see.
-            yield* Effect.sleep("1 second");
-            return (yield* peer.stats).map(record);
-          }).pipe(Scope.provide(scope));
-          expect(checking.some((entry) => entry.type === "candidate-pair")).toBe(true);
-          expect(
-            checking.filter(
-              (entry) => entry.type === "candidate-pair" && entry.state === "succeeded",
-            ),
-          ).toEqual([]);
-          yield* eventually({
-            condition: () => errors.length > 0,
-            message: "ICE never failed",
-            timeout: "45 seconds",
+          yield* Effect.addFinalizer(() => far.close(id));
+          // The bridge's own candidates never reach the far peer, so it cannot
+          // reach the bridge either and teach it a peer-reflexive candidate.
+          const relay = yield* coordinator({
+            sessionId: id,
+            tracks,
+            answer: (sdp) =>
+              Effect.map(far.answer(id, sdp), (answer) => unreachableAnswer(answer, unreachable())),
           });
-          yield* Console.log(
-            `ice-failure ${runtime} states=${states.join(",")} reason=${errors[0]?.reason._tag ?? ""}`,
-          );
-          expect(states).not.toContain("connected");
+          const failure = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const factory = yield* nativeClient({
+                settings: { apiUrl: "https://coordinator.far-peer" },
+              });
+              return yield* Effect.flip(
+                factory.create({
+                  model: "far-peer",
+                  tokens: Coordinator.fixedTokens({
+                    jwt: Redacted.make("far-peer-token"),
+                    expiresAt: Number.MAX_SAFE_INTEGER,
+                    maxSessionSeconds: undefined,
+                  }),
+                }),
+              );
+            }),
+          ).pipe(Effect.provideService(HttpClient.HttpClient, relay.client));
+          yield* Console.log(`ice-failure ${runtime} reason=${failure.reason._tag}`);
           // libwebrtc reports failure once it has pruned the last timed-out pair,
           // so the pairs the classification reads may already be gone.
-          expect(errors).toHaveLength(1);
-          expect(errors[0]).toMatchObject({
-            reason: { _tag: "IceFailed" },
-            message: "native peer found no working ICE candidate pair",
+          expect(failure).toMatchObject({
+            reason: { _tag: "IceFailed", message: "peer found no working ICE candidate pair" },
           });
-          yield* close(receiver);
         }),
       60_000,
     );

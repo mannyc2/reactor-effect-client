@@ -3,10 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
-import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { PeerEvent } from "reactor-effect-client/Peer";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import { expect } from "vitest";
 import { decoded, eventually, fakeAddon, nativePeer } from "./support.js";
 
@@ -69,45 +68,25 @@ layer(NodeServices.layer, { excludeTestServices: true })(
         assert.deepStrictEqual(yield* media.audio("main_audio").pipe(Stream.runCollect), []);
       }),
     );
+
+    it.effect(
+      "reports a failed connection as its state and stays open for the session to read",
+      () =>
+        Effect.gen(function* () {
+          const addon = yield* fakeAddon;
+          const peer = yield* nativePeer({ addon: addon.module });
+          const events: Array<PeerEvent> = [];
+          yield* peer.prepare([], tracks, (event) => {
+            events.push(event);
+          });
+          const [made] = addon.module.controls.peers;
+          assert(made !== undefined, "the peer opened an addon peer");
+          made.fail();
+          yield* eventually({ condition: () => events.length > 0, message: "no event" });
+          assert.deepStrictEqual(events, [{ type: "state", state: "failed" }]);
+          assert.deepStrictEqual(yield* addon.calls, ["prepare"]);
+          assert.deepStrictEqual(yield* peer.stats, []);
+        }),
+    );
   },
 );
-
-layer(NodeServices.layer)("native peer on the fiber's Clock", (it) => {
-  it.effect(
-    "classifies a failed connection on the fiber's Clock when statistics never return",
-    () =>
-      Effect.gen(function* () {
-        const addon = yield* fakeAddon;
-        const peer = yield* nativePeer({ addon: addon.module });
-        const errors: Array<ReactorError> = [];
-        yield* peer.prepare([], tracks, (event) => {
-          if (event.type === "error") errors.push(event.error);
-        });
-        yield* addon.hold("stats", true);
-        // Release the held read before the scope's shutdown joins it.
-        yield* Effect.addFinalizer(() => addon.hold("stats", false));
-        addon.module.controls.peers[0]?.fail();
-        yield* TestClock.withLive(addon.reached("stats"));
-        // The call never answers, and no host timer ends the wait.
-        yield* TestClock.withLive(Effect.sleep("50 millis"));
-        assert.deepStrictEqual(errors, []);
-        yield* TestClock.adjust("2 seconds");
-        yield* TestClock.withLive(
-          eventually({
-            condition: () => errors.length > 0,
-            message: "no classification",
-            timeout: "1 second",
-          }),
-        );
-        assert.strictEqual(errors.length, 1);
-        const [error] = errors;
-        assert(error !== undefined, "the failed connection was reported");
-        assert.strictEqual(error.reason._tag, "Disconnected");
-        assert.strictEqual(error.message, "peer state failed");
-        const detail = error.context.detail && Redacted.value(error.context.detail);
-        assert(ReactorError.is(detail), "the failure carries why classification ended");
-        assert.strictEqual(detail.reason._tag, "Timeout");
-        assert.strictEqual(detail.message, "native failure classification timed out");
-      }),
-  );
-});
