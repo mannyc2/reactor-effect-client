@@ -5,11 +5,12 @@
  */
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 import * as Latch from "effect/Latch";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import { ReactorError } from "reactor-effect-client/ReactorError";
-import { retain, usable } from "./addon.js";
 import type { Addon } from "./addon.js";
 import type * as Binding from "./binding.js";
 import { nativeFailure } from "./peer.js";
@@ -45,20 +46,21 @@ export const open = (addon: Addon): Effect.Effect<Opened, ReactorError> =>
           detail: cause,
         }),
     });
-    let closed = false;
+    const closed = yield* Ref.make(false);
     /**
      * A queue's items as its reader pulls them. Each pull first yields, so
      * readers run between frames and a backlog released by a stalled event
      * loop reaches them at their pace. An empty queue waits on its latch,
-     * closed before the take so a wake between the two is never lost.
+     * closed before the close check and the take, so neither a wake nor the
+     * close between them is lost.
      */
     const drain = <A>(latch: Latch.Latch, take: () => A | null): Stream.Stream<A> =>
       Stream.fromEffectRepeat(
         Effect.gen(function* () {
           yield* Effect.yieldNow;
           for (;;) {
-            if (closed) return yield* Cause.done();
             yield* latch.close;
+            if (yield* Ref.get(closed)) return yield* Cause.done();
             const item = take();
             if (item !== null) return item;
             yield* latch.await;
@@ -70,26 +72,25 @@ export const open = (addon: Addon): Effect.Effect<Opened, ReactorError> =>
       events: drain(events, () => peer.takeEvent()),
       video: drain(video, () => peer.takeVideo()),
       audio: drain(audio, () => peer.takeAudio()),
-      close: Effect.sync(() => {
-        closed = true;
-        peer.close();
-        for (const latch of latches) Latch.openUnsafe(latch);
-      }),
+      close: Ref.set(closed, true).pipe(
+        Effect.andThen(Effect.sync(() => peer.close())),
+        Effect.andThen(Effect.forEach(latches, (latch) => latch.open, { discard: true })),
+      ),
     };
   });
 
-/**
- * A call's reply, or the failure it carries. A call the addon threw or
- * rejected before answering is an unclassified native failure.
- */
+/** A call the addon threw or rejected before answering is an unclassified native failure. */
+const unanswered = (cause: unknown): Binding.Failure => ({
+  class: "Native",
+  message: String(cause),
+});
+
+/** A call's reply, or the failure it carries. */
 export const settle = (
   call: () => Promise<Binding.Reply>,
 ): Effect.Effect<Binding.Reply, Binding.Failure> =>
   Effect.gen(function* () {
-    const reply = yield* Effect.tryPromise({
-      try: call,
-      catch: (cause): Binding.Failure => ({ class: "Native", message: String(cause) }),
-    });
+    const reply = yield* Effect.tryPromise({ try: call, catch: unanswered });
     if (reply.failure !== undefined) return yield* Effect.fail(reply.failure);
     return reply;
   });
@@ -103,61 +104,79 @@ export const request = (session: {
   tracks: session.tracks.map((track) => ({ ...track })),
 });
 
-export const local = (addon: Addon): Effect.Effect<NativeHandle, ReactorError> =>
-  Effect.gen(function* () {
-    yield* usable(addon);
-    const opened = yield* open(addon);
-    const { peer } = opened;
-    const call = (operation: string, run: () => Promise<Binding.Reply>) =>
-      Effect.mapError(settle(run), nativeFailure(operation));
-    // The join runs once, whether or not anyone still waits for it.
-    let joining: Promise<Binding.Reply> | undefined;
-    const join = () => (joining ??= peer.shutdown());
-    return {
-      prepare: (servers, tracks) =>
-        call("prepare native WebRTC", () => {
-          const prepare = request({ servers, tracks });
-          return peer.prepare(prepare.servers, prepare.tracks);
-        }).pipe(
-          Effect.flatMap(({ prepared }) =>
-            prepared === undefined
-              ? Effect.fail(
-                  ReactorError.fromCode("Protocol", "native prepare answered without an offer"),
-                )
-              : Effect.succeed(prepared),
-          ),
+/**
+ * Owner joins that outlived their deadline, each held until it completes. A
+ * factory's peers share one libwebrtc factory, which such a join may have
+ * wedged, so the factory makes no peer while one is held. Closing the
+ * factory's scope stops waiting for them.
+ */
+export type Joins = FiberSet.FiberSet;
+
+/** Refuse before a session is allocated for a peer that could not work. */
+export const usable = (joins: Joins): Effect.Effect<void, ReactorError> =>
+  Effect.flatMap(FiberSet.size(joins), (held) =>
+    held === 0
+      ? Effect.void
+      : ReactorError.fromCode(
+          "Native",
+          "native WebRTC runtime is degraded: an earlier peer's owner join exceeded its shutdown deadline and is still retained",
+          { outcome: "not-submitted" },
         ),
-      answer: (sdp) => Effect.asVoid(call("apply native SDP answer", () => peer.answer(sdp))),
-      direction: (name, active) =>
-        Effect.asVoid(call("set native transceiver direction", () => peer.direction(name, active))),
-      maxBitrate: (name, bitsPerSecond) =>
-        Effect.asVoid(
-          call("set native sender bitrate", () => peer.maxBitrate(name, bitsPerSecond)),
+  );
+
+export const local = Effect.fnUntraced(function* (
+  addon: Addon,
+  joins: Joins,
+): Effect.fn.Return<NativeHandle, ReactorError> {
+  yield* usable(joins);
+  const opened = yield* open(addon);
+  const { peer } = opened;
+  const call = (operation: string, run: () => Promise<Binding.Reply>) =>
+    Effect.mapError(settle(run), nativeFailure(operation));
+  // The addon's shutdown joins the owner once: asked again, it answers when
+  // that join completes.
+  const join = settle(() => peer.shutdown());
+  return {
+    prepare: (servers, tracks) =>
+      call("prepare native WebRTC", () => {
+        const prepare = request({ servers, tracks });
+        return peer.prepare(prepare.servers, prepare.tracks);
+      }).pipe(
+        Effect.flatMap(({ prepared }) =>
+          prepared === undefined
+            ? Effect.fail(
+                ReactorError.fromCode("Protocol", "native prepare answered without an offer"),
+              )
+            : Effect.succeed(prepared),
         ),
-      send: (channel, bytes) =>
-        Effect.asVoid(call(`send native ${channel}`, () => peer.send(channel, bytes))),
-      stats: Effect.map(
-        call("native WebRTC statistics", () => peer.stats()),
-        ({ stats }) => stats ?? [],
       ),
-      pressure: Effect.sync(() => peer.pressure()),
-      events: opened.events,
-      video: opened.video,
-      audio: opened.audio,
-      close: opened.close,
-      shutdown: Effect.asVoid(call("shutdown native WebRTC", join)),
-      // The join keeps the peer until it completes, and no later peer is
-      // made on this addon until then.
-      abandon: Effect.gen(function* () {
-        const release = retain(addon)(peer);
-        yield* Effect.forkDetach(
-          settle(join).pipe(Effect.ignore, Effect.ensuring(Effect.sync(release))),
-        );
-        return ReactorError.fromCode(
+    answer: (sdp) => Effect.asVoid(call("apply native SDP answer", () => peer.answer(sdp))),
+    direction: (name, active) =>
+      Effect.asVoid(call("set native transceiver direction", () => peer.direction(name, active))),
+    maxBitrate: (name, bitsPerSecond) =>
+      Effect.asVoid(call("set native sender bitrate", () => peer.maxBitrate(name, bitsPerSecond))),
+    send: (channel, bytes) =>
+      Effect.asVoid(call(`send native ${channel}`, () => peer.send(channel, bytes))),
+    stats: Effect.map(
+      call("native WebRTC statistics", () => peer.stats()),
+      ({ stats }) => stats ?? [],
+    ),
+    pressure: Effect.sync(() => peer.pressure()),
+    events: opened.events,
+    video: opened.video,
+    audio: opened.audio,
+    close: opened.close,
+    shutdown: join.pipe(Effect.mapError(nativeFailure("shutdown native WebRTC")), Effect.asVoid),
+    // The join keeps the peer until it completes, and the factory makes no
+    // later peer until then.
+    abandon: FiberSet.run(joins, join).pipe(
+      Effect.as(
+        ReactorError.fromCode(
           "Shutdown",
           "native owner join exceeded its deadline; handle retained",
           { operation: "shutdown native WebRTC" },
-        );
-      }),
-    };
-  });
+        ),
+      ),
+    ),
+  };
+});

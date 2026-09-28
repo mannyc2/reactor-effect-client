@@ -35,7 +35,7 @@ const handlers = IsolatedRpcs.toLayer(
       Effect.flatMap(current, ({ peer }) => settle(() => run(peer)));
     /** One queue, taken only as the parent pulls: a stalled parent leaves the addon's bounds to drop. */
     const queue = <A>(select: (peer: Opened) => Stream.Stream<A>) =>
-      current.pipe(Effect.orDie, Effect.map(select), Stream.unwrap);
+      current.pipe(Effect.map(select), Stream.unwrap);
     return {
       Open: ({ addon }) =>
         Ref.get(opened).pipe(

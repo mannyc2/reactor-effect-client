@@ -4,21 +4,32 @@
  * IPC channel. The child relays the addon; the parent runs the same peer over
  * it that runs in process.
  *
- * The worker protocols encode every message with Schema's JSON codec. What the
- * addon produces crosses as a declaration that structured clone passes on as
- * it is, typed arrays and bigints included; the parent's peer checks what it
- * uses, as it does in process.
+ * The worker protocols encode every message with Schema's JSON codec, and
+ * every value the addon produces crosses as its Schema. Typed arrays pass
+ * through that codec as they are, for structured clone to carry; bigints
+ * cross as decimal strings. Encoding and decoding a 1344x768 BGRA frame
+ * through its Schema took about 1.6 us on Node and 1 us on Bun, against
+ * 0.25 us for passing it on unchecked: nothing beside the copy the IPC hop
+ * already makes of its 4 MB, so frames are checked like everything else.
  */
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { IceServer, Track } from "reactor-effect-client/Coordinator";
-import { Channel } from "reactor-effect-client/Peer";
+import { Channel, Prepared } from "reactor-effect-client/Peer";
 import type * as Binding from "../binding.js";
 
-const cloned = <T>(expected: string, is: (u: unknown) => boolean = Predicate.isObject) =>
-  Schema.declare((u): u is T => is(u), { expected, toCodecJson: () => undefined });
+/** Bytes, carried as the typed array they are. */
+const Bytes = Schema.instanceOf(globalThis.Uint8Array<ArrayBufferLike>, {
+  expected: "Uint8Array",
+  toCodecJson: () => undefined,
+});
+
+/** PCM samples, carried as the typed array they are. */
+const Samples = Schema.instanceOf(globalThis.Int16Array<ArrayBufferLike>, {
+  expected: "Int16Array",
+  toCodecJson: () => undefined,
+});
 
 /** The addon's failure: its class and its private diagnostic text. */
 export const Failure = Schema.Struct({
@@ -40,6 +51,69 @@ export const OpenFailure = Schema.Struct({
   message: Schema.String,
 });
 
+/** An RTCStatsReport-shaped array; counters beyond double precision are decimal strings. */
+const Stats = Schema.Array(Schema.Record(Schema.String, Schema.Unknown));
+
+/** What each of the addon's queues dropped, delivered and still holds. */
+const Pressure = Schema.Struct({
+  closed: Schema.Boolean,
+  pendingRequests: Schema.Int,
+  queuedControl: Schema.Int,
+  queuedVideo: Schema.Int,
+  queuedAudio: Schema.Int,
+  queuedBytes: Schema.Int,
+  droppedVideo: Schema.BigInt,
+  droppedAudio: Schema.BigInt,
+  deliveredVideo: Schema.BigInt,
+  deliveredAudio: Schema.BigInt,
+});
+
+/** A transport event, as the addon queues it. */
+const PeerEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("state"), state: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("ice"),
+    candidate: Schema.optionalKey(
+      Schema.Struct({
+        candidate: Schema.String,
+        sdpMid: Schema.optionalKey(Schema.String),
+        sdpMLineIndex: Schema.optionalKey(Schema.Int),
+      }),
+    ),
+  }),
+  Schema.Struct({ type: Schema.Literal("channel"), channel: Channel, open: Schema.Boolean }),
+  Schema.Struct({ type: Schema.Literal("message"), channel: Channel, bytes: Bytes }),
+  Schema.Struct({ type: Schema.Literal("track"), name: Schema.String, mid: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("decoded"),
+    kind: Schema.Literals(["video", "audio"]),
+    name: Schema.String,
+    mid: Schema.String,
+  }),
+  Schema.Struct({ type: Schema.Literal("error"), failure: Failure }),
+]);
+
+/** One decoded BGRA frame, named by its track's index in the prepare request. */
+const Video = Schema.Struct({
+  track: Schema.Int,
+  width: Schema.Int,
+  height: Schema.Int,
+  frameId: Schema.BigInt,
+  timestampUs: Schema.BigInt,
+  sequence: Schema.BigInt,
+  data: Bytes,
+  metadata: Bytes,
+});
+
+/** One block of interleaved PCM, named as a frame is. */
+const Audio = Schema.Struct({
+  track: Schema.Int,
+  sampleRate: Schema.Int,
+  channels: Schema.Int,
+  sequence: Schema.BigInt,
+  samples: Samples,
+});
+
 /**
  * One child per peer. `Open` loads the addon and creates the child's peer;
  * `Shutdown` closes and joins it. Every other RPC is one addon call, and each
@@ -52,7 +126,7 @@ export class IsolatedRpcs extends RpcGroup.make(
   }),
   Rpc.make("Prepare", {
     payload: { servers: Schema.Array(IceServer), tracks: Schema.Array(Track) },
-    success: cloned<Binding.Prepared>("Prepared"),
+    success: Prepared,
     error: Failure,
   }),
   Rpc.make("Answer", { payload: { sdp: Schema.String }, error: Failure }),
@@ -64,20 +138,11 @@ export class IsolatedRpcs extends RpcGroup.make(
     payload: { name: Schema.String, bitsPerSecond: Schema.Int },
     error: Failure,
   }),
-  Rpc.make("Send", {
-    payload: {
-      channel: Channel,
-      bytes: cloned<Uint8Array>("Uint8Array", (u) => u instanceof Uint8Array),
-    },
-    error: Failure,
-  }),
-  Rpc.make("Stats", {
-    success: cloned<ReadonlyArray<Record<string, unknown>>>("statistics", Array.isArray),
-    error: Failure,
-  }),
-  Rpc.make("Pressure", { success: cloned<Binding.Pressure>("Pressure"), error: Failure }),
-  Rpc.make("Events", { success: cloned<Binding.PeerEvent>("PeerEvent"), stream: true }),
-  Rpc.make("Video", { success: cloned<Binding.Video>("Video"), stream: true }),
-  Rpc.make("Audio", { success: cloned<Binding.Audio>("Audio"), stream: true }),
+  Rpc.make("Send", { payload: { channel: Channel, bytes: Bytes }, error: Failure }),
+  Rpc.make("Stats", { success: Stats, error: Failure }),
+  Rpc.make("Pressure", { success: Pressure, error: Failure }),
+  Rpc.make("Events", { success: PeerEvent, error: Failure, stream: true }),
+  Rpc.make("Video", { success: Video, error: Failure, stream: true }),
+  Rpc.make("Audio", { success: Audio, error: Failure, stream: true }),
   Rpc.make("Shutdown", { error: Failure }),
 ) {}

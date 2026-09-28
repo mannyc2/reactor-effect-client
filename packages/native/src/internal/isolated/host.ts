@@ -5,10 +5,9 @@
  * keeps credentials, allocation, correlation and termination; a child that
  * crashes takes only its own connection generation with it.
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- NodeWorker's spawner takes a forked ChildProcess
-import { fork } from "node:child_process";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- NodeWorker's spawner takes a forked ChildProcess
-import type { ChildProcess } from "node:child_process";
+// NodeWorker's spawner takes the ChildProcess Node's fork returns, with its IPC channel.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as NodeWorker from "@effect/platform-node/NodeWorker";
 import * as Cause from "effect/Cause";
@@ -282,7 +281,7 @@ export const remote = Effect.fnUntraced(function* (
   const queue = <A>(
     open: (
       rpc: Client,
-    ) => Effect.Effect<Queue.Dequeue<A, RpcClientError | Cause.Done>, never, Scope.Scope>,
+    ) => Effect.Effect<Queue.Dequeue<A, CallError | Cause.Done>, never, Scope.Scope>,
   ): Stream.Stream<A, ReactorError> =>
     Deferred.await(client).pipe(
       Effect.flatMap(open),

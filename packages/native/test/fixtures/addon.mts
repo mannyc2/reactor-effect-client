@@ -4,13 +4,14 @@
  * wakes the host on a later turn of the event loop and never waits for it.
  *
  * Files in its directory steer it from any process: while `hold-stats` or
- * `hold-shutdown` exists, that call does not answer, and every call it
- * receives is appended to `calls.log`, so a test sees what reached a child.
+ * `hold-shutdown` exists, that call does not answer. Every call it receives,
+ * each call's answer and each item taken from a queue is appended to
+ * `calls.log`, so a test sees what reached a child and what it sent back.
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- another process steers the fake through files
+// A stand-in for a Node-API module has no Effect services: it reads and appends the files
+// another process steers it with synchronously, as the addon's own calls return.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { appendFileSync, existsSync } from "node:fs";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- another process steers the fake through files
-import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import type * as Binding from "../../src/internal/binding.js";
@@ -23,16 +24,19 @@ const mapping: Array<Binding.Mapping> = [
 
 /** The addon's module, steered by the files in `directory`. */
 export const make = (directory: string) => {
-  const log = (call: string) => appendFileSync(join(directory, "calls.log"), `${call}\n`);
+  const log = (call: string) => appendFileSync(`${directory}/calls.log`, `${call}\n`);
   /** `value`, once no `hold-<call>` file is in the directory: a promise, as the addon answers. */
   const release = <A,>(call: string, value: A): Promise<A> =>
     Effect.runPromise(
       Effect.suspend(() =>
-        existsSync(join(directory, `hold-${call}`)) ? Effect.fail("held") : Effect.succeed(value),
+        existsSync(`${directory}/hold-${call}`) ? Effect.fail("held") : Effect.succeed(value),
       ).pipe(Effect.retry({ schedule: Schedule.spaced("5 millis") })),
     );
   /** In-process controls: the peers made, and a fault to inject. */
-  const controls = { peers: [] as Array<NativePeer>, fault: false };
+  const controls: { readonly peers: Array<NativePeer>; fault: boolean } = {
+    peers: [],
+    fault: false,
+  };
 
   class NativePeer implements Binding.NativePeer {
     closed = false;
@@ -59,7 +63,7 @@ export const make = (directory: string) => {
     ): Promise<Binding.Reply> {
       log(name);
       if (this.closed) return Promise.resolve({ failure: { class: "Closed", message: "closed" } });
-      const call = Promise.resolve(answer());
+      const call = Promise.resolve(answer()).finally(() => log(`${name} answered`));
       this.calls.add(call);
       return call.finally(() => this.calls.delete(call));
     }
@@ -105,16 +109,23 @@ export const make = (directory: string) => {
       this.wake(1);
     }
 
+    take<A>(queue: string, items: Array<A>): A | null {
+      const item = this.closed ? undefined : items.shift();
+      if (item === undefined) return null;
+      log(`take ${queue}`);
+      return item;
+    }
+
     takeEvent(): Binding.PeerEvent | null {
-      return this.closed ? null : (this.events.shift() ?? null);
+      return this.take("event", this.events);
     }
 
     takeVideo(): Binding.Video | null {
-      return this.closed ? null : (this.video.shift() ?? null);
+      return this.take("video", this.video);
     }
 
     takeAudio(): Binding.Audio | null {
-      return this.closed ? null : (this.audio.shift() ?? null);
+      return this.take("audio", this.audio);
     }
 
     /**
