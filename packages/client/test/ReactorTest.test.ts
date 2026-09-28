@@ -1,10 +1,9 @@
-/** The simulated Reactor behind the real client, H3 provider and orchestration. */
+/** The simulated Reactor behind the real client, the H3 provider and a playout. */
 import { assert, layer } from "@effect/vitest";
 import { Effect, Fiber, Ref, Stream } from "effect";
 import * as H3 from "../src/H3.js";
-import { ReactorTest } from "../src/index.js";
+import { H3Source, Playout, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
-import * as Orchestration from "../src/orchestration/index.js";
 import { connect, environment, mint } from "./fixtures/Simulated.js";
 
 const frameMs = 1000 / 24;
@@ -109,35 +108,38 @@ layer(
   );
 });
 
-layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
-  "orchestration",
-  (it) => {
-    it.effect("an orchestration opened with openH3 plays and terminates on the simulator", () =>
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("playout", (it) => {
+  it.effect(
+    "a playout opened with H3Source plays on the simulator and terminates what it opened",
+    () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
-        const handle = yield* Orchestration.make({ open: Orchestration.openH3({ mint }) });
-        const video = yield* handle.media.video.pipe(
-          Stream.take(124),
-          Stream.runCollect,
-          Effect.forkScoped,
-        );
-        yield* handle.media.audio.pipe(Stream.runDrain, Effect.forkScoped);
-        yield* handle.engine.setAutoplay(true);
-        yield* handle.engine.enqueue(
-          Orchestration.ClipRequest.make({
-            prompt: "one",
-            references: [],
-            durationSeconds: 5,
-            metadata: {},
+        const { cleanup, frames } = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const playout = yield* Playout.make({
+              open: H3Source.open({ mint }),
+              lanes: [{ name: "line" }],
+            });
+            const video = yield* playout.video.pipe(
+              Stream.take(124),
+              Stream.runCollect,
+              Effect.forkScoped,
+            );
+            const item = yield* playout.submit({
+              key: Playout.ItemKey.make("one"),
+              lane: "line",
+              request: { prompt: "one", seconds: 5 },
+            });
+            yield* item.outcome;
+            return { cleanup: playout.cleanup, frames: yield* Fiber.join(video) };
           }),
         );
-        assert.strictEqual((yield* Fiber.join(video)).length, 124);
-        const report = yield* handle.close;
+        assert.strictEqual(frames.length, 124);
+        const report = yield* cleanup;
         assert.deepStrictEqual(
-          report.sessions.map((cleanup) => cleanup.lease.remote.confirmed),
+          report.retained.map((entry) => entry.remote.confirmed),
           [true],
         );
       }),
-    );
-  },
-);
+  );
+});

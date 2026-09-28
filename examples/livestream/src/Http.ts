@@ -1,132 +1,100 @@
-import { Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
+import { Effect, FileSystem, Layer, Path, Stream } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder, HttpApiScalar } from "effect/unstable/httpapi";
-import * as Orchestration from "reactor-effect-client/orchestration";
+import { Playout } from "reactor-effect-client";
 import { Api, ChannelStatus, OffAir } from "./Api.ts";
 import type { ChannelEvent, ClipSummary } from "./Api.ts";
 import { Broadcast } from "./Broadcast.ts";
 import { Programme } from "./Programme.ts";
 import { Settings } from "./Settings.ts";
 
-/** A clip as viewers see it: its identity and, when this server authored it, its prompt. */
-const summary = (record: Orchestration.ClipRecord): ClipSummary => ({
-  clipId: record.clipId,
-  prompt: record.request?.prompt ?? null,
-});
+/** As-run statuses as the page shows them; anything that did not air reads as failed. */
+const phases: Record<
+  Playout.AsRunStatus["_tag"],
+  Extract<ChannelEvent, { _tag: "Clip" }>["phase"]
+> = {
+  Accepted: "Queued",
+  Building: "Building",
+  Ready: "Ready",
+  Started: "Started",
+  Ended: "Ended",
+  Dropped: "Failed",
+  Failed: "Failed",
+  Unobserved: "Failed",
+  Unknown: "Failed",
+};
 
-/** The clips that have not started, across every source the orchestration holds. */
-const upcoming = (state: Orchestration.EngineState): readonly Orchestration.ClipRecord[] => [
-  ...Option.match(state.building, { onNone: () => [], onSome: (building) => [building.record] }),
-  ...state.queued,
-  ...state.ready,
-];
-
-const playing = (state: Orchestration.EngineState): Option.Option<Orchestration.ClipRecord> =>
-  Option.flatMap(state.playing, (value) => value.record);
-
-const mediaEvent = (state: Orchestration.MediaState): ChannelEvent => ({
-  _tag: "Media",
-  state: state._tag,
-  session: "sessionId" in state ? state.sessionId : null,
-});
-
-/**
- * A handle event as a channel event. A clip failure carries no reason: an H3
- * `clip_failed` reason is provider text, which the channel does not repeat.
- */
-const toChannelEvent = Effect.fnUntraced(function* (
-  engine: Orchestration.EngineShape,
-  event: Orchestration.HandleEvent,
-): Effect.fn.Return<ChannelEvent> {
-  switch (event._tag) {
-    case "Engine": {
-      const inner = event.event;
-      if (inner._tag === "Starved") return { _tag: "Starved" };
-      if (inner._tag === "SessionFailed") return { _tag: "OffAir", reason: inner.failure.message };
-      if (inner._tag === "HandoffReady")
-        return {
-          _tag: "Renewal",
-          phase: "HandoffReady",
-          session: inner.sessionId,
-          lostClips: null,
-        };
-      const state = yield* engine.state;
-      const record = [...upcoming(state), ...Option.toArray(playing(state))].find(
-        (value) => value.clipId === inner.clipId,
-      );
-      return {
-        _tag: "Clip",
-        clipId: inner.clipId,
-        phase: inner._tag,
-        prompt: record?.request?.prompt ?? null,
-      };
-    }
-    case "Renewal": {
-      const renewal = event.event;
-      return {
-        _tag: "Renewal",
-        phase: renewal._tag,
-        session: "sessionId" in renewal ? renewal.sessionId : null,
-        lostClips: renewal._tag === "Replaced" ? renewal.lostClips : null,
-      };
-    }
-    case "Media":
-      return mediaEvent(event.state);
-  }
-});
-
-/** Prompts in; status and the handle's events out. Failures are the contract's errors. */
+/** Prompts in; status and the playout's events out. Failures are the contract's errors. */
 const ChannelHandlers = HttpApiBuilder.group(
   Api,
   "channel",
   Effect.fn(function* (handlers) {
     const programme = yield* Programme;
-    const handle = yield* Orchestration.Handle;
+    const playout = yield* Playout.Playout;
     const { mode } = yield* Settings;
 
+    const summary = (key: string): Effect.Effect<ClipSummary> =>
+      Effect.map(programme.prompt(key), (prompt) => ({ clipId: key, prompt: prompt ?? null }));
+
     const status = Effect.gen(function* () {
-      const state = yield* handle.engine.state;
-      // Loss totals that cannot be read fail rather than read as zero.
-      const pressure = yield* Effect.option(handle.media.pressure);
+      const state = yield* playout.state;
+      const onAir = state.sessions.find((session) => session.role === "on-air");
       return new ChannelStatus({
         mode,
-        session: Option.getOrNull(yield* handle.sessionId),
-        media: (yield* handle.mediaState)._tag,
-        playing: Option.getOrNull(Option.map(playing(state), summary)),
-        upcoming: upcoming(state).map(summary),
-        loss: Option.getOrNull(
-          Option.map(pressure, (value) => ({
-            droppedVideo: Number(value.droppedVideo),
-            droppedAudio: Number(value.droppedAudio),
-            readerOverflows: Number(value.readerOverflows),
-          })),
+        session: onAir?.sessionId ?? null,
+        media: onAir === undefined ? "Recovering" : "Ready",
+        playing: typeof state.playing === "string" ? yield* summary(state.playing) : null,
+        upcoming: yield* Effect.forEach(
+          state.lanes.flatMap((lane) => lane.keys),
+          summary,
         ),
+        loss: null,
       });
     });
 
-    // The handle's observation: its current state, then every change, with
-    // nothing lost between them. An observer that falls behind ends its
-    // stream; the browser's EventSource reconnects and observes again.
-    const events = Stream.unwrap(
-      Effect.gen(function* () {
-        const observation = yield* handle.observe();
-        const { engine, media } = observation.initial;
-        const initial: readonly ChannelEvent[] = [
-          mediaEvent(media),
-          ...Option.toArray(playing(engine)).map((record): ChannelEvent => ({
-            _tag: "Clip",
-            phase: "Started",
-            ...summary(record),
-          })),
-        ];
-        return Stream.concat(
-          Stream.fromIterable(initial),
-          observation.events.pipe(
-            Stream.mapEffect((event) => toChannelEvent(handle.engine, event)),
-          ),
-        );
-      }),
-    ).pipe(Stream.catch(() => Stream.empty));
+    // Every event from now on. A clip failure carries no reason: an H3
+    // `clip_failed` reason is provider text, which the channel does not repeat.
+    const events = playout.events.pipe(
+      Stream.mapEffect(
+        Effect.fnUntraced(function* (
+          event: Playout.Event,
+        ): Effect.fn.Return<ReadonlyArray<ChannelEvent>> {
+          switch (event._tag) {
+            case "AsRun": {
+              const { key, status: asRun } = event.event;
+              return [
+                {
+                  _tag: "Clip",
+                  phase: phases[asRun._tag],
+                  ...(yield* summary(key)),
+                } satisfies ChannelEvent,
+              ];
+            }
+            case "Session": {
+              const session = event.event;
+              return [
+                {
+                  _tag: "Renewal",
+                  phase: session._tag,
+                  session:
+                    session._tag === "Opened"
+                      ? session.sessionId
+                      : session._tag === "SetupFailed"
+                        ? null
+                        : session.from,
+                  lostClips: session._tag === "Replaced" ? session.carried : null,
+                } satisfies ChannelEvent,
+              ];
+            }
+            case "Starved":
+              return [{ _tag: "Starved" } satisfies ChannelEvent];
+            case "Cue":
+              return [];
+          }
+        }),
+      ),
+      Stream.flatMap((values) => Stream.fromIterable(values)),
+    );
 
     return handlers.handleAll({
       submit: ({ payload }) => programme.submit(payload.prompt),

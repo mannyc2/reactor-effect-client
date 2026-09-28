@@ -30,6 +30,14 @@
       "types": "./dist/H3.d.ts",
       "import": "./dist/H3.js"
     },
+    "./H3Source": {
+      "types": "./dist/H3Source.d.ts",
+      "import": "./dist/H3Source.js"
+    },
+    "./LocalSource": {
+      "types": "./dist/LocalSource.d.ts",
+      "import": "./dist/LocalSource.js"
+    },
     "./Media": {
       "types": "./dist/Media.d.ts",
       "import": "./dist/Media.js"
@@ -37,6 +45,10 @@
     "./Peer": {
       "types": "./dist/Peer.d.ts",
       "import": "./dist/Peer.js"
+    },
+    "./Playout": {
+      "types": "./dist/Playout.d.ts",
+      "import": "./dist/Playout.js"
     },
     "./Reactor": {
       "types": "./dist/Reactor.d.ts",
@@ -57,14 +69,6 @@
     "./wire": {
       "types": "./dist/wire.d.ts",
       "import": "./dist/wire.js"
-    },
-    "./orchestration": {
-      "types": "./dist/orchestration/index.d.ts",
-      "import": "./dist/orchestration/index.js"
-    },
-    "./simulation": {
-      "types": "./dist/simulation/index.d.ts",
-      "import": "./dist/simulation/index.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

@@ -87,19 +87,3 @@ export const make = <P, A, E>(
       state: Effect.sync(() => state),
     };
   });
-
-/** Project a result without adding preparation, execution, or commit ownership. */
-export const map = <A, B, E>(
-  submission: Submission<A, E>,
-  project: (value: A) => B,
-): Submission<B, E> => ({
-  id: submission.id,
-  submit: submission.submit.pipe(Effect.map(project)),
-  state: submission.state.pipe(
-    Effect.map((state): State<B, E> =>
-      state._tag === "Completed"
-        ? { _tag: "Completed", exit: Exit.map(state.exit, project) }
-        : state,
-    ),
-  ),
-});

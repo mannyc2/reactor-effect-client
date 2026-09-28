@@ -70,7 +70,7 @@ export class ChannelStatus extends Schema.Class<ChannelStatus>("ChannelStatus")(
 
 /**
  * What `GET /api/events` sends, one Server-Sent Event per change, in the order
- * the orchestration observed them. It carries identities and phases only:
+ * the playout observed them. It carries identities and phases only:
  * never provider text, which the SDK keeps out of everything it reports.
  */
 export const ChannelEvent = Schema.Union([

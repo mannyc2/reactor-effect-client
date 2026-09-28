@@ -2,15 +2,14 @@
  * An encoder run that ends is replaced, never handed to a new viewer: a frame
  * of another format ends the run its viewers are on, and a viewer that joins
  * afterwards gets a new run, starting with a new initialization segment. The
- * media here is synthetic, so no orchestration is involved; ffmpeg is real.
+ * media here is synthetic, so no playout is involved; ffmpeg is real.
  */
 import { spawnSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Result, Stream } from "effect";
-import * as Orchestration from "reactor-effect-client/orchestration";
 import type { VideoFrame } from "reactor-effect-native";
-import { Broadcast } from "../src/Broadcast.ts";
+import { Broadcast, ChannelMedia } from "../src/Broadcast.ts";
 
 /** Two seconds of 64x36 frames, then 48x48 frames: a canvas change. */
 const frames = Stream.fromEffectRepeat(Effect.sleep("40 millis")).pipe(
@@ -40,25 +39,8 @@ const frames = Stream.fromEffectRepeat(Effect.sleep("40 millis")).pipe(
 );
 
 const SyntheticMedia = Layer.succeed(
-  Orchestration.Media,
-  Orchestration.Media.of({
-    video: frames,
-    audio: Stream.never,
-    videoFramesPerSecond: 24,
-    pressure: Effect.succeed({
-      closed: false,
-      queuedControl: 0,
-      queuedVideo: 0,
-      queuedAudio: 0,
-      queuedBytes: 0,
-      droppedVideo: 0n,
-      droppedAudio: 0n,
-      pendingRequests: 0,
-      deliveredVideo: 0n,
-      deliveredAudio: 0n,
-      readerOverflows: 0n,
-    }),
-  }),
+  ChannelMedia,
+  ChannelMedia.of({ video: frames, audio: Stream.never }),
 );
 
 const boxType = (bytes: Uint8Array) => String.fromCharCode(...bytes.subarray(4, 8));

@@ -4,10 +4,9 @@
  * one flow across seeded random timings and checks what must hold for any.
  */
 import { assert, layer } from "@effect/vitest";
-import { Effect, Exit, type Layer, Scope } from "effect";
+import { Effect, Exit, type Layer, Schema, Scope } from "effect";
 import * as H3 from "../src/H3.js";
 import { ReactorTest } from "../src/index.js";
-import { PolicyFailure } from "../src/orchestration/policy.js";
 import { pngBytes } from "../src/testing/Png.js";
 import { wavBytes } from "../src/testing/Wav.js";
 import { commands, connect, environment } from "./fixtures/Simulated.js";
@@ -68,16 +67,19 @@ scenario("an enqueue with no evidence fails as unknown and is never sent again",
   }),
 );
 
+/** An application's own local refusal. */
+class Full extends Schema.TaggedError<Full>()("Full", {}) {}
+
 scenario("a commit hook's refusal sends nothing and reaches the caller unchanged", () =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());
     const provider = yield* H3.make(yield* connect);
     const submission = yield* provider.prepare(
       { prompt: "refused locally" },
-      { commit: () => PolicyFailure.refuse("QueueFull", "the application is full") },
+      { commit: () => Full.make({}) },
     );
     const failure = yield* Effect.flip(submission.submit);
-    assert.isTrue(PolicyFailure.is(failure));
+    assert.strictEqual(failure._tag, "Full");
     assert.deepStrictEqual(yield* commands("enqueue"), []);
   }),
 );
