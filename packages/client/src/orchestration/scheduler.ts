@@ -19,7 +19,7 @@ import { parsedInput } from "../internal/validation.js";
 import { ReactorError } from "../ReactorError.js";
 
 import { monotonicMillis } from "./elapsed.js";
-import { requestSeconds as h3RequestSeconds } from "../h3/profile.js";
+import { requestSeconds as h3RequestSeconds } from "../internal/h3/profile.js";
 import { captureRequest, PolicyFailure } from "./request.js";
 import type { ClipId, ClipRequest } from "./request.js";
 import { activeIds } from "./routing.js";

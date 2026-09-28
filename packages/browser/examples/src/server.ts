@@ -5,7 +5,7 @@ import { Config, Effect, FileSystem, Layer, Path, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import * as Coordinator from "reactor-effect-client/Coordinator";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import { Api, TokenUnavailable } from "./Api.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 

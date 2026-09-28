@@ -26,6 +26,10 @@
       "types": "./dist/Coordinator.d.ts",
       "import": "./dist/Coordinator.js"
     },
+    "./H3": {
+      "types": "./dist/H3.d.ts",
+      "import": "./dist/H3.js"
+    },
     "./Media": {
       "types": "./dist/Media.d.ts",
       "import": "./dist/Media.js"
@@ -53,10 +57,6 @@
     "./wire": {
       "types": "./dist/wire.d.ts",
       "import": "./dist/wire.js"
-    },
-    "./h3": {
-      "types": "./dist/h3/index.d.ts",
-      "import": "./dist/h3/index.js"
     },
     "./orchestration": {
       "types": "./dist/orchestration/index.d.ts",

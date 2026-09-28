@@ -11,16 +11,16 @@ import * as Stream from "effect/Stream";
 import type * as Crypto from "effect/Crypto";
 import type * as Http from "effect/unstable/http/HttpClient";
 import { CommandFailure, ReactorError } from "../ReactorError.js";
-import type { Clip as ProviderClip } from "../h3/messages.js";
-import { make as makeProvider } from "../h3/_internal/client.js";
-import { audioReferenceLimits, h3ReferenceTurboRealtime } from "../h3/profile.js";
+import type { Clip as ProviderClip } from "../internal/h3/messages.js";
+import { make as makeProvider } from "../H3.js";
+import { audioReferenceLimits, h3ReferenceTurboRealtime } from "../internal/h3/profile.js";
 import type {
   Options as ProviderOptions,
   Provider,
   ProviderEvent,
   ProviderSnapshot,
   Request as ProviderRequest,
-} from "../h3/types.js";
+} from "../H3.js";
 import { Observations } from "../observation.js";
 import type { Session } from "../Session.js";
 import type { DecodedMedia } from "../Media.js";
@@ -252,7 +252,7 @@ export const fromH3 = (
     let report: SourceCleanup | undefined;
     let starvationArmed = false;
     const closeGate = yield* Semaphore.make(1);
-    const state = provider.current.pipe(
+    const state = provider.snapshot.pipe(
       Effect.map((snapshot) => project(snapshot, annotations, times, session.id)),
     );
     const emit = (event: EngineEvent): void => observations.emit(event, 256);
@@ -345,7 +345,7 @@ export const fromH3 = (
           starvationArmed &&
           (message.type === "state_update" || message.type === "queue_update")
         ) {
-          const snapshot = yield* provider.current;
+          const snapshot = yield* provider.snapshot;
           if (
             snapshot._tag === "Ready" &&
             snapshot.state.autoplay &&
@@ -368,10 +368,10 @@ export const fromH3 = (
       Effect.gen(function* () {
         if (closed)
           return yield* PolicyFailure.refuse("SessionClosed", "Source is closed", operation);
-        let snapshot = yield* provider.current;
+        let snapshot = yield* provider.snapshot;
         if (snapshot._tag === "Synchronizing") {
           yield* provider.refresh;
-          snapshot = yield* provider.current;
+          snapshot = yield* provider.snapshot;
         }
         if (snapshot._tag !== "Ready")
           return yield* PolicyFailure.refuse(

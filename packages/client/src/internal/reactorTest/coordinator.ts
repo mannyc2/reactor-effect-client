@@ -28,6 +28,14 @@ const Create = Schema.Struct({
   ),
 });
 const Offer = Schema.Struct({ sdp_offer: Schema.String, track_mapping: Schema.Array(Mapping) });
+const UploadRequest = Schema.Struct({
+  name: Schema.String,
+  mime_type: Schema.String,
+  size: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+
+/** Where a presigned upload goes: another origin, as hosted Reactor's storage is. */
+const storage = "https://uploads.reactor.test";
 
 interface Reply {
   readonly status: number;
@@ -61,6 +69,11 @@ const route = (
   Effect.gen(function* () {
     const method = request.method;
     const header = (name: string) => Option.getOrUndefined(Headers.get(request.headers, name));
+    if (url.origin === storage) {
+      if (method !== "PUT") return yield* refuse(405, "method_not_allowed", "uploads take PUT");
+      const received = request.body._tag === "Uint8Array" ? request.body.body.byteLength : 0;
+      return yield* Effect.as(sessions.stored(url.pathname.slice(1), received), { status: 200 });
+    }
     if (url.pathname === "/pricing" && method === "GET") return ok(sessions.pricing);
     if (url.pathname === "/tokens" && method === "POST") {
       const body = yield* decode(Token, request);
@@ -84,6 +97,15 @@ const route = (
     if (rest.length === 0 && method === "GET") return ok(yield* sessions.read(jwt, id));
     if (rest.length === 0 && method === "DELETE")
       return yield* Effect.as(sessions.remove(jwt, id), { status: 202 });
+    if (rest.length === 1 && rest[0] === "uploads" && method === "POST") {
+      const body = yield* decode(UploadRequest, request);
+      const slot = yield* sessions.upload(jwt, id, body.name, body.size);
+      return ok({
+        presigned_id: slot,
+        presigned_url: `${storage}/${slot}`,
+        path: `uploads/${slot}`,
+      });
+    }
     if (rest[0] !== "transport" || rest[1] !== "webrtc")
       return yield* refuse(404, "not_found", "no such route");
     // `/transport/webrtc/<resource>[/<connection>/<operation>]`
@@ -114,7 +136,7 @@ const route = (
 export const client = (sessions: Sessions): HttpClient.HttpClient =>
   HttpClient.make((request, url) =>
     Effect.gen(function* () {
-      yield* Effect.sleep(sessions.options.httpLatency);
+      yield* Effect.sleep(yield* sessions.timing.delay("http"));
       const reply = yield* route(sessions, request, url).pipe(
         Effect.catchTag("Refusal", ({ status, code, reason }) =>
           Effect.succeed<Reply>({ status, body: { error: { code, message: reason } } }),

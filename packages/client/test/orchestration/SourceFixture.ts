@@ -30,7 +30,7 @@ import { CommandFailure } from "../../src/ReactorError.js";
 import type { AudioFrame, MediaPressure, VideoFrame } from "../../src/Media.js";
 import * as Submission from "../../src/Submission.js";
 import * as TestPlatform from "../Platform.js";
-import { fixtureClip } from "../h3/ProviderSession.js";
+import { fixtureClip } from "./ProviderSession.js";
 import { signals } from "./Signals.js";
 
 export type Services =

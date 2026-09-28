@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { Clock, Effect, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import * as H3 from "../../src/h3/index.js";
+import * as H3 from "../../src/H3.js";
 import { ItemKey, makeScheduler } from "../../src/orchestration/scheduler.js";
 import type {
   AsRunEvent,

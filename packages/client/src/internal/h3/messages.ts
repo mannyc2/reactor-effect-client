@@ -1,12 +1,9 @@
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { ReactorError } from "../ReactorError.js";
-import { jsonObject } from "../json.js";
-import type { JsonObject } from "../json.js";
+import { ReactorError } from "../../ReactorError.js";
 
 const Positive = Schema.Int.check(Schema.isGreaterThan(0));
 const Id = Schema.String.check(Schema.isUUID());
-
 /** Required fields follow the H3 Reference Turbo Realtime 0.5.5 documentation. */
 export const Clip = Schema.Struct({
   clip_id: Id,
@@ -122,36 +119,35 @@ export type Message = {
 }[MessageType];
 export type DecodedMessage =
   | Message
-  | { readonly type: "unknown"; readonly name: string; readonly data: JsonObject | undefined };
-
-const freeze = <A>(value: A): A => {
-  if (value !== null && typeof value === "object") {
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  }
-  return value;
-};
-
-/** The `SchemaError`, which names the path but no input value, stays in `detail`. */
-const malformed = (type: string, cause: Schema.SchemaError): ReactorError =>
-  ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
-    operation: "h3 observation",
-    detail: cause,
-  });
+  | {
+      readonly type: "unknown";
+      readonly name: string;
+      readonly data: Schema.JsonObject | undefined;
+    };
 
 /**
- * Unknown events remain observable. A known message never accepts a partial
- * payload: its Schema, cross-field rules included, rejects it as Protocol, and
- * a bug in these checks stays a defect.
+ * Unknown events stay observable. A known message never accepts a partial
+ * payload: its Schema, cross-field rules included, rejects it as `Protocol`,
+ * and the `SchemaError`, which names the path but no input value, stays in
+ * the error's detail.
  */
-export const decodeMessage = (type: string, input: unknown): DecodedMessage => {
-  if (!Object.hasOwn(Payloads, type))
-    return Object.freeze({
-      type: "unknown",
-      name: type,
-      data: input === undefined ? undefined : jsonObject(input),
-    });
-  const decoded = Schema.decodeUnknownResult(Payloads[type as MessageType])(input);
-  if (Result.isFailure(decoded)) throw malformed(type, decoded.failure);
-  return freeze({ type, data: decoded.success } as Message);
+export const decodeMessage = ({
+  type,
+  data,
+}: {
+  readonly type: string;
+  readonly data?: Schema.JsonObject | undefined;
+}): Result.Result<DecodedMessage, ReactorError> => {
+  if (!isMessageType(type)) return Result.succeed({ type: "unknown", name: type, data });
+  return Result.mapBoth(Schema.decodeUnknownResult(Payloads[type])(data), {
+    onFailure: (cause) =>
+      ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
+        operation: "H3 observation",
+        detail: cause,
+      }),
+    // TypeScript cannot correlate `type` with the payload its Schema decoded.
+    onSuccess: (decoded): DecodedMessage => ({ type, data: decoded }) as Message,
+  });
 };
+
+const isMessageType = (type: string): type is MessageType => Object.hasOwn(Payloads, type);

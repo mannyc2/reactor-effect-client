@@ -13,7 +13,7 @@ import * as Tracer from "effect/Tracer";
 import { recorder, type Recorded } from "reactor-effect-client/Media";
 import { type SessionEvent, type Statistics } from "reactor-effect-client/Session";
 import type * as Reactor from "reactor-effect-client";
-import type * as H3 from "reactor-effect-client/h3";
+import type * as H3 from "reactor-effect-client/H3";
 import type * as Orchestration from "reactor-effect-client/orchestration";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import { terminal } from "reactor-effect-client/host";

@@ -22,7 +22,7 @@ import * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Reactor from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import { mediaGeneration } from "reactor-effect-client/host";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Testing from "reactor-effect-client/testing";
@@ -557,7 +557,7 @@ test(
             const session = yield* client.attachConnected({ sessionId, jwt: grant.jwt });
             const attachMs = performance.now() - killedAt;
             const provider = yield* H3.make(session);
-            const snapshot = yield* provider.current;
+            const snapshot = yield* provider.snapshot;
             const fresh = yield* frames(session, 12);
             return { attachMs, snapshot, fresh, closed: yield* session.close };
           }),

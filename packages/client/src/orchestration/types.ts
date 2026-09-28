@@ -9,7 +9,7 @@ import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { ReactorError } from "../ReactorError.js";
 import type { ObservationOptions } from "../observation.js";
-import type { Clip } from "../h3/messages.js";
+import type { Clip } from "../internal/h3/messages.js";
 import type { CommandFailure } from "../ReactorError.js";
 import type { PolicyFailure } from "./policy.js";
 import { FailureSummary } from "../ReactorError.js";

@@ -14,7 +14,7 @@ import {
 import { Command, Flag } from "effect/unstable/cli";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as Coordinator from "reactor-effect-client/Coordinator";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import * as Native from "reactor-effect-native";
 import { toMp4 } from "./Recording.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";

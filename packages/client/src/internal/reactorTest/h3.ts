@@ -7,9 +7,10 @@
 import { dual } from "effect/Function";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { Commands } from "../../h3/_internal/contracts.js";
-import { Payloads } from "../../h3/messages.js";
-import type { Clip, Message, Queue, State } from "../../h3/messages.js";
+import * as Struct from "effect/Struct";
+import { Commands } from "../h3/commands.js";
+import { Payloads } from "../h3/messages.js";
+import type { Clip, Message, Queue, State } from "../h3/messages.js";
 import {
   alignFrames,
   audioReferenceLimits,
@@ -19,8 +20,8 @@ import {
   metadataMaxChars,
   referenceLimits,
   requestSeconds,
-} from "../../h3/profile.js";
-import type { CanvasAspect } from "../../h3/profile.js";
+} from "../h3/profile.js";
+import type { CanvasAspect } from "../h3/profile.js";
 import type { JsonObject } from "../../json.js";
 
 export interface H3 {
@@ -459,7 +460,7 @@ export const step: {
  * The deployment document `request_schema` answers with, derived from the
  * client's own command and message Schemas, so the two cannot drift.
  */
-export const deployment = () => {
+export const deployment = (referenceAudio: boolean) => {
   const body = (schema: Schema.Top) => ({
     required: true,
     content: { "application/json": { schema: Schema.toJsonSchemaDocument(schema).schema } },
@@ -473,7 +474,11 @@ export const deployment = () => {
         {
           post: {
             operationId: name,
-            requestBody: body(args),
+            requestBody: body(
+              name === "enqueue" && !referenceAudio
+                ? Commands.enqueue.args.mapFields(Struct.omit(["reference_audios"]))
+                : args,
+            ),
             responses:
               reply === null
                 ? { "202": { description: "accepted" } }

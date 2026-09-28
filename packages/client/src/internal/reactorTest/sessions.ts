@@ -9,20 +9,20 @@ import * as Encoding from "effect/Encoding";
 import * as Exit from "effect/Exit";
 import * as FiberSet from "effect/FiberSet";
 import * as Option from "effect/Option";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import type { IceServersReply, Registered, SdpAnswer } from "../../Coordinator.js";
 import type { Descriptor } from "../../Coordinator.js";
 import type { SessionAuthorization } from "../../Coordinator.js";
-import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
+import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import { structFromObject } from "../../json.js";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
 import * as Faults from "./faults.js";
 import { deployment } from "./h3.js";
 import type { Link } from "./peer.js";
 import * as Playout from "./playout.js";
+import type { Sampler } from "./timing.js";
 
 /** A request the simulated coordinator refuses, with the status a client sees. */
 export class Refusal extends Schema.TaggedError<Refusal>(
@@ -83,20 +83,20 @@ const descriptor = (id: string, phase: Phase) =>
       : {}),
   }) satisfies (typeof Descriptor)["Encoded"];
 
-export const make = Effect.fnUntraced(function* (options: Options) {
+export const make = Effect.fnUntraced(function* (options: Options, timing: Sampler) {
   const scope = yield* Effect.scope;
   const lifetimes = yield* FiberSet.make<void>();
   const faults = yield* Faults.make(options.faults);
-  const random = yield* Effect.withFiber((fiber) =>
-    Effect.succeed(fiber.getRef(Random.Random)),
-  ).pipe(Random.withSeed(options.seed));
   const grants = yield* Ref.make<ReadonlyMap<string, Grant>>(new Map());
   const sessions = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
   const peers = yield* Ref.make<ReadonlyMap<string, Link>>(new Map());
   const bindings = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
   const counts = yield* Ref.make({ grants: 0, sessions: 0, connections: 1000, peers: 0 });
   const entries = yield* Ref.make<ReadonlyArray<Entry>>([]);
-  const openapi = structFromObject(deployment());
+  /** Upload slots handed out and not yet filled, with the session that asked for each. */
+  const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
+  const uploads = yield* Ref.make(0);
+  const openapi = structFromObject(deployment(options.referenceAudio));
 
   const count = (key: "grants" | "sessions" | "connections" | "peers") =>
     Ref.modify(counts, (all) => [all[key] + 1, { ...all, [key]: all[key] + 1 }] as const);
@@ -192,7 +192,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
 
   return {
     options,
-    channelMs: Duration.toMillis(options.channelLatency),
+    timing,
     // Test peers
     nextPeer: Effect.map(count("peers"), (n) => `reactor-test-peer-${n}`),
     attach: (link: Link) => Ref.update(peers, (all) => new Map(all).set(link.id, link)),
@@ -209,7 +209,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         const link = (yield* Ref.get(peers)).get(peerId);
         const session = (yield* Ref.get(bindings)).get(peerId);
         if (link !== undefined && session !== undefined)
-          yield* later(Duration.toMillis(options.connect), open(session, link));
+          yield* later(yield* timing.delay("connect"), open(session, link));
       }),
     receive: (peerId: string, channel: "control" | "data", bytes: Uint8Array) =>
       Effect.gen(function* () {
@@ -295,19 +295,34 @@ export const make = Effect.fnUntraced(function* (options: Options) {
             connected: false,
             connections: new Map(),
           }),
-          playout: yield* Playout.make(id, { options, faults, random, openapi, log }).pipe(
+          playout: yield* Playout.make(id, { options, faults, timing, openapi, log }).pipe(
             Scope.provide(sessionScope),
           ),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
         yield* log({ sessionId: id, kind: "session", name: "created" });
-        yield* later(Duration.toMillis(options.allocation), activate(session));
+        yield* later(yield* timing.delay("allocation"), activate(session));
         return descriptor(id, "PENDING");
       }),
     read: (jwt: string | undefined, id: string) =>
       Effect.flatMap(owned(jwt, id), (session) =>
         Effect.map(Ref.get(session.state), (state) => descriptor(id, state.phase)),
       ),
+    upload: (jwt: string | undefined, id: string, name: string, size: number) =>
+      Effect.gen(function* () {
+        yield* owned(jwt, id, true);
+        const n = yield* Ref.updateAndGet(uploads, (value) => value + 1);
+        const slot = `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+        yield* Ref.update(slots, (all) => new Map(all).set(slot, id));
+        yield* log({ sessionId: id, kind: "upload", name: `allocated ${name} (${size} bytes)` });
+        return slot;
+      }),
+    stored: (slot: string, bytes: number) =>
+      Effect.gen(function* () {
+        const sessionId = (yield* Ref.get(slots)).get(slot);
+        if (sessionId === undefined) return yield* refuse(404, "not_found", "no such upload");
+        yield* log({ sessionId, kind: "upload", name: `stored ${bytes} bytes` });
+      }),
     remove: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id);
@@ -352,7 +367,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
         if (previous !== undefined && previous !== link)
           yield* unlink(session, previous, "replaced");
         yield* setBinding(peerId, session);
-        const at = (yield* Playout.monotonic) + Duration.toMillis(options.negotiation);
+        const at = (yield* Playout.monotonic) + (yield* timing.delay("negotiation"));
         const answer = `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=reactor-test\r\na=ice-ufrag:${peerId}\r\n`;
         yield* Ref.update(session.state, (state) => ({
           ...state,

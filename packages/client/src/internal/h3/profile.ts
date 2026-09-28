@@ -1,30 +1,36 @@
+/** The H3 Reference Turbo Realtime model: its documented limits and frame grid. */
+import { dual } from "effect/Function";
+
 /** Documentation revision selected by this adapter, not an assertion about a server version. */
 export const modelName = "reactor/h3-reference-to-video-turbo-realtime" as const;
 export const documentedVersion = "0.5.5" as const;
 export const source =
   "https://docs.reactor.inc/model-api-reference/h3-reference-to-video-turbo-realtime/schema";
-export const requestSeconds = Object.freeze({ min: 5, max: 15.084 });
-export const canvases = Object.freeze({
-  "16:9": Object.freeze({ width: 1344, height: 768 }),
-  "1:1": Object.freeze({ width: 768, height: 768 }),
-  "9:16": Object.freeze({ width: 768, height: 1344 }),
-  "4:3": Object.freeze({ width: 1024, height: 768 }),
-});
+export const requestSeconds = { min: 5, max: 15.084 } as const;
+export const canvases = {
+  "16:9": { width: 1344, height: 768 },
+  "1:1": { width: 768, height: 768 },
+  "9:16": { width: 768, height: 1344 },
+  "4:3": { width: 1024, height: 768 },
+} as const;
+export type CanvasAspect = keyof typeof canvases;
+
 /** SDK image safety bounds; byte validation does not replace the model's image decoder. */
-export const referenceLimits = Object.freeze({
+export const referenceLimits = {
   maxImages: 9,
   maxBytes: 25 * 1024 * 1024,
   maxPixels: 25_000_000,
   minAspect: 0.25,
   maxAspect: 4,
-});
+} as const;
+
 /**
  * H3's audio reference bounds: at most three clips, or two when the clip
  * continues another, whose soundtrack takes the third; at most twelve
  * references in total, counting images, audio and a continuation; each 2–15 s
  * long, mono or stereo, and at most 25 MiB.
  */
-export const audioReferenceLimits = Object.freeze({
+export const audioReferenceLimits = {
   maxAudio: 3,
   maxAudioWithContinuation: 2,
   maxTotal: 12,
@@ -32,17 +38,18 @@ export const audioReferenceLimits = Object.freeze({
   minSeconds: 2,
   maxSeconds: 15,
   maxChannels: 2,
-});
-/** Adapter limits shared by request capture, reference validation and profile declarations. */
+} as const;
+
 export const metadataMaxChars = 2_000;
-export const imageMimeTypes = Object.freeze(["image/jpeg", "image/png", "image/webp"] as const);
+export const imageMimeTypes = ["image/jpeg", "image/png", "image/webp"] as const;
+
 /**
  * The audio formats H3 documents (WAV, MP3, AAC/M4A, OGG/Opus, FLAC and WebM),
  * by the MIME type an upload of each carries. Bytes are identified by their
  * container, which names the first type of each format; an existing upload
  * may carry any of them.
  */
-export const audioMimeTypes = Object.freeze([
+export const audioMimeTypes = [
   "audio/wav",
   "audio/mpeg",
   "audio/aac",
@@ -55,13 +62,9 @@ export const audioMimeTypes = Object.freeze([
   "audio/x-m4a",
   "audio/opus",
   "audio/x-flac",
-] as const);
-
-/** Shared H3 timing data and explicit defaults used by offline orchestration. */
-export type CanvasAspect = keyof typeof canvases;
+] as const;
 
 export interface ModelProfile {
-  /** Wire model name passed to the SDK. */
   readonly modelName: string;
   readonly fps: number;
   /** Legal output lengths are `minFrames + k * frameStep`, `k >= 0`, up to `maxFrames`. */
@@ -72,9 +75,9 @@ export interface ModelProfile {
   readonly requestSeconds: { readonly min: number; readonly max: number };
   readonly prompt: {
     readonly maxChars: number;
-    /** Provider-side text budget. It is not a local hard limit because the provider tokenizer is authoritative. */
+    /** The provider's text budget; its tokenizer, not this estimate, is authoritative. */
     readonly maxTokens: number;
-    /** Conservative characters-per-token used to estimate the token bound locally. */
+    /** Conservative characters per token for a local estimate. */
     readonly charsPerTokenEstimate: number;
   };
   readonly references: {
@@ -87,10 +90,7 @@ export interface ModelProfile {
     readonly maxAspect: number;
     readonly mimeTypes: ReadonlyArray<string>;
   };
-  /**
-   * Audio references the model takes beside its images; absent for a model
-   * that takes none, whose requests must carry no audio.
-   */
+  /** Audio references the model takes beside its images; absent for a model that takes none. */
   readonly audioReferences?: {
     readonly max: number;
     /** A continued clip spends one audio slot on the previous clip's soundtrack. */
@@ -108,9 +108,9 @@ export interface ModelProfile {
     readonly width: number;
     readonly height: number;
   }>;
-  /** Defaults for offline simulation; live provider snapshots remain authoritative. */
+  /** The queue capacities H3 documents; live state snapshots are authoritative. */
   readonly expectedCapacities: { readonly generation: number; readonly playout: number };
-  /** Bounded continuation hints for orchestration; not a claim that the deployment retains a clip. */
+  /** How many recent clips orchestration offers as continuations. */
   readonly continuationWindow: number;
   readonly audio: { readonly sampleRate: number; readonly channels: number };
   readonly tracks: { readonly video: string; readonly audio: string };
@@ -123,8 +123,8 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
   maxFrames: 362,
   frameStep: 17,
   requestSeconds,
-  // No provider character limit; the text budget is ~2,000 tokens ("roughly 8,000 characters of English
-  // prose") and exceeding it fails the clip at build. maxChars is our own sanity bound.
+  // The provider sets no character limit; its budget is about 2,000 tokens, and
+  // a longer prompt fails the clip at build. maxChars is this SDK's own bound.
   prompt: { maxChars: 12_000, maxTokens: 2_000, charsPerTokenEstimate: 3.5 },
   references: {
     min: 0,
@@ -133,7 +133,7 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
     maxPixels: referenceLimits.maxPixels,
     minAspect: referenceLimits.minAspect,
     maxAspect: referenceLimits.maxAspect,
-    mimeTypes: [...imageMimeTypes],
+    mimeTypes: imageMimeTypes,
   },
   audioReferences: {
     max: audioReferenceLimits.maxAudio,
@@ -142,12 +142,12 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
     maxBytes: audioReferenceLimits.maxBytes,
     minSeconds: audioReferenceLimits.minSeconds,
     maxSeconds: audioReferenceLimits.maxSeconds,
-    mimeTypes: [...audioMimeTypes],
+    mimeTypes: audioMimeTypes,
   },
   metadataMaxChars,
-  canvases: Object.entries(canvases).map(([aspect, size]) => ({
-    aspect: aspect as CanvasAspect,
-    ...size,
+  canvases: (["16:9", "1:1", "9:16", "4:3"] as const).map((aspect) => ({
+    aspect,
+    ...canvases[aspect],
   })),
   expectedCapacities: { generation: 20, playout: 10 },
   continuationWindow: 8,
@@ -155,37 +155,58 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
   tracks: { video: "main_video", audio: "main_audio" },
 };
 
-export const minSeconds = (p: ModelProfile) => p.minFrames / p.fps;
-export const maxSeconds = (p: ModelProfile) => p.maxFrames / p.fps;
+export const minSeconds = (profile: ModelProfile): number => profile.minFrames / profile.fps;
+export const maxSeconds = (profile: ModelProfile): number => profile.maxFrames / profile.fps;
 
-/** Snap upward on this profile's frame grid. Actual admitted lengths come from Clip.frames and Clip.seconds. */
-export const alignFrames = (p: ModelProfile, seconds: number): number => {
-  if (!Number.isFinite(seconds)) throw new RangeError("clip length must be finite");
-  const frames = Math.ceil(seconds * p.fps - 1e-6);
-  const steps = Math.ceil(Math.max(0, frames - p.minFrames) / p.frameStep);
-  return Math.min(p.maxFrames, p.minFrames + steps * p.frameStep);
-};
+/**
+ * The frame count a request of `seconds` produces: rounded up onto the
+ * profile's frame grid. A clip's own `frames` and `seconds` are authoritative.
+ */
+export const alignFrames: {
+  (seconds: number): (profile: ModelProfile) => number;
+  (profile: ModelProfile, seconds: number): number;
+} = dual(2, (profile: ModelProfile, seconds: number): number => {
+  const frames = Number.isFinite(seconds) ? Math.ceil(seconds * profile.fps - 1e-6) : 0;
+  const steps = Math.ceil(Math.max(0, frames - profile.minFrames) / profile.frameStep);
+  return Math.min(profile.maxFrames, profile.minFrames + steps * profile.frameStep);
+});
 
-export const alignSecondsTo = (p: ModelProfile, seconds: number): number =>
-  alignFrames(p, seconds) / p.fps;
+export const alignSecondsTo: {
+  (seconds: number): (profile: ModelProfile) => number;
+  (profile: ModelProfile, seconds: number): number;
+} = dual(
+  2,
+  (profile: ModelProfile, seconds: number): number => alignFrames(profile, seconds) / profile.fps,
+);
 
-/** Clamp into the accepted request range, then align. Always yields a length the provider accepts. */
-export const clampSecondsTo = (p: ModelProfile, seconds: number): number =>
-  alignSecondsTo(
-    p,
-    Math.min(
-      p.requestSeconds.max,
-      Math.max(p.requestSeconds.min, Number.isFinite(seconds) ? seconds : p.requestSeconds.min),
-    ),
+/** Clamps into the accepted request range, then aligns: always a length the provider accepts. */
+export const clampSecondsTo: {
+  (seconds: number): (profile: ModelProfile) => number;
+  (profile: ModelProfile, seconds: number): number;
+} = dual(2, (profile: ModelProfile, seconds: number): number => {
+  const { min, max } = profile.requestSeconds;
+  return alignSecondsTo(
+    profile,
+    Math.min(max, Math.max(min, Number.isFinite(seconds) ? seconds : min)),
   );
+});
 
 /** True when `seconds` is a length the provider accepts as a request. */
-export const isRequestableSeconds = (p: ModelProfile, seconds: number): boolean =>
-  Number.isFinite(seconds) && seconds >= p.requestSeconds.min && seconds <= p.requestSeconds.max;
+export const isRequestableSeconds: {
+  (seconds: number): (profile: ModelProfile) => boolean;
+  (profile: ModelProfile, seconds: number): boolean;
+} = dual(
+  2,
+  (profile: ModelProfile, seconds: number): boolean =>
+    Number.isFinite(seconds) &&
+    seconds >= profile.requestSeconds.min &&
+    seconds <= profile.requestSeconds.max,
+);
 
-/** Advisory token-count estimate for caller budgeting. The adapter does not reject from this estimate; the provider tokenizer is authoritative. */
-export const estimateTokens = (p: ModelProfile, prompt: string): number =>
-  Math.ceil(prompt.length / p.prompt.charsPerTokenEstimate);
-
-export const canvasSize = (p: ModelProfile, aspect: CanvasAspect) =>
-  p.canvases.find((c) => c.aspect === aspect);
+/** An advisory token estimate for budgeting; the provider's tokenizer decides. */
+export const estimateTokens: {
+  (prompt: string): (profile: ModelProfile) => number;
+  (profile: ModelProfile, prompt: string): number;
+} = dual(2, (profile: ModelProfile, prompt: string): number =>
+  Math.ceil(prompt.length / profile.prompt.charsPerTokenEstimate),
+);

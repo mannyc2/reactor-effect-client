@@ -1,5 +1,5 @@
 /** Synthetic media: a frame carries its clip's ordinal and its own index in its first two pixels. */
-import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
+import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 
 /** One audio block, as libwebrtc hosts deliver them. */
 export const audioBlockMs = 10;

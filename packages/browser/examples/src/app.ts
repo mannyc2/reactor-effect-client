@@ -4,7 +4,7 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as Session from "reactor-effect-client/Session";
 import { isReactorFailure } from "reactor-effect-client/ReactorError";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import * as Browser from "reactor-effect-browser";
 import { Api } from "./Api.ts";
 import { WebCrypto } from "./WebCrypto.ts";

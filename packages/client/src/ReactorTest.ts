@@ -1,10 +1,16 @@
 /**
  * Reactor in a box: Reactor's coordinator and an H3 model simulated in memory
  * at the network edge, so an application and every SDK layer above it run
- * unchanged without a paid session. Provide `layer()` beneath `Reactor.layer()`
- * in place of an HTTP client and a host. Every delay is an `Effect.sleep`:
- * under `TestClock`, fork `flow()` and the run is deterministic; on the live
- * clock it plays in real time.
+ * unchanged without a paid session. Provide `layer({ timing })` beneath
+ * `Reactor.layer()` in place of an HTTP client and a host.
+ *
+ * It models what H3 does, not how fast it does it: every delay comes from the
+ * `timing` the caller chooses. A scenario test states the timing it relies on
+ * with `Timing.fixed`; a simulation test draws from wide ranges with
+ * `Timing.random`, reproducibly for its seed; `Timing.hosted` replays what two
+ * paid runs measured, for demos. Every delay is an `Effect.sleep`: under
+ * `TestClock`, fork `flow()` and the run is deterministic; on the live clock
+ * it plays in real time.
  */
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -19,6 +25,7 @@ import { clipId } from "./internal/reactorTest/h3.js";
 import * as Media from "./internal/reactorTest/media.js";
 import * as Peer from "./internal/reactorTest/peer.js";
 import * as Sessions from "./internal/reactorTest/sessions.js";
+import * as Sampler from "./internal/reactorTest/timing.js";
 import type { VideoFrame } from "./Media.js";
 import { PeerFactory } from "./Peer.js";
 
@@ -59,45 +66,133 @@ export const Fault = Schema.Union([
 ]);
 export type Fault = typeof Fault.Type;
 
-const millis = (value: number) =>
-  Schema.Duration.pipe(Schema.withConstructorDefault(Effect.succeed(Duration.millis(value))));
+/** A delay drawn uniformly from `min` to `max`; equal ends make it fixed. */
+export interface Range {
+  readonly min: Duration.Duration;
+  readonly max: Duration.Duration;
+}
+
+/** Where each simulated delay comes from. */
+export interface Timing {
+  /** Where the numbers come from, for a reader of a failing run. */
+  readonly label: string;
+  /** Seeds every draw, so a run repeats. */
+  readonly seed: number;
+  /** Each coordinator request, once. */
+  readonly http: Range;
+  /** Each channel message and each clip's media, one way. */
+  readonly channel: Range;
+  /** From `POST /sessions` until the session is ACTIVE and billed. */
+  readonly allocation: Range;
+  /** From the SDP offer until its answer is ready. */
+  readonly negotiation: Range;
+  /** From the SDP answer until both channels open. */
+  readonly connect: Range;
+  /** From `clip_finished` to the next `clip_started` under autoplay. */
+  readonly seam: Range;
+  /** Seconds of video built per second of build time; below 1 the queue starves. */
+  readonly buildSpeed: { readonly min: number; readonly max: number };
+}
+
+const point = (input: Duration.Input | undefined): Range => {
+  const value = Duration.fromInputUnsafe(input ?? 0);
+  return { min: value, max: value };
+};
+const range = (bounds: readonly [Duration.Input, Duration.Input]): Range => ({
+  min: Duration.fromInputUnsafe(bounds[0]),
+  max: Duration.fromInputUnsafe(bounds[1]),
+});
+
+export const Timing = {
+  /**
+   * Every delay fixed: zero unless named. A scenario test names the ones its
+   * outcome depends on.
+   */
+  fixed: (input: {
+    readonly buildSpeed: number;
+    readonly http?: Duration.Input;
+    readonly channel?: Duration.Input;
+    readonly allocation?: Duration.Input;
+    readonly negotiation?: Duration.Input;
+    readonly connect?: Duration.Input;
+    readonly seam?: Duration.Input;
+  }): Timing => ({
+    label: "fixed",
+    seed: 1,
+    http: point(input.http),
+    channel: point(input.channel),
+    allocation: point(input.allocation),
+    negotiation: point(input.negotiation),
+    connect: point(input.connect),
+    seam: point(input.seam),
+    buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
+  }),
+  /**
+   * Every delay drawn from a range, deliberately wider than anything measured
+   * so that code tuned to one provider speed fails: builds from a quarter of
+   * real time to ten times it, requests and messages up to 2 s, seams up to
+   * half a second. Name a narrower range to explore one.
+   */
+  random: (input: {
+    readonly seed: number;
+    readonly http?: readonly [Duration.Input, Duration.Input];
+    readonly channel?: readonly [Duration.Input, Duration.Input];
+    readonly allocation?: readonly [Duration.Input, Duration.Input];
+    readonly negotiation?: readonly [Duration.Input, Duration.Input];
+    readonly connect?: readonly [Duration.Input, Duration.Input];
+    readonly seam?: readonly [Duration.Input, Duration.Input];
+    readonly buildSpeed?: readonly [number, number];
+  }): Timing => ({
+    label: `random seed ${input.seed}`,
+    seed: input.seed,
+    http: range(input.http ?? [0, "2 seconds"]),
+    channel: range(input.channel ?? [0, "2 seconds"]),
+    allocation: range(input.allocation ?? [0, "5 seconds"]),
+    negotiation: range(input.negotiation ?? [0, "2 seconds"]),
+    connect: range(input.connect ?? [0, "2 seconds"]),
+    seam: range(input.seam ?? [0, "500 millis"]),
+    buildSpeed: {
+      min: input.buildSpeed?.[0] ?? 0.25,
+      max: input.buildSpeed?.[1] ?? 10,
+    },
+  }),
+  /**
+   * What two paid hosted H3 runs measured on 2026-09-27 (0.6.0 evidence):
+   * connect steps of 0.2–0.9 s, eleven 5 s clips built about every 2.1 s
+   * while playing, five seams of 30–110 ms and command round trips of 60–90
+   * ms. Two runs are a small sample: use it for demos and realism checks, not
+   * as what a test depends on.
+   */
+  hosted: {
+    label: "hosted H3, 2 paid runs, 2026-09-27",
+    seed: 1,
+    http: range(["200 millis", "300 millis"]),
+    channel: range(["30 millis", "45 millis"]),
+    allocation: range(["300 millis", "500 millis"]),
+    negotiation: range(["500 millis", "650 millis"]),
+    connect: range(["600 millis", "900 millis"]),
+    seam: range(["30 millis", "110 millis"]),
+    buildSpeed: { min: 2.3, max: 2.6 },
+  } satisfies Timing,
+};
+
 const count = (value: number) => Count.pipe(Schema.withConstructorDefault(Effect.succeed(value)));
 
-/**
- * How the simulated Reactor behaves. Defaults marked measured come from paid
- * hosted H3 runs in September 2026; the others are assumptions.
- */
+/** The simulated Reactor's fixed facts; its delays come from `Timing`. */
 export const Options = Schema.Struct({
   /** The key `POST /tokens` accepts. */
   apiKey: Schema.String.pipe(Schema.withConstructorDefault(Effect.succeed("reactor-test-api-key"))),
-  /** Each coordinator request, one way; 40 ms (assumed). */
-  httpLatency: millis(40),
-  /** Each channel message and media frame, one way; 20 ms (assumed). */
-  channelLatency: millis(20),
-  /** From `POST /sessions` until the session is ACTIVE and billed; 1 s (assumed). */
-  allocation: millis(1_000),
-  /** From the SDP offer until its answer is ready; 50 ms (assumed). */
-  negotiation: millis(50),
-  /** From the SDP answer until both channels open; 100 ms (assumed). */
-  connect: millis(100),
-  /** Seconds of video built per second; 2.4 (measured: a 5 s clip about every 2.1 s while playing). */
-  buildSpeed: Schema.Finite.check(Schema.isGreaterThan(0)).pipe(
-    Schema.withConstructorDefault(Effect.succeed(2.4)),
-  ),
-  /** From `clip_finished` to the next `clip_started` under autoplay; 30–110 ms (measured). */
-  seamMin: millis(30),
-  seamMax: millis(110),
   /** The queue capacities H3's state reports. */
   generationCapacity: count(20),
   playoutCapacity: count(10),
-  /** The published rate: 125 credits a second at 10,000 a dollar, $0.75 a minute (measured). */
+  /** The published rate: 125 credits a second at 10,000 a dollar, $0.75 a minute. */
   creditsPerSecond: count(125),
   creditsPerDollar: count(10_000),
   /** Decoded frame size. */
   width: count(16),
   height: count(16),
-  /** Seeds the seam delays, so a run repeats. */
-  seed: Schema.Int.pipe(Schema.withConstructorDefault(Effect.succeed(1))),
+  /** Whether the deployment's `enqueue` declares `reference_audios`. */
+  referenceAudio: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(true))),
   faults: Schema.Array(Fault).pipe(Schema.withConstructorDefault(Effect.succeed([]))),
 });
 export type Options = typeof Options.Type;
@@ -125,7 +220,7 @@ export interface Entry {
   /** Monotonic milliseconds. */
   readonly at: number;
   readonly sessionId: string;
-  readonly kind: "session" | "command" | "message";
+  readonly kind: "session" | "command" | "message" | "upload";
   readonly name: string;
   readonly clipId?: string;
   /** What a `DropReply` fault took: the reply only, or the whole command. */
@@ -149,12 +244,13 @@ export class ReactorTest extends Context.Service<
 
 /** The simulated Reactor, as the network edge `Reactor.layer` needs. */
 export const layer = (
-  input: Schema.Struct.MakeIn<typeof Options.fields> = {},
+  input: Schema.Struct.MakeIn<typeof Options.fields> & { readonly timing: Timing },
 ): Layer.Layer<ReactorTest | HttpClient.HttpClient | PeerFactory> =>
   Layer.effectContext(
     Effect.gen(function* () {
-      const options = Options.make(input);
-      const sessions = yield* Sessions.make(options);
+      const { timing, ...rest } = input;
+      const options = Options.make(rest);
+      const sessions = yield* Sessions.make(options, yield* Sampler.make(timing));
       return Context.make(
         ReactorTest,
         ReactorTest.of({

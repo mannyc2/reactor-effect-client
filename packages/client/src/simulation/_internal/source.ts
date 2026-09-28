@@ -20,7 +20,7 @@ import {
   alignSecondsTo,
   h3ReferenceTurboRealtime,
   isRequestableSeconds,
-} from "../../h3/profile.js";
+} from "../../internal/h3/profile.js";
 import { Observations } from "../../observation.js";
 import { monotonicMillis } from "../../orchestration/elapsed.js";
 import { PolicyFailure, captureRequest } from "../../orchestration/request.js";

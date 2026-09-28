@@ -7,7 +7,7 @@ import { ClipId } from "../../src/orchestration/request.js";
 import * as Simulation from "../../src/simulation/index.js";
 import type { SimOptions } from "../../src/simulation/index.js";
 import { buildFailsEveryNth } from "../../src/testing/Faults.js";
-import * as H3 from "../../src/h3/index.js";
+import * as H3 from "../../src/H3.js";
 import {
   audioFrame,
   gate,

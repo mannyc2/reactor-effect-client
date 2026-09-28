@@ -15,7 +15,7 @@ import type { AddressInfo, Socket } from "node:net";
 import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
 import type { Mapping } from "reactor-effect-client/Coordinator";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import { H3Model, tracks } from "./h3.js";
 import { answer, parseCandidate, peerOf } from "./protocol.js";
 import type { Candidate, ChannelName, EncodedEvent } from "./protocol.js";

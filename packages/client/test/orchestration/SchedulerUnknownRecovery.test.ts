@@ -15,9 +15,9 @@ import {
   Stream,
 } from "effect";
 import { TestClock } from "effect/testing";
-import * as H3 from "../../src/h3/index.js";
+import * as H3 from "../../src/H3.js";
 import { fromH3 } from "../../src/orchestration/h3-source.js";
-import { fixture as providerFixture } from "../h3/ProviderSession.js";
+import { fixture as providerFixture } from "./ProviderSession.js";
 import { ReactorError } from "../../src/ReactorError.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
 import * as Renewal from "../../src/orchestration/renewal.js";

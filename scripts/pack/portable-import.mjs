@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Root from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Simulation from "reactor-effect-client/simulation";
 import * as Testing from "reactor-effect-client/testing";

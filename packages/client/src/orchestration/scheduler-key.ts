@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { metadataMaxChars } from "../h3/profile.js";
+import { metadataMaxChars } from "../internal/h3/profile.js";
 import { ClipRequest, PolicyFailure, captureRequest } from "./request.js";
 import type { ClipId } from "./request.js";
 

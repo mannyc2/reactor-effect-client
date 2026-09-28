@@ -3,7 +3,7 @@ import type * as Crypto from "effect/Crypto";
 import type * as Scope from "effect/Scope";
 import type * as Layer from "effect/Layer";
 import * as Root from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import * as Native from "reactor-effect-native";
 
 declare const factory: Root.Factory;

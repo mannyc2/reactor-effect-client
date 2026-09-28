@@ -8,11 +8,10 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FiberHandle from "effect/FiberHandle";
 import * as FiberSet from "effect/FiberSet";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
-import type { Clip, Message } from "../../h3/messages.js";
-import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
+import type { Clip, Message } from "../h3/messages.js";
+import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import { objectFromStruct, structFromObject } from "../../json.js";
 import type { Entry, Options } from "../../ReactorTest.js";
 import {
@@ -27,6 +26,7 @@ import type { Faults } from "./faults.js";
 import * as H3 from "./h3.js";
 import * as Media from "./media.js";
 import type { Link } from "./peer.js";
+import type { Sampler } from "./timing.js";
 
 export const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1e6);
 
@@ -38,8 +38,8 @@ export const until = (at: number): Effect.Effect<void> =>
 export interface Environment {
   readonly options: Options;
   readonly faults: Faults;
-  /** Seeded once for the whole simulation, so seams repeat run to run. */
-  readonly random: Random.Random;
+  /** Draws every delay, seeded once for the whole simulation so a run repeats. */
+  readonly timing: Sampler;
   readonly openapi: Google_Struct;
   readonly log: (entry: Omit<Entry, "at">) => Effect.Effect<void>;
 }
@@ -101,7 +101,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       const video = yield* faults.standing((fault) => fault._tag === "Video");
       const silent = yield* faults.standing((fault) => fault._tag === "NoAudio");
       const picture = video?._tag === "Video" ? video.video : "live";
-      const latency = Duration.toMillis(options.channelLatency);
+      const latency = yield* environment.timing.delay("channel");
       const frameMs = 1000 / profile.fps;
       const frame = (index: number) =>
         until(startedAt + latency + index * frameMs).pipe(
@@ -161,7 +161,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
             (candidate) => candidate._tag === "StallBuild" || candidate._tag === "FailBuild",
           );
           if (fault?._tag === "StallBuild") return;
-          const ms = (output.seconds / options.buildSpeed) * 1000;
+          const ms = (output.seconds / (yield* environment.timing.buildSpeed)) * 1000;
           return yield* later(
             ms,
             fault?._tag === "FailBuild"
@@ -170,10 +170,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           );
         }
         case "Arm": {
-          const seam = yield* Random.nextBetween(
-            Duration.toMillis(options.seamMin),
-            Duration.toMillis(options.seamMax),
-          ).pipe(Effect.provideService(Random.Random, environment.random));
+          const seam = yield* environment.timing.delay("seam");
           return yield* later(seam, { _tag: "Start", token: output.token });
         }
         case "Play":

@@ -1,77 +1,73 @@
 /** The simulated Reactor behind the real client, H3 provider and orchestration. */
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, layer } from "@effect/vitest";
-import { Effect, Fiber, FileSystem, Layer, Path, Ref, Stream } from "effect";
-import * as H3 from "../src/h3/index.js";
-import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
+import { Effect, Fiber, Ref, Stream } from "effect";
+import * as H3 from "../src/H3.js";
+import { ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
 import * as Orchestration from "../src/orchestration/index.js";
+import { connect, environment, mint } from "./fixtures/Simulated.js";
 
-/** Each block gets its own simulated Reactor, so no session or bill carries over. */
-const environment = (options?: Parameters<typeof ReactorTest.layer>[0]) =>
-  Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
-    Layer.provideMerge(ReactorTest.layer(options)),
-    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+const frameMs = 1000 / 24;
+
+/** Plays two 5 s clips back to back and returns each clip's frames in arrival order. */
+const playTwo = Effect.gen(function* () {
+  const session = yield* connect;
+  const provider = yield* H3.make(session);
+  const media = yield* session.decoded;
+  const frames = yield* Ref.make<ReadonlyArray<VideoFrame>>([]);
+  yield* media.video(H3.h3ReferenceTurboRealtime.tracks.video).pipe(
+    Stream.runForEach((frame) => Ref.update(frames, (all) => [...all, frame])),
+    Effect.forkScoped,
   );
-
-const mint = Effect.gen(function* () {
-  const test = yield* ReactorTest.ReactorTest;
-  const coordinator = yield* Coordinator.Coordinator;
-  return yield* coordinator.mintToken({
-    apiKey: test.apiKey,
-    modelName: H3.modelName,
-    maxSessionDuration: "120 seconds",
-    expiresAfter: "10 minutes",
+  yield* provider.setAutoplay(true);
+  const first = yield* provider.enqueue({ prompt: "first", seconds: 5 });
+  const second = yield* provider.enqueue({ prompt: "second", seconds: 5 });
+  yield* Effect.sleep("30 seconds");
+  const played = (yield* Ref.get(frames)).flatMap((frame) => {
+    const decoded = ReactorTest.frameOf(frame);
+    return decoded === undefined ? [] : [{ ...decoded, at: Number(frame.timestampMicros) / 1000 }];
   });
+  const of = (clipId: string) => played.filter((frame) => frame.clipId === clipId);
+  return { first: of(first.clip.clip_id), second: of(second.clip.clip_id), frames };
 });
 
-const connect = Effect.gen(function* () {
-  const grant = yield* mint;
-  const reactor = yield* Reactor.Reactor;
-  return yield* reactor.create({ model: H3.modelName, jwt: grant.jwt });
-});
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "70 millis" }) }))(
+  "playback",
+  (it) => {
+    it.effect("plays each 5 s clip as 124 frames, its seam as timed, and nothing when idle", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const { first, second, frames } = yield* playTwo;
+        assert.deepStrictEqual(
+          first.map((frame) => frame.index),
+          Array.from({ length: 124 }, (_, index) => index),
+        );
+        assert.strictEqual(second.length, 124);
+        // The next clip starts the seam's 70 ms after the last one ends, one frame after its last frame.
+        const seam = (second[0]?.at ?? 0) - (first[123]?.at ?? 0);
+        assert.approximately(seam, frameMs + 70, 1);
+        // Hosted H3 sends no frames while nothing plays.
+        yield* Effect.sleep("10 seconds");
+        assert.strictEqual((yield* Ref.get(frames)).length, 248);
+      }),
+    );
+  },
+);
 
-layer(environment())("playback", (it) => {
-  it.effect("plays each 5 s clip as 124 frames with a measured seam, and nothing when idle", () =>
+layer(environment({ timing: ReactorTest.Timing.hosted }))("the hosted trace", (it) => {
+  it.effect("plays back to back within the seams two paid runs measured", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
-      const session = yield* connect;
-      const provider = yield* H3.make(session);
-      const media = yield* session.decoded;
-      const frames = yield* Ref.make<ReadonlyArray<VideoFrame>>([]);
-      yield* media.video(H3.h3ReferenceTurboRealtime.tracks.video).pipe(
-        Stream.runForEach((frame) => Ref.update(frames, (all) => [...all, frame])),
-        Effect.forkScoped,
-      );
-      yield* provider.setAutoplay(true);
-      const first = yield* provider.enqueue({ prompt: "first", seconds: 5 });
-      const second = yield* provider.enqueue({ prompt: "second", seconds: 5 });
-      yield* Effect.sleep("20 seconds");
-
-      const played = (yield* Ref.get(frames)).flatMap((frame) => {
-        const decoded = ReactorTest.frameOf(frame);
-        return decoded === undefined ? [] : [{ ...decoded, at: Number(frame.timestampMicros) }];
-      });
-      const of = (clipId: string) => played.filter((frame) => frame.clipId === clipId);
-      assert.deepStrictEqual(
-        of(first.clip.clip_id).map((frame) => frame.index),
-        Array.from({ length: 124 }, (_, index) => index),
-      );
-      assert.strictEqual(of(second.clip.clip_id).length, 124);
-      // clip_started follows clip_finished by 30–110 ms, so the seam adds that to one frame's spacing.
-      const lastOfFirst = of(first.clip.clip_id)[123]?.at ?? 0;
-      const seamMs = ((of(second.clip.clip_id)[0]?.at ?? 0) - lastOfFirst) / 1000;
-      assert.isTrue(seamMs >= 1000 / 24 + 30 && seamMs <= 1000 / 24 + 110, `seam ${seamMs} ms`);
-
-      // Hosted H3 sends no frames while nothing plays.
-      yield* Effect.sleep("10 seconds");
-      assert.strictEqual((yield* Ref.get(frames)).length, 248);
+      const { first, second } = yield* playTwo;
+      assert.strictEqual(first.length, 124);
+      assert.strictEqual(second.length, 124);
+      const seam = (second[0]?.at ?? 0) - (first[123]?.at ?? 0);
+      assert.isTrue(seam >= frameMs + 30 && seam <= frameMs + 110, `seam ${seam} ms`);
     }),
   );
 });
 
-layer(environment())("billing", (it) => {
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("billing", (it) => {
   it.effect("bills whole minutes from ready until close confirms termination", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
@@ -92,28 +88,12 @@ layer(environment())("billing", (it) => {
   );
 });
 
-layer(environment())("lost replies", (it) => {
-  it.effect("an enqueue whose reply is lost fails as unknown and is never resent", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const test = yield* ReactorTest.ReactorTest;
-      const provider = yield* H3.make(yield* connect);
-      yield* test.inject({ _tag: "DropReply", command: "enqueue" });
-      const failure = yield* Effect.flip(provider.enqueue({ prompt: "lost", seconds: 5 }));
-      assert.strictEqual(failure.context.outcome, "unknown");
-      yield* Effect.sleep("30 seconds");
-      const enqueues = (yield* test.log).filter(
-        (entry) => entry.kind === "command" && entry.name === "enqueue",
-      );
-      assert.deepStrictEqual(
-        enqueues.map((entry) => entry.dropped),
-        ["command"],
-      );
-    }),
-  );
-});
-
-layer(environment({ faults: [{ _tag: "RefuseAllocation", nth: 1 }] }))("allocation", (it) => {
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }),
+    faults: [{ _tag: "RefuseAllocation", nth: 1 }],
+  }),
+)("allocation", (it) => {
   it.effect("a refused allocation fails acquisition and allocates nothing", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
@@ -129,32 +109,35 @@ layer(environment({ faults: [{ _tag: "RefuseAllocation", nth: 1 }] }))("allocati
   );
 });
 
-layer(environment())("orchestration", (it) => {
-  it.effect("an orchestration opened with openH3 plays and terminates on the simulator", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
-      const handle = yield* Orchestration.make({ open: Orchestration.openH3({ mint }) });
-      const video = yield* handle.media.video.pipe(
-        Stream.take(124),
-        Stream.runCollect,
-        Effect.forkScoped,
-      );
-      yield* handle.media.audio.pipe(Stream.runDrain, Effect.forkScoped);
-      yield* handle.engine.setAutoplay(true);
-      yield* handle.engine.enqueue(
-        Orchestration.ClipRequest.make({
-          prompt: "one",
-          references: [],
-          durationSeconds: 5,
-          metadata: {},
-        }),
-      );
-      assert.strictEqual((yield* Fiber.join(video)).length, 124);
-      const report = yield* handle.close;
-      assert.deepStrictEqual(
-        report.sessions.map((cleanup) => cleanup.lease.remote.confirmed),
-        [true],
-      );
-    }),
-  );
-});
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+  "orchestration",
+  (it) => {
+    it.effect("an orchestration opened with openH3 plays and terminates on the simulator", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
+        const handle = yield* Orchestration.make({ open: Orchestration.openH3({ mint }) });
+        const video = yield* handle.media.video.pipe(
+          Stream.take(124),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* handle.media.audio.pipe(Stream.runDrain, Effect.forkScoped);
+        yield* handle.engine.setAutoplay(true);
+        yield* handle.engine.enqueue(
+          Orchestration.ClipRequest.make({
+            prompt: "one",
+            references: [],
+            durationSeconds: 5,
+            metadata: {},
+          }),
+        );
+        assert.strictEqual((yield* Fiber.join(video)).length, 124);
+        const report = yield* handle.close;
+        assert.deepStrictEqual(
+          report.sessions.map((cleanup) => cleanup.lease.remote.confirmed),
+          [true],
+        );
+      }),
+    );
+  },
+);

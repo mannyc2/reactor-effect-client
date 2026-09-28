@@ -60,7 +60,7 @@ import * as Tracer from "effect/Tracer";
 import type { Mutable } from "effect/Types";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 import type { AudioFrame, VideoFrame, DecodedMedia } from "reactor-effect-client/Media";
 import * as Orchestration from "reactor-effect-client/orchestration";
 import * as Testing from "reactor-effect-client/testing";
@@ -2037,7 +2037,7 @@ const takeover = (target: Target, run: Run, budget: Budget, check: "takeover" | 
             // clip shows only as `playing_clip_id`, the queued one with its metadata.
             const facts = yield* Effect.gen(function* () {
               for (;;) {
-                const snapshot = yield* provider.current;
+                const snapshot = yield* provider.snapshot;
                 if (snapshot._tag === "Ready") return snapshot;
                 yield* Effect.sleep("50 millis");
               }

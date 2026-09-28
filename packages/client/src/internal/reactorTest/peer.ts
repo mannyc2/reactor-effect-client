@@ -8,7 +8,7 @@ import * as Stream from "effect/Stream";
 import { take } from "../queue.js";
 import type { Mapping } from "../../Coordinator.js";
 import { ReactorError } from "../../ReactorError.js";
-import { h3ReferenceTurboRealtime as profile } from "../../h3/profile.js";
+import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import { Observations } from "../../observation.js";
 import type { Channel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
@@ -120,11 +120,10 @@ export const make = (sessions: Sessions): Peer => {
         close();
       }),
     deliver: (channel, bytes) =>
-      Effect.flatMap(monotonic, (now) =>
-        inbound === undefined
-          ? Effect.succeed(false)
-          : Queue.offer(inbound, { channel, bytes, due: now + sessions.channelMs }),
-      ),
+      Effect.gen(function* () {
+        const due = (yield* monotonic) + (yield* sessions.timing.delay("channel"));
+        return inbound === undefined ? false : yield* Queue.offer(inbound, { channel, bytes, due });
+      }),
     video: (frame) =>
       Effect.sync(() =>
         publish(
@@ -227,13 +226,10 @@ export const make = (sessions: Sessions): Peer => {
               outcome: "not-submitted",
             }),
           );
-        return Effect.flatMap(monotonic, (now) =>
-          Queue.offer(queue, {
-            channel,
-            bytes: new Uint8Array(bytes),
-            due: now + sessions.channelMs,
-          }),
-        ).pipe(Effect.asVoid);
+        return Effect.gen(function* () {
+          const due = (yield* monotonic) + (yield* sessions.timing.delay("channel"));
+          yield* Queue.offer(queue, { channel, bytes: new Uint8Array(bytes), due });
+        });
       }),
     close: Effect.sync(close),
     direction: () => Effect.void,

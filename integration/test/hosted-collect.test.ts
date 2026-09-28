@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import { Http, ReactorError } from "reactor-effect-client/ReactorError";
 import type { Recorded } from "reactor-effect-client/Media";
 import type { Statistics } from "reactor-effect-client/Session";
-import type * as H3 from "reactor-effect-client/h3";
+import type * as H3 from "reactor-effect-client/H3";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import {
   AudioReader,

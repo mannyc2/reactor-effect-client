@@ -1,5 +1,5 @@
 import * as Option from "effect/Option";
-import { h3ReferenceTurboRealtime } from "../h3/profile.js";
+import { h3ReferenceTurboRealtime } from "../internal/h3/profile.js";
 import type { EngineState } from "./types.js";
 
 export const emptyState = (): EngineState => ({

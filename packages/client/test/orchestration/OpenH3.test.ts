@@ -2,7 +2,7 @@
 import { expect, test } from "vitest";
 import { Context, Duration, Effect, Exit, Layer, Redacted, Result, Stream } from "effect";
 import { AcquisitionFailure, isReactorFailure, ReactorError } from "../../src/ReactorError.js";
-import * as H3 from "../../src/h3/index.js";
+import * as H3 from "../../src/H3.js";
 import { bindSession } from "../../src/orchestration/h3-source.js";
 import { openH3With } from "../../src/orchestration/open-h3.js";
 import type { Allocated } from "../../src/orchestration/open-h3.js";
@@ -12,7 +12,7 @@ import { Reactor } from "../../src/Reactor.js";
 import type { CreateOptions } from "../../src/Reactor.js";
 import type { Session } from "../../src/Session.js";
 import type { DecodedMedia } from "../../src/Media.js";
-import { fixture } from "../h3/ProviderSession.js";
+import { fixture } from "./ProviderSession.js";
 import { TestClock } from "effect/testing";
 import { cleanPressure, run, runClock } from "./SourceFixture.js";
 

@@ -1,5 +1,5 @@
 import { Config, Context, Duration, Effect, Layer, Schema } from "effect";
-import * as H3 from "reactor-effect-client/h3";
+import * as H3 from "reactor-effect-client/H3";
 
 export class SettingsError extends Schema.TaggedError<SettingsError>()("SettingsError", {
   message: Schema.String,

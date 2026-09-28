@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { Clock, Effect, Fiber, Option, Result, Stream } from "effect";
-import * as H3 from "../../src/h3/index.js";
+import * as H3 from "../../src/H3.js";
 import { bindSession, fromH3, isLocalClip } from "../../src/orchestration/h3-source.js";
 import type { H3SourceOptions } from "../../src/orchestration/h3-source.js";
 import { captureRequest, ClipId } from "../../src/orchestration/request.js";
@@ -14,8 +14,8 @@ import type { JsonObject } from "../../src/json.js";
 import { ReactorError } from "../../src/ReactorError.js";
 import { dataUri, pngBytes } from "../../src/testing/Png.js";
 import { wavBytes } from "../../src/testing/Wav.js";
-import { fixture, fixtureClip, metadataOf, textArg } from "../h3/ProviderSession.js";
-import type { Script } from "../h3/ProviderSession.js";
+import { fixture, fixtureClip, metadataOf, textArg } from "./ProviderSession.js";
+import type { Script } from "./ProviderSession.js";
 import {
   cleanPressure,
   failure,
@@ -75,7 +75,7 @@ const setup = (
       Effect.gen(function* () {
         const event = yield* fake.emit(type, data);
         yield* untilEffect(
-          provider.current.pipe(Effect.map((snapshot) => snapshot.revision >= event.sequence)),
+          provider.snapshot.pipe(Effect.map((snapshot) => snapshot.revision >= event.sequence)),
         );
         yield* Effect.sleep(1);
       });
@@ -125,7 +125,7 @@ test("H3 source has no implicit autoplay, flush, canvas, connect or reconnect po
       const { source, provider, fake } = yield* setup();
       expect(fake.calls.map((call) => call.command)).toEqual(["get_state", "get_queue"]);
       expect(fake.lifecycleCalls).toEqual({ connect: 0, reconnect: 0, close: 0 });
-      const snapshot = yield* provider.current;
+      const snapshot = yield* provider.snapshot;
       expect(snapshot._tag === "Ready" && snapshot.state.autoplay).toBe(false);
       expect(snapshot._tag === "Ready" && snapshot.state.flush_on_clip_end).toBe(true);
       expect((yield* source.state).building).toEqual(Option.none());
@@ -146,7 +146,7 @@ test("explicit canvas and hold policy changes only the requested settings", () =
         ["set_flush_on_clip_end", { enabled: false }],
       ]);
       expect((yield* source.state).canvas).toEqual(Option.some("9:16"));
-      const snapshot = yield* provider.current;
+      const snapshot = yield* provider.snapshot;
       expect(snapshot._tag === "Ready" && snapshot.state.autoplay).toBe(false);
     }),
   ));

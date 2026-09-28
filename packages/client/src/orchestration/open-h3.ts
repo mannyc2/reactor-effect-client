@@ -12,7 +12,7 @@ import type { TokenGrant } from "../Coordinator.js";
 import { AcquisitionFailure, ReactorError } from "../ReactorError.js";
 import type { CommandFailure } from "../ReactorError.js";
 import type { PolicyFailure } from "./policy.js";
-import { modelName } from "../h3/profile.js";
+import { modelName } from "../internal/h3/profile.js";
 import { noAcquisition, Reactor } from "../Reactor.js";
 import type { CreateOptions } from "../Reactor.js";
 import type { Session } from "../Session.js";
