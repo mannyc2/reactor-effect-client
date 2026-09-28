@@ -1039,3 +1039,35 @@ layer(hosted)("failing after a recovered open", (it) => {
     }),
   );
 });
+layer(hosted)("media", (it) => {
+  it.effect("video goes on after a reader falls behind its bound", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const source = yield* H3Source.open({ tokens: yield* tokens("10 minutes") });
+      yield* source.setAutoplay(true);
+      for (let index = 0; index < 8; index++)
+        yield* source.enqueue(clip(`long ${String(index)}`, 15), { _tag: "Filler", index });
+      const frames = yield* Ref.make(0);
+      const stalled = yield* Deferred.make<void>();
+      // The first frame stalls the reader past the simulated host's 512-frame bound.
+      yield* source.video.pipe(
+        Stream.runForEach(() =>
+          Ref.getAndUpdate(frames, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 0
+                ? Effect.andThen(Effect.sleep("40 seconds"), Deferred.succeed(stalled, undefined))
+                : Effect.void,
+            ),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(stalled);
+      // What the bound held drains first; frames must go on arriving after it.
+      yield* Effect.sleep("20 seconds");
+      const before = yield* Ref.get(frames);
+      yield* Effect.sleep("5 seconds");
+      assert.isAbove((yield* Ref.get(frames)) - before, 24);
+    }),
+  );
+});

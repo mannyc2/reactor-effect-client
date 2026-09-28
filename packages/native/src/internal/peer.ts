@@ -192,11 +192,16 @@ export const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audi
         }),
   );
 
-/** Per-reader bounds: a reader that falls this far behind fails with `Overflow`. */
+/**
+ * Per-reader bounds: a reader that falls this far behind fails with `Overflow`.
+ * Video holds about a second, 24 frames at H3's 24 fps, so a consumer that
+ * pauses briefly to encode keeps every frame; a second of H3's 1344 x 768 BGRA
+ * is about 99 MB.
+ */
 const bounds = {
   video: {
-    capacity: 4,
-    maxBytes: 64 * 1024 * 1024,
+    capacity: 24,
+    maxBytes: 128 * 1024 * 1024,
     bytes: (frame: VideoFrame) =>
       frame.data.byteLength + frame.metadata.byteLength + frame.track.length * 2,
   },
