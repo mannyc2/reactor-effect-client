@@ -63,6 +63,8 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("Video", { video: Schema.Literals(["absent", "black", "frozen"]) }),
   /** The session offers audio and sends none. */
   Schema.TaggedStruct("NoAudio", {}),
+  /** An enqueue with reference images is refused because one of them is invalid. */
+  Schema.TaggedStruct("InvalidImage", nth),
 ]);
 export type Fault = typeof Fault.Type;
 
@@ -80,7 +82,10 @@ export interface Timing {
   readonly seed: number;
   /** Each coordinator request, once. */
   readonly http: Range;
-  /** Each channel message and each clip's media, one way. */
+  /**
+   * Each channel message, one way. A connection's media arrives at one delay
+   * from this range, drawn when the connection opens.
+   */
   readonly channel: Range;
   /** From `POST /sessions` until the session is ACTIVE and billed. */
   readonly allocation: Range;
@@ -185,8 +190,11 @@ export const Options = Schema.Struct({
   /** The queue capacities H3's state reports. */
   generationCapacity: count(20),
   playoutCapacity: count(10),
-  /** The published rate: 125 credits a second at 10,000 a dollar, $0.75 a minute. */
-  creditsPerSecond: count(125),
+  /**
+   * The rate the pricing API publishes, in credits a minute: 7,500 at 10,000
+   * a dollar is $0.75 a minute.
+   */
+  creditsPerMinute: count(7_500),
   creditsPerDollar: count(10_000),
   /** Decoded frame size. */
   width: count(16),
@@ -220,9 +228,14 @@ export interface Entry {
   /** Monotonic milliseconds. */
   readonly at: number;
   readonly sessionId: string;
-  readonly kind: "session" | "command" | "message" | "upload";
+  readonly kind: "session" | "command" | "message" | "upload" | "build";
   readonly name: string;
   readonly clipId?: string;
+  /**
+   * A build that asked to continue from this clip: its name says whether it
+   * `continued` or built `independent`ly, which H3 itself never reports.
+   */
+  readonly continuedFrom?: string;
   /** What a `DropReply` fault took: the reply only, or the whole command. */
   readonly dropped?: "reply" | "command";
 }

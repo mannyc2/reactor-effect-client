@@ -226,9 +226,9 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         {
           name: profile.modelName.slice(profile.modelName.lastIndexOf("/") + 1),
           rate: {
-            amount_per_sec: options.creditsPerSecond,
+            amount_per_min: options.creditsPerMinute,
             unit: "credits",
-            denomination: "second",
+            denomination: "minute",
           },
         },
       ],
@@ -416,7 +416,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       return {
         seconds: billed.reduce((sum, seconds) => sum + seconds, 0),
         minutes,
-        usd: (minutes * 60 * options.creditsPerSecond) / options.creditsPerDollar,
+        usd: (minutes * options.creditsPerMinute) / options.creditsPerDollar,
       } satisfies Billing;
     }),
     log: Ref.get(entries),

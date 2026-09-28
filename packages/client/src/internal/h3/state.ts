@@ -106,7 +106,12 @@ const rank = (type: MessageType | null): number => {
   }
 };
 
-/** A state and queue that were each read in full, and that agree with each other. */
+/**
+ * A state and queue that were each read in full, and that agree with each
+ * other. H3 reports a clip armed to start after its seam as playing; whether
+ * it has left the playout queue by then is undocumented, so a playing clip at
+ * the front of that queue is taken as armed rather than as a disagreement.
+ */
 const coherent = (model: Model): model is Model & Facts =>
   model.state !== undefined &&
   model.queue !== undefined &&
@@ -114,7 +119,7 @@ const coherent = (model: Model): model is Model & Facts =>
   !model.queueDirty &&
   model.state.generation_queued === model.queue.generation.length &&
   model.state.playout_queued === model.queue.playout.length &&
-  ![...model.queue.generation, ...model.queue.playout].some(
+  ![...model.queue.generation, ...model.queue.playout.slice(1)].some(
     (clip) => clip.clip_id === model.state?.playing_clip_id,
   );
 
