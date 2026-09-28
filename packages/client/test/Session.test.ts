@@ -1,6 +1,6 @@
 /** One session through its public contract, on a simulated Reactor with the timing each case states. */
 import { assert, layer } from "@effect/vitest";
-import { Duration, Effect, Redacted } from "effect";
+import { Duration, Effect, Redacted, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
 import { connect, environment } from "./fixtures/Simulated.js";
@@ -47,7 +47,11 @@ layer(environment({ timing }))("reconnection", (it) => {
       const test = yield* ReactorTest.ReactorTest;
       yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
       const session = yield* connect;
-      yield* Effect.sleep("2 seconds");
+      // The fault drops the connection a second after its channels open.
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+      );
       assert.strictEqual((yield* session.snapshot).status, "disconnected");
       yield* session.reconnect;
       const ready = yield* session.snapshot;
