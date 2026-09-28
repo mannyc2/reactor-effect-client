@@ -8,9 +8,13 @@ The canonical wire definitions and selected protocol behavior derive from:
 - reactor-client-sdks, commit 24f1865b48f03354b15402731f1b92e90ceee92a
 - reactor-runtime, commit 8e98536c6daedca298700dc45cbb5fd9e3676f16
 Their upstream licenses and notices are retained under packages/client/notices/.
-packages/client/wire/proto contains the selected canonical protocol sources.
-The generated wire module also incorporates Google's protobuf Struct
-descriptor; see packages/client/notices/google-protobuf-LICENSE.
+packages/client/wire/proto contains the selected canonical protocol sources;
+protoc-gen-es generates the client's wire module from them. That module runs
+on @bufbuild/protobuf (Apache-2.0 AND BSD-3-Clause), a runtime dependency of
+reactor-effect-client; its Apache terms are retained in
+packages/client/notices/bufbuild-protobuf-LICENSE and the BSD terms of the
+Google protobuf code it incorporates in
+packages/client/notices/google-protobuf-LICENSE.
 
 Session, correlation, observation and browser-media implementations incorporate
 the user-supplied reactor-effect-client reference source. Reusable H3, coordinator,

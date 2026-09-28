@@ -27,7 +27,7 @@ Each package builds from its `tsconfig.build.json`, which is also its host closu
 
 After build, `check:examples` (`examples.ts`) runs each example workspace's offline tests under Node and then Bun and builds each browser bundle, failing if a bundle reaches Node or native code. Credential variables are removed and examples that need a paid session are never executed. The tests that encode video need `ffmpeg`; they skip without it, and `EXAMPLES_REQUIRE_FFMPEG=1`, which CI sets, turns its absence into a failure.
 
-`packages/client/wire/generate.py` uses CPython 3.13 and only its standard library; CI pins 3.13.5. It reads every tracked Reactor proto and the tracked Google Struct descriptor. The parser rejects syntax outside its supported canonical schema subset, and the generator has no network or host-protoc dependency. `bun run generate:check` regenerates in memory and fails on any byte difference from `packages/client/src/wire.generated.ts`; `bun run generate:wire` writes the regenerated file. Schema changes must be reviewed alongside their generated diff.
+`bun run generate:wire` runs `buf generate` with `protoc-gen-es`, both pinned exactly as client devDependencies, over the tracked Reactor protos; Google's Struct comes with buf. There is no network or host-protoc dependency. `bun run generate:check` regenerates into `packages/client/node_modules/.wire-check` and fails on any difference from `packages/client/src/internal/proto`. Schema changes must be reviewed alongside their generated diff.
 
 ## Installed-package and host evidence
 

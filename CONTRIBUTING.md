@@ -30,7 +30,6 @@ file does not repeat them.
 | ------------- | -------------------------------------------- | ---------------------- |
 | Bun           | 1.4.2 (`packageManager`)                     | everything             |
 | Node.js       | 22 or newer                                  | the Node test runs     |
-| CPython       | 3.13                                         | `generate:wire` only   |
 | Rust          | 1.90 (`packages/native/rust-toolchain.toml`) | native work            |
 | Clang (Linux) | 21                                           | native work            |
 | Effect        | 4.0.0-rc.117 (root catalog)                  | read its guide (below) |

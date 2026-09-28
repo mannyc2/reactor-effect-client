@@ -9,19 +9,13 @@ import * as Effect from "effect/Effect";
 import * as FiberMap from "effect/FiberMap";
 import * as FiberSet from "effect/FiberSet";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
 import type { Clip, Message } from "../h3/messages.js";
 import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
-import { objectFromStruct, structFromObject } from "../../json.js";
 import type { Entry, Options } from "../../ReactorTest.js";
-import {
-  ControlClientMessage,
-  ControlServerMessage,
-  DataClientMessage,
-  DataServerMessage,
-  MessageKind,
-} from "../wire.generated.js";
-import type { Google_Struct } from "../wire.generated.js";
+import * as Wire from "../wire.js";
 import type { Faults } from "./faults.js";
 import * as H3 from "./h3.js";
 import * as Media from "./media.js";
@@ -40,7 +34,7 @@ export interface Environment {
   readonly faults: Faults;
   /** Draws every delay, seeded once for the whole simulation so a run repeats. */
   readonly timing: Sampler;
-  readonly openapi: Google_Struct;
+  readonly openapi: typeof Wire.StructJson.Type;
   readonly log: (entry: Omit<Entry, "at">) => Effect.Effect<void>;
 }
 
@@ -62,11 +56,21 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     | undefined
   >(undefined);
 
-  const send = (channel: "control" | "data", bytes: Uint8Array<ArrayBuffer>) =>
+  /** The simulation encodes only messages it built, so a failure is a defect. */
+  const send = <Desc extends DescMessage>(
+    channel: "control" | "data",
+    schema: Desc,
+    message: MessageInitShape<Desc>,
+  ) =>
     Effect.flatMap(Ref.get(connection), (open) =>
-      open === undefined ? Effect.void : open.link.deliver(channel, bytes),
+      open === undefined
+        ? Effect.void
+        : Wire.encode(schema, message).pipe(
+            Effect.orDie,
+            Effect.flatMap((bytes) => open.link.deliver(channel, bytes)),
+          ),
     );
-  const data = (requestId: string, kind: number, message: Message) =>
+  const data = (requestId: string, kind: Wire.MessageKind, message: Message) =>
     Effect.gen(function* () {
       if (message.type !== "queue_update" && message.type !== "state_update")
         yield* log({
@@ -75,25 +79,22 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
           name: message.type,
           ...("clip" in message.data ? { clipId: message.data.clip.clip_id } : {}),
         });
-      const value = { type: message.type, data: structFromObject(message.data) };
-      yield* send(
-        "data",
-        DataServerMessage.encode({
-          request_id: requestId,
-          kind,
-          payload: { case: "message", value },
-        }),
-      );
+      const json = yield* Effect.orDie(Schema.decodeUnknownEffect(Wire.StructJson)(message.data));
+      yield* send("data", Wire.DataServerMessageSchema, {
+        requestId,
+        kind,
+        payload: { case: "message", value: { type: message.type, data: json } },
+      });
     });
-  const respond = (requestId: string, payload?: DataServerMessage["payload"]) =>
-    send(
-      "data",
-      DataServerMessage.encode({
-        request_id: requestId,
-        kind: MessageKind.MESSAGE_KIND_RESPONSE,
-        ...(payload && { payload }),
-      }),
-    );
+  const respond = (
+    requestId: string,
+    payload?: MessageInitShape<typeof Wire.DataServerMessageSchema>["payload"],
+  ) =>
+    send("data", Wire.DataServerMessageSchema, {
+      requestId,
+      kind: Wire.MessageKind.RESPONSE,
+      ...(payload && { payload }),
+    });
   const later = (ms: number, input: H3.Input) =>
     FiberSet.run(timers, Effect.sleep(Duration.millis(ms)).pipe(Effect.andThen(apply(input))));
   /** Media reaches the open connection on a track it has resumed. */
@@ -172,9 +173,9 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       if ("requestId" in output && output.requestId === withheld) return;
       switch (output._tag) {
         case "Reply":
-          return yield* data(output.requestId, MessageKind.MESSAGE_KIND_RESPONSE, output.message);
+          return yield* data(output.requestId, Wire.MessageKind.RESPONSE, output.message);
         case "Broadcast":
-          return yield* data("", MessageKind.MESSAGE_KIND_NOTIFICATION, output.message);
+          return yield* data("", Wire.MessageKind.NOTIFICATION, output.message);
         case "Ack":
           return yield* respond(output.requestId);
         case "Unknown":
@@ -233,16 +234,15 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     );
   }
 
-  const control = (message: ControlClientMessage) => {
-    const answer = (payload: NonNullable<ControlServerMessage["payload"]>) =>
-      send(
-        "control",
-        ControlServerMessage.encode({
-          request_id: message.request_id,
-          kind: MessageKind.MESSAGE_KIND_RESPONSE,
-          payload,
-        }),
-      );
+  const control = (message: Wire.ControlClientMessage) => {
+    const answer = (
+      payload: NonNullable<MessageInitShape<typeof Wire.ControlServerMessageSchema>["payload"]>,
+    ) =>
+      send("control", Wire.ControlServerMessageSchema, {
+        requestId: message.requestId,
+        kind: Wire.MessageKind.RESPONSE,
+        payload,
+      });
     const pause = (name: string, paused: boolean) =>
       Ref.update(connection, (open) => {
         if (open === undefined) return open;
@@ -251,29 +251,29 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         else next.delete(name);
         return { ...open, paused: next };
       });
-    switch (message.payload?.case) {
-      case "request_schema":
-        return answer({ case: "model_schema", value: { openapi: environment.openapi } });
-      case "pause_track":
+    switch (message.payload.case) {
+      case "requestSchema":
+        return answer({ case: "modelSchema", value: { openapi: environment.openapi } });
+      case "pauseTrack":
         return pause(message.payload.value.name, true);
-      case "resume_track":
+      case "resumeTrack":
         return pause(message.payload.value.name, false);
-      case "publish_track":
+      case "publishTrack":
         return answer({ case: "error", value: { code: "unknown_track", message: "no input" } });
-      case "request_clip":
-      case "request_recording":
-        return answer({ case: "clip_failed", value: { reason: "recorder disabled" } });
+      case "requestClip":
+      case "requestRecording":
+        return answer({ case: "clipFailed", value: { reason: "recorder disabled" } });
       default:
         // Pings and upload or unpublish notifications need no answer.
         return Effect.void;
     }
   };
 
-  const command = (message: DataClientMessage) =>
+  const command = (message: Wire.DataClientMessage) =>
     Effect.gen(function* () {
-      if (message.payload?.case !== "command") return;
+      if (message.payload.case !== "command") return;
       const { type: name, data: args } = message.payload.value;
-      const requestId = message.request_id;
+      const requestId = message.requestId;
       const fault = yield* faults.trip(
         (candidate) => candidate._tag === "DropReply" && candidate.command === name,
       );
@@ -281,7 +281,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       const dropped = fault && (applied ? "reply" : "command");
       yield* log({ sessionId, kind: "command", name, ...(dropped && { dropped }) });
       if (dropped === "command") return;
-      const input = yield* Effect.try(() => (args === undefined ? {} : objectFromStruct(args)));
+      const input = args ?? {};
       const images = input.reference_images;
       const invalid =
         name === "enqueue" && Array.isArray(images) && images.length > 0
@@ -315,8 +315,8 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       Effect.gen(function* () {
         if ((yield* Ref.get(connection))?.link !== link) return;
         if (channel === "control")
-          yield* control(yield* Effect.try(() => ControlClientMessage.decode(bytes)));
-        else yield* command(yield* Effect.try(() => DataClientMessage.decode(bytes)));
+          yield* control(yield* Wire.decode(Wire.ControlClientMessageSchema, bytes));
+        else yield* command(yield* Wire.decode(Wire.DataClientMessageSchema, bytes));
       }).pipe(Effect.ignore),
   };
 });

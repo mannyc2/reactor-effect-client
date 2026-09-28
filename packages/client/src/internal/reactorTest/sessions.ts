@@ -16,8 +16,8 @@ import type { IceServersReply, Registered, SdpAnswer } from "../../Coordinator.j
 import type { Descriptor } from "../../Coordinator.js";
 import type { SessionAuthorization } from "../../Coordinator.js";
 import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
-import { structFromObject } from "../../json.js";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
+import * as Wire from "../wire.js";
 import * as Faults from "./faults.js";
 import { deployment } from "./h3.js";
 import type { Link } from "./peer.js";
@@ -96,7 +96,9 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   /** Upload slots handed out and not yet filled, with the session that asked for each. */
   const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
   const uploads = yield* Ref.make(0);
-  const openapi = structFromObject(deployment(options.referenceAudio));
+  const openapi = yield* Schema.decodeUnknownEffect(Wire.StructJson)(
+    deployment(options.referenceAudio),
+  ).pipe(Effect.orDie);
 
   const count = (key: "grants" | "sessions" | "connections" | "peers") =>
     Ref.modify(counts, (all) => [all[key] + 1, { ...all, [key]: all[key] + 1 }] as const);

@@ -10,7 +10,7 @@ import * as Result from "effect/Result";
 import type * as Headers from "effect/unstable/http/Headers";
 import { ReactorError } from "../ReactorError.js";
 import type { Descriptor } from "../Coordinator.js";
-import type { ClipReady } from "./wire.generated.js";
+import type { ClipReady } from "./wire.js";
 
 export interface Segment {
   readonly url: string;
@@ -123,18 +123,18 @@ export const download = (
   const totalBytes = options.maxTotalBytes ?? 64 * 1024 * 1024;
   const maxSegments = options.maxSegments ?? 1024;
   const playlist: Effect.Effect<ReadonlyArray<Segment>, ReactorError> = Effect.gen(function* () {
-    const reply = yield* fetcher.fetch("clip playlist", clip.playlist_url, manifestBytes);
+    const reply = yield* fetcher.fetch("clip playlist", clip.playlistUrl, manifestBytes);
     if (reply.status !== 202) {
       const text = yield* Effect.try({
         try: () => new TextDecoder("utf-8", { fatal: true }).decode(reply.bytes),
         catch: () => ReactorError.fromCode("Protocol", "clip playlist is not UTF-8"),
       });
       return yield* Effect.fromResult(
-        parsePlaylist({ text, baseUrl: clip.playlist_url, maxSegments }),
+        parsePlaylist({ text, baseUrl: clip.playlistUrl, maxSegments }),
       );
     }
     // A local disconnection does not prove the remote stopped: ask the coordinator.
-    const descriptor = yield* fetcher.read(clip.session_id);
+    const descriptor = yield* fetcher.read(clip.sessionId);
     if (descriptor.state === "CLOSED" || descriptor.state === "INACTIVE")
       return yield* ReactorError.fromCode(
         "TerminalSession",

@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import type {
   Descriptor,
   IceCandidate,
@@ -51,12 +52,13 @@ import type {
   UploadOptions,
   UploadProgress,
   Uploaded,
+  UploadReference,
 } from "../Session.js";
 import * as Correlator from "./correlator.js";
 import * as Hub from "./hub.js";
 import { take } from "./queue.js";
 import * as Stats from "./stats.js";
-import * as Wire from "./wire.generated.js";
+import * as Wire from "./wire.js";
 
 export interface Settings {
   readonly replyTimeout: Duration.Duration;
@@ -151,61 +153,16 @@ const transitions: Record<Status, ReadonlyArray<Status>> = {
 
 const isClosing = (status: Status): boolean => status === "closing" || status === "closed";
 
-type ControlPayload = NonNullable<Wire.ControlClientMessage["payload"]>;
-type ControlReply = NonNullable<Wire.ControlServerMessage["payload"]>;
-
-/** A decoder rejects malformed input with a `ReactorError`; anything else it throws is a bug. */
-const decoding = <A>(decode: () => A): Effect.Effect<A, ReactorError> =>
-  Effect.suspend(() => {
-    try {
-      return Effect.succeed(decode());
-    } catch (cause) {
-      return ReactorError.is(cause) ? Effect.fail(cause) : Effect.die(cause);
-    }
-  });
-
-const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Array.isArray(value);
-const valueFromJson = (value: Schema.Json): Wire.Google_Value => {
-  if (value === null) return { kind: { case: "null_value", value: 0 } };
-  if (typeof value === "boolean") return { kind: { case: "bool_value", value } };
-  if (typeof value === "number") return { kind: { case: "number_value", value } };
-  if (typeof value === "string") return { kind: { case: "string_value", value } };
-  if (isJsonArray(value))
-    return { kind: { case: "list_value", value: { values: value.map(valueFromJson) } } };
-  return { kind: { case: "struct_value", value: structFromJson(value) } };
-};
-const structFromJson = (object: Schema.JsonObject): Wire.Google_Struct => ({
-  fields: new Map(Object.entries(object).map(([key, value]) => [key, valueFromJson(value)])),
-});
-const valueToJson = (value: Wire.Google_Value, depth: number): Schema.Json => {
-  const kind = value.kind;
-  if (kind === undefined || depth > 64) return null;
-  switch (kind.case) {
-    case "null_value":
-      return null;
-    case "number_value":
-      return Number.isFinite(kind.value) ? kind.value : null;
-    case "string_value":
-    case "bool_value":
-      return kind.value;
-    case "struct_value":
-      return objectFromStruct(kind.value, depth + 1);
-    case "list_value":
-      return kind.value.values.map((item) => valueToJson(item, depth + 1));
-  }
-};
-const objectFromStruct = (struct: Wire.Google_Struct, depth: number): Schema.JsonObject =>
-  Object.fromEntries(
-    [...struct.fields].map(([key, value]) => [key, valueToJson(value, depth + 1)]),
-  );
-/** Unset kinds and non-finite numbers become null, as upstream Struct conversion does. */
-export const jsonFromStruct = (struct: Wire.Google_Struct): Schema.JsonObject =>
-  objectFromStruct(struct, 0);
+type ControlPayload = Exclude<
+  MessageInitShape<typeof Wire.ControlClientMessageSchema>["payload"],
+  { readonly case: undefined } | undefined
+>;
+type ControlReply = Exclude<Wire.ControlServerMessage["payload"], { readonly case: undefined }>;
 
 const UploadReference = Schema.Struct({
-  upload_id: Schema.NonEmptyString,
+  uploadId: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
-  mime_type: Schema.NonEmptyString,
+  mimeType: Schema.NonEmptyString,
   size: Schema.BigInt.check(
     Schema.isGreaterThanOrEqualToBigInt(0n),
     Schema.isLessThanBigInt(1n << 63n),
@@ -213,7 +170,7 @@ const UploadReference = Schema.Struct({
 });
 const CommandInput = Schema.Struct({
   name: Schema.NonEmptyString,
-  data: Schema.JsonObject,
+  data: Wire.StructJson,
   uploads: Schema.ReadonlyMap(Schema.NonEmptyString, UploadReference).check(
     Schema.makeFilter((uploads) => uploads.size <= 128 || "at most 128 upload references"),
   ),
@@ -435,39 +392,39 @@ export const make = Effect.fnUntraced(function* (input: {
 
   const receiveData = (c: Connection, bytes: Uint8Array) =>
     Effect.gen(function* () {
-      const message = yield* decoding(() => Wire.DataServerMessage.decode(bytes));
+      const message = yield* Wire.decode(Wire.DataServerMessageSchema, bytes);
       const payload = message.payload;
-      if (payload?.case === "error") {
+      if (payload.case === "error") {
         const error = ReactorError.make({
           reason: remoteError(payload.value),
           context: {
-            requestId: message.request_id,
+            requestId: message.requestId,
             generation: c.generation,
             outcome: "replied",
             detail: Redacted.make(message),
           },
         });
-        yield* data.settle(message.request_id, c.generation, (correlation) =>
+        yield* data.settle(message.requestId, c.generation, (correlation) =>
           publish(
-            { _tag: "CommandError", requestId: message.request_id, error, correlation },
+            { _tag: "CommandError", requestId: message.requestId, error, correlation },
             c.generation,
           ).pipe(Effect.andThen(Effect.fail(error))),
         );
         return;
       }
       const body =
-        payload === undefined
+        payload.case === undefined
           ? { kind: "ack" as const, raw: message }
           : {
               kind: "message" as const,
               type: payload.value.type,
               ...(payload.value.data === undefined
                 ? {}
-                : { data: jsonFromStruct(payload.value.data) }),
+                : { data: yield* Wire.json(payload.value.data) }),
               raw: message,
             };
       yield* data.settle(
-        message.request_id,
+        message.requestId,
         c.generation,
         (correlation) =>
           Effect.gen(function* () {
@@ -476,7 +433,7 @@ export const make = Effect.fnUntraced(function* (input: {
               ...body,
               _tag: "Model",
               outcome: "replied",
-              requestId: message.request_id,
+              requestId: message.requestId,
               generation: c.generation,
               sequence: yield* Ref.updateAndGet(sequence, (value) => value + 1n),
               correlation,
@@ -490,10 +447,10 @@ export const make = Effect.fnUntraced(function* (input: {
 
   const receiveControl = (c: Connection, bytes: Uint8Array) =>
     Effect.gen(function* () {
-      const message = yield* decoding(() => Wire.ControlServerMessage.decode(bytes));
+      const message = yield* Wire.decode(Wire.ControlServerMessageSchema, bytes);
       const payload = message.payload;
       // Unlike a data reply, a bodyless control message acknowledges nothing.
-      if (payload === undefined)
+      if (payload.case === undefined)
         return yield* publish(
           {
             _tag: "Diagnostic",
@@ -501,32 +458,32 @@ export const make = Effect.fnUntraced(function* (input: {
               "Protocol",
               "bodyless control response resolves no request",
               {
-                requestId: message.request_id,
+                requestId: message.requestId,
               },
             ),
           },
           c.generation,
         );
-      const claim = (yield* Ref.get(c.link)).claims.get(message.request_id);
+      const claim = (yield* Ref.get(c.link)).claims.get(message.requestId);
       if (claim !== undefined) {
-        if (payload.case === "publish_track" && payload.value.name === claim)
+        if (payload.case === "publishTrack" && payload.value.name === claim)
           // Remote ownership is recorded even after the publisher stops waiting.
           yield* Ref.update(c.link, (link): Link => ({
             ...link,
             claimed: new Set(link.claimed).add(claim),
-            claims: withoutKey(link.claims, message.request_id),
+            claims: withoutKey(link.claims, message.requestId),
           }));
         else if (payload.case === "error")
           yield* Ref.update(c.link, (link): Link => ({
             ...link,
-            claims: withoutKey(link.claims, message.request_id),
+            claims: withoutKey(link.claims, message.requestId),
           }));
         else
           return yield* fail(
             c,
             ReactorError.fromCode("UnexpectedReply", "publisher claim reply named another track", {
               operation: "publish_track",
-              requestId: message.request_id,
+              requestId: message.requestId,
               outcome: "unknown",
             }),
           );
@@ -537,14 +494,14 @@ export const make = Effect.fnUntraced(function* (input: {
               ReactorError.make({
                 reason: remoteError(payload.value),
                 context: {
-                  requestId: message.request_id,
+                  requestId: message.requestId,
                   outcome: "replied",
                   detail: Redacted.make(message),
                 },
               }),
             )
           : Effect.succeed(payload);
-      const correlation = yield* control.settle(message.request_id, c.generation, () => result);
+      const correlation = yield* control.settle(message.requestId, c.generation, () => result);
       if (payload.case !== "error" || correlation !== "matched")
         yield* publish({ _tag: "Control", message, correlation }, c.generation);
     });
@@ -964,7 +921,7 @@ export const make = Effect.fnUntraced(function* (input: {
     c: Connection,
     correlator: Correlator.Correlator<A>,
     operation: string,
-    encode: (id: string) => Uint8Array<ArrayBuffer>,
+    encode: (id: string) => Effect.Effect<Uint8Array<ArrayBuffer>, ReactorError>,
     channel: "control" | "data",
     wait: Duration.Duration,
     publication?: string,
@@ -985,7 +942,7 @@ export const make = Effect.fnUntraced(function* (input: {
             ...link,
             claims: new Map(link.claims).set(pending.id, publication),
           }));
-        const encoded = yield* Effect.result(decoding(() => encode(pending.id)));
+        const encoded = yield* Effect.result(encode(pending.id));
         if (encoded._tag === "Failure") {
           yield* forget;
           return yield* ReactorError.make({
@@ -1108,15 +1065,15 @@ export const make = Effect.fnUntraced(function* (input: {
         data,
         name,
         (id) =>
-          Wire.DataClientMessage.encode({
-            request_id: id,
-            kind: 1,
+          Wire.encode(Wire.DataClientMessageSchema, {
+            requestId: id,
+            kind: Wire.MessageKind.REQUEST,
             payload: {
               case: "command",
               value: {
                 type: payload.name,
-                data: structFromJson(payload.data),
-                uploads: new Map(payload.uploads),
+                data: payload.data,
+                uploads: Object.fromEntries(payload.uploads),
               },
             },
           }),
@@ -1156,17 +1113,25 @@ export const make = Effect.fnUntraced(function* (input: {
         c,
         control,
         operation,
-        (id) => Wire.ControlClientMessage.encode({ request_id: id, kind: 1, payload }),
+        (id) =>
+          Wire.encode(Wire.ControlClientMessageSchema, {
+            requestId: id,
+            kind: Wire.MessageKind.REQUEST,
+            payload,
+          }),
         "control",
         settings.replyTimeout,
-        payload.case === "publish_track" ? payload.value.name : undefined,
+        payload.case === "publishTrack" ? payload.value.name : undefined,
       );
     });
 
   const notification = (c: Connection, payload: ControlPayload) =>
     current(c).pipe(
       Effect.andThen(
-        decoding(() => Wire.ControlClientMessage.encode({ request_id: "", kind: 3, payload })),
+        Wire.encode(Wire.ControlClientMessageSchema, {
+          kind: Wire.MessageKind.NOTIFICATION,
+          payload,
+        }),
       ),
       Effect.flatMap((bytes) => guard(c, c.peer.send("control", bytes))),
       (effect) => deadline(effect, settings.replyTimeout, "control notification"),
@@ -1175,10 +1140,10 @@ export const make = Effect.fnUntraced(function* (input: {
   const unexpected = (message: string) =>
     ReactorError.fromCode("UnexpectedReply", message, { outcome: "replied" });
 
-  const clip = (payload: ControlPayload) =>
-    controlRequest(payload.case, payload).pipe(
+  const clip = (operation: string, payload: ControlPayload) =>
+    controlRequest(operation, payload).pipe(
       Effect.flatMap((reply) => {
-        if (reply.case === "clip_failed")
+        if (reply.case === "clipFailed")
           return Effect.fail(
             ReactorError.make({
               reason: Remote.make({
@@ -1193,16 +1158,16 @@ export const make = Effect.fnUntraced(function* (input: {
               context: { outcome: "replied" },
             }),
           );
-        if (reply.case !== "clip_ready")
+        if (reply.case !== "clipReady")
           return Effect.fail(unexpected(`clip reply was ${reply.case}`));
-        const playlist = URL.parse(reply.value.playlist_url, `${input.apiUrl}/`);
+        const playlist = URL.parse(reply.value.playlistUrl, `${input.apiUrl}/`);
         return playlist === null
           ? Effect.fail(
               ReactorError.fromCode("Protocol", "clip playlist URL is malformed", {
                 outcome: "replied",
               }),
             )
-          : Effect.succeed({ ...reply.value, playlist_url: playlist.href });
+          : Effect.succeed({ ...reply.value, playlistUrl: playlist.href });
       }),
     );
 
@@ -1261,8 +1226,8 @@ export const make = Effect.fnUntraced(function* (input: {
             notification(
               c,
               active
-                ? { case: "resume_track", value: { name } }
-                : { case: "pause_track", value: { name } },
+                ? { case: "resumeTrack", value: { name } }
+                : { case: "pauseTrack", value: { name } },
             ),
           ),
         ),
@@ -1365,10 +1330,10 @@ export const make = Effect.fnUntraced(function* (input: {
           if (!(yield* Ref.get(c.link)).claimed.has(name)) {
             const reply = yield* controlRequest(
               "publish_track",
-              { case: "publish_track", value: { name } },
+              { case: "publishTrack", value: { name } },
               c,
             );
-            if (reply.case !== "publish_track" || reply.value.name !== name)
+            if (reply.case !== "publishTrack" || reply.value.name !== name)
               return yield* unexpected("publisher claim reply mismatch");
             yield* Ref.update(c.link, (link): Link => ({
               ...link,
@@ -1385,7 +1350,7 @@ export const make = Effect.fnUntraced(function* (input: {
       name,
       (c) =>
         replaceSender(c, name, null).pipe(
-          Effect.andThen(notification(c, { case: "unpublish_track", value: { name } })),
+          Effect.andThen(notification(c, { case: "unpublishTrack", value: { name } })),
           Effect.andThen(
             Ref.update(c.link, (link) => {
               const claimed = new Set(link.claimed);
@@ -1426,13 +1391,10 @@ export const make = Effect.fnUntraced(function* (input: {
       for (const name of link.claimed) {
         // Closing has fenced ordinary requests; these are the last notifications.
         const sent = yield* Effect.exit(
-          decoding(() =>
-            Wire.ControlClientMessage.encode({
-              request_id: "",
-              kind: 3,
-              payload: { case: "unpublish_track", value: { name } },
-            }),
-          ).pipe(
+          Wire.encode(Wire.ControlClientMessageSchema, {
+            kind: Wire.MessageKind.NOTIFICATION,
+            payload: { case: "unpublishTrack", value: { name } },
+          }).pipe(
             Effect.flatMap((bytes) => c.peer.send("control", bytes)),
             (effect) =>
               deadline(
@@ -1665,10 +1627,10 @@ export const make = Effect.fnUntraced(function* (input: {
           c,
           signaling.allocateUpload(known.id, name, mimeType, copy.length),
         );
-        const file: Wire.UploadReference = {
-          upload_id: slot.presigned_id,
+        const file: UploadReference = {
+          uploadId: slot.presigned_id,
           name,
-          mime_type: mimeType,
+          mimeType,
           size: BigInt(copy.length),
         };
         yield* Ref.update(progress, (p): UploadProgress => ({
@@ -1683,7 +1645,7 @@ export const make = Effect.fnUntraced(function* (input: {
           transfer: "confirmed",
           notification: "unknown",
         }));
-        yield* notification(c, { case: "file_uploaded", value: file }).pipe(
+        yield* notification(c, { case: "fileUploaded", value: file }).pipe(
           Effect.tapError((error) =>
             error.context.outcome === "not-submitted"
               ? Ref.update(progress, (p): UploadProgress => ({
@@ -1748,28 +1710,28 @@ export const make = Effect.fnUntraced(function* (input: {
     events: (options) => Stream.unwrap(hub.subscribe(options?.capacity)),
     observe,
     command,
-    schema: controlRequest("request_schema", { case: "request_schema", value: {} }).pipe(
+    schema: controlRequest("request_schema", { case: "requestSchema", value: {} }).pipe(
       Effect.flatMap((reply) =>
-        reply.case === "model_schema"
-          ? Effect.succeed({
-              raw: reply.value,
-              ...(reply.value.openapi === undefined
-                ? {}
-                : { openapi: jsonFromStruct(reply.value.openapi) }),
-            })
+        reply.case === "modelSchema"
+          ? reply.value.openapi === undefined
+            ? Effect.succeed({ raw: reply.value })
+            : Effect.map(Wire.json(reply.value.openapi), (openapi) => ({
+                raw: reply.value,
+                openapi,
+              }))
           : Effect.fail(unexpected(`schema reply was ${reply.case}`)),
       ),
     ),
     upload,
     requestRecordingClip: (seconds) =>
       Number.isFinite(seconds) && seconds > 0
-        ? clip({ case: "request_clip", value: { duration_seconds: seconds } })
+        ? clip("request_clip", { case: "requestClip", value: { durationSeconds: seconds } })
         : Effect.fail(
             ReactorError.fromCode("InvalidInput", "clip duration must be finite and positive", {
               outcome: "not-submitted",
             }),
           ),
-    recording: clip({ case: "request_recording", value: {} }),
+    recording: clip("request_recording", { case: "requestRecording", value: {} }),
     stats: Effect.gen(function* () {
       const { c } = yield* currentReady;
       const raw = yield* guard(c, c.peer.stats);

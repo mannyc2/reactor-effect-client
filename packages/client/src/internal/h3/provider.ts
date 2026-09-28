@@ -595,7 +595,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           .pipe(Effect.mapError((error) => localFailure("enqueue", error)));
         if (
           uploaded.file.size !== BigInt(reference.size) ||
-          uploaded.file.mime_type !== reference.mimeType
+          uploaded.file.mimeType !== reference.mimeType
         )
           return yield* localFailure(
             "enqueue",
