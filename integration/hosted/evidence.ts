@@ -132,6 +132,52 @@ export const SchedulerBoundary = Schema.Struct({
 });
 export type SchedulerBoundary = typeof SchedulerBoundary.Type;
 
+/**
+ * The largest change between consecutive decoded frames around a boundary,
+ * against the change between the frames of the clip that ends just before it.
+ */
+export const SeamJump = Schema.Struct({
+  atMs: Ms,
+  /** Mean absolute luma difference, 0 to 255, between the frames either side. */
+  change: Schema.Finite,
+  /** The median change between consecutive frames of the ending clip. */
+  typical: Schema.Finite,
+  /** `change` over `typical`: near 1 when the picture carries across the boundary. */
+  ratio: Schema.Finite,
+});
+export type SeamJump = typeof SeamJump.Type;
+
+/** One boundary between two scheduled items: when it fell and how it looked. */
+export const ItemSeam = Schema.Struct({
+  ending: Schema.String,
+  next: Schema.String,
+  /** Whether the next clip was built continuing from the ending one. */
+  continued: Schema.Boolean,
+  endedMs: Schema.optionalKey(Ms),
+  startedMs: Schema.optionalKey(Ms),
+  pause: Schema.optionalKey(SeamPause),
+  jump: Schema.optionalKey(SeamJump),
+  /** Names of the frames either side, written beside the run, never into this file. */
+  frames: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+export type ItemSeam = typeof ItemSeam.Type;
+
+/** A scheduled item as its as-run told it, in run-relative milliseconds. */
+export const RunItem = Schema.Struct({
+  key: Schema.String,
+  submittedMs: Ms,
+  readyMs: Schema.optionalKey(Ms),
+  startedMs: Schema.optionalKey(Ms),
+  endedMs: Schema.optionalKey(Ms),
+  seconds: Schema.optionalKey(Schema.Finite),
+  airedSeconds: Schema.optionalKey(Schema.Finite),
+  termination: Schema.optionalKey(Schema.Literals(["finished", "stopped"])),
+  /** The last as-run status. */
+  last: Schema.String,
+  dropped: Schema.optionalKey(Schema.String),
+});
+export type RunItem = typeof RunItem.Type;
+
 export const Pressure = Schema.Struct({
   deliveredVideo: Counter,
   deliveredAudio: Counter,
@@ -572,6 +618,87 @@ export const Evidence = Schema.Struct({
     }),
   ),
   schedulerRenewal: Schema.optionalKey(SchedulerRenewal),
+  /**
+   * One capped session through the public scheduler: inserts with and without
+   * continuity inside a line, and an edit batch timed to take effect just
+   * before a boundary. Protocol, as-run and decoded-media observations only.
+   */
+  schedulerEdits: Schema.optionalKey(
+    Schema.Struct({
+      items: Schema.Array(RunItem),
+      plannedOrder: Schema.Array(Schema.String),
+      startOrder: Schema.Array(Schema.String),
+      seams: Schema.Array(ItemSeam),
+      batch: Schema.optionalKey(
+        Schema.Struct({
+          submittedMs: Ms,
+          committedMs: Schema.optionalKey(Ms),
+          /** When the clip playing at the commit ended. */
+          boundaryMs: Schema.optionalKey(Ms),
+          withdrawn: Schema.Array(Schema.String),
+          inserted: Schema.String,
+          withdrawnStarted: Schema.Boolean,
+        }),
+      ),
+      estimates: Schema.optionalKey(
+        Schema.Struct({
+          buildMedian: Schema.optionalKey(Schema.Finite),
+          buildP95: Schema.optionalKey(Schema.Finite),
+          length: Schema.Finite,
+        }),
+      ),
+      media: Schema.optionalKey(Schema.Struct({ video: VideoSummary, audio: AudioSummary })),
+    }),
+  ),
+  /**
+   * One capped session: raw H3 probes of position zero behind a running build,
+   * a popped build's hold on the build slot and whether a queue read sent
+   * right after an enqueue reflects it, then a cut lane cutting a long clip.
+   */
+  schedulerCut: Schema.optionalKey(
+    Schema.Struct({
+      positionZero: Schema.optionalKey(
+        Schema.Struct({
+          buildingClipId: Schema.String,
+          requestedClipId: Schema.String,
+          /** Enqueued after the position-zero clip, at the end of the queue. */
+          tailClipId: Schema.String,
+          generationOrder: Schema.Array(Schema.String),
+        }),
+      ),
+      poppedBuild: Schema.optionalKey(
+        Schema.Struct({
+          poppedMs: Ms,
+          nextSubmittedMs: Ms,
+          nextReadyMs: Schema.optionalKey(Ms),
+          /** How long the clip queued behind the popped one took to be Ready. */
+          nextBuildMs: Schema.optionalKey(Ms),
+          /** A lone build's time in the same session, for comparison. */
+          loneBuildMs: Schema.optionalKey(Ms),
+        }),
+      ),
+      /** An enqueue then a queue read sent right behind it, without waiting for the enqueue's reply. */
+      ordering: Schema.Array(
+        Schema.Struct({
+          sentMs: Ms,
+          listed: Schema.Boolean,
+          clipKnown: Schema.Boolean,
+          /** Whether the read's reply arrived before the enqueue's. */
+          repliedFirst: Schema.optionalKey(Schema.Boolean),
+        }),
+      ),
+      items: Schema.Array(RunItem),
+      cut: Schema.optionalKey(
+        Schema.Struct({
+          longKey: Schema.String,
+          cutterKey: Schema.String,
+          cutterSubmittedMs: Ms,
+          seam: Schema.optionalKey(ItemSeam),
+        }),
+      ),
+      media: Schema.optionalKey(Schema.Struct({ video: VideoSummary, audio: AudioSummary })),
+    }),
+  ),
   outcomes: Schema.Array(Schema.Literals(["not-submitted", "unknown", "replied"])),
   criteria: Schema.Array(Criterion),
   missing: Schema.Array(Schema.String),
@@ -634,6 +761,24 @@ export const required = (evidence: Evidence): readonly string[] => {
         ...(edit === "none" ? [] : [`scheduler.boundaries.${index}.command`]),
       ]),
       "scheduler.media.video.arrivalsMs.0",
+    ];
+  if (evidence.check === "scheduler-edits")
+    return [
+      ...common,
+      "schedulerEdits.items.0.startedMs",
+      "schedulerEdits.seams.0.jump",
+      "schedulerEdits.seams.0.pause",
+      "schedulerEdits.batch.committedMs",
+      "schedulerEdits.media.video.arrivalsMs.0",
+    ];
+  if (evidence.check === "scheduler-cut")
+    return [
+      ...common,
+      "schedulerCut.positionZero",
+      "schedulerCut.poppedBuild.nextReadyMs",
+      "schedulerCut.ordering.0",
+      "schedulerCut.cut.seam.pause",
+      "schedulerCut.media.video.arrivalsMs.0",
     ];
   if (evidence.check === "takeover" || evidence.check === "resume")
     return [

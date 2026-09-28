@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The hosted qualification gains two one-session checks for 0.7.0's scheduler, at most $0.75 each. `scheduler-edits` inserts clips into a group with and without `continuity: "previous"` and sends an edit batch timed to take effect a second before a boundary. It records the order clips air in, when the batch took effect, and each seam's pause and picture change against the ending clip's own motion. `scheduler-cut` probes raw H3 for position zero behind a running build, how long a popped build holds the build slot, and whether a queue read sent right behind an enqueue lists the new clip, then lets a cut lane stop a playing 15 s clip and measures the cut's seam. The two frames either side of each seam are written for review outside the evidence, which still holds no frame.
+
 ## [0.7.0] - 2026-09-27
 
 The orchestration scheduler becomes a queue a live show can edit. Beats of a line air back to back as a group. A queued beat can be replaced, and a clip inserted before or after any beat. Drops, amendments and inserts apply together as one make-before-break batch, where the old beats cover until the new ones are Ready. Lanes can replace or skip, or cut lower lanes. Items can start as soon as possible or be held until released. Cues fire at offsets from a clip's start or end. Clips lost with a session are rebuilt from the plan, filler lengths tile the gap to an anchor, and a clip can continue from the one before it. Deadlines and the runway floor now use build times the scheduler measures itself, and refused withdrawals are retried by the scheduler. `SchedulerShape`, `EngineShape`, `StartMode`, `AsRunStatus`, `SchedulerState` and the submission errors gain members, so a `^0.6.0` range does not include it. The native Rust sources are unchanged.

@@ -3,7 +3,7 @@
  * saw. It is what a pull request, the changelog or an upstream report quotes.
  */
 import { confirmedOwnedCleanup, rejudged } from "./evidence.js";
-import type { Evidence, SchedulerRenewal, SpanRecord } from "./evidence.js";
+import type { Evidence, ItemSeam, SchedulerRenewal, SpanRecord } from "./evidence.js";
 
 const seconds = (ms: number | undefined): string =>
   ms === undefined ? "?" : `${(ms / 1000).toFixed(2)} s`;
@@ -216,6 +216,66 @@ const section = (evidence: Evidence): string => {
       "Clip metadata",
       `${counts(scheduler.metadata.observed)}; mismatched ${counts(scheduler.metadata.mismatched)}`,
     );
+  }
+  const seamLine = (seam: ItemSeam): string =>
+    `${seam.ending} to ${seam.next}${seam.continued ? " (continued)" : ""}: ${
+      seam.pause === undefined
+        ? "pause not measured"
+        : `pause ${seconds(seam.pause.durationMs)} (${seam.pause.frames} frames, ${seam.pause.dark} dark)`
+    }; ${
+      seam.jump === undefined
+        ? "join not measured"
+        : `join change ${seam.jump.change.toFixed(1)} against ${seam.jump.typical.toFixed(1)} within the clip (x${seam.jump.ratio.toFixed(1)})`
+    }`;
+  const edits = evidence.schedulerEdits;
+  if (edits !== undefined) {
+    add(
+      "Order",
+      `planned ${edits.plannedOrder.join(", ")}; started ${edits.startOrder.join(", ") || "none"}`,
+    );
+    for (const [index, seam] of edits.seams.entries()) add(`Seam ${index + 1}`, seamLine(seam));
+    const batch = edits.batch;
+    if (batch !== undefined)
+      add(
+        "Edit batch",
+        `${batch.committedMs === undefined ? "never took effect" : `took effect ${seconds(batch.committedMs - batch.submittedMs)} after it was sent${batch.boundaryMs === undefined ? "" : `, ${seconds(batch.boundaryMs - batch.committedMs)} before its boundary`}`}; withdrawn clip ${batch.withdrawnStarted ? "STARTED" : "never started"}`,
+      );
+    if (edits.estimates !== undefined)
+      add(
+        "Estimates",
+        `build ${edits.estimates.buildMedian?.toFixed(3) ?? "?"} s median and ${edits.estimates.buildP95?.toFixed(3) ?? "?"} s p95 per requested second; actual over requested length ${edits.estimates.length.toFixed(4)}`,
+      );
+  }
+  const cut = evidence.schedulerCut;
+  if (cut !== undefined) {
+    const zero = cut.positionZero;
+    if (zero !== undefined) {
+      const names = new Map([
+        [zero.buildingClipId, "running build"],
+        [zero.requestedClipId, "position zero"],
+        [zero.tailClipId, "tail"],
+      ]);
+      add(
+        "Position zero",
+        `generation order ${zero.generationOrder.map((id) => names.get(id) ?? "other").join(", ") || "empty"}`,
+      );
+    }
+    const popped = cut.poppedBuild;
+    if (popped !== undefined)
+      add(
+        "Popped build",
+        `the clip behind it took ${popped.nextBuildMs === undefined ? "?" : seconds(popped.nextBuildMs)} to be Ready; a lone build took ${popped.loneBuildMs === undefined ? "?" : seconds(popped.loneBuildMs)}`,
+      );
+    add(
+      "Queue read after enqueue",
+      `${cut.ordering.filter((probe) => probe.listed).length} of ${cut.ordering.length} listed the new clip; ${cut.ordering.filter((probe) => probe.repliedFirst === true).length} were answered before the enqueue`,
+    );
+    const long = cut.items.find((item) => item.key === cut.cut?.longKey);
+    if (cut.cut?.seam !== undefined)
+      add(
+        "Cut",
+        `the long clip ended ${long?.termination ?? "?"} after ${long?.airedSeconds === undefined ? "?" : `${long.airedSeconds.toFixed(2)} s`}; ${seamLine(cut.cut.seam)}`,
+      );
   }
   const renewal = evidence.schedulerRenewal;
   if (renewal !== undefined) {
