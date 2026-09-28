@@ -890,6 +890,11 @@ export const step: {
               ),
             );
             state = { ...state, nextOrder: state.nextOrder - 1 };
+            // A replacement takes its part's place: withdrawing the group or that place reaches it.
+            const group =
+              old.group === undefined || old.inserted ? undefined : groups.get(old.group.key);
+            if (old.group !== undefined && group !== undefined)
+              groups.set(old.group.key, { ...group, parts: [...group.parts, edit.spec.key] });
           }
           results.push({ _tag: "Added", key: edit.spec.key });
           break;
@@ -948,25 +953,26 @@ export const step: {
     }
     actions.push({ _tag: "Accepted", id, results });
     if (pending || targets.length > 0) {
-      state = { ...state, batches: [...state.batches, { id, adds, targets }] };
-      // What nothing was built for covers nothing, so it goes at once.
-      for (const target of targets) {
-        const item = items.get(target.key);
-        if (item?.phase === "Accepted")
+      // What nothing was built for covers nothing, so it goes at once, and is answered once.
+      const later = targets.filter((target) => items.get(target.key)?.phase !== "Accepted");
+      for (const target of targets)
+        if (!later.includes(target))
           withdraw(
             target.key,
             target.reason,
             target.index >= 0 ? { id, index: target.index } : undefined,
           );
-      }
+      state = { ...state, batches: [...state.batches, { id, adds, targets: later }] };
     } else actions.push({ _tag: "Committed", id });
   };
+  /** A group's first or last waiting part by place; a replacement shares its part's place. */
   function firstOrLastPart(key: ItemKey, side: "before" | "after"): Item | undefined {
-    const parts =
+    const parts = (
       groups
         .get(key)
         ?.parts.map((part) => items.get(part))
-        .filter(live) ?? [];
+        .filter(live) ?? []
+    ).sort((a, b) => (a.group?.index ?? 0) - (b.group?.index ?? 0) || a.generation - b.generation);
     return side === "before" ? parts[0] : parts[parts.length - 1];
   }
 
@@ -1483,10 +1489,21 @@ export const step: {
       break;
     case "Close": {
       state = { ...state, accepting: false, closed: true };
+      // A pending batch's withdrawals take effect now: what they name never airs, and each
+      // is answered with what became of its item (#64).
+      for (const batch of state.batches)
+        for (const target of batch.targets)
+          withdraw(
+            target.key,
+            target.reason,
+            target.index >= 0 ? { id: batch.id, index: target.index } : undefined,
+          );
       for (const item of items.values()) {
         if (item.phase === "Settled") continue;
         if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
         else if (item.phase === "Started") settle(item.spec.key, { _tag: "Unobserved" });
+        else if (item.withdraw !== undefined)
+          settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
         else settle(item.spec.key, { _tag: "Failed", reason: "the playout closed" });
       }
       for (const batch of state.batches)
