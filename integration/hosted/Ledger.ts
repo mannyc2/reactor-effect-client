@@ -80,6 +80,7 @@ const encode = Schema.encodeEffect(EvidenceJson);
  * each later save replaces it atomically. A save whose text holds any of the
  * run's secrets writes nothing and fails. Saves run one at a time: two at once
  * would share the one pending file, and the second rename would find it gone.
+ * With `write` false a save only checks: the encoding and the secrets.
  */
 export const writer = (file: string) =>
   Effect.gen(function* () {
@@ -87,7 +88,11 @@ export const writer = (file: string) =>
     const claimed = yield* Ref.make(false);
     const one = yield* Semaphore.make(1);
     const failed = () => SaveFailed.make({ message: `${file} could not be written` });
-    return (evidence: Evidence, secrets: ReadonlyArray<Redacted.Redacted<string>>) =>
+    return (
+      evidence: Evidence,
+      secrets: ReadonlyArray<Redacted.Redacted<string>>,
+      options: { readonly write: boolean } = { write: true },
+    ) =>
       Effect.gen(function* () {
         const text = yield* encode(evidence).pipe(
           Effect.mapError(() => SaveFailed.make({ message: "the evidence does not encode" })),
@@ -101,6 +106,7 @@ export const writer = (file: string) =>
           return yield* SaveFailed.make({
             message: "the evidence would contain a credential; it was not written",
           });
+        if (!options.write) return;
         if (!(yield* Ref.get(claimed))) {
           yield* fs
             .writeFileString(file, `${text}\n`, { flag: "wx", mode: 0o600 })
@@ -111,5 +117,5 @@ export const writer = (file: string) =>
         yield* fs
           .writeFileString(pending, `${text}\n`, { mode: 0o600 })
           .pipe(Effect.andThen(fs.rename(pending, file)), Effect.mapError(failed));
-      }).pipe(one.withPermit);
+      }).pipe(one.withPermits(1));
   });
