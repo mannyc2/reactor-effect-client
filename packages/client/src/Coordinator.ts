@@ -32,10 +32,6 @@ export const defaultApiUrl = "https://api.reactor.inc";
 
 const clientInfo = { sdk_version: "0.7.0", sdk_type: "typescript-effect-independent" } as const;
 
-// ---------------------------------------------------------------------------
-// Models
-// ---------------------------------------------------------------------------
-
 /** A field the provider sends as `null` or omits for the same fact decodes as absent. */
 const NullAsAbsent = <S extends Schema.Top>(schema: S) =>
   schema.pipe(
@@ -178,7 +174,6 @@ export const terminationAttributes = (termination: Termination): Record<string, 
   ...(termination.evidence === null
     ? {}
     : { "reactor.termination.evidence": termination.evidence }),
-  ...(termination.error === undefined ? {} : { "error.type": termination.error.reason }),
 });
 
 const Pricing = Schema.Struct({
@@ -280,6 +275,28 @@ const TokenRequestBody = Schema.Struct({
   authorization_details: SessionAuthorization,
   expires_after: Schema.Int,
 });
+const ClientInfo = Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String });
+const CreateBody = Schema.Struct({
+  model: Schema.Struct({ name: Schema.NonEmptyString, version: Schema.optionalKey(Schema.String) }),
+  client_info: ClientInfo,
+  supported_transports: Schema.Array(Transport),
+  extra_args: Schema.optionalKey(Schema.Json),
+});
+const OfferBody = Schema.Struct({
+  sdp_offer: Schema.NonEmptyString,
+  client_info: ClientInfo,
+  track_mapping: Schema.Array(Mapping),
+});
+const IceBody = Schema.Struct({
+  candidates: Schema.Array(IceCandidate),
+  is_final: Schema.Boolean,
+  client_info: ClientInfo,
+});
+const UploadBody = Schema.Struct({
+  name: Schema.NonEmptyString,
+  mime_type: Schema.NonEmptyString,
+  size: PositiveInt,
+});
 
 export const Inspection = Schema.Struct({
   observedAt: Schema.Finite,
@@ -315,11 +332,10 @@ export type DownloadedClip = Recording.DownloadedClip;
 export type DownloadOptions = Recording.DownloadOptions;
 export const parsePlaylist = Recording.parsePlaylist;
 
-// ---------------------------------------------------------------------------
-// HTTP
-// ---------------------------------------------------------------------------
-
 type Auth = "session" | "signaling" | "same-origin" | "none";
+
+/** The largest response body read, unless an exchange sets its own bound. */
+const maxResponseBytes = 2_097_152;
 
 interface Exchange {
   readonly url: string;
@@ -360,7 +376,7 @@ const checkedUrl = (url: string, base?: string): Effect.Effect<URL, ReactorError
     ),
   );
 
-/** Counts every chunk, empty ones included, and keeps owned copies within the byte bound. */
+/** Reads the body within the byte bound, counting every chunk, empty ones included. */
 const readBody = (response: HttpClientResponse.HttpClientResponse, maxBytes: number) =>
   response.stream.pipe(
     Stream.catchIf(
@@ -368,19 +384,18 @@ const readBody = (response: HttpClientResponse.HttpClientResponse, maxBytes: num
       () => Stream.empty,
     ),
     Stream.runFoldEffect(
-      () => ({ chunks: [] as ReadonlyArray<Uint8Array>, size: 0, count: 0 }),
-      (read, chunk) =>
-        read.size + chunk.byteLength > maxBytes || read.count >= 16_384
+      () => ({ chunks: new Array<Uint8Array>(), size: 0 }),
+      (read, chunk) => {
+        read.size += chunk.byteLength;
+        read.chunks.push(chunk);
+        return read.size > maxBytes || read.chunks.length > 16_384
           ? Effect.fail(
               ReactorError.fromCode("Overflow", `response exceeds its ${maxBytes} byte bound`, {
                 outcome: "replied",
               }),
             )
-          : Effect.succeed({
-              chunks: [...read.chunks, new Uint8Array(chunk)],
-              size: read.size + chunk.byteLength,
-              count: read.count + 1,
-            }),
+          : Effect.succeed(read);
+      },
     ),
     Effect.map(({ chunks, size }) => {
       const bytes = new Uint8Array(size);
@@ -444,10 +459,6 @@ const jsonBody = <S extends Schema.Top & { readonly EncodingServices: never }>(
     ),
   );
 
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
-
 /** The coordinator calls one session makes, authorized by its token. */
 export interface Signaling {
   /** Resolves once the reply names the allocated session; `describe` decodes the rest. */
@@ -509,14 +520,6 @@ export interface Options {
   readonly apiKey?: Redacted.Redacted<string> | undefined;
   /** The session token that authorizes `inspect`, `terminate` and `downloadClip`. */
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
-  /**
-   * Bounds each request, from sending it to reading the whole response. By
-   * default each operation has its own: 15 s, 8 s for pricing and tokens, 3 s
-   * for each termination request and 1 s for an inspection.
-   */
-  readonly requestTimeout?: Duration.Input | undefined;
-  /** The largest response body read; 2 MiB by default. */
-  readonly maxResponseBytes?: number | undefined;
 }
 
 export class Coordinator extends Context.Service<
@@ -557,11 +560,6 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   );
   const apiUrl = base.href.replace(/\/$/, "");
   const origin = base.origin;
-  const requestTimeout =
-    options.requestTimeout === undefined
-      ? undefined
-      : Duration.fromInputUnsafe(options.requestTimeout);
-  const maxBytes = options.maxResponseBytes ?? 2_097_152;
   const path = (rest: string) => `${apiUrl}${rest}`;
   const sessionPath = (id: string) => path(`/sessions/${encodeURIComponent(id)}`);
   const transportPath = (id: string) => `${sessionPath(id)}/transport/webrtc`;
@@ -608,7 +606,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       // a transport failure after it cannot prove non-delivery.
       const response = yield* client.execute(request).pipe(Effect.mapError(network("unknown")));
       if (spec.onStatus !== undefined) yield* spec.onStatus(response.status);
-      const bytes = yield* readBody(response, spec.maxBytes ?? maxBytes).pipe(
+      const bytes = yield* readBody(response, spec.maxBytes ?? maxResponseBytes).pipe(
         Effect.mapError(network("unknown", response.status)),
       );
       const reply: Reply = { status: response.status, headers: response.headers, bytes };
@@ -638,7 +636,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     }).pipe(
       Effect.scoped,
       Effect.timeoutOrElse({
-        duration: requestTimeout ?? spec.timeout ?? Duration.seconds(15),
+        duration: spec.timeout ?? Duration.seconds(15),
         orElse: () =>
           Effect.fail(
             ReactorError.fromCode("Timeout", `${spec.operation}: deadline`, {
@@ -735,7 +733,12 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           ...(!terminal && removal._tag === "Failure" ? { error: summarize(removal.failure) } : {}),
         };
       }).pipe(
-        Effect.tap((termination) => Effect.annotateCurrentSpan(terminationAttributes(termination))),
+        Effect.tap((termination) =>
+          Effect.annotateCurrentSpan({
+            ...terminationAttributes(termination),
+            ...(termination.error === undefined ? {} : { "error.type": termination.error.reason }),
+          }),
+        ),
         Effect.withSpan(
           "reactor.coordinator.terminate",
           { kind: "client", attributes: { "reactor.session.id": sessionId } },
@@ -746,15 +749,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     return {
       create: (model, extraArgs) =>
         jsonBody(
-          Schema.Struct({
-            model: Schema.Struct({
-              name: Schema.NonEmptyString,
-              version: Schema.optionalKey(Schema.String),
-            }),
-            client_info: Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String }),
-            supported_transports: Schema.Array(Transport),
-            extra_args: Schema.optionalKey(Schema.Json),
-          }),
+          CreateBody,
           {
             model: {
               name: model.name,
@@ -769,22 +764,16 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.flatMap((body) =>
             request({ operation: "create session", method: "POST", url: path("/sessions"), body }),
           ),
-          Effect.flatMap((reply) =>
-            decodeReply(
-              Schema.Unknown,
-              "create session",
-            )(reply).pipe(
-              Effect.flatMap((raw) =>
-                Schema.decodeUnknownEffect(Allocated)(raw).pipe(
-                  Effect.map((allocated) => ({ sessionId: allocated.session_id, reply: raw })),
-                  Effect.mapError((cause) =>
-                    ReactorError.fromCode("Protocol", "create reply names no session", {
-                      operation: "create session",
-                      outcome: "unknown",
-                      detail: cause,
-                    }),
-                  ),
-                ),
+          Effect.flatMap(decodeReply(Schema.Unknown, "create session")),
+          Effect.flatMap((raw) =>
+            Schema.decodeUnknownEffect(Allocated)(raw).pipe(
+              Effect.map((allocated) => ({ sessionId: allocated.session_id, reply: raw })),
+              Effect.mapError((cause) =>
+                ReactorError.fromCode("Protocol", "create reply names no session", {
+                  operation: "create session",
+                  outcome: "unknown",
+                  detail: cause,
+                }),
               ),
             ),
           ),
@@ -856,11 +845,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ),
       offer: (sessionId, cid, sdp, mapping, replace) =>
         jsonBody(
-          Schema.Struct({
-            sdp_offer: Schema.NonEmptyString,
-            client_info: Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String }),
-            track_mapping: Schema.Array(Mapping),
-          }),
+          OfferBody,
           { sdp_offer: sdp, client_info: clientInfo, track_mapping: mapping },
           "SDP offer",
         ).pipe(
@@ -886,11 +871,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ),
       ice: (sessionId, cid, candidates, isFinal) =>
         jsonBody(
-          Schema.Struct({
-            candidates: Schema.Array(IceCandidate),
-            is_final: Schema.Boolean,
-            client_info: Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String }),
-          }),
+          IceBody,
           { candidates, is_final: isFinal, client_info: clientInfo },
           "ICE candidates",
         ).pipe(
@@ -906,15 +887,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.asVoid,
         ),
       allocateUpload: (sessionId, name, mimeType, size) =>
-        jsonBody(
-          Schema.Struct({
-            name: Schema.NonEmptyString,
-            mime_type: Schema.NonEmptyString,
-            size: PositiveInt,
-          }),
-          { name, mime_type: mimeType, size },
-          "allocate upload",
-        ).pipe(
+        jsonBody(UploadBody, { name, mime_type: mimeType, size }, "allocate upload").pipe(
           Effect.flatMap((body) =>
             request({
               operation: "allocate upload",
