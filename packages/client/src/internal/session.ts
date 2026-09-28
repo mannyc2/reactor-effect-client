@@ -501,6 +501,7 @@ export const make = Effect.fnUntraced(function* (input: {
             categories: verdict.categories,
             ...(verdict.inputKind === "" ? {} : { inputKind: verdict.inputKind }),
             ...(verdict.command === "" ? {} : { command: verdict.command }),
+            ...(message.requestId === "" ? {} : { requestId: message.requestId }),
           },
           c.generation,
         );
