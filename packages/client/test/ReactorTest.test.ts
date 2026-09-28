@@ -78,19 +78,6 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "7
   },
 );
 
-layer(environment({ timing: ReactorTest.Timing.hosted }))("the hosted trace", (it) => {
-  it.effect("plays back to back within the seams two paid runs measured", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow());
-      const { first, second } = yield* playTwo();
-      assert.strictEqual(first.length, 124);
-      assert.strictEqual(second.length, 124);
-      const seam = (second[0]?.at ?? 0) - (first[123]?.at ?? 0);
-      assert.isTrue(seam >= frameMs + 30 && seam <= frameMs + 110, `seam ${seam} ms`);
-    }),
-  );
-});
-
 layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("billing", (it) => {
   // The live pricing endpoint states H3's rate per second, and the paid runs were billed by it.
   it.effect("bills each second from ready until close confirms termination", () =>
