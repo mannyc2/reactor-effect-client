@@ -1,11 +1,22 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
-import { Deferred, Duration, Effect, Exit, Option, Ref, Scope, Stream } from "effect";
+import {
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Option,
+  Redacted,
+  Ref,
+  Scope,
+  Stream,
+} from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
 import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
 import type { Options } from "../src/Playout.js";
-import { environment } from "./fixtures/Simulated.js";
+import { commands, environment } from "./fixtures/Simulated.js";
 
 const key = (value: string) => Playout.ItemKey.make(value);
 const clip = (prompt: string, seconds = 5): H3.Request => ({ prompt, seconds });
@@ -168,6 +179,81 @@ layer(hosted)("order", (it) => {
   );
 });
 
+layer(hosted)("what airs", (it) => {
+  it.effect("names the playing item, when its start was seen and its length", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const item = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const started = yield* item.started;
+      assert.strictEqual(started._tag, "Started");
+      if (started._tag === "Started")
+        assert.deepStrictEqual((yield* playout.state).playing, {
+          key: key("a"),
+          startedAt: started.at,
+          seconds: started.seconds,
+        });
+      yield* item.outcome;
+      assert.isNull((yield* eventually(playout.state, (state) => state.playing === null)).playing);
+    }),
+  );
+
+  it.effect("reports each filler clip's start and end", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start({
+        filler: {
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        },
+      });
+      const fillers = Effect.map(events, (all) =>
+        all.flatMap((event) => (event._tag === "Filler" ? [event] : [])),
+      );
+      const seen = yield* eventually(fillers, (all) =>
+        all.some((event) => event.index === 0 && event.phase === "Ended"),
+      );
+      const [first, second] = seen.filter((event) => event.index === 0);
+      assert.strictEqual(first?.phase, "Started");
+      assert.strictEqual(second?.phase, "Ended");
+      assert.isAbove(first?.seconds ?? 0, 5);
+      assert.isAbove((second?.at ?? 0) - (first?.at ?? 0), 5_000);
+      const playing = yield* eventually(playout.state, (state) => state.playing?.key === "filler");
+      assert.strictEqual(
+        playing.playing?.startedAt,
+        (yield* fillers).findLast((event) => event.phase === "Started")?.at,
+      );
+    }),
+  );
+});
+
+// Its fault stays armed for the rest of a block, so it has one of its own.
+layer(hosted)("a dropped connection", (it) => {
+  it.effect("reports the reconnect and how long it took, and airs on", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(8) });
+      const { playout, events } = yield* start();
+      const handles = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of handles) yield* handle.outcome;
+      const sessions = (yield* events).flatMap((event) =>
+        event._tag === "Session" ? [event.event] : [],
+      );
+      assert.deepStrictEqual(
+        sessions.map((event) => event._tag),
+        ["Opened", "Reconnecting", "Reconnected"],
+      );
+      const [opened, reconnecting, reconnected] = sessions;
+      assert.deepStrictEqual(reconnecting, {
+        _tag: "Reconnecting",
+        sessionId: opened?._tag === "Opened" ? opened.sessionId : "",
+      });
+      assert.isAbove(reconnected?._tag === "Reconnected" ? reconnected.afterMillis : 0, 0);
+      assert.strictEqual((yield* handles[2]?.outcome ?? Effect.die("no third item"))._tag, "Ended");
+    }),
+  );
+});
+
 layer(hosted)("edits", (it) => {
   it.effect("replaces an item make-before-break and withdraws one that waits", () =>
     Effect.gen(function* () {
@@ -215,6 +301,61 @@ layer(hosted)("edits", (it) => {
       assert.strictEqual(added?._tag, "Added");
       if (added?._tag === "Added") yield* added.handle.outcome;
       assert.deepStrictEqual(yield* starts, ["a", "new"]);
+    }),
+  );
+
+  it.effect("refuses a request outside H3's limits, and sends nothing for it", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const sent = (yield* commands("enqueue")).length;
+      const refusals = yield* Effect.forEach(
+        [
+          playout.submit({ key: key("long"), lane: "line", request: clip("long", 20) }),
+          playout.submit({
+            key: key("picture"),
+            lane: "line",
+            request: { prompt: "a", references: [{ _tag: "Bytes", bytes: new Uint8Array(3) }] },
+          }),
+          Effect.flatMap(
+            playout.edit([
+              { _tag: "Submit", item: { key: key("fine"), lane: "line", request: clip("fine") } },
+              {
+                _tag: "Submit",
+                item: { key: key("blank"), lane: "line", request: { prompt: " " } },
+              },
+            ]),
+            (batch) => batch.committed,
+          ),
+        ],
+        (refused) => Effect.map(Effect.flip(refused), (error) => error._tag),
+      );
+      assert.deepStrictEqual(refusals, ["InvalidItem", "InvalidItem", "InvalidItem"]);
+      yield* Effect.sleep("10 seconds");
+      assert.strictEqual((yield* commands("enqueue")).length, sent);
+    }),
+  );
+
+  // Metadata within H3's bound on its own can pass it once the playout's key and H3's own
+  // identity wrap it, each escaping its quotes again: the enqueue would refuse it unsent.
+  it.effect("refuses metadata that fits H3's bound only before it is wrapped", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const sent = (yield* commands("enqueue")).length;
+      const refused = yield* Effect.flip(
+        playout.submit({
+          key: key("quoted"),
+          lane: "line",
+          request: { ...clip("quoted"), metadata: '"'.repeat(600) },
+        }),
+      );
+      assert.strictEqual(refused._tag, "InvalidItem");
+      const fits = yield* playout.submit({
+        key: key("plain"),
+        lane: "line",
+        request: { ...clip("plain"), metadata: "x".repeat(1_700) },
+      });
+      assert.strictEqual((yield* fits.outcome)._tag, "Ended");
+      assert.strictEqual((yield* commands("enqueue")).length, sent + 1);
     }),
   );
 
@@ -362,33 +503,6 @@ layer(
           [["continued", started[2], started[1]]],
         );
       }),
-  );
-});
-
-layer(hosted)("the cut's fence", (it) => {
-  it.effect("puts back the autoplay the playout asked for, not always on", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const source = yield* H3Source.open({ tokens: yield* tokens("10 minutes") });
-      const started = yield* Ref.make<ReadonlyArray<string>>([]);
-      yield* source.events.pipe(
-        Stream.runForEach((event) =>
-          event._tag === "Started"
-            ? Ref.update(started, (all) => [...all, event.clip.clipId])
-            : Effect.void,
-        ),
-        Effect.forkScoped,
-      );
-      yield* source.setAutoplay(false);
-      const first = yield* source.enqueue(clip("first"), { _tag: "Filler", index: 0 });
-      yield* source.enqueue(clip("second"), { _tag: "Filler", index: 1 });
-      yield* Effect.sleep("6 seconds");
-      // Nothing plays, so nothing is stopped; the play starts the first clip.
-      yield* source.cut("no-such-clip", first);
-      yield* Effect.sleep("12 seconds");
-      // Autoplay stayed off: the second clip, Ready all along, waits for a play.
-      assert.deepStrictEqual(yield* Ref.get(started), [first]);
-    }),
   );
 });
 
@@ -626,6 +740,36 @@ layer(hosted)("filler", (it) => {
         const state = yield* playout.state;
         assert.isAbove(state.runwaySeconds, 0);
         assert.strictEqual((yield* events).filter((event) => event._tag === "Starved").length, 0);
+      }),
+    { timeout: 60_000 },
+  );
+
+  // The hosted `show` rehearsal: with 5 s clips measured at H3's 5.167 s, a 6 s gap was tiled
+  // with a 5.806 s request, H3 aligned it to 5.875 s, and the 125 ms left cost a whole clip.
+  it.effect(
+    "tiles the gap before an At item without falling short on H3's frame grid",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "5 seconds", target: "8 seconds" },
+            clip: ({ index, seconds }) => clip(`idle ${index}`, seconds),
+          },
+        });
+        const measured = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+        yield* measured.outcome;
+        const secured = yield* eventually(playout.state, (state) => state.runwaySeconds >= 8);
+        const due = (yield* Clock.currentTimeMillis) + secured.runwaySeconds * 1000 + 6_000;
+        const timed = yield* playout.submit({
+          key: key("timed"),
+          lane: "line",
+          request: clip("timed"),
+          start: { _tag: "At", time: due, late: { _tag: "nextBoundary" } },
+        });
+        const started = yield* timed.started;
+        assert.strictEqual(started._tag, "Started");
+        // One step of H3's grid is 17 frames, 708 ms: a tile may run over by less than that.
+        if (started._tag === "Started") assert.isBelow(started.lateByMillis ?? 0, 1_000);
       }),
     { timeout: 60_000 },
   );
@@ -886,6 +1030,54 @@ for (const seed of [1, 2, 3, 4])
     },
   );
 
+// Provider text stays Redacted: an H3 `clip_failed` reason is the provider's own words.
+layer(hosted)("failure reasons", (it) => {
+  it.effect("says why an item failed: its clip, its command, or the playout's close", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "FailBuild", nth: 1, reason: "the provider's own words" });
+      yield* test.inject({ _tag: "InvalidImage", nth: 1 });
+      const scope = yield* Scope.make();
+      const { playout } = yield* start().pipe(Scope.provide(scope));
+      const built = yield* playout.submit({ key: key("built"), lane: "line", request: clip("a") });
+      const clipFailure = yield* built.outcome;
+      const clipReason = clipFailure._tag === "Failed" ? clipFailure.reason : undefined;
+      assert.strictEqual(clipReason?._tag, "Clip");
+      if (clipReason?._tag === "Clip") {
+        assert.strictEqual(Redacted.value(clipReason.provider), "the provider's own words");
+        assert.notInclude(clipReason.message, "own words");
+      }
+      const pictured = yield* playout.submit({
+        key: key("pictured"),
+        lane: "line",
+        request: {
+          prompt: "b",
+          references: [{ _tag: "Bytes", bytes: ReactorTest.pngBytes({ width: 64, height: 64 }) }],
+        },
+      });
+      const commandFailure = yield* pictured.outcome;
+      const commandReason = commandFailure._tag === "Failed" ? commandFailure.reason : undefined;
+      assert.deepStrictEqual(
+        commandReason?._tag === "Command"
+          ? [commandReason._tag, commandReason.cause.context.outcome]
+          : commandReason,
+        ["Command", "replied"],
+      );
+      const waiting = yield* playout.submit({
+        key: key("waiting"),
+        lane: "line",
+        request: clip("c"),
+        window: { notBefore: "1 hour", firm: false },
+      });
+      yield* Scope.close(scope, Exit.void);
+      const closed = yield* waiting.outcome;
+      assert.deepStrictEqual(closed._tag === "Failed" ? closed.reason : closed._tag, {
+        _tag: "Closed",
+      });
+    }),
+  );
+});
+
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
 // SDK "observes the session leaving the ready state"; a verdict may or may not come first.
 layer(hosted)("moderation with a verdict", (it) => {
@@ -901,10 +1093,11 @@ layer(hosted)("moderation with a verdict", (it) => {
       });
       const fine = yield* playout.submit({ key: key("fine"), lane: "line", request: clip("y") });
       const outcome = yield* flagged.outcome;
-      assert.deepStrictEqual(
-        outcome._tag === "Failed" ? [outcome._tag, outcome.moderated] : [outcome._tag],
-        ["Failed", true],
-      );
+      // The verdict H3 sent in a paid run named no category.
+      assert.deepStrictEqual(outcome._tag === "Failed" ? outcome.reason : outcome._tag, {
+        _tag: "Moderated",
+        categories: [],
+      });
       assert.strictEqual((yield* fine.outcome)._tag, "Ended");
       const moderated = (yield* events).flatMap((event) =>
         event._tag === "Session" && event.event._tag === "Moderated" ? [event.event.key] : [],
@@ -944,16 +1137,8 @@ layer(
         yield* eventually(statuses("innocent"), (all) => all.includes("Ready"));
         const flagged = yield* submit("flagged", 15);
         const failed = yield* flagged.outcome;
-        assert.deepStrictEqual(
-          failed._tag === "Failed"
-            ? [
-                failed._tag,
-                failed.lost !== undefined,
-                failed.reason.includes("before it was built"),
-              ]
-            : [failed._tag],
-          ["Failed", true, true],
-        );
+        assert.deepStrictEqual(failed._tag === "Failed" ? failed.reason._tag : failed._tag, "Lost");
+        assert.notInclude(yield* statuses("flagged"), "Started");
         assert.strictEqual((yield* innocent.outcome)._tag, "Ended");
         yield* Effect.sleep("2 minutes");
         // Two sessions ended over the flagged prompt; the third waits for work, and the playout goes on.
@@ -1109,6 +1294,53 @@ layer(hosted)("closing and failing", (it) => {
       assert.deepStrictEqual(answers, Option.some(["already-started", "not-found"]));
     }),
   );
+
+  it.effect("a group's withdrawal after the playout closed answers from its parts' fates", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
+        lanes: [{ name: "line" }],
+      }).pipe(Scope.provide(scope));
+      const group = (name: string) =>
+        playout.submitGroup({
+          key: key(name),
+          lane: "line",
+          parts: [
+            { key: key(`${name}1`), request: clip(`${name} one`) },
+            { key: key(`${name}2`), request: clip(`${name} two`) },
+          ],
+        });
+      const cut = yield* group("cut");
+      assert.strictEqual(yield* playout.withdraw(key("cut2")), "withdrawn");
+      const whole = yield* group("whole");
+      for (const part of [...cut.parts, ...whole.parts]) yield* part.outcome;
+      yield* Scope.close(scope, Exit.void);
+      const answers = yield* Effect.forEach(["cut", "whole", "never"], (name) =>
+        playout.withdraw(key(name)),
+      ).pipe(Effect.timeoutOption("10 seconds"));
+      assert.deepStrictEqual(answers, Option.some(["withdrawn", "already-started", "not-found"]));
+    }),
+  );
+
+  it.effect("a filler request outside H3's limits fails the playout, naming its index", () =>
+    Effect.gen(function* () {
+      const sent = (yield* commands("enqueue")).length;
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index, seconds }) => clip(`filler ${String(index)}`, index === 1 ? 99 : seconds),
+        },
+      });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
+      const index = Option.map(failure, (error) =>
+        error._tag === "InvalidFiller" ? error.index : error._tag,
+      );
+      assert.deepStrictEqual(index, Option.some<number | string>(1));
+      assert.strictEqual((yield* commands("enqueue")).length, sent + 1);
+    }),
+  );
 });
 
 // Its faults stay armed for the rest of a block, so it has one of its own.
@@ -1159,6 +1391,45 @@ layer(hosted)("media", (it) => {
       const before = yield* Ref.get(frames);
       yield* Effect.sleep("5 seconds");
       assert.isAbove((yield* Ref.get(frames)) - before, 24);
+    }),
+  );
+
+  it.effect("says which session's track a reader fell behind on", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start({
+        filler: {
+          runway: { floor: "10 seconds", target: "20 seconds" },
+          clip: ({ index }) => clip(`long ${String(index)}`, 15),
+        },
+      });
+      const frames = yield* Ref.make(0);
+      const stalled = yield* Deferred.make<void>();
+      // The first frame stalls the reader past the simulated host's 512-frame bound.
+      yield* playout.video.pipe(
+        Stream.runForEach(() =>
+          Ref.getAndUpdate(frames, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 0
+                ? Effect.andThen(Effect.sleep("40 seconds"), Deferred.succeed(stalled, undefined))
+                : Effect.void,
+            ),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(stalled);
+      const overflowed = yield* eventually(
+        Effect.map(events, (all) =>
+          all.flatMap((event) => (event._tag === "ReaderOverflow" ? [event] : [])),
+        ),
+        (all) => all.length > 0,
+      );
+      const opened = (yield* events).flatMap((event) =>
+        event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+      );
+      assert.strictEqual(overflowed[0]?.track, "video");
+      assert.strictEqual(overflowed[0]?.sessionId, opened[0]);
+      assert.isAbove(Number(overflowed[0]?.pressure.readerOverflows ?? 0n), 0);
     }),
   );
 });

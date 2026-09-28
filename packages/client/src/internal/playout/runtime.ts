@@ -12,19 +12,26 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Playout from "../../Playout.js";
-import { requestSeconds } from "../h3/profile.js";
+import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
+import { validateAudioReference, validateReference } from "../h3/references.js";
+import { Request } from "../h3/request.js";
 import { take } from "../queue.js";
-import { ReactorError } from "../../ReactorError.js";
+import { CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
 import type { CloseReport } from "../../Session.js";
 import {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
@@ -34,6 +41,7 @@ import {
 } from "./errors.js";
 import type { SubmitError } from "./errors.js";
 import * as Policy from "./policy.js";
+import * as Tag from "./tag.js";
 
 type Handle = {
   readonly started: Deferred.Deferred<Playout.AsRunStatus>;
@@ -50,6 +58,52 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
   input === undefined ? fallback : Duration.toMillis(Duration.fromInputUnsafe(input));
 
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
+
+/**
+ * Where a request for the clip `tag` names falls outside H3's documented
+ * limits, field by field, or undefined within them: its metadata counted as
+ * sent, wrapped with the tag and H3's own identity. Each issue names its field
+ * and the limit, never the value, which may be a prompt.
+ */
+const requestIssues = (request: Request, tag: Playout.ClipTag): string | undefined => {
+  const decoded = Schema.decodeResult(Request)(request, { errors: "all" });
+  const refused = (field: string, index: number) => (error: ReactorError) => [
+    { path: [field, String(index)], message: error.message },
+  ];
+  const issues = Result.isFailure(decoded)
+    ? SchemaIssue.makeFormatterStandardSchemaV1()(decoded.failure.issue).issues.map((issue) => ({
+        path: (issue.path ?? []).map((segment) =>
+          String(Predicate.isObject(segment) ? segment.key : segment),
+        ),
+        message: issue.message,
+      }))
+    : [
+        ...(decoded.success.references ?? []).flatMap((reference, index) =>
+          Result.match(validateReference(reference), {
+            onFailure: refused("references", index),
+            onSuccess: () => [],
+          }),
+        ),
+        ...(decoded.success.audio ?? []).flatMap((reference, index) =>
+          Result.match(validateAudioReference(reference), {
+            onFailure: refused("audio", index),
+            onSuccess: () => [],
+          }),
+        ),
+        ...(Tag.fits({ tag, metadata: decoded.success.metadata })
+          ? []
+          : [
+              {
+                path: ["metadata"],
+                message: `exceeds ${String(metadataMaxChars)} characters once wrapped as sent`,
+              },
+            ]),
+      ];
+  if (issues.length === 0) return undefined;
+  return issues
+    .map(({ path, message }) => (path.length === 0 ? message : `${path.join(".")}: ${message}`))
+    .join("; ");
+};
 
 /** A stable fingerprint of a spec: byte payloads by length and a checksum, never by content. */
 const fingerprint = (value: unknown): string =>
@@ -77,6 +131,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             target: millis(options.filler.runway.target, 0) / 1000,
             clip: options.filler.clip,
             lengths: options.filler.lengths ?? requestSeconds,
+            invalid: (request, index) => {
+              const issues = requestIssues(request, { _tag: "Filler", index });
+              return issues === undefined
+                ? undefined
+                : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
+            },
           },
     maxBuildsInFlight: options.maxBuildsInFlight ?? 1,
     maxHistory: options.maxHistory ?? 4096,
@@ -108,7 +168,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
-  const failure = yield* Deferred.make<ReactorFailure>();
+  const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
   // Why the latest open failed while no open has succeeded since, and why the latest session was lost.
   const lastOpenError = yield* Ref.make<ReactorFailure | undefined>(undefined);
   const lastLostError = yield* Ref.make<ReactorError | undefined>(undefined);
@@ -253,44 +313,58 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       if (entry === undefined)
         return {
           _tag: "Failed",
-          outcome: "not-submitted",
-          retryable: false,
-          reason: "the session is gone",
+          cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
+            operation: action.command._tag,
+            outcome: "not-submitted",
+          }),
         } as const;
       const source = entry.source;
       const command = action.command;
-      const result =
-        command._tag === "Enqueue"
-          ? Effect.map(
-              source.enqueue(command.request, command.tag, command.continueFrom),
-              (clipId) => ({ clipId }),
-            )
-          : command._tag === "Remove"
-            ? source.remove(command.clipId)
-            : command._tag === "Move"
-              ? source.move(command.clipId, command.position)
-              : command._tag === "Autoplay"
-                ? source.setAutoplay(command.enabled)
-                : source.cut(command.clipId, command.next);
+      const result = ((): Effect.Effect<string | void, CommandFailure> => {
+        switch (command._tag) {
+          case "Enqueue":
+            return source.enqueue(command.request, command.tag, command.continueFrom);
+          case "Remove":
+            return source.remove(command.clipId);
+          case "Move":
+            return source.move(command.clipId, command.position);
+          case "Autoplay":
+            return source.setAutoplay(command.enabled);
+          case "Stop":
+            return source.stop(command.clipId);
+          case "Play":
+            return source.play(command.clipId);
+        }
+      })();
       const exit = yield* Effect.exit(result);
-      if (Exit.isSuccess(exit)) {
-        const value: unknown = exit.value;
+      if (Exit.isSuccess(exit))
         return {
           _tag: "Done",
-          clipId:
-            typeof value === "object" && value !== null && "clipId" in value
-              ? String(value.clipId)
-              : undefined,
+          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
         } as const;
-      }
-      const error = Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
-      return {
-        _tag: "Failed",
-        outcome: error?.context.outcome ?? "unknown",
-        retryable: error?.isRetryable ?? false,
-        reason: error?.message ?? "the command failed",
-      } as const;
+      const error = Exit.findErrorOption(exit);
+      return Option.isSome(error)
+        ? ({ _tag: "Failed", cause: error.value } as const)
+        : ({ _tag: "Died" } as const);
     });
+
+  /** Why the plan failed the playout: the error behind a failed open or a loss, when there was one. */
+  const failureOf = (
+    action: Extract<Policy.Action, { _tag: "Fail" }>,
+  ): Effect.Effect<ReactorFailure | InvalidFiller> => {
+    const otherwise = (error: ReactorFailure | undefined) =>
+      error ?? ReactorError.fromCode("InvalidState", action.reason);
+    switch (action.cause) {
+      case "filler":
+        return Effect.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
+      case "moderation":
+        return Effect.succeed(ReactorError.fromCode("Moderated", action.reason));
+      case "open":
+        return Effect.map(Ref.get(lastOpenError), otherwise);
+      case "lost":
+        return Effect.map(Ref.get(lastLostError), otherwise);
+    }
+  };
 
   const act = (action: Policy.Action): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -353,14 +427,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             return next;
           });
         case "Fail": {
-          const error: ReactorFailure =
-            action.cause === "moderation"
-              ? ReactorError.fromCode("Moderated", action.reason)
-              : ((action.cause === "open"
-                  ? yield* Ref.get(lastOpenError)
-                  : yield* Ref.get(lastLostError)) ??
-                ReactorError.fromCode("InvalidState", action.reason));
-          yield* Deferred.succeed(failure, error);
+          yield* Deferred.succeed(failure, yield* failureOf(action));
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
           yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, {
             discard: true,
@@ -468,6 +535,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
       const bad = (message: string) => InvalidItem.make({ key, message });
+      const issues = requestIssues(input.request, { _tag: "Item", key });
+      if (issues !== undefined)
+        return yield* bad(`the request is outside H3's documented limits: ${issues}`);
       const duration = (value: Duration.Input | undefined) =>
         value === undefined
           ? Effect.undefined
@@ -563,17 +633,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       }
       return { commit, outcomes, results: answer.results };
     });
-  /** What a withdrawal of `key` would have found once the playout stopped: its recorded fate. */
+  /**
+   * What a withdrawal of `key` would have found once the playout stopped: the
+   * recorded fate of its item, or of a group's parts.
+   */
   const stoppedOutcome = (key: ItemKey): Effect.Effect<Playout.WithdrawOutcome> =>
-    Effect.gen(function* () {
-      const value = (yield* Ref.get(handles)).get(key);
-      if (value === undefined || !(yield* Deferred.isDone(value.started))) return "not-found";
-      const started = yield* Deferred.await(value.started);
-      if (started._tag === "Dropped") return "withdrawn";
-      return started._tag === "Started" || started._tag === "Ended"
-        ? "already-started"
-        : "not-found";
-    });
+    Effect.map(Ref.get(state), (value) => Policy.fate(value, key));
   const toEdit = (edit: Playout.Edit): Effect.Effect<Policy.EditInput, InvalidItem> =>
     Effect.gen(function* () {
       switch (edit._tag) {

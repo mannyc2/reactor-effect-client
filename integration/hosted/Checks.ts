@@ -35,6 +35,7 @@ import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
 import type * as Evidence from "./Evidence.js";
+import { failedOf } from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
 import * as Probes from "./Probes.js";
@@ -1651,14 +1652,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
                 case "Dropped":
                   return new Map(all).set(event.key, { ...next, dropped: status.reason });
                 case "Failed":
-                  return new Map(all).set(event.key, {
-                    ...next,
-                    failed: {
-                      reason: status.reason,
-                      moderated: status.moderated === true,
-                      lost: status.lost !== undefined,
-                    },
-                  });
+                  return new Map(all).set(event.key, { ...next, failed: failedOf(status.reason) });
                 default:
                   return new Map(all).set(event.key, next);
               }
@@ -1881,6 +1875,10 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
 /** How long a held, flagged item is watched for a verdict or its session's end. */
 const moderationWaitMs = 12_000;
 
+/** A failed item's record as a line of evidence: whether moderation or a loss was why, and why. */
+const failureDetail = (failed: NonNullable<Item["failed"]>): string =>
+  `${failed.moderated ? "moderated" : failed.lost ? "lost" : "failed"}: ${failed.reason}`;
+
 /** A playout session event, as the evidence keeps it. */
 const sessionEventText = (event: Playout.SessionEvent): string => {
   switch (event._tag) {
@@ -1894,6 +1892,10 @@ const sessionEventText = (event: Playout.SessionEvent): string => {
       return `replaced ${event.from}, ${event.carried} carried`;
     case "Moderated":
       return `moderated ${event.sessionId}${event.key === undefined ? "" : ` blaming ${event.key}`}`;
+    case "Reconnecting":
+      return `reconnecting ${event.sessionId}`;
+    case "Reconnected":
+      return `reconnected ${event.sessionId} after ${Math.round(event.afterMillis)} ms`;
   }
 };
 
@@ -1923,7 +1925,10 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
     yield* air.playout.failure.pipe(
       Effect.flatMap((failure) =>
         Effect.map(run.now, (atMs) => {
-          playoutLog.push({ atMs, event: `failed ${failure.reason._tag}` });
+          playoutLog.push({
+            atMs,
+            event: `failed ${failure._tag === "InvalidFiller" ? failure._tag : failure.reason._tag}`,
+          });
         }),
       ),
       Effect.forkScoped,
@@ -1998,9 +2003,7 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
           atMs,
           status: status._tag,
           ...(status._tag === "Failed"
-            ? {
-                detail: `${status.moderated === true ? "moderated" : status.lost === undefined ? "failed" : "lost"}: ${status.reason}`,
-              }
+            ? { detail: failureDetail(failedOf(status.reason)) }
             : status._tag === "Unknown" && status.terminal === true
               ? { detail: "terminal" }
               : {}),

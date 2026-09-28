@@ -12,16 +12,17 @@ import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type { TokenGrant, Tokens } from "./Coordinator.js";
 import * as H3 from "./H3.js";
-import type { DecodedMedia } from "./Media.js";
-import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
-import { ItemKey } from "./internal/playout/errors.js";
+import type { DecodedMedia, MediaPressure } from "./Media.js";
+import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
+import * as Tag from "./internal/playout/tag.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
@@ -79,34 +80,9 @@ export interface ResumeOptions extends Omit<Options, "canvas"> {
   readonly tokens: Pick<Tokens, "bind">;
 }
 
-// Playout's identity travels inside the caller part of H3's metadata envelope,
-// so a resumed session's clips are recognized by key whatever process sent them.
-const Envelope = Schema.fromJsonString(
-  Schema.Struct({ reactor_effect_h3: Schema.Literal(1), caller: Schema.String }),
-);
-const Tag = Schema.fromJsonString(
-  Schema.Struct({
-    playout: Schema.Literal(1),
-    key: Schema.optionalKey(ItemKey),
-    filler: Schema.optionalKey(Schema.Int),
-    metadata: Schema.optionalKey(Schema.String),
-  }),
-);
-
-const tagOf = (metadata: string): ClipTag | undefined => {
-  const envelope = Schema.decodeResult(Envelope)(metadata);
-  if (Result.isFailure(envelope)) return undefined;
-  const tag = Schema.decodeResult(Tag)(envelope.success.caller);
-  if (Result.isFailure(tag)) return undefined;
-  if (tag.success.key !== undefined) return { _tag: "Item", key: tag.success.key };
-  return tag.success.filler === undefined
-    ? undefined
-    : { _tag: "Filler", index: tag.success.filler };
-};
-
 const clipOf = (clip: (typeof H3.Clip)["Type"]): SourceClip => ({
   clipId: clip.clip_id,
-  tag: tagOf(clip.metadata),
+  tag: Tag.decode(clip.metadata),
   seconds: clip.seconds,
 });
 
@@ -148,11 +124,13 @@ const stateOf = (snapshot: H3.ProviderSnapshot): SourceState => {
  * Sends each generation's decoded track, following the session across
  * reconnects. A reader that falls behind its bound fails with `Overflow` and
  * misses the rest, so it reads again from the next frame: the picture goes on,
- * and the host counts the loss in `readerOverflows`.
+ * the host counts the loss in `readerOverflows`, and `overflowed` reports it
+ * with the pressure that follows.
  */
 const track = <A>(
   session: Session,
   read: (media: DecodedMedia) => Stream.Stream<A, ReactorError>,
+  overflowed: (pressure: MediaPressure) => Effect.Effect<void>,
 ) =>
   session.changes.pipe(
     Stream.filter((snapshot) => snapshot.status === "ready"),
@@ -160,11 +138,17 @@ const track = <A>(
     Stream.changes,
     Stream.switchMap(() => {
       const frames: Stream.Stream<A, ReactorError> = Stream.unwrap(
-        Effect.map(session.decoded, read),
-      ).pipe(
-        Stream.catchIf(
-          (error) => error.reason._tag === "Overflow",
-          () => frames,
+        Effect.map(session.decoded, (media) =>
+          read(media).pipe(
+            Stream.catchIf(
+              (error) => error.reason._tag === "Overflow",
+              () =>
+                Stream.concat(
+                  Stream.fromEffectDrain(Effect.flatMap(media.pressure, overflowed)),
+                  frames,
+                ),
+            ),
+          ),
         ),
       );
       // A retired generation's failure ends its frames until the next is ready; a defect stays one.
@@ -201,18 +185,22 @@ const fromSession = Effect.fnUntraced(function* (
         : error,
     ),
   );
+  const reconnect: Stream.Stream<SourceEvent, ReactorError> = Stream.concat(
+    Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
+    Stream.fromIterableEffect(
+      Effect.gen(function* () {
+        const [after] = yield* Effect.timed(recover);
+        return [
+          { _tag: "Reconnected", afterMillis: Duration.toMillis(after) },
+          { _tag: "State", state: stateOf(yield* provider.snapshot) },
+        ] satisfies ReadonlyArray<SourceEvent>;
+      }),
+    ),
+  );
   const translate = (
     event: H3.ProviderEvent,
   ): Effect.Effect<ReadonlyArray<SourceEvent>, ReactorError> =>
     Effect.gen(function* () {
-      if (
-        event._tag === "Session" &&
-        event.source._tag === "Status" &&
-        event.source.status === "disconnected"
-      ) {
-        yield* recover;
-        return [{ _tag: "State", state: stateOf(yield* provider.snapshot) }];
-      }
       if (event._tag === "Session" && event.source._tag === "Moderation")
         return [
           { _tag: "Moderated", action: event.source.action, categories: event.source.categories },
@@ -249,24 +237,38 @@ const fromSession = Effect.fnUntraced(function* (
         }
         case "clip_failed":
           return [
-            { _tag: "Failed", clip: clipOf(message.data.clip), reason: message.data.reason },
+            {
+              _tag: "Failed",
+              clip: clipOf(message.data.clip),
+              message: "H3 failed the clip",
+              provider: Redacted.make(message.data.reason),
+            },
             state,
           ];
         default:
           return [state];
       }
     });
+  // Overflow reports never hold up a reader: a slow consumer of them loses the oldest.
+  const overflows = yield* PubSub.sliding<SourceEvent>(64);
+  const overflowed = (track: "video" | "audio") => (pressure: MediaPressure) =>
+    Effect.asVoid(PubSub.publish(overflows, { _tag: "ReaderOverflow", track, pressure }));
   const events: Stream.Stream<SourceEvent, ReactorError> = Stream.unwrap(
     Effect.map(provider.observe({ capacity: 1024 }), (observation) =>
       Stream.concat(
         Stream.succeed<SourceEvent>({ _tag: "State", state: stateOf(observation.initial) }),
         observation.events.pipe(
-          Stream.mapEffect(translate),
-          Stream.flatMap((translated) => Stream.fromIterable(translated)),
+          Stream.flatMap((event) =>
+            event._tag === "Session" &&
+            event.source._tag === "Status" &&
+            event.source.status === "disconnected"
+              ? reconnect
+              : Stream.fromIterableEffect(translate(event)),
+          ),
         ),
       ),
     ),
-  );
+  ).pipe(Stream.merge(Stream.fromPubSub(overflows), { haltStrategy: "left" }));
   const replied = (error: CommandFailure) => error.context.outcome === "replied";
   const replyTimeout = Duration.fromInputUnsafe(options.provider?.replyTimeout ?? "15 seconds");
   /**
@@ -293,37 +295,18 @@ const fromSession = Effect.fnUntraced(function* (
           ),
       }),
     );
-  // The autoplay the playout last asked for, which a cut puts back when it is done.
-  const autoplay = yield* Ref.make(false);
-  const withAutoplayOff = <A>(effect: Effect.Effect<A, CommandFailure>) =>
-    provider.setAutoplay(false).pipe(
-      Effect.andThen(Effect.exit(effect)),
-      Effect.flatMap((exit) =>
-        Effect.andThen(
-          Effect.flatMap(Ref.get(autoplay), (wanted) => provider.setAutoplay(wanted)),
-          exit,
-        ),
-      ),
-    );
   return {
     sessionId: session.id,
     lifetime: options.lifetime,
     events,
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
-        const caller = yield* Schema.encodeResult(Tag)({
-          playout: 1,
-          ...(tag._tag === "Item" ? { key: tag.key } : { filler: tag.index }),
-          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-        }).pipe(
-          Effect.fromResult,
-          Effect.mapError(() =>
-            CommandFailure.from(
-              ReactorError.fromCode("InvalidInput", "clip metadata could not be encoded"),
-              { operation: "enqueue", outcome: "not-submitted" },
-            ),
-          ),
-        );
+        const caller = Tag.encode({ tag, metadata: request.metadata });
+        if (caller === undefined)
+          return yield* CommandFailure.from(
+            ReactorError.fromCode("InvalidInput", "clip metadata could not be encoded"),
+            { operation: "enqueue", outcome: "not-submitted" },
+          );
         const acceptance = yield* provider.enqueue({
           ...request,
           metadata: caller,
@@ -333,26 +316,29 @@ const fromSession = Effect.fnUntraced(function* (
       }),
     remove: (clipId) => Effect.asVoid(provider.pop(clipId)),
     move: (clipId, position) => Effect.asVoid(provider.move(clipId, position)),
-    setAutoplay: (enabled) =>
-      provider.setAutoplay(enabled).pipe(Effect.andThen(Ref.set(autoplay, enabled))),
-    // With autoplay off nothing starts between the stop and the play, so the stop can only hit
-    // the clip that was playing. That clip may have ended on its own first: a refusal because
-    // nothing plays is harmless, and a clip that took its place is not stopped.
-    cut: (clipId, next) =>
-      withAutoplayOff(
-        Effect.gen(function* () {
-          const playing = playingOf(yield* provider.snapshot);
-          if (playing !== undefined && playing !== clipId) return;
-          if (playing !== undefined)
-            yield* provider.stop.pipe(
-              Effect.flatMap((stopped) => landed(clipId, stopped)),
-              Effect.catchIf(replied, () => Effect.void),
-            );
-          yield* provider.play(next);
-        }),
-      ),
-    video: track(session, (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video)),
-    audio: track(session, (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio)),
+    setAutoplay: (enabled) => Effect.asVoid(provider.setAutoplay(enabled)),
+    // With autoplay off nothing starts after the clip, so H3's stop, which names no clip, can
+    // only hit it. It may have ended on its own first: a refusal because nothing plays is
+    // harmless, and a clip that took its place is not stopped.
+    stop: (clipId) =>
+      Effect.gen(function* () {
+        if (playingOf(yield* provider.snapshot) !== clipId) return;
+        yield* provider.stop.pipe(
+          Effect.flatMap((stopped) => landed(clipId, stopped)),
+          Effect.catchIf(replied, () => Effect.void),
+        );
+      }),
+    play: (clipId) => Effect.asVoid(provider.play(clipId)),
+    video: track(
+      session,
+      (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video),
+      overflowed("video"),
+    ),
+    audio: track(
+      session,
+      (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio),
+      overflowed("audio"),
+    ),
     close: session.close,
   } satisfies Source;
 });

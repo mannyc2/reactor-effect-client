@@ -382,6 +382,22 @@ export const encodeMetadata = ({
         : Result.succeed(value),
   );
 
+/** Random bytes in a provider's namespace, which its metadata carries in hex. */
+export const namespaceBytes = 16;
+const widestNamespace = "f".repeat(namespaceBytes * 2);
+/** A submission counted to twenty digits, more enqueues than one provider ever sends. */
+const widestSubmission = `${widestNamespace}:${"9".repeat(20)}`;
+
+/**
+ * Whether `caller` stays within the metadata bound once any provider wraps it,
+ * so it can be checked before a provider exists: what `encodeMetadata` refuses
+ * for some provider, this refuses.
+ */
+export const callerFits = (caller: string): boolean =>
+  Result.isSuccess(
+    encodeMetadata({ namespace: widestNamespace, submission: widestSubmission, caller }),
+  );
+
 /** The local submission a clip's metadata names; foreign or extended metadata names none. */
 export const submissionFromMetadata = ({
   namespace,

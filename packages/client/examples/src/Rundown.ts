@@ -27,7 +27,7 @@ const outcomeOf = (status: Playout.AsRunStatus): Outcome => {
         ? { _tag: "Played", airedSeconds: status.airedSeconds }
         : { _tag: "Failed", reason: "stopped" };
     case "Failed":
-      return { _tag: "Failed", reason: status.reason };
+      return { _tag: "Failed", reason: status.reason._tag };
     case "Dropped":
       return { _tag: "Failed", reason: status.reason };
     default:

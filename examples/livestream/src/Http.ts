@@ -24,8 +24,10 @@ const phases: Record<
   Unknown: "Failed",
 };
 
-/** The session a playout session event is about, where it names one. */
-const sessionOf = (event: Playout.SessionEvent): string | null => {
+/** The session a renewal event is about, where it names one. */
+const sessionOf = (
+  event: Exclude<Playout.SessionEvent, { readonly _tag: "Reconnecting" | "Reconnected" }>,
+): string | null => {
   switch (event._tag) {
     case "Opened":
     case "Moderated":
@@ -57,7 +59,7 @@ const ChannelHandlers = HttpApiBuilder.group(
         mode,
         session: onAir?.sessionId ?? null,
         media: onAir === undefined ? "Recovering" : "Ready",
-        playing: typeof state.playing === "string" ? yield* summary(state.playing) : null,
+        playing: state.playing === null ? null : yield* summary(state.playing.key),
         upcoming: yield* Effect.forEach(
           state.lanes.flatMap((lane) => lane.keys),
           summary,
@@ -86,18 +88,31 @@ const ChannelHandlers = HttpApiBuilder.group(
             }
             case "Session": {
               const session = event.event;
-              return [
-                {
-                  _tag: "Renewal",
-                  phase: session._tag,
-                  session: sessionOf(session),
-                  lostClips: session._tag === "Replaced" ? session.carried : null,
-                } satisfies ChannelEvent,
-              ];
+              switch (session._tag) {
+                case "Reconnecting":
+                  return [
+                    { _tag: "Media", state: "Recovering", session: session.sessionId },
+                  ] satisfies ReadonlyArray<ChannelEvent>;
+                case "Reconnected":
+                  return [
+                    { _tag: "Media", state: "Ready", session: session.sessionId },
+                  ] satisfies ReadonlyArray<ChannelEvent>;
+                default:
+                  return [
+                    {
+                      _tag: "Renewal",
+                      phase: session._tag,
+                      session: sessionOf(session),
+                      lostClips: session._tag === "Replaced" ? session.carried : null,
+                    } satisfies ChannelEvent,
+                  ];
+              }
             }
             case "Starved":
               return [{ _tag: "Starved" } satisfies ChannelEvent];
             case "Cue":
+            case "Filler":
+            case "ReaderOverflow":
               return [];
           }
         }),

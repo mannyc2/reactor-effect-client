@@ -15,21 +15,24 @@ import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { Request } from "./H3.js";
 import type {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   PlayoutClosed,
   SubmitError,
 } from "./internal/playout/errors.js";
 import * as Runtime from "./internal/playout/runtime.js";
-import type { AudioFrame, VideoFrame } from "./Media.js";
+import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
 import type { CommandFailure, ReactorError, ReactorFailure } from "./ReactorError.js";
 import type { CloseReport } from "./Session.js";
 
 export {
+  InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
@@ -146,6 +149,31 @@ export type Edit =
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
 
+/** Why an item failed for good. */
+export type FailureReason =
+  /**
+   * The provider failed its clip. `message` is the library's; the provider's
+   * own words stay in `provider`, out of messages, logs and spans.
+   */
+  | {
+      readonly _tag: "Clip";
+      readonly message: string;
+      readonly provider: Redacted.Redacted<string>;
+    }
+  /**
+   * A command for it failed in a way a retry would not mend. An enqueue its
+   * session refused unsent, not ready for it, is sent there again once what the
+   * session reports has changed, as after a reconnect; refused again while the
+   * session reports itself ready, it fails here.
+   */
+  | { readonly _tag: "Command"; readonly cause: CommandFailure }
+  /** Its session was lost while it played, or before it was built on two sessions in a row. */
+  | { readonly _tag: "Lost"; readonly sessionId: string }
+  /** Content moderation ended its session over it; it is never built again. */
+  | { readonly _tag: "Moderated"; readonly categories: ReadonlyArray<string> }
+  /** The playout closed before it aired. */
+  | { readonly _tag: "Closed" };
+
 /**
  * What became of an item. `Unknown` is "sent, acknowledgement never seen";
  * `Unobserved` is "acknowledged, start never seen". Neither is ever replayed
@@ -175,14 +203,7 @@ export type AsRunStatus =
       readonly airedSeconds: number;
     }
   | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" | "replaced" }
-  | {
-      readonly _tag: "Failed";
-      readonly reason: string;
-      /** The session it was lost with, when that is why it failed. */
-      readonly lost?: string | undefined;
-      /** Content moderation ended its session over it; it is never built again. */
-      readonly moderated?: true | undefined;
-    }
+  | { readonly _tag: "Failed"; readonly reason: FailureReason }
   | { readonly _tag: "Unobserved" }
   | {
       readonly _tag: "Unknown";
@@ -250,6 +271,10 @@ export type SessionEvent =
       readonly reason: string;
       readonly carried: number;
     }
+  /** The session's connection dropped, and its source is reconnecting it. */
+  | { readonly _tag: "Reconnecting"; readonly sessionId: string }
+  /** The session is connected again, this long after the drop was seen. */
+  | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly afterMillis: number }
   /**
    * Content moderation flagged an input. On `terminate` Reactor ends the
    * session; the item whose enqueue was sent there last is held to blame, as
@@ -267,6 +292,29 @@ export type Event =
   | { readonly _tag: "AsRun"; readonly event: AsRunEvent }
   | { readonly _tag: "Cue"; readonly event: CueEvent }
   | { readonly _tag: "Session"; readonly event: SessionEvent }
+  /**
+   * A filler clip started or ended, at epoch milliseconds; `seconds` is its
+   * length as the provider built it, when known.
+   */
+  | {
+      readonly _tag: "Filler";
+      readonly index: number;
+      readonly phase: "Started" | "Ended";
+      readonly at: number;
+      readonly seconds: number | undefined;
+    }
+  /**
+   * A reader of the session's `track` fell behind its bound and missed frames;
+   * it reads on from the next one. `pressure` is the session's media pressure
+   * just after, its `readerOverflows` counting this one.
+   */
+  | {
+      readonly _tag: "ReaderOverflow";
+      readonly sessionId: string;
+      readonly track: "video" | "audio";
+      readonly at: number;
+      readonly pressure: MediaPressure;
+    }
   /** Nothing was left to play while the plan still wanted air. */
   | { readonly _tag: "Starved"; readonly at: number };
 
@@ -274,7 +322,16 @@ export interface State {
   readonly accepting: boolean;
   /** Seconds of air secured: the playing clip's rest and the Ready clips after it. */
   readonly runwaySeconds: number;
-  readonly playing: ItemKey | "filler" | "other" | null;
+  /**
+   * The clip on air: whose it is, when its start was seen in epoch
+   * milliseconds, and its length as the provider built it. The length is
+   * unknown for a clip that started before the playout attached, until it ends.
+   */
+  readonly playing: {
+    readonly key: ItemKey | "filler" | "other";
+    readonly startedAt: number;
+    readonly seconds: number | undefined;
+  } | null;
   readonly lanes: ReadonlyArray<{ readonly name: string; readonly keys: ReadonlyArray<ItemKey> }>;
   readonly sessions: ReadonlyArray<{
     readonly sessionId: string;
@@ -339,18 +396,34 @@ export type SourceEvent =
       /** From the provider's own count when it gives one. */
       readonly airedSeconds?: number | undefined;
     }
-  | { readonly _tag: "Failed"; readonly clip: SourceClip; readonly reason: string }
+  /** The provider failed a clip: `message` in the source's words, `provider` in its own. */
+  | {
+      readonly _tag: "Failed";
+      readonly clip: SourceClip;
+      readonly message: string;
+      readonly provider: Redacted.Redacted<string>;
+    }
   /** The provider's content moderation flagged an input; `terminate` ends the session. */
   | {
       readonly _tag: "Moderated";
       readonly action: string;
       readonly categories: ReadonlyArray<string>;
+    }
+  /** The connection dropped and the source is reconnecting; a failed reconnect fails `events`. */
+  | { readonly _tag: "Reconnecting" }
+  /** The connection is back, this long after the drop was seen. */
+  | { readonly _tag: "Reconnected"; readonly afterMillis: number }
+  /** A reader of `video` or `audio` fell behind its bound, missed frames and reads on. */
+  | {
+      readonly _tag: "ReaderOverflow";
+      readonly track: "video" | "audio";
+      readonly pressure: MediaPressure;
     };
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
  * media. `events` starts with a `State` and fails when the session is lost for
- * good; recoverable disconnects are the source's own business.
+ * good; the source recovers a dropped connection itself, and reports it.
  */
 export interface Source {
   readonly sessionId: string;
@@ -366,11 +439,14 @@ export interface Source {
   readonly move: (clipId: string, position: number) => Effect.Effect<void, CommandFailure>;
   readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
   /**
-   * Stops `clipId` and, once the stop has taken effect, plays `next`, a Ready
-   * clip. Autoplay is off throughout, so nothing starts in between. Another
-   * clip playing by then is left alone.
+   * Stops `clipId` if it still plays, and completes once the provider reports
+   * it ended. A provider's stop may name no clip, so one that ended first, or
+   * another clip playing by then, is left alone. The playout turns autoplay
+   * off first, so nothing starts in its place.
    */
-  readonly cut: (clipId: string, next: string) => Effect.Effect<void, CommandFailure>;
+  readonly stop: (clipId: string) => Effect.Effect<void, CommandFailure>;
+  /** Plays `clipId`, a Ready clip, while nothing plays. */
+  readonly play: (clipId: string) => Effect.Effect<void, CommandFailure>;
   readonly video: Stream.Stream<VideoFrame, ReactorError>;
   readonly audio: Stream.Stream<AudioFrame, ReactorError>;
   /** Idempotent; closing an owned session terminates it. */
@@ -383,8 +459,9 @@ export interface FillContext {
   readonly runwaySeconds: number;
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
-   * equal clips that tile the uncovered gap; otherwise the shortest, which
-   * keeps boundaries, and so reactions, frequent.
+   * equal clips that tile the uncovered gap, none asking for less than its
+   * share; otherwise the shortest, which keeps boundaries, and so reactions,
+   * frequent.
    */
   readonly seconds: number;
 }
@@ -398,7 +475,10 @@ export interface Options<R = never> {
     | {
         /** Air secured ahead: refill below `floor`, up to `target`. */
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
-        /** Called once per admitted clip; keep it pure. */
+        /**
+         * Called once per admitted clip; keep it pure. A request outside H3's
+         * documented limits fails the playout with `InvalidFiller`.
+         */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
@@ -452,7 +532,8 @@ export class Playout extends Context.Service<
     readonly insert: (spec: InsertSpec) => Effect.Effect<ItemHandle, SubmitError>;
     /**
      * Builds `next` for the item's place, lane and group position. Once `next`
-     * is Ready the item goes as `replaced`; if the item starts first, `next` goes.
+     * is Ready the item goes as `replaced`; if the item starts first, `next`
+     * is dropped as `withdrawn`.
      */
     readonly replace: (
       key: ItemKey,
@@ -466,7 +547,12 @@ export class Playout extends Context.Service<
     readonly edit: (edits: ReadonlyArray<Edit>) => Effect.Effect<EditHandle, SubmitError>;
     /** Releases a held `Manual` item to air at the next boundary. */
     readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
-    /** A group key withdraws its unstarted parts; a part key, that part and those after it. */
+    /**
+     * A group key withdraws its unstarted parts, and answers `withdrawn` if any
+     * part was, else `already-started` if any started; a part key withdraws that
+     * part and those after it, and answers for that part. Once the playout has
+     * stopped, it answers from what became of the item or the parts.
+     */
     readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
     /** Admits nothing more and completes once the chosen work has aired or settled. */
     readonly drain: (options?: {
@@ -479,8 +565,11 @@ export class Playout extends Context.Service<
     /** The on-air session's picture, continuing across renewals. */
     readonly video: Stream.Stream<VideoFrame, ReactorError>;
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
-    /** Why the playout stopped: a session could not be opened, or its scope closed. */
-    readonly failure: Effect.Effect<ReactorFailure>;
+    /**
+     * Why the playout stopped: a session could not be opened or kept, a filler
+     * request was outside H3's limits (`InvalidFiller`), or its scope closed.
+     */
+    readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
     readonly cleanup: Effect.Effect<Cleanup>;
   }
 >()("reactor-effect-client/Playout") {}

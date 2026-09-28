@@ -11,6 +11,7 @@
  */
 import { dual } from "effect/Function";
 import type { Request } from "../../H3.js";
+import type { CommandFailure } from "../../ReactorError.js";
 import type {
   AsRunStatus,
   ClipTag,
@@ -78,18 +79,29 @@ export type Command =
   | { readonly _tag: "Remove"; readonly clipId: string }
   | { readonly _tag: "Move"; readonly clipId: string; readonly position: number }
   | { readonly _tag: "Autoplay"; readonly enabled: boolean }
-  /** Stop `clipId`, if it still plays, and play `next`. */
-  | { readonly _tag: "Cut"; readonly clipId: string; readonly next: string };
+  /** Stop `clipId` if it still plays, once autoplay is off; done when its end is reported. */
+  | { readonly _tag: "Stop"; readonly clipId: string }
+  | { readonly _tag: "Play"; readonly clipId: string };
 
 /** A command's result: the clip an enqueue created, or how a failure left the provider. */
 export type CommandResult =
   | { readonly _tag: "Done"; readonly clipId?: string | undefined }
-  | {
-      readonly _tag: "Failed";
-      readonly outcome: "not-submitted" | "unknown" | "replied";
-      readonly retryable: boolean;
-      readonly reason: string;
-    };
+  /** Its outcome says whether the provider may have applied it, and whether a retry may mend it. */
+  | { readonly _tag: "Failed"; readonly cause: CommandFailure }
+  /** It died or was interrupted, so whether the provider applied it cannot be told. */
+  | { readonly _tag: "Died" };
+
+/**
+ * Whether a command was refused unsent because its session was not in a state
+ * to take it, as when its connection drops before its source can say so. Only a
+ * change in what the session reports can mend that, so it waits for one.
+ */
+const unready = (cause: CommandFailure): boolean =>
+  cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState";
+
+/** Whether a command that failed may have taken effect unseen. */
+const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
+  result._tag === "Died" || result.cause.context.outcome === "unknown";
 
 export type Input =
   /** `batch`: the edits take effect together, make-before-break, as `Playout.edit` promises. */
@@ -152,6 +164,13 @@ export type Action =
       readonly reason: string;
       readonly cause: "open" | "lost" | "moderation";
     }
+  /** The filler clip at `index` asked for a request outside H3's limits, which would be refused again. */
+  | {
+      readonly _tag: "Fail";
+      readonly reason: string;
+      readonly cause: "filler";
+      readonly index: number;
+    }
   /** Settled keys the history bound dropped: they may be submitted afresh. */
   | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
 
@@ -167,6 +186,8 @@ export interface Config {
         readonly target: number;
         readonly clip: (context: FillContext) => Request;
         readonly lengths: { readonly min: number; readonly max: number };
+        /** Where the filler clip at `index` asks for more than H3 takes, or undefined. */
+        readonly invalid: (request: Request, index: number) => string | undefined;
       }
     | undefined;
   readonly maxBuildsInFlight: number;
@@ -226,6 +247,12 @@ interface Item {
   /** The source state a refused remove saw; it is retried once that changes. */
   readonly blockedRemove?: string | undefined;
   /**
+   * The session that last refused its enqueue unsent, not ready for it, and
+   * that session's availability changes then: it is sent there again only after
+   * another change.
+   */
+  readonly unsent?: { readonly sessionId: string; readonly changes: number } | undefined;
+  /**
    * A clip of its own taken off because it was Ready too early: never adopted
    * again as queued, though if it plays anyway, it aired.
    */
@@ -239,6 +266,8 @@ interface Session {
   readonly openedAt: number;
   readonly lifetimeMs: number;
   readonly source: SourceState | undefined;
+  /** How often its source's `available` has changed: a reconnect changes it twice. */
+  readonly changes: number;
   readonly autoplay: boolean | undefined;
   readonly wantAutoplay: boolean;
   readonly retiring: boolean;
@@ -251,8 +280,11 @@ interface Session {
    * their clip or the session goes: each may be building here, and only here.
    */
   readonly unknownFiller: ReadonlyArray<{ readonly index: number; readonly since: number }>;
-  /** The playing clip and when its start was observed, on the monotonic clock. */
-  readonly playing: { readonly clipId: string; readonly at: number } | undefined;
+  /**
+   * The clip the provider last reported playing, and when its start was
+   * observed: `at` on the monotonic clock, `wall` in epoch milliseconds.
+   */
+  readonly playing: (PlayingClip & { readonly at: number; readonly wall: number }) | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
   readonly lastEnqueue: ClipTag | undefined;
 }
@@ -296,6 +328,14 @@ export interface State {
     readonly refilling: boolean;
   };
   readonly batches: ReadonlyArray<Batch>;
+  /**
+   * Withdrawals of a group key still waiting on some of its parts, by edit and
+   * position: the parts not answered yet, and whether any was withdrawn.
+   */
+  readonly joins: ReadonlyMap<
+    string,
+    { readonly left: number; readonly outcomes: ReadonlyArray<WithdrawOutcome> }
+  >;
   readonly drains: ReadonlyArray<{ readonly id: number; readonly finish: "playing" | "accepted" }>;
   readonly accepting: boolean;
   readonly closed: boolean;
@@ -315,6 +355,20 @@ export interface State {
    * its end is reported, so a second cut would stop the clip after it.
    */
   readonly cut: string | undefined;
+  /**
+   * The cut under way, one command at a time: autoplay off on its session, a
+   * stop of the clip it cuts, then a play of its cutter. Autoplay stays off
+   * until the cutter has left the Ready queue, played or withdrawn, or a step
+   * failed with the cutter still wanted, which then airs at the next boundary.
+   */
+  readonly cutting:
+    | {
+        readonly sessionId: string;
+        readonly clipId: string;
+        readonly next: string;
+        readonly stage: "stopping" | "stopped" | "played" | "failed";
+      }
+    | undefined;
   readonly starving: boolean;
   readonly starved: number;
 }
@@ -349,12 +403,14 @@ export const initial: State = {
     refilling: false,
   },
   batches: [],
+  joins: new Map(),
   drains: [],
   accepting: true,
   closed: false,
   samples: { build: [], continued: [], length: [] },
   blockedMove: undefined,
   cut: undefined,
+  cutting: undefined,
   starving: false,
   starved: 0,
 };
@@ -430,6 +486,20 @@ type Rank = readonly [number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
+/** A group's answer from its parts': `withdrawn` if any was, else `already-started` if any started. */
+const combined = (outcomes: ReadonlyArray<WithdrawOutcome>): WithdrawOutcome => {
+  if (outcomes.includes("withdrawn")) return "withdrawn";
+  return outcomes.includes("already-started") ? "already-started" : "not-found";
+};
+
+/** What a withdrawal finds of an item from its record: dropped, started, or neither. */
+const fateOf = (item: Item): WithdrawOutcome => {
+  if (item.status?._tag === "Dropped") return "withdrawn";
+  const started =
+    item.startedAt !== undefined || item.phase === "Started" || item.status?._tag === "Ended";
+  return started ? "already-started" : "not-found";
+};
+
 /** Applies one input: a pure function of the state, the input, the configuration and the time. */
 export const step: {
   (previous: State, input: Input, now: Now): (config: Config) => Step;
@@ -461,27 +531,54 @@ export const step: {
       sessions: state.sessions.map((value) => (value.id === id ? { ...value, ...patch } : value)),
     };
   };
+  /** Records what a session's source reports, counting each change in whether it takes commands. */
+  const report = (id: string, source: SourceState): void => {
+    const previous = session(id);
+    const changed = (previous?.source?.available ?? false) !== source.available;
+    updateSession(id, { source, changes: (previous?.changes ?? 0) + (changed ? 1 : 0) });
+  };
   /** The session new work goes to: the newest one that is live and not retiring. */
   const preferred = (): Session | undefined => preferredOf(state.sessions);
   const atMono = (item: Item): number | undefined =>
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
 
-  /** What a withdrawal waiting on an item learns from how it settled. */
-  const outcomeOf = (item: Item, status: AsRunStatus): WithdrawOutcome =>
-    status._tag === "Dropped"
-      ? "withdrawn"
-      : item.startedAt !== undefined || status._tag === "Ended"
-        ? "already-started"
-        : "not-found";
+  /**
+   * Answers a withdrawal waiting on one item. A group key's withdrawal waits on
+   * each part and answers once all have: `withdrawn` if any part was, else
+   * `already-started` if any started, as 0.7.0 answered it.
+   */
+  const answer = (
+    waiter: { readonly id: number; readonly index: number },
+    outcome: WithdrawOutcome,
+  ): void => {
+    const id = `${String(waiter.id)}:${String(waiter.index)}`;
+    const join = state.joins.get(id);
+    if (join === undefined) {
+      actions.push({ _tag: "Withdrawn", id: waiter.id, index: waiter.index, outcome });
+      return;
+    }
+    const outcomes = [...join.outcomes, outcome];
+    const joins = new Map(state.joins);
+    if (join.left > 1) joins.set(id, { left: join.left - 1, outcomes });
+    else joins.delete(id);
+    state = { ...state, joins };
+    if (join.left > 1) return;
+    actions.push({
+      _tag: "Withdrawn",
+      id: waiter.id,
+      index: waiter.index,
+      outcome: combined(outcomes),
+    });
+  };
   /** Settles an item for good, resolving withdrawals that wait on it and recording history. */
   const settle = (key: ItemKey, status: AsRunStatus): void => {
     const item = items.get(key);
     if (item === undefined || item.phase === "Settled") return;
-    const outcome = outcomeOf(item, status);
-    for (const wait of item.waiting)
-      actions.push({ _tag: "Withdrawn", id: wait.id, index: wait.index, outcome });
+    // The as-run goes out first, so a withdrawal's caller finds it already published.
     set(key, { phase: "Settled", waiting: [], withdraw: undefined });
     asRun(key, status);
+    const outcome = fateOf({ ...item, status });
+    for (const wait of item.waiting) answer(wait, outcome);
     state = { ...state, settled: [...state.settled, key] };
     // A part that fails or is dropped takes the parts after it with it; a replaced one does not,
     // since its replacement takes its place.
@@ -507,19 +604,17 @@ export const step: {
     waiter?: { readonly id: number; readonly index: number },
   ): void => {
     const item = items.get(key);
-    if (item === undefined) return;
+    if (item === undefined) {
+      if (waiter !== undefined) answer(waiter, "not-found");
+      return;
+    }
     if (item.phase === "Started" || (item.phase === "Settled" && item.startedAt !== undefined)) {
-      if (waiter !== undefined)
-        actions.push({ _tag: "Withdrawn", ...waiter, outcome: "already-started" });
+      if (waiter !== undefined) answer(waiter, "already-started");
       return;
     }
     if (item.phase === "Settled") {
       if (waiter !== undefined)
-        actions.push({
-          _tag: "Withdrawn",
-          ...waiter,
-          outcome: item.status?._tag === "Dropped" ? "withdrawn" : "not-found",
-        });
+        answer(waiter, item.status?._tag === "Dropped" ? "withdrawn" : "not-found");
       return;
     }
     const waiting = waiter === undefined ? item.waiting : [...item.waiting, waiter];
@@ -787,6 +882,8 @@ export const step: {
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
     const targets: Array<Batch["targets"][number]> = [];
+    /** Group-key withdrawals by position, and how many parts each waits on. */
+    const joined: Array<{ readonly index: number; readonly parts: number }> = [];
     const put = (item: Item): void => {
       items.set(item.spec.key, item);
       adds.push(item.spec.key);
@@ -904,12 +1001,12 @@ export const step: {
           const keys = group === undefined ? [edit.key] : group.parts;
           const known = keys.some((key) => items.has(key));
           if (!known) actions.push({ _tag: "Withdrawn", id, index, outcome: "not-found" });
-          else if (
-            group === undefined &&
-            items.get(edit.key)?.group !== undefined &&
-            !items.get(edit.key)!.inserted
-          ) {
-            // A part key withdraws that part and every part after it.
+          else if (group !== undefined) {
+            // A group key withdraws every part, and answers once each part has.
+            joined.push({ index, parts: group.parts.length });
+            for (const key of group.parts) targets.push({ key, index, reason: "withdrawn" });
+          } else if (items.get(edit.key)?.group !== undefined && !items.get(edit.key)!.inserted) {
+            // A part key withdraws that part and every part after it, and answers for that part.
             const part = items.get(edit.key)!;
             for (const other of groups.get(part.group!.key)?.parts ?? [])
               if ((items.get(other)?.group?.index ?? -1) >= part.group!.index)
@@ -918,9 +1015,7 @@ export const step: {
                   index: other === edit.key ? index : -1,
                   reason: "withdrawn",
                 });
-          } else
-            for (const key of keys)
-              targets.push({ key, index: key === keys[0] ? index : -1, reason: "withdrawn" });
+          } else targets.push({ key: edit.key, index, reason: "withdrawn" });
           results.push({ _tag: "Withdrawal" });
           break;
         }
@@ -945,6 +1040,12 @@ export const step: {
           if (value.parts.some((part) => adds.includes(part))) groups.delete(group);
         return refuse({ _tag: "WouldMissDeadline", key });
       }
+    }
+    if (joined.length > 0) {
+      const joins = new Map(state.joins);
+      for (const join of joined)
+        joins.set(`${String(id)}:${String(join.index)}`, { left: join.parts, outcomes: [] });
+      state = { ...state, joins };
     }
     const pending = batched && (adds.length > 0 || targets.length > 0);
     for (const key of adds) {
@@ -976,12 +1077,35 @@ export const step: {
     return side === "before" ? parts[0] : parts[parts.length - 1];
   }
 
-  const started = (sessionId: string, clip: PlayingClip): void => {
-    if (session(sessionId)?.playing?.clipId !== clip.clipId)
+  /** Records the clip a session plays, and when a new one's start was seen. */
+  const nowPlaying = (sessionId: string, clip: PlayingClip): void => {
+    const playing = session(sessionId)?.playing;
+    // A later report of the same clip may name what an earlier one could not.
+    if (playing?.clipId === clip.clipId) {
       updateSession(sessionId, {
-        startedAny: true,
-        playing: { clipId: clip.clipId, at: now.mono },
+        playing: {
+          ...playing,
+          tag: clip.tag ?? playing.tag,
+          seconds: clip.seconds ?? playing.seconds,
+        },
       });
+      return;
+    }
+    updateSession(sessionId, {
+      startedAny: true,
+      playing: { ...clip, at: now.mono, wall: now.wall },
+    });
+    if (clip.tag?._tag === "Filler")
+      emit({
+        _tag: "Filler",
+        index: clip.tag.index,
+        phase: "Started",
+        at: now.wall,
+        seconds: clip.seconds,
+      });
+  };
+  const started = (sessionId: string, clip: PlayingClip): void => {
+    nowPlaying(sessionId, clip);
     // A clip on air ends a run of sessions that failed to set up or to play anything.
     state = { ...state, setupFailures: 0 };
     if (clip.tag?._tag !== "Item") return;
@@ -995,14 +1119,6 @@ export const step: {
         : at !== undefined && now.mono > at
           ? now.mono - at
           : undefined;
-    // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
-    for (const wait of item.waiting)
-      actions.push({
-        _tag: "Withdrawn",
-        id: wait.id,
-        index: wait.index,
-        outcome: "already-started",
-      });
     set(clip.tag.key, {
       phase: "Started",
       startedAt: now.mono,
@@ -1020,6 +1136,8 @@ export const step: {
       seconds: clip.seconds ?? item.spec.seconds,
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
+    // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
+    for (const wait of item.waiting) answer(wait, "already-started");
   };
   const forgetFiller = (clipId: string): void => {
     state = { ...state, fillers: new Map([...state.fillers].filter(([id]) => id !== clipId)) };
@@ -1030,7 +1148,16 @@ export const step: {
       lastEndedAt: now.mono,
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
     });
-    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
+    if (clip.tag?._tag === "Filler") {
+      emit({
+        _tag: "Filler",
+        index: clip.tag.index,
+        phase: "Ended",
+        at: now.wall,
+        seconds: clip.seconds,
+      });
+      return forgetFiller(clip.clipId);
+    }
     const item = itemOf(clip);
     if (item === undefined || item.phase === "Settled") return;
     if (item.startedAt === undefined) {
@@ -1076,7 +1203,10 @@ export const step: {
     });
     if (!terminate) return;
     if (key !== undefined)
-      settle(key, { _tag: "Failed", reason: "content moderation flagged it", moderated: true });
+      settle(key, {
+        _tag: "Failed",
+        reason: { _tag: "Moderated", categories: event.categories },
+      });
     // A flagged filler request is not asked for again.
     if (suspect?._tag === "Filler" && suspect.index === state.filler.index)
       state = {
@@ -1092,23 +1222,22 @@ export const step: {
         cause: "moderation",
       });
   };
-  const failed = (clip: SourceClip, reason: string): void => {
-    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
-    const item = itemOf(clip);
-    if (item !== undefined) settle(item.spec.key, { _tag: "Failed", reason });
+  const failed = (event: Extract<SourceEvent, { readonly _tag: "Failed" }>): void => {
+    if (event.clip.tag?._tag === "Filler") return forgetFiller(event.clip.clipId);
+    const item = itemOf(event.clip);
+    if (item !== undefined)
+      settle(item.spec.key, {
+        _tag: "Failed",
+        reason: { _tag: "Clip", message: event.message, provider: event.provider },
+      });
   };
   /** Reads a session's queues back into the plan: adoption by key, Ready, and clips that vanished. */
   const observe = (sessionId: string, source: SourceState): void => {
-    updateSession(sessionId, { source });
-    // A clip seen playing without its start event started no later than now.
-    if (
-      source.playing !== undefined &&
-      session(sessionId)?.playing?.clipId !== source.playing.clipId
-    )
-      updateSession(sessionId, {
-        startedAny: true,
-        playing: { clipId: source.playing.clipId, at: now.mono },
-      });
+    report(sessionId, source);
+    // What plays is what the provider reports; a clip seen playing without its start event
+    // started no later than now.
+    if (source.playing === undefined) updateSession(sessionId, { playing: undefined });
+    else nowPlaying(sessionId, source.playing);
     const listed = new Map<string, "Building" | "Ready" | "Playing">();
     for (const clip of source.building) listed.set(clip.clipId, "Building");
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");
@@ -1220,16 +1349,12 @@ export const step: {
     for (const item of items.values()) {
       if (item.sessionId !== sessionId || item.phase === "Settled") continue;
       if (item.phase === "Started")
-        settle(item.spec.key, { _tag: "Failed", reason, lost: sessionId });
+        settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
       else if (item.withdraw !== undefined)
         settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
       else if (!planned && item.phase === "Building" && item.unbuiltLosses + 1 >= 2)
-        settle(item.spec.key, {
-          _tag: "Failed",
-          reason: "its clip was lost before it was built on two sessions in a row",
-          lost: sessionId,
-        });
+        settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else {
         carried++;
         set(item.spec.key, {
@@ -1276,6 +1401,10 @@ export const step: {
     }
   };
 
+  const cutFailed = (sessionId: string): void => {
+    if (state.cutting?.sessionId === sessionId)
+      state = { ...state, cutting: { ...state.cutting, stage: "failed" } };
+  };
   const applyResult = (id: number, result: CommandResult): void => {
     const busy = state.busy;
     if (busy === undefined || busy.id !== id) return;
@@ -1297,7 +1426,7 @@ export const step: {
                       [result.clipId, { index: filler.index, sessionId: busy.sessionId }],
                     ]),
             };
-          } else if (result.outcome === "unknown") {
+          } else if (uncertain(result)) {
             // Its clip may be building on that session: it holds that session's build slot until
             // a queue read shows it, the deadline passes or the session goes.
             state = {
@@ -1319,7 +1448,9 @@ export const step: {
         }
         const item = items.get(command.tag.key);
         if (item === undefined || item.phase === "Settled") return;
+        const owner = session(busy.sessionId);
         if (result._tag === "Done") {
+          set(item.spec.key, { unsent: undefined });
           if (item.clipId === undefined)
             set(item.spec.key, { clipId: result.clipId, sessionId: busy.sessionId });
           if (item.phase === "Unknown")
@@ -1327,7 +1458,7 @@ export const step: {
           const now_ = items.get(item.spec.key)!;
           if (now_.phase === "Building" && now_.status?._tag !== "Building")
             asRun(item.spec.key, { _tag: "Building", sessionId: busy.sessionId });
-        } else if (result.outcome === "unknown") {
+        } else if (uncertain(result)) {
           if (item.clipId === undefined) {
             set(item.spec.key, {
               phase: "Unknown",
@@ -1337,14 +1468,30 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result.retryable)
+        } else if (result._tag === "Failed" && result.cause.isRetryable)
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
             dispatchedAt: undefined,
             retryAt: now.mono + retryDelayMs,
           });
-        else settle(item.spec.key, { _tag: "Failed", reason: result.reason });
+        else if (
+          result._tag === "Failed" &&
+          unready(result.cause) &&
+          // Refused again while the session says it takes commands, nothing is left to wait for.
+          !(item.unsent?.sessionId === busy.sessionId && owner?.source?.available === true)
+        )
+          set(item.spec.key, {
+            phase: "Accepted",
+            sessionId: undefined,
+            dispatchedAt: undefined,
+            unsent: { sessionId: busy.sessionId, changes: owner?.changes ?? 0 },
+          });
+        else if (result._tag === "Failed")
+          settle(item.spec.key, {
+            _tag: "Failed",
+            reason: { _tag: "Command", cause: result.cause },
+          });
         return;
       }
       case "Remove": {
@@ -1366,9 +1513,18 @@ export const step: {
         return;
       case "Autoplay":
         if (result._tag === "Done") updateSession(busy.sessionId, { autoplay: command.enabled });
+        else if (!command.enabled) cutFailed(busy.sessionId);
         return;
-      case "Cut":
-        // Its clip was marked cut when it was sent; neither result makes it cuttable again.
+      // Its clip was marked cut when the cut began; no result makes it cuttable again.
+      case "Stop":
+        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (state.cutting?.sessionId === busy.sessionId && state.cutting.clipId === command.clipId)
+          state = { ...state, cutting: { ...state.cutting, stage: "stopped" } };
+        return;
+      case "Play":
+        if (result._tag === "Failed") return cutFailed(busy.sessionId);
+        if (state.cutting?.sessionId === busy.sessionId && state.cutting.next === command.clipId)
+          state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
     }
   };
@@ -1417,6 +1573,7 @@ export const step: {
             openedAt: now.mono,
             lifetimeMs: input.lifetimeMs,
             source: undefined,
+            changes: 0,
             autoplay: undefined,
             wantAutoplay: first,
             retiring: false,
@@ -1471,10 +1628,36 @@ export const step: {
           ended(input.sessionId, event);
           break;
         case "Failed":
-          failed(event.clip, event.reason);
+          failed(event);
           break;
         case "Moderated":
           moderated(input.sessionId, event);
+          break;
+        case "Reconnecting": {
+          // It takes no commands until its source reports a state again.
+          const source = session(input.sessionId)?.source;
+          if (source !== undefined) report(input.sessionId, { ...source, available: false });
+          emit({ _tag: "Session", event: { _tag: "Reconnecting", sessionId: input.sessionId } });
+          break;
+        }
+        case "Reconnected":
+          emit({
+            _tag: "Session",
+            event: {
+              _tag: "Reconnected",
+              sessionId: input.sessionId,
+              afterMillis: event.afterMillis,
+            },
+          });
+          break;
+        case "ReaderOverflow":
+          emit({
+            _tag: "ReaderOverflow",
+            sessionId: input.sessionId,
+            track: event.track,
+            at: now.wall,
+            pressure: event.pressure,
+          });
           break;
       }
       break;
@@ -1504,7 +1687,7 @@ export const step: {
         else if (item.phase === "Started") settle(item.spec.key, { _tag: "Unobserved" });
         else if (item.withdraw !== undefined)
           settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
-        else settle(item.spec.key, { _tag: "Failed", reason: "the playout closed" });
+        else settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Closed" } });
       }
       for (const batch of state.batches)
         actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });
@@ -1758,10 +1941,47 @@ export const step: {
       : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
   }
   function decideCommand(): void {
-    // Autoplay as each session's role wants it: off on a replacement until it takes the air.
-    for (const value of state.sessions)
-      if (value.source?.available === true && value.autoplay !== value.wantAutoplay)
-        return queueCommand(value.id, { _tag: "Autoplay", enabled: value.wantAutoplay });
+    // A cut ends once its cutter has left its session's Ready queue; once a step failed with the
+    // cutter still wanted, which then airs at the next boundary; or once a cutter no longer
+    // wanted is not being removed.
+    const cutting = state.cutting;
+    const cutOn = session(cutting?.sessionId);
+    const cutter = cutOn?.source?.ready.find((clip) => clip.clipId === cutting?.next);
+    const cutterItem = itemOf(cutter);
+    const wanted = cutter !== undefined && airs(cutter) && cutterItem?.phase === "Ready";
+    const removing =
+      cutterItem?.withdraw !== undefined && cutterItem.blockedRemove !== signature(cutOn);
+    if (
+      cutting !== undefined &&
+      (cutter === undefined || (cutting.stage === "failed" && wanted) || (!wanted && !removing))
+    )
+      state = { ...state, cutting: undefined };
+    // Autoplay as each session's role wants it: off on a replacement until it takes the air,
+    // and off on the air while a cut is under way.
+    for (const value of state.sessions) {
+      const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id;
+      if (value.source?.available === true && value.autoplay !== autoplay)
+        return queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
+    }
+    // The cut's next step, with autoplay off: stop the clip it cuts, and once that has ended,
+    // play the cutter. The plan looks again between them, so a cutter withdrawn meanwhile goes
+    // instead, and until its play nothing else is sent that could hold it up.
+    if (
+      state.cutting !== undefined &&
+      (state.cutting.stage === "stopping" || state.cutting.stage === "stopped") &&
+      wanted &&
+      cutOn?.source?.available === true
+    ) {
+      const playing = cutOn.source.playing?.clipId;
+      if (state.cutting.stage === "stopping")
+        return queueCommand(cutOn.id, { _tag: "Stop", clipId: state.cutting.clipId });
+      if (playing === undefined)
+        return queueCommand(cutOn.id, { _tag: "Play", clipId: state.cutting.next });
+      if (playing === state.cutting.clipId) return;
+      // Something else plays: the cutter waits for the next boundary.
+      state = { ...state, cutting: undefined };
+      return decideCommand();
+    }
     // Withdrawals the plan wants, retried once a refused one's session changes.
     for (const item of items.values())
       if (
@@ -1803,14 +2023,15 @@ export const step: {
     }
     // A cut lane's Ready item at the front cuts a lower lane's clip, or filler, that has a while to run.
     const onAirNow = session(state.air);
-    const cutter = onAirNow === undefined ? undefined : readyOf(onAirNow)[0];
-    const cutItem = itemOf(cutter);
+    const front = onAirNow === undefined ? undefined : readyOf(onAirNow)[0];
+    const cutItem = itemOf(front);
     const playing = onAirNow?.source?.playing;
     if (
       onAirNow !== undefined &&
-      cutter !== undefined &&
+      front !== undefined &&
       cutItem !== undefined &&
       playing !== undefined &&
+      state.cutting === undefined &&
       config.lanes[cutItem.spec.lane]?.cut === true &&
       state.cut !== playing.clipId &&
       playingRestMs(onAirNow) > cutMarginMs
@@ -1820,13 +2041,18 @@ export const step: {
       const lower =
         playing.tag?._tag === "Filler" ||
         (playingItem !== undefined && playingItem.spec.lane > cutItem.spec.lane);
-      if (lower && airs(cutter)) {
-        state = { ...state, cut: playing.clipId };
-        return queueCommand(onAirNow.id, {
-          _tag: "Cut",
-          clipId: playing.clipId,
-          next: cutter.clipId,
-        });
+      if (lower && airs(front)) {
+        state = {
+          ...state,
+          cut: playing.clipId,
+          cutting: {
+            sessionId: onAirNow.id,
+            clipId: playing.clipId,
+            next: front.clipId,
+            stage: "stopping",
+          },
+        };
+        return decideCommand();
       }
     }
     // A held item about to be next, or an At item Ready too early, is removed and rebuilt later.
@@ -1920,6 +2146,13 @@ export const step: {
     const request =
       state.filler.request ??
       filler.clip({ index: state.filler.index, runwaySeconds: room, seconds });
+    const invalid = filler.invalid(request, state.filler.index);
+    if (invalid !== undefined) {
+      // Skipping it would leave the air uncovered without a word, and asking again gets the same.
+      state = { ...state, filler: { ...state.filler, retryAt: Infinity } };
+      actions.push({ _tag: "Fail", reason: invalid, cause: "filler", index: state.filler.index });
+      return;
+    }
     state = { ...state, filler: { ...state.filler, request, dispatchedAt: now.mono, seconds } };
     queueCommand(target.id, {
       _tag: "Enqueue",
@@ -1931,6 +2164,7 @@ export const step: {
   function eligible(): ReadonlyArray<Item> {
     const room = runway();
     const floorSeconds = fillerFloor();
+    const target = preferred();
     return [...items.values()]
       .filter(
         (item) =>
@@ -1938,6 +2172,10 @@ export const step: {
           item.withdraw === undefined &&
           previousAdmitted(item) &&
           (item.retryAt ?? -Infinity) <= now.mono &&
+          // A session that refused it unsent gets it again only once what it reports has changed.
+          (item.unsent === undefined ||
+            item.unsent.sessionId !== target?.id ||
+            item.unsent.changes !== target.changes) &&
           (item.notBefore ?? -Infinity) <= now.mono &&
           // Autoplay cannot hold a Ready clip: build a future anchor once air ahead covers the wait.
           ((atMono(item) ?? -Infinity) <= now.mono ||
@@ -2125,15 +2363,38 @@ export const step: {
   }
 });
 
-/** Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest. */
+/**
+ * What a withdrawal of `key` finds once nothing can change: the recorded fate of
+ * the item, or of a group's parts, answered as a withdrawal waiting on them would be.
+ */
+export const fate: {
+  (key: ItemKey): (state: State) => WithdrawOutcome;
+  (state: State, key: ItemKey): WithdrawOutcome;
+} = dual(2, (state: State, key: ItemKey): WithdrawOutcome =>
+  combined(
+    (state.groups.get(key)?.parts ?? [key]).flatMap((part) => {
+      const item = state.items.get(part);
+      return item === undefined ? [] : [fateOf(item)];
+    }),
+  ),
+);
+
+/**
+ * Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest.
+ * A tile that falls short costs a whole clip more, so each asks for no less than its share. A
+ * provider that makes clips longer than asked covers the share anyway: H3 aligns a length up to
+ * its frame grid, which airs 5 s as 5.167 s but 5.806 s as 5.875 s, so a ratio learned on one
+ * length does not carry to another. Only one that makes them shorter is asked for more.
+ */
 const fillLength = (
   gapSeconds: number,
   lengths: { readonly min: number; readonly max: number },
   ratio: number,
 ): number => {
   if (!(gapSeconds > 0)) return lengths.min;
-  const pieces = Math.max(1, Math.ceil(gapSeconds / (lengths.max * ratio)));
-  return Math.min(lengths.max, Math.max(lengths.min, gapSeconds / pieces / ratio));
+  const shortfall = Math.min(1, ratio);
+  const pieces = Math.max(1, Math.ceil(gapSeconds / (lengths.max * shortfall)));
+  return Math.min(lengths.max, Math.max(lengths.min, gapSeconds / pieces / shortfall));
 };
 
 /** The public view of the plan. */
@@ -2144,14 +2405,17 @@ export const view: {
   const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
-  const playing = air?.source?.playing;
+  const playing = air?.playing;
   const target = preferredOf(state.sessions) ?? air;
   const rest = target?.id === state.air ? playingRestOf(air, now.mono) / 1000 : 0;
   return {
     accepting: state.accepting,
     runwaySeconds:
       rest + (target?.source?.ready ?? []).reduce((total, clip) => total + clip.seconds, 0),
-    playing: playing === undefined ? null : own(playing),
+    playing:
+      playing === undefined
+        ? null
+        : { key: own(playing), startedAt: playing.wall, seconds: playing.seconds },
     lanes: config.lanes.map((lane, index) => ({
       name: lane.name,
       keys: [...state.items.values()]

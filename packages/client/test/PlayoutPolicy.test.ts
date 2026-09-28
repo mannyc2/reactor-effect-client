@@ -1,9 +1,10 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
-import { Config, Effect, Option, Schema } from "effect";
+import { Config, Effect, Option, Redacted, Schema } from "effect";
 import * as Policy from "../src/internal/playout/policy.js";
 import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
 import { ItemKey } from "../src/Playout.js";
+import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 
 const config: Policy.Config = {
   lanes: [
@@ -40,6 +41,24 @@ const source = (partial: Partial<SourceState> = {}): SourceState => ({
   playing: undefined,
   continuable: [],
   ...partial,
+});
+
+/** A command that failed: never sent, answered with a refusal, or sent with its reply lost. */
+const failed = (outcome: "not-submitted" | "replied" | "unknown"): Policy.CommandResult => ({
+  _tag: "Failed",
+  cause: CommandFailure.from(
+    ReactorError.fromCode("InvalidState", "the provider refused it"),
+    outcome === "not-submitted"
+      ? { operation: "enqueue", outcome }
+      : { operation: "enqueue", outcome, requestId: "request", generation: 1n },
+  ),
+});
+/** The provider failed `value`'s build. */
+const buildFailed = (value: SourceClip): SourceEvent => ({
+  _tag: "Failed",
+  clip: value,
+  message: "the build failed",
+  provider: Redacted.make("the provider's words"),
 });
 
 /** Runs inputs in order at one-millisecond steps and collects every action. */
@@ -198,12 +217,12 @@ describe("PlayoutPolicy", () => {
               state: source({ playing, ready: [clip("cu", item("urgent"))] }),
             },
           },
+          { _tag: "Result", id: 3, result: { _tag: "Done" } },
         ]).actions,
-      ).find((action) => action.command._tag === "Cut");
+      ).find((action) => action.command._tag === "Stop");
     assert.deepStrictEqual(cut(clip("filler", { _tag: "Filler", index: 0 }, 15))?.command, {
-      _tag: "Cut",
+      _tag: "Stop",
       clipId: "filler",
-      next: "cu",
     });
     assert.isUndefined(cut(clip("peer", item("other"), 15)));
   });
@@ -211,31 +230,24 @@ describe("PlayoutPolicy", () => {
   // The 0.7.0 scheduler-cut paid run: H3 answered the stop before it reported the clip ended,
   // the scheduler cut the clip again, and that second stop cut the cutter 5 ms after it started.
   it("cuts a playing clip once, though its end is reported after the cut's result", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
     const playing = clip("long", item("other"), 15);
-    const stale: Policy.Input = {
-      _tag: "Source",
-      sessionId: "s1",
-      event: {
-        _tag: "State",
-        state: source({ playing, ready: [clip("cu", item("urgent"))] }),
-      },
-    };
-    const { state, actions } = run([
-      ...opened(),
-      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("other") }], batch: false },
-      { _tag: "Result", id: 2, result: { _tag: "Done", clipId: "long" } },
-      { _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: playing } },
-      { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("urgent", 0) }], batch: false },
-      { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "cu" } },
-      stale,
-    ]);
-    assert.deepStrictEqual(commands(actions).at(-1)?.command, {
-      _tag: "Cut",
-      clipId: "long",
-      next: "cu",
-    });
-    const after = run([answer(state, { _tag: "Done" }), stale, { _tag: "Tick" }], state, 10);
-    assert.isUndefined(commands(after.actions).find((action) => action.command._tag === "Cut"));
+    policy.submit(spec("other"));
+    policy.reply({ _tag: "Done", clipId: "long" });
+    policy.event({ _tag: "Started", clip: playing });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "cu" });
+    const stale: Partial<SourceState> = { playing, ready: [clip("cu", item("urgent"))] };
+    policy.observe(stale);
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "long" });
+    policy.reply({ _tag: "Done" });
+    policy.observe(stale);
+    policy.tick();
+    const stops = commands(policy.actions).filter((action) => action.command._tag === "Stop");
+    assert.strictEqual(stops.length, 1);
   });
 
   it("withdraws what has no clip at once and removes a clip before it drops it", () => {
@@ -328,7 +340,7 @@ describe("PlayoutPolicy", () => {
   });
 
   it("counts no air left for a playing clip the provider named without its length", () => {
-    const { state } = run([
+    const inputs: ReadonlyArray<Policy.Input> = [
       ...opened(),
       {
         _tag: "Source",
@@ -341,10 +353,16 @@ describe("PlayoutPolicy", () => {
           }),
         },
       },
-    ]);
+    ];
+    const { state } = run(inputs);
     const view = Policy.view(config, state, { mono: 10, wall: 10 });
     assert.strictEqual(view.runwaySeconds, 5);
-    assert.strictEqual(view.playing, "other");
+    // It was seen playing at the last input, so it started no later than that.
+    assert.deepStrictEqual(view.playing, {
+      key: "other",
+      startedAt: inputs.length - 1,
+      seconds: undefined,
+    });
   });
 
   it("refuses a changed spec under a used key, and a batch with one refused edit changes nothing", () => {
@@ -429,7 +447,7 @@ describe("PlayoutPolicy", () => {
       {
         _tag: "Result",
         id: 2,
-        result: { _tag: "Failed", outcome: "unknown", retryable: false, reason: "lost reply" },
+        result: failed("unknown"),
       },
       { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("b") }], batch: false },
       { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "cb" } },
@@ -445,6 +463,51 @@ describe("PlayoutPolicy", () => {
           action.event.event._tag === "Replaced",
       ),
     );
+  });
+
+  // A session going down refuses what it is sent before its source can say so. Only a change in
+  // what the session reports can mend that, so a timer would resend it forever.
+  it("sends an enqueue refused unsent again once, when its session's availability changes", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    const enqueues = () =>
+      commands(policy.actions).filter((action) => action.command._tag === "Enqueue").length;
+    policy.reply(failed("not-submitted"));
+    policy.tick(5_000);
+    policy.tick(60_000);
+    assert.strictEqual(enqueues(), 1);
+    policy.event({ _tag: "Reconnecting" });
+    policy.event({ _tag: "Reconnected", afterMillis: 900 });
+    policy.observe({});
+    assert.deepStrictEqual(policy.busy(), {
+      _tag: "Enqueue",
+      request: spec("a").request,
+      tag: item("a"),
+      continueFrom: undefined,
+    });
+    assert.strictEqual(enqueues(), 2);
+  });
+
+  it("fails an item refused unsent again while its session reports itself available", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    policy.reply(failed("not-submitted"));
+    policy.event({ _tag: "Reconnecting" });
+    policy.observe({});
+    policy.reply(failed("not-submitted"));
+    assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted", "Failed"]);
+    const settled = policy.actions.findLast(
+      (action) => action._tag === "Emit" && action.event._tag === "AsRun",
+    );
+    const status =
+      settled?._tag === "Emit" && settled.event._tag === "AsRun"
+        ? settled.event.event.status
+        : undefined;
+    assert.strictEqual(status?._tag === "Failed" ? status.reason._tag : status?._tag, "Command");
   });
 
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {
@@ -515,8 +578,7 @@ describe("PlayoutPolicy", () => {
       { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("unsure") }], batch: false },
       2_001,
     ).state;
-    const lost = { _tag: "Failed", outcome: "unknown", retryable: false, reason: "lost" } as const;
-    state = at(state, answer(state, lost), 2_010).state;
+    state = at(state, answer(state, failed("unknown")), 2_010).state;
     // Its clip turns up Ready much later: that wait includes the uncertainty, so it is no sample.
     const unsure = clip("cu", item("unsure"));
     state = at(
@@ -628,12 +690,7 @@ const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
       ? [action.command.tag._tag === "Item" ? String(action.command.tag.key) : "filler"]
       : [],
   );
-const unknown: Policy.CommandResult = {
-  _tag: "Failed",
-  outcome: "unknown",
-  retryable: false,
-  reason: "the reply was lost",
-};
+const unknown = failed("unknown");
 
 // What 0.7.0's scheduler guaranteed and the first Playout lost, found by an independent critique.
 describe("PlayoutPolicy, uncertainty and loss", () => {
@@ -644,6 +701,7 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
       target: 10,
       clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
       lengths: { min: 5, max: 15 },
+      invalid: () => undefined,
     },
   };
 
@@ -774,7 +832,7 @@ describe("PlayoutPolicy, edits", () => {
     policy.edit([{ _tag: "Withdraw", key: key("a") }]);
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-a" });
     policy.event({ _tag: "Started", clip: clip("c-a", item("a")) });
-    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "it plays" });
+    policy.reply(failed("replied"));
     policy.event({ _tag: "Ended", clip: clip("c-a", item("a")), termination: "finished" });
     assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
   });
@@ -787,12 +845,14 @@ describe("PlayoutPolicy, edits", () => {
     policy.reply({ _tag: "Done", clipId: "c-a" });
     policy.observe({ building: [clip("c-a", item("a"))] });
     policy.edit([{ _tag: "Withdraw", key: key("a") }]);
-    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "building" });
-    policy.event({ _tag: "Failed", clip: clip("c-a", item("a")), reason: "the build failed" });
+    policy.reply(failed("replied"));
+    policy.event(buildFailed(clip("c-a", item("a"))));
     assert.deepStrictEqual(withdrawn(policy.actions), ["not-found"]);
   });
 
-  it("answers already-started for a cutter the cut in flight is playing", () => {
+  // One command at a time: a cut that stopped the playing clip and played its cutter in one call
+  // played a cutter withdrawn while the stop was landing, and answered already-started.
+  it("drops a cutter withdrawn while its cut stops the playing clip, and never plays it", () => {
     const policy = drive();
     policy.tick(0);
     policy.open();
@@ -803,15 +863,79 @@ describe("PlayoutPolicy, edits", () => {
     policy.observe({ playing: long });
     policy.submit(spec("urgent", 0));
     policy.reply({ _tag: "Done", clipId: "c-urgent" });
-    policy.observe({ playing: long, ready: [clip("c-urgent", item("urgent"))] });
-    assert.deepStrictEqual(policy.busy(), { _tag: "Cut", clipId: "c-long", next: "c-urgent" });
-    // The withdrawal waits behind the cut, which plays the cutter: it is too late.
+    const cutter = clip("c-urgent", item("urgent"));
+    policy.observe({ playing: long, ready: [cutter] });
+    // Autoplay goes off first, so nothing starts in the stopped clip's place.
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "c-long" });
     policy.edit([{ _tag: "Withdraw", key: key("urgent") }]);
     policy.event({ _tag: "Ended", clip: long, termination: "stopped" });
-    policy.event({ _tag: "Started", clip: clip("c-urgent", item("urgent")) });
-    assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
+    policy.observe({ ready: [cutter] });
     policy.reply({ _tag: "Done" });
-    assert.deepStrictEqual(policy.busy(), undefined);
+    // The plan looks again once the stop has landed: the cutter goes instead of playing.
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-urgent" });
+    policy.reply({ _tag: "Done" });
+    policy.observe({});
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+    assert.deepStrictEqual(statuses(policy.actions, "urgent").at(-1), "Dropped");
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+    assert.isUndefined(commands(policy.actions).find((action) => action.command._tag === "Play"));
+  });
+
+  it("plays the cutter once the stop has landed, then puts autoplay back", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const long = clip("c-long", item("long"), 15);
+    policy.submit(spec("long", 1, 15));
+    built(policy, ["long"]);
+    policy.event({ _tag: "Started", clip: long });
+    policy.observe({ playing: long });
+    policy.submit(spec("urgent", 0));
+    policy.reply({ _tag: "Done", clipId: "c-urgent" });
+    const cutter = clip("c-urgent", item("urgent"));
+    policy.observe({ playing: long, ready: [cutter] });
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: "c-long" });
+    // The stop's reply can come before H3 reports the clip ended: the play waits for that.
+    policy.reply({ _tag: "Done" });
+    assert.isUndefined(policy.busy());
+    policy.event({ _tag: "Ended", clip: long, termination: "stopped" });
+    policy.observe({ ready: [cutter] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Play", clipId: "c-urgent" });
+    policy.reply({ _tag: "Done" });
+    policy.event({ _tag: "Started", clip: cutter });
+    policy.observe({ playing: cutter });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+    assert.deepStrictEqual(statuses(policy.actions, "urgent").at(-1), "Started");
+  });
+
+  // 0.7.0 answered a group key's withdrawal `withdrawn` if any part was; the first Playout
+  // answered with the first part's outcome.
+  it("answers withdrawn for a group whose first part aired and whose next part it drops", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    built(policy, ["p1", "p2"]);
+    const first = clip("c-p1", item("p1"));
+    policy.event({ _tag: "Started", clip: first });
+    policy.observe({ playing: first, ready: [clip("c-p2", item("p2"))] });
+    policy.edit([{ _tag: "Withdraw", key: key("g") }]);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-p2" });
+    assert.deepStrictEqual(withdrawn(policy.actions), []);
+    policy.reply({ _tag: "Done" });
+    assert.deepStrictEqual(statuses(policy.actions, "p2").at(-1), "Dropped");
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
   });
 
   // A drain stops admissions, not withdrawals: the critique's withdraw during a drain answered
@@ -923,6 +1047,7 @@ const simulate = (script: Script) => {
       target: 10,
       clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
       lengths: { min: 5, max: 15 },
+      invalid: () => undefined,
     },
   };
   let state = Policy.initial;
@@ -940,7 +1065,7 @@ const simulate = (script: Script) => {
   const edits = new Map<number, { readonly batch: boolean; readonly keys: Map<number, string> }>();
   const drains: Array<number> = [];
   const problems: Array<string> = [];
-  /** Keys submitted so far, groups by key, and what a withdrawal may drop. */
+  /** Keys submitted so far, group keys among them, and what a withdrawal may drop. */
   const known: Array<string> = [];
   /**
    * Each group's parts by place, replacements included: a replacement takes
@@ -971,9 +1096,9 @@ const simulate = (script: Script) => {
         outstanding = { id: action.id, sessionId: action.sessionId };
         // A cut stops only filler, a clip the plan does not own, or a strictly lower lane's clip.
         const command = action.command;
-        if (command._tag === "Cut") {
+        if (command._tag === "Stop") {
           const value = sessions.get(action.sessionId);
-          const cutter = value?.ready.find((clip) => clip.clipId === command.next)?.tag;
+          const cutter = value?.ready.find((clip) => clip.clipId === state.cutting?.next)?.tag;
           const cut = value?.playing?.clipId === command.clipId ? value.playing.tag : undefined;
           if (
             cutter?._tag === "Item" &&
@@ -1040,6 +1165,7 @@ const simulate = (script: Script) => {
           value.key,
           value.parts.map((part, place) => ({ key: part.key, place })),
         );
+        known.push(value.key);
         value.parts.forEach((part, place) => {
           lanes.set(part.key, part.lane);
           known.push(part.key);
@@ -1136,26 +1262,27 @@ const simulate = (script: Script) => {
               }
               break;
             }
-            case "Cut": {
-              const next = value.ready.find((clip) => clip.clipId === command.next);
-              if (value.playing?.clipId === command.clipId) {
-                const cut = value.playing;
-                value.playing = undefined;
-                send({
-                  _tag: "Source",
-                  sessionId: busy.sessionId,
-                  event: { _tag: "Ended", clip: cut, termination: "stopped" },
-                });
-              }
-              if (next !== undefined && value.playing === undefined) {
-                value.ready = value.ready.filter((clip) => clip !== next);
-                value.playing = next;
-                send({
-                  _tag: "Source",
-                  sessionId: busy.sessionId,
-                  event: { _tag: "Started", clip: next },
-                });
-              }
+            case "Stop": {
+              if (value.playing?.clipId !== command.clipId) break;
+              const cut = value.playing;
+              value.playing = undefined;
+              send({
+                _tag: "Source",
+                sessionId: busy.sessionId,
+                event: { _tag: "Ended", clip: cut, termination: "stopped" },
+              });
+              break;
+            }
+            case "Play": {
+              const next = value.ready.find((clip) => clip.clipId === command.clipId);
+              if (next === undefined || value.playing !== undefined) break;
+              value.ready = value.ready.filter((clip) => clip !== next);
+              value.playing = next;
+              send({
+                _tag: "Source",
+                sessionId: busy.sessionId,
+                event: { _tag: "Started", clip: next },
+              });
               break;
             }
             case "Autoplay":
@@ -1170,23 +1297,13 @@ const simulate = (script: Script) => {
         return send({
           _tag: "Result",
           id: busy.id,
-          result: {
-            _tag: "Failed",
-            outcome: step === "unknown" ? "unknown" : "replied",
-            retryable: false,
-            reason: step,
-          },
+          result: failed(step === "unknown" ? "unknown" : "replied"),
         });
       case "fail": {
         const [sessionId, value] =
           [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
-        const failed = value.building.shift()!;
-        send({
-          _tag: "Source",
-          sessionId,
-          event: { _tag: "Failed", clip: failed, reason: "the build failed" },
-        });
+        send({ _tag: "Source", sessionId, event: buildFailed(value.building.shift()!) });
         return observe(sessionId);
       }
       case "ready": {
@@ -1302,11 +1419,31 @@ const check = (script: Script): void => {
           1,
           `the withdrawal of ${value.keys.get(position) ?? ""} was answered other than once`,
         );
-  // A withdrawal answers what became of its item.
+  // A withdrawal answers what became of its item. A group key's answers `withdrawn` if any
+  // part was dropped by then, else `already-started` if any started, else `not-found`.
+  const seen = new Map<string, ReadonlyArray<string>>();
+  for (const action of actions) {
+    if (action._tag === "Emit" && action.event._tag === "AsRun")
+      seen.set(action.event.event.key, [
+        ...(seen.get(action.event.event.key) ?? []),
+        action.event.event.status._tag,
+      ]);
+    if (action._tag !== "Withdrawn") continue;
+    const name = edits.get(action.id)?.keys.get(action.index);
+    const parts = name === undefined ? undefined : groups.get(name);
+    if (parts === undefined) continue;
+    const so = parts.flatMap((part) => seen.get(part.key) ?? []);
+    const expected = so.includes("Dropped")
+      ? "withdrawn"
+      : so.includes("Started")
+        ? "already-started"
+        : "not-found";
+    assert.strictEqual(action.outcome, expected, `group ${name ?? ""}: ${so.join(",")}`);
+  }
   for (const action of actions)
     if (action._tag === "Withdrawn") {
       const name = edits.get(action.id)?.keys.get(action.index);
-      if (name === undefined) continue;
+      if (name === undefined || groups.has(name)) continue;
       const statuses = tags(name);
       if (action.outcome === "withdrawn")
         assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);
@@ -1315,8 +1452,9 @@ const check = (script: Script): void => {
       if (action.outcome === "not-found")
         assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
     }
-  // An item is dropped as withdrawn only when a withdrawal or a drain named it, or an
-  // earlier part of its group failed or was dropped; a replaced part keeps those after it.
+  // An item is dropped as withdrawn only when a withdrawal or a drain named it, an earlier
+  // part of its group failed or was dropped (a replaced part keeps those after it), or it is
+  // a replacement whose item started first, as 0.7.0 withdrew it.
   if (drains.length === 0) {
     const reasons = (name: string) =>
       (history.get(name) ?? []).flatMap((action) =>
@@ -1334,6 +1472,9 @@ const check = (script: Script): void => {
       const from = Math.min(...broken.map((part) => part.place));
       for (const part of parts) if (part.place > from) allowed.add(part.key);
     }
+    for (const next of replaced.keys())
+      for (let old = replaced.get(next); old !== undefined; old = replaced.get(old))
+        if (tags(old).includes("Started")) allowed.add(next);
     for (const name of history.keys())
       if (reasons(name).includes("withdrawn"))
         assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
@@ -1397,6 +1538,8 @@ const counterexamples: ReadonlyArray<Script> = [
   ["batch", "open", "done", "batch"],
   ["batch", "withdraw", "fail", "batch"],
   ["urgent", "withdraw", "lost", "batch"],
+  // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
+  ["submit", "open", "done", "done", "ready", "replace", "start"],
 ];
 
 describe("PlayoutPolicy, any script", () => {
