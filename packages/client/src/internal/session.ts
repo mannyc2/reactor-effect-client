@@ -376,20 +376,11 @@ export const make = Effect.fnUntraced(function* (input: {
       }
     });
 
+  /** A task of `c`'s whose failure fails `c`; a defect is a bug and stays one. */
   const background = (c: Connection, body: Effect.Effect<void, ReactorError>) =>
     body.pipe(
       Effect.raceFirst(Deferred.await(c.failed)),
-      Effect.catchCause((cause) =>
-        fail(
-          c,
-          failureOf(cause, () =>
-            ReactorError.fromCode("Protocol", "session task failed", {
-              detail: cause,
-              generation: c.generation,
-            }),
-          ),
-        ),
-      ),
+      Effect.catch((error) => fail(c, error)),
       Effect.forkIn(c.scope),
       Effect.asVoid,
     );
