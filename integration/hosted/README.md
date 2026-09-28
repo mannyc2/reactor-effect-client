@@ -35,11 +35,13 @@ Two extra checks are deliberately not planned:
 
 A capability added after 0.3.0 gets one check of its own, run once, against the published bytes of the release that carries it or from the checkout that adds it. Each release keeps its own ledger, `evidence/<version>/`, under the same limits: at most $0.75 for a one-session check or $1.50 for the two-session check. Until its check has run, the capability is qualified only by the tests and the twin.
 
-| Check       | Release | What it adds to the vertical                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ----------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audio`     | 0.3.1   | The clip carries a gray reference image and a 3 s tone as its reference audio, because H3 takes audio only beside an image or a continuation. It records whether the deployment declares `reference_audios`, and passes only if the accepted clip reports `has_reference_audio` and one audio reference, as H3 documents.                                                                                                                             |
-| `resume`    | 0.3.2   | The takeover, but the new process resumes the session with `Orchestration.resumeH3` from the owner record `openH3` handed the owner, which adopts it. It passes only if the resume sends nothing but state and queue reads, identifies the playing clip, keeps the queued clip's metadata, receives fresh frames, and closing the resumed source terminates the session and confirms it, with no help from the record.                                |
-| `scheduler` | 0.5.0   | One capped H3 session with autoplay on. Before five clip boundaries it moves a waiting clip to the front, or pops the next one, at a set distance from the boundary, and records which clip starts and what the seam looks like in the messages and decoded frames. It also records position zero while a build is active, a pop of the build in flight, and metadata on every watched clip message. See [the scheduler check](#the-scheduler-check). |
+| Check             | Release | What it adds to the vertical                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audio`           | 0.3.1   | The clip carries a gray reference image and a 3 s tone as its reference audio, because H3 takes audio only beside an image or a continuation. It records whether the deployment declares `reference_audios`, and passes only if the accepted clip reports `has_reference_audio` and one audio reference, as H3 documents.                                                                                                                             |
+| `resume`          | 0.3.2   | The takeover, but the new process resumes the session with `Orchestration.resumeH3` from the owner record `openH3` handed the owner, which adopts it. It passes only if the resume sends nothing but state and queue reads, identifies the playing clip, keeps the queued clip's metadata, receives fresh frames, and closing the resumed source terminates the session and confirms it, with no help from the record.                                |
+| `scheduler`       | 0.5.0   | One capped H3 session with autoplay on. Before five clip boundaries it moves a waiting clip to the front, or pops the next one, at a set distance from the boundary, and records which clip starts and what the seam looks like in the messages and decoded frames. It also records position zero while a build is active, a pop of the build in flight, and metadata on every watched clip message. See [the scheduler check](#the-scheduler-check). |
+| `scheduler-edits` | 0.7.0   | One capped session through the public owner and `makeScheduler`: inserts with and without `continuity: "previous"` inside a group, and an edit batch timed to take effect a second before a boundary. It records the order clips air in, when the batch took effect, and each seam's pause and picture change. See [the edit checks](#the-070-edit-checks).                                                                                           |
+| `scheduler-cut`   | 0.7.0   | One capped session: raw H3 probes of position zero behind a running build, how long a popped build holds the build slot, and whether a queue read sent right behind an enqueue lists the new clip; then a cut lane stopping a playing 15 s clip, with the cut's seam measured. See [the edit checks](#the-070-edit-checks).                                                                                                                           |
 
 ### The scheduler check
 
@@ -69,6 +71,45 @@ The evidence stays narrow:
 - The handoff between two sessions is measured by `scheduler-renewal`.
 
 Billing and presented output need separate dashboard or output evidence.
+
+### The 0.7.0 edit checks
+
+0.7.0's scheduler inserts clips, applies edit batches, cuts from a lane and continues a clip from the one before it. `scheduler` showed that `move` and `pop` decide the next clip close to a boundary; these two checks put the scheduler's own edits on hosted H3, at $0.75 each. Both run the public renewing owner over one capped `openH3` source that it never renews, with filler off. The source holds the last frame at boundaries (`holdLastFrame: true`), as a show does; by default H3 flushes to black there, as its schema documents.
+
+`scheduler-edits` turns autoplay on and submits a group of three 5 s beats, `p1` to `p3`, and a fourth clip `w1` behind it. Once `p1` plays, it inserts `xc` after `p2` with `continuity: "previous"`, so `xc` continues from `p2`, and `xn` before `p3`, built on its own. A continued build took 5.45 s on hosted H3, so `xc` needs `p2`'s whole length to build in; the 0.7.0 run put it before `p2`, where it missed its place. Once `p3` plays, it sends one `edit` batch that withdraws `w1` and inserts `y` after `p3`. The batch goes one measured build plus a second before `p3` ends, so it should take effect about a second before that boundary. It passes only if:
+
+- the clips start in the order `p1`, `p2`, `xc`, `xn`, `p3`, `y`;
+- the batch takes effect before `p3` ends;
+- `w1` never starts, and is dropped as withdrawn;
+- every one of the five seams has its pause and picture change measured.
+
+`scheduler-cut` starts with autoplay off and uses the H3 provider directly:
+
+- a lone build, for its time;
+- a clip, a clip at position zero and a third, then a queue read: position zero must be listed behind the running build and ahead of the third;
+- a build popped while it runs, and the time the clip queued behind it takes to be Ready, against the lone build;
+- three enqueues, each followed by a queue read sent as soon as the enqueue is committed, long before its reply: every read must list the new clip. The scheduler still treats an enqueue whose reply is lost as unknown. If H3 applies commands in the order they arrive, a later queue read can settle it.
+
+It then pops every raw clip, turns autoplay on, and submits a 15 s clip to the scheduler's `line` lane. 2.5 s after it starts, a 5 s clip goes to an `urgent` lane with `cut: true`. That clip must stop the long one once it is Ready, and start next.
+
+At every seam the evidence keeps:
+
+- the ending clip's end and the next clip's start;
+- the longest stretch with no new picture;
+- the largest change between two consecutive decoded frames. That change is set against the median change between consecutive frames in the two seconds before it, the ending clip's own motion. A ratio near 1 means the picture carries across the seam; a hard cut scores far higher.
+
+Comparing the continued seam `p1` to `xc` with the independent ones is what the check says about continuity. The two frames on either side of each seam's largest change are written at half size as PNGs to `reactor-seams-<run id>` in the system's temporary directory, for a person to look at. They are never written into the ledger, which holds no frame. Delete them after review.
+
+The evidence stays narrow:
+
+- one prompt serves every clip, so independent clips already resemble each other, and one run cannot separate continuity from similar prompts;
+- one sample of each edit shows it can land, not a stable margin;
+- the queue-read probes show order on this deployment, three times, not a documented guarantee.
+
+Both ran once against published 0.7.0, in [its ledger](./evidence/0.7.0/summary.md), for $1.50, before their sessions held the last frame. Both failed:
+
+- **`scheduler-edits`** failed its order. The batch took effect 1.04 s before its boundary, and its withdrawn clip never started. The continued insert, though, waited behind a build in flight, and its continued build took 5.45 s against about 2.2 s for an independent one. It missed its place and aired after a clip it did not continue from, so no continued join was measured. Every clip ended on the one black frame that H3's default flush documents.
+- **`scheduler-cut`** found a defect, since fixed: the scheduler stopped the long clip twice, and H3's `stop`, which names no clip, cut the cut-lane clip 5 ms after it started. Its position-zero criterion failed too: the queue read listed position zero ahead of the running build. Its queue reads, each sent right behind an enqueue, all listed the new clip.
 
 ## Public scheduler renewal (offline implementation)
 
@@ -116,7 +157,7 @@ The evidence never holds:
 
 - a credential;
 - SDP, candidate addresses or IP addresses;
-- a frame or an audio sample (only per-frame digests and summaries);
+- a frame or an audio sample (only per-frame digests and summaries; the 0.7.0 edit checks write a few seam frames beside the run, never into it);
 - provider error text.
 
 ### What the runs settle that no document does
@@ -141,11 +182,11 @@ Reactor's documentation leaves these open. Each has a step that answers it, and 
    - that the native library loads.
 5. **Rehearsed end to end.** `rehearse <check>` runs the same code against `twin/`, a local stand-in for:
    - the coordinator's routes, including pricing (listed by bare model name, as the live endpoint does), tokens, termination and the session cap;
-   - the H3 model's messages, in the documented order (a command's reply before the broadcasts it causes, and autoplay off until a client turns it on), except where hosted H3 was seen to differ: an enqueue's queue broadcast comes before its reply;
+   - the H3 model's messages, in the documented order (a command's reply before the broadcasts it causes, and autoplay off until a client turns it on), except where hosted H3 was seen to differ: an enqueue's queue broadcast comes before its reply, and a stop lands about 20 ms after its acknowledgement, with another stop sent meanwhile handled once the next clip has started;
    - media, which each connection receives only once it resumes its tracks, as on hosted Reactor;
    - stats as the native host reports them: each candidate pair with its local candidate only, and the relay pair ICE nominated first left nominated beside the direct pair that carries the media.
 
-   CI rehearses every check and every failure path, and asserts that each evidence file decodes, that passing runs are complete, and that no file holds a credential. The failure paths are:
+   CI rehearses every check before 0.7.0 and every failure path, and asserts that each evidence file decodes, that passing runs are complete, and that no file holds a credential. `scheduler-edits` and `scheduler-cut` are rehearsed by hand before their paid runs. The failure paths are:
    - a lost enqueue reply (outcome unknown, so the check stops);
    - a DELETE the coordinator completes only after the library's one confirmation read (unconfirmed termination, with cleanup instructions and a trail of when it ended);
    - black or frozen video;
@@ -199,6 +240,14 @@ bun hosted/qualify.ts scheduler --budget-usd=0.75 --total-budget-usd=2.25 \
 bun hosted/qualify.ts rehearse scheduler-renewal
 bun hosted/qualify.ts scheduler-renewal --budget-usd=1.50 --total-budget-usd=2.25 \
   --ledger=evidence/<version> --network="home fiber, no VPN" --i-authorize-paid-sessions
+
+# 0.7.0's edit checks, $0.75 each.
+bun hosted/qualify.ts rehearse scheduler-edits
+bun hosted/qualify.ts rehearse scheduler-cut
+bun hosted/qualify.ts scheduler-edits --budget-usd=0.75 --total-budget-usd=1.50 \
+  --ledger=evidence/0.7.0 --network="home fiber, no VPN" --i-authorize-paid-sessions
+bun hosted/qualify.ts scheduler-cut --budget-usd=0.75 --total-budget-usd=1.50 \
+  --ledger=evidence/0.7.0 --network="home fiber, no VPN" --i-authorize-paid-sessions
 
 bun hosted/qualify.ts summarize ledger > summary.md
 ```
