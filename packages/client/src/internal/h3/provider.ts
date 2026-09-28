@@ -485,6 +485,14 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     args: CommandArgs<K>,
     needsFacts: boolean,
   ) {
+    if (!contract.commands.has(operation))
+      return yield* localFailure(
+        operation,
+        ReactorError.fromCode(
+          "UnsupportedCapability",
+          `The deployment does not offer H3 ${operation}`,
+        ),
+      );
     yield* active(operation, needsFacts);
     const source = yield* session.command(operation, args, { replyTimeout: limits.command });
     const message = yield* awaitReply(source).pipe(

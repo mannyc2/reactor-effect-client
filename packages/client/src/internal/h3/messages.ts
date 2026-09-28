@@ -82,8 +82,8 @@ export const State = Schema.Struct({
     if (state.clip_seconds_max < state.clip_seconds_min)
       issues.push({ path: ["clip_seconds_max"], issue: "must be at least clip_seconds_min" });
     if (state.clip_seconds <= 0) issues.push({ path: ["clip_seconds"], issue: "must be positive" });
-    if (state.playing !== (state.playing_clip_id !== null))
-      issues.push({ path: ["playing_clip_id"], issue: "must be set exactly while playing" });
+    // `playing` also covers a clip armed for its seam, and H3 does not say whether
+    // `playing_clip_id` names that clip yet, so the two are not held to agree.
     return issues;
   }),
 );
