@@ -337,7 +337,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         startMarker: start,
         endMarker: elapsed,
         nowMarker: elapsed,
-        predictedReadyAtMs: BigInt(yield* Clock.currentTimeMillis),
+        // A test clock can stand between two milliseconds, and a BigInt takes whole ones.
+        predictedReadyAtMs: BigInt(Math.round(yield* Clock.currentTimeMillis)),
         playlistUrl: `/clips/${id}.m3u8`,
       };
     });
