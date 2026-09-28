@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-client-examples",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "reactor-effect-client example: an application service over a Playout, run and tested offline against the simulated Reactor",
   "type": "module",

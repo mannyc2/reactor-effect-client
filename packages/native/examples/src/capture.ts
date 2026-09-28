@@ -166,7 +166,7 @@ const capture = Command.make(
 ).pipe(Command.withDescription("Generate one clip with Reactor H3 and save it as an MP4"));
 
 capture.pipe(
-  Command.run({ version: "0.7.0" }),
+  Command.run({ version: "0.7.1" }),
   Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
   NodeRuntime.runMain,
 );
