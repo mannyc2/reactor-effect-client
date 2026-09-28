@@ -2,7 +2,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import * as Policy from "../src/internal/playout/policy.js";
-import type { ClipTag, SourceClip, SourceState } from "../src/Playout.js";
+import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
 import { ItemKey } from "../src/Playout.js";
 
 const config: Policy.Config = {
@@ -81,6 +81,60 @@ const answer = (state: Policy.State, result: Policy.CommandResult): Policy.Input
   id: state.busy?.id ?? -1,
   result,
 });
+
+/**
+ * A policy driven input by input, each at the time given: the state it reached and every action,
+ * with shorthands for the inputs most cases send.
+ */
+const drive = (options: { readonly config?: Policy.Config; readonly from?: Policy.State } = {}) => {
+  const settings = options.config ?? config;
+  let state = options.from ?? Policy.initial;
+  const actions: Array<Policy.Action> = [];
+  let clock = 0;
+  const send = (input: Policy.Input, time = clock + 1) => {
+    clock = Math.max(clock, time);
+    const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
+    state = result.state;
+    actions.push(...result.actions);
+    return result;
+  };
+  return {
+    state: () => state,
+    actions,
+    now: () => clock,
+    send,
+    /** Opens `id` with `lifetimeMs` and confirms whatever autoplay it asks for first. */
+    open: (id = "s1", lifetimeMs = 600_000, time?: number) => {
+      send({ _tag: "Opened", sessionId: id, lifetimeMs }, time);
+      send({ _tag: "Source", sessionId: id, event: { _tag: "State", state: source() } });
+      if (state.busy?.command._tag === "Autoplay") send(answer(state, { _tag: "Done" }));
+    },
+    submit: (value: Policy.Spec, time?: number) =>
+      send(
+        {
+          _tag: "Edit",
+          id: 1000 + actions.length,
+          edits: [{ _tag: "Submit", spec: value }],
+          batch: false,
+        },
+        time,
+      ),
+    edit: (edits: ReadonlyArray<Policy.EditInput>, batch = false, time?: number) =>
+      send({ _tag: "Edit", id: 1000 + actions.length, edits, batch }, time),
+    /** Answers the command in flight. */
+    reply: (result: Policy.CommandResult, time?: number) => send(answer(state, result), time),
+    observe: (partial: Partial<SourceState>, id = "s1", time?: number) =>
+      send(
+        { _tag: "Source", sessionId: id, event: { _tag: "State", state: source(partial) } },
+        time,
+      ),
+    event: (event: SourceEvent, id = "s1", time?: number) =>
+      send({ _tag: "Source", sessionId: id, event }, time),
+    tick: (time?: number) => send({ _tag: "Tick" }, time),
+    /** The command in flight, if any. */
+    busy: () => state.busy?.command,
+  };
+};
 
 describe("PlayoutPolicy", () => {
   it("opens a session, turns autoplay on, then builds the first item in lane order", () => {
@@ -683,4 +737,72 @@ describe("PlayoutPolicy", () => {
         }
       }),
   );
+});
+
+const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
+  commands(actions).flatMap((action) =>
+    action.command._tag === "Enqueue" && (sessionId === undefined || action.sessionId === sessionId)
+      ? [action.command.tag._tag === "Item" ? String(action.command.tag.key) : "filler"]
+      : [],
+  );
+const unknown: Policy.CommandResult = {
+  _tag: "Failed",
+  outcome: "unknown",
+  retryable: false,
+  reason: "the reply was lost",
+};
+
+// What 0.7.0's scheduler guaranteed and the first Playout lost, found by an independent critique.
+describe("PlayoutPolicy, uncertainty and loss", () => {
+  const filled: Policy.Config = {
+    ...config,
+    filler: {
+      floor: 5,
+      target: 10,
+      clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
+      lengths: { min: 5, max: 15 },
+    },
+  };
+
+  // 0.7.0 SchedulerRenewal "uncertain filler on the retiring source does not hold replacement
+  // runway", and SchedulerUnknownRecovery's per-source filler identities.
+  for (const lifetimeMs of [600_000, Infinity])
+    it(`a lost filler reply holds only its own session, replaced by the deadline (lifetime ${String(lifetimeMs)})`, () => {
+      const policy = drive({ config: filled });
+      policy.tick(0);
+      policy.open("s1", lifetimeMs);
+      assert.deepStrictEqual(enqueued(policy.actions), ["filler"]);
+      policy.reply(unknown, 100);
+      policy.submit(spec("a"), 200);
+      const deadline = policy.tick(100 + filled.unknownTimeoutMs);
+      assert.isTrue(deadline.actions.some((action) => action._tag === "Open"));
+      policy.open("s2", lifetimeMs);
+      assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["a"]);
+    });
+
+  for (const lifetimeMs of [600_000, Infinity])
+    it(`a lost item reply opens a replacement at the deadline, not at the cap (lifetime ${String(lifetimeMs)})`, () => {
+      const policy = drive();
+      policy.tick(0);
+      policy.open("s1", lifetimeMs);
+      policy.submit(spec("lost"), 10);
+      policy.reply(unknown, 20);
+      policy.submit(spec("next"), 30);
+      assert.deepStrictEqual(enqueued(policy.actions), ["lost"]);
+      const deadline = policy.tick(20 + config.unknownTimeoutMs);
+      assert.isTrue(deadline.actions.some((action) => action._tag === "Open"));
+      policy.open("s2", lifetimeMs);
+      assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["next"]);
+    });
+
+  // 0.7.0 SchedulerFates: a session lost is closed, so it cannot bill beside its replacement.
+  it("closes a session it lost", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1");
+    const lost = policy.send({ _tag: "Lost", sessionId: "s1", reason: "the connection failed" });
+    assert.isTrue(
+      lost.actions.some((action) => action._tag === "Close" && action.sessionId === "s1"),
+    );
+  });
 });
