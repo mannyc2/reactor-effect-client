@@ -49,6 +49,20 @@ What they found:
   motion, against 13–19× at the independent joins, and its seam frames show the same glasses and
   plate shifted a little, where the independent joins cut to a new picture.
 
+## The commits
+
+The branch's commit messages were reworded after these runs, which gave every commit a new hash
+and changed no tree. The commits the runs name are still reachable from the tag
+`archive/effect-native-pre-reword`, and each is on the branch as:
+
+| The evidence names | On the branch | Runs                  |
+| ------------------ | ------------- | --------------------- |
+| 8458d081           | b799f9b       | 83d17eb7 (`tokens`)   |
+| f5daf554           | cc6df75       | 7bc779d4 (`tokens`)   |
+| 59136a27           | 52d0e96       | c1796473 (`cut`)      |
+| 69f34e9f           | 5cf54a2       | d56fd1ee (`vertical`) |
+| 3539ed45           | 4bfb5b3       | 3ae36b29 (`edits`)    |
+
 ## The dashboard
 
 The Usage page, read after the last run, lists these sessions, all `CLOSED` on cluster `5a004973-…`
