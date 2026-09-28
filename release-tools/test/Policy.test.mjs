@@ -14,6 +14,7 @@ import {
   ciRunId,
   executionEnvironment,
   loadOffline,
+  packageNames,
   preparationRun,
   prepared,
   sourceCommit,
@@ -54,8 +55,10 @@ for (const [name, changes] of invalidRuns)
   test(`CI selection rejects ${name}`, () =>
     assert.throws(() => validateRun({ ...workflowRun(), ...changes }, ciRunId, "ci")));
 
-const confirmation =
-  "publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0";
+/** @param {string} version */
+const confirming = (version) =>
+  `publish ${packageNames.map((name) => `${name}@${version}`).join(" ")}`;
+const confirmation = confirming("0.2.0");
 
 test("explicit confirmation of every package selects publication; observe cannot acquire publication authority", () =>
   withFixture(async (fixture) => {
@@ -124,8 +127,7 @@ test("a prerelease confirmation names every package at the exact prerelease vers
   withFixture(
     async (fixture) => {
       const { identity } = await prepared(fixture);
-      const expected =
-        "publish reactor-effect-client@0.2.0-rc.1 reactor-effect-browser@0.2.0-rc.1 reactor-effect-native@0.2.0-rc.1";
+      const expected = confirming("0.2.0-rc.1");
       assert.equal(confirmationFor(identity.qualification), expected);
       const options = {
         ciRun: workflowRun(),

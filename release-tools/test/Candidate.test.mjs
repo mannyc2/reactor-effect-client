@@ -22,7 +22,10 @@ import {
   hostPackages,
   intentFor,
   loadOffline,
+  darwinPackage,
+  linuxPackage,
   nativePackage,
+  platformPackages,
   operationFor,
   packageNames,
   prepareOffline,
@@ -124,15 +127,24 @@ test("prepare and load retain the exact qualified archives, both native identiti
     );
     assert.equal(plan.planId, identity.planId);
     assert.equal(plan.journalId, "reactor-npm:mannyc2/reactor-effect-client:0.2.0");
-    assert.equal(plan.operations.length, 3);
+    assert.equal(plan.operations.length, packageNames.length);
     assert.ok(plan.operations.every((operation) => operation.definitionId === "npm.publish"));
     assert.deepEqual([...intents.keys()].sort(), [...packageNames].sort());
-    // Both host publications depend on the client's; the client depends on nothing.
+    // Every later publication depends on the client's, and the binding also on
+    // the platform packages it pins; the client depends on nothing.
     const client = operationFor(loaded, clientPackage);
     assert.deepEqual(client.dependsOn, []);
     for (const name of hostPackages)
-      assert.deepEqual(operationFor(loaded, name).dependsOn, [client.operationId]);
-    assert.equal(new Set(plan.operations.map((operation) => operation.operationId)).size, 3);
+      assert.deepEqual(
+        [...operationFor(loaded, name).dependsOn].sort(),
+        (name === nativePackage ? [clientPackage, ...platformPackages] : [clientPackage])
+          .map((dependency) => operationFor(loaded, dependency).operationId)
+          .sort(),
+      );
+    assert.equal(
+      new Set(plan.operations.map((operation) => operation.operationId)).size,
+      packageNames.length,
+    );
     for (const name of packageNames) {
       const intent = intentFor(loaded, name);
       const archive = fixture.packages[name];
@@ -166,21 +178,26 @@ test("prepare and load retain the exact qualified archives, both native identiti
       "reactor-effect-client-0.2.0.tgz.sigstore.json",
       "reactor-effect-native-0.2.0.tgz",
       "reactor-effect-native-0.2.0.tgz.sigstore.json",
+      "reactor-effect-native-darwin-arm64-0.2.0.tgz",
+      "reactor-effect-native-darwin-arm64-0.2.0.tgz.sigstore.json",
+      "reactor-effect-native-linux-x64-gnu-0.2.0.tgz",
+      "reactor-effect-native-linux-x64-gnu-0.2.0.tgz.sigstore.json",
     ]);
     assert.deepEqual(await retainedJson(loaded, "package-identity.json"), fixture.identity);
     assert.deepEqual(await retainedJson(loaded, "qualification.json"), fixture.qualification);
     assert.deepEqual(identity.qualification, fixture.qualification);
-    assert.deepEqual(Object.keys(fixture.identity.native).sort(), ["darwin-arm64", "linux-x64"]);
-    // Only the native archive carries libraries and their identity sidecars.
-    for (const [platform, library] of Object.entries({
-      "darwin-arm64": "libreactor_effect_native.dylib",
-      "linux-x64": "libreactor_effect_native.so",
-    }))
-      for (const path of [`lib/${platform}/${library}`, `lib/${platform}/native-identity.json`])
-        assert.ok(fixture.packages[nativePackage].files.includes(path));
-    for (const name of [clientPackage, browserPackage])
+    assert.deepEqual(Object.keys(fixture.identity.native).sort(), [
+      "darwin-arm64",
+      "linux-x64-gnu",
+    ]);
+    // Only the platform archives carry an addon and its identity.
+    for (const path of ["reactor-effect-native.darwin-arm64.node", "native-identity.json"])
+      assert.ok(fixture.packages[darwinPackage].files.includes(path));
+    for (const path of ["reactor-effect-native.linux-x64-gnu.node", "native-identity.json"])
+      assert.ok(fixture.packages[linuxPackage].files.includes(path));
+    for (const name of [clientPackage, browserPackage, nativePackage])
       assert.equal(
-        fixture.packages[name].files.some((path) => path.startsWith("lib/")),
+        fixture.packages[name].files.some((path) => path.endsWith(".node")),
         false,
       );
     assert.deepEqual(readdirSync(fixture.candidateDirectory).sort(), [
@@ -189,7 +206,10 @@ test("prepare and load retain the exact qualified archives, both native identiti
       "identity.json",
       "plan.json",
     ]);
-    assert.equal(readdirSync(join(fixture.candidateDirectory, "content")).length, 8);
+    assert.equal(
+      readdirSync(join(fixture.candidateDirectory, "content")).length,
+      packageNames.length * 2 + 2,
+    );
   }));
 
 test("prereleases select next rather than latest for every package without changing their bytes", () =>
@@ -349,14 +369,14 @@ const invalidIdentities = [
   [
     "a missing native platform",
     (identity) => {
-      Reflect.deleteProperty(identity.native, "linux-x64");
+      Reflect.deleteProperty(identity.native, "linux-x64-gnu");
     },
     schema,
   ],
   [
     "a native platform built from other source",
     (identity) => {
-      const platform = identity.native["linux-x64"];
+      const platform = identity.native["linux-x64-gnu"];
       assert.ok(platform);
       platform.build.sourceSha256 = "0".repeat(64);
     },
@@ -365,7 +385,7 @@ const invalidIdentities = [
   [
     "native platforms linking different WebRTC prebuilts",
     (identity) => {
-      const platform = identity.native["linux-x64"];
+      const platform = identity.native["linux-x64-gnu"];
       assert.ok(platform);
       platform.build.webrtcPrebuilt = "webrtc-7907-a5ddff60-p8";
     },
@@ -383,7 +403,7 @@ const invalidIdentities = [
   [
     "a mislabelled native platform",
     (identity) => {
-      const platform = identity.native["linux-x64"];
+      const platform = identity.native["linux-x64-gnu"];
       assert.ok(platform);
       platform.platform = "linux-arm64";
     },
@@ -394,16 +414,15 @@ const invalidIdentities = [
     (identity) => {
       const platform = identity.native["darwin-arm64"];
       assert.ok(platform);
-      platform.library = "libreactor_effect_native.so";
+      platform.file = "reactor-effect-native.linux-x64-gnu.node";
     },
     nativeIdentity,
   ],
   [
     "native library bytes differing from the packaged file",
     (identity) => {
-      identity.packages[nativePackage].fileSha256[
-        "lib/darwin-arm64/libreactor_effect_native.dylib"
-      ] = "0".repeat(64);
+      identity.packages[darwinPackage].fileSha256["reactor-effect-native.darwin-arm64.node"] =
+        "0".repeat(64);
     },
     nativeIdentity,
   ],
@@ -419,8 +438,8 @@ const invalidIdentities = [
   [
     "a missing native identity sidecar",
     (identity) => {
-      const sidecar = "lib/linux-x64/native-identity.json";
-      const native = identity.packages[nativePackage];
+      const sidecar = "native-identity.json";
+      const native = identity.packages[linuxPackage];
       native.files = native.files.filter((path) => path !== sidecar);
       delete native.fileSha256[sidecar];
     },
@@ -436,7 +455,7 @@ const invalidIdentities = [
   [
     "a native library inside the browser package",
     (identity) => {
-      const path = "lib/linux-x64/libreactor_effect_native.so";
+      const path = "reactor-effect-native.linux-x64-gnu.node";
       identity.packages[browserPackage].files.push(path);
       identity.packages[browserPackage].fileSha256[path] = digest("smuggled library");
     },
@@ -621,6 +640,8 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
     const client = operationFor(loaded, clientPackage);
     const browser = operationFor(loaded, browserPackage);
     const native = operationFor(loaded, nativePackage);
+    const platforms = platformPackages.map((name) => operationFor(loaded, name));
+    const platformIds = platforms.map((operation) => operation.operationId);
     const otherPrincipal = new Npm.TokenAuthorization({ principal: "other-publisher" });
     /** @param {import("./Fixture.mjs").PackageName} name @param {Partial<Npm.PublishIntent>} changes @param {readonly string[]} dependsOn */
     const republish = (name, changes, dependsOn) =>
@@ -641,11 +662,20 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
     const variants = [
       [
         "another npm principal for the client",
-        [
-          otherClient,
-          await republish(browserPackage, {}, [otherClient.operationId]),
-          await republish(nativePackage, {}, [otherClient.operationId]),
-        ],
+        await (async () => {
+          const others = await Promise.all(
+            platformPackages.map((name) => republish(name, {}, [otherClient.operationId])),
+          );
+          return [
+            otherClient,
+            await republish(browserPackage, {}, [otherClient.operationId]),
+            ...others,
+            await republish(nativePackage, {}, [
+              otherClient.operationId,
+              ...others.map((operation) => operation.operationId),
+            ]),
+          ];
+        })(),
         journal,
       ],
       [
@@ -653,21 +683,30 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
         [
           client,
           browser,
-          await republish(nativePackage, { authorization: otherPrincipal }, [client.operationId]),
+          ...platforms,
+          await republish(nativePackage, { authorization: otherPrincipal }, [
+            client.operationId,
+            ...platformIds,
+          ]),
         ],
         journal,
       ],
       ["another journal", loaded.plan.operations, `${journal}:replacement`],
-      ["a dropped host publication", [client, browser], journal],
+      ["a dropped host publication", [client, browser, ...platforms], journal],
       ["only the client publication", [client], journal],
       [
         "a host publication without its client dependency",
-        [client, await republish(browserPackage, {}, []), native],
+        [client, await republish(browserPackage, {}, []), ...platforms, native],
         journal,
       ],
       [
         "a host depending on the other host instead of the client",
-        [client, browser, await republish(nativePackage, {}, [browser.operationId])],
+        [
+          client,
+          browser,
+          ...platforms,
+          await republish(nativePackage, {}, [browser.operationId, ...platformIds]),
+        ],
         journal,
       ],
       [
@@ -675,7 +714,12 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
         [
           client,
           browser,
-          await republish(nativePackage, {}, [client.operationId, browser.operationId]),
+          ...platforms,
+          await republish(nativePackage, {}, [
+            client.operationId,
+            browser.operationId,
+            ...platformIds,
+          ]),
         ],
         journal,
       ],
@@ -692,6 +736,7 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
             },
             [client.operationId],
           ),
+          ...platforms,
           native,
         ],
         journal,
@@ -705,6 +750,7 @@ test("a validly rehashed Plan cannot change the npm principal, the journal, the 
             { provenance: intentFor(loaded, nativePackage).provenance },
             [client.operationId],
           ),
+          ...platforms,
           native,
         ],
         journal,

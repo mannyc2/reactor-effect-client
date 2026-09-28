@@ -11,221 +11,210 @@ export declare class NativePeer {
    * the queues that have items (events 1, video 2, audio 4); it is only a
    * wake, and the host takes the items itself.
    */
-  constructor(ready: (arg: number) => void);
+  constructor(ready: (arg: number) => void)
   /** Create the connection and its local offer. */
-  prepare(servers: Array<IceServer>, tracks: Array<Track>): Promise<Reply>;
+  prepare(servers: Array<IceServer>, tracks: Array<Track>): Promise<Reply>
   /** Apply the remote answer. */
-  answer(sdp: string): Promise<Reply>;
+  answer(sdp: string): Promise<Reply>
   /** Pause a declared track, or resume it in its declared direction. */
-  direction(name: string, active: boolean): Promise<Reply>;
+  direction(name: string, active: boolean): Promise<Reply>
   /** Cap an outgoing track's send bitrate. */
-  maxBitrate(name: string, bitsPerSecond: number): Promise<Reply>;
+  maxBitrate(name: string, bitsPerSecond: number): Promise<Reply>
   /** Read WebRTC statistics. */
-  stats(): Promise<Reply>;
+  stats(): Promise<Reply>
   /**
    * Send one binary message. The bytes are copied before this returns, so
    * later changes to them never reach the peer.
    */
-  send(channel: Channel, bytes: Uint8Array): Promise<Reply>;
+  send(channel: Channel, bytes: Uint8Array): Promise<Reply>
   /** The next transport event, if one is queued. */
-  takeEvent(): PeerEvent | null;
+  takeEvent(): PeerEvent | null
   /** The next decoded frame, if one is queued. */
-  takeVideo(): Video | null;
+  takeVideo(): Video | null
   /** The next decoded audio block, if one is queued. */
-  takeAudio(): Audio | null;
+  takeAudio(): Audio | null
   /** What each queue dropped, delivered and still holds. */
-  pressure(): Pressure;
+  pressure(): Pressure
   /** Fence callback admission and calls at once, and discard what is queued. */
-  close(): void;
+  close(): void
   /**
    * Close, then join the owner thread and every admitted callback, on a
    * thread of its own. The promise settles when the join completes.
    */
-  shutdown(): Promise<Reply>;
+  shutdown(): Promise<Reply>
 }
 
 /** One block of decoded, interleaved PCM. */
 export interface Audio {
   /** The track's index in the prepare request. */
-  track: number;
+  track: number
   /** Samples per second. */
-  sampleRate: number;
+  sampleRate: number
   /** Interleaved channels. */
-  channels: number;
+  channels: number
   /** The block's admission sequence on its track: a gap counts drops. */
-  sequence: bigint;
+  sequence: bigint
   /** Signed 16-bit samples, in an `ArrayBuffer` of their own. */
-  samples: Int16Array;
+  samples: Int16Array
 }
 
 /**
  * The build identity JSON: the source hash, target, profile and toolchain
  * the addon was built from, which staging checks against the checkout.
  */
-export declare function buildIdentity(): string;
+export declare function buildIdentity(): string
 
 /** A local ICE candidate, as the host forwards it to signaling. */
 export interface Candidate {
   /** The candidate line. */
-  candidate: string;
+  candidate: string
   /** Its media section, if known. */
-  sdpMid?: string;
+  sdpMid?: string
   /** Its m-line index, if known. */
-  sdpMLineIndex?: number;
+  sdpMLineIndex?: number
 }
 
 /** A data channel the addon owns. */
-export type Channel = "control" | "data";
+export type Channel = 'control' | 'data'
 
 /** Which way a track's media flows, seen from the addon. */
-export type Direction = "recvonly" | "sendonly";
+export type Direction = 'recvonly' | 'sendonly'
 
 /** A classified failure. */
 export interface Failure {
   /** What kind of failure it is. */
-  class: FailureClass;
+  class: FailureClass
   /**
    * Diagnostic text. It can quote libwebrtc and so peer SDP: the host keeps
    * it private and never matches on it.
    */
-  message: string;
+  message: string
 }
 
 /**
  * What kind of failure a call or the connection met. The host maps each class
  * to its own error reason.
  */
-export type FailureClass =
-  | "Closed"
-  | "InvalidInput"
-  | "Native"
-  | "Overflow"
-  | "Protocol"
-  | "SdpRejected"
-  | "ChannelClosed";
+export type FailureClass = 'Closed' | 'InvalidInput' | 'Native' | 'Overflow' | 'Protocol' | 'SdpRejected' | 'ChannelClosed'
 
 /** A STUN or TURN server. */
 export interface IceServer {
   /** The server's URLs. */
-  urls: Array<string>;
+  urls: Array<string>
   /** The TURN username, if any. */
-  username?: string;
+  username?: string
   /** The TURN credential, if any. */
-  credential?: string;
+  credential?: string
 }
 
 /** A declared track and the MID libwebrtc gave its transceiver. */
 export interface Mapping {
   /** The declared name. */
-  name: string;
+  name: string
   /** Its media. */
-  kind: TrackKind;
+  kind: TrackKind
   /** Its direction. */
-  direction: Direction;
+  direction: Direction
   /** Its media section. */
-  mid: string;
+  mid: string
 }
 
 /** A transport event, in the order it happened. */
 export type PeerEvent =
-  | {
-      type: "state" /** `new`, `connecting`, `connected`, `disconnected`, `failed` or `closed`. */;
-      state: string;
-    }
-  | { type: "ice" /** The candidate. */; candidate?: Candidate }
-  | {
-      type: "channel" /** Which channel. */;
-      channel: Channel /** Whether it is now open. */;
-      open: boolean;
-    }
-  | {
-      type: "message" /** Which channel. */;
-      channel: Channel /** The message, in an `ArrayBuffer` of its own. */;
-      bytes: Uint8Array;
-    }
-  | { type: "track" /** The declared name. */; name: string /** Its media section. */; mid: string }
-  | {
-      type: "decoded" /** Its media. */;
-      kind: TrackKind /** The declared name. */;
-      name: string /** Its media section. */;
-      mid: string;
-    }
-  | { type: "error" /** Why. */; failure: Failure };
+  | { type: 'state'; /** `new`, `connecting`, `connected`, `disconnected`, `failed` or `closed`. */
+  state: string }
+  | { type: 'ice'; /** The candidate. */
+  candidate?: Candidate }
+  | { type: 'channel'; /** Which channel. */
+    channel: Channel; /** Whether it is now open. */
+  open: boolean }
+  | { type: 'message'; /** Which channel. */
+    channel: Channel; /** The message, in an `ArrayBuffer` of its own. */
+  bytes: Uint8Array }
+  | { type: 'track'; /** The declared name. */
+    name: string; /** Its media section. */
+  mid: string }
+  | { type: 'decoded'; /** Its media. */
+    kind: TrackKind; /** The declared name. */
+    name: string; /** Its media section. */
+  mid: string }
+  | { type: 'error'; /** Why. */
+  failure: Failure }
 
 /** The local offer and each declared track's mapping. */
 export interface Prepared {
   /** The offer. */
-  sdp: string;
+  sdp: string
   /** The mapping of each declared track, in request order. */
-  mapping: Array<Mapping>;
+  mapping: Array<Mapping>
 }
 
 /** What each queue dropped, delivered and still holds. */
 export interface Pressure {
   /** Whether the peer is closed. */
-  closed: boolean;
+  closed: boolean
   /** Calls admitted and not yet taken up by the owner thread. */
-  pendingRequests: number;
+  pendingRequests: number
   /** Events waiting. */
-  queuedControl: number;
+  queuedControl: number
   /** Frames waiting. */
-  queuedVideo: number;
+  queuedVideo: number
   /** Audio blocks waiting. */
-  queuedAudio: number;
+  queuedAudio: number
   /** Bytes waiting across the queues. */
-  queuedBytes: number;
+  queuedBytes: number
   /** Frames the video queue evicted. */
-  droppedVideo: bigint;
+  droppedVideo: bigint
   /** Blocks the audio queue evicted. */
-  droppedAudio: bigint;
+  droppedAudio: bigint
   /** Frames the host took. */
-  deliveredVideo: bigint;
+  deliveredVideo: bigint
   /** Blocks the host took. */
-  deliveredAudio: bigint;
+  deliveredAudio: bigint
 }
 
 /** A call's answer: its failure, or the value a call returns. */
 export interface Reply {
   /** Present when the call failed. */
-  failure?: Failure;
+  failure?: Failure
   /** `prepare`'s offer and mapping. */
-  prepared?: Prepared;
+  prepared?: Prepared
   /**
    * `stats`: an `RTCStatsReport`-shaped array; counters beyond double
    * precision are decimal strings.
    */
-  stats?: Array<Record<string, unknown>>;
+  stats?: Array<Record<string, unknown>>
 }
 
 /** A track to negotiate. */
 export interface Track {
   /** The track's name, unique in its request. */
-  name: string;
+  name: string
   /** Its media. */
-  kind: TrackKind;
+  kind: TrackKind
   /** Its direction. */
-  direction: Direction;
+  direction: Direction
 }
 
 /** The media a track carries. */
-export type TrackKind = "video" | "audio";
+export type TrackKind = 'video' | 'audio'
 
 /** One decoded BGRA frame. */
 export interface Video {
   /** The track's index in the prepare request. */
-  track: number;
+  track: number
   /** Width in pixels. */
-  width: number;
+  width: number
   /** Height in pixels. */
-  height: number;
+  height: number
   /** The sender's frame id; 0 when it supplied none. */
-  frameId: bigint;
+  frameId: bigint
   /** The sender's capture time in microseconds; 0 when absent. */
-  timestampUs: bigint;
+  timestampUs: bigint
   /** The frame's admission sequence on its track: a gap counts drops. */
-  sequence: bigint;
+  sequence: bigint
   /** `width * height * 4` bytes, in an `ArrayBuffer` of their own. */
-  data: Uint8Array;
+  data: Uint8Array
   /** The sender's metadata, in an `ArrayBuffer` of its own. */
-  metadata: Uint8Array;
+  metadata: Uint8Array
 }
