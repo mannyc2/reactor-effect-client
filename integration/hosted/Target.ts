@@ -31,7 +31,7 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
-import { sessionSeconds, workSeconds } from "./Spend.js";
+import { sessionSeconds } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
 
@@ -128,7 +128,7 @@ export const own = (input: {
       yield* announce({ allocation, playing, queued });
       return yield* Effect.never;
     }),
-  ).pipe(Effect.timeout(Duration.seconds(workSeconds)));
+  ).pipe(Effect.timeout(Duration.seconds((input.grant.maxSessionSeconds ?? sessionSeconds) - 10)));
 
 /** Hosted Reactor over the native peer, in this process. */
 export const paid = (input: {
@@ -179,7 +179,7 @@ export const paid = (input: {
               Stream.filter(Option.isSome),
               Stream.map((line) => line.value),
               Stream.runHead,
-              Effect.timeout(Duration.seconds(workSeconds + 15)),
+              Effect.timeout(Duration.seconds((grant.maxSessionSeconds ?? sessionSeconds) + 5)),
             );
             if (Option.isNone(streaming))
               return yield* OwnerFailed.make({ message: "the owner exited before streaming" });

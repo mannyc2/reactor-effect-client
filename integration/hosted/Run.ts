@@ -21,6 +21,7 @@ export class Run extends Context.Service<
   Run,
   {
     readonly runId: string;
+    readonly check: Evidence["check"];
     /** When the run started, in epoch milliseconds on Effect's clock. */
     readonly origin: number;
     /** Milliseconds since the run started, on Effect's clock. */
@@ -89,6 +90,7 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
   const save = saving(initial.mode === "paid");
   return Run.of({
     runId: initial.runId,
+    check: initial.check,
     origin,
     now,
     evidence: Effect.map(Ref.get(state), (evidence) => ({ ...evidence, spans: spanRecords() })),

@@ -41,9 +41,10 @@ import {
   acceptGrant,
   billedUsd,
   provenGrant,
+  plans,
   sessionSeconds,
-  tokenSeconds,
-  workSeconds,
+  tokenSecondsFor,
+  workSecondsFor,
 } from "./Spend.js";
 import { prompt, Target } from "./Target.js";
 
@@ -187,14 +188,17 @@ const withToken = (jwt: Redacted.Redacted<string>) =>
   );
 
 /** Mints one session's token: its grant goes into the evidence, its JWT never does. */
-const mint = Effect.fnUntraced(function* (check: Check, expiresAfterSeconds = tokenSeconds) {
+const mint = Effect.fnUntraced(function* (
+  check: Check,
+  expiresAfterSeconds = tokenSecondsFor(check),
+) {
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* Coordinator.Coordinator;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
     modelName: H3.modelName,
-    maxSessionDuration: `${sessionSeconds} seconds`,
+    maxSessionDuration: `${plans[check].seconds} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
   yield* run.secret(grant.jwt);
@@ -260,7 +264,7 @@ const holding = Effect.fnUntraced(function* (
       },
     ],
   }));
-  return allocatedAt + workSeconds * 1000;
+  return allocatedAt + workSecondsFor(run.check) * 1000;
 });
 
 /** Records a session the check allocated, and when its grant's cap ends it. Returns its work deadline. */
@@ -757,7 +761,7 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
   const grant = yield* mint(check);
   // The taker holds the key, as a server adopting a dead owner's session does: it mints a
   // token bound to the session, which allocates nothing and stays out of the evidence.
-  const bound = yield* binder(tokenSeconds);
+  const bound = yield* binder(tokenSecondsFor(check));
   const marker = `hosted-qualification:${run.runId}`;
   const video = Media.videoLog();
   yield* withSessions(
