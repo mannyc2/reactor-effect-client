@@ -5,16 +5,11 @@ import { readFileSync } from "node:fs";
  * current runtime and export something. Run under the pack resolution guard,
  * this also proves that no portable entry reaches Koffi or the native package.
  */
-/** @type {readonly (readonly [string, readonly string[]])[]} */
-const packages = [
-  ["client", [".", "./h3", "./orchestration", "./simulation", "./testing", "./wire", "./host"]],
-  ["browser", ["."]],
-];
-for (const [directory, entries] of packages) {
+for (const directory of ["client", "browser"]) {
   const manifest = JSON.parse(
     readFileSync(new URL(`../packages/${directory}/package.json`, import.meta.url), "utf8"),
   );
-  for (const entry of entries) {
+  for (const entry of Object.keys(manifest.exports)) {
     const target = manifest.exports[entry]?.import;
     if (typeof target !== "string")
       throw new Error(`${manifest.name} entry has no import target: ${entry}`);

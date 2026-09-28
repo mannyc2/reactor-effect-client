@@ -24,9 +24,8 @@ Effect `4.0.0-rc.117` is a peer dependency (`^4.0.0-rc.117`); later rc releases 
 | `reactor-effect-client/simulation`    | Production simulation source, factory, and Effect service layer                                |
 | `reactor-effect-client/testing`       | Reusable fault, PNG and WAV fixtures                                                           |
 | `reactor-effect-client/wire`          | Generated protocol messages and wire encoding/decoding                                         |
-| `reactor-effect-client/host`          | Host transport extension surface used by the first-party host packages                         |
 
-These seven paths are the complete public export map. Internal file layout does not create additional supported deep imports. `/host` is published for `reactor-effect-browser` and `reactor-effect-native`, which pin this exact version; applications compose hosts through those packages and never need it.
+Internal file layout does not create additional supported deep imports.
 
 ## Session ownership
 
@@ -56,10 +55,10 @@ The surrounding application supplies the `Client` layer and Effect platform serv
 import { Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Reactor from "reactor-effect-client";
-import * as Native from "reactor-effect-native";
+import { NativePeer } from "reactor-effect-native";
 
 const clientLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, Native.layer())),
+  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, NativePeer.layer())),
 );
 
 // useSession is the operation above. Acquiring a real session can be billable;
@@ -67,7 +66,7 @@ const clientLayer = Reactor.layer().pipe(
 const main = Effect.scoped(useSession).pipe(Effect.provide(clientLayer));
 ```
 
-Building a host layer is its preflight: `Native.layer()` loads and verifies the native library, and `Browser.layer` detects WebRTC, so an unsupported host fails while the layer is built, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement. A custom host provides `PeerFactory` itself: `make` returns a fresh `Peer` for each connection generation, and an optional `check` fails when the host cannot create one right now; the factory runs it before every remote allocation.
+Building a host layer is its preflight: `NativePeer.layer()` loads and verifies the native library, and `BrowserPeer.layer` detects WebRTC, so an unsupported host fails while the layer is built, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. HTTP and crypto services remain explicit. The root session constructor has no filesystem or path requirement. A custom host provides `PeerFactory` itself: `make` returns a fresh `Peer` for each connection generation, and an optional `check` fails when the host cannot create one right now; the factory runs it before every remote allocation.
 
 Browser and native media values stay bound to their negotiated generation. A reconnect creates a new generation; existing readers end or fail with their source. Applications obtain the new media generation explicitly, or opt into orchestration's recovering media streams. Each `VideoFrame` declares its pixel `format` (`"BGRA"` from the native host); nothing converts between formats implicitly. A recorder reads a track directly and sees loss before admission as a rise in `pressure`'s `droppedVideo`/`droppedAudio`, and a reader that falls behind its bound fails with `Overflow` and counts in `readerOverflows`. Every frame carries its admission `sequence` on its track, so `recorder(stream)` yields each frame plus a `Lost { after, count }` wherever the host dropped frames, at their position. A preview keeps only the newest frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
 
