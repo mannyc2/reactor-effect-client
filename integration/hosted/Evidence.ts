@@ -240,6 +240,16 @@ export const TokensRecord = Schema.Struct({
 });
 export type TokensRecord = typeof TokensRecord.Type;
 
+/** A raw read of a session: its status, key names, state and identifier-like codes, never values. */
+export const SessionRead = Schema.Struct({
+  atMs: Ms,
+  status: Schema.Int,
+  keys: Schema.Array(Schema.String),
+  state: Schema.optionalKey(Schema.String),
+  codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+export type SessionRead = typeof SessionRead.Type;
+
 /**
  * The moderation tail of `cut`: a held item whose prompt is meant to be
  * flagged, and what hosted Reactor, the session and the playout did.
@@ -278,15 +288,7 @@ export const ModerationRecord = Schema.Struct({
   /** The playout's session events and failure from the submission on. */
   playout: Schema.Array(Schema.Struct({ atMs: Ms, event: Schema.String })),
   /** The coordinator's read of the session afterwards: status, key names, state and codes. */
-  read: Schema.optionalKey(
-    Schema.Struct({
-      atMs: Ms,
-      status: Schema.Int,
-      keys: Schema.Array(Schema.String),
-      state: Schema.optionalKey(Schema.String),
-      codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-    }),
-  ),
+  read: Schema.optionalKey(SessionRead),
   /** A verdict arrived or the session ended while the item waited. */
   flagged: Schema.Boolean,
   /** The item started: moderation let it through. */
@@ -402,6 +404,15 @@ export const Evidence = Schema.Struct({
       /** The local candidate type of the pair that carried the media. */
       pair: Schema.optionalKey(Schema.String),
     }),
+  ),
+  /**
+   * Every read the adopting process made of the session it took over (takeover,
+   * resume, tokens), with the time since the owner was killed. Paid run tokens
+   * 83d17eb7 read INACTIVE there.
+   */
+  adopterReads: Schema.Struct({ ...SessionRead.fields, sinceKillMs: Ms }).pipe(
+    Schema.Array,
+    Schema.optionalKey,
   ),
   takeover: Schema.optionalKey(
     Schema.Struct({

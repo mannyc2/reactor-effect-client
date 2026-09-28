@@ -44,7 +44,8 @@ Everything comes from sessions the checks pay for anyway.
 - **Timing:** milestones, the library's own spans (only `reactor.*` attributes and `error.type`), acceptance, generation and start of each clip, and submission to Ready of each build.
 - **Media:** frames, sizes, frame rate and intervals, lit and distinct frames, losses; audio blocks and levels; at each seam the longest pause, dark frames and the largest picture change against the ending clip's own motion.
 - **Network:** one statistics sample a second and the local candidate type of the pair that carried the media.
-- **Termination:** the library's close report, then the coordinator's answer every half second until the session is terminal or gone.
+- **Adoption:** each read the adopting process makes of the session it takes over (`takeover`, `resume`, `tokens`), with the time since the owner died: status, state and key names. The first paid `tokens` run read `INACTIVE` 9 s after the kill, and the SDK then counted that session as ended; it was still running.
+- **Termination:** the library's close report, then the coordinator's answer every half second until the session is `CLOSED` or gone.
 
 The evidence never holds a credential, SDP, a candidate address, a frame, audio or provider text. A save whose text would contain the API key or a session token writes nothing and stops the run. The two frames on either side of a playout seam are written at half size to a `reactor-seams-*` temporary directory for a person to look at; they are never part of the ledger.
 

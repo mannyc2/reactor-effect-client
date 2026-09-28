@@ -77,6 +77,12 @@ export class Target extends Context.Service<
      * operator names; `cut` then ends with it. Never logged or saved.
      */
     readonly moderationPrompt: Redacted.Redacted<string> | undefined;
+    /**
+     * How long after the owner is killed the adopter starts (takeover, resume,
+     * tokens), when a rehearsal sets it; otherwise at once, or for `tokens` once
+     * the creating token expired.
+     */
+    readonly adoptAfterMs: number | undefined;
     /** Starts the takeover's owner on the grant; it returns once the owner streams. */
     readonly owner: (
       grant: Coordinator.TokenGrant,
@@ -145,6 +151,7 @@ export const paid = (input: {
         apiUrl: input.apiUrl,
         network: input.network,
         windowMs: 6_000,
+        adoptAfterMs: undefined,
         seams: input.seams,
         moderationPrompt: input.moderationPrompt,
         // The owner is a child process, so killing it is a real crash. It gets the grant on
@@ -229,6 +236,7 @@ export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
 export const rehearsal = (input: {
   readonly faults: ReadonlyArray<ReactorTest.Fault>;
   readonly candidate: "host" | "relay";
+  readonly adoptAfterMs?: number | undefined;
   readonly moderationPrompt?: Redacted.Redacted<string> | undefined;
 }) =>
   Layer.effect(
@@ -243,6 +251,7 @@ export const rehearsal = (input: {
         apiUrl: Coordinator.defaultApiUrl,
         network: "rehearsal against ReactorTest",
         windowMs: 1_500,
+        adoptAfterMs: input.adoptAfterMs,
         seams: undefined,
         moderationPrompt: input.moderationPrompt,
         owner: (grant, marker) =>

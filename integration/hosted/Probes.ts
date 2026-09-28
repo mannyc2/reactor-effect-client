@@ -194,24 +194,32 @@ export const readSession = (input: {
         Effect.timeout("8 seconds"),
         Effect.orElseSucceed(() => ({ status: 0, body: undefined })),
       );
-    const body = Predicate.isObject(reply.body) ? reply.body : {};
-    const codes: Record<string, string> = {};
-    const note = (key: string, value: unknown) => {
-      if (Predicate.isString(value))
-        codes[key] = /^[\w.:/-]{1,64}$/.test(value) ? value : `(text, ${value.length} chars)`;
-      else if (typeof value === "number" || typeof value === "boolean") codes[key] = String(value);
-    };
-    for (const [key, value] of Object.entries(body)) {
-      if (!telling.test(key)) continue;
-      if (Predicate.isObject(value) && !Array.isArray(value))
-        for (const [inner, item] of Object.entries(value)) note(`${key}.${inner}`, item);
-      else note(key, value);
-    }
-    const state = Predicate.isString(body.state) ? body.state : undefined;
-    return {
-      status: reply.status,
-      keys: Object.keys(body),
-      ...(state === undefined ? {} : { state }),
-      ...(Object.keys(codes).length === 0 ? {} : { codes }),
-    };
+    return summarize(reply);
   });
+
+/**
+ * A session reply as evidence may keep it: the status, top-level key names, the
+ * state, and identifier-like values under keys that may say why it ended.
+ */
+export const summarize = (reply: { readonly status: number; readonly body: unknown }) => {
+  const body = Predicate.isObject(reply.body) ? reply.body : {};
+  const codes: Record<string, string> = {};
+  const note = (key: string, value: unknown) => {
+    if (Predicate.isString(value))
+      codes[key] = /^[\w.:/-]{1,64}$/.test(value) ? value : `(text, ${value.length} chars)`;
+    else if (typeof value === "number" || typeof value === "boolean") codes[key] = String(value);
+  };
+  for (const [key, value] of Object.entries(body)) {
+    if (!telling.test(key)) continue;
+    if (Predicate.isObject(value) && !Array.isArray(value))
+      for (const [inner, item] of Object.entries(value)) note(`${key}.${inner}`, item);
+    else note(key, value);
+  }
+  const state = Predicate.isString(body.state) ? body.state : undefined;
+  return {
+    status: reply.status,
+    keys: Object.keys(body),
+    ...(state === undefined ? {} : { state }),
+    ...(Object.keys(codes).length === 0 ? {} : { codes }),
+  };
+};
