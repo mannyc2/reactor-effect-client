@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A clip with `continuity: "previous"` that cannot be Ready before the clip ahead of it ends no longer airs after a clip it does not continue from. The scheduler now projects the continued build when it sends it. If the clip would be Ready only after the playing or Ready clip ahead of it ends, it continues from the clip that will be playing by then and airs right behind that clip, one clip later than its place. The projection uses measured continued builds; before one is measured, it takes 2.5 times an independent build. In the 0.7.0 paid `scheduler-edits` run, a continued build took 5.45 s against about 2.2 s. Continued builds are now measured apart from independent ones, so they no longer raise the runway floor or deadline projections. `SchedulerState.estimates` gains an optional `continuedBuild`.
 - A cut no longer stops the clip that replaces the one it cut. On hosted H3, `stop` names no clip, and its reply comes before H3 reports the clip stopped. So the scheduler, still seeing the cut clip playing, cut it again, and that second stop cut the cut-lane clip 5 ms after it started. The scheduler now cuts a clip once, and `EngineShape.cut` from `make` and `makeContinuous` stops a clip at most once, however soon it is asked again. Found by the paid `scheduler-cut` run.
 
 ## [0.7.0] - 2026-09-27

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ClipRequest } from "../../src/orchestration/request.js";
 import type { ClipId } from "../../src/orchestration/request.js";
@@ -34,10 +34,22 @@ const options = {
   },
 } satisfies SchedulerOptions;
 
-/** A simulated engine that records, by item key, each clip's ID and what it continues from. */
-const recording = (buildMs: number) =>
+/**
+ * A simulated engine that records, by item key, each clip's ID and what it continues from.
+ * A continued build takes `continuedMs` when given, as it took longer on hosted H3.
+ */
+const recording = (buildMs: number, continuedMs?: number) =>
   Effect.gen(function* () {
-    const handle = yield* Simulation.make({ fixedBuildTime: buildMs, buildRatio: 0 });
+    const handle = yield* Simulation.make(
+      continuedMs === undefined
+        ? { fixedBuildTime: buildMs, buildRatio: 0 }
+        : {
+            build: (record) =>
+              Effect.sleep(record.request.continueFrom === undefined ? buildMs : continuedMs).pipe(
+                Effect.as(record.durationSeconds),
+              ),
+          },
+    );
     const clips = new Map<string, ClipId>();
     const continues = new Map<string, ClipId | undefined>();
     const engine: EngineShape = {
@@ -123,5 +135,75 @@ test("a replacement continues from the clip before its place, not the one it rep
       yield* scheduler.replace(ItemKey.make("b"), part("b2"));
       yield* advance(2_000);
       expect(continues.get("b2")).toBe(clips.get("a"));
+    }),
+  ));
+
+// The 0.7.0 scheduler-edits paid run (integration/hosted/evidence/0.7.0): a continued insert
+// waited behind a build in flight, and its continued build took 5.45 s against about 2.2 s for
+// an independent one. It missed the playing clip's end, and aired after the next clip, which it
+// did not continue from.
+test("an insert that cannot be Ready before the playing clip ends continues from the clip that airs before it", () =>
+  runClock(
+    Effect.gen(function* () {
+      const { engine, clips, continues } = yield* recording(2_200, 5_500);
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const starts: string[] = [];
+      yield* scheduler.asRun.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event.status._tag === "Started") starts.push(event.key);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* advance(1_000);
+      yield* scheduler.submitGroup({
+        key: ItemKey.make("line"),
+        lane: "line",
+        parts: [
+          { key: ItemKey.make("p1"), request: clip("p1") },
+          { key: ItemKey.make("p2"), request: clip("p2") },
+          { key: ItemKey.make("p3"), request: clip("p3") },
+        ],
+      });
+      // p1 plays from 3.2 s to 8.2 s while p2 builds; xc can build only once p2 is built.
+      yield* advance(2_400);
+      yield* scheduler.insert({ ...part("xc"), before: ItemKey.make("p2") });
+      yield* advance(30_000);
+      expect(continues.get("xc")).toBe(clips.get("p2"));
+      expect(starts).toEqual(["p1", "p2", "xc", "p3"]);
+    }),
+  ));
+
+test("a clip built from the clip after its place waits behind that clip, though it is Ready in time", () =>
+  runClock(
+    Effect.gen(function* () {
+      // No continued build is measured yet, so xc is projected to miss p1's end, but builds fast.
+      const { engine, clips, continues } = yield* recording(2_200, 2_200);
+      const scheduler = yield* makeScheduler(options).pipe(Effect.provideService(Engine, engine));
+      const starts: string[] = [];
+      yield* scheduler.asRun.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            if (event.status._tag === "Started") starts.push(event.key);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* advance(1_000);
+      yield* scheduler.submitGroup({
+        key: ItemKey.make("line"),
+        lane: "line",
+        parts: [
+          { key: ItemKey.make("p1"), request: clip("p1") },
+          { key: ItemKey.make("p2"), request: clip("p2") },
+          { key: ItemKey.make("p3"), request: clip("p3") },
+        ],
+      });
+      yield* advance(2_400);
+      yield* scheduler.insert({ ...part("xc"), before: ItemKey.make("p2") });
+      yield* advance(30_000);
+      expect(continues.get("xc")).toBe(clips.get("p2"));
+      expect(starts).toEqual(["p1", "p2", "xc", "p3"]);
     }),
   ));
