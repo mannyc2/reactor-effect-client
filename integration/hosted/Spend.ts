@@ -28,21 +28,47 @@ export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
 
 /**
- * One billed minute at the published rate ($0.75 on September 24, 2026) for a
- * one-session check, two for `renewal`; every paid run in a ledger shares the
- * total. The operator's limits may only be lower.
+ * What a check may hold: how many sessions it opens, and each one's cap in
+ * seconds, which its token sets server-side. A check that renews rests its
+ * timing on full grants, so a shorter grant cannot qualify it.
  */
-export const maxCheckUsd = 0.75;
-export const maxTotalUsd = 3.75;
-/** Each token caps its one session at this many seconds, server-side. */
-export const sessionSeconds = 50;
-/** A token outlives its session by this much, so cleanup still holds a valid one. */
-export const tokenSeconds = sessionSeconds + 60;
-/** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
-export const workSeconds = sessionSeconds - 10;
+export interface Plan {
+  readonly sessions: number;
+  readonly seconds: number;
+  readonly renews?: true;
+}
 
-export const sessionsFor = (check: Check): number => (check === "renewal" ? 2 : 1);
-export const ceilingFor = (check: Check): number => sessionsFor(check) * maxCheckUsd;
+/** One 50-second session, which every check held before the longer runs. */
+export const sessionSeconds = 50;
+const single: Plan = { sessions: 1, seconds: sessionSeconds };
+
+export const plans: { readonly [C in Check]: Plan } = {
+  vertical: single,
+  takeover: single,
+  turn: single,
+  audio: single,
+  resume: single,
+  queue: single,
+  renewal: { sessions: 2, seconds: sessionSeconds, renews: true },
+  edits: single,
+  cut: single,
+  tokens: single,
+};
+
+/** A check's tokens outlive its sessions' cap by a minute, so cleanup still holds a valid one. */
+export const tokenSecondsFor = (check: Check): number => plans[check].seconds + 60;
+/** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
+export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
+
+/**
+ * The most a check may spend: every started minute of each of its sessions at
+ * the published rate ($0.75 a minute on September 24, 2026), so $0.75 for one
+ * 50-second session. Every paid run in a ledger shares the total. The
+ * operator's limits may only be lower.
+ */
+export const ceilingFor = (check: Check): number =>
+  plans[check].sessions * Math.ceil(plans[check].seconds / 60) * 0.75;
+export const maxTotalUsd = 5;
 
 /** A gate refused: nothing past it runs, and nothing was spent. */
 export class Refused extends Schema.TaggedError<Refused>(
@@ -112,11 +138,11 @@ export const admit = (input: {
   readonly reservedUsd: number;
 }): Effect.Effect<number, Refused> => {
   const { rate, authorization, reservedUsd } = input;
-  const sessions = sessionsFor(authorization.check);
-  const worst = reservationUsd(billedUsd({ rate, seconds: sessionSeconds }) * sessions);
+  const { sessions, seconds } = plans[authorization.check];
+  const worst = reservationUsd(billedUsd({ rate, seconds }) * sessions);
   if (!(worst <= authorization.budgetUsd + 1e-9))
     return refuse(
-      `${sessions} capped ${sessionSeconds} s session(s) bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
+      `${sessions} capped ${seconds} s session(s) bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
     );
   // A nanodollar of float slack, so five $0.75 runs still fit $3.75.
   if (!(reservedUsd + worst <= authorization.totalUsd + 1e-9))
@@ -183,11 +209,11 @@ export const acceptGrant = (input: {
   readonly granted: { readonly maxSessions: number; readonly maxSessionSeconds: number };
 }): Effect.Effect<void, Refused> => {
   const { check, granted } = input;
-  if (granted.maxSessions !== 1 || granted.maxSessionSeconds > sessionSeconds)
+  const plan = plans[check];
+  if (granted.maxSessions !== 1 || granted.maxSessionSeconds > plan.seconds)
     return refuse("the token grants more than one session of at most the capped length");
-  // Renewal's timing rests on two full grants; shorter ones cannot qualify it.
-  if (check === "renewal" && granted.maxSessionSeconds !== sessionSeconds)
-    return refuse("renewal needs the full 50-second grant");
+  if (plan.renews === true && granted.maxSessionSeconds !== plan.seconds)
+    return refuse(`${check} needs the full ${plan.seconds}-second grant`);
   return Effect.void;
 };
 

@@ -16,7 +16,7 @@ describe("the spending gates", () => {
     () =>
       Effect.gen(function* () {
         yield* refused(Spend.authorize({ check: "vertical", budgetUsd: 0.76, totalUsd: 1.5 }));
-        yield* refused(Spend.authorize({ check: "vertical", budgetUsd: 0.75, totalUsd: 3.76 }));
+        yield* refused(Spend.authorize({ check: "vertical", budgetUsd: 0.75, totalUsd: 5.01 }));
         yield* refused(Spend.authorize({ check: "renewal", budgetUsd: 1.5, totalUsd: 0.75 }));
         yield* refused(Spend.authorize({ check: "vertical", budgetUsd: Number.NaN, totalUsd: 1 }));
         const renewal = yield* Spend.authorize({

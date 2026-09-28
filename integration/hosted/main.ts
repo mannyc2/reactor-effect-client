@@ -198,7 +198,11 @@ const preflight = Command.make(
     const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
     const worst = yield* Spend.admit({
       rate,
-      authorization: { check: "vertical", budgetUsd: Spend.maxCheckUsd, totalUsd: input.total },
+      authorization: {
+        check: "vertical",
+        budgetUsd: Spend.ceilingFor("vertical"),
+        totalUsd: input.total,
+      },
       reservedUsd,
     });
     yield* Console.log(
@@ -207,8 +211,8 @@ const preflight = Command.make(
     // Minting allocates nothing; a token that grants more than asked refuses here.
     const grant = yield* coordinator.mintToken({
       modelName: H3.modelName,
-      maxSessionDuration: `${Spend.sessionSeconds} seconds`,
-      expiresAfter: `${Spend.tokenSeconds} seconds`,
+      maxSessionDuration: `${Spend.plans.vertical.seconds} seconds`,
+      expiresAfter: `${Spend.tokenSecondsFor("vertical")} seconds`,
     });
     const granted = yield* Spend.provenGrant({
       jwt: Redacted.value(grant.jwt),
