@@ -77,28 +77,59 @@ const nativeIdentity = Effect.gen(function* () {
   };
 }).pipe(Effect.option);
 
+/** Package `name` as it resolves from here: its directory and version. */
+const resolved = (name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    let directory = path.dirname(yield* path.fromFileUrl(new URL(import.meta.resolve(name))));
+    for (;;) {
+      const manifest = yield* fs
+        .readFileString(path.join(directory, "package.json"))
+        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Manifest)), Effect.option);
+      if (Option.isSome(manifest) && manifest.value.name === name)
+        return { directory, version: manifest.value.version };
+      const parent = path.dirname(directory);
+      if (parent === directory) return yield* Effect.fail("not found");
+      directory = parent;
+    }
+  }).pipe(Effect.option);
+
+/**
+ * Whether the package at `directory` was built before its sources last
+ * changed. Evidence names the commit checked out, so a run on an older build
+ * would credit that commit with code it never ran. A package without
+ * sources, as one installed from npm, counts as built.
+ */
+export const staleBuild = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const modified = (folder: string, extension: string) =>
+    Effect.gen(function* () {
+      const root = path.join(directory, folder);
+      const files = (yield* fs.readDirectory(root, { recursive: true })).filter((file) =>
+        file.endsWith(extension),
+      );
+      return yield* Effect.forEach(files, (file) =>
+        Effect.map(fs.stat(path.join(root, file)), (info) =>
+          Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() }),
+        ),
+      );
+    }).pipe(Effect.orElseSucceed((): ReadonlyArray<number> => []));
+  const sources = yield* modified("src", ".ts");
+  if (sources.length === 0) return false;
+  const built = yield* modified("dist", ".js");
+  return built.length === 0 || Math.max(...sources) > Math.min(...built);
+});
+
 /** Where the run happens: runtime, commit and the packages as they resolve from here. */
 const environment = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const target = yield* Target;
   const here = path.dirname(yield* path.fromFileUrl(new URL(import.meta.url)));
   const git = (...args: ReadonlyArray<string>) =>
     spawner.string(ChildProcess.make("git", args, { cwd: here })).pipe(Effect.option);
-  const version = (name: string) =>
-    Effect.gen(function* () {
-      let directory = path.dirname(yield* path.fromFileUrl(new URL(import.meta.resolve(name))));
-      for (;;) {
-        const manifest = yield* fs
-          .readFileString(path.join(directory, "package.json"))
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Manifest)), Effect.option);
-        if (Option.isSome(manifest) && manifest.value.name === name) return manifest.value.version;
-        const parent = path.dirname(directory);
-        if (parent === directory) return yield* Effect.fail("not found");
-        directory = parent;
-      }
-    }).pipe(Effect.option);
   const packages: Record<string, string> = {};
   for (const name of [
     "reactor-effect-client",
@@ -106,8 +137,8 @@ const environment = Effect.gen(function* () {
     "effect",
     "@effect/platform-node",
   ]) {
-    const found = yield* version(name);
-    if (Option.isSome(found)) packages[name] = found.value;
+    const found = yield* resolved(name);
+    if (Option.isSome(found)) packages[name] = found.value.version;
   }
   const commit = yield* git("rev-parse", "HEAD");
   const status = yield* git("status", "--porcelain", "--untracked-files=no");
@@ -139,6 +170,13 @@ export const execute = (input: {
       const { authorization, ledger } = input;
       const target = yield* Target;
       const path = yield* Path.Path;
+      for (const name of ["reactor-effect-client", "reactor-effect-native"]) {
+        const found = yield* resolved(name);
+        if (Option.isSome(found) && (yield* staleBuild(found.value.directory)))
+          return yield* Refused.make({
+            message: `${name} was built before its sources last changed: run \`bun run build\``,
+          });
+      }
       yield* Ledger.lock(ledger);
       const earlier = yield* Ledger.entries(ledger);
       const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);

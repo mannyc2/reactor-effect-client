@@ -136,7 +136,7 @@ bun hosted/main.ts run renewal --budget-usd 1.50 --total-budget-usd 3.75 \
 bun hosted/main.ts summarize evidence/<version> > evidence/<version>/summary.md
 ```
 
-A run exits 0 when it passes, 1 when it fails, and 2 when it refused before claiming its evidence file, and so before spending anything. To re-run a fix before it is released, run `bun --no-env-file integration/hosted/main.ts` from a built checkout instead; the evidence records the commit.
+A run exits 0 when it passes, 1 when it fails, and 2 when it refused before claiming its evidence file, and so before spending anything. To re-run a fix before it is released, run `bun --no-env-file integration/hosted/main.ts` from a built checkout instead; the evidence records the commit, so a run refuses when `reactor-effect-client` or `reactor-effect-native` resolves to a checkout whose build is older than its sources.
 
 After a failure, read its reasons and fix the cause before running it again. To run a fix before it is released, run from a checkout of it: `bun run build`, then, if the native sources are unchanged, copy the published candidate's addon from its platform package into `packages/native/npm/<platform>/` and run `node packages/native/scripts/stage.mjs` on it, which refuses it unless its `sourceSha256` matches the checkout. The evidence records the commit. After an unknown outcome or an unconfirmed termination, confirm in the Reactor dashboard that the session ended. After all the runs, compare the dashboard's charges with each run's estimate and note any difference in `summary.md`.
 
