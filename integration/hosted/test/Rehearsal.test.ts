@@ -84,8 +84,9 @@ rehearse("tokens records the free probes and the documented refusals", {
       tokens?.probes.map((probe) => probe.status),
       [200, 200, 200, 200, 403, 404, 404],
     );
-    // ReactorTest clamps a 7 h token to six hours, as Reactor documents.
-    assert.strictEqual(tokens?.probes[1]?.lifetimeSeconds, 21_600);
+    // ReactorTest clamps a 7 h token to six hours, as Reactor documents; `expires_at` is whole
+    // seconds, so the lifetime measured from the request is good to a second.
+    assert.closeTo(tokens?.probes[1]?.lifetimeSeconds ?? 0, 21_600, 1);
     // A token is base64url JSON, so it would begin "eyJ": no probe keeps one.
     assert.notInclude(JSON.stringify(tokens?.probes), "eyJ");
     assert.deepStrictEqual(
