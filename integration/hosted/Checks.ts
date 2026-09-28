@@ -200,8 +200,8 @@ const settle = (tokens: ReadonlyMap<string, Coordinator.TokenGrant>) =>
       }));
     }
     const evidence = yield* run.evidence;
-    // Reactor bills from `ready` to the end, by the minute. Counting from allocation, which
-    // precedes ready, to the confirmed report or the first terminal read bills no less.
+    // Reactor bills from `ready` to the end. Counting from allocation, which precedes ready, to
+    // the confirmed report or the first terminal read, every started unit whole, bills no less.
     const rate = evidence.budget.rate;
     const spent = evidence.sessions.map((session) => {
       const endedMs =

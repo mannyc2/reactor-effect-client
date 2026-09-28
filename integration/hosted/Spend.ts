@@ -32,8 +32,6 @@ export type Check = typeof Check.Type;
  */
 export const maxCheckUsd = 0.75;
 export const maxTotalUsd = 3.75;
-/** Reactor bills by the minute from `ready`; how a started minute rounds is undocumented, so it counts whole. */
-export const billedSeconds = 60;
 /** Each token caps its one session at this many seconds, server-side. */
 export const sessionSeconds = 50;
 /** A token outlives its session by this much, so cleanup still holds a valid one. */
@@ -54,14 +52,23 @@ const refuse = (message: string) => Effect.fail(Refused.make({ message }));
 export interface Rate {
   readonly creditsPerSecond: number;
   readonly creditsPerDollar: number;
+  /** The unit the pricing states the rate in. */
+  readonly per: "second" | "minute";
 }
 
-/** What `seconds` of session time bills at `rate`, every started minute whole. */
-export const billedUsd = (input: { readonly rate: Rate; readonly seconds: number }): number =>
-  (input.rate.creditsPerSecond *
-    Math.ceil(Math.max(0, input.seconds) / billedSeconds) *
-    billedSeconds) /
-  input.rate.creditsPerDollar;
+/**
+ * What `seconds` of session time bills at `rate`, every started unit of the
+ * rate whole. The billing page says Reactor bills "per session-minute", while
+ * the pricing endpoint states H3's rate per second (September 2026) and
+ * measured charges were lower still, so the rate's own unit is the one counted.
+ */
+export const billedUsd = (input: { readonly rate: Rate; readonly seconds: number }): number => {
+  const unit = input.rate.per === "second" ? 1 : 60;
+  return (
+    (input.rate.creditsPerSecond * Math.ceil(Math.max(0, input.seconds) / unit) * unit) /
+    input.rate.creditsPerDollar
+  );
+};
 
 /**
  * What the ledger reserves for `amount`: rounded up to its four decimals, so a
