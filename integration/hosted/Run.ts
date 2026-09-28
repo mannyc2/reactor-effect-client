@@ -43,6 +43,9 @@ export class Run extends Context.Service<
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
+/** The client's spans the evidence keeps: its operations, a command's execution and the playout's. */
+const clientSpans = /^(?:reactor\.|Reactor\.|Session\.|Coordinator\.|H3\.(?:enqueue|reconcile)$)/;
+
 export const make = Effect.fnUntraced(function* (initial: Evidence, file: string) {
   const origin = yield* Clock.currentTimeMillis;
   const state = yield* Ref.make(initial);
@@ -52,7 +55,7 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
   const tracer = Tracer.make({
     span: (options) => {
       const span = new Tracer.NativeSpan(options);
-      if (options.name.startsWith("reactor.") && spans.length < 4096) spans.push(span);
+      if (clientSpans.test(options.name) && spans.length < 4096) spans.push(span);
       return span;
     },
   });

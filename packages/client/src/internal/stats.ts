@@ -38,22 +38,31 @@ export interface Baseline {
   readonly received: bigint;
 }
 const number = (u: unknown): number | undefined =>
-  typeof u === "number" && Number.isFinite(u) ? u : undefined;
+  Predicate.isNumber(u) && Number.isFinite(u) ? u : undefined;
 const positive = (u: unknown): number | undefined => {
   const n = number(u);
   return n !== undefined && n > 0 ? n : undefined;
 };
-const text = (u: unknown): string | undefined => (typeof u === "string" ? u : undefined);
+const text = (u: unknown): string | undefined => (Predicate.isString(u) ? u : undefined);
+/** A whole number as a bigint, when it is one exactly. */
+const whole = (u: unknown): bigint | undefined => {
+  if (Predicate.isBigInt(u)) return u;
+  return Predicate.isNumber(u) && Number.isSafeInteger(u) ? BigInt(u) : undefined;
+};
 /** A byte counter as a bigint, when it is one exactly; only for choosing a pair. */
-const bytes = (u: unknown): bigint | undefined =>
-  typeof u === "bigint"
-    ? u
-    : typeof u === "number" && Number.isSafeInteger(u) && u >= 0
-      ? BigInt(u)
-      : undefined;
+const bytes = (u: unknown): bigint | undefined => {
+  if (Predicate.isBigInt(u)) return u;
+  const n = whole(u);
+  return n !== undefined && n >= 0n ? n : undefined;
+};
+/** A counter's growth since `prior`; one below it belongs to a reset pair, which grew by all of it. */
+const growth = (count: bigint | undefined, prior: bigint | undefined): bigint => {
+  if (count === undefined) return 0n;
+  return prior === undefined || count < prior ? count : count - prior;
+};
 type Entry = { readonly [x: PropertyKey]: unknown };
 type Pair = Entry & { readonly id: string };
-const isPair = (e: Entry): e is Pair => e.type === "candidate-pair" && typeof e.id === "string";
+const isPair = (e: Entry): e is Pair => e.type === "candidate-pair" && Predicate.isString(e.id);
 /**
  * One pair across the samples of a generation. The native host names pairs by
  * their position in its report, which shifts when a pair is added or dropped.
@@ -62,7 +71,7 @@ const isPair = (e: Entry): e is Pair => e.type === "candidate-pair" && typeof e.
  */
 const pairKey = (generation: bigint, pair: Pair, byId: ReadonlyMap<string, Entry>): string => {
   const priority = pair.priority;
-  if (typeof priority !== "bigint" && typeof priority !== "number")
+  if (!Predicate.isBigInt(priority) && !Predicate.isNumber(priority))
     return `${generation}:id:${pair.id}`;
   const local = byId.get(text(pair.localCandidateId) ?? "");
   return `${generation}:priority:${priority}:${text(local?.candidateType) ?? ""}:${text(local?.relayProtocol) ?? ""}`;
@@ -120,14 +129,10 @@ const selectedPair = (
   if (chosen === undefined)
     for (const pair of pairs) {
       if (pair.nominated !== true || pair.state !== "succeeded") continue;
-      const count = bytes(pair.bytesReceived),
-        prior = state.received.get(key(pair));
-      // A count below the last one belongs to a reset pair: it grew by all of it.
-      const growth =
-        count === undefined ? 0n : prior === undefined || count < prior ? count : count - prior;
-      if (growth > most || (growth === most && key(pair) === state.chosen)) {
+      const grown = growth(bytes(pair.bytesReceived), state.received.get(key(pair)));
+      if (grown > most || (grown === most && key(pair) === state.chosen)) {
         chosen = pair;
-        most = growth;
+        most = grown;
       }
     }
   return { pair: chosen, received, chosen: chosen === undefined ? undefined : key(chosen) };
@@ -148,15 +153,10 @@ export const sample = (input: {
   const { state, raw, generation, atMs } = input;
   const warnings: string[] = [],
     entries = raw.filter(Predicate.isObject),
-    byId = new Map(entries.flatMap((e) => (typeof e.id === "string" ? [[e.id, e] as const] : [])));
+    byId = new Map(entries.flatMap((e) => (Predicate.isString(e.id) ? [[e.id, e] as const] : [])));
   const counter = (u: unknown, field: string, signed = false): bigint | undefined => {
     if (u === undefined) return undefined;
-    const n =
-      typeof u === "bigint"
-        ? u
-        : typeof u === "number" && Number.isSafeInteger(u)
-          ? BigInt(u)
-          : undefined;
+    const n = whole(u);
     if (
       n === undefined ||
       (signed ? n < -(1n << 63n) || n >= 1n << 63n : n < 0n || n > 0xffffffffffffffffn)
@@ -239,11 +239,9 @@ export const sample = (input: {
     .map((e) => number(e.jitter))
     .filter((n): n is number => n !== undefined && n >= 0);
   const jitter = jitterSamples.length > 0 ? Math.max(...jitterSamples) : undefined;
-  const ratio = ratioValid
-    ? ratioLost + ratioReceived === 0n
-      ? 0
-      : Number(ratioLost) / Number(ratioLost + ratioReceived)
-    : undefined;
+  const counted = ratioLost + ratioReceived;
+  const lostShare = counted === 0n ? 0 : Number(ratioLost) / Number(counted);
+  const ratio = ratioValid ? lostShare : undefined;
   const fps = firstVideo === undefined ? undefined : positive(firstVideo.framesPerSecond);
   const fallbackRtts = entries
     .map((e) =>

@@ -8,7 +8,13 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import { PeerFactory } from "reactor-effect-client/Peer";
-import type { Channel, MediaTrack, Peer, PeerEvent, Prepared } from "reactor-effect-client/Peer";
+import type {
+  DataChannel,
+  MediaTrack,
+  Peer,
+  PeerEvent,
+  Prepared,
+} from "reactor-effect-client/Peer";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import type { MessageCode } from "reactor-effect-client/ReactorError";
 
@@ -34,7 +40,7 @@ const refused = (code: MessageCode, message: string): ReactorError =>
  */
 interface Connection {
   readonly pc: RTCPeerConnection;
-  readonly channels: Readonly<Record<Channel, RTCDataChannel>>;
+  readonly channels: Readonly<Record<DataChannel, RTCDataChannel>>;
   readonly sections: ReadonlyMap<string, Section>;
   readonly received: Map<string, MediaStreamTrack>;
   messageLimit: number;
@@ -254,7 +260,10 @@ export const make: Effect.Effect<Peer, never, Scope.Scope> = Effect.gen(function
           : messageBound;
     });
 
-  const send = (kind: Channel, bytes: Uint8Array<ArrayBuffer>): Effect.Effect<void, ReactorError> =>
+  const send = (
+    kind: DataChannel,
+    bytes: Uint8Array<ArrayBuffer>,
+  ): Effect.Effect<void, ReactorError> =>
     Effect.gen(function* () {
       const opened = yield* current;
       const channel = opened.channels[kind];

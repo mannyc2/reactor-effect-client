@@ -9,7 +9,7 @@ import { take } from "../queue.js";
 import type { Mapping } from "../../Coordinator.js";
 import { ReactorError } from "../../ReactorError.js";
 import { trackFeed } from "../../Peer.js";
-import type { Channel, Peer, PeerEvent } from "../../Peer.js";
+import type { DataChannel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
 import { documented } from "./h3.js";
 import { monotonic, until } from "./playout.js";
@@ -33,13 +33,13 @@ export interface Link {
    */
   readonly drop: (reason: "ended" | "replaced" | "disconnected") => Effect.Effect<void>;
   /** A channel message, delivered after the channel latency. */
-  readonly deliver: (channel: Channel, bytes: Uint8Array<ArrayBuffer>) => Effect.Effect<void>;
+  readonly deliver: (channel: DataChannel, bytes: Uint8Array<ArrayBuffer>) => Effect.Effect<void>;
   readonly video: (frame: Frame) => Effect.Effect<void>;
   readonly audio: (samples: Int16Array<ArrayBuffer>) => Effect.Effect<void>;
 }
 
 interface Delivery {
-  readonly channel: Channel;
+  readonly channel: DataChannel;
   readonly bytes: Uint8Array<ArrayBuffer>;
   readonly due: number;
 }

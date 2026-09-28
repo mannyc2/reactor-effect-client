@@ -1,4 +1,3 @@
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 
@@ -22,14 +21,3 @@ const awaitAvailable = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<void, E>
 
 export const take = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<A, E> =>
   Effect.suspend(() => Queue.takeUnsafe(self) ?? Effect.andThen(awaitAvailable(self), take(self)));
-
-export const takeAll = <A, E>(self: Queue.Dequeue<A, E>): Effect.Effect<Arr.NonEmptyArray<A>, E> =>
-  Effect.suspend(() => {
-    const state: Queue.Queue.State<A, E> = self.state;
-    if (state._tag === "Done") return state.exit;
-    // clear retains Effect's batch and backpressure handling without waiting;
-    // the terminal check above preserves Done, which clear deliberately omits.
-    return Effect.filterOrElse(Queue.clear(self), Arr.isArrayNonEmpty, () =>
-      Effect.andThen(awaitAvailable(self), takeAll(self)),
-    );
-  });

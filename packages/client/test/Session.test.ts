@@ -14,6 +14,7 @@ import {
   Path,
   Redacted,
   Stream,
+  Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
@@ -58,9 +59,82 @@ layer(environment({ timing }))("replies", (it) => {
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow());
         const session = yield* connect;
+        const observed = yield* session.events().pipe(
+          Stream.filter((event) => event._tag === "Control"),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
         const failure = yield* Effect.flip(session.requestRecordingClip(5));
         assert.strictEqual(failure.reason._tag, "RecorderDisabled");
+        // Observers see the reply too, its provider text kept out of what logs print.
+        const control = Option.getOrThrow(yield* Fiber.join(observed));
+        assert.strictEqual(control.message._tag, "ClipFailed");
+        if (control.message._tag !== "ClipFailed") return;
+        assert.strictEqual(Redacted.value(control.message.reason), "recorder disabled");
+        assert.notInclude(Inspectable.toStringUnknown(control), "recorder disabled");
       }),
+  );
+});
+
+/** A number whose text `Duration` cannot parse: `${huge} seconds` reads "Infinity seconds". */
+const huge: number = 10 ** 999;
+/** Deadlines `Duration` misreads: one it cannot parse, a NaN it reads as zero, a negative. */
+const badDeadlines: ReadonlyArray<Duration.Input> = [`${huge} seconds`, Number.NaN, -5];
+
+layer(environment({ timing }))("a per-call deadline", (it) => {
+  it.effect("that is not a finite, non-negative duration is refused before anything is sent", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const png = ReactorTest.pngBytes({ width: 16, height: 16 });
+      for (const bad of badDeadlines) {
+        const command = yield* Effect.flip(session.command("get_state", {}, { replyTimeout: bad }));
+        const upload = yield* Effect.flip(
+          session.upload("still.png", "image/png", png, { uploadTimeout: bad }),
+        );
+        assert.deepStrictEqual(
+          [command, upload].map((error) => [error.reason._tag, error.context.outcome]),
+          [
+            ["InvalidInput", "not-submitted"],
+            ["InvalidInput", "not-submitted"],
+          ],
+          Inspectable.toStringUnknown(bad),
+        );
+      }
+      assert.deepStrictEqual((yield* session.snapshot).pending, { data: 0, control: 0 });
+    }),
+  );
+});
+
+layer(environment({ timing }))("tracing", (it) => {
+  it.effect("names each operation's span after its module and operation", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const names = new Set<string>();
+      const tracer = Tracer.make({
+        span: (options) => {
+          names.add(options.name);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      yield* Effect.gen(function* () {
+        const session = yield* connect;
+        yield* session.command("get_state", {});
+        yield* session.close;
+      }).pipe(Effect.withTracer(tracer));
+      assert.includeMembers(
+        [...names],
+        [
+          "Coordinator.mintToken",
+          "Reactor.create",
+          "Session.connect",
+          "Session.command",
+          "Session.close",
+          "Coordinator.terminate",
+        ],
+      );
+    }),
   );
 });
 
@@ -320,7 +394,7 @@ const dyingPings = Layer.effectContext(
     const peers = yield* PeerFactory;
     const died = yield* Deferred.make<void>();
     const isPing = (bytes: Uint8Array) =>
-      Wire.decode(Wire.ControlClientMessageSchema, bytes).pipe(
+      Wire.decode(Wire.ControlClientMessageSchema)(bytes).pipe(
         Effect.map((message) => message.payload.case === "ping"),
         Effect.orElseSucceed(() => false),
       );

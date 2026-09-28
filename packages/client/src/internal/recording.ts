@@ -8,10 +8,12 @@ import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import type * as Headers from "effect/unstable/http/Headers";
+import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import { ReactorError } from "../ReactorError.js";
+import * as Deadline from "./deadline.js";
 import type { Descriptor } from "../Coordinator.js";
-import type { ClipReady } from "./wire.js";
+import type { ClipReady } from "../Session.js";
 
 export interface Segment {
   readonly url: string;
@@ -32,10 +34,12 @@ export interface DownloadOptions {
   readonly maxSegments?: number | undefined;
 }
 
-interface Reply {
+/** A response read within its byte bound. */
+export interface Reply {
   readonly status: number;
-  readonly headers: Headers.Headers;
-  readonly bytes: Uint8Array<ArrayBuffer>;
+  readonly bytes: Uint8Array;
+  /** The response's `Retry-After`, when it names a delay in seconds. */
+  readonly retryAfter?: Duration.Duration | undefined;
 }
 
 /** The coordinator calls a download needs. */
@@ -113,32 +117,57 @@ export const parsePlaylist = (playlist: {
 /** How long past its predicted ready time a recording of an ended session is still waited for. */
 const finishingGraceMs = 10_000;
 
-const retryAfterMillis = (headers: Headers.Headers): number => {
-  const seconds = Number(headers["retry-after"] ?? Number.NaN);
-  return Number.isFinite(seconds) ? seconds * 1000 : 2000;
-};
+/** A pending playlist is read again after its `Retry-After`, held to 200 ms to 2 s; 2 s if none. */
+const pending = Schedule.spaced("2 seconds").pipe(
+  Schedule.setInputType<Reply>(),
+  Schedule.modifyDelay(({ input }) =>
+    Effect.succeed(
+      Duration.clamp(input.retryAfter ?? Duration.seconds(2), {
+        minimum: Duration.millis(200),
+        maximum: Duration.seconds(2),
+      }),
+    ),
+  ),
+);
 
-export const download = (
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+const Bound = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }));
+/** A download's options, decoded once: a deadline, and whole, positive bounds. */
+const Settings = Schema.Struct({
+  downloadTimeout: Deadline.Deadline,
+  maxManifestBytes: Bound,
+  maxSegmentBytes: Bound,
+  maxTotalBytes: Bound,
+  maxSegments: Bound,
+});
+
+export const download = Effect.fnUntraced(function* (
   options: DownloadOptions & { readonly fetcher: Fetcher; readonly clip: ClipReady },
-): Effect.Effect<DownloadedClip, ReactorError> => {
+) {
   const { fetcher, clip } = options;
-  const manifestBytes = options.maxManifestBytes ?? 262_144;
-  const segmentBytes = options.maxSegmentBytes ?? 16_777_216;
-  const totalBytes = options.maxTotalBytes ?? 64 * 1024 * 1024;
-  const maxSegments = options.maxSegments ?? 1024;
-  const playlist: Effect.Effect<ReadonlyArray<Segment>, ReactorError> = Effect.gen(function* () {
-    const reply = yield* fetcher.fetch("clip playlist", clip.playlistUrl, manifestBytes);
-    if (reply.status !== 202) {
-      const text = yield* Effect.try({
-        try: () => new TextDecoder("utf-8", { fatal: true }).decode(reply.bytes),
-        catch: () => ReactorError.fromCode("Protocol", "clip playlist is not UTF-8"),
-      });
-      return yield* Effect.fromResult(
-        parsePlaylist({ text, baseUrl: clip.playlistUrl, maxSegments }),
-      );
-    }
-    // A recording can finish after its session ends, so an ended session is a
-    // verdict only once the clip's predicted ready time, and a grace, have passed.
+  const settings = yield* Schema.decodeEffect(Settings)({
+    downloadTimeout: options.downloadTimeout ?? "60 seconds",
+    maxManifestBytes: options.maxManifestBytes ?? 262_144,
+    maxSegmentBytes: options.maxSegmentBytes ?? 16_777_216,
+    maxTotalBytes: options.maxTotalBytes ?? 64 * 1024 * 1024,
+    maxSegments: options.maxSegments ?? 1024,
+  }).pipe(
+    Effect.mapError((cause) =>
+      ReactorError.fromCode(
+        "InvalidInput",
+        "a download needs a finite, non-negative deadline and whole, positive bounds",
+        { outcome: "not-submitted", detail: cause },
+      ),
+    ),
+  );
+  const { maxSegments } = settings;
+  const manifestBytes = settings.maxManifestBytes;
+  const segmentBytes = settings.maxSegmentBytes;
+  const totalBytes = settings.maxTotalBytes;
+  // A recording can finish after its session ends, so an ended session is a
+  // verdict only once the clip's predicted ready time, and a grace, have passed.
+  const ended = Effect.gen(function* () {
     const descriptor = yield* fetcher.read(clip.sessionId);
     const due = Number(clip.predictedReadyAtMs) + finishingGraceMs;
     // Only CLOSED has ended (Coordinator.isTerminal, which imports this module): an
@@ -148,12 +177,23 @@ export const download = (
         "TerminalSession",
         "session ended and its playlist was not available by the predicted time",
       );
-    yield* Effect.sleep(Math.max(200, Math.min(retryAfterMillis(reply.headers), 2000)));
-    return yield* playlist;
   });
-  return Effect.gen(function* () {
+  const playlist = fetcher.fetch("clip playlist", clip.playlistUrl, manifestBytes).pipe(
+    Effect.tap((reply) => (reply.status === 202 ? ended : Effect.void)),
+    Effect.repeat({ schedule: pending, until: (reply) => reply.status !== 202 }),
+    Effect.flatMap((reply) =>
+      Effect.try({
+        try: () => utf8.decode(reply.bytes),
+        catch: () => ReactorError.fromCode("Protocol", "clip playlist is not UTF-8"),
+      }),
+    ),
+    Effect.flatMap((text) =>
+      Effect.fromResult(parsePlaylist({ text, baseUrl: clip.playlistUrl, maxSegments })),
+    ),
+  );
+  const joined = Effect.gen(function* () {
     const segments = yield* playlist;
-    const chunks: Array<Uint8Array<ArrayBuffer>> = [];
+    const chunks: Array<Uint8Array> = [];
     let size = 0;
     for (const segment of segments) {
       const reply = yield* fetcher.fetch(
@@ -178,16 +218,12 @@ export const download = (
       offset += chunk.byteLength;
     }
     return { bytes, segments };
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.fromInputUnsafe(options.downloadTimeout ?? "60 seconds"),
-      orElse: () =>
-        Effect.fail(
-          ReactorError.fromCode(
-            "Timeout",
-            "clip download deadline; the remote outcome is unchanged",
-          ),
-        ),
-    }),
-  );
-};
+  });
+  return yield* Effect.timeoutOrElse(joined, {
+    duration: settings.downloadTimeout,
+    orElse: () =>
+      Effect.fail(
+        ReactorError.fromCode("Timeout", "clip download deadline; the remote outcome is unchanged"),
+      ),
+  });
+});

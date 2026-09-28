@@ -16,8 +16,8 @@ import type { IceServer, Track } from "./Coordinator.js";
 import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
 import { ReactorError } from "./ReactorError.js";
 
-export const Channel = Schema.Literals(["control", "data"]);
-export type Channel = typeof Channel.Type;
+export const DataChannel = Schema.Literals(["control", "data"]);
+export type DataChannel = typeof DataChannel.Type;
 
 export const PeerState = Schema.Literals([
   "new",
@@ -32,8 +32,12 @@ export type PeerState = typeof PeerState.Type;
 /** What a host reports about its connection, in the order it happened. */
 export const PeerEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("state"), state: PeerState }),
-  Schema.Struct({ type: Schema.Literal("channel"), channel: Channel, open: Schema.Boolean }),
-  Schema.Struct({ type: Schema.Literal("message"), channel: Channel, bytes: Schema.Uint8Array }),
+  Schema.Struct({ type: Schema.Literal("channel"), channel: DataChannel, open: Schema.Boolean }),
+  Schema.Struct({
+    type: Schema.Literal("message"),
+    channel: DataChannel,
+    bytes: Schema.Uint8Array,
+  }),
   /** A local candidate; none marks the end of gathering. */
   Schema.Struct({ type: Schema.Literal("ice"), candidate: Schema.optionalKey(IceCandidate) }),
   Schema.Struct({ type: Schema.Literal("track"), name: Schema.String, mid: Schema.String }),
@@ -125,7 +129,7 @@ export interface Peer {
   readonly answer: (sdp: string) => Effect.Effect<void, ReactorError>;
   /** Local submission; never a Reactor reply. */
   readonly send: (
-    channel: Channel,
+    channel: DataChannel,
     bytes: Uint8Array<ArrayBuffer>,
   ) => Effect.Effect<void, ReactorError>;
   readonly direction: (name: string, active: boolean) => Effect.Effect<void, ReactorError>;

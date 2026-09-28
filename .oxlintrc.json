@@ -62,6 +62,9 @@
     "typescript/prefer-readonly": "error",
     "typescript/require-array-sort-compare": "error",
     "typescript/strict-boolean-expressions": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/no-unnecessary-condition": "error",
+    "typescript/no-non-null-assertion": "error",
     // A `default` clause marks a switch over a union as deliberately partial.
     "typescript/switch-exhaustiveness-check": [
       "error",
@@ -96,6 +99,41 @@
       "files": ["release-tools/**"],
       "rules": {
         "typescript/no-misused-spread": "off"
+      }
+    },
+    {
+      // These files still break a rule below; a path goes once its file is fixed.
+      "files": [
+        "packages/browser/src/BrowserMedia.ts",
+        "packages/browser/src/BrowserPeer.ts",
+        "packages/browser/test/BrowserMedia.test.ts",
+        "packages/client/src/internal/playout/runtime.ts",
+        "packages/native/scripts/stage.mjs",
+        "packages/native/src/internal/addon.ts",
+        "packages/native/src/internal/peer.ts"
+      ],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    },
+    {
+      "files": [
+        "integration/hosted/Qualify.ts",
+        "integration/hosted/test/Rehearsal.test.ts",
+        "packages/client/src/internal/playout/runtime.ts"
+      ],
+      "rules": {
+        "typescript/no-unnecessary-condition": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/client/src/internal/playout/policy.ts",
+        "packages/client/test/PlayoutPolicy.test.ts",
+        "packages/client/test/Playout.test.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off"
       }
     },
     {

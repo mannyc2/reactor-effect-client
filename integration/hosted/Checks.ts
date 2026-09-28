@@ -94,7 +94,7 @@ const bump = (counts: Record<string, number>, key: string) => {
 const commandSpans = (evidence: Evidence.Evidence, sinceMs: number, operation?: string) =>
   evidence.spans.filter(
     (span) =>
-      span.name === "reactor.session.command" &&
+      span.name === "Session.command" &&
       span.startMs >= sinceMs &&
       (operation === undefined || span.attributes["reactor.operation"] === operation),
   );
@@ -1440,7 +1440,7 @@ const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionI
         verdict: event,
       };
     case "Control":
-      return { event: `control ${event.message.payload.case ?? "unknown"}` };
+      return { event: `control ${event.message._tag}` };
     case "CommandError":
       return { event: `command error ${event.error.reason._tag}` };
     case "Diagnostic":
