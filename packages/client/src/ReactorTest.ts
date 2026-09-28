@@ -279,10 +279,7 @@ export const layer = (
           PeerFactory,
           PeerFactory.of({
             check: Effect.void,
-            make: Effect.acquireRelease(
-              Effect.sync(() => Peer.make(sessions)),
-              (peer) => peer.close,
-            ),
+            make: Effect.acquireRelease(Peer.make(sessions), (peer) => peer.close),
           }),
         ),
       );

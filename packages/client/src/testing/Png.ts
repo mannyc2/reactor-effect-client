@@ -23,10 +23,17 @@ const zeroPixels = (size: number): Uint8Array => {
   return output;
 };
 
-export const pngBytes = (width: number, height: number): Uint8Array => {
+/** A complete black PNG image of the given size: an image reference H3 accepts. */
+export const pngBytes = ({
+  width,
+  height,
+}: {
+  readonly width: number;
+  readonly height: number;
+}): Uint8Array => {
   const crcTable = new Uint32Array(256).map((_, n) => {
     let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    for (let k = 0; k < 8; k++) c = (c & 1) === 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     return c >>> 0;
   });
   const crc = (bytes: Uint8Array) => {

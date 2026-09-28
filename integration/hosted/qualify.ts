@@ -173,7 +173,9 @@ const audioRequest = (marker: string): H3.Request => ({
   seconds: 5,
   metadata: marker,
   references: [{ _tag: "Bytes", bytes: grayPng(256, 144) }],
-  audio: [{ _tag: "Bytes", bytes: Testing.wavBytes(3, { sampleRate: 48_000, frequency: 220 }) }],
+  audio: [
+    { _tag: "Bytes", bytes: Testing.wavBytes({ seconds: 3, sampleRate: 48_000, frequency: 220 }) },
+  ],
 });
 
 /** Where a check runs: hosted Reactor for money, or the local twin for free. */

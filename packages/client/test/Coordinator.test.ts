@@ -1,6 +1,6 @@
 /** Reactor's HTTP API over an in-memory origin: what counts as proof, and who gets the token. */
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Encoding, Fiber, Redacted, Result } from "effect";
+import { Effect, Encoding, Fiber, Redacted, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -258,7 +258,8 @@ it.effect(
       assert.strictEqual(error.reason._tag, "Http");
       assert.isTrue(error.isRetryable);
       assert.isFalse(error.message.includes("secret"));
-      assert.isFalse(JSON.stringify(error).includes("secret"));
+      const json = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(error);
+      assert.isFalse(json.includes("secret"));
       assert.strictEqual(
         error.reason._tag === "Http" && Redacted.value(error.reason.body ?? Redacted.make("")),
         "provider secret text",

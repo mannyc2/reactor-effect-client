@@ -420,8 +420,8 @@ test(
 
 test("reference audio uploads through the twin and its clip reports it; audio alone is refused", () =>
   withTwin(async (twin) => {
-    const image = { _tag: "Bytes" as const, bytes: Testing.pngBytes(64, 48) };
-    const voice = { _tag: "Bytes" as const, bytes: Testing.wavBytes(3) };
+    const image = { _tag: "Bytes" as const, bytes: Testing.pngBytes({ width: 64, height: 48 }) };
+    const voice = { _tag: "Bytes" as const, bytes: Testing.wavBytes({ seconds: 3 }) };
     const { acceptance, contract } = await run(
       twin,
       Effect.gen(function* () {

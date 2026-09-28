@@ -9,6 +9,7 @@
  * within their own session and never ranked across two, and at most one
  * provider command is in flight, so a refusal is always attributable.
  */
+import { dual } from "effect/Function";
 import type { Request } from "../../H3.js";
 import type {
   AsRunStatus,
@@ -323,7 +324,10 @@ const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
 /** Applies one input: a pure function of the state, the input, the configuration and the time. */
-export const step = (config: Config, previous: State, input: Input, now: Now): Step => {
+export const step: {
+  (previous: State, input: Input, now: Now): (config: Config) => Step;
+  (config: Config, previous: State, input: Input, now: Now): Step;
+} = dual(4, (config: Config, previous: State, input: Input, now: Now): Step => {
   const items = new Map(previous.items);
   const groups = new Map(previous.groups);
   let state: State = previous;
@@ -1777,7 +1781,7 @@ export const step = (config: Config, previous: State, input: Input, now: Now): S
     }
     return times.length === 0 ? undefined : Math.min(...times);
   }
-};
+});
 
 /** Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest. */
 const fillLength = (
@@ -1791,7 +1795,10 @@ const fillLength = (
 };
 
 /** The public view of the plan. */
-export const view = (config: Config, state: State, now: Now): PublicState => {
+export const view: {
+  (state: State, now: Now): (config: Config) => PublicState;
+  (config: Config, state: State, now: Now): PublicState;
+} = dual(3, (config: Config, state: State, now: Now): PublicState => {
   const own = (clip: SourceClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
@@ -1836,7 +1843,7 @@ export const view = (config: Config, state: State, now: Now): PublicState => {
       length: state.samples.length.length === 0 ? 1 : quantile(state.samples.length, 0.5),
     },
   };
-};
+});
 
 /** Whether an as-run status settles an item's start, and its outcome. */
 export const decides = (

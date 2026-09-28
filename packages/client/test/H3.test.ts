@@ -141,7 +141,7 @@ scenario("identical image bytes upload once for the clips that share them", () =
     yield* Effect.forkScoped(ReactorTest.flow());
     const test = yield* ReactorTest.ReactorTest;
     const provider = yield* H3.make(yield* connect);
-    const image = { _tag: "Bytes" as const, bytes: pngBytes(64, 64) };
+    const image = { _tag: "Bytes" as const, bytes: pngBytes({ width: 64, height: 64 }) };
     const first = yield* provider.enqueue({ prompt: "one", references: [image] });
     const second = yield* provider.enqueue({ prompt: "two", references: [image] });
     assert.strictEqual(first.clip.reference_image_count, 1);
@@ -184,8 +184,8 @@ scenario(
       const failure = yield* Effect.flip(
         provider.enqueue({
           prompt: "Audio 1 over a still",
-          references: [{ _tag: "Bytes", bytes: pngBytes(64, 64) }],
-          audio: [{ _tag: "Bytes", bytes: wavBytes(3) }],
+          references: [{ _tag: "Bytes", bytes: pngBytes({ width: 64, height: 64 }) }],
+          audio: [{ _tag: "Bytes", bytes: wavBytes({ seconds: 3 }) }],
         }),
       );
       assert.strictEqual(failure.reason._tag, "UnsupportedCapability");
@@ -318,7 +318,7 @@ describe("references are refused before anything is uploaded", () => {
   const webp = (type: string, body: ReadonlyArray<number>) =>
     bytes("RIFF", le32(22), "WEBP", type, le32(10), body);
   const images: ReadonlyArray<readonly [string, Uint8Array, string | undefined]> = [
-    ["PNG", pngBytes(64, 64), "image/png"],
+    ["PNG", pngBytes({ width: 64, height: 64 }), "image/png"],
     [
       "JPEG",
       bytes([255, 216, 255, 192, 0, 11, 8, 0, 64, 0, 64, 1, 1, 17, 0, 255, 217]),
@@ -327,10 +327,10 @@ describe("references are refused before anything is uploaded", () => {
     ["lossy WebP", webp("VP8 ", [0, 0, 0, 157, 1, 42, 64, 0, 64, 0]), "image/webp"],
     ["lossless WebP", webp("VP8L", [47, ...le32(63 | (63 << 14)), 0, 0, 0, 0, 0]), "image/webp"],
     ["extended WebP", webp("VP8X", [0, 0, 0, 0, 63, 0, 0, 63, 0, 0]), "image/webp"],
-    ["a truncated PNG", pngBytes(64, 64).slice(0, 40), undefined],
+    ["a truncated PNG", pngBytes({ width: 64, height: 64 }).slice(0, 40), undefined],
     ["a JPEG with no dimensions", bytes([255, 216, 255, 217]), undefined],
     ["a truncated WebP", webp("VP8X", [0, 0, 0, 0]), undefined],
-    ["an image four times too wide", pngBytes(1000, 100), undefined],
+    ["an image four times too wide", pngBytes({ width: 1000, height: 100 }), undefined],
     ["text", bytes("not an image at all, only words"), undefined],
   ];
   it.effect.each(images)("%s", ([, image, mimeType]) =>
@@ -353,8 +353,8 @@ describe("references are refused before anything is uploaded", () => {
       new Array<number>(16).fill(0),
     );
   const audio: ReadonlyArray<readonly [string, Uint8Array, string | undefined]> = [
-    ["WAV", wavBytes(3), "audio/wav"],
-    ["stereo WAV", wavBytes(3, { channels: 2 }), "audio/wav"],
+    ["WAV", wavBytes({ seconds: 3 }), "audio/wav"],
+    ["stereo WAV", wavBytes({ seconds: 3, channels: 2 }), "audio/wav"],
     ["FLAC", flac(48_000, 2, 48_000 * 3), "audio/flac"],
     [
       "Opus in Ogg",
@@ -365,8 +365,8 @@ describe("references are refused before anything is uploaded", () => {
     ["WebM", bytes([26, 69, 223, 163], new Array<number>(8).fill(0)), "audio/webm"],
     ["MP3", bytes("ID3", new Array<number>(8).fill(0)), "audio/mpeg"],
     ["AAC", bytes([255, 241], new Array<number>(8).fill(0)), "audio/aac"],
-    ["a WAV under 2 s", wavBytes(1), undefined],
-    ["a WAV over 15 s", wavBytes(16), undefined],
+    ["a WAV under 2 s", wavBytes({ seconds: 1 }), undefined],
+    ["a WAV over 15 s", wavBytes({ seconds: 16 }), undefined],
     ["a FLAC over 15 s", flac(48_000, 2, 48_000 * 20), undefined],
     ["a FLAC with no sample rate", flac(0, 2, 48_000 * 3), undefined],
     ["text", bytes("not audio at all, only words"), undefined],
