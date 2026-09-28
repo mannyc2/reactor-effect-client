@@ -282,7 +282,8 @@
               "**/packages/client/examples/**/*.ts",
               "**/packages/browser/src/**/*.ts",
               "**/packages/browser/test/**/*.ts",
-              "**/packages/native/src/**/*.ts"
+              "**/packages/native/src/**/*.ts",
+              "**/integration/hosted/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

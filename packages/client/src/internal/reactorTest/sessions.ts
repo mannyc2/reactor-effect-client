@@ -245,13 +245,24 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           return yield* refuse(401, "unauthorized", "a valid Reactor-API-Key is required");
         const n = yield* count("grants");
         const issuedAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-        const [{ resources, constraints }] = authorization;
+        // An over-granting token lets its session run twice as long as was asked.
+        const overGrant = (yield* faults.trip((fault) => fault._tag === "OverGrant")) !== undefined;
+        const [asked] = authorization;
+        const { resources, constraints } = overGrant
+          ? {
+              ...asked,
+              constraints: {
+                ...asked.constraints,
+                max_session_duration_seconds: asked.constraints.max_session_duration_seconds * 2,
+              },
+            }
+          : asked;
         const claims = {
           iss: "reactor-test",
           iat: issuedAt,
           exp: issuedAt + expiresAfter,
           jti: `reactor-test-grant-${n}`,
-          authorization_details: authorization,
+          authorization_details: [{ ...asked, resources, constraints }],
         };
         const jwt = [{ alg: "none", typ: "JWT" }, claims, "reactor-test"]
           .map((part) => Encoding.encodeBase64Url(JSON.stringify(part)))
