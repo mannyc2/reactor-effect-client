@@ -69,8 +69,8 @@ export class Http extends Schema.Error<Http>("reactor-effect-client/ReactorError
 export class Remote extends Schema.Error<Remote>("reactor-effect-client/ReactorError/Remote")({
   _tag: Schema.Literals(["Remote", "RecorderDisabled"]),
   message: Schema.String,
-  /** The provider's own error code, verbatim. */
-  remoteCode: Schema.optionalKey(Schema.String),
+  /** The provider's own error code, verbatim, for explicit inspection only. */
+  remoteCode: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
   /** The provider's error text, for explicit inspection only. */
   body: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
 }) {}
