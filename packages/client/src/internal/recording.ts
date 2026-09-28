@@ -4,6 +4,7 @@
  * not decode or play the clip, and a deadline does not change the remote
  * generation's outcome.
  */
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -109,6 +110,9 @@ export const parsePlaylist = (playlist: {
   return Result.succeed(resolved);
 };
 
+/** How long past its predicted ready time a recording of an ended session is still waited for. */
+const finishingGraceMs = 10_000;
+
 const retryAfterMillis = (headers: Headers.Headers): number => {
   const seconds = Number(headers["retry-after"] ?? Number.NaN);
   return Number.isFinite(seconds) ? seconds * 1000 : 2000;
@@ -133,12 +137,17 @@ export const download = (
         parsePlaylist({ text, baseUrl: clip.playlistUrl, maxSegments }),
       );
     }
-    // A local disconnection does not prove the remote stopped: ask the coordinator.
+    // A recording can finish after its session ends, so an ended session is a
+    // verdict only once the clip's predicted ready time, and a grace, have passed.
     const descriptor = yield* fetcher.read(clip.sessionId);
-    if (descriptor.state === "CLOSED" || descriptor.state === "INACTIVE")
+    const due = Number(clip.predictedReadyAtMs) + finishingGraceMs;
+    if (
+      (descriptor.state === "CLOSED" || descriptor.state === "INACTIVE") &&
+      (yield* Clock.currentTimeMillis) > due
+    )
       return yield* ReactorError.fromCode(
         "TerminalSession",
-        "session ended before its playlist became available",
+        "session ended and its playlist was not available by the predicted time",
       );
     yield* Effect.sleep(Math.max(200, Math.min(retryAfterMillis(reply.headers), 2000)));
     return yield* playlist;

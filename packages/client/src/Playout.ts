@@ -180,6 +180,8 @@ export type AsRunStatus =
       readonly reason: string;
       /** The session it was lost with, when that is why it failed. */
       readonly lost?: string | undefined;
+      /** Content moderation ended its session over it; it is never built again. */
+      readonly moderated?: true | undefined;
     }
   | { readonly _tag: "Unobserved" }
   | {
@@ -247,6 +249,18 @@ export type SessionEvent =
       readonly from: string;
       readonly reason: string;
       readonly carried: number;
+    }
+  /**
+   * Content moderation flagged an input. On `terminate` Reactor ends the
+   * session; the item whose enqueue was sent there last is held to blame, as
+   * the verdict names no clip, and fails instead of being rebuilt.
+   */
+  | {
+      readonly _tag: "Moderated";
+      readonly sessionId: string;
+      readonly action: string;
+      readonly categories: ReadonlyArray<string>;
+      readonly key?: ItemKey | undefined;
     };
 
 export type Event =
@@ -325,7 +339,13 @@ export type SourceEvent =
       /** From the provider's own count when it gives one. */
       readonly airedSeconds?: number | undefined;
     }
-  | { readonly _tag: "Failed"; readonly clip: SourceClip; readonly reason: string };
+  | { readonly _tag: "Failed"; readonly clip: SourceClip; readonly reason: string }
+  /** The provider's content moderation flagged an input; `terminate` ends the session. */
+  | {
+      readonly _tag: "Moderated";
+      readonly action: string;
+      readonly categories: ReadonlyArray<string>;
+    };
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
@@ -393,13 +413,26 @@ export interface Options<R = never> {
    * indeterminate, so a replacement takes over; 60 seconds by default.
    */
   readonly unknownTimeout?: Duration.Input | undefined;
+  /**
+   * Sessions content moderation may end before the playout fails, rather than
+   * open more paid sessions for content that keeps being flagged; 2 by default.
+   */
+  readonly maxModerations?: number | undefined;
   readonly renewal?:
     | {
         /** Opens the replacement this long before a session's lifetime ends; 30 seconds by default. */
         readonly lead?: Duration.Input | undefined;
+        /**
+         * How long opening a session may take, the wait for a GPU included;
+         * 3 minutes by default. Waiting for a GPU is not billed.
+         */
+        readonly openTimeout?: Duration.Input | undefined;
         /** How long after the retiring session's last clip ends the switch waits; 250 ms by default. */
         readonly grace?: Duration.Input | undefined;
-        /** Consecutive failed opens that end the playout; 3 by default. */
+        /**
+         * Consecutive failed setups that end the playout: opens that failed, and
+         * sessions lost before any clip sent to them started. 3 by default.
+         */
         readonly maxSetupFailures?: number | undefined;
       }
     | undefined;

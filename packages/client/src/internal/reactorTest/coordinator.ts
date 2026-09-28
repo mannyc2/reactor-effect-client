@@ -18,8 +18,8 @@ import { Refusal } from "./sessions.js";
 import type { Sessions } from "./sessions.js";
 
 const Token = Schema.Struct({
-  authorization_details: SessionAuthorization,
-  expires_after: Schema.Int.check(Schema.isGreaterThan(0)),
+  authorization_details: Schema.Tuple([SessionAuthorization]),
+  expires_after: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 const Create = Schema.Struct({
   model: Schema.Struct({ name: Schema.String }),
@@ -40,6 +40,8 @@ const storage = "https://uploads.reactor.test";
 interface Reply {
   readonly status: number;
   readonly body?: unknown;
+  /** Seconds, sent as `Retry-After`. */
+  readonly retryAfter?: number;
 }
 const ok = (body: unknown): Reply => ({ status: 200, body });
 const refuse = (status: number, code: string, reason: string) =>
@@ -78,7 +80,7 @@ const route = (
     if (url.pathname === "/tokens" && method === "POST") {
       const body = yield* decode(Token, request);
       const key = header("reactor-api-key");
-      return ok(yield* sessions.mint(key, body.authorization_details, body.expires_after));
+      return ok(yield* sessions.mint(key, body.authorization_details[0], body.expires_after));
     }
     const [root, id, ...rest] = url.pathname.split("/").slice(1).map(decodeURIComponent);
     if (root !== "sessions") return yield* refuse(404, "not_found", "no such route");
@@ -138,14 +140,23 @@ export const client = (sessions: Sessions): HttpClient.HttpClient =>
     Effect.gen(function* () {
       yield* Effect.sleep(yield* sessions.timing.delay("http"));
       const reply = yield* route(sessions, request, url).pipe(
-        Effect.catchTag("Refusal", ({ status, code, reason }) =>
-          Effect.succeed<Reply>({ status, body: { error: { code, message: reason } } }),
+        Effect.catchTag("Refusal", ({ status, code, reason, retryAfter }) =>
+          Effect.succeed<Reply>({
+            status,
+            body: {
+              error: { code, message: reason },
+              ...(retryAfter === undefined ? {} : { retry_after_seconds: retryAfter }),
+            },
+            ...(retryAfter === undefined ? {} : { retryAfter }),
+          }),
         ),
       );
+      const headers =
+        reply.retryAfter === undefined ? {} : { "retry-after": String(reply.retryAfter) };
       const response =
         reply.body === undefined
-          ? HttpServerResponse.empty({ status: reply.status })
-          : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status });
+          ? HttpServerResponse.empty({ status: reply.status, headers })
+          : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status, headers });
       return HttpServerResponse.toClientResponse(response, { request });
     }),
   );

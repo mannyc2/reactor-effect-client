@@ -12,10 +12,11 @@ export const environment = (options: Parameters<typeof ReactorTest.layer>[0]) =>
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   );
 
-export const mint = Effect.gen(function* () {
+/** Tokens from the simulated Reactor's key: sessions capped at five minutes, tokens of ten. */
+export const tokens = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
   const coordinator = yield* Coordinator.Coordinator;
-  return yield* coordinator.mintToken({
+  return coordinator.tokens({
     apiKey: test.apiKey,
     modelName: H3.modelName,
     maxSessionDuration: "5 minutes",
@@ -25,9 +26,8 @@ export const mint = Effect.gen(function* () {
 
 /** A connected H3 session. */
 export const connect = Effect.gen(function* () {
-  const grant = yield* mint;
   const reactor = yield* Reactor.Reactor;
-  return yield* reactor.create({ model: H3.modelName, jwt: grant.jwt });
+  return yield* reactor.create({ model: H3.modelName, tokens: yield* tokens });
 });
 
 /** The simulated model's log, narrowed to the commands it received with one name. */

@@ -17,6 +17,7 @@ const config: Policy.Config = {
   leadMs: 30_000,
   graceMs: 250,
   maxSetupFailures: 3,
+  maxModerations: 2,
 };
 
 const key = (value: string) => ItemKey.make(value);

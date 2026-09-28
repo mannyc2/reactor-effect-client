@@ -27,25 +27,44 @@ import type { Sampler } from "./timing.js";
 /** A request the simulated coordinator refuses, with the status a client sees. */
 export class Refusal extends Schema.TaggedError<Refusal>(
   "reactor-effect-client/ReactorTest/Refusal",
-)("Refusal", { status: Schema.Int, code: Schema.String, reason: Schema.String }) {}
+)("Refusal", {
+  status: Schema.Int,
+  code: Schema.String,
+  reason: Schema.String,
+  /** Seconds to wait, sent as `Retry-After` and `retry_after_seconds`. */
+  retryAfter: Schema.optionalKey(Schema.Int),
+}) {}
 
 const refuse = (status: number, code: string, reason: string) =>
   Refusal.make({ status, code, reason });
+
+/** Reactor's ceiling on a token's life: a longer one is clamped without a word. */
+const maxTokenSeconds = 21_600;
+/** How long Reactor keeps a session that lost its last connection. */
+const reconnectWindowMs = 30_000;
+/** Sessions an account may create back to back before the per-minute rate applies. */
+const burst = 3;
 
 type Phase = SessionInfo["state"];
 
 interface Grant {
   readonly jwt: string;
-  readonly model: string;
+  readonly models: ReadonlyArray<string>;
+  /** Sessions it may create, the bound ones counted in. */
   readonly maxSessions: number;
-  readonly maxSessionSeconds: number;
+  /** Undefined for sessions without a cap. */
+  readonly maxSessionSeconds: number | undefined;
   /** Seconds since the epoch. */
   readonly expiresAt: number;
-  readonly sessions: number;
+  readonly created: number;
+  /** Open sessions it acts on besides those it created. */
+  readonly bound: ReadonlySet<string>;
 }
 
 interface State {
   readonly phase: Phase;
+  /** Connections lost with none left, so a 30 s window closes on the latest. */
+  readonly drops: number;
   readonly activeAt: number | undefined;
   readonly endedAt: number | undefined;
   readonly deletes: number;
@@ -58,7 +77,11 @@ interface State {
 
 interface Session {
   readonly id: string;
-  readonly grant: Grant;
+  readonly model: string;
+  /** The token that created it, which acts on it without a bind. */
+  readonly creator: string;
+  readonly maxSessionSeconds: number | undefined;
+  readonly expiresAt: number;
   readonly state: Ref.Ref<State>;
   readonly scope: Scope.Closeable;
   readonly playout: Playout.Playout;
@@ -92,6 +115,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   const peers = yield* Ref.make<ReadonlyMap<string, Link>>(new Map());
   const bindings = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
   const counts = yield* Ref.make({ grants: 0, sessions: 0, connections: 1000, peers: 0 });
+  /** The account's session-creation bucket: `burst` at once, refilled at the per-minute rate. */
+  const bucket = yield* Ref.make({ tokens: burst, at: 0 });
   const entries = yield* Ref.make<ReadonlyArray<Entry>>([]);
   /** Upload slots handed out and not yet filled, with the session that asked for each. */
   const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
@@ -116,8 +141,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       return next;
     });
 
+  /** A session token, or the API key, which acts on every session of the account. */
   const authorize = (jwt: string | undefined) =>
     Effect.gen(function* () {
+      if (jwt !== undefined && jwt === options.apiKey) return "key" as const;
       const grant = jwt === undefined ? undefined : (yield* Ref.get(grants)).get(jwt);
       if (grant === undefined || grant.expiresAt * 1000 <= (yield* Clock.currentTimeMillis))
         return yield* refuse(401, "unauthorized", "a valid bearer token is required");
@@ -128,8 +155,12 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       const grant = yield* authorize(jwt);
       const session = (yield* Ref.get(sessions)).get(id);
       if (session === undefined) return yield* refuse(404, "not_found", "no such session");
-      if (session.grant.jwt !== grant.jwt)
-        return yield* refuse(403, "forbidden", "the token does not grant this session");
+      if (grant !== "key" && session.creator !== grant.jwt && !grant.bound.has(id))
+        return yield* refuse(
+          403,
+          "forbidden",
+          "the token is not bound to this session: authorization_details.resources.sessions.bind",
+        );
       const { phase } = yield* Ref.get(session.state);
       if (active && phase !== "ACTIVE")
         return yield* refuse(409, "session_not_active", `the session is ${phase}`);
@@ -143,7 +174,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     );
 
   /** The link stops carrying the session: it closes, or the session moves on. */
-  const unlink = (session: Session, link: Link, reason: "ended" | "replaced" | "disconnected") =>
+  const unlink = (
+    session: Session,
+    link: Link,
+    reason: "ended" | "replaced" | "disconnected",
+  ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const previous = yield* Ref.getAndUpdate(session.state, (state) =>
         state.bound === link ? { ...state, bound: undefined, connected: false } : state,
@@ -153,8 +188,22 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       yield* session.playout.disconnect(link);
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* link.drop(reason);
+      if (reason !== "disconnected") return;
+      // Reactor ends a session 30 s after its last connection drops, unless one returns.
+      const { drops } = yield* Ref.updateAndGet(session.state, (state) => ({
+        ...state,
+        drops: state.drops + 1,
+      }));
+      yield* later(
+        reconnectWindowMs,
+        Effect.flatMap(Ref.get(session.state), (state) =>
+          state.bound === undefined && state.drops === drops
+            ? end(session, "abandoned")
+            : Effect.void,
+        ),
+      );
     });
-  const end = (session: Session, reason: string) =>
+  const end = (session: Session, reason: string): Effect.Effect<void> =>
     Effect.gen(function* () {
       const now = yield* Playout.monotonic;
       const previous = yield* Ref.getAndUpdate(session.state, (state) =>
@@ -174,9 +223,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       if (previous.phase !== "PENDING") return;
       yield* log({ sessionId: session.id, kind: "session", name: "active" });
       const expire = yield* faults.standing((fault) => fault._tag === "Expire");
-      const cap = session.grant.maxSessionSeconds * 1000;
-      const early = expire?._tag === "Expire" ? Duration.toMillis(expire.after) : cap;
-      yield* later(Math.min(cap, early), end(session, "expired"));
+      const cap =
+        session.maxSessionSeconds === undefined ? Infinity : session.maxSessionSeconds * 1000;
+      const early = expire?._tag === "Expire" ? Duration.toMillis(expire.after) : Infinity;
+      const lifetime = Math.min(cap, early);
+      if (Number.isFinite(lifetime)) yield* later(lifetime, end(session, "expired"));
     });
   /** Connectivity succeeded for the peer the session is bound to. */
   const open = (session: Session, link: Link) =>
@@ -238,69 +289,112 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     mint: (
       key: string | undefined,
       authorization: (typeof SessionAuthorization)["Type"],
-      expiresAfter: number,
+      expiresAfter: number | undefined,
     ) =>
       Effect.gen(function* () {
         if (key !== options.apiKey)
           return yield* refuse(401, "unauthorized", "a valid Reactor-API-Key is required");
+        const models = authorization.resources.models.match;
+        const bind = authorization.resources.sessions?.bind ?? [];
+        const all = yield* Ref.get(sessions);
+        for (const id of bind) {
+          const session = all.get(id);
+          const open = session !== undefined && (yield* Ref.get(session.state)).phase !== "CLOSED";
+          // A closed, foreign or unknown id is refused alike, so bind cannot find sessions.
+          if (!open || !models.includes(session.model))
+            return yield* refuse(403, "forbidden", "a bound session is not open for this token");
+        }
         const n = yield* count("grants");
         const issuedAt = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-        // An over-granting token lets its session run twice as long as was asked.
+        const asked = authorization.constraints?.max_session_duration_seconds;
+        // An over-granting token lets its sessions run twice as long as was asked.
         const overGrant = (yield* faults.trip((fault) => fault._tag === "OverGrant")) !== undefined;
-        const [asked] = authorization;
-        const { resources, constraints } = overGrant
-          ? {
-              ...asked,
-              constraints: {
-                ...asked.constraints,
-                max_session_duration_seconds: asked.constraints.max_session_duration_seconds * 2,
-              },
-            }
-          : asked;
+        const cap = asked !== undefined && overGrant ? asked * 2 : asked;
+        const grant: Grant = {
+          jwt: "",
+          models,
+          maxSessions:
+            authorization.constraints?.max_sessions ?? (bind.length > 0 ? bind.length : 5),
+          maxSessionSeconds: cap,
+          expiresAt: issuedAt + Math.min(expiresAfter ?? 3_600, maxTokenSeconds),
+          created: 0,
+          bound: new Set(bind),
+        };
+        const echo = {
+          type: "session" as const,
+          resources: {
+            models: { match: models },
+            ...(bind.length > 0 ? { sessions: { bind } } : {}),
+          },
+          constraints: {
+            max_sessions: grant.maxSessions,
+            ...(cap === undefined ? {} : { max_session_duration_seconds: cap }),
+          },
+        };
+        // Bound sessions live on the server, not in the token's claims.
         const claims = {
           iss: "reactor-test",
           iat: issuedAt,
-          exp: issuedAt + expiresAfter,
+          exp: grant.expiresAt,
           jti: `reactor-test-grant-${n}`,
-          authorization_details: [{ ...asked, resources, constraints }],
+          authorization_details: [{ ...echo, resources: { models: { match: models } } }],
         };
         const jwt = [{ alg: "none", typ: "JWT" }, claims, "reactor-test"]
           .map((part) => Encoding.encodeBase64Url(JSON.stringify(part)))
           .join(".");
-        const grant: Grant = {
-          jwt,
-          model: resources.models.match[0],
-          maxSessions: constraints.max_sessions,
-          maxSessionSeconds: constraints.max_session_duration_seconds,
-          expiresAt: claims.exp,
-          sessions: 0,
-        };
-        yield* Ref.update(grants, (all) => new Map(all).set(jwt, grant));
-        return { jwt, expires_at: grant.expiresAt };
+        yield* Ref.update(grants, (current) => new Map(current).set(jwt, { ...grant, jwt }));
+        return { jwt, expires_at: grant.expiresAt, authorization_details: [echo] };
       }),
     create: (jwt: string | undefined, model: string, webrtc: boolean) =>
       Effect.gen(function* () {
         const grant = yield* authorize(jwt);
+        if (grant === "key")
+          return yield* refuse(403, "forbidden", "sessions are created with a session token");
         if (model !== profile.modelName)
           return yield* refuse(404, "unknown_model", "ReactorTest serves H3 only");
-        if (model !== grant.model)
+        if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
         if (!webrtc) return yield* refuse(400, "unsupported_transport", "WebRTC 1.0 only");
-        if (grant.sessions >= grant.maxSessions)
+        if (grant.created >= grant.maxSessions - grant.bound.size)
           return yield* refuse(403, "session_limit", "the token's sessions are used");
         if ((yield* faults.trip((fault) => fault._tag === "RefuseAllocation")) !== undefined)
           return yield* refuse(403, "allocation_refused", "allocation refused");
+        const running = yield* Effect.filter([...(yield* Ref.get(sessions)).values()], (session) =>
+          Effect.map(Ref.get(session.state), (state) => state.phase !== "CLOSED"),
+        );
+        if (running.length >= options.concurrentSessions)
+          return yield* refuse(429, "concurrent_limit", "too many concurrent sessions");
+        // A token bucket: `burst` back to back, then one every minute / sessionsPerMinute.
+        const now = yield* Playout.monotonic;
+        const refillMs = 60_000 / options.sessionsPerMinute;
+        const wait = yield* Ref.modify(bucket, (current) => {
+          const tokens = Math.min(burst, current.tokens + (now - current.at) / refillMs);
+          return tokens >= 1
+            ? ([0, { tokens: tokens - 1, at: now }] as const)
+            : ([Math.ceil(((1 - tokens) * refillMs) / 1000), { tokens, at: now }] as const);
+        });
+        if (wait > 0)
+          return yield* Refusal.make({
+            status: 429,
+            code: "rate_limited",
+            reason: "too many sessions this minute",
+            retryAfter: wait,
+          });
         yield* Ref.update(grants, (all) =>
-          new Map(all).set(grant.jwt, { ...grant, sessions: grant.sessions + 1 }),
+          new Map(all).set(grant.jwt, { ...grant, created: grant.created + 1 }),
         );
         const id = `sess_reactor_test_${yield* count("sessions")}`;
         const sessionScope = yield* Scope.fork(scope);
         const session: Session = {
           id,
-          grant,
+          model,
+          creator: grant.jwt,
+          maxSessionSeconds: grant.maxSessionSeconds,
+          expiresAt: grant.expiresAt,
           scope: sessionScope,
           state: yield* Ref.make<State>({
             phase: "PENDING",
+            drops: 0,
             activeAt: undefined,
             endedAt: undefined,
             deletes: 0,
@@ -308,9 +402,16 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             connected: false,
             connections: new Map(),
           }),
-          playout: yield* Playout.make(id, { options, faults, timing, openapi, log }).pipe(
-            Scope.provide(sessionScope),
-          ),
+          playout: yield* Playout.make(id, {
+            options,
+            faults,
+            timing,
+            openapi,
+            log,
+            // The session a moderation verdict ends is this one, built just below.
+            terminate: (afterMs) =>
+              Effect.suspend(() => Effect.asVoid(later(afterMs, end(session, "moderated")))),
+          }).pipe(Scope.provide(sessionScope)),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
         yield* log({ sessionId: id, kind: "session", name: "created" });
@@ -412,8 +513,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           connected: state.connected,
           deletes: state.deletes,
           grant: {
-            maxSessionSeconds: session.grant.maxSessionSeconds,
-            expiresAt: session.grant.expiresAt,
+            maxSessionSeconds: session.maxSessionSeconds,
+            expiresAt: session.expiresAt,
           },
         })),
       ),

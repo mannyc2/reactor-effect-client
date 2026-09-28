@@ -10,10 +10,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Random from "effect/Random";
-import type * as Redacted from "effect/Redacted";
 import type * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { Coordinator, notTerminated } from "./Coordinator.js";
+import type { Tokens } from "./Coordinator.js";
 import * as Internal from "./internal/session.js";
 import { PeerFactory } from "./Peer.js";
 import { AcquisitionFailure, isReactorFailure, ReactorError } from "./ReactorError.js";
@@ -24,8 +24,16 @@ export interface Options {
   readonly replyTimeout?: Duration.Input | undefined;
   /** How long an upload may take in all; 60 seconds by default. */
   readonly uploadTimeout?: Duration.Input | undefined;
-  /** How long connecting or reconnecting may take in all; 3 minutes by default. */
+  /**
+   * How long connecting may take in all, the wait for a GPU included; 3 minutes by default.
+   * Waiting for a GPU is not billed.
+   */
   readonly connectTimeout?: Duration.Input | undefined;
+  /**
+   * How long a reconnect may take; 30 seconds by default, the time Reactor keeps a
+   * session that has lost its last connection before it ends it.
+   */
+  readonly reconnectTimeout?: Duration.Input | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
   readonly readyTimeout?: Duration.Input | undefined;
   /** Between heartbeats; 10 seconds by default, `"Infinity"` for none. */
@@ -34,14 +42,28 @@ export interface Options {
   readonly maxPending?: number | undefined;
   /** The largest upload; 16 MiB by default, at most 64 MiB. */
   readonly maxUploadBytes?: number | undefined;
-  /** The session token used when an acquisition names none. */
-  readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
+  /** The tokens an acquisition uses when it names none. */
+  readonly tokens?: Tokens | undefined;
 }
 
-export interface CreateOptions<E = never, R = never> {
+interface AcquisitionOptions {
+  /**
+   * Resume the session's receive-only tracks as each connection becomes
+   * ready; true by default. Reactor sends a connection no media until it
+   * does, so a viewer that starts paused resumes them itself through `Media`.
+   */
+  readonly resumeTracks?: boolean | undefined;
+}
+
+export interface CreateOptions<E = never, R = never> extends AcquisitionOptions {
   readonly model: string;
   readonly version?: string | undefined;
-  readonly jwt?: Redacted.Redacted<string> | undefined;
+  /**
+   * The session's tokens: `create`'s token allocates it, and before that
+   * expires a token from `bind` carries its later calls on, so the session can
+   * outlive any one token.
+   */
+  readonly tokens?: Tokens | undefined;
   readonly extraArgs?: Schema.Json | undefined;
   /**
    * Runs once the session is allocated and before it connects, so a
@@ -51,10 +73,11 @@ export interface CreateOptions<E = never, R = never> {
   readonly onAllocated?: ((session: Session) => Effect.Effect<void, E, R>) | undefined;
 }
 
-export interface AttachOptions {
+export interface AttachOptions extends AcquisitionOptions {
   readonly sessionId: string;
   readonly connectionId?: number | undefined;
-  readonly jwt?: Redacted.Redacted<string> | undefined;
+  /** Tokens bound to the session, minted when the attach starts and before each expires. */
+  readonly tokens?: Pick<Tokens, "bind"> | undefined;
   /**
    * Take over the session's remote lifetime, as a process resuming a session
    * its dead owner recorded does: closing it, or a failed attach, terminates
@@ -119,6 +142,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     replyTimeout: yield* bounded(options.replyTimeout, "10 seconds", "reply timeout"),
     uploadTimeout: yield* bounded(options.uploadTimeout, "60 seconds", "upload timeout"),
     connectTimeout: yield* bounded(options.connectTimeout, "3 minutes", "connect timeout"),
+    reconnectTimeout: yield* bounded(options.reconnectTimeout, "30 seconds", "reconnect timeout"),
     readyTimeout: yield* bounded(options.readyTimeout, "30 seconds", "ready timeout"),
     heartbeat: yield* bounded(options.heartbeatInterval, "10 seconds", "heartbeat interval", true),
     maxPending: yield* count(options.maxPending, 128, 4096, "maxPending"),
@@ -132,7 +156,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
 
   const acquire = <E, R>(
     intent: Internal.Intent,
-    jwt: Redacted.Redacted<string> | undefined,
+    tokens: (Pick<Tokens, "bind"> & Partial<Pick<Tokens, "create">>) | undefined,
+    resumeTracks: boolean | undefined,
     onAllocated: ((session: Session) => Effect.Effect<void, E, R>) | undefined,
   ): Effect.Effect<Session, AcquisitionFailure | E, Scope.Scope | R> =>
     Effect.uninterruptibleMask((restore) =>
@@ -140,11 +165,6 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         const rejected = (error: ReactorError) =>
           Effect.fail(AcquisitionFailure.from(error, noAcquisition));
         yield* restore(peers.check).pipe(Effect.catch(rejected));
-        const token =
-          jwt ??
-          (options.credential === undefined
-            ? undefined
-            : yield* restore(options.credential).pipe(Effect.catch(rejected)));
         const words = yield* Effect.all(
           Array.from({ length: 4 }, () => Random.nextIntBetween(0, 0xffffffff)),
         );
@@ -154,10 +174,11 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         const scope = yield* Scope.fork(yield* Effect.scope);
         const handle = yield* Internal.make({
           intent,
-          signaling: coordinator.signaling(token),
+          coordinator,
+          tokens: tokens ?? options.tokens,
+          resumeTracks: resumeTracks ?? true,
           peers,
           settings: { ...settings, namespace },
-          apiUrl: coordinator.apiUrl,
         }).pipe(Scope.provide(scope));
         yield* Scope.addFinalizer(scope, handle.close);
         const release = handle.close.pipe(Effect.tap(() => Scope.close(scope, Exit.void)));
@@ -218,7 +239,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
               },
               ...(input.extraArgs === undefined ? {} : { extraArgs: input.extraArgs }),
             },
-            input.jwt,
+            input.tokens,
+            input.resumeTracks,
             input.onAllocated,
           ),
     attach: (input) =>
@@ -242,7 +264,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
               ...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
               adopt: input.adopt === true,
             },
-            input.jwt,
+            input.tokens,
+            input.resumeTracks,
             undefined,
           ),
   });

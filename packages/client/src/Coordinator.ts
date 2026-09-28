@@ -242,38 +242,111 @@ export interface TokenOptions {
   /** The API key; the service's configured key when omitted. */
   readonly apiKey?: Redacted.Redacted<string> | undefined;
   readonly modelName: string;
-  /** The longest session the token may start, in whole seconds, at most one day. */
-  readonly maxSessionDuration: Duration.Input;
-  /** How long the token stays valid, more than 30 seconds past `maxSessionDuration`. */
-  readonly expiresAfter: Duration.Input;
+  /**
+   * Caps each session the token creates, from one second to a day, or
+   * `"unlimited"` for Reactor's default of no cap. An uncapped session bills
+   * until something terminates it, so it is never a default here. A token that
+   * creates no session, one only `bind`s, needs none.
+   */
+  readonly maxSessionDuration?: Duration.Input | "unlimited" | undefined;
+  /**
+   * Sessions the token may create, 1 to 500; 1 by default. With `bind`,
+   * Reactor counts the bound sessions in it and by default leaves no room to create.
+   */
+  readonly maxSessions?: number | undefined;
+  /** Open sessions of this account the token acts on besides those it creates. */
+  readonly bind?: ReadonlyArray<string> | undefined;
+  /**
+   * How long the token stays valid; Reactor's default of an hour when omitted.
+   * Reactor clamps it to six hours without saying so: read `expiresAt`.
+   */
+  readonly expiresAfter?: Duration.Input | undefined;
+}
+
+/** What Reactor says a token grants, from its echo of the request; undefined where it says nothing. */
+export interface Granted {
+  readonly models: ReadonlyArray<string>;
+  readonly maxSessions: number | undefined;
+  readonly maxSessionSeconds: number | "unlimited" | undefined;
+  /** Open sessions the token acts on besides those it creates. */
+  readonly bound: ReadonlyArray<string>;
 }
 
 export interface TokenGrant {
   readonly jwt: Redacted.Redacted<string>;
+  /** When the token expires, in seconds since the epoch, as Reactor set it. */
   readonly expiresAt: number;
-  readonly granted: { readonly maxSessions: 1; readonly maxSessionSeconds: number };
+  /** The cap on each session the token creates, in seconds, as asked; undefined for none. */
+  readonly maxSessionSeconds: number | undefined;
+  /** Reactor's echo of the grant, when its reply carries one; a grant wider than asked is refused. */
+  readonly granted?: Granted | undefined;
 }
 
-const TokenReply = Schema.Struct({ jwt: Schema.NonEmptyString, expires_at: Schema.Finite });
-const TokenClaims = Schema.StringFromBase64Url.pipe(
-  Schema.decodeTo(Schema.fromJsonString(Schema.Struct({ authorization_details: Schema.Unknown }))),
-);
-/** The authority a session token grants: one session of one model for a bounded time. */
-export const SessionAuthorization = Schema.Tuple([
-  Schema.Struct({
-    type: Schema.Literal("session"),
-    resources: Schema.Struct({
-      models: Schema.Struct({ match: Schema.Tuple([Schema.NonEmptyString]) }),
-    }),
-    constraints: Schema.Struct({
-      max_sessions: Schema.Literal(1),
-      max_session_duration_seconds: PositiveInt,
-    }),
+/**
+ * How an application gives sessions their tokens without handing over its API
+ * key. A session-scoped token acts only on the sessions it created or was bound
+ * to, and lives at most six hours, while a session can run a day or more; so a
+ * session starts on a token from `create` and, before that expires, carries on
+ * with one from `bind` for its own id.
+ */
+export interface Tokens {
+  /** A token that may create one session. */
+  readonly create: Effect.Effect<TokenGrant, ReactorError>;
+  /** A fresh token bound to an open session. */
+  readonly bind: (sessionId: string) => Effect.Effect<TokenGrant, ReactorError>;
+}
+
+/**
+ * Tokens that are never refreshed, for a session shorter than its token: the
+ * same `token` creates the session and serves its every later call, and the
+ * session's calls fail once it expires.
+ */
+export const fixedTokens = (token: TokenGrant): Tokens => ({
+  create: Effect.succeed(token),
+  bind: () => Effect.succeed(token),
+});
+
+const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }));
+const Seconds = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86_400 }));
+/** One `authorization_details` entry of a session-scoped token, as `POST /tokens` takes it. */
+export const SessionAuthorization = Schema.Struct({
+  type: Schema.Literal("session"),
+  resources: Schema.Struct({
+    models: Schema.Struct({ match: Schema.NonEmptyArray(Schema.NonEmptyString) }),
+    sessions: Schema.optionalKey(
+      Schema.Struct({ bind: Schema.NonEmptyArray(Schema.NonEmptyString) }),
+    ),
   }),
-]);
+  constraints: Schema.optionalKey(
+    Schema.Struct({
+      max_sessions: Schema.optionalKey(Count),
+      max_session_duration_seconds: Schema.optionalKey(Seconds),
+    }),
+  ),
+});
+/** Reactor's echo of a grant: the request's shape, with the resolved count and bound set. */
+const Stated = Schema.Int.pipe(Schema.NullOr, Schema.optionalKey);
+const GrantEcho = Schema.Struct({
+  type: Schema.Literal("session"),
+  resources: Schema.Struct({
+    models: Schema.Struct({ match: Schema.Array(Schema.String) }),
+    sessions: Schema.Struct({
+      bind: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+    }).pipe(Schema.NullOr, Schema.optionalKey),
+  }),
+  constraints: Schema.Struct({
+    max_sessions: Stated,
+    max_session_duration_seconds: Stated,
+  }).pipe(Schema.NullOr, Schema.optionalKey),
+});
+const TokenReply = Schema.Struct({
+  jwt: Schema.NonEmptyString,
+  expires_at: Schema.Finite,
+  authorization_details: GrantEcho.pipe(Schema.Array, Schema.optionalKey),
+});
 const TokenRequestBody = Schema.Struct({
-  authorization_details: SessionAuthorization,
-  expires_after: Schema.Int,
+  authorization_details: Schema.Tuple([SessionAuthorization]),
+  expires_after: Schema.optionalKey(Schema.Int),
 });
 const ClientInfo = Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String });
 const CreateBody = Schema.Struct({
@@ -516,7 +589,11 @@ export interface Signaling {
 
 export interface Options {
   readonly apiUrl?: string | undefined;
-  /** The API key `mintToken` uses when its options name none. */
+  /**
+   * The API key `mintToken` uses when its options name none. A server that
+   * holds it also terminates with it when no `credential` is set, since the
+   * key may end any session of its account.
+   */
   readonly apiKey?: Redacted.Redacted<string> | undefined;
   /** The session token that authorizes `inspect`, `terminate` and `downloadClip`. */
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
@@ -529,6 +606,16 @@ export class Coordinator extends Context.Service<
     /** The pricing catalog, as the provider publishes it. */
     readonly pricing: Effect.Effect<Schema.Json, ReactorError>;
     readonly mintToken: (options: TokenOptions) => Effect.Effect<TokenGrant, ReactorError>;
+    /**
+     * `Tokens` minted with the API key: each `create` token may create one
+     * session capped as `maxSessionDuration` says, and each `bind` token acts
+     * on the one session it names.
+     */
+    readonly tokens: (
+      options: Omit<TokenOptions, "maxSessions" | "bind"> & {
+        readonly maxSessionDuration: Duration.Input | "unlimited";
+      },
+    ) => Tokens;
     readonly inspect: (sessionId: string) => Effect.Effect<Inspection, ReactorError>;
     /** Uncertainty stays in the report; supervisors choose their own failure policy. */
     readonly terminate: (sessionId: string) => Effect.Effect<Termination>;
@@ -536,8 +623,10 @@ export class Coordinator extends Context.Service<
       clip: ClipReady,
       options?: DownloadOptions,
     ) => Effect.Effect<DownloadedClip, ReactorError>;
-    /** The calls one session makes with its own token. */
-    readonly signaling: (credential: Redacted.Redacted<string> | undefined) => Signaling;
+    /** The calls one session makes, each with the token `credential` then gives. */
+    readonly signaling: (
+      credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
+    ) => Signaling;
   }
 >()("reactor-effect-client/Coordinator") {}
 
@@ -586,7 +675,17 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         auth === "session" ||
         auth === "signaling" ||
         (auth === "same-origin" && url.origin === origin);
-      const token = authenticate ? yield* credential : undefined;
+      // A request whose token could not be had was never sent.
+      const token = authenticate
+        ? yield* credential.pipe(
+            Effect.mapError((error) =>
+              ReactorError.make({
+                reason: error.reason,
+                context: { ...error.context, operation, outcome: "not-submitted" },
+              }),
+            ),
+          )
+        : undefined;
       let request = HttpClientRequest.make(spec.method ?? "GET")(url.href).pipe(
         HttpClientRequest.setHeaders({ ...versioned, ...spec.headers }),
       );
@@ -654,8 +753,9 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       Effect.updateService(Headers.CurrentRedactedNames, (names) => [...names, "reactor-api-key"]),
     );
 
-  const signaling = (token: Redacted.Redacted<string> | undefined): Signaling => {
-    const credential = Effect.succeed(token);
+  const signaling = (
+    credential: Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>,
+  ): Signaling => {
     const request = (spec: Exchange) => exchange(credential, spec);
 
     const read = (sessionId: string) =>
@@ -923,11 +1023,140 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
 
   const configured = options.credential ?? Effect.undefined;
   const app = (spec: Exchange) => exchange(configured, spec);
-  const appSignaling: Effect.Effect<Signaling, ReactorError> = Effect.map(configured, signaling);
+  const appSignaling = signaling(configured);
+  // A server holding the key ends any session of its account with the key as the bearer.
+  const terminator = signaling(
+    options.credential ??
+      (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey)),
+  );
+
+  const mintToken = Effect.fn("reactor.coordinator.mintToken")(function* (input: TokenOptions) {
+    const invalid = (message: string) =>
+      ReactorError.fromCode("InvalidInput", message, {
+        operation: "token",
+        outcome: "not-submitted",
+      });
+    const apiKey = input.apiKey ?? options.apiKey;
+    if (apiKey === undefined || Redacted.value(apiKey).length === 0)
+      return yield* invalid("a token needs an API key");
+    if (input.modelName.length === 0) return yield* invalid("a token needs a model");
+    const bind = input.bind ?? [];
+    if (bind.some((id) => id.length === 0)) return yield* invalid("a bound session needs an id");
+    const maxSessions = input.maxSessions ?? (bind.length === 0 ? 1 : undefined);
+    if (
+      maxSessions !== undefined &&
+      !(
+        Number.isInteger(maxSessions) &&
+        maxSessions >= Math.max(1, bind.length) &&
+        maxSessions <= 500
+      )
+    )
+      return yield* invalid("maxSessions is an integer from 1, or the bound count, to 500");
+    // Reactor's default leaves a bound token no room to create; any other token creates.
+    const creates = maxSessions !== undefined && maxSessions > bind.length;
+    const cap = input.maxSessionDuration;
+    let seconds: number | undefined;
+    if (cap === undefined) {
+      if (creates)
+        return yield* invalid(
+          'a token that creates sessions needs a maxSessionDuration: a duration or "unlimited"',
+        );
+    } else if (cap !== "unlimited") {
+      const duration = Duration.fromInput(cap);
+      seconds = Option.isSome(duration) ? Duration.toSeconds(duration.value) : Number.NaN;
+      if (!(Number.isInteger(seconds) && seconds >= 1 && seconds <= 86_400))
+        return yield* invalid("maxSessionDuration is whole seconds from one to a day");
+    }
+    let expiresAfter: number | undefined;
+    if (input.expiresAfter !== undefined) {
+      const expiry = Duration.fromInput(input.expiresAfter);
+      expiresAfter = Option.isSome(expiry) ? Duration.toSeconds(expiry.value) : Number.NaN;
+      if (!(Number.isSafeInteger(expiresAfter) && expiresAfter >= 1))
+        return yield* invalid("expiresAfter is whole seconds, at least one");
+    }
+    const body = yield* jsonBody(
+      TokenRequestBody,
+      {
+        authorization_details: [
+          {
+            type: "session",
+            resources: {
+              models: { match: [input.modelName] },
+              ...(bind.length === 0 ? {} : { sessions: { bind: [bind[0]!, ...bind.slice(1)] } }),
+            },
+            ...(maxSessions === undefined && seconds === undefined
+              ? {}
+              : {
+                  constraints: {
+                    ...(maxSessions === undefined ? {} : { max_sessions: maxSessions }),
+                    ...(seconds === undefined ? {} : { max_session_duration_seconds: seconds }),
+                  },
+                }),
+          },
+        ],
+        ...(expiresAfter === undefined ? {} : { expires_after: expiresAfter }),
+      },
+      "token",
+    );
+    const reply = yield* app({
+      operation: "token",
+      method: "POST",
+      url: path("/tokens"),
+      auth: "none",
+      headers: { "reactor-api-key": Redacted.value(apiKey) },
+      body,
+      timeout: Duration.seconds(8),
+    });
+    const token = yield* decodeReply(TokenReply, "token")(reply);
+    const protocol = (message: string) =>
+      ReactorError.fromCode("Protocol", message, { operation: "token", outcome: "replied" });
+    if (token.expires_at * 1_000 <= (yield* Clock.currentTimeMillis))
+      return yield* protocol("the token has already expired");
+    const [entry, ...others] = token.authorization_details ?? [];
+    if (others.length > 0) return yield* protocol("the token grants other authority than asked");
+    const stated = entry?.constraints?.max_session_duration_seconds;
+    const granted: Granted | undefined =
+      entry === undefined
+        ? undefined
+        : {
+            models: entry.resources.models.match,
+            maxSessions: entry.constraints?.max_sessions ?? undefined,
+            // A null cap says there is none; an absent one says nothing.
+            maxSessionSeconds: stated === null ? "unlimited" : stated,
+            bound: entry.resources.sessions?.bind ?? [],
+          };
+    if (
+      granted !== undefined &&
+      (granted.models.some((model) => model !== input.modelName) ||
+        granted.bound.some((id) => !bind.includes(id)) ||
+        (granted.maxSessions ?? 0) > (maxSessions ?? bind.length) ||
+        (seconds !== undefined &&
+          (granted.maxSessionSeconds === "unlimited" ||
+            (granted.maxSessionSeconds ?? 0) > seconds)))
+    )
+      return yield* protocol("the token grants more than was asked");
+    return {
+      jwt: Redacted.make(token.jwt),
+      expiresAt: token.expires_at,
+      maxSessionSeconds: seconds,
+      ...(granted === undefined ? {} : { granted }),
+    } satisfies TokenGrant;
+  });
 
   return Coordinator.of({
     apiUrl,
     signaling,
+    mintToken,
+    tokens: (input) => ({
+      create: mintToken({ ...input, maxSessions: 1 }),
+      bind: (sessionId) =>
+        mintToken({
+          modelName: input.modelName,
+          bind: [sessionId],
+          ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
+          ...(input.expiresAfter === undefined ? {} : { expiresAfter: input.expiresAfter }),
+        }),
+    }),
     pricing: app({
       operation: "pricing",
       url: path("/pricing"),
@@ -941,80 +1170,6 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         { captureStackTrace: false },
       ),
     ),
-    mintToken: Effect.fn("reactor.coordinator.mintToken")(function* (input: TokenOptions) {
-      const invalid = ReactorError.fromCode(
-        "InvalidInput",
-        "a bounded session needs a model, an API key, a whole-second duration and a token expiry allowing cleanup",
-        { operation: "token", outcome: "not-submitted" },
-      );
-      const apiKey = input.apiKey ?? options.apiKey;
-      const duration = Duration.fromInput(input.maxSessionDuration);
-      const expiry = Duration.fromInput(input.expiresAfter);
-      if (apiKey === undefined || Option.isNone(duration) || Option.isNone(expiry))
-        return yield* invalid;
-      const seconds = Duration.toSeconds(duration.value);
-      const expiresAfter = Duration.toSeconds(expiry.value);
-      if (
-        Redacted.value(apiKey).length === 0 ||
-        input.modelName.length === 0 ||
-        !Number.isInteger(seconds) ||
-        seconds < 1 ||
-        seconds > 86_400 ||
-        !Number.isSafeInteger(expiresAfter) ||
-        expiresAfter <= seconds + 30
-      )
-        return yield* invalid;
-      const body = yield* jsonBody(
-        TokenRequestBody,
-        {
-          authorization_details: [
-            {
-              type: "session",
-              resources: { models: { match: [input.modelName] } },
-              constraints: { max_sessions: 1, max_session_duration_seconds: seconds },
-            },
-          ],
-          expires_after: expiresAfter,
-        },
-        "token",
-      );
-      const reply = yield* app({
-        operation: "token",
-        method: "POST",
-        url: path("/tokens"),
-        auth: "none",
-        headers: { "reactor-api-key": Redacted.value(apiKey) },
-        body,
-        timeout: Duration.seconds(8),
-      });
-      const token = yield* decodeReply(TokenReply, "token")(reply);
-      const now = yield* Clock.currentTimeMillis;
-      const protocol = (message: string, cause?: unknown) =>
-        ReactorError.fromCode("Protocol", message, {
-          operation: "token",
-          outcome: "replied",
-          ...(cause === undefined ? {} : { detail: cause }),
-        });
-      if (token.expires_at * 1_000 < now + (seconds + 30) * 1_000)
-        return yield* protocol("the token outlives neither the session nor its cleanup");
-      const payload = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/.exec(token.jwt)?.[1];
-      const claims = yield* Schema.decodeUnknownEffect(TokenClaims)(payload).pipe(
-        Effect.mapError((cause) => protocol("the token carries no session grant", cause)),
-      );
-      const [grant] = yield* Schema.decodeUnknownEffect(SessionAuthorization, {
-        onExcessProperty: "error",
-      })(claims.authorization_details).pipe(
-        Effect.mapError((cause) => protocol("the token grants an unbounded session", cause)),
-      );
-      const granted = grant.constraints.max_session_duration_seconds;
-      if (grant.resources.models.match[0] !== input.modelName || granted > seconds)
-        return yield* protocol("the token grants more than was asked");
-      return {
-        jwt: Redacted.make(token.jwt),
-        expiresAt: token.expires_at,
-        granted: { maxSessions: grant.constraints.max_sessions, maxSessionSeconds: granted },
-      } satisfies TokenGrant;
-    }),
     inspect: Effect.fn("reactor.coordinator.inspect")(function* (sessionId: string) {
       const reply = yield* app({
         operation: "inspect",
@@ -1037,15 +1192,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         serverVersion: value.server_info?.server_version ?? null,
       } satisfies Inspection;
     }),
-    terminate: (sessionId) =>
-      appSignaling.pipe(
-        Effect.flatMap((api) => api.terminate(sessionId)),
-        Effect.catch((error) =>
-          Effect.succeed<Termination>({ ...notTerminated, error: summarize(error) }),
-        ),
-      ),
-    downloadClip: (clip, downloadOptions) =>
-      appSignaling.pipe(Effect.flatMap((api) => api.downloadClip(clip, downloadOptions))),
+    terminate: terminator.terminate,
+    downloadClip: appSignaling.downloadClip,
   });
 });
 

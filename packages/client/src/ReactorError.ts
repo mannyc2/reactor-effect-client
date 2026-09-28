@@ -39,6 +39,8 @@ export const FailureCode = Schema.Literals([
   "SdpRejected",
   "ChannelClosed",
   "Indeterminate",
+  /** Reactor's content moderation ended the session. */
+  "Moderated",
 ]);
 export type FailureCode = typeof FailureCode.Type;
 
@@ -213,11 +215,12 @@ const retryable = (reason: ReactorErrorReason, outcome: RemoteOutcome | undefine
     case "ChannelClosed":
       return true;
     case "Http":
+      // Reactor classes a server error as recoverable; a refusal of authority or a conflict is not.
       return (
         reason.status === undefined ||
         reason.status === 408 ||
         reason.status === 429 ||
-        reason.status === 503 ||
+        reason.status >= 500 ||
         reason.retryAfter !== undefined
       );
     default:

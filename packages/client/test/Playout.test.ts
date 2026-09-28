@@ -1,6 +1,6 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
-import { Deferred, Duration, Effect, Exit, Ref, Scope, Stream } from "effect";
+import { Deferred, Duration, Effect, Exit, Option, Ref, Scope, Stream } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
 import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
@@ -10,11 +10,11 @@ import { environment } from "./fixtures/Simulated.js";
 const key = (value: string) => Playout.ItemKey.make(value);
 const clip = (prompt: string, seconds = 5): H3.Request => ({ prompt, seconds });
 
-const mint = (maxSessionDuration: Duration.Input) =>
+const tokens = (maxSessionDuration: Duration.Input) =>
   Effect.gen(function* () {
     const test = yield* ReactorTest.ReactorTest;
     const coordinator = yield* Coordinator.Coordinator;
-    return yield* coordinator.mintToken({
+    return coordinator.tokens({
       apiKey: test.apiKey,
       modelName: H3.modelName,
       maxSessionDuration,
@@ -27,7 +27,7 @@ const start = (options: Partial<Options<never>> & { readonly lifetime?: Duration
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
     const playout = yield* Playout.make({
-      open: H3Source.open({ mint: mint(options.lifetime ?? "10 minutes") }),
+      open: H3Source.open({ tokens: yield* tokens(options.lifetime ?? "10 minutes") }),
       lanes: [{ name: "urgent", cut: true }, { name: "line" }, { name: "quiet", conflict: "skip" }],
       ...options,
     });
@@ -354,7 +354,7 @@ layer(hosted)("the cut's fence", (it) => {
   it.effect("puts back the autoplay the playout asked for, not always on", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const source = yield* H3Source.open({ mint: mint("10 minutes") });
+      const source = yield* H3Source.open({ tokens: yield* tokens("10 minutes") });
       const started = yield* Ref.make<ReadonlyArray<string>>([]);
       yield* source.events.pipe(
         Stream.runForEach((event) =>
@@ -384,12 +384,12 @@ layer(hosted)("resume", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      const grant = yield* mint("10 minutes");
+      const sessionTokens = yield* tokens("10 minutes");
       const recorded = yield* Deferred.make<H3Source.Allocation>();
       // The owner's scope stays open, as a crashed process's would.
       const owned = yield* Scope.make();
       const owner = yield* H3Source.open({
-        mint: Effect.succeed(grant),
+        tokens: sessionTokens,
         onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
       }).pipe(Scope.provide(owned));
       yield* owner.setAutoplay(true);
@@ -405,7 +405,7 @@ layer(hosted)("resume", (it) => {
       const before = (yield* test.log).length;
       const source = yield* H3Source.resume({
         allocation: yield* Deferred.await(recorded),
-        jwt: grant.jwt,
+        tokens: sessionTokens,
       });
       const first = yield* source.events.pipe(Stream.runHead, Effect.flatMap(Effect.fromOption));
       assert.deepStrictEqual(first._tag === "State" ? first.state.playing : undefined, {
@@ -758,3 +758,120 @@ for (const seed of [1, 2, 3, 4, 5, 6])
       );
     },
   );
+
+// Reactor's docs: "When submitted content violates the policy the session is terminated", and the
+// SDK "observes the session leaving the ready state"; a verdict may or may not come first.
+layer(hosted)("moderation with a verdict", (it) => {
+  it.effect("fails the flagged item at once and airs the rest on the next session", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "Moderate", nth: 1 });
+      const { playout, events } = yield* start();
+      const flagged = yield* playout.submit({
+        key: key("flagged"),
+        lane: "line",
+        request: clip("x"),
+      });
+      const fine = yield* playout.submit({ key: key("fine"), lane: "line", request: clip("y") });
+      const outcome = yield* flagged.outcome;
+      assert.deepStrictEqual(
+        outcome._tag === "Failed" ? [outcome._tag, outcome.moderated] : [outcome._tag],
+        ["Failed", true],
+      );
+      assert.strictEqual((yield* fine.outcome)._tag, "Ended");
+      const moderated = (yield* events).flatMap((event) =>
+        event._tag === "Session" && event.event._tag === "Moderated" ? [event.event.key] : [],
+      );
+      assert.deepStrictEqual(moderated, [key("flagged")]);
+      assert.strictEqual((yield* test.sessions).length, 2);
+    }),
+  );
+});
+
+layer(hosted)("moderation without a verdict", (it) => {
+  // Screening ends the session as the flagged clip's build does, and says nothing.
+  it.effect(
+    "fails a clip lost unbuilt twice in a row, and rebuilds a Ready one until it airs",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "Moderate", prompt: "flagged", verdict: false });
+        const { playout } = yield* start();
+        const submit = (name: string, seconds: number) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name, seconds) });
+        // The opener plays while the innocent clip waits Ready and the flagged one builds.
+        yield* submit("opener", 15);
+        const innocent = yield* submit("innocent", 5);
+        const flagged = yield* submit("flagged", 15);
+        const failed = yield* flagged.outcome;
+        assert.deepStrictEqual(
+          failed._tag === "Failed"
+            ? [
+                failed._tag,
+                failed.lost !== undefined,
+                failed.reason.includes("before it was built"),
+              ]
+            : [failed._tag],
+          ["Failed", true, true],
+        );
+        assert.strictEqual((yield* innocent.outcome)._tag, "Ended");
+        yield* Effect.sleep("2 minutes");
+        // Two sessions ended over the flagged prompt; the third waits for work, and the playout goes on.
+        assert.strictEqual((yield* test.sessions).length, 3);
+        assert.isTrue(Option.isNone(yield* Effect.timeoutOption(playout.failure, "1 second")));
+      }),
+  );
+});
+
+layer(hosted)("a crash loop", (it) => {
+  it.effect("ends the playout when sessions keep dying before anything plays", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "Moderate", verdict: false });
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index }) => clip(`filler ${String(index)}`),
+        },
+      });
+      const failure = yield* playout.failure;
+      assert.strictEqual(failure._tag, "ReactorError");
+      assert.strictEqual((yield* test.sessions).length, 3);
+    }),
+  );
+});
+
+layer(hosted)("resume after the owner's token expired", (it) => {
+  it.effect("adopts the session with a token bound to it; the owner's stale one is refused", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      const coordinator = yield* Coordinator.Coordinator;
+      const sessionTokens = coordinator.tokens({
+        apiKey: test.apiKey,
+        modelName: H3.modelName,
+        maxSessionDuration: "10 minutes",
+        expiresAfter: "1 minute",
+      });
+      const grant = yield* sessionTokens.create;
+      const recorded = yield* Deferred.make<H3Source.Allocation>();
+      // The owner's scope stays open, as a crashed process's would.
+      const owned = yield* Scope.make();
+      yield* H3Source.open({
+        tokens: { create: Effect.succeed(grant), bind: sessionTokens.bind },
+        onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+      }).pipe(Scope.provide(owned));
+      const allocation = yield* Deferred.await(recorded);
+      yield* Effect.sleep("2 minutes");
+      const stale = yield* Effect.flip(
+        H3Source.resume({ allocation, tokens: { bind: () => Effect.succeed(grant) } }),
+      );
+      assert.deepStrictEqual(
+        [stale.reason._tag, stale.reason._tag === "Http" ? stale.reason.status : undefined],
+        ["Http", 401],
+      );
+      const source = yield* H3Source.resume({ allocation, tokens: sessionTokens });
+      assert.strictEqual(source.sessionId, allocation.sessionId);
+    }),
+  );
+});

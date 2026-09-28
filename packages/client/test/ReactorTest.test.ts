@@ -1,10 +1,10 @@
 /** The simulated Reactor behind the real client, the H3 provider and a playout. */
 import { assert, layer } from "@effect/vitest";
-import { Effect, Fiber, Ref, Stream } from "effect";
+import { Duration, Effect, Fiber, Ref, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, H3Source, Playout, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
-import { connect, environment, mint } from "./fixtures/Simulated.js";
+import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
 const frameMs = 1000 / 24;
 
@@ -141,7 +141,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("p
         const { cleanup, frames } = yield* Effect.scoped(
           Effect.gen(function* () {
             const playout = yield* Playout.make({
-              open: H3Source.open({ mint }),
+              open: H3Source.open({ tokens: yield* tokens }),
               lanes: [{ name: "line" }],
             });
             const video = yield* playout.video.pipe(
@@ -347,5 +347,48 @@ layer(
           [first.clip.clip_id, second.clip.clip_id, third.clip.clip_id],
         );
       }),
+  );
+});
+
+// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+  "the reconnect window",
+  (it) => {
+    it.effect("ends a session 30 s after its connection drops with none back", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
+        const session = yield* connect;
+        yield* Effect.sleep("20 seconds");
+        const state = (id: string) =>
+          Effect.map(test.sessions, (all) => all.find((info) => info.id === id)?.state);
+        assert.strictEqual(yield* state(session.id), "ACTIVE");
+        yield* Effect.sleep("15 seconds");
+        assert.strictEqual(yield* state(session.id), "CLOSED");
+        const late = yield* Effect.flip(session.reconnect);
+        assert.strictEqual(late.reason._tag, "TerminalSession");
+      }),
+    );
+  },
+);
+
+// Reactor's docs: 5 concurrent sessions, and 10 a minute with 3 back to back; 429 says when to retry.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("quotas", (it) => {
+  it.effect("refuses a fourth session at once, retryable after the delay it names", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      yield* Effect.replicateEffect(connect, 3);
+      const refused = yield* Effect.flip(connect);
+      assert.deepStrictEqual(
+        [refused.reason._tag, refused.reason._tag === "Http" ? refused.reason.status : undefined],
+        ["Http", 429],
+      );
+      assert.isTrue(refused.isRetryable);
+      assert.isDefined(refused.retryAfter);
+      assert.strictEqual(refused.cleanup.allocation, "none");
+      yield* Effect.sleep("6 seconds");
+      yield* connect;
+    }),
   );
 });
