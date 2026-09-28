@@ -11,6 +11,7 @@
  */
 import { dual } from "effect/Function";
 import type { Request } from "../../H3.js";
+import type { CommandFailure } from "../../ReactorError.js";
 import type {
   AsRunStatus,
   ClipTag,
@@ -85,12 +86,14 @@ export type Command =
 /** A command's result: the clip an enqueue created, or how a failure left the provider. */
 export type CommandResult =
   | { readonly _tag: "Done"; readonly clipId?: string | undefined }
-  | {
-      readonly _tag: "Failed";
-      readonly outcome: "not-submitted" | "unknown" | "replied";
-      readonly retryable: boolean;
-      readonly reason: string;
-    };
+  /** Its outcome says whether the provider may have applied it, and whether a retry may mend it. */
+  | { readonly _tag: "Failed"; readonly cause: CommandFailure }
+  /** It died or was interrupted, so whether the provider applied it cannot be told. */
+  | { readonly _tag: "Died" };
+
+/** Whether a command that failed may have taken effect unseen. */
+const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
+  result._tag === "Died" || result.cause.context.outcome === "unknown";
 
 export type Input =
   /** `batch`: the edits take effect together, make-before-break, as `Playout.edit` promises. */
@@ -1127,7 +1130,10 @@ export const step: {
     });
     if (!terminate) return;
     if (key !== undefined)
-      settle(key, { _tag: "Failed", reason: "content moderation flagged it", moderated: true });
+      settle(key, {
+        _tag: "Failed",
+        reason: { _tag: "Moderated", categories: event.categories },
+      });
     // A flagged filler request is not asked for again.
     if (suspect?._tag === "Filler" && suspect.index === state.filler.index)
       state = {
@@ -1143,10 +1149,14 @@ export const step: {
         cause: "moderation",
       });
   };
-  const failed = (clip: SourceClip, reason: string): void => {
-    if (clip.tag?._tag === "Filler") return forgetFiller(clip.clipId);
-    const item = itemOf(clip);
-    if (item !== undefined) settle(item.spec.key, { _tag: "Failed", reason });
+  const failed = (event: Extract<SourceEvent, { readonly _tag: "Failed" }>): void => {
+    if (event.clip.tag?._tag === "Filler") return forgetFiller(event.clip.clipId);
+    const item = itemOf(event.clip);
+    if (item !== undefined)
+      settle(item.spec.key, {
+        _tag: "Failed",
+        reason: { _tag: "Clip", message: event.message, provider: event.provider },
+      });
   };
   /** Reads a session's queues back into the plan: adoption by key, Ready, and clips that vanished. */
   const observe = (sessionId: string, source: SourceState): void => {
@@ -1271,16 +1281,12 @@ export const step: {
     for (const item of items.values()) {
       if (item.sessionId !== sessionId || item.phase === "Settled") continue;
       if (item.phase === "Started")
-        settle(item.spec.key, { _tag: "Failed", reason, lost: sessionId });
+        settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
       else if (item.withdraw !== undefined)
         settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
       else if (!planned && item.phase === "Building" && item.unbuiltLosses + 1 >= 2)
-        settle(item.spec.key, {
-          _tag: "Failed",
-          reason: "its clip was lost before it was built on two sessions in a row",
-          lost: sessionId,
-        });
+        settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else {
         carried++;
         set(item.spec.key, {
@@ -1352,7 +1358,7 @@ export const step: {
                       [result.clipId, { index: filler.index, sessionId: busy.sessionId }],
                     ]),
             };
-          } else if (result.outcome === "unknown") {
+          } else if (uncertain(result)) {
             // Its clip may be building on that session: it holds that session's build slot until
             // a queue read shows it, the deadline passes or the session goes.
             state = {
@@ -1382,7 +1388,7 @@ export const step: {
           const now_ = items.get(item.spec.key)!;
           if (now_.phase === "Building" && now_.status?._tag !== "Building")
             asRun(item.spec.key, { _tag: "Building", sessionId: busy.sessionId });
-        } else if (result.outcome === "unknown") {
+        } else if (uncertain(result)) {
           if (item.clipId === undefined) {
             set(item.spec.key, {
               phase: "Unknown",
@@ -1392,14 +1398,18 @@ export const step: {
             });
             asRun(item.spec.key, { _tag: "Unknown" });
           }
-        } else if (result.retryable)
+        } else if (result._tag === "Failed" && result.cause.isRetryable)
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
             dispatchedAt: undefined,
             retryAt: now.mono + retryDelayMs,
           });
-        else settle(item.spec.key, { _tag: "Failed", reason: result.reason });
+        else if (result._tag === "Failed")
+          settle(item.spec.key, {
+            _tag: "Failed",
+            reason: { _tag: "Command", cause: result.cause },
+          });
         return;
       }
       case "Remove": {
@@ -1535,7 +1545,7 @@ export const step: {
           ended(input.sessionId, event);
           break;
         case "Failed":
-          failed(event.clip, event.reason);
+          failed(event);
           break;
         case "Moderated":
           moderated(input.sessionId, event);
@@ -1568,7 +1578,7 @@ export const step: {
         else if (item.phase === "Started") settle(item.spec.key, { _tag: "Unobserved" });
         else if (item.withdraw !== undefined)
           settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
-        else settle(item.spec.key, { _tag: "Failed", reason: "the playout closed" });
+        else settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Closed" } });
       }
       for (const batch of state.batches)
         actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });

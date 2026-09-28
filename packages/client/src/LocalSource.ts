@@ -4,12 +4,14 @@
  * application's renderer hooks. It never expires and costs nothing, so it
  * serves locally rendered material (speech, stills) and demos.
  */
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -139,7 +141,12 @@ export const open = Effect.fnUntraced(function* (
       const popped = (yield* SubscriptionRef.get(state)).popped.has(next.clipId);
       // The failure comes before the queue that no longer lists the clip, as H3 sends them.
       if (built._tag === "Failure")
-        yield* publish({ _tag: "Failed", clip: clip(next), reason: "the local build failed" });
+        yield* publish({
+          _tag: "Failed",
+          clip: clip(next),
+          message: "the local build failed",
+          provider: built.cause.pipe(Cause.pretty, Redacted.make),
+        });
       yield* change((value) => ({
         ...value,
         building: value.building.filter((other) => other.clipId !== next.clipId),

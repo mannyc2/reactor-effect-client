@@ -1,11 +1,22 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
-import { Clock, Deferred, Duration, Effect, Exit, Option, Ref, Scope, Stream } from "effect";
+import {
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Option,
+  Redacted,
+  Ref,
+  Scope,
+  Stream,
+} from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
 import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
 import type { Options } from "../src/Playout.js";
-import { environment } from "./fixtures/Simulated.js";
+import { commands, environment } from "./fixtures/Simulated.js";
 
 const key = (value: string) => Playout.ItemKey.make(value);
 const clip = (prompt: string, seconds = 5): H3.Request => ({ prompt, seconds });
@@ -215,6 +226,37 @@ layer(hosted)("edits", (it) => {
       assert.strictEqual(added?._tag, "Added");
       if (added?._tag === "Added") yield* added.handle.outcome;
       assert.deepStrictEqual(yield* starts, ["a", "new"]);
+    }),
+  );
+
+  it.effect("refuses a request outside H3's limits, and sends nothing for it", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const sent = (yield* commands("enqueue")).length;
+      const refusals = yield* Effect.forEach(
+        [
+          playout.submit({ key: key("long"), lane: "line", request: clip("long", 20) }),
+          playout.submit({
+            key: key("picture"),
+            lane: "line",
+            request: { prompt: "a", references: [{ _tag: "Bytes", bytes: new Uint8Array(3) }] },
+          }),
+          Effect.flatMap(
+            playout.edit([
+              { _tag: "Submit", item: { key: key("fine"), lane: "line", request: clip("fine") } },
+              {
+                _tag: "Submit",
+                item: { key: key("blank"), lane: "line", request: { prompt: " " } },
+              },
+            ]),
+            (batch) => batch.committed,
+          ),
+        ],
+        (refused) => Effect.map(Effect.flip(refused), (error) => error._tag),
+      );
+      assert.deepStrictEqual(refusals, ["InvalidItem", "InvalidItem", "InvalidItem"]);
+      yield* Effect.sleep("10 seconds");
+      assert.strictEqual((yield* commands("enqueue")).length, sent);
     }),
   );
 
@@ -889,6 +931,54 @@ for (const seed of [1, 2, 3, 4])
     },
   );
 
+// Provider text stays Redacted: an H3 `clip_failed` reason is the provider's own words.
+layer(hosted)("failure reasons", (it) => {
+  it.effect("says why an item failed: its clip, its command, or the playout's close", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "FailBuild", nth: 1, reason: "the provider's own words" });
+      yield* test.inject({ _tag: "InvalidImage", nth: 1 });
+      const scope = yield* Scope.make();
+      const { playout } = yield* start().pipe(Scope.provide(scope));
+      const built = yield* playout.submit({ key: key("built"), lane: "line", request: clip("a") });
+      const clipFailure = yield* built.outcome;
+      const clipReason = clipFailure._tag === "Failed" ? clipFailure.reason : undefined;
+      assert.strictEqual(clipReason?._tag, "Clip");
+      if (clipReason?._tag === "Clip") {
+        assert.strictEqual(Redacted.value(clipReason.provider), "the provider's own words");
+        assert.notInclude(clipReason.message, "own words");
+      }
+      const pictured = yield* playout.submit({
+        key: key("pictured"),
+        lane: "line",
+        request: {
+          prompt: "b",
+          references: [{ _tag: "Bytes", bytes: ReactorTest.pngBytes({ width: 64, height: 64 }) }],
+        },
+      });
+      const commandFailure = yield* pictured.outcome;
+      const commandReason = commandFailure._tag === "Failed" ? commandFailure.reason : undefined;
+      assert.deepStrictEqual(
+        commandReason?._tag === "Command"
+          ? [commandReason._tag, commandReason.cause.context.outcome]
+          : commandReason,
+        ["Command", "replied"],
+      );
+      const waiting = yield* playout.submit({
+        key: key("waiting"),
+        lane: "line",
+        request: clip("c"),
+        window: { notBefore: "1 hour", firm: false },
+      });
+      yield* Scope.close(scope, Exit.void);
+      const closed = yield* waiting.outcome;
+      assert.deepStrictEqual(closed._tag === "Failed" ? closed.reason : closed._tag, {
+        _tag: "Closed",
+      });
+    }),
+  );
+});
+
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
 // SDK "observes the session leaving the ready state"; a verdict may or may not come first.
 layer(hosted)("moderation with a verdict", (it) => {
@@ -904,10 +994,11 @@ layer(hosted)("moderation with a verdict", (it) => {
       });
       const fine = yield* playout.submit({ key: key("fine"), lane: "line", request: clip("y") });
       const outcome = yield* flagged.outcome;
-      assert.deepStrictEqual(
-        outcome._tag === "Failed" ? [outcome._tag, outcome.moderated] : [outcome._tag],
-        ["Failed", true],
-      );
+      // The verdict H3 sent in a paid run named no category.
+      assert.deepStrictEqual(outcome._tag === "Failed" ? outcome.reason : outcome._tag, {
+        _tag: "Moderated",
+        categories: [],
+      });
       assert.strictEqual((yield* fine.outcome)._tag, "Ended");
       const moderated = (yield* events).flatMap((event) =>
         event._tag === "Session" && event.event._tag === "Moderated" ? [event.event.key] : [],
@@ -947,16 +1038,8 @@ layer(
         yield* eventually(statuses("innocent"), (all) => all.includes("Ready"));
         const flagged = yield* submit("flagged", 15);
         const failed = yield* flagged.outcome;
-        assert.deepStrictEqual(
-          failed._tag === "Failed"
-            ? [
-                failed._tag,
-                failed.lost !== undefined,
-                failed.reason.includes("before it was built"),
-              ]
-            : [failed._tag],
-          ["Failed", true, true],
-        );
+        assert.deepStrictEqual(failed._tag === "Failed" ? failed.reason._tag : failed._tag, "Lost");
+        assert.notInclude(yield* statuses("flagged"), "Started");
         assert.strictEqual((yield* innocent.outcome)._tag, "Ended");
         yield* Effect.sleep("2 minutes");
         // Two sessions ended over the flagged prompt; the third waits for work, and the playout goes on.

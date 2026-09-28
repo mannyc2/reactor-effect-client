@@ -15,6 +15,7 @@ import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { Request } from "./H3.js";
@@ -146,6 +147,26 @@ export type Edit =
 
 export type WithdrawOutcome = "withdrawn" | "already-started" | "not-found";
 
+/** Why an item failed for good. */
+export type FailureReason =
+  /**
+   * The provider failed its clip. `message` is the library's; the provider's
+   * own words stay in `provider`, out of messages, logs and spans.
+   */
+  | {
+      readonly _tag: "Clip";
+      readonly message: string;
+      readonly provider: Redacted.Redacted<string>;
+    }
+  /** A command for it failed in a way a retry would not mend. */
+  | { readonly _tag: "Command"; readonly cause: CommandFailure }
+  /** Its session was lost while it played, or before it was built on two sessions in a row. */
+  | { readonly _tag: "Lost"; readonly sessionId: string }
+  /** Content moderation ended its session over it; it is never built again. */
+  | { readonly _tag: "Moderated"; readonly categories: ReadonlyArray<string> }
+  /** The playout closed before it aired. */
+  | { readonly _tag: "Closed" };
+
 /**
  * What became of an item. `Unknown` is "sent, acknowledgement never seen";
  * `Unobserved` is "acknowledged, start never seen". Neither is ever replayed
@@ -175,14 +196,7 @@ export type AsRunStatus =
       readonly airedSeconds: number;
     }
   | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" | "replaced" }
-  | {
-      readonly _tag: "Failed";
-      readonly reason: string;
-      /** The session it was lost with, when that is why it failed. */
-      readonly lost?: string | undefined;
-      /** Content moderation ended its session over it; it is never built again. */
-      readonly moderated?: true | undefined;
-    }
+  | { readonly _tag: "Failed"; readonly reason: FailureReason }
   | { readonly _tag: "Unobserved" }
   | {
       readonly _tag: "Unknown";
@@ -339,7 +353,13 @@ export type SourceEvent =
       /** From the provider's own count when it gives one. */
       readonly airedSeconds?: number | undefined;
     }
-  | { readonly _tag: "Failed"; readonly clip: SourceClip; readonly reason: string }
+  /** The provider failed a clip: `message` in the source's words, `provider` in its own. */
+  | {
+      readonly _tag: "Failed";
+      readonly clip: SourceClip;
+      readonly message: string;
+      readonly provider: Redacted.Redacted<string>;
+    }
   /** The provider's content moderation flagged an input; `terminate` ends the session. */
   | {
       readonly _tag: "Moderated";

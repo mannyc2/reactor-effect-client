@@ -1,9 +1,10 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
-import { Config, Effect, Option, Schema } from "effect";
+import { Config, Effect, Option, Redacted, Schema } from "effect";
 import * as Policy from "../src/internal/playout/policy.js";
 import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
 import { ItemKey } from "../src/Playout.js";
+import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 
 const config: Policy.Config = {
   lanes: [
@@ -40,6 +41,24 @@ const source = (partial: Partial<SourceState> = {}): SourceState => ({
   playing: undefined,
   continuable: [],
   ...partial,
+});
+
+/** A command that failed: never sent, answered with a refusal, or sent with its reply lost. */
+const failed = (outcome: "not-submitted" | "replied" | "unknown"): Policy.CommandResult => ({
+  _tag: "Failed",
+  cause: CommandFailure.from(
+    ReactorError.fromCode("InvalidState", "the provider refused it"),
+    outcome === "not-submitted"
+      ? { operation: "enqueue", outcome }
+      : { operation: "enqueue", outcome, requestId: "request", generation: 1n },
+  ),
+});
+/** The provider failed `value`'s build. */
+const buildFailed = (value: SourceClip): SourceEvent => ({
+  _tag: "Failed",
+  clip: value,
+  message: "the build failed",
+  provider: Redacted.make("the provider's words"),
 });
 
 /** Runs inputs in order at one-millisecond steps and collects every action. */
@@ -422,7 +441,7 @@ describe("PlayoutPolicy", () => {
       {
         _tag: "Result",
         id: 2,
-        result: { _tag: "Failed", outcome: "unknown", retryable: false, reason: "lost reply" },
+        result: failed("unknown"),
       },
       { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("b") }], batch: false },
       { _tag: "Result", id: 3, result: { _tag: "Done", clipId: "cb" } },
@@ -508,8 +527,7 @@ describe("PlayoutPolicy", () => {
       { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("unsure") }], batch: false },
       2_001,
     ).state;
-    const lost = { _tag: "Failed", outcome: "unknown", retryable: false, reason: "lost" } as const;
-    state = at(state, answer(state, lost), 2_010).state;
+    state = at(state, answer(state, failed("unknown")), 2_010).state;
     // Its clip turns up Ready much later: that wait includes the uncertainty, so it is no sample.
     const unsure = clip("cu", item("unsure"));
     state = at(
@@ -621,12 +639,7 @@ const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
       ? [action.command.tag._tag === "Item" ? String(action.command.tag.key) : "filler"]
       : [],
   );
-const unknown: Policy.CommandResult = {
-  _tag: "Failed",
-  outcome: "unknown",
-  retryable: false,
-  reason: "the reply was lost",
-};
+const unknown = failed("unknown");
 
 // What 0.7.0's scheduler guaranteed and the first Playout lost, found by an independent critique.
 describe("PlayoutPolicy, uncertainty and loss", () => {
@@ -767,7 +780,7 @@ describe("PlayoutPolicy, edits", () => {
     policy.edit([{ _tag: "Withdraw", key: key("a") }]);
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-a" });
     policy.event({ _tag: "Started", clip: clip("c-a", item("a")) });
-    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "it plays" });
+    policy.reply(failed("replied"));
     policy.event({ _tag: "Ended", clip: clip("c-a", item("a")), termination: "finished" });
     assert.deepStrictEqual(withdrawn(policy.actions), ["already-started"]);
   });
@@ -780,8 +793,8 @@ describe("PlayoutPolicy, edits", () => {
     policy.reply({ _tag: "Done", clipId: "c-a" });
     policy.observe({ building: [clip("c-a", item("a"))] });
     policy.edit([{ _tag: "Withdraw", key: key("a") }]);
-    policy.reply({ _tag: "Failed", outcome: "replied", retryable: false, reason: "building" });
-    policy.event({ _tag: "Failed", clip: clip("c-a", item("a")), reason: "the build failed" });
+    policy.reply(failed("replied"));
+    policy.event(buildFailed(clip("c-a", item("a"))));
     assert.deepStrictEqual(withdrawn(policy.actions), ["not-found"]);
   });
 
@@ -1231,23 +1244,13 @@ const simulate = (script: Script) => {
         return send({
           _tag: "Result",
           id: busy.id,
-          result: {
-            _tag: "Failed",
-            outcome: step === "unknown" ? "unknown" : "replied",
-            retryable: false,
-            reason: step,
-          },
+          result: failed(step === "unknown" ? "unknown" : "replied"),
         });
       case "fail": {
         const [sessionId, value] =
           [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
-        const failed = value.building.shift()!;
-        send({
-          _tag: "Source",
-          sessionId,
-          event: { _tag: "Failed", clip: failed, reason: "the build failed" },
-        });
+        send({ _tag: "Source", sessionId, event: buildFailed(value.building.shift()!) });
         return observe(sessionId);
       }
       case "ready": {

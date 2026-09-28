@@ -12,6 +12,7 @@ import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -249,7 +250,12 @@ const fromSession = Effect.fnUntraced(function* (
         }
         case "clip_failed":
           return [
-            { _tag: "Failed", clip: clipOf(message.data.clip), reason: message.data.reason },
+            {
+              _tag: "Failed",
+              clip: clipOf(message.data.clip),
+              message: "H3 failed the clip",
+              provider: Redacted.make(message.data.reason),
+            },
             state,
           ];
         default:

@@ -56,6 +56,7 @@ import * as Playout from "reactor-effect-client/Playout";
 import { isReactorFailure } from "reactor-effect-client/ReactorError";
 import type { Air, Pieces } from "../Checks.js";
 import type * as Evidence from "../Evidence.js";
+import { failedOf } from "../Evidence.js";
 import type { Seam } from "../Evidence.js";
 import { SaveFailed } from "../Ledger.js";
 import * as Probes from "../Probes.js";
@@ -128,10 +129,15 @@ const whyFailed = (
     }
   | undefined => {
   if (status?._tag !== "Failed") return undefined;
-  if (status.moderated === true) return { kind: "moderated", reason: status.reason };
-  return status.lost === undefined
-    ? { kind: "failed", reason: status.reason }
-    : { kind: "lost", lost: status.lost, reason: status.reason };
+  const reason = failedOf(status.reason).reason;
+  switch (status.reason._tag) {
+    case "Moderated":
+      return { kind: "moderated", reason };
+    case "Lost":
+      return { kind: "lost", lost: status.reason.sessionId, reason };
+    default:
+      return { kind: "failed", reason };
+  }
 };
 
 /** What the evidence says beside a status: why it failed, or that nothing can settle it any more. */

@@ -5,6 +5,7 @@
  * credential, an address, SDP, a frame, audio or provider text.
  */
 import * as Schema from "effect/Schema";
+import type { FailureReason } from "reactor-effect-client/Playout";
 import { CloseReport } from "reactor-effect-client/Session";
 import { Termination } from "reactor-effect-client/Coordinator";
 import { Check } from "./Spend.js";
@@ -106,6 +107,22 @@ export const Item = Schema.Struct({
   sessionId: Schema.optionalKey(Schema.String),
 });
 export type Item = typeof Item.Type;
+
+/** A failed item's record: why, in the library's words, never the provider's. */
+export const failedOf = (reason: FailureReason): NonNullable<Item["failed"]> => {
+  switch (reason._tag) {
+    case "Clip":
+      return { reason: reason.message, moderated: false, lost: false };
+    case "Command":
+      return { reason: reason.cause.message, moderated: false, lost: false };
+    case "Lost":
+      return { reason: "its session was lost", moderated: false, lost: true };
+    case "Moderated":
+      return { reason: "content moderation flagged it", moderated: true, lost: false };
+    case "Closed":
+      return { reason: "the playout closed", moderated: false, lost: false };
+  }
+};
 
 export const StatsSample = Schema.Struct({
   atMs: Ms,
