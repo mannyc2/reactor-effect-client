@@ -167,7 +167,10 @@ export type ItemFailureReason =
 export type AsRunStatus =
   | {
       readonly _tag: "Accepted";
-      /** Accepted again: its clip was lost with this session before it aired, and it is rebuilt. */
+      /**
+       * Accepted again: its clip was lost with this session before it aired, and it is rebuilt.
+       * One lost before it was built with two sessions in a row settles `Failed` instead.
+       */
       readonly carried?: { readonly sessionId: string };
     }
   | { readonly _tag: "Building" }
@@ -404,6 +407,8 @@ interface Entry extends PlannedItem {
   /** Whether its build in flight continues from another clip, which is measured apart. */
   continued?: boolean;
   follows?: ClipId;
+  /** Sessions in a row that its clip was lost with before it was built. */
+  lostUnbuilt?: number;
   retryAtMs?: number;
   atMs?: number;
   clipId?: ClipId;
@@ -1910,6 +1915,7 @@ export const makeScheduler = (
             break;
           case "Ready": {
             measureItem(item, event.durationSeconds);
+            delete item.lostUnbuilt;
             const record = knownRecord(yield* engine.state, event.clipId);
             if (record !== undefined) {
               item.sessionId = record.sessionId;
@@ -1971,6 +1977,11 @@ export const makeScheduler = (
               event.lost === true &&
               (item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready")
             ) {
+              // A moderated prompt ends its session, possibly after it was accepted, and would
+              // end every session it is rebuilt on. So a clip lost before it was built with two
+              // sessions in a row is not rebuilt again. A clip that was built passed screening.
+              const unbuilt = item.phase !== "Ready";
+              if (unbuilt) item.lostUnbuilt = (item.lostUnbuilt ?? 0) + 1;
               const sessionId = event.sessionId ?? item.sessionId;
               // Its session may still list the clip until it closes; it is not adopted again.
               removedIds.add(event.clipId);
@@ -1984,7 +1995,15 @@ export const makeScheduler = (
               if (pending !== undefined) {
                 yield* emit(item, { _tag: "Dropped", reason: pending.reason });
                 yield* finishWithdrawal(item.key, Result.succeed("withdrawn"));
-              } else
+              } else if (unbuilt && (item.lostUnbuilt ?? 0) >= 2)
+                yield* emit(item, {
+                  _tag: "Failed",
+                  reason: {
+                    _tag: "Clip",
+                    message: "Its clip was lost with two sessions in a row before it was built",
+                  },
+                });
+              else
                 yield* emit(
                   item,
                   sessionId === undefined
