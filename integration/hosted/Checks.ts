@@ -16,6 +16,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
@@ -61,6 +63,52 @@ const sleepUntil = (atMs: number, deadline: number) =>
     const run = yield* Run;
     const left = Duration.toMillis(yield* until(deadline));
     yield* Effect.sleep(Duration.millis(Math.min(left, Math.max(0, atMs - (yield* run.now)))));
+  });
+
+/**
+ * The adopting process's Reactor. Every read it makes of the session's
+ * descriptor goes into the evidence: the time since the owner was killed, the
+ * status, the state, and key names and codes only (`Probes.summarize`). Paid
+ * run tokens 83d17eb7 read INACTIVE there, which the SDK then counted as ended.
+ */
+const adopting = (sessionId: string, killedMs: number) =>
+  Effect.gen(function* () {
+    const run = yield* Run;
+    const target = yield* Target;
+    const http = yield* HttpClient.HttpClient;
+    const descriptor = `/sessions/${encodeURIComponent(sessionId)}`;
+    const client = HttpClient.transform(http, (effect, request) =>
+      request.method !== "GET" || !request.url.endsWith(descriptor)
+        ? effect
+        : Effect.flatMap(effect, (response) =>
+            Effect.gen(function* () {
+              const body = yield* Effect.orElseSucceed(response.json, () => undefined);
+              const atMs = yield* run.now;
+              yield* run.update((evidence) => ({
+                ...evidence,
+                adopterReads: [
+                  ...(evidence.adopterReads ?? []),
+                  {
+                    atMs,
+                    sinceKillMs: atMs - killedMs,
+                    ...Probes.summarize({ status: response.status, body }),
+                  },
+                ],
+              }));
+              // The body was read here, so the SDK gets a copy of the reply.
+              const bytes = yield* response.arrayBuffer;
+              return HttpClientResponse.fromWeb(
+                request,
+                new Response(bytes, { status: response.status, headers: response.headers }),
+              );
+            }),
+          ),
+    );
+    const coordinator = yield* Coordinator.make({
+      apiUrl: target.apiUrl,
+      apiKey: target.apiKey,
+    }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+    return yield* Reactor.make().pipe(Effect.provideService(Coordinator.Coordinator, coordinator));
   });
 
 /** The first value `find` picks from `ref` as it changes, waited for until `deadline`. */
@@ -630,15 +678,17 @@ export const takeover = (check: "takeover" | "resume") =>
           takeover: { ownerStreamingMs, killedMs },
         }));
         yield* run.mark("owner killed", owner.playing);
+        if (target.adoptAfterMs !== undefined)
+          yield* sleepUntil(killedMs + target.adoptAfterMs, Number.POSITIVE_INFINITY);
         // Everything after this is the taker's own doing.
         const takenMs = yield* run.now;
         const taken = yield* Effect.scoped(
           Effect.gen(function* () {
+            const reactor = yield* adopting(sessionId, killedMs);
             if (check === "takeover") {
-              const reactor = yield* Reactor.Reactor;
               const session = yield* reactor.attach({ sessionId, tokens: bound });
               const provider = yield* H3.make(session);
-              const attachMs = (yield* run.now) - killedMs;
+              const attachMs = (yield* run.now) - takenMs;
               yield* run.mark("attached");
               const snapshot = yield* provider.snapshot;
               const facts = snapshot._tag === "Ready" ? snapshot : snapshot.lastFacts;
@@ -661,8 +711,11 @@ export const takeover = (check: "takeover" | "resume") =>
                 metadataPreserved: queued?.metadata.includes(`${marker}:queued`) === true,
               };
             }
-            const source = yield* H3Source.resume({ allocation: owner.allocation, tokens: bound });
-            const attachMs = (yield* run.now) - killedMs;
+            const source = yield* H3Source.resume({
+              allocation: owner.allocation,
+              tokens: bound,
+            }).pipe(Effect.provideService(Reactor.Reactor, reactor));
+            const attachMs = (yield* run.now) - takenMs;
             yield* run.mark("resumed");
             const state = yield* source.events.pipe(
               Stream.filter((event) => event._tag === "State"),
@@ -893,9 +946,16 @@ export const tokens = Effect.gen(function* () {
       yield* record((tokens) => ({ ...tokens, ownerKilledMs, createExpiresMs }));
       yield* run.mark("owner killed", owner.playing);
       // The session must outlive the token that created it before anyone adopts it.
-      yield* sleepUntil(createExpiresMs + 500, deadline - afterAdoptMs);
+      const adoptAfterMs = target.adoptAfterMs;
+      if (adoptAfterMs === undefined)
+        yield* sleepUntil(createExpiresMs + 500, deadline - afterAdoptMs);
+      else
+        yield* sleepUntil(
+          Math.max(createExpiresMs + 500, ownerKilledMs + adoptAfterMs),
+          Number.POSITIVE_INFINITY,
+        );
       const resumeStartedMs = yield* run.now;
-      const reactor = yield* Reactor.Reactor;
+      const reactor = yield* adopting(sessionId, ownerKilledMs);
       const session = yield* reactor.attach({ sessionId, tokens: binder, adopt: true });
       const provider = yield* H3.make(session);
       const attachedMs = yield* run.now;

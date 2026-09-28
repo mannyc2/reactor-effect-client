@@ -18,10 +18,15 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       `**Video:** ${media.video.frames} frames${media.video.fps === undefined ? "" : ` at ${media.video.fps} fps`}, ${media.video.lit} lit, ${media.video.distinct} distinct, ${media.video.lost} lost${media.audio === undefined ? "" : `; audio ${media.audio.blocks} blocks, peak RMS ${media.audio.peakRms}`}`,
     );
   if (evidence.network?.pair !== undefined) lines.push(`**Pair:** ${evidence.network.pair}`);
+  const reads = evidence.adopterReads;
+  if (reads !== undefined && reads.length > 0)
+    lines.push(
+      `**Adopter's session reads:** ${reads.map((read) => `+${seconds(read.sinceKillMs)} ${read.status} ${read.state ?? "no state"} (${read.keys.join(", ")})`).join("; ")}`,
+    );
   const takeover = evidence.takeover;
   if (takeover?.attachMs !== undefined)
     lines.push(
-      `**Takeover:** attached ${seconds(takeover.attachMs)} after the kill; playing clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; commands after the kill: ${Object.entries(
+      `**Takeover:** attached ${seconds(takeover.attachMs)} after it began; playing clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; commands after the kill: ${Object.entries(
         takeover.commands ?? {},
       )
         .map(([name, count]) => `${name} ${count}`)

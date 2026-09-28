@@ -19,6 +19,7 @@ const rehearse = (
     readonly check: Check;
     readonly faults?: ReadonlyArray<ReactorTest.Fault>;
     readonly moderationPrompt?: string;
+    readonly adoptAfterMs?: number;
     readonly judge: (evidence: Evidence) => void;
   },
 ) =>
@@ -28,6 +29,7 @@ const rehearse = (
       candidate: input.check === "turn" ? "relay" : "host",
       moderationPrompt:
         input.moderationPrompt === undefined ? undefined : Redacted.make(input.moderationPrompt),
+      adoptAfterMs: input.adoptAfterMs,
     }).pipe(Layer.provideMerge(NodeServices.layer)),
   )(name, (it) =>
     it.effect(
@@ -74,6 +76,38 @@ for (const check of [
   "tokens",
 ] as const)
   rehearse(`${check} passes`, { check, judge: passes });
+
+// Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed, and the
+// session was still there. Reactor ends a session 30 s after its last connection drops.
+for (const check of ["takeover", "resume", "tokens"] as const) {
+  rehearse(`${check} adopts a session left without a connection for 9 s`, {
+    check,
+    adoptAfterMs: 9_000,
+    judge: (evidence) => {
+      passes(evidence);
+      const states = (evidence.adopterReads ?? []).map((read) => read.state);
+      assert.include(states, "INACTIVE", JSON.stringify(evidence.adopterReads));
+    },
+  });
+  rehearse(`${check} fails cleanly when its adopter comes 31 s after the owner died`, {
+    check,
+    adoptAfterMs: 31_000,
+    judge: (evidence) => {
+      assert.strictEqual(evidence.verdict, "fail");
+      // A bind must name an open session (authentication), so the adopter's mint is refused.
+      assert.isTrue(
+        evidence.reasons.some(
+          (reason) => reason.includes("HTTP 403") || reason.includes("TerminalSession"),
+        ),
+        evidence.reasons.join("; "),
+      );
+      assert.isTrue(
+        evidence.sessions.every((session) => session.close?.termination?.confirmed === true),
+        JSON.stringify(evidence.sessions.map((session) => session.close)),
+      );
+    },
+  });
+}
 
 rehearse("tokens records the free probes and the documented refusals", {
   check: "tokens",
