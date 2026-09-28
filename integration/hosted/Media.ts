@@ -15,7 +15,8 @@ const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 
 
 const spread = (values: ReadonlyArray<number>) => {
   const sorted = [...values].sort((a, b) => a - b);
-  const pick = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
+  const pick = (q: number) =>
+    sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
   return { p50: round(pick(0.5)), p95: round(pick(0.95)), max: round(sorted.at(-1) ?? 0) };
 };
 
@@ -67,7 +68,8 @@ const sample = (frame: VideoFrame) => {
 /** Mean absolute luma difference between two thumbnails, 0 to 255. */
 const difference = (a: Uint8Array, b: Uint8Array) => {
   let total = 0;
-  for (let index = 0; index < a.length; index++) total += Math.abs((a[index] ?? 0) - (b[index] ?? 0));
+  for (let index = 0; index < a.length; index++)
+    total += Math.abs((a[index] ?? 0) - (b[index] ?? 0));
   return total / a.length;
 };
 
@@ -99,7 +101,11 @@ export const videoLog = () => {
   const seen: Array<Seen> = [];
   const windows = new Map<
     number,
-    { readonly fromMs: number; readonly toMs: number; readonly frames: Array<{ readonly atMs: number; readonly image: Image }> }
+    {
+      readonly fromMs: number;
+      readonly toMs: number;
+      readonly frames: Array<{ readonly atMs: number; readonly image: Image }>;
+    }
   >();
   const formats = new Set<string>();
   const sizes = new Set<string>();
@@ -126,7 +132,13 @@ export const videoLog = () => {
       if (sampled.luma > litLuma) lit++;
       if (seen.length < 100_000) {
         digests.add(sampled.digest);
-        seen.push({ atMs, digest: sampled.digest, lit: sampled.luma > litLuma, format: frame.format, thumb: sampled.thumb });
+        seen.push({
+          atMs,
+          digest: sampled.digest,
+          lit: sampled.luma > litLuma,
+          format: frame.format,
+          thumb: sampled.thumb,
+        });
       }
       for (const window of windows.values())
         if (atMs >= window.fromMs && atMs <= window.toMs && window.frames.length < 120)
@@ -151,7 +163,8 @@ export const videoLog = () => {
         if (recent[index]?.digest !== recent[index - 1]?.digest) changes++;
       return changes > 1 ? undefined : "the recent frames did not keep changing";
     },
-    dark: (fromMs: number, toMs: number) => within(fromMs, toMs).filter((frame) => !frame.lit).length,
+    dark: (fromMs: number, toMs: number) =>
+      within(fromMs, toMs).filter((frame) => !frame.lit).length,
     /** The longest stretch from `fromMs` to `toMs` with no new picture. */
     pause: (fromMs: number, toMs: number): Pause | undefined => {
       const window = within(fromMs, toMs);
@@ -181,7 +194,12 @@ export const videoLog = () => {
       for (let index = 1; index < seen.length; index++) {
         const frame = seen[index];
         const previous = seen[index - 1];
-        if (frame === undefined || previous === undefined || frame.atMs < fromMs || frame.atMs > toMs)
+        if (
+          frame === undefined ||
+          previous === undefined ||
+          frame.atMs < fromMs ||
+          frame.atMs > toMs
+        )
           continue;
         const change = difference(frame.thumb, previous.thumb);
         if (best === undefined || change > best.change) best = { index, change };
@@ -217,7 +235,9 @@ export const videoLog = () => {
       if (window === undefined || atMs === undefined) return undefined;
       const before = window.frames.findLast((frame) => frame.atMs < atMs);
       const after = window.frames.find((frame) => frame.atMs >= atMs);
-      return before === undefined || after === undefined ? undefined : ([before.image, after.image] as const);
+      return before === undefined || after === undefined
+        ? undefined
+        : ([before.image, after.image] as const);
     },
     summary: (): VideoSummary => {
       const arrivals = seen.map((frame) => frame.atMs);

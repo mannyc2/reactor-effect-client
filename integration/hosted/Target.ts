@@ -24,7 +24,6 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as Coordinator from "reactor-effect-client/Coordinator";
-import * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import { ItemKey } from "reactor-effect-client/Playout";
@@ -157,7 +156,9 @@ export const paid = (input: {
               maxSessionSeconds: grant.granted.maxSessionSeconds,
               marker,
             });
-            yield* Stream.make(new TextEncoder().encode(`${text}\n`)).pipe(Stream.run(handle.stdin));
+            yield* Stream.make(new TextEncoder().encode(`${text}\n`)).pipe(
+              Stream.run(handle.stdin),
+            );
             const streaming = yield* handle.stdout.pipe(
               Stream.decodeText(),
               Stream.splitLines,
@@ -171,7 +172,10 @@ export const paid = (input: {
             );
             if (Option.isNone(streaming))
               return yield* OwnerFailed.make({ message: "the owner exited before streaming" });
-            return { ...streaming.value, kill: Effect.ignore(handle.kill({ killSignal: "SIGKILL" })) };
+            return {
+              ...streaming.value,
+              kill: Effect.ignore(handle.kill({ killSignal: "SIGKILL" })),
+            };
           }).pipe(
             Effect.mapError((cause) =>
               Schema.is(OwnerFailed)(cause) ? cause : OwnerFailed.make({ message: String(cause) }),
@@ -210,10 +214,10 @@ export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
   });
 
 /**
- * The simulated Reactor under a test clock that keeps moving, so a check that
- * waits out a session plays in moments and repeats exactly. The owner runs in
- * this process: its kill cuts its network, so neither its connection nor its
- * coordinator requests reach the simulated Reactor, then interrupts it.
+ * The simulated Reactor, at the timing two paid runs measured. The owner runs
+ * in this process: its kill cuts its network, so neither its connection nor
+ * its coordinator requests reach the simulated Reactor, then interrupts it.
+ * Run it under `movingClock`, or a test's own `TestClock` kept moving.
  */
 export const rehearsal = (input: {
   readonly faults: ReadonlyArray<ReactorTest.Fault>;
@@ -256,7 +260,9 @@ export const rehearsal = (input: {
                 ...peer,
                 send: (channel, bytes) =>
                   Effect.flatMap(Ref.get(cut), (isCut) =>
-                    isCut ? Effect.fail(gone("the owner process is gone")) : peer.send(channel, bytes),
+                    isCut
+                      ? Effect.fail(gone("the owner process is gone"))
+                      : peer.send(channel, bytes),
                   ),
               })),
             });
@@ -301,6 +307,12 @@ export const rehearsal = (input: {
         height: 36,
       }),
     ),
-    Layer.provideMerge(Layer.effectDiscard(ReactorTest.flow().pipe(Effect.forkScoped))),
-    Layer.provideMerge(TestClock.layer()),
   );
+
+/**
+ * A test clock that keeps moving in small steps, so a rehearsal that waits out
+ * a session plays in moments and repeats exactly.
+ */
+export const movingClock = Layer.effectDiscard(ReactorTest.flow().pipe(Effect.forkScoped)).pipe(
+  Layer.provideMerge(TestClock.layer()),
+);

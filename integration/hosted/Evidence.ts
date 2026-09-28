@@ -121,8 +121,8 @@ export const Span = Schema.Struct({
   startMs: Ms,
   durationMs: Schema.optionalKey(Ms),
   status: Schema.Literals(["open", "ok", "error"]),
-  attributes: Schema.Union([Schema.String, Schema.Finite, Schema.Boolean]).pipe(
-    (value) => Schema.Record(Schema.String, value),
+  attributes: Schema.Union([Schema.String, Schema.Finite, Schema.Boolean]).pipe((value) =>
+    Schema.Record(Schema.String, value),
   ),
 });
 export type Span = typeof Span.Type;
@@ -421,4 +421,5 @@ export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> =
         ],
   );
 
-export const EvidenceJson = Schema.fromJsonString(Evidence);
+/** Evidence as a file holds it: indented, so a ledger reads well in review. */
+export const EvidenceJson = Schema.fromJsonString(Evidence, { space: 2 });

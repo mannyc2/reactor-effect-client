@@ -21,7 +21,9 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   const takeover = evidence.takeover;
   if (takeover?.attachMs !== undefined)
     lines.push(
-      `**Takeover:** attached ${seconds(takeover.attachMs)} after the kill; playing clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; commands after the kill: ${Object.entries(takeover.commands ?? {})
+      `**Takeover:** attached ${seconds(takeover.attachMs)} after the kill; playing clip ${takeover.clipIdentified === true ? "identified" : "not identified"}; commands after the kill: ${Object.entries(
+        takeover.commands ?? {},
+      )
         .map(([name, count]) => `${name} ${count}`)
         .join(", ")}`,
     );

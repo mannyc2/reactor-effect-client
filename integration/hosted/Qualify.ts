@@ -39,7 +39,9 @@ export const describe = (cause: Cause.Cause<unknown>): string => {
   return `unexpected: ${String(error).slice(0, 300)}`;
 };
 
-const Manifest = Schema.fromJsonString(Schema.Struct({ name: Schema.String, version: Schema.String }));
+const Manifest = Schema.fromJsonString(
+  Schema.Struct({ name: Schema.String, version: Schema.String }),
+);
 
 /** Where the run happens: runtime, commit and the packages as they resolve from here. */
 const environment = Effect.gen(function* () {
@@ -76,7 +78,10 @@ const environment = Effect.gen(function* () {
   const commit = yield* git("rev-parse", "HEAD");
   const status = yield* git("status", "--porcelain", "--untracked-files=no");
   return {
-    runtime: process.versions.bun === undefined ? `node ${process.version}` : `bun ${process.versions.bun}`,
+    runtime:
+      process.versions.bun === undefined
+        ? `node ${process.version}`
+        : `bun ${process.versions.bun}`,
     os: `${process.platform} ${process.arch}`,
     ...(Option.isSome(commit) ? { commit: commit.value.trim() } : {}),
     ...(Option.isSome(status) ? { dirty: status.value.trim().length > 0 } : {}),
@@ -91,7 +96,10 @@ const environment = Effect.gen(function* () {
  * It fails with `Refused` only before the evidence file is claimed, and so
  * before anything was spent.
  */
-export const execute = (input: { readonly authorization: Authorization; readonly ledger: string }) =>
+export const execute = (input: {
+  readonly authorization: Authorization;
+  readonly ledger: string;
+}) =>
   Effect.scoped(
     Effect.gen(function* () {
       const { authorization, ledger } = input;
@@ -102,7 +110,9 @@ export const execute = (input: { readonly authorization: Authorization; readonly
       const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);
       if (authorization.check === "turn" && target.mode === "paid")
         yield* admitRelay(
-          earlier.flatMap((run) => (run.mode === "paid" && run.network?.pair !== undefined ? [run.network.pair] : [])),
+          earlier.flatMap((run) =>
+            run.mode === "paid" && run.network?.pair !== undefined ? [run.network.pair] : [],
+          ),
         );
       const coordinator = yield* Coordinator.Coordinator;
       const rate = yield* coordinator.pricing.pipe(

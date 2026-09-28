@@ -13,7 +13,6 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
-import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Coordinator from "reactor-effect-client/Coordinator";
@@ -116,14 +115,13 @@ const allocated = (sessionId: string, grant: Coordinator.TokenGrant) =>
 const closedWith = (
   sessionId: string,
   requestedMs: number,
-  close:
-    | { readonly report: CloseReport }
-    | { readonly termination: Coordinator.Termination },
+  close: { readonly report: CloseReport } | { readonly termination: Coordinator.Termination },
 ) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const reportedMs = yield* run.now;
-    const confirmed = "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
+    const confirmed =
+      "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
     yield* run.update((evidence) => ({
       ...evidence,
       sessions: evidence.sessions.map((session) =>
@@ -196,7 +194,8 @@ const settle = (tokens: ReadonlyMap<string, Coordinator.TokenGrant>) =>
     // precedes ready, to the confirmed report or the first terminal read bills no less.
     const rate = evidence.budget.rate;
     const spent = evidence.sessions.map((session) => {
-      const endedMs = session.close?.confirmed === true ? session.close.reportedMs : session.terminalMs;
+      const endedMs =
+        session.close?.confirmed === true ? session.close.reportedMs : session.terminalMs;
       return rate === undefined || endedMs === undefined
         ? undefined
         : billedUsd({ rate, seconds: (endedMs - session.allocatedMs) / 1000 });
@@ -312,12 +311,22 @@ const sampleStats = (session: Pick<Session, "stats">, samples: Array<StatsSample
     if (samples.length < 600)
       samples.push({
         atMs,
-        ...(stats.pair?.localCandidateType === undefined ? {} : { local: stats.pair.localCandidateType }),
-        ...(stats.pair?.remoteCandidateType === undefined ? {} : { remote: stats.pair.remoteCandidateType }),
-        ...(stats.roundTripTimeSeconds === undefined ? {} : { rttMs: round(stats.roundTripTimeSeconds * 1000) }),
-        ...(stats.rates === undefined ? {} : { receivedKbps: round(stats.rates.receivedBitsPerSecond / 1000) }),
+        ...(stats.pair?.localCandidateType === undefined
+          ? {}
+          : { local: stats.pair.localCandidateType }),
+        ...(stats.pair?.remoteCandidateType === undefined
+          ? {}
+          : { remote: stats.pair.remoteCandidateType }),
+        ...(stats.roundTripTimeSeconds === undefined
+          ? {}
+          : { rttMs: round(stats.roundTripTimeSeconds * 1000) }),
+        ...(stats.rates === undefined
+          ? {}
+          : { receivedKbps: round(stats.rates.receivedBitsPerSecond / 1000) }),
         ...(stats.framesPerSecond === undefined ? {} : { fps: round(stats.framesPerSecond) }),
-        ...(stats.jitterSeconds === undefined ? {} : { jitterMs: round(stats.jitterSeconds * 1000) }),
+        ...(stats.jitterSeconds === undefined
+          ? {}
+          : { jitterMs: round(stats.jitterSeconds * 1000) }),
         ...(stats.lossRatio === undefined ? {} : { lossRatio: round(stats.lossRatio, 4) }),
       });
   }).pipe(Effect.ignore, Effect.repeat(Schedule.spaced("1 second")));
@@ -456,7 +465,10 @@ export const vertical = (check: "vertical" | "turn" | "audio") =>
                   }
                 : {}),
             },
-            network: { samples: [...samples], ...(paired?.local === undefined ? {} : { pair: paired.local }) },
+            network: {
+              samples: [...samples],
+              ...(paired?.local === undefined ? {} : { pair: paired.local }),
+            },
           }));
         });
         yield* run.update((evidence) => ({
@@ -471,7 +483,9 @@ export const vertical = (check: "vertical" | "turn" | "audio") =>
         }));
         const acceptedMs = yield* run.now;
         yield* run.update((evidence) =>
-          evidence.clip === undefined ? evidence : { ...evidence, clip: { ...evidence.clip, acceptedMs } },
+          evidence.clip === undefined
+            ? evidence
+            : { ...evidence, clip: { ...evidence.clip, acceptedMs } },
         );
         // The collectors' view goes into the evidence however the check ends.
         yield* Effect.addFinalizer(() => Effect.ignore(record));
@@ -483,16 +497,17 @@ export const vertical = (check: "vertical" | "turn" | "audio") =>
               lifecycle[phase] ??= atMs;
             }),
           );
-        yield* operation.reached("generated").pipe(
-          Effect.andThen(reached("generatedMs")),
+        yield* operation
+          .reached("generated")
+          .pipe(Effect.andThen(reached("generatedMs")), Effect.ignore, Effect.forkScoped);
+        yield* operation.ended.pipe(
+          Effect.andThen(reached("endedMs")),
           Effect.ignore,
           Effect.forkScoped,
         );
-        yield* operation.ended.pipe(Effect.andThen(reached("endedMs")), Effect.ignore, Effect.forkScoped);
-        yield* operation.reached("started").pipe(
-          Effect.andThen(reached("startedMs")),
-          Effect.timeout(yield* until(deadline)),
-        );
+        yield* operation
+          .reached("started")
+          .pipe(Effect.andThen(reached("startedMs")), Effect.timeout(yield* until(deadline)));
         yield* run.mark("clip started");
         yield* Effect.sleep(Duration.min(Duration.millis(target.windowMs), yield* until(deadline)));
         yield* record;
@@ -581,7 +596,10 @@ export const takeover = (check: "takeover" | "resume") =>
         const ownerStreamingMs = yield* run.now;
         yield* owner.kill;
         const killedMs = yield* run.now;
-        yield* run.update((evidence) => ({ ...evidence, takeover: { ownerStreamingMs, killedMs } }));
+        yield* run.update((evidence) => ({
+          ...evidence,
+          takeover: { ownerStreamingMs, killedMs },
+        }));
         yield* run.mark("owner killed", owner.playing);
         // Everything after this is the taker's own doing.
         const takenMs = yield* run.now;
@@ -595,13 +613,16 @@ export const takeover = (check: "takeover" | "resume") =>
               yield* run.mark("attached");
               const snapshot = yield* provider.snapshot;
               const facts = snapshot._tag === "Ready" ? snapshot : snapshot.lastFacts;
-              const queued = [...(facts?.queue.generation ?? []), ...(facts?.queue.playout ?? [])].find(
-                (clip) => clip.clip_id === owner.queued,
-              );
+              const queued = [
+                ...(facts?.queue.generation ?? []),
+                ...(facts?.queue.playout ?? []),
+              ].find((clip) => clip.clip_id === owner.queued);
               const media = yield* session.decoded;
               const attachedMs = yield* run.now;
               yield* readInto(media.video(tracks.video).pipe(Stream.take(48)), video).pipe(
-                Effect.timeout(Duration.min(Duration.millis(target.windowMs), yield* until(deadline))),
+                Effect.timeout(
+                  Duration.min(Duration.millis(target.windowMs), yield* until(deadline)),
+                ),
                 Effect.ignore,
               );
               return {
@@ -622,7 +643,9 @@ export const takeover = (check: "takeover" | "resume") =>
             const clips = [...state.state.building, ...state.state.ready];
             const attachedMs = yield* run.now;
             yield* readInto(source.video.pipe(Stream.take(48)), video).pipe(
-              Effect.timeout(Duration.min(Duration.millis(target.windowMs), yield* until(deadline))),
+              Effect.timeout(
+                Duration.min(Duration.millis(target.windowMs), yield* until(deadline)),
+              ),
               Effect.ignore,
             );
             // The adopted session is owned: closing its source terminates it.
@@ -702,11 +725,15 @@ export const takeover = (check: "takeover" | "resume") =>
         );
         yield* run.judge(
           "metadata preserved",
-          taken.metadataPreserved ? undefined : "the owner's queued clip lost its metadata, or was not listed",
+          taken.metadataPreserved
+            ? undefined
+            : "the owner's queued clip lost its metadata, or was not listed",
         );
         yield* run.judge(
           "no enqueue on attach",
-          (commands.enqueue ?? 0) === 0 ? undefined : `${commands.enqueue} enqueue(s) after attaching`,
+          (commands.enqueue ?? 0) === 0
+            ? undefined
+            : `${commands.enqueue} enqueue(s) after attaching`,
         );
         yield* run.judge(
           "fresh frames",
@@ -814,8 +841,13 @@ export const queue = Effect.gen(function* () {
       const media = yield* session.decoded;
       yield* readInto(media.video(tracks.video), video).pipe(Effect.forkScoped);
       const seen = (type: string, clipId: string) =>
-        waitFor(observed, (all) => all.find((event) => event.type === type && event.clipId === clipId), deadline);
-      const started = (all: ReadonlyArray<Observed>) => all.filter((event) => event.type === "clip_started");
+        waitFor(
+          observed,
+          (all) => all.find((event) => event.type === type && event.clipId === clipId),
+          deadline,
+        );
+      const started = (all: ReadonlyArray<Observed>) =>
+        all.filter((event) => event.type === "clip_started");
       // `sending` completes as the enqueue commits, just before it is written to the channel.
       const submit = (name: string, position?: number, sending?: Deferred.Deferred<void>) =>
         Effect.gen(function* () {
@@ -838,7 +870,10 @@ export const queue = Effect.gen(function* () {
         recorded(command).pipe(
           Effect.as(false),
           Effect.catchIf(
-            (error) => error.reason._tag === "Remote" && "outcome" in error.context && error.context.outcome === "replied",
+            (error) =>
+              error.reason._tag === "Remote" &&
+              "outcome" in error.context &&
+              error.context.outcome === "replied",
             () => Effect.succeed(true),
           ),
         );
@@ -872,7 +907,10 @@ export const queue = Effect.gen(function* () {
       for (let index = 1; index <= 3; index++) {
         const name = `ordering-${index}`;
         const sending = yield* Deferred.make<void>();
-        const enqueue = yield* submit(name, undefined, sending).pipe(Effect.result, Effect.forkChild);
+        const enqueue = yield* submit(name, undefined, sending).pipe(
+          Effect.result,
+          Effect.forkChild,
+        );
         yield* Deferred.await(sending);
         yield* Effect.sleep("1 millis");
         const listed = yield* Effect.map(readQueue, (value) =>
@@ -909,11 +947,17 @@ export const queue = Effect.gen(function* () {
           bump(counts, event.type);
           if (!event.metadata.includes(marker)) bump(mismatched, event.type);
         }
-        const afterPop = all.filter((event) => event.clipId === popped.clipId && event.atMs > poppedMs);
+        const afterPop = all.filter(
+          (event) => event.clipId === popped.clipId && event.atMs > poppedMs,
+        );
         yield* run.update((evidence) => ({
           ...evidence,
           queue: {
-            positionZero: { buildingClipId: first.clipId, requestedClipId: zero.clipId, generationOrder },
+            positionZero: {
+              buildingClipId: first.clipId,
+              requestedClipId: zero.clipId,
+              generationOrder,
+            },
             poppedBuild: {
               wasBuilding,
               generatedAfterPop: afterPop.some((event) => event.type === "clip_generated"),
@@ -922,7 +966,9 @@ export const queue = Effect.gen(function* () {
             ordering,
             boundaries: recordedBoundaries.map((boundary) => ({ ...boundary })),
             builds: builds.flatMap(({ clipId, submittedMs }) => {
-              const generated = all.find((event) => event.type === "clip_generated" && event.clipId === clipId);
+              const generated = all.find(
+                (event) => event.type === "clip_generated" && event.clipId === clipId,
+              );
               return generated === undefined ? [] : [round(generated.atMs - submittedMs)];
             }),
             metadata: { observed: counts, mismatched },
@@ -933,13 +979,21 @@ export const queue = Effect.gen(function* () {
       for (const [index, planned] of boundaries.entries()) {
         const ending = yield* waitFor(observed, (all) => started(all)[index], deadline);
         const endsAtMs = ending.atMs + ending.seconds * 1000;
-        const boundary: Boundary = { edit: planned.edit, aimMs: planned.aimMs, endingClipId: ending.clipId };
+        const boundary: Boundary = {
+          edit: planned.edit,
+          aimMs: planned.aimMs,
+          endingClipId: ending.clipId,
+        };
         recordedBoundaries.push(boundary);
         if (planned.edit !== "none") {
           // The queue is read just ahead, so the edit itself leaves on its aim.
           yield* sleepUntil(endsAtMs - planned.aimMs - 600, deadline);
-          const played = new Set(started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId));
-          const waiting = (yield* readQueue).playout.map((clip) => clip.clip_id).filter((id) => !played.has(id));
+          const played = new Set(
+            started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId),
+          );
+          const waiting = (yield* readQueue).playout
+            .map((clip) => clip.clip_id)
+            .filter((id) => !played.has(id));
           // Without two clips waiting the edit cannot show anything, so it is not staged.
           const [firstWaiting, secondWaiting] = waiting;
           if (firstWaiting !== undefined && secondWaiting !== undefined) {
@@ -955,7 +1009,11 @@ export const queue = Effect.gen(function* () {
           }
           yield* run.mark(
             `boundary ${index + 1}: ${planned.edit} ${planned.aimMs} ms before the end`,
-            boundary.sentMs === undefined ? "not staged" : boundary.refused === true ? "refused" : undefined,
+            boundary.sentMs === undefined
+              ? "not staged"
+              : boundary.refused === true
+                ? "refused"
+                : undefined,
           );
         }
         const finished = yield* waitFor(
@@ -1072,7 +1130,10 @@ const onAir = <A, E, R>(
     let opened = 0;
     const open = Effect.gen(function* () {
       if (opened++ >= options.sessions)
-        return yield* ReactorError.fromCode("InvalidState", `the ${check} check opens ${options.sessions} session(s)`);
+        return yield* ReactorError.fromCode(
+          "InvalidState",
+          `the ${check} check opens ${options.sessions} session(s)`,
+        );
       const grant = yield* mint(check).pipe(
         Effect.mapError((error) =>
           error._tag === "Refused" || error._tag === "SaveFailed"
@@ -1124,15 +1185,27 @@ const onAir = <A, E, R>(
                 const next = { ...item, last: status._tag };
                 switch (status._tag) {
                   case "Ready":
-                    return new Map(all).set(event.key, { ...next, readyMs: item.readyMs ?? atMs, sessionId: status.sessionId });
+                    return new Map(all).set(event.key, {
+                      ...next,
+                      readyMs: item.readyMs ?? atMs,
+                      sessionId: status.sessionId,
+                    });
                   case "Started":
                     starts.push(event.key);
                     if (target.seams !== undefined)
                       windows.set(
                         event.key,
-                        video.watch(atMs + status.seconds * 1000 - seamMs, atMs + status.seconds * 1000 + 2 * seamMs),
+                        video.watch(
+                          atMs + status.seconds * 1000 - seamMs,
+                          atMs + status.seconds * 1000 + 2 * seamMs,
+                        ),
                       );
-                    return new Map(all).set(event.key, { ...next, startedMs: atMs, seconds: status.seconds, sessionId: status.sessionId });
+                    return new Map(all).set(event.key, {
+                      ...next,
+                      startedMs: atMs,
+                      seconds: status.seconds,
+                      sessionId: status.sessionId,
+                    });
                   case "Ended":
                     return new Map(all).set(event.key, {
                       ...next,
@@ -1283,7 +1356,9 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
         ],
       }),
     );
-    yield* recorded(air.playout.submit({ key: yield* air.track("w1"), lane: "line", request: itemRequest() }));
+    yield* recorded(
+      air.playout.submit({ key: yield* air.track("w1"), lane: "line", request: itemRequest() }),
+    );
     yield* run.mark("line submitted");
     yield* waitFor(air.items, startedOf("p1"), air.deadline());
     // A continued build takes about 2.5 times an independent one on hosted H3, so xc
@@ -1316,7 +1391,11 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
         { _tag: "Withdraw", key: Playout.ItemKey.make("w1") },
         {
           _tag: "Insert",
-          insert: { key: yield* air.track("y"), request: itemRequest(), after: Playout.ItemKey.make("p3") },
+          insert: {
+            key: yield* air.track("y"),
+            request: itemRequest(),
+            after: Playout.ItemKey.make("p3"),
+          },
         },
       ]),
     );
@@ -1335,7 +1414,8 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
     for (let index = 0; index + 1 < order.length; index++) {
       const ending = order[index];
       const next = order[index + 1];
-      if (ending !== undefined && next !== undefined) seams.push(yield* air.seam(ending, next, next === "xc"));
+      if (ending !== undefined && next !== undefined)
+        seams.push(yield* air.seam(ending, next, next === "xc"));
     }
     yield* setSeams(seams);
     const p3End = all.get("p3")?.endedMs;
@@ -1355,7 +1435,9 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
     }));
     yield* run.judge(
       "inserts and the batch air in their planned places",
-      order.join(",") === plannedEdits.join(",") ? undefined : `started in the order ${order.join(", ")}`,
+      order.join(",") === plannedEdits.join(",")
+        ? undefined
+        : `started in the order ${order.join(", ")}`,
     );
     yield* run.judge(
       "a batch takes effect before its boundary",
@@ -1396,13 +1478,33 @@ export const cut = onAir(
   (air) =>
     Effect.gen(function* () {
       const run = yield* Run;
-      yield* recorded(air.playout.submit({ key: yield* air.track("long"), lane: "line", request: itemRequest(15) }));
-      const longStarted = yield* waitFor(air.items, (all) => all.get("long")?.startedMs, air.deadline());
+      yield* recorded(
+        air.playout.submit({
+          key: yield* air.track("long"),
+          lane: "line",
+          request: itemRequest(15),
+        }),
+      );
+      const longStarted = yield* waitFor(
+        air.items,
+        (all) => all.get("long")?.startedMs,
+        air.deadline(),
+      );
       yield* sleepUntil(longStarted + 2_500, air.deadline());
       const cutFromMs = yield* run.now;
-      yield* recorded(air.playout.submit({ key: yield* air.track("cutter"), lane: "urgent", request: itemRequest() }));
+      yield* recorded(
+        air.playout.submit({
+          key: yield* air.track("cutter"),
+          lane: "urgent",
+          request: itemRequest(),
+        }),
+      );
       yield* run.mark("cutter submitted");
-      const cutterStarted = yield* waitFor(air.items, (all) => all.get("cutter")?.startedMs, air.deadline());
+      const cutterStarted = yield* waitFor(
+        air.items,
+        (all) => all.get("cutter")?.startedMs,
+        air.deadline(),
+      );
       yield* sleepUntil(cutterStarted + 2 * seamMs + 250, air.deadline());
       const all = yield* SubscriptionRef.get(air.items);
       const seam = yield* air.seam("long", "cutter", false);
@@ -1450,18 +1552,25 @@ export const renewal = onAir(
   (air) =>
     Effect.gen(function* () {
       const run = yield* Run;
-      const sessionEvents = yield* SubscriptionRef.make<ReadonlyArray<{ readonly atMs: number; readonly event: Playout.SessionEvent }>>([]);
+      const sessionEvents = yield* SubscriptionRef.make<
+        ReadonlyArray<{ readonly atMs: number; readonly event: Playout.SessionEvent }>
+      >([]);
       yield* air.playout.events.pipe(
         Stream.runForEach((event) =>
           event._tag === "Session"
             ? Effect.flatMap(run.now, (atMs) =>
-                SubscriptionRef.update(sessionEvents, (all) => [...all, { atMs, event: event.event }]),
+                SubscriptionRef.update(sessionEvents, (all) => [
+                  ...all,
+                  { atMs, event: event.event },
+                ]),
               )
             : Effect.void,
         ),
         Effect.forkScoped,
       );
-      yield* recorded(air.playout.submit({ key: yield* air.track("A"), lane: "line", request: itemRequest() }));
+      yield* recorded(
+        air.playout.submit({ key: yield* air.track("A"), lane: "line", request: itemRequest() }),
+      );
       yield* run.mark("A submitted");
       yield* waitFor(air.items, (all) => all.get("A")?.endedMs, air.deadline());
       const first = (yield* SubscriptionRef.get(air.items)).get("A")?.sessionId;
@@ -1471,17 +1580,21 @@ export const renewal = onAir(
         air.deadline(),
       );
       yield* run.mark("replacement opened");
-      yield* recorded(air.playout.submit({ key: yield* air.track("B"), lane: "line", request: itemRequest() }));
-      yield* run.mark("B submitted");
-      yield* air.playout.drain({ finish: "accepted" }).pipe(
-        Effect.timeout(yield* until(air.deadline())),
+      yield* recorded(
+        air.playout.submit({ key: yield* air.track("B"), lane: "line", request: itemRequest() }),
       );
+      yield* run.mark("B submitted");
+      yield* air.playout
+        .drain({ finish: "accepted" })
+        .pipe(Effect.timeout(yield* until(air.deadline())));
       const drainedMs = yield* run.now;
       yield* run.mark("drained");
       const all = yield* SubscriptionRef.get(air.items);
       const events = yield* SubscriptionRef.get(sessionEvents);
       const switches = events.flatMap(({ atMs, event }) =>
-        event._tag === "Switched" ? [{ atMs, from: event.from, to: event.to, decision: event.decision }] : [],
+        event._tag === "Switched"
+          ? [{ atMs, from: event.from, to: event.to, decision: event.decision }]
+          : [],
       );
       // The playout's one picture carries each session's clip in turn.
       const framesWhile = (key: string) => {
@@ -1507,7 +1620,9 @@ export const renewal = onAir(
       const b = all.get("B");
       yield* run.judge(
         "A then B finish",
-        a?.termination === "finished" && b?.termination === "finished" && (a.startedMs ?? 0) < (b.startedMs ?? 0)
+        a?.termination === "finished" &&
+          b?.termination === "finished" &&
+          (a.startedMs ?? 0) < (b.startedMs ?? 0)
           ? undefined
           : `A ended ${a?.termination ?? a?.last ?? "untracked"}, B ${b?.termination ?? b?.last ?? "untracked"}`,
       );

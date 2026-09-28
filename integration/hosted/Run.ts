@@ -7,7 +7,6 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import type * as FileSystem from "effect/FileSystem";
 import type * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Tracer from "effect/Tracer";
@@ -101,7 +100,11 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
         ...evidence,
         criteria: [
           ...evidence.criteria,
-          { name, passed: failure === undefined, ...(failure === undefined ? {} : { detail: failure }) },
+          {
+            name,
+            passed: failure === undefined,
+            ...(failure === undefined ? {} : { detail: failure }),
+          },
         ],
       })),
     secret: (value) => Ref.update(secrets, (all) => [...all, value]),
@@ -110,12 +113,12 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
 });
 
 /** Records a failed command's remote outcome, which the stop rules read. */
-export const recorded = <A, E, R>(
-  command: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R | Run> =>
+export const recorded = <A, E, R>(command: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | Run> =>
   Effect.tapError(command, (error) =>
     Effect.gen(function* () {
-      const outcome: Outcome | undefined = isReactorFailure(error) ? error.context.outcome : undefined;
+      const outcome: Outcome | undefined = isReactorFailure(error)
+        ? error.context.outcome
+        : undefined;
       if (outcome === undefined) return;
       const run = yield* Run;
       yield* run.update((evidence) => ({ ...evidence, outcomes: [...evidence.outcomes, outcome] }));

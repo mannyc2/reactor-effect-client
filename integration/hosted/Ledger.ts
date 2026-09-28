@@ -8,26 +8,28 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { Evidence, EvidenceJson } from "./Evidence.js";
 import { ceilingFor, Refused } from "./Spend.js";
 
 /** Holds the ledger's lock for the scope; refused while another run, or a crashed one, holds it. */
-export const lock = (directory: string): Effect.Effect<void, Refused, FileSystem.FileSystem | Path.Path | Scope.Scope> =>
+export const lock = (
+  directory: string,
+): Effect.Effect<void, Refused, FileSystem.FileSystem | Path.Path | Scope.Scope> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const file = (yield* Path.Path).join(directory, ".lock");
-    yield* fs.makeDirectory(directory, { recursive: true }).pipe(
-      Effect.mapError(() => Refused.make({ message: `${directory} cannot be created` })),
-    );
+    yield* fs
+      .makeDirectory(directory, { recursive: true })
+      .pipe(Effect.mapError(() => Refused.make({ message: `${directory} cannot be created` })));
     yield* Effect.acquireRelease(
       fs.writeFileString(file, "held\n", { flag: "wx" }).pipe(
-        Effect.mapError(
-          () =>
-            Refused.make({
-              message: `${file} exists: another run holds the ledger, or one crashed; remove it once no run is active`,
-            }),
+        Effect.mapError(() =>
+          Refused.make({
+            message: `${file} exists: another run holds the ledger, or one crashed; remove it once no run is active`,
+          }),
         ),
       ),
       () => Effect.ignore(fs.remove(file)),
@@ -42,31 +44,28 @@ export const entries = (
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     if (!(yield* Effect.orElseSucceed(fs.exists(directory), () => false))) return [];
-    const names = yield* fs.readDirectory(directory).pipe(
-      Effect.mapError(() => Refused.make({ message: `${directory} cannot be read` })),
-    );
-    return yield* Effect.forEach(
-      names.filter((name) => name.endsWith(".json")).sort(),
-      (name) => {
-        const file = path.join(directory, name);
-        return fs.readFileString(file).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(EvidenceJson)),
-          Effect.mapError(
-            () =>
-              Refused.make({
-                message: `${file} is not ${Evidence.fields.format.literal} evidence, so the spend it records is unknown`,
-              }),
-          ),
-        );
-      },
-    );
+    const names = yield* fs
+      .readDirectory(directory)
+      .pipe(Effect.mapError(() => Refused.make({ message: `${directory} cannot be read` })));
+    return yield* Effect.forEach(names.filter((name) => name.endsWith(".json")).sort(), (name) => {
+      const file = path.join(directory, name);
+      return fs.readFileString(file).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(EvidenceJson)),
+        Effect.mapError(() =>
+          Refused.make({
+            message: `${file} is not ${Evidence.fields.format.literal} evidence, so the spend it records is unknown`,
+          }),
+        ),
+      );
+    });
   });
 
 /** What a run reserves: a paid run's worst case once admitted, or its whole ceiling if it holds a grant without one. */
 export const reserved = (evidence: Evidence): number =>
   evidence.mode !== "paid"
     ? 0
-    : (evidence.budget.worstCaseUsd ?? (evidence.grants.length === 0 ? 0 : ceilingFor(evidence.check)));
+    : (evidence.budget.worstCaseUsd ??
+      (evidence.grants.length === 0 ? 0 : ceilingFor(evidence.check)));
 
 /** Evidence could not be saved: the run stops opening, minting and submitting. */
 export class SaveFailed extends Schema.TaggedError<SaveFailed>(
@@ -83,7 +82,8 @@ const encode = Schema.encodeEffect(EvidenceJson);
 export const writer = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    let claimed = false;
+    const claimed = yield* Ref.make(false);
+    const failed = () => SaveFailed.make({ message: `${file} could not be written` });
     return (evidence: Evidence, secrets: ReadonlyArray<Redacted.Redacted<string>>) =>
       Effect.gen(function* () {
         const text = yield* encode(evidence).pipe(
@@ -98,18 +98,15 @@ export const writer = (file: string) =>
           return yield* SaveFailed.make({
             message: "the evidence would contain a credential; it was not written",
           });
-        const failed = () => SaveFailed.make({ message: `${file} could not be written` });
-        if (!claimed) {
+        if (!(yield* Ref.get(claimed))) {
           yield* fs
             .writeFileString(file, `${text}\n`, { flag: "wx", mode: 0o600 })
             .pipe(Effect.mapError(failed));
-          claimed = true;
-          return;
+          return yield* Ref.set(claimed, true);
         }
         const pending = `${file}.pending`;
-        yield* fs.writeFileString(pending, `${text}\n`, { mode: 0o600 }).pipe(
-          Effect.andThen(fs.rename(pending, file)),
-          Effect.mapError(failed),
-        );
+        yield* fs
+          .writeFileString(pending, `${text}\n`, { mode: 0o600 })
+          .pipe(Effect.andThen(fs.rename(pending, file)), Effect.mapError(failed));
       });
   });
