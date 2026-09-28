@@ -26,29 +26,34 @@ file does not repeat them.
 
 ## Setup
 
-| Tool          | Version                                      | Needed for             |
-| ------------- | -------------------------------------------- | ---------------------- |
-| Bun           | 1.4.2 (`packageManager`)                     | everything             |
-| Node.js       | 22 or newer                                  | the Node test runs     |
-| Rust          | 1.90 (`packages/native/rust-toolchain.toml`) | native work            |
-| Clang (Linux) | 21                                           | native work            |
-| Effect        | 4.0.0-rc.117 (root catalog)                  | read its guide (below) |
+| Tool          | Version                                      | Needed for                                     |
+| ------------- | -------------------------------------------- | ---------------------------------------------- |
+| Bun           | 1.4.2 (`packageManager`)                     | everything                                     |
+| Node.js       | 22.18 or newer                               | the Node test runs, examples and runners       |
+| Chrome        | any current (`BROWSER_EXECUTABLE` names one) | `test:integration`                             |
+| ffmpeg        | on `PATH`                                    | the examples' video tests (skipped without it) |
+| Rust          | 1.90 (`packages/native/rust-toolchain.toml`) | native work                                    |
+| Clang (Linux) | 21                                           | native work                                    |
+| Effect        | 4.0.0-rc.117 (root catalog)                  | read its guide (below)                         |
 
 ```sh
 bun install --frozen-lockfile
 ```
 
-The `prepare` script patches the installed `typescript` with `@effect/tsgo`, and every rule of its
-Effect language service is an error in `tsconfig.base.json`, so `tsc` fails on any finding.
-`tsc --version` ends in `+effect-tsgo` when the patch is in place; an install that skipped lifecycle
-scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
-[packages/native/README.md](packages/native/README.md); ordinary builds never install system packages.
+The install brings the pinned `buf` and `protoc-gen-es` that generate the wire codec, so no Python
+or host `protoc` is needed. Node 22.18 strips types, so the examples and the integration runner run
+from their TypeScript sources. The `prepare` script patches the installed `typescript` with
+`@effect/tsgo`, and every rule of its Effect language service is an error in `tsconfig.base.json`,
+so `tsc` fails on any finding. `tsc --version` ends in `+effect-tsgo` when the patch is in place; an
+install that skipped lifecycle scripts needs `bunx effect-tsgo patch --typescript`. Native
+prerequisites are in [packages/native/README.md](packages/native/README.md); ordinary builds never
+install system packages.
 
 ## Architecture
 
 - Three packages, and one addon package per native platform, are published with one version:
   - `reactor-effect-client` (`packages/client`) is the portable core: the coordinator's HTTP API,
-    sessions, the wire protocol, the H3 provider, orchestration and the Reactor test layer. It runs
+    sessions, the wire protocol, the H3 provider, the playout and the Reactor test layer. It runs
     on Node, Bun and browsers and loads no native code.
   - `reactor-effect-browser` binds the client's `Peer` port to `RTCPeerConnection` and DOM media.
   - `reactor-effect-native` binds it to a libwebrtc Node-API addon, in process or in a child process
@@ -58,7 +63,7 @@ scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
 - The client owns every contract, and a host package only binds the port, as Effect's platform
   packages do. A host imports the client's public modules and never another host.
 - One session owns each allocation or attachment: its commands, connection generations and cleanup
-  evidence. H3 and orchestration build on that session and never allocate around it.
+  evidence. H3 and the playout build on that session and never allocate around it.
 - The SDK owns generic provider and queue mechanics. Editorial priority, filler, pricing, personas
   and proof of presented output belong to the application.
 - The native bridge carries transport and media only. Session allocation, model commands and
@@ -70,7 +75,7 @@ scripts needs `bunx effect-tsgo patch --typescript`. Native prerequisites are in
 ## Where code lives
 
 - `packages/<name>/src/` holds one module per concept, named for it in PascalCase (`Session.ts`,
-  `Coordinator.ts`, `Scheduler.ts`) and exported as a namespace from `src/index.ts`. Implementation
+  `Coordinator.ts`, `Playout.ts`) and exported as a namespace from `src/index.ts`. Implementation
   detail goes in `src/internal/`, which the export map closes. There are no `utils/`, `common/`,
   `shared/` or layer folders: they hide who owns what.
 - A module lives with its owner, not with one of its readers. A type lives beside the code that
@@ -169,17 +174,16 @@ the root. Use the installed version's APIs; snippets from elsewhere may target a
 
 ## Scheduling work
 
-`Schedule` governs in-process retry and recurrence; the orchestration and H3 modules own the queue
-and dispatch facts. Before changing queue or dispatch behaviour, state the observable contract:
+`Schedule` governs in-process retry and recurrence; `Playout` and `H3` own the queue and dispatch
+facts. Before changing queue or dispatch behaviour, state the observable contract:
 
 - whether order and capacity are per physical session or span a renewal;
 - which contiguous Ready clips can actually play;
 - what a deadline or an interruption cancels;
 - which outcomes stay unknown after a lost reply, an observation overflow or a retired session.
 
-A provider `Started` fact doesn't establish presented or encoded output. Timed orchestration tests
-use `TestClock` and event barriers; a long single-session simulation doesn't establish renewal
-ordering.
+A provider `Started` fact doesn't establish presented or encoded output. Timed playout tests use
+`TestClock` and event barriers; a long single-session run doesn't establish renewal ordering.
 
 ## Tests
 
@@ -227,14 +231,21 @@ Iterate with the smallest check that can invalidate the change, then run the rel
 the final change. Siblings resolve each other through built declarations, so build before
 typechecking, linting or running examples.
 
-| Change                         | Gate                                                                      |
-| ------------------------------ | ------------------------------------------------------------------------- |
-| TypeScript in any package      | `bun run verify --profile portable` (CI's portable gate)                  |
-| A public export or package map | the portable gate, then `bun run test:pack`                               |
-| Native TypeScript or Rust      | `bun run native:build`, `bun run native:test`, `bun run test:integration` |
-| Documentation only             | `bun run format:check` and `git diff --check`                             |
+| Change                          | Gate                                                                         |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| TypeScript in any package       | `bun run verify --profile portable`, CI's portable gate                      |
+| The protocol sources in `wire/` | `bun run generate:wire`, then the portable gate                              |
+| A public export or package map  | the portable gate, then `bun run test:pack`                                  |
+| Native TypeScript or Rust       | `bun run verify --profile native`                                            |
+| `release-tools/`                | `bun install --cwd release-tools --frozen-lockfile`, `bun run check:release` |
+| Documentation only              | `bun run format:check` and `git diff --check`                                |
 
-Inside a package, `node node_modules/vitest/vitest.mjs run <file>` runs one suite on Node and
+The portable profile runs `generate:check`, `format:check`, `build`, `lint`, `typecheck`,
+`check:examples` and `test:portable`, whose Vitest projects (client, browser, the hosted rehearsals)
+run on Node and then on Bun; the native profile builds, then `native:build` stages the addon into
+its platform package, `native:test` runs the Rust checks and the native suites, and
+`test:integration` runs real Chrome against it. `--list` prints a profile's commands. Inside a
+package, `node node_modules/vitest/vitest.mjs run <file>` runs one suite on Node and
 `bun --bun node_modules/vitest/vitest.mjs run <file>` on Bun. Report checks that couldn't run, and
 why.
 
