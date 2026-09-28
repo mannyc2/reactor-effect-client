@@ -1,56 +1,61 @@
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, layer } from "@effect/vitest";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
+import * as Stdio from "effect/Stdio";
+import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
 
-test("public Browser and Native owners exchange real local WebRTC media and join cleanup", async () => {
-  const root = fileURLToPath(new URL("../", import.meta.url));
-  const child = spawn("sh", ["scripts/browser-native.sh"], {
-    cwd: root,
-    env: {
-      ...process.env,
-      NODE_BINARY: process.execPath,
-      BUN_BINARY: process.env.BUN_BINARY ?? "bun",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  let output = "";
-  const capture = (chunk: Buffer): void => {
-    output = `${output}${chunk.toString("utf8")}`.slice(-256 * 1024);
-    process.stdout.write(chunk);
-  };
-  child.stdout.on("data", capture);
-  child.stderr.on("data", capture);
-  const signal = (name: NodeJS.Signals): void => {
-    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-    try {
-      if (process.platform === "win32") child.kill(name);
-      else process.kill(-child.pid, name);
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== "ESRCH") throw cause;
-    }
-  };
-  let timedOut = false;
-  let force: ReturnType<typeof setTimeout> | undefined;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    signal("SIGTERM");
-    force = setTimeout(() => signal("SIGKILL"), 2000);
-  }, 110_000);
-  let exit: number | null;
-  try {
-    exit = await new Promise<number | null>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", resolve);
-    });
-  } finally {
-    clearTimeout(timeout);
-    if (force !== undefined) clearTimeout(force);
-  }
-  expect(timedOut, "public session subprocess exceeded its bounded lifetime").toBe(false);
-  expect(exit, output).toBe(0);
-  expect(output).toContain("browser-native-ok");
-  expect(output).toContain("sameAttributedObjects");
-  expect(output).toContain("failureCleanup");
-  expect(output).toContain("native-artifact sha256=");
+/** How much of the runner's output the assertions keep: its tail. */
+const kept = 256 * 1024;
+
+// The runner is a real subprocess with real Chrome, so its deadline runs on the live clock.
+layer(NodeServices.layer, { excludeTestServices: true })((it) => {
+  it.effect(
+    "public Browser and Native owners exchange real local WebRTC media and join cleanup",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const stdio = yield* Stdio.Stdio;
+        const root = yield* path.fromFileUrl(new URL("../", import.meta.url));
+        const bun = yield* Config.String("BUN_BINARY").pipe(Config.withDefault("bun"));
+        const run = Effect.gen(function* () {
+          // The runner, Chrome and their helpers share this process group, which closing the
+          // scope terminates: TERM, then KILL two seconds later.
+          const runner = yield* ChildProcess.make("sh", ["scripts/browser-native.sh"], {
+            cwd: root,
+            env: { NODE_BINARY: process.execPath, BUN_BINARY: bun },
+            extendEnv: true,
+            stdin: "ignore",
+            detached: true,
+            killSignal: "SIGTERM",
+            forceKillAfter: "2 seconds",
+          });
+          const output = yield* Ref.make("");
+          yield* runner.all.pipe(
+            Stream.decodeText(),
+            Stream.tap((text) => Ref.update(output, (seen) => `${seen}${text}`.slice(-kept))),
+            Stream.run(stdio.stdout()),
+          );
+          return { exit: yield* runner.exitCode, output: yield* Ref.get(output) };
+        }).pipe(
+          Effect.scoped,
+          Effect.timeoutOrElse({
+            duration: "110 seconds",
+            orElse: () =>
+              Effect.sync(() =>
+                assert.fail("public session subprocess exceeded its bounded lifetime"),
+              ),
+          }),
+        );
+        const { exit, output } = yield* run;
+        assert.strictEqual(exit, 0, output);
+        assert.include(output, "browser-native-ok");
+        assert.include(output, "sameAttributedObjects");
+        assert.include(output, "failureCleanup");
+        assert.include(output, "native-artifact sha256=");
+      }),
+  );
 });
