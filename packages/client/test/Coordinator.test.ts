@@ -160,6 +160,11 @@ describe("recordings", () => {
       const late = yield* Effect.forkChild(Effect.flip(overdue.downloadClip(finishing)));
       yield* TestClock.adjust("20 seconds");
       assert.strictEqual((yield* Fiber.join(late)).reason._tag, "TerminalSession");
+      // An INACTIVE session has only lost its connection, so its recording is still awaited.
+      const dropped = yield* coordinator(recordings(40, 4, "INACTIVE").client);
+      const awaited = yield* Effect.forkChild(dropped.downloadClip(finishing));
+      yield* TestClock.adjust("20 seconds");
+      assert.strictEqual((yield* Fiber.join(awaited)).bytes.byteLength, 12);
     }),
   );
 
@@ -250,6 +255,13 @@ describe("termination", () => {
         terminating(202, Response.json({ session_id: "s1", state: "CLOSED" })).client,
       )).terminate("s1");
       assert.strictEqual(ended.evidence, "terminal");
+
+      // Paid run tokens 83d17eb7: INACTIVE is a session without a connection, still running.
+      const dropped = yield* (yield* coordinator(
+        terminating(200, Response.json({ session_id: "s1", state: "INACTIVE" })).client,
+      )).terminate("s1");
+      assert.strictEqual(dropped.confirmed, false);
+      assert.strictEqual(dropped.state, "INACTIVE");
     }),
   );
 

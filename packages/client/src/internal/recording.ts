@@ -141,10 +141,9 @@ export const download = (
     // verdict only once the clip's predicted ready time, and a grace, have passed.
     const descriptor = yield* fetcher.read(clip.sessionId);
     const due = Number(clip.predictedReadyAtMs) + finishingGraceMs;
-    if (
-      (descriptor.state === "CLOSED" || descriptor.state === "INACTIVE") &&
-      (yield* Clock.currentTimeMillis) > due
-    )
+    // Only CLOSED has ended (Coordinator.isTerminal, which imports this module): an
+    // INACTIVE session lost its connection and may still be reconnected.
+    if (descriptor.state === "CLOSED" && (yield* Clock.currentTimeMillis) > due)
       return yield* ReactorError.fromCode(
         "TerminalSession",
         "session ended and its playlist was not available by the predicted time",

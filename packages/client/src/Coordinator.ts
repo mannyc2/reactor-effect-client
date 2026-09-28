@@ -92,8 +92,14 @@ export const Descriptor = Schema.Struct({
 });
 export type Descriptor = typeof Descriptor.Type;
 
-/** Whether a session state is final. */
-export const isTerminal = (state: string): boolean => state === "CLOSED" || state === "INACTIVE";
+/**
+ * Whether a session state is final. Only `CLOSED` is: hosted Reactor reads
+ * `INACTIVE` for a session whose last connection dropped, and that session still
+ * runs (and bills) for the documented 30 s reconnect window. A paid run adopted
+ * one 9 s after its owner was killed, then ended it with a DELETE that
+ * answered 200 and moved it to `CLOSED`.
+ */
+export const isTerminal = (state: string): boolean => state === "CLOSED";
 
 export const IceServer = Schema.Struct({
   urls: Schema.Array(Schema.NonEmptyString),

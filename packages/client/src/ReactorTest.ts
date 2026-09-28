@@ -267,7 +267,8 @@ export type Options = typeof Options.Type;
 
 export interface SessionInfo {
   readonly id: string;
-  readonly state: "PENDING" | "ACTIVE" | "STOPPING" | "CLOSED";
+  /** INACTIVE: its last connection dropped; it ends 30 s later unless one returns. */
+  readonly state: "PENDING" | "ACTIVE" | "INACTIVE" | "STOPPING" | "CLOSED";
   /** A peer is bound and both its channels are open. */
   readonly connected: boolean;
   /** DELETE requests received, repeats and ignored ones included. */
