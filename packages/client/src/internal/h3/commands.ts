@@ -4,6 +4,7 @@
  */
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { ReactorError } from "../../ReactorError.js";
 import type { MessageType } from "./messages.js";
 import { documentedVersion, modelName, source } from "./profile.js";
@@ -73,6 +74,9 @@ export type ReplyCommand = {
 export type ReplyType<K extends ReplyCommand> = (typeof Commands)[K]["reply"];
 export type ControlCommand = Exclude<CommandName, ReplyCommand>;
 
+/** What a provider needs to start: it enqueues, and reads the state and queue in full. */
+const required: ReadonlyArray<CommandName> = ["enqueue", "get_state", "get_queue"];
+
 /** What this adapter supports, and what the deployment it checked declares. */
 export interface Contract {
   readonly modelName: typeof modelName;
@@ -84,6 +88,11 @@ export interface Contract {
    * before anything is uploaded or sent.
    */
   readonly referenceAudio: boolean;
+  /**
+   * The commands the deployment offers. One it lacks fails its operation as
+   * `UnsupportedCapability` before anything is sent.
+   */
+  readonly commands: ReadonlySet<CommandName>;
   readonly deployment: { readonly title: string | null; readonly version: string | null };
 }
 
@@ -122,9 +131,10 @@ const incompatible = (reason: string): ReactorError =>
   );
 
 /**
- * Admits a deployment whose OpenAPI document offers every command this
- * adapter sends. Payloads are checked where they arrive: a message that does
- * not match its Schema fails the provider as `Protocol`.
+ * Admits a deployment whose OpenAPI document offers the commands a provider
+ * needs to start, and records which others it offers. Payloads are checked
+ * where they arrive: a message that does not match its Schema fails the
+ * provider as `Protocol`.
  */
 export const deploymentContract = (
   openapi: Schema.Json | undefined,
@@ -141,9 +151,14 @@ export const deploymentContract = (
       return components[name] ?? schema;
     };
     let referenceAudio = false;
-    for (const name of Object.keys(Commands)) {
+    const commands = new Set<CommandName>();
+    for (const name of Struct.keys(Commands)) {
       const operation = Schema.decodeUnknownResult(Operation)(document.paths[`/events/${name}`]);
-      if (Result.isFailure(operation)) return yield* Result.fail(incompatible(`command ${name}`));
+      if (Result.isFailure(operation)) {
+        if (required.includes(name)) return yield* Result.fail(incompatible(`command ${name}`));
+        continue;
+      }
+      commands.add(name);
       if (name !== "enqueue") continue;
       const body = operation.success.post.requestBody?.content["application/json"].schema;
       const declared =
@@ -158,6 +173,7 @@ export const deploymentContract = (
       documentedVersion,
       source,
       referenceAudio,
+      commands,
       deployment: {
         title: document.info?.title ?? null,
         version: document.info?.version ?? null,

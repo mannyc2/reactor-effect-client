@@ -3,10 +3,13 @@
  * simulated Reactor. Each block states the timing it relies on; the last runs
  * one flow across seeded random timings and checks what must hold for any.
  */
-import { assert, layer } from "@effect/vitest";
-import { Effect, Exit, type Layer, Schema, Scope } from "effect";
+import { assert, describe, it, layer } from "@effect/vitest";
+import { Effect, Exit, type Layer, Result, Schema, Scope } from "effect";
 import * as H3 from "../src/H3.js";
 import { ReactorTest } from "../src/index.js";
+import { deploymentContract } from "../src/internal/h3/commands.js";
+import { decodeMessage } from "../src/internal/h3/messages.js";
+import { deployment } from "../src/internal/reactorTest/h3.js";
 import { pngBytes } from "../src/testing/Png.js";
 import { wavBytes } from "../src/testing/Wav.js";
 import { commands, connect, environment } from "./fixtures/Simulated.js";
@@ -234,3 +237,61 @@ for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
     },
   );
 }
+
+describe("the deployment and its messages", () => {
+  /** The simulated deployment's document without one command, as the session reads it. */
+  const withoutCommand = (name: string) => {
+    const document = deployment(true);
+    const { [`/events/${name}`]: _removed, ...paths } = document.paths;
+    return Result.flatMap(
+      Schema.decodeUnknownResult(Schema.Json)({ ...document, paths }),
+      deploymentContract,
+    );
+  };
+
+  it("admits a deployment that lacks a command the provider can start without", () => {
+    const contract = withoutCommand("set_seed");
+    assert.isTrue(Result.isSuccess(contract));
+    if (Result.isSuccess(contract)) {
+      assert.isFalse(contract.success.commands.has("set_seed"));
+      assert.isTrue(contract.success.commands.has("enqueue"));
+    }
+  });
+
+  it("refuses a deployment that lacks a command the provider needs to start", () => {
+    const contract = withoutCommand("get_queue");
+    assert.isTrue(Result.isFailure(contract));
+    const failure = Result.isFailure(contract) ? contract.failure : undefined;
+    assert.strictEqual(
+      failure?._tag === "ReactorError" ? failure.reason._tag : failure?._tag,
+      "UnsupportedCapability",
+    );
+  });
+
+  it("decodes a state that is playing an armed clip it does not name yet", () => {
+    const decoded = decodeMessage({
+      type: "state_update",
+      data: {
+        clip_seconds: 5.167,
+        clip_seconds_min: 5,
+        clip_seconds_max: 15.084,
+        seed: 1000,
+        autoplay: true,
+        flush_on_clip_end: true,
+        aspect: "16:9",
+        width: 1344,
+        height: 768,
+        playing: true,
+        playing_clip_id: null,
+        generation_queued: 0,
+        generation_capacity: 20,
+        playout_queued: 1,
+        playout_capacity: 10,
+        clips_played: 1,
+        seconds_sent: 5.167,
+        valid_commands: ["stop"],
+      },
+    });
+    assert.isTrue(Result.isSuccess(decoded));
+  });
+});
