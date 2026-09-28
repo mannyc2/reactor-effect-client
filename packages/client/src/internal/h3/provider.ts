@@ -5,7 +5,6 @@
  */
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
@@ -28,6 +27,7 @@ import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
 import type { MessageCode } from "../../ReactorError.js";
 import type { CommandReply, Session, SessionEvent, UploadReference } from "../../Session.js";
 import * as Submission from "./submission.js";
+import * as Deadline from "../deadline.js";
 import * as Hub from "../hub.js";
 import { Commands, deploymentContract } from "./commands.js";
 import type {
@@ -137,19 +137,11 @@ const covered = (event: ProviderEvent, revision: bigint): boolean => {
 const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
-  const limit = (name: string, input: Duration.Input | undefined, fallback: Duration.Input) =>
-    Effect.fromOption(Duration.fromInput(input ?? fallback)).pipe(
-      Effect.mapError(() =>
-        ReactorError.fromCode("InvalidInput", `H3 ${name} must be a duration`, {
-          outcome: "not-submitted",
-        }),
-      ),
-    );
   const limits = {
-    command: yield* limit("replyTimeout", options.replyTimeout, "15 seconds"),
-    upload: yield* limit("uploadTimeout", options.uploadTimeout, "60 seconds"),
-    setup: yield* limit("setupTimeout", options.setupTimeout, "60 seconds"),
-    reconcile: yield* limit("reconcileWindow", options.reconcileWindow, "5 seconds"),
+    command: yield* Deadline.decode("H3 replyTimeout")(options.replyTimeout ?? "15 seconds"),
+    upload: yield* Deadline.decode("H3 uploadTimeout")(options.uploadTimeout ?? "60 seconds"),
+    setup: yield* Deadline.decode("H3 setupTimeout")(options.setupTimeout ?? "60 seconds"),
+    reconcile: yield* Deadline.decode("H3 reconcileWindow")(options.reconcileWindow ?? "5 seconds"),
   };
   // A provider attaches to an already connected session. It neither allocates
   // nor connects it, and never takes ownership of its remote lifetime.

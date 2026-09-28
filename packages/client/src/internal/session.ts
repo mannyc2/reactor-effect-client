@@ -66,6 +66,7 @@ import type {
   UploadReference,
 } from "../Session.js";
 import * as Correlator from "./correlator.js";
+import * as Deadline from "./deadline.js";
 import * as Hub from "./hub.js";
 import { take } from "./queue.js";
 import * as Stats from "./stats.js";
@@ -1160,10 +1161,9 @@ export const make = Effect.fnUntraced(function* (input: {
           }),
         ),
       );
-      const wait =
-        options.replyTimeout === undefined
-          ? settings.replyTimeout
-          : Duration.fromInputUnsafe(options.replyTimeout);
+      const wait = yield* Deadline.decode("replyTimeout")(
+        options.replyTimeout ?? settings.replyTimeout,
+      );
       return yield* request(
         c,
         data,
@@ -1710,10 +1710,9 @@ export const make = Effect.fnUntraced(function* (input: {
         yield* reach({ notification: "submitted" });
         return { file, transfer: "confirmed", notification: "submitted" } satisfies Uploaded;
       });
-      const wait =
-        options.uploadTimeout === undefined
-          ? settings.uploadTimeout
-          : Duration.fromInputUnsafe(options.uploadTimeout);
+      const wait = yield* Deadline.decode("uploadTimeout")(
+        options.uploadTimeout ?? settings.uploadTimeout,
+      );
       return yield* deadline(operation, wait, "upload").pipe(
         Effect.catch((error) =>
           Ref.get(progress).pipe(

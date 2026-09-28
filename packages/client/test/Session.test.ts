@@ -76,6 +76,36 @@ layer(environment({ timing }))("replies", (it) => {
   );
 });
 
+/** A number whose text `Duration` cannot parse: `${huge} seconds` reads "Infinity seconds". */
+const huge: number = 10 ** 999;
+/** Deadlines `Duration` misreads: one it cannot parse, a NaN it reads as zero, a negative. */
+const badDeadlines: ReadonlyArray<Duration.Input> = [`${huge} seconds`, Number.NaN, -5];
+
+layer(environment({ timing }))("a per-call deadline", (it) => {
+  it.effect("that is not a finite, non-negative duration is refused before anything is sent", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const png = ReactorTest.pngBytes({ width: 16, height: 16 });
+      for (const bad of badDeadlines) {
+        const command = yield* Effect.flip(session.command("get_state", {}, { replyTimeout: bad }));
+        const upload = yield* Effect.flip(
+          session.upload("still.png", "image/png", png, { uploadTimeout: bad }),
+        );
+        assert.deepStrictEqual(
+          [command, upload].map((error) => [error.reason._tag, error.context.outcome]),
+          [
+            ["InvalidInput", "not-submitted"],
+            ["InvalidInput", "not-submitted"],
+          ],
+          Inspectable.toStringUnknown(bad),
+        );
+      }
+      assert.deepStrictEqual((yield* session.snapshot).pending, { data: 0, control: 0 });
+    }),
+  );
+});
+
 layer(environment({ timing }))("reconnection", (it) => {
   it.effect("a dropped connection reconnects on a new generation, and commands work again", () =>
     Effect.gen(function* () {

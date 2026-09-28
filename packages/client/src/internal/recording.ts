@@ -5,11 +5,12 @@
  * generation's outcome.
  */
 import * as Clock from "effect/Clock";
-import * as Duration from "effect/Duration";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as Headers from "effect/unstable/http/Headers";
 import { ReactorError } from "../ReactorError.js";
+import * as Deadline from "./deadline.js";
 import type { Descriptor } from "../Coordinator.js";
 import type { ClipReady } from "../Session.js";
 
@@ -151,7 +152,7 @@ export const download = (
     yield* Effect.sleep(Math.max(200, Math.min(retryAfterMillis(reply.headers), 2000)));
     return yield* playlist;
   });
-  return Effect.gen(function* () {
+  const joined = Effect.gen(function* () {
     const segments = yield* playlist;
     const chunks: Array<Uint8Array<ArrayBuffer>> = [];
     let size = 0;
@@ -178,16 +179,19 @@ export const download = (
       offset += chunk.byteLength;
     }
     return { bytes, segments };
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.fromInputUnsafe(options.downloadTimeout ?? "60 seconds"),
-      orElse: () =>
-        Effect.fail(
-          ReactorError.fromCode(
-            "Timeout",
-            "clip download deadline; the remote outcome is unchanged",
+  });
+  return Deadline.decode("downloadTimeout")(options.downloadTimeout ?? "60 seconds").pipe(
+    Effect.flatMap((duration) =>
+      Effect.timeoutOrElse(joined, {
+        duration,
+        orElse: () =>
+          Effect.fail(
+            ReactorError.fromCode(
+              "Timeout",
+              "clip download deadline; the remote outcome is unchanged",
+            ),
           ),
-        ),
-    }),
+      }),
+    ),
   );
 };
