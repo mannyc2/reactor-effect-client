@@ -274,6 +274,101 @@ describe("PlayoutPolicy", () => {
     );
   });
 
+  /** Steps one input at `at` milliseconds, on both clocks. */
+  const at = (state: Policy.State, input: Policy.Input, time: number) =>
+    Policy.step(config, state, input, { mono: time, wall: time });
+  /** The answer to the command in flight. */
+  const answer = (state: Policy.State, result: Policy.CommandResult): Policy.Input => ({
+    _tag: "Result",
+    id: state.busy?.id ?? -1,
+    result,
+  });
+
+  it("a drain withdraws a held Manual item and finishes although it was never released", () => {
+    const { actions } = run([
+      ...opened(),
+      {
+        _tag: "Edit",
+        id: 1,
+        edits: [{ _tag: "Submit", spec: { ...spec("held"), start: { _tag: "Manual" } } }],
+        batch: false,
+      },
+      { _tag: "Drain", id: 2, finish: "accepted" },
+      { _tag: "Tick" },
+    ]);
+    assert.strictEqual(statuses(actions, "held").at(-1), "Dropped");
+    assert.isTrue(actions.some((action) => action._tag === "Drained" && action.id === 2));
+  });
+
+  it("fires a cue due at a clip's last moment when the clip finishes there", () => {
+    const cued: Policy.Spec = { ...spec("a"), cues: [{ name: "out", from: "end", offsetMs: 0 }] };
+    let state = run([
+      ...opened(),
+      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: cued }], batch: false },
+    ]).state;
+    state = at(state, answer(state, { _tag: "Done", clipId: "ca" }), 10).state;
+    const playing = clip("ca", item("a"));
+    state = at(
+      state,
+      { _tag: "Source", sessionId: "s1", event: { _tag: "Started", clip: playing } },
+      100,
+    ).state;
+    const ended = at(
+      state,
+      {
+        _tag: "Source",
+        sessionId: "s1",
+        event: { _tag: "Ended", clip: playing, termination: "finished" },
+      },
+      5_100,
+    );
+    assert.deepStrictEqual(
+      ended.actions.flatMap((action) =>
+        action._tag === "Emit" && action.event._tag === "Cue" ? [action.event.event.name] : [],
+      ),
+      ["out"],
+    );
+  });
+
+  it("learns build time only from builds whose dispatch outcome was always known", () => {
+    let state = run([
+      ...opened(),
+      { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: spec("known") }], batch: false },
+    ]).state;
+    state = at(state, answer(state, { _tag: "Done", clipId: "ck" }), 10).state;
+    const known = clip("ck", item("known"));
+    state = at(
+      state,
+      {
+        _tag: "Source",
+        sessionId: "s1",
+        event: { _tag: "State", state: source({ ready: [known] }) },
+      },
+      2_000,
+    ).state;
+    assert.strictEqual(state.samples.build.length, 1);
+    state = at(
+      state,
+      { _tag: "Edit", id: 2, edits: [{ _tag: "Submit", spec: spec("unsure") }], batch: false },
+      2_001,
+    ).state;
+    const lost = { _tag: "Failed", outcome: "unknown", retryable: false, reason: "lost" } as const;
+    state = at(state, answer(state, lost), 2_010).state;
+    // Its clip turns up Ready much later: that wait includes the uncertainty, so it is no sample.
+    const unsure = clip("cu", item("unsure"));
+    state = at(
+      state,
+      {
+        _tag: "Source",
+        sessionId: "s1",
+        event: { _tag: "State", state: source({ ready: [known, unsure] }) },
+      },
+      40_000,
+    ).state;
+    assert.strictEqual(state.items.get(key("unsure"))?.phase, "Ready");
+    assert.strictEqual(state.samples.build.length, 1);
+  });
+
   // Any sequence of edits and provider answers keeps the plan's promises.
   it.effect.prop(
     "one command at a time, no enqueue sent twice for a key, one terminal status each",
