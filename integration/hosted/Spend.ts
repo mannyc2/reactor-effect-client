@@ -8,8 +8,9 @@ import * as Schema from "effect/Schema";
 /**
  * The checks. `vertical`, `takeover` and `turn` qualified 0.3.0; each later
  * capability added one: `audio` (reference audio), `resume` (adopting a dead
- * owner's session), `queue` (H3's own move and pop near a boundary), and the
- * playout's `renewal`, `edits` and `cut`.
+ * owner's session), `queue` (H3's own move and pop near a boundary), the
+ * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
+ * token that created it).
  */
 export const checks = [
   "vertical",
@@ -21,6 +22,7 @@ export const checks = [
   "renewal",
   "edits",
   "cut",
+  "tokens",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;

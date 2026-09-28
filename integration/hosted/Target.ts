@@ -72,6 +72,11 @@ export class Target extends Context.Service<
     readonly windowMs: number;
     /** Where seam frames are written for a person to look at; none in rehearsal. */
     readonly seams: string | undefined;
+    /**
+     * A prompt meant to be flagged by content moderation, read from a file the
+     * operator names; `cut` then ends with it. Never logged or saved.
+     */
+    readonly moderationPrompt: Redacted.Redacted<string> | undefined;
     /** Starts the takeover's owner on the grant; it returns once the owner streams. */
     readonly owner: (
       grant: Coordinator.TokenGrant,
@@ -128,6 +133,7 @@ export const paid = (input: {
   readonly network: string;
   readonly seams: string;
   readonly script: string;
+  readonly moderationPrompt: Redacted.Redacted<string> | undefined;
 }) =>
   Layer.effect(
     Target,
@@ -140,6 +146,7 @@ export const paid = (input: {
         network: input.network,
         windowMs: 6_000,
         seams: input.seams,
+        moderationPrompt: input.moderationPrompt,
         // The owner is a child process, so killing it is a real crash. It gets the grant on
         // its stdin and never the API key.
         owner: (grant, marker) =>
@@ -222,6 +229,7 @@ export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
 export const rehearsal = (input: {
   readonly faults: ReadonlyArray<ReactorTest.Fault>;
   readonly candidate: "host" | "relay";
+  readonly moderationPrompt?: Redacted.Redacted<string> | undefined;
 }) =>
   Layer.effect(
     Target,
@@ -236,6 +244,7 @@ export const rehearsal = (input: {
         network: "rehearsal against ReactorTest",
         windowMs: 1_500,
         seams: undefined,
+        moderationPrompt: input.moderationPrompt,
         owner: (grant, marker) =>
           Effect.gen(function* () {
             const cut = yield* Ref.make(false);

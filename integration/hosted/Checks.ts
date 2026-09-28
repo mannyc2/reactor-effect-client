@@ -25,12 +25,13 @@ import * as Playout from "reactor-effect-client/Playout";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import type { CommandFailure } from "reactor-effect-client/ReactorError";
-import type { CloseReport, Session } from "reactor-effect-client/Session";
+import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type * as Evidence from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
+import * as Probes from "./Probes.js";
 import { recorded, Run } from "./Run.js";
 import type { Check } from "./Spend.js";
 import {
@@ -79,7 +80,7 @@ const waitFor = <A, B>(
   );
 
 /** Mints one session's token: its grant goes into the evidence, its JWT never does. */
-const mint = (check: Check) =>
+const mint = (check: Check, expiresAfterSeconds = tokenSeconds) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const target = yield* Target;
@@ -88,7 +89,7 @@ const mint = (check: Check) =>
       apiKey: target.apiKey,
       modelName: H3.modelName,
       maxSessionDuration: `${sessionSeconds} seconds`,
-      expiresAfter: `${tokenSeconds} seconds`,
+      expiresAfter: `${expiresAfterSeconds} seconds`,
     });
     yield* run.secret(grant.jwt);
     const granted = yield* provenGrant({ jwt: Redacted.value(grant.jwt), granted: grant.granted });
@@ -125,7 +126,9 @@ const allocated = (sessionId: string, grant: Coordinator.TokenGrant) =>
 const closedWith = (
   sessionId: string,
   requestedMs: number,
-  close: { readonly report: CloseReport } | { readonly termination: Coordinator.Termination },
+  close:
+    | { readonly report: Session.CloseReport }
+    | { readonly termination: Coordinator.Termination },
 ) =>
   Effect.gen(function* () {
     const run = yield* Run;
@@ -144,7 +147,7 @@ const closedWith = (
   });
 
 /** Closes a session the check allocated, recording the library's report. */
-const close = (session: Pick<Session, "id" | "close">) =>
+const close = (session: Pick<Session.Session, "id" | "close">) =>
   Effect.gen(function* () {
     const requestedMs = yield* (yield* Run).now;
     const report = yield* session.close;
@@ -313,7 +316,7 @@ const readInto = <F extends { readonly sequence: bigint }, E>(
   });
 
 /** One statistics sample a second, as far as the evidence keeps it. */
-const sampleStats = (session: Pick<Session, "stats">, samples: Array<StatsSample>) =>
+const sampleStats = (session: Pick<Session.Session, "stats">, samples: Array<StatsSample>) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const stats = yield* session.stats;
@@ -788,6 +791,280 @@ export const takeover = (check: "takeover" | "resume") =>
     );
   });
 
+/** How long `tokens`' creating token lives: enough to connect and stream, not to outlive the session. */
+const createSeconds = 20;
+/** How long each bound token lives in `tokens`, so one is refreshed while the session runs. */
+const boundSeconds = 12;
+/** What `tokens` needs after it adopts the session: frames, a refresh, a clip and the probes. */
+const afterAdoptMs = 16_000;
+
+/**
+ * A session outliving the token that created it, as authentication ›
+ * "Keeping the token fresh for a whole session" and "Acting on a session
+ * another token created" describe. The owner creates the session on a 20 s
+ * token, streams and dies; once that token expired, this process, holding the
+ * key, adopts the session with a token bound to it, refreshes that token
+ * before the next call, enqueues a clip with a reference image and audio on
+ * it, and ends the session with the API key as the bearer. Free probes of the
+ * token and key rules go first.
+ */
+export const tokens = Effect.gen(function* () {
+  const run = yield* Run;
+  const target = yield* Target;
+  const coordinator = yield* Coordinator.Coordinator;
+  const record = (change: (tokens: Evidence.TokensRecord) => Evidence.TokensRecord) =>
+    run.update((evidence) => ({
+      ...evidence,
+      tokens: change(evidence.tokens ?? { probes: [], mints: [] }),
+    }));
+  const minted = (
+    kind: "create" | "bind" | "unbound",
+    grant: Coordinator.TokenGrant,
+    sentAt: number,
+  ) =>
+    Effect.gen(function* () {
+      const atMs = yield* run.now;
+      yield* record((tokens) => ({
+        ...tokens,
+        mints: [
+          ...tokens.mints,
+          {
+            atMs,
+            kind,
+            lifetimeSeconds: round(grant.expiresAt - sentAt / 1000),
+            echoed: grant.granted !== undefined,
+            ...(grant.granted === undefined ? {} : { bound: grant.granted.bound.length }),
+          },
+        ],
+      }));
+    });
+  // Free: minting allocates nothing, and the key probes name no real session.
+  const probes = yield* Probes.run({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  yield* record((tokens) => ({ ...tokens, probes: [...probes] }));
+  yield* run.mark("probed");
+  const createSentAt = yield* Clock.currentTimeMillis;
+  const grant = yield* mint("tokens", createSeconds);
+  yield* minted("create", grant, createSentAt);
+  // The adopter's tokens, each bound to the session and short enough to be refreshed in it.
+  const bound: Array<{ readonly grant: Coordinator.TokenGrant; readonly sentAt: number }> = [];
+  const binder: Pick<Coordinator.Tokens, "bind"> = {
+    bind: (sessionId) =>
+      Effect.gen(function* () {
+        const sentAt = yield* Clock.currentTimeMillis;
+        const token = yield* coordinator.mintToken({
+          apiKey: target.apiKey,
+          modelName: H3.modelName,
+          bind: [sessionId],
+          expiresAfter: `${boundSeconds} seconds`,
+        });
+        yield* run.secret(token.jwt);
+        bound.push({ grant: token, sentAt });
+        yield* minted("bind", token, sentAt);
+        return token;
+      }),
+  };
+  const sessions = new Map<string, Coordinator.TokenGrant>();
+  const marker = `hosted-qualification:${run.runId}`;
+  const video = Media.videoLog();
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const owner = yield* target.owner(grant, marker);
+      const sessionId = owner.allocation.sessionId;
+      sessions.set(sessionId, grant);
+      const cap = (grant.maxSessionSeconds ?? sessionSeconds) * 1000;
+      const endsAt = owner.allocation.endsAt ?? ((yield* Clock.currentTimeMillis) + cap) / 1000;
+      const allocatedAt = endsAt * 1000 - cap;
+      const deadline = allocatedAt + workSeconds * 1000;
+      yield* run.update((evidence) => ({
+        ...evidence,
+        sessions: [
+          ...evidence.sessions,
+          {
+            id: sessionId,
+            allocatedMs: allocatedAt - run.origin,
+            capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(endsAt * 1000)),
+            trail: [],
+          },
+        ],
+      }));
+      yield* owner.kill;
+      const ownerKilledMs = yield* run.now;
+      const createExpiresMs = grant.expiresAt * 1000 - run.origin;
+      yield* record((tokens) => ({ ...tokens, ownerKilledMs, createExpiresMs }));
+      yield* run.mark("owner killed", owner.playing);
+      // The session must outlive the token that created it before anyone adopts it.
+      yield* sleepUntil(createExpiresMs + 500, deadline - afterAdoptMs);
+      const resumeStartedMs = yield* run.now;
+      const reactor = yield* Reactor.Reactor;
+      const session = yield* reactor.attach({ sessionId, tokens: binder, adopt: true });
+      const provider = yield* H3.make(session);
+      const attachedMs = yield* run.now;
+      yield* run.mark("adopted");
+      const snapshot = yield* provider.snapshot;
+      const facts = snapshot._tag === "Ready" ? snapshot : snapshot.lastFacts;
+      const playingClipId = facts?.state.playing_clip_id ?? null;
+      const media = yield* session.decoded;
+      yield* readInto(media.video(tracks.video).pipe(Stream.take(48)), video).pipe(
+        Effect.timeout(Duration.min(Duration.millis(target.windowMs), yield* until(deadline))),
+        Effect.ignore,
+      );
+      const firstFreshFrameMs = video.firstAfter(attachedMs);
+      yield* record((tokens) => ({
+        ...tokens,
+        resumeStartedMs,
+        attachedMs,
+        playingClipId,
+        clipIdentified: playingClipId === owner.playing,
+        ...(firstFreshFrameMs === undefined ? {} : { firstFreshFrameMs }),
+        video: video.summary(),
+      }));
+      // The next call after the first bound token's refresh point mints the next one.
+      const first = bound[0];
+      if (first !== undefined) {
+        const expiresAt = first.grant.expiresAt * 1000;
+        const margin = Math.min(60_000, (expiresAt - first.sentAt) / 4);
+        yield* sleepUntil(expiresAt - margin - run.origin + 250, deadline - 7_000);
+      }
+      const request: H3.Request = {
+        prompt: `Picture 1 is a plain gray backdrop. Audio 1 is a low, steady hum under the scene. ${prompt}`,
+        seconds: clipSeconds,
+        metadata: `${marker}:references`,
+        references: [{ _tag: "Bytes", bytes: Media.grayPng({ width: 256, height: 144 }) }],
+        audio: [
+          {
+            _tag: "Bytes",
+            bytes: Media.tone({ seconds: 3, sampleRate: 48_000, frequency: 220 }),
+          },
+        ],
+      };
+      const startedMs = yield* run.now;
+      const acceptance = yield* recorded(
+        Effect.flatMap(provider.prepare(request), (submission) => submission.submit),
+      );
+      const acceptedMs = yield* run.now;
+      const refreshedMs = (yield* run.evidence).tokens?.mints.filter(
+        (mint) => mint.kind === "bind",
+      )[1]?.atMs;
+      yield* record((tokens) => ({
+        ...tokens,
+        ...(refreshedMs === undefined ? {} : { refreshedMs }),
+        upload: {
+          startedMs,
+          acceptedMs,
+          images: 1,
+          audio: 1,
+          reportedAudio: acceptance.clip.reference_audio_count ?? null,
+          hasReferenceAudio: acceptance.clip.has_reference_audio ?? null,
+        },
+      }));
+      yield* run.mark("enqueued on a refreshed token");
+      // The documented refusals: a token past its expiry, and one not bound to the session.
+      const statusOf = (credential: Redacted.Redacted<string>) =>
+        Coordinator.make({ apiUrl: target.apiUrl, credential: Effect.succeed(credential) }).pipe(
+          Effect.flatMap((inspector) => inspector.inspect(sessionId)),
+          Effect.as(200),
+          Effect.catch((error) =>
+            Effect.succeed(
+              error.reason._tag === "Http" && error.reason.status !== undefined
+                ? error.reason.status
+                : 0,
+            ),
+          ),
+        );
+      const expiredTokenStatus = yield* statusOf(grant.jwt);
+      const unboundSentAt = yield* Clock.currentTimeMillis;
+      const unbound = yield* coordinator.mintToken({
+        apiKey: target.apiKey,
+        modelName: H3.modelName,
+        // It could create one session of a second; it creates none.
+        maxSessionDuration: "1 second",
+        expiresAfter: "15 seconds",
+      });
+      yield* run.secret(unbound.jwt);
+      yield* minted("unbound", unbound, unboundSentAt);
+      const unboundTokenStatus = yield* statusOf(unbound.jwt);
+      yield* record((tokens) => ({ ...tokens, expiredTokenStatus, unboundTokenStatus }));
+      // The key ends any session of its account, with the independent read confirming it.
+      const keyed = yield* Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+      const requestedMs = yield* run.now;
+      const apiKeyTermination = yield* keyed.terminate(sessionId);
+      yield* record((tokens) => ({ ...tokens, apiKeyTermination }));
+      if (apiKeyTermination.confirmed)
+        yield* closedWith(sessionId, requestedMs, { termination: apiKeyTermination });
+      else yield* close(session);
+      const evidence = yield* run.evidence;
+      const commands: Record<string, number> = {};
+      for (const span of evidence.spans)
+        if (span.name === "reactor.session.command" && span.startMs >= resumeStartedMs)
+          bump(commands, String(span.attributes["reactor.operation"]));
+      yield* record((tokens) => ({ ...tokens, commands }));
+      const latest = bound.at(-1);
+      if (latest !== undefined) sessions.set(sessionId, latest.grant);
+      const binds = bound.length;
+      yield* run.judge(
+        "adopted after the creating token expired",
+        resumeStartedMs > createExpiresMs
+          ? undefined
+          : `the creating token lived ${Math.round((createExpiresMs - resumeStartedMs) / 1000)} s past the adoption`,
+      );
+      yield* run.judge(
+        "clip identified",
+        playingClipId === owner.playing
+          ? undefined
+          : `the adopted state named ${playingClipId ?? "no clip"} playing, not the owner's`,
+      );
+      yield* run.judge(
+        "fresh frames",
+        video.count === 0 ? "no frame arrived after adopting" : video.live(attachedMs),
+      );
+      yield* run.judge(
+        "a refreshed bound token carried the next call",
+        binds < 2 || refreshedMs === undefined
+          ? `${binds} bound token(s) were minted`
+          : refreshedMs < startedMs || refreshedMs > acceptedMs
+            ? "the refresh did not happen for the clip's upload"
+            : undefined,
+      );
+      yield* run.judge(
+        "reference audio reported",
+        acceptance.clip.has_reference_audio === true && acceptance.clip.reference_audio_count === 1
+          ? undefined
+          : `the clip reports has_reference_audio ${String(acceptance.clip.has_reference_audio ?? "absent")} and ${String(acceptance.clip.reference_audio_count ?? "no")} audio reference(s) for 1 sent`,
+      );
+      yield* run.judge(
+        "an expired token is refused",
+        expiredTokenStatus === 401 ? undefined : `reading with it answered ${expiredTokenStatus}`,
+      );
+      yield* run.judge(
+        "an unbound token is refused",
+        unboundTokenStatus === 403 ? undefined : `reading with it answered ${unboundTokenStatus}`,
+      );
+      yield* run.judge(
+        "the API key ends the session",
+        apiKeyTermination.confirmed
+          ? undefined
+          : `DELETE answered ${String(apiKeyTermination.deleteStatus ?? "nothing")} and the read found ${apiKeyTermination.state ?? "no terminal state"}`,
+      );
+      yield* run.mark("tokens observed");
+    }),
+  ).pipe(
+    // Whatever failed, the key ends a session the check allocated.
+    Effect.ensuring(
+      Effect.gen(function* () {
+        const keyed = yield* Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+        for (const session of (yield* run.evidence).sessions) {
+          if (session.close !== undefined) continue;
+          const requestedMs = yield* run.now;
+          yield* closedWith(session.id, requestedMs, {
+            termination: yield* keyed.terminate(session.id),
+          });
+        }
+      }).pipe(Effect.ignore),
+    ),
+    Effect.ensuring(settle(sessions)),
+  );
+});
+
 /** The queue check's edit before each boundary, and how long before the playing clip's end it is sent. */
 const boundaries = [
   { edit: "none", aimMs: 0 },
@@ -1110,10 +1387,53 @@ export const queue = Effect.gen(function* () {
   ).pipe(Effect.ensuring(settle(tokens)));
 });
 
+/** An event a playout's session published, as the evidence may keep it: no provider text. */
+interface Logged {
+  readonly atMs: number;
+  readonly sessionId: string;
+  readonly event: string;
+  readonly verdict?: Extract<Session.EventPayload, { readonly _tag: "Moderation" }>;
+}
+
+/** A code or category plain enough to be an identifier rather than provider text. */
+const identifier = (value: string) => /^[\w.:/-]{1,64}$/.test(value);
+
+/** A session event as the evidence may keep it; replies and track noise are left out. */
+const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionId"> | undefined => {
+  if (!("_tag" in event)) return undefined;
+  switch (event._tag) {
+    case "Status":
+      return { event: `status ${event.status}` };
+    case "Moderation":
+      return {
+        event: `moderation ${identifier(event.action) ? event.action : "(text)"}`,
+        verdict: event,
+      };
+    case "Control":
+      return { event: `control ${event.message.payload.case ?? "unknown"}` };
+    case "CommandError":
+      return { event: `command error ${event.error.reason._tag}` };
+    case "Diagnostic":
+      return { event: `diagnostic ${event.error.reason._tag}` };
+    default:
+      return undefined;
+  }
+};
+
 /** What a playout check has while its playout runs. */
 interface Air {
   readonly playout: Playout.Playout["Service"];
   readonly items: SubscriptionRef.SubscriptionRef<ReadonlyMap<string, Item>>;
+  /** Every as-run event, in order. */
+  readonly asRun: () => ReadonlyArray<{
+    readonly atMs: number;
+    readonly key: string;
+    readonly status: Playout.AsRunStatus;
+  }>;
+  /** What each session published: statuses, control messages, verdicts and diagnostics. */
+  readonly sessionLog: () => ReadonlyArray<Logged>;
+  /** The token each session was created with. */
+  readonly grant: (sessionId: string) => Coordinator.TokenGrant | undefined;
   readonly starts: () => ReadonlyArray<string>;
   /** Submits an item under `key`, recording when. */
   readonly track: (key: string) => Effect.Effect<Playout.ItemKey>;
@@ -1140,6 +1460,8 @@ const onAir = <A, E, R>(
     readonly lanes: ReadonlyArray<Playout.LaneSpec>;
     readonly sessions: number;
     readonly renewal?: Playout.Options["renewal"];
+    readonly maxModerations?: number;
+    readonly maxBuildsInFlight?: number;
   },
   scenario: (air: Air) => Effect.Effect<A, E, R>,
 ) =>
@@ -1151,6 +1473,12 @@ const onAir = <A, E, R>(
     const audio = Media.audioLog();
     const items = yield* SubscriptionRef.make<ReadonlyMap<string, Item>>(new Map());
     const starts: Array<string> = [];
+    const timeline: Array<{
+      readonly atMs: number;
+      readonly key: string;
+      readonly status: Playout.AsRunStatus;
+    }> = [];
+    const sessionLog: Array<Logged> = [];
     const windows = new Map<string, number>();
     let deadline = Number.POSITIVE_INFINITY;
     let opened = 0;
@@ -1171,12 +1499,24 @@ const onAir = <A, E, R>(
         tokens: Coordinator.fixedTokens(grant),
         holdLastFrame: true,
         onAllocated: ({ session }) =>
-          Effect.map(allocated(session.id, grant), (at) => {
+          Effect.gen(function* () {
+            const at = yield* allocated(session.id, grant);
             deadline = Math.min(deadline, at);
             tokens.set(session.id, grant);
+            yield* session.events({ capacity: 1024 }).pipe(
+              Stream.runForEach((event) =>
+                Effect.map(run.now, (atMs) => {
+                  const logged = summarize(event);
+                  if (logged !== undefined)
+                    sessionLog.push({ atMs, sessionId: session.id, ...logged });
+                }),
+              ),
+              Effect.ignore,
+              Effect.forkScoped,
+            );
           }).pipe(Effect.mapError((error) => ReactorError.fromCode("InvalidState", error.message))),
       });
-      const recordClose = (requestedMs: number, report: CloseReport) =>
+      const recordClose = (requestedMs: number, report: Session.CloseReport) =>
         closedWith(source.sessionId, requestedMs, { report }).pipe(
           Effect.provideService(Run, run),
           Effect.ignore,
@@ -1184,12 +1524,16 @@ const onAir = <A, E, R>(
       const wrapped: Playout.Source = {
         ...source,
         ...(options.renewal === undefined ? { lifetime: Duration.infinity } : {}),
-        close: Effect.gen(function* () {
-          const requestedMs = yield* run.now;
-          const report = yield* source.close;
-          yield* recordClose(requestedMs, report);
-          return report;
-        }),
+        // A failed playout closes its sessions on a fiber its scope may interrupt: the
+        // close and its record finish together.
+        close: Effect.uninterruptible(
+          Effect.gen(function* () {
+            const requestedMs = yield* run.now;
+            const report = yield* source.close;
+            yield* recordClose(requestedMs, report);
+            return report;
+          }),
+        ),
       };
       return wrapped;
     });
@@ -1199,12 +1543,19 @@ const onAir = <A, E, R>(
           open,
           lanes: options.lanes,
           ...(options.renewal === undefined ? {} : { renewal: options.renewal }),
+          ...(options.maxModerations === undefined
+            ? {}
+            : { maxModerations: options.maxModerations }),
+          ...(options.maxBuildsInFlight === undefined
+            ? {}
+            : { maxBuildsInFlight: options.maxBuildsInFlight }),
         });
         yield* playout.asRun.pipe(
           Stream.runForEach((event) =>
             Effect.gen(function* () {
-              const atMs = event.at - run.origin;
+              const atMs = round(event.at - run.origin);
               const status = event.status;
+              timeline.push({ atMs, key: event.key, status });
               yield* SubscriptionRef.update(items, (all) => {
                 const item = all.get(event.key);
                 if (item === undefined) return all;
@@ -1241,6 +1592,15 @@ const onAir = <A, E, R>(
                     });
                   case "Dropped":
                     return new Map(all).set(event.key, { ...next, dropped: status.reason });
+                  case "Failed":
+                    return new Map(all).set(event.key, {
+                      ...next,
+                      failed: {
+                        reason: status.reason,
+                        moderated: status.moderated === true,
+                        lost: status.lost !== undefined,
+                      },
+                    });
                   default:
                     return new Map(all).set(event.key, next);
                 }
@@ -1270,6 +1630,9 @@ const onAir = <A, E, R>(
         const air: Air = {
           playout,
           items,
+          asRun: () => [...timeline],
+          sessionLog: () => [...sessionLog],
+          grant: (sessionId) => tokens.get(sessionId),
           starts: () => [...starts],
           track: (key) =>
             Effect.gen(function* () {
@@ -1493,77 +1856,288 @@ export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, 
   }),
 );
 
+/** How long a held, flagged item is watched for a verdict or its session's end. */
+const moderationWaitMs = 12_000;
+
+/** A playout session event, as the evidence keeps it. */
+const sessionEventText = (event: Playout.SessionEvent): string => {
+  switch (event._tag) {
+    case "Opened":
+      return `opened ${event.sessionId}`;
+    case "SetupFailed":
+      return `setup failed (${event.consecutive} in a row)`;
+    case "Switched":
+      return `switched ${event.from} to ${event.to}`;
+    case "Replaced":
+      return `replaced ${event.from}, ${event.carried} carried`;
+    case "Moderated":
+      return `moderated ${event.sessionId}${event.key === undefined ? "" : ` blaming ${event.key}`}`;
+  }
+};
+
+/**
+ * The end of `cut` when the operator gives a prompt meant to be flagged: a
+ * 15 s guard clip goes to the line, and the flagged item behind it, so the
+ * flagged clip could air only after the watch ends; if it comes back Ready
+ * unflagged it is withdrawn. The check records what hosted Reactor, the
+ * session and the playout do. The playout may open no second session, and
+ * fails after one moderation.
+ */
+const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const run = yield* Run;
+    const target = yield* Target;
+    yield* run.secret(flagged);
+    const playoutLog: Array<{ readonly atMs: number; readonly event: string }> = [];
+    yield* air.playout.events.pipe(
+      Stream.runForEach((event) =>
+        Effect.map(run.now, (atMs) => {
+          if (event._tag === "Session")
+            playoutLog.push({ atMs, event: sessionEventText(event.event) });
+        }),
+      ),
+      Effect.forkScoped,
+    );
+    yield* air.playout.failure.pipe(
+      Effect.flatMap((failure) =>
+        Effect.map(run.now, (atMs) => {
+          playoutLog.push({ atMs, event: `failed ${failure.reason._tag}` });
+        }),
+      ),
+      Effect.forkScoped,
+    );
+    yield* recorded(
+      air.playout.submit({
+        key: yield* air.track("guard"),
+        lane: "line",
+        request: itemRequest(15),
+      }),
+    );
+    const submittedMs = yield* run.now;
+    yield* recorded(
+      air.playout.submit({
+        key: yield* air.track("flagged"),
+        lane: "line",
+        request: { prompt: Redacted.value(flagged), seconds: clipSeconds },
+      }),
+    );
+    yield* run.mark("flagged item queued behind the guard");
+    // The session ended under the item: the playout lost it, or a verdict said so.
+    const ended = () =>
+      playoutLog.some(
+        (logged) => logged.event.startsWith("replaced") || logged.event.startsWith("moderated"),
+      );
+    const settled = Effect.gen(function* () {
+      const last = (yield* SubscriptionRef.get(air.items)).get("flagged")?.last;
+      return (
+        last === "Failed" ||
+        last === "Unknown" ||
+        last === "Ready" ||
+        ended() ||
+        air
+          .sessionLog()
+          .some((logged) => logged.atMs >= submittedMs && logged.verdict !== undefined)
+      );
+    });
+    const watchUntil = Math.min(
+      air.deadline(),
+      (yield* Clock.currentTimeMillis) + moderationWaitMs,
+    );
+    while (!(yield* settled) && (yield* Clock.currentTimeMillis) < watchUntil)
+      yield* Effect.sleep("250 millis");
+    // Built and unflagged: it goes before it can air.
+    if ((yield* SubscriptionRef.get(air.items)).get("flagged")?.last === "Ready")
+      yield* air.playout
+        .edit([{ _tag: "Withdraw", key: Playout.ItemKey.make("flagged") }])
+        .pipe(Effect.ignore);
+    // A verdict can follow a built clip, and a close follows a verdict: watch a little longer.
+    yield* Effect.sleep(Duration.min(Duration.seconds(3), yield* until(air.deadline())));
+    const all = yield* SubscriptionRef.get(air.items);
+    const flaggedItem = all.get("flagged");
+    const sessionId = flaggedItem?.sessionId ?? all.get("long")?.sessionId;
+    // A session that ended under the item is closed once the playout gives up on it.
+    const closed = Effect.map(
+      run.evidence,
+      (evidence) =>
+        evidence.sessions.find((session) => session.id === sessionId)?.close !== undefined,
+    );
+    if (ended())
+      while (!(yield* closed) && (yield* Clock.currentTimeMillis) < air.deadline())
+        yield* Effect.sleep("250 millis");
+    const enqueueSpan = (yield* run.evidence).spans.find(
+      (span) =>
+        span.name === "reactor.session.command" &&
+        span.attributes["reactor.operation"] === "enqueue" &&
+        span.startMs >= submittedMs,
+    );
+    const enqueueRequest = enqueueSpan?.attributes["reactor.request.id"];
+    const verdictLog = air
+      .sessionLog()
+      .find((logged) => logged.atMs >= submittedMs && logged.verdict !== undefined);
+    const verdict = verdictLog?.verdict;
+    const grant = sessionId === undefined ? undefined : air.grant(sessionId);
+    const read =
+      sessionId === undefined || grant === undefined
+        ? undefined
+        : {
+            atMs: yield* run.now,
+            ...(yield* Probes.readSession({
+              apiUrl: target.apiUrl,
+              sessionId,
+              credential: grant.jwt,
+            })),
+          };
+    const moderation: Evidence.ModerationRecord = {
+      promptLength: Redacted.value(flagged).length,
+      submittedMs,
+      statuses: air
+        .asRun()
+        .filter((entry) => entry.key === "flagged")
+        .map(({ atMs, status }) => ({
+          atMs,
+          status: status._tag,
+          ...(status._tag === "Failed"
+            ? {
+                detail: `${status.moderated === true ? "moderated" : status.lost === undefined ? "failed" : "lost"}: ${status.reason}`,
+              }
+            : status._tag === "Unknown" && status.terminal === true
+              ? { detail: "terminal" }
+              : {}),
+        })),
+      ...(enqueueSpan === undefined
+        ? {}
+        : {
+            enqueue: {
+              startMs: enqueueSpan.startMs,
+              ...(enqueueSpan.durationMs === undefined
+                ? {}
+                : { durationMs: enqueueSpan.durationMs }),
+              status: enqueueSpan.status,
+              ...(typeof enqueueRequest === "string" ? { requestId: enqueueRequest } : {}),
+            },
+          }),
+      ...(verdictLog === undefined || verdict === undefined
+        ? {}
+        : {
+            verdict: {
+              atMs: verdictLog.atMs,
+              action: identifier(verdict.action) ? verdict.action : "(text)",
+              categories: verdict.categories.filter(identifier),
+              ...(verdict.inputKind === undefined || !identifier(verdict.inputKind)
+                ? {}
+                : { inputKind: verdict.inputKind }),
+              ...(verdict.command === undefined || !identifier(verdict.command)
+                ? {}
+                : { command: verdict.command }),
+              ...(verdict.requestId === undefined ? {} : { requestId: verdict.requestId }),
+              namesEnqueue: verdict.requestId !== undefined && verdict.requestId === enqueueRequest,
+            },
+          }),
+      session: air
+        .sessionLog()
+        .filter((logged) => logged.atMs >= submittedMs)
+        .map(({ atMs, event }) => ({ atMs, event })),
+      playout: [...playoutLog],
+      ...(read === undefined ? {} : { read }),
+      flagged: verdict !== undefined || ended(),
+      aired: flaggedItem?.startedMs !== undefined,
+    };
+    yield* run.update((evidence) => ({ ...evidence, moderation }));
+    yield* run.mark(
+      "moderation observed",
+      moderation.flagged ? "flagged" : moderation.aired ? "aired" : "not flagged",
+    );
+  }).pipe(
+    // The cut is judged already; what moderation did is an observation, never its verdict.
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        const run = yield* Run;
+        yield* run.mark("moderation not observed", error.message);
+      }),
+    ),
+  );
+
 /**
  * A cut lane on one session: a 15 s clip plays in the line lane, and 2.5 s
  * after it starts a 5 s clip goes to a lane with `cut: true`, which must stop
- * the long one once it is Ready, with one `stop`, and start next.
+ * the long one once it is Ready, with one `stop`, and start next. With a
+ * moderation prompt, a held item carrying it follows.
  */
-export const cut = onAir(
-  "cut",
-  { lanes: [{ name: "urgent", cut: true }, { name: "line" }], sessions: 1 },
-  (air) =>
-    Effect.gen(function* () {
-      const run = yield* Run;
-      yield* recorded(
-        air.playout.submit({
-          key: yield* air.track("long"),
-          lane: "line",
-          request: itemRequest(15),
-        }),
-      );
-      const longStarted = yield* waitFor(
-        air.items,
-        (all) => all.get("long")?.startedMs,
-        air.deadline(),
-      );
-      yield* sleepUntil(longStarted + 2_500, air.deadline());
-      const cutFromMs = yield* run.now;
-      yield* recorded(
-        air.playout.submit({
-          key: yield* air.track("cutter"),
-          lane: "urgent",
-          request: itemRequest(),
-        }),
-      );
-      yield* run.mark("cutter submitted");
-      const cutterStarted = yield* waitFor(
-        air.items,
-        (all) => all.get("cutter")?.startedMs,
-        air.deadline(),
-      );
-      yield* sleepUntil(cutterStarted + 2 * seamMs + 250, air.deadline());
-      const all = yield* SubscriptionRef.get(air.items);
-      const seam = yield* air.seam("long", "cutter", false);
-      yield* setSeams([seam]);
-      // H3's stop names no clip: a second one stops whatever plays by then.
-      const stops = (yield* run.evidence).spans.filter(
-        (span) =>
-          span.name === "reactor.session.command" &&
-          span.attributes["reactor.operation"] === "stop" &&
-          span.startMs >= cutFromMs,
-      ).length;
-      yield* run.update((evidence) => ({
-        ...evidence,
-        playout: { items: [], startOrder: [], seams: [], ...evidence.playout, stops },
-      }));
-      const long = all.get("long");
-      const cutter = all.get("cutter");
-      const order = air.starts();
-      yield* run.judge(
-        "a cut lane's clip stops a lower lane's playing clip",
-        long?.termination !== "stopped"
-          ? `the long clip ended ${long?.termination ?? long?.last ?? "untracked"}`
-          : order[order.indexOf("long") + 1] !== "cutter"
-            ? "the cut-lane clip did not start next"
-            : cutter?.termination === "stopped"
-              ? `the cut-lane clip was itself stopped after ${String(cutter.airedSeconds ?? "?")} s`
-              : stops !== 1
-                ? `${stops} stops were sent for one cut`
-                : undefined,
-      );
-      yield* run.mark("cut observed");
-    }),
-);
+export const cut = Effect.gen(function* () {
+  const flagged = (yield* Target).moderationPrompt;
+  return yield* onAir(
+    "cut",
+    {
+      lanes: [{ name: "urgent", cut: true }, { name: "line" }],
+      sessions: 1,
+      // The flagged enqueue goes out while the guard builds, so screening starts at once.
+      ...(flagged === undefined ? {} : { maxModerations: 1, maxBuildsInFlight: 2 }),
+    },
+    (air) =>
+      Effect.gen(function* () {
+        const run = yield* Run;
+        yield* recorded(
+          air.playout.submit({
+            key: yield* air.track("long"),
+            lane: "line",
+            request: itemRequest(15),
+          }),
+        );
+        const longStarted = yield* waitFor(
+          air.items,
+          (all) => all.get("long")?.startedMs,
+          air.deadline(),
+        );
+        yield* sleepUntil(longStarted + 2_500, air.deadline());
+        const cutFromMs = yield* run.now;
+        yield* recorded(
+          air.playout.submit({
+            key: yield* air.track("cutter"),
+            lane: "urgent",
+            request: itemRequest(),
+          }),
+        );
+        yield* run.mark("cutter submitted");
+        const cutterStarted = yield* waitFor(
+          air.items,
+          (all) => all.get("cutter")?.startedMs,
+          air.deadline(),
+        );
+        yield* sleepUntil(cutterStarted + 2 * seamMs + 250, air.deadline());
+        const all = yield* SubscriptionRef.get(air.items);
+        const seam = yield* air.seam("long", "cutter", false);
+        yield* setSeams([seam]);
+        // H3's stop names no clip: a second one stops whatever plays by then.
+        const stops = (yield* run.evidence).spans.filter(
+          (span) =>
+            span.name === "reactor.session.command" &&
+            span.attributes["reactor.operation"] === "stop" &&
+            span.startMs >= cutFromMs,
+        ).length;
+        yield* run.update((evidence) => ({
+          ...evidence,
+          playout: { items: [], startOrder: [], seams: [], ...evidence.playout, stops },
+        }));
+        const long = all.get("long");
+        const cutter = all.get("cutter");
+        const order = air.starts();
+        yield* run.judge(
+          "a cut lane's clip stops a lower lane's playing clip",
+          long?.termination !== "stopped"
+            ? `the long clip ended ${long?.termination ?? long?.last ?? "untracked"}`
+            : order[order.indexOf("long") + 1] !== "cutter"
+              ? "the cut-lane clip did not start next"
+              : cutter?.termination === "stopped"
+                ? `the cut-lane clip was itself stopped after ${String(cutter.airedSeconds ?? "?")} s`
+                : stops !== 1
+                  ? `${stops} stops were sent for one cut`
+                  : undefined,
+        );
+        yield* run.mark("cut observed");
+        if (flagged !== undefined) yield* moderate(air, flagged);
+      }),
+  );
+});
 
 /**
  * Renewal across two capped sessions: the playout opens the replacement 40 s
@@ -1686,6 +2260,7 @@ const all = {
   renewal,
   edits,
   cut,
+  tokens,
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

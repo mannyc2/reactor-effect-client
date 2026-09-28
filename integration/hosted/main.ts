@@ -2,10 +2,12 @@
  * The hosted qualification. README.md says what each check costs and
  * gathers, and why.
  *
- *   bun integration/hosted/main.ts rehearse <check> [--faults '<json>'] [--ledger <dir>]
+ *   bun integration/hosted/main.ts rehearse <check> [--faults '<json>'] [--ledger <dir>] \
+ *     [--moderation-prompt-file <path>]
  *   bun integration/hosted/main.ts preflight --total-budget-usd 1.50 --ledger <dir>
  *   bun integration/hosted/main.ts run <check> --budget-usd 0.75 --total-budget-usd 1.50 \
- *     --ledger <dir> --network "<where, without addresses>" --i-authorize-paid-sessions
+ *     --ledger <dir> --network "<where, without addresses>" --i-authorize-paid-sessions \
+ *     [--moderation-prompt-file <path>]
  *   bun integration/hosted/main.ts summarize <file or ledger>...
  *
  * A run exits 0 when it passes, 1 when it fails, and 2 when it refused before
@@ -36,8 +38,9 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
 import type { Evidence } from "./Evidence.js";
-import { EvidenceJson } from "./Evidence.js";
+import { EvidenceJson, Probe } from "./Evidence.js";
 import * as Ledger from "./Ledger.js";
+import * as Probes from "./Probes.js";
 import { execute } from "./Qualify.js";
 import * as Spend from "./Spend.js";
 import { summarize } from "./Summary.js";
@@ -53,6 +56,29 @@ const check = Argument.Literals("check", Spend.checks);
 const ledger = Flag.String("ledger").pipe(
   Flag.withDescription("the evidence directory: the ledger"),
 );
+const moderationPromptFile = Flag.String("moderation-prompt-file").pipe(
+  Flag.withDescription(
+    "a file holding a prompt meant to be flagged by content moderation; `cut` ends with it",
+  ),
+  Flag.optional,
+);
+
+/** The moderation prompt, read from the operator's file: redacted, and never in a message. */
+const moderationPrompt = (file: Option.Option<string>) =>
+  Effect.gen(function* () {
+    if (Option.isNone(file)) return undefined;
+    const text = yield* (yield* FileSystem.FileSystem)
+      .readFileString(file.value)
+      .pipe(
+        Effect.mapError(() =>
+          Spend.Refused.make({ message: "the moderation prompt file cannot be read" }),
+        ),
+      );
+    const prompt = text.trim();
+    if (prompt.length === 0)
+      return yield* Spend.Refused.make({ message: "the moderation prompt file is empty" });
+    return Redacted.make(prompt);
+  });
 
 const report = Effect.fnUntraced(function* (evidence: Evidence) {
   yield* Console.log(summarize([evidence]));
@@ -75,6 +101,7 @@ const rehearse = Command.make(
       Flag.withDescription('ReactorTest faults as JSON, e.g. [{"_tag":"NoAudio"}]'),
       Flag.optional,
     ),
+    moderationPromptFile,
   },
   Effect.fnUntraced(function* (input) {
     const directory = Option.isSome(input.ledger)
@@ -94,10 +121,21 @@ const rehearse = Command.make(
   }, Effect.scoped),
 ).pipe(
   Command.provide((input) =>
-    Target.rehearsal({
-      faults: Option.getOrElse(input.faults, () => []),
-      candidate: input.check === "turn" ? "relay" : "host",
-    }).pipe(Layer.provideMerge(Target.movingClock)),
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const prompt = yield* moderationPrompt(input.moderationPromptFile);
+        const faults = Option.getOrElse(input.faults, () => []);
+        return Target.rehearsal({
+          // Unless the faults say otherwise, the simulated moderation flags the prompt given.
+          faults:
+            prompt === undefined || faults.some((fault) => fault._tag === "Moderate")
+              ? faults
+              : [...faults, { _tag: "Moderate", prompt: Redacted.value(prompt) }],
+          candidate: input.check === "turn" ? "relay" : "host",
+          moderationPrompt: prompt,
+        }).pipe(Layer.provideMerge(Target.movingClock));
+      }),
+    ),
   ),
   Command.withDescription("Run a check against ReactorTest, for free"),
 );
@@ -114,6 +152,7 @@ const paid = Command.make(
       Flag.withDescription("where the check runs from, without addresses"),
     ),
     authorized: Flag.Boolean("i-authorize-paid-sessions").pipe(Flag.withDefault(false)),
+    moderationPromptFile,
   },
   Effect.fnUntraced(function* (input) {
     const authorization = yield* Spend.authorize({
@@ -141,6 +180,7 @@ const paid = Command.make(
           // Seam frames are for a person to look at, beside the run and never in the ledger.
           seams: yield* fs.makeTempDirectory({ prefix: "reactor-seams-" }),
           script: yield* path.fromFileUrl(new URL(import.meta.url)),
+          moderationPrompt: yield* moderationPrompt(input.moderationPromptFile),
         });
       }),
     ),
@@ -179,13 +219,18 @@ const preflight = Command.make(
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);
     yield* Console.log("the native library loads");
+    // Free questions about tokens and the key: each allocates nothing.
+    for (const probe of yield* Probes.run({ apiUrl: coordinator.apiUrl, apiKey: yield* apiKey }))
+      yield* Console.log(
+        `probe: ${yield* Schema.encodeEffect(Schema.fromJsonString(Probe))(probe)}`,
+      );
   }),
 ).pipe(
   Command.provide(
     Layer.unwrap(
       Effect.gen(function* () {
         return Coordinator.layer({ apiUrl: yield* apiUrl, apiKey: yield* apiKey }).pipe(
-          Layer.provide(FetchHttpClient.layer),
+          Layer.provideMerge(FetchHttpClient.layer),
         );
       }),
     ),
