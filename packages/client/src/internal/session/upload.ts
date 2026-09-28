@@ -26,8 +26,8 @@ export const make = ({
   const { settings, signaling, state, publish } = core;
   const { currentReady, guard } = generation;
 
-  return (name: string, mimeType: string, bytes: Uint8Array, options: UploadOptions = {}) =>
-    Effect.gen(function* () {
+  return Effect.fnUntraced(
+    function* (name: string, mimeType: string, bytes: Uint8Array, options: UploadOptions = {}) {
       const progress = yield* Ref.make<UploadProgress>({
         allocation: "not-requested",
         transfer: "not-requested",
@@ -102,18 +102,18 @@ export const make = ({
           ),
         ),
       );
-    }).pipe(
-      // The MIME type and size only: never the name or the bytes.
-      Effect.withSpan(
-        "reactor.session.upload",
-        {
-          kind: "client",
-          attributes: {
-            "reactor.upload.mime_type": mimeType,
-            "reactor.upload.size": bytes.byteLength,
-          },
+    },
+    // The MIME type and size only: never the name or the bytes.
+    Effect.withSpan(
+      "Session.upload",
+      (_name, mimeType, bytes) => ({
+        kind: "client",
+        attributes: {
+          "reactor.upload.mime_type": mimeType,
+          "reactor.upload.size": bytes.byteLength,
         },
-        { captureStackTrace: false },
-      ),
-    );
+      }),
+      { captureStackTrace: false },
+    ),
+  );
 };

@@ -347,7 +347,7 @@ export const make = ({
       );
     }).pipe(
       Effect.withSpan(
-        reconnect ? "reactor.session.reconnect" : "reactor.session.connect",
+        reconnect ? "Session.reconnect" : "Session.connect",
         { kind: "client" },
         { captureStackTrace: false },
       ),

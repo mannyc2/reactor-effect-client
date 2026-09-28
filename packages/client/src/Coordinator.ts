@@ -807,8 +807,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ),
       );
 
-    const terminate = (sessionId: string): Effect.Effect<Termination> =>
-      Effect.gen(function* (): Effect.fn.Return<Termination> {
+    const terminate = Effect.fnUntraced(
+      function* (sessionId: string): Effect.fn.Return<Termination> {
         const status = yield* Ref.make<number | null>(null);
         const path = sessionPath(sessionId);
         const removal = yield* Effect.result(
@@ -876,19 +876,19 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           state,
           ...(!terminal && removal._tag === "Failure" ? { error: summarize(removal.failure) } : {}),
         };
-      }).pipe(
-        Effect.tap((termination) =>
-          Effect.annotateCurrentSpan({
-            ...terminationAttributes(termination),
-            ...(termination.error === undefined ? {} : { "error.type": termination.error.reason }),
-          }),
-        ),
-        Effect.withSpan(
-          "reactor.coordinator.terminate",
-          { kind: "client", attributes: { "reactor.session.id": sessionId } },
-          { captureStackTrace: false },
-        ),
-      );
+      },
+      Effect.tap((termination) =>
+        Effect.annotateCurrentSpan({
+          ...terminationAttributes(termination),
+          ...(termination.error === undefined ? {} : { "error.type": termination.error.reason }),
+        }),
+      ),
+      Effect.withSpan(
+        "Coordinator.terminate",
+        (sessionId) => ({ kind: "client", attributes: { "reactor.session.id": sessionId } }),
+        { captureStackTrace: false },
+      ),
+    );
 
     return {
       create: (model, extraArgs) =>
@@ -1071,7 +1071,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey)),
   );
 
-  const mintToken = Effect.fn("reactor.coordinator.mintToken")(function* (input: TokenOptions) {
+  const mintToken = Effect.fn("Coordinator.mintToken")(function* (input: TokenOptions) {
     const invalid = (message: string) =>
       ReactorError.fromCode("InvalidInput", message, {
         operation: "token",
@@ -1202,13 +1202,9 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       timeout: "8 seconds",
     }).pipe(
       Effect.flatMap(decodeReply(Schema.Json, "pricing")),
-      Effect.withSpan(
-        "reactor.coordinator.pricing",
-        { kind: "client" },
-        { captureStackTrace: false },
-      ),
+      Effect.withSpan("Coordinator.pricing", { kind: "client" }, { captureStackTrace: false }),
     ),
-    inspect: Effect.fn("reactor.coordinator.inspect")(function* (sessionId: string) {
+    inspect: Effect.fn("Coordinator.inspect")(function* (sessionId: string) {
       const value = yield* app({
         operation: "inspect",
         request: HttpClientRequest.get(sessionPath(sessionId)),

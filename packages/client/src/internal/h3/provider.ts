@@ -38,7 +38,7 @@ import type {
   ReplyType,
 } from "./commands.js";
 import { decodeMessage, Payloads } from "./messages.js";
-import type { Clip } from "./messages.js";
+import type { Clip, Message } from "./messages.js";
 import * as Operations from "./operations.js";
 import { canvases } from "./profile.js";
 import type { CanvasAspect } from "./profile.js";
@@ -121,6 +121,25 @@ const rejected = (operation: string, source: CommandReply, reason: string): Comm
 
 const hex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+/** The clips a message lists: a queue's three lists, or a lifecycle message's one clip. */
+const clipsOf = (message: Message) => {
+  if (message.type === "queue_update")
+    return [...message.data.generation, ...message.data.playout, ...message.data.history];
+  return "clip" in message.data ? [message.data.clip] : [];
+};
+
+/** An enqueue's outcome as its span records it; an interruption records none. */
+const outcomeOf = (exit: Exit.Exit<Acceptance, CommandFailure>) => {
+  if (Exit.isSuccess(exit)) return { "reactor.command.outcome": "replied" };
+  const error = Exit.findError(exit);
+  return error._tag === "Success"
+    ? {
+        "reactor.command.outcome": error.success.context.outcome,
+        "error.type": error.success.reason._tag,
+      }
+    : {};
+};
 
 /** Whether a snapshot at `revision` already reflects `event`. */
 const covered = (event: ProviderEvent, revision: bigint): boolean => {
@@ -348,12 +367,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         current = { ...current, model: result.success[1] };
       }
       if (applied !== "stale" && message.type !== "unknown") {
-        const clips =
-          message.type === "queue_update"
-            ? [...message.data.generation, ...message.data.playout, ...message.data.history]
-            : "clip" in message.data
-              ? [message.data.clip]
-              : [];
+        const clips = clipsOf(message);
         const [accepted, acceptedEffects] = sequence(
           current,
           clips.map((clip) => accept(clip, source)),
@@ -655,8 +669,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const nextId = Ref.modify(counter, (n) => [`${namespace}:${n + 1n}`, n + 1n] as const);
 
   /** The enqueue itself, run once in the submission's own execution fiber. */
-  const execute = (id: string, args: CommandArgs<"enqueue">, entry: Pending) =>
-    Effect.gen(function* () {
+  const execute = Effect.fnUntraced(
+    function* (id: string, args: CommandArgs<"enqueue">, entry: Pending) {
       const sent = yield* Effect.result(
         session.command("enqueue", args, { replyTimeout: limits.command }),
       );
@@ -690,13 +704,14 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const acceptance = yield* Deferred.await(entry.deferred).pipe(
         Effect.timeoutOrElse({ duration: limits.reconcile, orElse: () => Effect.fail(original) }),
         Effect.mapError(() => original),
-        Effect.withSpan("reactor.h3.reconcile", {}, { captureStackTrace: false }),
+        Effect.withSpan("H3.reconcile", {}, { captureStackTrace: false }),
       );
       // An enqueue settles once the snapshots its reply implies are observed.
       yield* settled;
       return acceptance;
-    }).pipe(
-      Effect.onExit((exit) =>
+    },
+    (effect, id) =>
+      Effect.onExit(effect, (exit) =>
         step((internal) => {
           // However the enqueue ends, the evidence it saw still decides; only a
           // definite failure discards it.
@@ -714,27 +729,15 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ];
         }),
       ),
-      // The span belongs to the execution fiber, so it ends with the enqueue's
-      // outcome even when the caller stopped waiting.
-      Effect.onExit((exit) => {
-        const error = Exit.findError(exit);
-        return Effect.annotateCurrentSpan(
-          Exit.isSuccess(exit)
-            ? { "reactor.command.outcome": "replied" }
-            : error._tag === "Success"
-              ? {
-                  "reactor.command.outcome": error.success.context.outcome,
-                  "error.type": error.success.reason._tag,
-                }
-              : {},
-        );
-      }),
-      Effect.withSpan(
-        "reactor.h3.enqueue",
-        { kind: "client", attributes: { "reactor.h3.submission.id": id } },
-        { captureStackTrace: false },
-      ),
-    );
+    // The span belongs to the execution fiber, so it ends with the enqueue's
+    // outcome even when the caller stopped waiting.
+    Effect.onExit((exit) => exit.pipe(outcomeOf, Effect.annotateCurrentSpan)),
+    Effect.withSpan(
+      "H3.enqueue",
+      (id) => ({ kind: "client", attributes: { "reactor.h3.submission.id": id } }),
+      { captureStackTrace: false },
+    ),
+  );
 
   const observeResult = <E>(
     id: string,

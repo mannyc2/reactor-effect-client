@@ -37,14 +37,16 @@ interface Entry<A> {
 
 type Completion = "acknowledged" | "replied" | "cancelled";
 
+interface Recent {
+  readonly generation: bigint;
+  readonly completion: Completion;
+}
+
 interface State<A> {
   readonly counter: bigint;
   readonly pending: ReadonlyMap<string, Entry<A>>;
   /** Recently completed ids, so a repeat or late reply is labelled, not mistaken. */
-  readonly recent: ReadonlyMap<
-    string,
-    { readonly generation: bigint; readonly completion: Completion }
-  >;
+  readonly recent: ReadonlyMap<string, Recent>;
 }
 
 export interface Correlator<A> {
@@ -87,6 +89,23 @@ const remember = <A>(
   return recent;
 };
 
+/** How a reply on `generation` relates to its request, pending or recently completed. */
+const correlationOf = <A>(
+  entry: Entry<A> | undefined,
+  recent: Recent | undefined,
+  generation: bigint,
+  stage: "acknowledged" | "replied",
+): Correlation => {
+  if (entry !== undefined) {
+    if (entry.pending.generation !== generation) return "stale-generation";
+    return entry.waiting ? "matched" : "late";
+  }
+  if (recent === undefined) return "late-or-unknown";
+  if (recent.generation !== generation) return "stale-generation";
+  if (recent.completion === "acknowledged" && stage === "replied") return "late";
+  return recent.completion === "cancelled" ? "late-or-unknown" : "duplicate";
+};
+
 const without = <A>(pending: State<A>["pending"], id: string): State<A>["pending"] => {
   const next = new Map(pending);
   next.delete(id);
@@ -117,34 +136,33 @@ export const make = <A>(options: {
         });
       return {
         size: Effect.map(Ref.get(state), (current) => current.pending.size),
-        register: (generation, operation) =>
-          Effect.gen(function* () {
-            const deferred = yield* Deferred.make<A, ReactorError>();
-            const pending = yield* Ref.modify(state, (current) => {
-              if (current.pending.size >= options.limit) return [undefined, current] as const;
-              const counter = current.counter + 1n;
-              const id = `${options.prefix}_${options.namespace}_${String(counter)}`;
-              const pending: Pending<A> = { id, generation, operation, deferred };
-              return [
-                pending,
-                {
-                  ...current,
-                  counter,
-                  pending: new Map(current.pending).set(id, {
-                    pending,
-                    submitted: false,
-                    waiting: true,
-                  }),
-                },
-              ] as const;
+        register: Effect.fnUntraced(function* (generation: bigint, operation: string) {
+          const deferred = yield* Deferred.make<A, ReactorError>();
+          const pending = yield* Ref.modify(state, (current) => {
+            if (current.pending.size >= options.limit) return [undefined, current] as const;
+            const counter = current.counter + 1n;
+            const id = `${options.prefix}_${options.namespace}_${String(counter)}`;
+            const pending: Pending<A> = { id, generation, operation, deferred };
+            return [
+              pending,
+              {
+                ...current,
+                counter,
+                pending: new Map(current.pending).set(id, {
+                  pending,
+                  submitted: false,
+                  waiting: true,
+                }),
+              },
+            ] as const;
+          });
+          if (pending === undefined)
+            return yield* ReactorError.fromCode("Overflow", "pending request bound reached", {
+              operation,
+              outcome: "not-submitted",
             });
-            if (pending === undefined)
-              return yield* ReactorError.fromCode("Overflow", "pending request bound reached", {
-                operation,
-                outcome: "not-submitted",
-              });
-            return pending;
-          }),
+          return pending;
+        }),
         submitted: (pending) => update(pending, (entry) => ({ ...entry, submitted: true })),
         isSubmitted: (pending) =>
           Effect.map(entryOf(pending), (entry) => entry?.submitted === true),
@@ -163,91 +181,73 @@ export const make = <A>(options: {
                 ]
               : [false, current],
           ),
-        settle: (id, generation, result, stage = "replied") =>
-          Effect.gen(function* () {
-            const [correlation, matched] = yield* Ref.modify(
-              state,
-              (current): readonly [readonly [Correlation, Pending<A> | undefined], State<A>] => {
-                const entry = current.pending.get(id);
-                const recent = current.recent.get(id);
-                const correlation: Correlation =
-                  id === ""
-                    ? "unsolicited"
-                    : entry !== undefined
-                      ? entry.pending.generation !== generation
-                        ? "stale-generation"
-                        : entry.waiting
-                          ? "matched"
-                          : "late"
-                      : recent === undefined
-                        ? "late-or-unknown"
-                        : recent.generation !== generation
-                          ? "stale-generation"
-                          : recent.completion === "acknowledged" && stage === "replied"
-                            ? "late"
-                            : recent.completion === "cancelled"
-                              ? "late-or-unknown"
-                              : "duplicate";
-                if (entry !== undefined && (correlation === "matched" || correlation === "late"))
-                  return [
-                    [correlation, entry.pending] as const,
-                    {
-                      ...current,
-                      pending: without(current.pending, id),
-                      recent: remember(current, id, generation, stage),
-                    },
-                  ] as const;
-                // An acknowledgement and a later model payload are two facts.
-                if (correlation === "late" && recent?.completion === "acknowledged")
-                  return [
-                    [correlation, undefined] as const,
-                    { ...current, recent: remember(current, id, generation, "replied") },
-                  ] as const;
-                return [[correlation, undefined] as const, current] as const;
-              },
+        settle: Effect.fnUntraced(function* (
+          id: string,
+          generation: bigint,
+          result: (correlation: Correlation) => Effect.Effect<A, ReactorError>,
+          stage: "acknowledged" | "replied" = "replied",
+        ) {
+          const [correlation, matched] = yield* Ref.modify(
+            state,
+            (current): readonly [readonly [Correlation, Pending<A> | undefined], State<A>] => {
+              const entry = current.pending.get(id);
+              const recent = current.recent.get(id);
+              const correlation =
+                id === "" ? "unsolicited" : correlationOf(entry, recent, generation, stage);
+              if (entry !== undefined && (correlation === "matched" || correlation === "late"))
+                return [
+                  [correlation, entry.pending] as const,
+                  {
+                    ...current,
+                    pending: without(current.pending, id),
+                    recent: remember(current, id, generation, stage),
+                  },
+                ] as const;
+              // An acknowledgement and a later model payload are two facts.
+              if (correlation === "late" && recent?.completion === "acknowledged")
+                return [
+                  [correlation, undefined] as const,
+                  { ...current, recent: remember(current, id, generation, "replied") },
+                ] as const;
+              return [[correlation, undefined] as const, current] as const;
+            },
+          );
+          const completion = yield* Effect.exit(result(correlation));
+          if (matched !== undefined) yield* Deferred.done(matched.deferred, completion);
+          return correlation;
+        }),
+        failGeneration: Effect.fnUntraced(function* (generation: bigint, failure: ReactorError) {
+          const retired = yield* Ref.modify(state, (current) => {
+            const retired = [...current.pending.values()].filter(
+              (entry) => entry.pending.generation === generation,
             );
-            const completion = yield* Effect.exit(result(correlation));
-            if (matched !== undefined) yield* Deferred.done(matched.deferred, completion);
-            return correlation;
-          }),
-        failGeneration: (generation, failure) =>
-          Effect.gen(function* () {
-            const retired = yield* Ref.modify(state, (current) => {
-              const retired = [...current.pending.values()].filter(
-                (entry) => entry.pending.generation === generation,
-              );
-              let recent = current.recent;
-              const pending = new Map(current.pending);
-              for (const entry of retired) {
-                pending.delete(entry.pending.id);
-                recent = remember(
-                  { ...current, recent },
-                  entry.pending.id,
-                  generation,
-                  "cancelled",
-                );
-              }
-              return [retired, { ...current, pending, recent }] as const;
-            });
-            yield* Effect.forEach(
-              retired,
-              (entry) =>
-                Deferred.fail(
-                  entry.pending.deferred,
-                  ReactorError.make({
-                    reason: failure.reason,
-                    context: {
-                      ...failure.context,
-                      operation: entry.pending.operation,
-                      requestId: entry.pending.id,
-                      generation,
-                      outcome: entry.submitted ? "unknown" : "not-submitted",
-                    },
-                  }),
-                ),
-              { discard: true },
-            );
-          }),
+            let recent = current.recent;
+            const pending = new Map(current.pending);
+            for (const entry of retired) {
+              pending.delete(entry.pending.id);
+              recent = remember({ ...current, recent }, entry.pending.id, generation, "cancelled");
+            }
+            return [retired, { ...current, pending, recent }] as const;
+          });
+          yield* Effect.forEach(
+            retired,
+            (entry) =>
+              Deferred.fail(
+                entry.pending.deferred,
+                ReactorError.make({
+                  reason: failure.reason,
+                  context: {
+                    ...failure.context,
+                    operation: entry.pending.operation,
+                    requestId: entry.pending.id,
+                    generation,
+                    outcome: entry.submitted ? "unknown" : "not-submitted",
+                  },
+                }),
+              ),
+            { discard: true },
+          );
+        }),
       };
     },
   );

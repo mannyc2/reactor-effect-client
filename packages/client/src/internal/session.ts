@@ -222,9 +222,7 @@ export const make = Effect.fnUntraced(function* (input: {
       ...terminationAttributes(report.remote),
     });
     return report;
-  }).pipe(
-    Effect.withSpan("reactor.session.close", { kind: "client" }, { captureStackTrace: false }),
-  );
+  }).pipe(Effect.withSpan("Session.close", { kind: "client" }, { captureStackTrace: false }));
 
   const close: Effect.Effect<CloseReport> = Effect.uninterruptible(
     Ref.getAndSet(closeStarted, true).pipe(
