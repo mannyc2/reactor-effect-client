@@ -22,6 +22,14 @@ const watch = Effect.gen(function* () {
   return { provider, frames };
 });
 
+/** One session's log entries of one kind and name: a block's tests share a simulated Reactor. */
+const logged = (sessionId: string, kind: "build" | "command" | "message", name: string) =>
+  Effect.map(ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.log)), (log) =>
+    log.filter(
+      (entry) => entry.sessionId === sessionId && entry.kind === kind && entry.name === name,
+    ),
+  );
+
 /** Plays two 5 s clips back to back and returns each clip's frames, and the black ones. */
 const playTwo = (flush?: boolean) =>
   Effect.gen(function* () {
@@ -184,13 +192,6 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
   "provider semantics",
   (it) => {
     const unknown = "00000000-0000-4000-8000-0000000000ff";
-    // The tests of this block share one simulated Reactor, so each reads its own session's log.
-    const logged = (sessionId: string, kind: "build" | "message", name: string) =>
-      Effect.map(ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.log)), (log) =>
-        log.filter(
-          (entry) => entry.sessionId === sessionId && entry.kind === kind && entry.name === name,
-        ),
-      );
 
     it.effect("continues only from a clip the session holds, and otherwise builds alone", () =>
       Effect.gen(function* () {
@@ -306,3 +307,43 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
     );
   },
 );
+
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "70 millis", stop: "100 millis" }),
+  }),
+)("a stop's landing", (it) => {
+  it.effect(
+    "answers a stop before its clip ends, and holds a stop sent meanwhile for the next clip",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const { provider } = yield* watch;
+        yield* provider.setAutoplay(true);
+        const first = yield* provider.enqueue({ prompt: "first", seconds: 15 });
+        const second = yield* provider.enqueue({ prompt: "second", seconds: 5 });
+        const third = yield* provider.enqueue({ prompt: "third", seconds: 5 });
+        yield* Effect.sleep("9 seconds");
+        yield* provider.stop;
+        // Acknowledged, not landed: the clip still plays, so a play is refused.
+        assert.strictEqual((yield* provider.getState).value.playing_clip_id, first.clip.clip_id);
+        const refused = yield* Effect.flip(provider.play(third.clip.clip_id));
+        assert.strictEqual(refused.context.outcome, "replied");
+        // H3's stop names no clip: this one waits for the landing, then stops the next clip.
+        yield* provider.stop;
+        yield* Effect.sleep("10 seconds");
+        assert.deepStrictEqual(
+          (yield* logged(provider.sessionId, "message", "clip_stopped")).map(
+            (entry) => entry.clipId,
+          ),
+          [first.clip.clip_id, second.clip.clip_id],
+        );
+        assert.deepStrictEqual(
+          (yield* logged(provider.sessionId, "message", "clip_started")).map(
+            (entry) => entry.clipId,
+          ),
+          [first.clip.clip_id, second.clip.clip_id, third.clip.clip_id],
+        );
+      }),
+  );
+});
