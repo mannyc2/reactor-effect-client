@@ -7,10 +7,10 @@
  * `hold-shutdown` exists, that call does not answer, and every call it
  * receives is appended to `calls.log`, so a test sees what reached a child.
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- another process steers the fake through files
+// A stand-in for a Node-API module has no Effect services: it reads and appends the files
+// another process steers it with synchronously, as the addon's own calls return.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { appendFileSync, existsSync } from "node:fs";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- another process steers the fake through files
-import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import type * as Binding from "../../src/internal/binding.js";
@@ -23,12 +23,12 @@ const mapping: Array<Binding.Mapping> = [
 
 /** The addon's module, steered by the files in `directory`. */
 export const make = (directory: string) => {
-  const log = (call: string) => appendFileSync(join(directory, "calls.log"), `${call}\n`);
+  const log = (call: string) => appendFileSync(`${directory}/calls.log`, `${call}\n`);
   /** `value`, once no `hold-<call>` file is in the directory: a promise, as the addon answers. */
   const release = <A,>(call: string, value: A): Promise<A> =>
     Effect.runPromise(
       Effect.suspend(() =>
-        existsSync(join(directory, `hold-${call}`)) ? Effect.fail("held") : Effect.succeed(value),
+        existsSync(`${directory}/hold-${call}`) ? Effect.fail("held") : Effect.succeed(value),
       ).pipe(Effect.retry({ schedule: Schedule.spaced("5 millis") })),
     );
   /** In-process controls: the peers made, and a fault to inject. */
