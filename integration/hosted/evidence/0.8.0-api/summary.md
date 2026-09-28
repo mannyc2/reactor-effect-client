@@ -3,7 +3,7 @@
 Paid runs from checkouts of `claude/effect-native` that verify the public API against hosted
 Reactor in as few sessions as possible: `tour` (one 90 s session), `adoption` (one 75 s session)
 and `show` (three 75 s sessions). The maintainer approved $5 for the three; the per-check worst
-cases total $4.875.
+cases total $4.875, and the runs' estimates at the published per-second rate total $2.388.
 
 What they found:
 
@@ -32,6 +32,30 @@ What they found:
     the canvas to 16:9 and the seed to 1000.
   - The API key ended the session (DELETE 200, `CLOSED`). Attaching afterwards failed with
     `TerminalSession`, and the key reading an unknown session got 404, ending it confirmed absent.
+- **`show` passed on 87d9f67, all 25 criteria, over three 75 s sessions.** One playout ran as a
+  show runs, with filler holding the air:
+  - Session 1's connection was cut with 8.07 s of air secured. It read ready 1.64 s later and its
+    picture resumed 1.82 s after the drop, with no replacement opened. The playout reported the
+    reconnect once, measured at 1686 ms, its two reports 1.69 s apart. No paid run had recovered a
+    dropped connection before.
+  - The edits aired in their planned order. The batch took effect 2.24 s after it was sent and
+    0.91 s before its boundary, and its withdrawn clip never started. Each seam paused 53 to 169 ms
+    with no dark frame.
+  - The planned switch came 57.28 s into the run, once the grace had passed; its gap on air, recorded and not
+    judged, was 420 ms. X at `Asap` aired ahead of L1, whose cues fired 0 and 1 ms from due. T, due
+    `At` an instant, aired 559 ms after it, at the end of a 6 s filler tile that ran 6.58 s.
+  - Content moderation ended session 2 with a `terminate` verdict 0.40 s after the flagged item was
+    submitted, with no categories and naming no request of ours. The flagged item failed as
+    moderated and never aired, the guard on air failed as lost, and c1, Ready, was carried to
+    session 3, which opened 3.17 s after the verdict and aired it.
+  - On session 3 the stepped cut, which no paid run had used, stopped the long clip with one `stop`
+    and started the cutter next after a 168 ms pause, with no dark frame. The `replace` lane's new
+    item took its waiting item's place, the `skip` lane refused a second item, and the drain
+    completed.
+  - On one session each clip followed the last within 75 ms; the loss left 5.34 s between the
+    guard's failure and c1. The playout's state named each of the 20 clips as its start was
+    reported, with that start. The show's reader never fell behind, and the picture lost no frame:
+    2,372 frames at 22.2 fps.
 - **Hosted H3 records.** Recorded, not judged: a clip request came back `ClipReady` in 2.6 s, but
   downloading it timed out after 15.1 s, and a whole-recording request timed out too. Whether the
   download or the check's window is at fault is open.
@@ -39,10 +63,27 @@ What they found:
   closed.** Recorded, not judged: the 0.8.0-dev `tokens` run first read `INACTIVE` 8.4 s after its
   owner's kill, so hosted takes some seconds to mark a session with no connection.
 
+## For the dashboard
+
+Each session from allocation to the request that ended it, as the evidence times them. The
+dashboard's Usage page and the balance have not been compared with these yet.
+
+| Run      | Check      | Session      | Allocated    | End requested | Span   |
+| -------- | ---------- | ------------ | ------------ | ------------- | ------ |
+| af351108 | `adoption` | `2b56408f-…` | 15:51:25.21Z | 15:51:55.72Z  | 30.5 s |
+| a2382505 | `tour`     | `ef93e126-…` | 16:12:11.10Z | 16:12:47.23Z  | 36.1 s |
+| 3a197a9a | `show`     | `224ecfa3-…` | 23:37:46.17Z | 23:38:42.99Z  | 56.8 s |
+| 3a197a9a | `show`     | `afe348f1-…` | 23:38:34.07Z | 23:39:06.98Z  | 32.9 s |
+| 3a197a9a | `show`     | `ef93d110-…` | 23:39:07.50Z | 23:39:38.14Z  | 30.6 s |
+
+At the published rate the five spans' 187 s come to $2.34; the runs' estimates, which count each
+session to its close report and round it up to the second, total $2.388.
+
 | Run      | Check    | Mode | Verdict | Started                  | Worst case | Estimated |
 | -------- | -------- | ---- | ------- | ------------------------ | ---------- | --------- |
 | af351108 | adoption | paid | pass    | 2026-09-28T15:51:24.513Z | $0.938     | $0.388    |
 | a2382505 | tour     | paid | pass    | 2026-09-28T16:12:10.204Z | $1.125     | $0.463    |
+| 3a197a9a | show     | paid | pass    | 2026-09-28T23:37:45.721Z | $2.813     | $1.538    |
 
 ### adoption: pass (paid, run af351108, 2026-09-28T15:51:24.513Z)
 
@@ -87,3 +128,37 @@ What they found:
 - **Free mints:** three sessions: granted, max_sessions 3, cap 1; no session cap: granted, max_sessions 1, cap absent
 - **Termination:** ef93e126-d2c4-4c68-ae2d-418309c9c4b1 confirmed (trail CLOSED)
 - **Criteria:** ✓ the deployment offers every command the tour sends · ✓ canvas_accepted names the canvas asked for at its size · ✓ the state reports the new canvas · ✓ clip 2 is accepted on clip 1's uploads · ✓ clip 2 reports its reused references · ✓ the queue read reflects the move · ✓ clip 1: correlated acceptance · ✓ clip 1: lifecycle progression · ✓ clip 1: live video · ✓ clip 1: audio when offered · ✓ clip 1: reference audio reported · ✓ clip 1: metadata preserved · ✓ stop cuts the playing clip · ✓ nothing starts after a stop with autoplay off · ✓ play starts the clip it names · ✓ reset stops the playing clip · ✓ reset leaves both queues empty and nothing playing · ✓ a prompt past H3's text budget fails its clip · ✓ the operation reports the failure as ClipEnded · ✓ the session refreshes to a token bound to itself before its token expires · ✓ a call after the creating token expired succeeds · ✓ the reconnect makes the next generation · ✓ H3 answers on the new connection with the session's state kept · ✓ fresh frames on the new connection · ✓ popped clips are never built or started · ✓ the API key ends the session · ✓ the session's own close confirms it ended · ✓ attaching to the ended session is refused · ✓ the API key finds no unknown session · ✓ confirmed termination
+
+### show: pass (paid, run 3a197a9a, 2026-09-28T23:37:45.721Z)
+
+- **Environment:** reactor-effect-client 0.7.1, reactor-effect-native 0.7.1, effect 4.0.0-rc.117, @effect/platform-node 4.0.0-rc.117, bun 1.4.2, linux x64, commit 87d9f679
+- **Native addon:** linux-x64-gnu sha256 4fdccf92, source 1da0d5fb, webrtc-7907-a5ddff60-p9
+- **Network:** maintainer's Linux workstation, network not described
+- **Cost:** worst case $2.813, estimated $1.538 at 125 credits/s, billed per second, and 10000 credits/$
+- **Timeline:** admitted 0.00 s · opened 0.01 s · minted 0.10 s · allocated 0.46 s · connection dropped 7.53 s · recovered 9.54 s · edits submitted 9.54 s · inserted 15.59 s · batch submitted 38.36 s · edits observed 45.07 s · minted 47.99 s · allocated 48.35 s · L1 and X submitted 50.62 s · switched 57.28 s · T submitted 57.45 s · closed 57.70 s · start modes observed 74.34 s · guard on air, c1 Ready 80.86 s · flagged item queued behind the guard 80.86 s · minted 81.49 s · closed 81.58 s · moderation observed 81.72 s · allocated 81.78 s · replaced 84.43 s · cutter submitted 94.23 s · lane conflicts submitted 94.23 s · cut observed 99.84 s · lanes observed 106.98 s · drained 112.11 s · show observed 112.11 s · closed 112.42 s · settled 112.81 s
+- **Order:** started p1, p2, xc, xn, p3, y, X, L1, T, guard, c1, long, cutter, new, solo
+- **Seam p1 to p2:** pause 169 ms (0 frames, 0 dark); 0 dark frames; join change 46.17 against 3.81 (×12.13)
+- **Seam p2 to xc (continued):** pause 53 ms (0 frames, 0 dark); 0 dark frames; join change 10.15 against 4.43 (×2.29)
+- **Seam xc to xn:** pause 80 ms (0 frames, 0 dark); 0 dark frames; join change 63.82 against 4.08 (×15.64)
+- **Seam xn to p3:** pause 72 ms (0 frames, 0 dark); 0 dark frames; join change 50.45 against 2.58 (×19.52)
+- **Seam p3 to y:** pause 122 ms (0 frames, 0 dark); 0 dark frames; join change 38.86 against 2.88 (×13.48)
+- **Seam long to cutter:** pause 168 ms (0 frames, 0 dark); 0 dark frames; join change 44.7 against 3.94 (×11.33)
+- **Batch:** took effect 2.24 s after it was sent, 0.91 s before its boundary
+- **Switch:** at 57.28 s, grace-elapsed
+- **Stops:** 1
+- **Filler:** 6 clips asked for (5 s at 0 s secured, 5 s at 5.17 s secured, 5 s at 5 s secured, 5 s at 8 s secured, 6 s at 10.33 s secured, 5 s at 5 s secured); starved at 112.11 s
+- **On air:** 5 filler clips started and 5 ended; 19 gaps between clips, the longest 5338 ms from guard to c1 at 81.27 s, 420 ms from filler 3 to X at 57.02 s, 75 ms from long to cutter at 96.52 s
+- **State on air:** named 20 clips as they started, 0 read after a later start
+- **Sessions:** opened 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 > reconnecting 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 > reconnected 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 after 1686 ms > opened afe348f1-102f-4a07-83f5-bc1512fe3599 > switched 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 to afe348f1-102f-4a07-83f5-bc1512fe3599 > moderated afe348f1-102f-4a07-83f5-bc1512fe3599 blaming flagged > reconnecting afe348f1-102f-4a07-83f5-bc1512fe3599 > replaced afe348f1-102f-4a07-83f5-bc1512fe3599, 1 carried > opened ef93d110-7c10-4789-b840-2a1d00ea67d9
+- **Reconnects:** 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 at 7.53 s, back 1.69 s later, measured 1686 ms; afe348f1-102f-4a07-83f5-bc1512fe3599 at 81.27 s, never back
+- **Readers:** never fell behind
+- **Failed:** flagged Moderated at 81.26 s, guard Lost with afe348f1-102f-4a07-83f5-bc1512fe3599 at 81.27 s
+- **Recovery:** 1 connection dropped at 7.53 s with 8.07 s secured; disconnected > connecting > waiting > ready; ready 1.64 s later, first frame 1.82 s after the drop
+- **At:** due at 73.78 s, started 559 ms after it
+- **Cues:** L1 in 0 ms from due, L1 out 1 ms from due
+- **Loss:** afe348f1-102f-4a07-83f5-bc1512fe3599 ended by moderation from 80.86 s; replaced 0.40 s later; ef93d110-7c10-4789-b840-2a1d00ea67d9 opened at 84.43 s
+- **Moderation:** flagged; enqueue ok in 27 ms; item Accepted > Building > Failed
+- **Verdict:** terminate at 0.40 s after the submission, categories none, input unnamed, command unnamed, names no request of ours
+- **Afterwards:** session moderation terminate > status disconnected > diagnostic ChannelClosed > status closing > status closed; playout moderated afe348f1-102f-4a07-83f5-bc1512fe3599 blaming flagged > reconnecting afe348f1-102f-4a07-83f5-bc1512fe3599 > replaced afe348f1-102f-4a07-83f5-bc1512fe3599, 1 carried; read 200 CLOSED (keys session_id, cluster, zone, state, server_info, model, origin_country, region)
+- **Termination:** 224ecfa3-d408-4bed-9b2e-4f9c3d507ee7 confirmed (trail CLOSED); afe348f1-102f-4a07-83f5-bc1512fe3599 confirmed (trail CLOSED); ef93d110-7c10-4789-b840-2a1d00ea67d9 confirmed (trail CLOSED)
+- **Criteria:** ✓ recovery on the same session · ✓ the playout reports the reconnect · ✓ inserts and the batch air in their planned places · ✓ a batch takes effect before its boundary · ✓ a batch's withdrawn clip never starts · ✓ every seam measured · ✓ an Asap item airs ahead of one waiting · ✓ an At item airs, never before its time · ✓ cues fire at their offsets · ✓ the ended session is replaced · ✓ a cut lane's clip stops a lower lane's playing clip · ✓ a replacing lane's new item takes its waiting item's place · ✓ a skipping lane refuses an item while one waits · ✓ the drain completes on the last session · ✓ a clip on air with the lost session fails as lost · ✓ a clip not yet aired is carried to the next session · ✓ moderation fails the item it blames · ✓ one planned switch · ✓ each item airs on the session on air · ✓ video from every session · ✓ filler keeps the air covered · ✓ no gap on air between clips, filler included · ✓ the state names the clip on air as it started · ✓ the show's own reader keeps up · ✓ confirmed termination
