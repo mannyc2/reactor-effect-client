@@ -407,8 +407,8 @@ export const make = Effect.fnUntraced(function* (input: {
   const remoteError = (value: { readonly code: string; readonly message: string }) =>
     Remote.make({
       _tag: "Remote",
-      message: `remote command error ${value.code}`,
-      remoteCode: value.code,
+      message: "remote command error",
+      remoteCode: Redacted.make(value.code),
       body: Redacted.make(value.message),
     });
 

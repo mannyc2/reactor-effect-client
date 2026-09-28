@@ -1,6 +1,6 @@
 /** One session through its public contract, on a simulated Reactor with the timing each case states. */
 import { assert, layer } from "@effect/vitest";
-import { Deferred, Duration, Effect, Fiber, Option, Redacted, Stream } from "effect";
+import { Deferred, Duration, Effect, Fiber, Inspectable, Option, Redacted, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
 import type { CommandFailure } from "../src/ReactorError.js";
@@ -10,8 +10,9 @@ import { connect, environment } from "./fixtures/Simulated.js";
 const timing = ReactorTest.Timing.fixed({ buildSpeed: 2.4, channel: "10 millis" });
 
 layer(environment({ timing }))("replies", (it) => {
+  // The simulated model refuses an unknown command with the code `unknown_command` and its name.
   it.effect(
-    "a provider's error reply fails the command as replied, its text out of the message",
+    "a provider's error reply fails the command as replied, its code and text out of the message",
     () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow());
@@ -21,12 +22,17 @@ layer(environment({ timing }))("replies", (it) => {
           [failure.context.outcome, failure.reason._tag, failure.context.operation],
           ["replied", "Remote", "no_such_command"],
         );
-        const text = failure.reason._tag === "Remote" ? failure.reason.body : undefined;
-        assert.strictEqual(
-          text === undefined ? undefined : Redacted.value(text),
-          "no_such_command",
-        );
+        const provider =
+          failure.reason._tag === "Remote"
+            ? [failure.reason.remoteCode, failure.reason.body].map((field) =>
+                field === undefined ? undefined : Redacted.value(field),
+              )
+            : [];
+        assert.deepStrictEqual(provider, ["unknown_command", "no_such_command"]);
+        assert.notInclude(failure.message, "unknown_command");
         assert.notInclude(failure.message, "no_such_command");
+        // As a log or span prints it.
+        assert.notInclude(Inspectable.toStringUnknown(failure), "unknown_command");
       }),
   );
 
