@@ -4,7 +4,6 @@
  * queues arrive as streams; this module names frames, fans them out to
  * bounded readers, maps the addon's failure classes and bounds the owner join.
  */
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -389,15 +388,9 @@ export const make = Effect.fnUntraced(function* (
     }),
     Effect.uninterruptible,
   );
-  const finished = yield* Deferred.make<void, ReactorError>();
-  const started = yield* Ref.make(false);
-  const explicit = yield* Ref.make(false);
   /** The bounded join, run once; every later call awaits the same outcome. */
-  const run = Effect.gen(function* () {
-    if (!(yield* Ref.getAndSet(started, true)))
-      yield* Deferred.done(finished, yield* Effect.exit(join));
-    return yield* Deferred.await(finished);
-  }).pipe(Effect.uninterruptible);
+  const run = Effect.uninterruptible(yield* Effect.cached(join));
+  const explicit = yield* Ref.make(false);
   // A shutdown nobody ran explicitly reports a failure by dying, so the
   // session's close report keeps it; one a caller ran already reported to it.
   yield* Effect.addFinalizer(() =>
