@@ -2467,7 +2467,9 @@ export const makeScheduler = (
             blockedMove = Result.isFailure(result) ? command.signature : undefined;
             break;
           case "Cut":
-            if (Result.isFailure(result)) blockedCut = command.clipId;
+            // A stopped clip can go on looking like it plays until the provider reports it
+            // ended, so it is never cut again, whether its cut was refused or sent.
+            blockedCut = command.clipId;
             break;
           case "PauseAutoplay":
             if (Result.isFailure(result)) {

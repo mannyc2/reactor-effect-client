@@ -177,7 +177,7 @@ export interface PolicySnapshot {
   readonly cutLanes: ReadonlySet<string>;
   /** The requested clip lengths filler may take, in seconds. */
   readonly fillLengths: { readonly min: number; readonly max: number };
-  /** A playing clip whose cut was refused is not cut again. */
+  /** A playing clip already cut, or whose cut was refused, is not cut again. */
   readonly blockedCut: ClipId | undefined;
 }
 

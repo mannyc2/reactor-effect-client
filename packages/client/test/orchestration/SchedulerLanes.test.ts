@@ -1,9 +1,12 @@
 import { expect, test } from "vitest";
-import { Clock, Effect, Stream } from "effect";
+import { Clock, Effect, Option, Result, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import { make as orchestrate } from "../../src/orchestration/renewal.js";
 import { makeScheduler, ItemKey } from "../../src/orchestration/scheduler.js";
 import type { ItemHandle, LaneSpec, SchedulerOptions } from "../../src/orchestration/scheduler.js";
 import { ClipRequest } from "../../src/orchestration/request.js";
+import { Engine } from "../../src/orchestration/types.js";
+import type { EngineState, Source } from "../../src/orchestration/types.js";
 import * as Simulation from "../../src/simulation/index.js";
 import { runClock } from "./SourceFixture.js";
 
@@ -154,4 +157,85 @@ test("a cut lane never cuts a clip of its own lane", () =>
       const ended = yield* u1.outcome;
       expect(ended._tag === "Ended" && ended.termination).toBe("finished");
     }).pipe(Effect.provide(quick)),
+  ));
+
+/**
+ * A simulated session that reports a stop as hosted H3 did in the 0.7.0
+ * `scheduler-cut` run (integration/hosted/evidence/0.7.0): the stop's reply
+ * comes first, and the ended and started reports 100 ms later, so until then
+ * its state still names the stopped clip as playing. H3's stop is not scoped
+ * to a clip: a second stop sent in that moment stopped the clip that had just
+ * started. Every stop sent is counted.
+ */
+const lagging = (stops: { count: number }) =>
+  Effect.gen(function* () {
+    const source = yield* Simulation.source({ fixedBuildTime: 500, buildRatio: 0 });
+    let stale: { readonly state: EngineState; readonly untilMs: number } | undefined;
+    const late = <A>(value: A) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (stale !== undefined && now < stale.untilMs) yield* Effect.sleep(stale.untilMs - now);
+        return value;
+      });
+    return {
+      ...source,
+      state: Effect.gen(function* () {
+        if (stale !== undefined && (yield* Clock.currentTimeMillis) < stale.untilMs)
+          return stale.state;
+        return yield* source.state;
+      }),
+      observe: (observation) =>
+        Effect.map(source.observe(observation), (observed) => ({
+          ...observed,
+          events: Stream.mapEffect(observed.events, late),
+        })),
+      stop: Effect.gen(function* () {
+        const before = yield* source.state;
+        stale = { state: before, untilMs: (yield* Clock.currentTimeMillis) + 100 };
+        stops.count++;
+        yield* source.stop;
+      }),
+    } satisfies Source;
+  });
+
+test("a cut stops the playing clip once, though the provider reports it ended only after the stop's reply", () =>
+  runClock(
+    Effect.gen(function* () {
+      const stops = { count: 0 };
+      const handle = yield* orchestrate({
+        open: lagging(stops).pipe(Effect.map((source) => ({ source, lifetime: "Infinity" }))),
+      });
+      const scheduler = yield* makeScheduler(
+        options({ name: "urgent", cut: true }, { name: "line" }),
+      ).pipe(Effect.provideService(Engine, handle.engine));
+      yield* advance(1_000);
+      const long = yield* scheduler.submit(item("long", "line", 15));
+      yield* advance(3_000);
+      const u = yield* scheduler.submit(item("u", "urgent"));
+      yield* advance(20_000);
+      expect(stops.count).toBe(1);
+      const cut = yield* long.outcome;
+      expect(cut._tag === "Ended" && cut.termination).toBe("stopped");
+      const ended = yield* u.outcome;
+      expect(ended._tag === "Ended" && ended.termination).toBe("finished");
+    }),
+  ));
+
+test("the engine stops a clip once, however soon it is asked again", () =>
+  runClock(
+    Effect.gen(function* () {
+      const stops = { count: 0 };
+      const handle = yield* orchestrate({
+        open: lagging(stops).pipe(Effect.map((source) => ({ source, lifetime: "Infinity" }))),
+      });
+      yield* handle.engine.setAutoplay(true);
+      const first = yield* handle.engine.enqueue(clip("first", 15));
+      yield* handle.engine.enqueue(clip("second"));
+      yield* advance(3_000);
+      expect(Option.getOrUndefined((yield* handle.engine.state).playing)?.clipId).toBe(first);
+      yield* handle.engine.cut(first);
+      const again = yield* Effect.result(handle.engine.cut(first));
+      expect(stops.count).toBe(1);
+      expect(Result.isFailure(again) && again.failure._tag).toBe("PolicyFailure");
+    }),
   ));

@@ -1224,6 +1224,10 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
       });
     });
 
+    // H3's stop is not scoped to a clip, and its reply comes before the session reports the
+    // clip ended, so for a moment the session still names a stopped clip as playing. A clip
+    // is stopped at most once: a second cut would stop the clip that started after it.
+    let stopped: ClipId | undefined;
     const owner = (id: ClipId, operation: string) =>
       Effect.gen(function* () {
         const matches = yield* Effect.forEach(
@@ -1312,8 +1316,21 @@ const makeOwner = <R>(options: ContinuousOptions<R>, continuous: boolean) =>
             "stop",
             owner(id, "stop").pipe(
               Effect.flatMap(({ slot, state }) =>
-                Option.getOrUndefined(state.playing)?.clipId === id
-                  ? slot.source.stop
+                Option.getOrUndefined(state.playing)?.clipId === id && stopped !== id
+                  ? slot.source.stop.pipe(
+                      Effect.onExit((exit) => {
+                        // Only a stop that was never sent leaves the clip to be stopped again.
+                        const error = Exit.findError(exit);
+                        if (
+                          !(
+                            error._tag === "Success" &&
+                            error.success.context.outcome === "not-submitted"
+                          )
+                        )
+                          stopped = id;
+                        return Effect.void;
+                      }),
+                    )
                   : PolicyFailure.refuse("NotFound", "The clip is no longer playing", "stop"),
               ),
             ),
