@@ -1,9 +1,11 @@
 /** Synthetic media: a frame carries its clip's ordinal and its own index in its first two pixels. */
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
+import { documented } from "./h3.js";
+
+const { sampleRate, channels } = documented.soundtrack;
 
 /** One audio block, as libwebrtc hosts deliver them. */
 export const audioBlockMs = 10;
-export const samplesPerBlock = (profile.audio.sampleRate * audioBlockMs) / 1000;
+export const samplesPerBlock = (sampleRate * audioBlockMs) / 1000;
 
 const ordinalOf = (clipId: string): number => Number.parseInt(clipId.slice(-12), 16);
 
@@ -44,15 +46,13 @@ export const decode = (
 
 /** A block of the clip's tone, continuous from sample `first`. */
 export const tone = ({ clipId, first }: { readonly clipId: string; readonly first: number }) => {
-  const samples = new Int16Array(samplesPerBlock * profile.audio.channels);
+  const samples = new Int16Array(samplesPerBlock * channels);
   const frequency = 220 + ((ordinalOf(clipId) * 37) % 440);
   for (let index = 0; index < samplesPerBlock; index++)
     samples.fill(
-      Math.round(
-        6000 * Math.sin((2 * Math.PI * frequency * (first + index)) / profile.audio.sampleRate),
-      ),
-      index * profile.audio.channels,
-      (index + 1) * profile.audio.channels,
+      Math.round(6000 * Math.sin((2 * Math.PI * frequency * (first + index)) / sampleRate)),
+      index * channels,
+      (index + 1) * channels,
     );
   return samples;
 };

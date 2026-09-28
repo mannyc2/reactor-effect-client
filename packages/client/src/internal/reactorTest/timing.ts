@@ -7,7 +7,15 @@ import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import type { Timing } from "../../ReactorTest.js";
 
-export type Delay = "http" | "channel" | "allocation" | "negotiation" | "connect" | "seam" | "stop";
+export type Delay =
+  | "http"
+  | "channel"
+  | "allocation"
+  | "negotiation"
+  | "connect"
+  | "seam"
+  | "stop"
+  | "moderation";
 
 export interface Sampler {
   /** A delay in milliseconds. */

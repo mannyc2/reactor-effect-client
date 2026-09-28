@@ -12,22 +12,33 @@ import * as Headers from "effect/unstable/http/Headers";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { Mapping } from "../../Coordinator.js";
-import { SessionAuthorization } from "../../Coordinator.js";
-import { Refusal } from "./sessions.js";
+import { Authorization, clips, Refusal } from "./sessions.js";
 import type { Sessions } from "./sessions.js";
 
 const Token = Schema.Struct({
-  authorization_details: Schema.Tuple([SessionAuthorization]),
+  authorization_details: Schema.Tuple([Authorization]),
   expires_after: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 const Create = Schema.Struct({
   model: Schema.Struct({ name: Schema.String }),
+  client_info: Schema.optionalKey(
+    Schema.Struct({ sdk_version: Schema.String, sdk_type: Schema.String }),
+  ),
   supported_transports: Schema.Array(
     Schema.Struct({ protocol: Schema.String, version: Schema.String }),
   ),
 });
-const Offer = Schema.Struct({ sdp_offer: Schema.String, track_mapping: Schema.Array(Mapping) });
+const Offer = Schema.Struct({
+  sdp_offer: Schema.String,
+  track_mapping: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      kind: Schema.String,
+      direction: Schema.String,
+      mid: Schema.String,
+    }),
+  ),
+});
 const UploadRequest = Schema.Struct({
   name: Schema.String,
   mime_type: Schema.String,
@@ -39,11 +50,22 @@ const storage = "https://uploads.reactor.test";
 
 interface Reply {
   readonly status: number;
+  /** JSON, or the bytes of a playlist or a segment. */
   readonly body?: unknown;
+  readonly bytes?: { readonly data: Uint8Array; readonly contentType: string };
   /** Seconds, sent as `Retry-After`. */
   readonly retryAfter?: number;
 }
 const ok = (body: unknown): Reply => ({ status: 200, body });
+const media = (data: Uint8Array, contentType: string): Reply => ({
+  status: 200,
+  bytes: { data, contentType },
+});
+/** The bearer a request carries. */
+const bearerOf = (request: HttpClientRequest.HttpClientRequest): string | undefined =>
+  /^Bearer (\S+)$/.exec(
+    Option.getOrUndefined(Headers.get(request.headers, "authorization")) ?? "",
+  )?.[1];
 const refuse = (status: number, code: string, reason: string) =>
   Refusal.make({ status, code, reason });
 
@@ -76,6 +98,19 @@ const route = (
       const received = request.body._tag === "Uint8Array" ? request.body.body.byteLength : 0;
       return yield* Effect.as(sessions.stored(url.pathname.slice(1), received), { status: 200 });
     }
+    const jwt = bearerOf(request);
+    if (url.origin === clips) {
+      const [recording = "", file = ""] = url.pathname.split("/").slice(1);
+      if (method !== "GET") return yield* refuse(405, "method_not_allowed", "segments take GET");
+      return media(yield* sessions.segment(recording, file), "video/mp4");
+    }
+    const playlist = /^\/clips\/([\w-]+)\.m3u8$/.exec(url.pathname)?.[1];
+    if (playlist !== undefined && method === "GET")
+      return Option.match(yield* sessions.playlist(jwt, playlist), {
+        // Not ready yet: ask again in a second.
+        onNone: (): Reply => ({ status: 202, retryAfter: 1 }),
+        onSome: (text) => media(new TextEncoder().encode(text), "application/vnd.apple.mpegurl"),
+      });
     if (url.pathname === "/pricing" && method === "GET") return ok(sessions.pricing);
     if (url.pathname === "/tokens" && method === "POST") {
       const body = yield* decode(Token, request);
@@ -88,17 +123,21 @@ const route = (
       return yield* refuse(426, "unsupported_version", "Reactor-API-Version 1 is required");
     if (rest[0] === "transport" && header("reactor-webrtc-version") !== "1.0")
       return yield* refuse(426, "unsupported_version", "Reactor-WebRTC-Version 1.0 is required");
-    const jwt = /^Bearer (\S+)$/.exec(header("authorization") ?? "")?.[1];
     if (id === undefined || id === "") {
       const body = yield* decode(Create, request);
       const webrtc = body.supported_transports.some(
         ({ protocol, version }) => protocol === "webrtc" && version === "1.0",
       );
-      return ok(yield* sessions.create(jwt, body.model.name, webrtc));
+      const client =
+        body.client_info === undefined
+          ? undefined
+          : { sdkVersion: body.client_info.sdk_version, sdkType: body.client_info.sdk_type };
+      return ok(yield* sessions.create(jwt, body.model.name, webrtc, client));
     }
     if (rest.length === 0 && method === "GET") return ok(yield* sessions.read(jwt, id));
+    // Paid runs saw a DELETE answered 200, by token and by API key alike.
     if (rest.length === 0 && method === "DELETE")
-      return yield* Effect.as(sessions.remove(jwt, id), { status: 202 });
+      return yield* Effect.as(sessions.remove(jwt, id), { status: 200 });
     if (rest.length === 1 && rest[0] === "uploads" && method === "POST") {
       const body = yield* decode(UploadRequest, request);
       const slot = yield* sessions.upload(jwt, id, body.name, body.size);
@@ -134,11 +173,21 @@ const route = (
     }
   });
 
-/** An `HttpClient` whose every request reaches the simulated coordinator. */
+/** An `HttpClient` whose every request reaches the simulated coordinator, and is logged. */
 export const client = (sessions: Sessions): HttpClient.HttpClient =>
   HttpClient.make((request, url) =>
     Effect.gen(function* () {
       yield* Effect.sleep(yield* sessions.timing.delay("http"));
+      const bearer = bearerOf(request);
+      const session = /^\/sessions\/([^/]+)/.exec(url.pathname)?.[1];
+      yield* sessions.note({
+        sessionId: session === undefined ? "" : decodeURIComponent(session),
+        kind: "request",
+        name: `${request.method} ${url.href}`,
+        ...(bearer === undefined
+          ? {}
+          : { bearer: bearer === sessions.options.apiKey ? "key" : "token" }),
+      });
       const reply = yield* route(sessions, request, url).pipe(
         Effect.catchTag("Refusal", ({ status, code, reason, retryAfter }) =>
           Effect.succeed<Reply>({
@@ -154,9 +203,15 @@ export const client = (sessions: Sessions): HttpClient.HttpClient =>
       const headers =
         reply.retryAfter === undefined ? {} : { "retry-after": String(reply.retryAfter) };
       const response =
-        reply.body === undefined
-          ? HttpServerResponse.empty({ status: reply.status, headers })
-          : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status, headers });
+        reply.bytes !== undefined
+          ? HttpServerResponse.uint8Array(reply.bytes.data, {
+              status: reply.status,
+              headers,
+              contentType: reply.bytes.contentType,
+            })
+          : reply.body === undefined
+            ? HttpServerResponse.empty({ status: reply.status, headers })
+            : HttpServerResponse.jsonUnsafe(reply.body, { status: reply.status, headers });
       return HttpServerResponse.toClientResponse(response, { request });
     }),
   );

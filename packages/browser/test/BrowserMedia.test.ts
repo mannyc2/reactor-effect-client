@@ -19,12 +19,12 @@ class FakeTrack {
   }
 }
 
-/** A media element whose `play` never settles unless a test says otherwise. */
-const element = (play: () => Promise<void> = () => Effect.runPromise(Effect.never)) => {
-  const fake = {
-    srcObject: null as unknown,
+/** A media element whose `play` never settles (an empty race) unless a test says otherwise. */
+const element = (play: () => Promise<void> = () => Promise.race<void>([])) => {
+  const fake: Parameters<typeof BrowserMedia.play>[1] & { paused: number } = {
+    srcObject: null,
     paused: 0,
-    getAttribute: (_name: string): string | null => null,
+    getAttribute: () => null,
     play,
     pause: () => {
       fake.paused++;
@@ -33,9 +33,8 @@ const element = (play: () => Promise<void> = () => Effect.runPromise(Effect.neve
   return fake;
 };
 
-// The tests hand fakes to functions typed for the DOM.
+// The tests hand a fake track to functions typed for the DOM's.
 const asTrack = (track: FakeTrack) => track as unknown as MediaStreamTrack;
-const asElement = (fake: ReturnType<typeof element>) => fake as unknown as HTMLMediaElement;
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -46,7 +45,7 @@ it.effect("a play that never starts fails at its deadline and detaches its clone
     vi.stubGlobal("MediaStream", class {});
     const track = new FakeTrack();
     const media = element();
-    const playing = yield* BrowserMedia.play(asTrack(track), asElement(media), {
+    const playing = yield* BrowserMedia.play(asTrack(track), media, {
       playTimeout: "2 seconds",
     }).pipe(Effect.scoped, Effect.flip, Effect.forkChild);
     yield* TestClock.adjust("2 seconds");
@@ -69,7 +68,7 @@ it.effect("a media element that cannot take the stream stops the clone it was gi
       },
     );
     const track = new FakeTrack();
-    const error = yield* BrowserMedia.play(asTrack(track), asElement(element())).pipe(
+    const error = yield* BrowserMedia.play(asTrack(track), element()).pipe(
       Effect.scoped,
       Effect.flip,
     );
@@ -83,10 +82,7 @@ it.effect("an element that already has a source is refused before anything is cl
     const track = new FakeTrack();
     const media = element();
     media.getAttribute = () => "clip.mp4";
-    const error = yield* BrowserMedia.play(asTrack(track), asElement(media)).pipe(
-      Effect.scoped,
-      Effect.flip,
-    );
+    const error = yield* BrowserMedia.play(asTrack(track), media).pipe(Effect.scoped, Effect.flip);
     assert.strictEqual(error.reason._tag, "InvalidState");
     assert.strictEqual(track.clones.length, 0);
   }),
@@ -99,7 +95,7 @@ it.effect("playback that started holds its clone until the scope closes", () =>
     const media = element(() => Promise.resolve());
     yield* Effect.scoped(
       Effect.gen(function* () {
-        yield* BrowserMedia.play(asTrack(track), asElement(media));
+        yield* BrowserMedia.play(asTrack(track), media);
         assert.strictEqual(track.clones[0]?.readyState, "live");
         assert.notStrictEqual(media.srcObject, null);
       }),

@@ -37,8 +37,8 @@ import type {
   ReplyCommand,
   ReplyType,
 } from "./commands.js";
-import { decodeMessage } from "./messages.js";
-import type { Clip, Payload } from "./messages.js";
+import { decodeMessage, Payloads } from "./messages.js";
+import type { Clip } from "./messages.js";
 import * as Operations from "./operations.js";
 import { canvases, requestSeconds } from "./profile.js";
 import type { CanvasAspect } from "./profile.js";
@@ -508,11 +508,17 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     return call(operation, args, needsFacts).pipe(
       Effect.flatMap(({ source, message }) =>
         message?.type === expected
-          ? // The broadcasts a reply implies follow it: the command settles once they
-            // are observed. The state and queue reads are that barrier themselves.
-            (needsFacts ? settled : Effect.void).pipe(
-              // TypeScript cannot correlate the reply type with its command.
-              Effect.as({ value: message.data as Payload<ReplyType<K>>, source }),
+          ? // The payload is read back as its command's reply type, which TypeScript
+            // cannot correlate with the command. The broadcasts a reply implies follow
+            // it: the command settles once they are observed. The state and queue
+            // reads are that barrier themselves.
+            Schema.decodeEffect(Payloads[expected])(message.data).pipe(
+              Effect.mapError(() =>
+                uncertain(operation, source, `H3 ${operation} reply is malformed`),
+              ),
+              Effect.flatMap((value) =>
+                Effect.as(needsFacts ? settled : Effect.void, { value, source }),
+              ),
             )
           : Effect.fail(uncertain(operation, source, `H3 ${operation} did not return ${expected}`)),
       ),

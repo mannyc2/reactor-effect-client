@@ -1,28 +1,195 @@
 /**
  * The simulated H3 model's queues, builds and playout as a pure state machine:
  * a command, a finished timer or a new connection goes in; the next state
- * comes out with the messages to send and the timers to start. It speaks the
- * client's own message Schemas, so every reply type-checks against them.
+ * comes out with the messages to send and the timers to start.
+ *
+ * It states H3 as Reactor documents it and paid runs measured it, and takes
+ * no rule from the client: a client limit that drifts from the documentation
+ * then fails against the simulation instead of passing with it.
  */
 import { dual } from "effect/Function";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { Commands } from "../h3/commands.js";
-import { Payloads } from "../h3/messages.js";
-import type { Clip, Message, Queue, State } from "../h3/messages.js";
-import {
-  alignFrames,
-  audioReferenceLimits,
-  canvases,
-  documentedVersion,
-  estimateTokens,
-  h3ReferenceTurboRealtime as profile,
-  metadataMaxChars,
-  referenceLimits,
-  requestSeconds,
-} from "../h3/profile.js";
-import type { CanvasAspect } from "../h3/profile.js";
+
+/** H3 Reference Turbo Realtime's documented facts, and the grid and audio paid runs measured. */
+export const documented = {
+  modelName: "reactor/h3-reference-to-video-turbo-realtime",
+  version: "0.5.5",
+  fps: 24,
+  /** Built lengths: 124 frames and each 17 more up to 362, so 5.167 to 15.083 seconds. */
+  frames: { min: 124, step: 17, max: 362 },
+  /** Requested lengths, before they are aligned up to the grid. */
+  seconds: { min: 5, max: 15.084 },
+  images: 9,
+  audio: 3,
+  /** A continued clip spends one audio slot on the soundtrack it continues. */
+  continuedAudio: 2,
+  /** Images, audio and a continuation together. */
+  references: 12,
+  metadataChars: 2_000,
+  /**
+   * The text budget, about 2,000 tokens; past it a clip fails as it would
+   * build. H3 does not document its tokenizer: 3.5 characters a token is this
+   * simulation's.
+   */
+  text: { tokens: 2_000, charactersPerToken: 3.5 },
+  canvases: {
+    "16:9": { width: 1344, height: 768 },
+    "1:1": { width: 768, height: 768 },
+    "9:16": { width: 768, height: 1344 },
+    "4:3": { width: 1024, height: 768 },
+  },
+  tracks: { video: "main_video", audio: "main_audio" },
+  /** The soundtrack hosted H3 sent in paid runs. */
+  soundtrack: { sampleRate: 48_000, channels: 1 },
+} as const;
+
+export type Aspect = keyof typeof documented.canvases;
+const isAspect = (aspect: string): aspect is Aspect => Object.hasOwn(documented.canvases, aspect);
+
+/** The frames a request of `seconds` builds: rounded to frames, then aligned up to the grid. */
+export const framesFor = (seconds: number): number => {
+  const { min, step, max } = documented.frames;
+  const frames = Math.ceil(seconds * documented.fps - 1e-6);
+  return Math.min(max, min + Math.ceil(Math.max(0, frames - min) / step) * step);
+};
+
+const requestable = (seconds: number): boolean =>
+  seconds >= documented.seconds.min && seconds <= documented.seconds.max;
+
+/** The clip object H3's messages and queues carry. */
+export interface Clip {
+  readonly clip_id: string;
+  readonly prompt: string;
+  readonly metadata: string;
+  readonly frames: number;
+  readonly seconds: number;
+  readonly seed: number;
+  readonly ready: boolean;
+  readonly has_reference_image: boolean;
+  readonly reference_image_count: number;
+  readonly has_reference_audio: boolean;
+  readonly reference_audio_count: number;
+}
+
+interface Queue {
+  readonly generation: ReadonlyArray<Clip>;
+  readonly playout: ReadonlyArray<Clip>;
+  /** Always empty: a played clip is not listed. */
+  readonly history: ReadonlyArray<Clip>;
+}
+
+interface State {
+  readonly clip_seconds: number;
+  readonly clip_seconds_min: number;
+  readonly clip_seconds_max: number;
+  readonly seed: number;
+  readonly autoplay: boolean;
+  readonly flush_on_clip_end: boolean;
+  readonly aspect: string;
+  readonly width: number;
+  readonly height: number;
+  readonly playing: boolean;
+  readonly playing_clip_id: string | null;
+  readonly generation_queued: number;
+  readonly generation_capacity: number;
+  readonly playout_queued: number;
+  readonly playout_capacity: number;
+  readonly clips_played: number;
+  readonly seconds_sent: number;
+  readonly valid_commands: ReadonlyArray<string>;
+}
+
+/** Each message H3 documents, and its payload. */
+export type Message =
+  | {
+      readonly type: "clip_queued" | "clip_popped" | "clip_generated" | "clip_started";
+      readonly data: { readonly clip: Clip };
+    }
+  | {
+      readonly type: "clip_moved";
+      readonly data: {
+        readonly clip: Clip;
+        readonly queue: "generation" | "playout";
+        readonly position: number;
+      };
+    }
+  | {
+      readonly type: "clip_failed";
+      readonly data: { readonly clip: Clip; readonly reason: string };
+    }
+  | {
+      readonly type: "clip_finished" | "clip_stopped";
+      readonly data: { readonly clip: Clip; readonly seconds_sent: number };
+    }
+  | { readonly type: "queue_update"; readonly data: Queue }
+  | { readonly type: "state_update"; readonly data: State }
+  | {
+      readonly type: "command_error";
+      readonly data: { readonly command: string; readonly reason: string };
+    }
+  | { readonly type: "seed_accepted"; readonly data: { readonly seed: number } }
+  | {
+      readonly type: "clip_length_accepted";
+      readonly data: { readonly clip_seconds: number; readonly frames: number };
+    }
+  | {
+      readonly type: "canvas_accepted";
+      readonly data: { readonly aspect: string; readonly width: number; readonly height: number };
+    }
+  | {
+      readonly type: "autoplay_accepted" | "flush_accepted";
+      readonly data: { readonly enabled: boolean };
+    }
+  | {
+      readonly type: "session_reset";
+      readonly data: { readonly cleared_clips: number; readonly was_playing: boolean };
+    };
+
+const Upload = Schema.Struct({
+  upload_id: Schema.String,
+  name: Schema.String,
+  mime_type: Schema.String,
+  size: Schema.Int,
+});
+/** A parameter that may be omitted, and null as well where H3 documents it nullable. */
+const omitted = Schema.optionalKey;
+const nullable = <S extends Schema.Top>(schema: S) =>
+  schema.pipe(Schema.NullOr, Schema.optionalKey);
+const Empty = Schema.Struct({});
+
+/**
+ * Each command's parameters as H3 documents them; one omitted takes its
+ * documented default. A value of the wrong type is refused as invalid.
+ */
+export const Arguments = {
+  enqueue: Schema.Struct({
+    prompt: omitted(Schema.String),
+    reference_image: nullable(Upload),
+    reference_images: nullable(Upload.pipe(Schema.Array)),
+    reference_audio: nullable(Upload),
+    reference_audios: nullable(Upload.pipe(Schema.Array)),
+    seconds: nullable(Schema.Finite),
+    seed: nullable(Schema.Int),
+    position: nullable(Schema.Int),
+    metadata: omitted(Schema.String),
+    continue_from_clip_id: omitted(Schema.String),
+  }),
+  move: Schema.Struct({ clip_id: omitted(Schema.String), position: omitted(Schema.Int) }),
+  pop: Schema.Struct({ clip_id: omitted(Schema.String) }),
+  play: Schema.Struct({ clip_id: omitted(Schema.String) }),
+  stop: Empty,
+  set_seed: Schema.Struct({ seed: omitted(Schema.Int) }),
+  set_clip_seconds: Schema.Struct({ seconds: omitted(Schema.Finite) }),
+  set_canvas: Schema.Struct({ aspect: omitted(Schema.String) }),
+  set_autoplay: Schema.Struct({ enabled: omitted(Schema.Boolean) }),
+  set_flush_on_clip_end: Schema.Struct({ enabled: omitted(Schema.Boolean) }),
+  get_queue: Empty,
+  get_state: Empty,
+  reset: Empty,
+} as const;
+type Enqueue = (typeof Arguments.enqueue)["Type"];
 
 export interface H3 {
   readonly generation: ReadonlyArray<Clip>;
@@ -60,7 +227,7 @@ export interface H3 {
   readonly flush: boolean;
   readonly seed: number;
   readonly clipFrames: number;
-  readonly aspect: CanvasAspect;
+  readonly aspect: Aspect;
   readonly clipsPlayed: number;
   readonly secondsSent: number;
   /** Clips created, which numbers the next clip id. */
@@ -86,7 +253,7 @@ export const initial: H3 = {
   autoplay: false,
   flush: true,
   seed: 1000,
-  clipFrames: alignFrames(profile, 15),
+  clipFrames: framesFor(15),
   aspect: "16:9",
   clipsPlayed: 0,
   secondsSent: 0,
@@ -124,7 +291,6 @@ export type Output =
       readonly token: number;
       readonly seconds: number;
       readonly continued: boolean;
-      readonly prompt: string;
     }
   /** Start the first ready clip once the seam has passed. */
   | { readonly _tag: "Arm"; readonly token: number }
@@ -173,29 +339,31 @@ const holds = (model: H3, id: string): boolean => {
 
 const adding = (set: ReadonlySet<string>, ids: ReadonlyArray<string>) => new Set([...set, ...ids]);
 
-const requestable = (seconds: number): boolean =>
-  seconds >= requestSeconds.min && seconds <= requestSeconds.max;
+/** An enqueue's references: images, audio, and whether it continues a clip. */
+const referencesOf = (args: Enqueue) => ({
+  images: args.reference_images?.length ?? (args.reference_image == null ? 0 : 1),
+  audio: args.reference_audios?.length ?? (args.reference_audio == null ? 0 : 1),
+  continued: (args.continue_from_clip_id ?? "") !== "",
+});
 
-/** Why H3 refuses an enqueue, as the provider checks it. */
-const refusal = (
-  args: (typeof Commands.enqueue.args)["Type"],
-  queued: number,
-  env: Env,
-): string | undefined => {
-  const images = args.reference_images?.length ?? 0;
-  const audios = args.reference_audios?.length ?? 0;
-  const continued = (args.continue_from_clip_id ?? "") !== "";
-  if (args.prompt.trim() === "") return "the prompt is empty";
+/** Why H3 refuses an enqueue, by its documented rules. */
+const refusal = (args: Enqueue, queued: number, env: Env): string | undefined => {
+  const { images, audio, continued } = referencesOf(args);
+  if (args.reference_image != null && args.reference_images != null)
+    return "reference_image and reference_images together";
+  if (args.reference_audio != null && args.reference_audios != null)
+    return "reference_audio and reference_audios together";
+  if ((args.prompt ?? "").trim() === "") return "the prompt is empty";
   if (args.seconds != null && !requestable(args.seconds)) return "seconds out of range";
   if ((args.seed ?? 0) < 0 || (args.position ?? 0) < 0) return "seed and position must be natural";
-  if (Array.from(args.metadata).length > metadataMaxChars) return "metadata is too long";
-  if (images > referenceLimits.maxImages) return "too many reference images";
-  if (audios > audioReferenceLimits.maxAudio || (audios > 0 && images === 0 && !continued))
+  if (Array.from(args.metadata ?? "").length > documented.metadataChars)
+    return "metadata is too long";
+  if (images > documented.images) return "too many reference images";
+  if (audio > documented.audio || (audio > 0 && images === 0 && !continued))
     return "invalid reference audio";
-  if (continued && audios > audioReferenceLimits.maxAudioWithContinuation)
+  if (continued && audio > documented.continuedAudio)
     return "a continued clip takes at most two audio references";
-  if (images + audios + (continued ? 1 : 0) > audioReferenceLimits.maxTotal)
-    return "too many references";
+  if (images + audio + (continued ? 1 : 0) > documented.references) return "too many references";
   if (queued >= env.generationCapacity) return "the generation queue is full";
   return undefined;
 };
@@ -239,14 +407,14 @@ export const step: {
       set_canvas: idle && queued === 0,
     };
     return {
-      clip_seconds: s.clipFrames / profile.fps,
-      clip_seconds_min: requestSeconds.min,
-      clip_seconds_max: requestSeconds.max,
+      clip_seconds: s.clipFrames / documented.fps,
+      clip_seconds_min: documented.seconds.min,
+      clip_seconds_max: documented.seconds.max,
       seed: s.seed,
       autoplay: s.autoplay,
       flush_on_clip_end: s.flush,
       aspect: s.aspect,
-      ...canvases[s.aspect],
+      ...documented.canvases[s.aspect],
       playing: !idle,
       playing_clip_id: s.playing?.clip.clip_id ?? s.arming?.clipId ?? null,
       generation_queued: s.generation.length,
@@ -255,7 +423,7 @@ export const step: {
       playout_capacity: env.playoutCapacity,
       clips_played: s.clipsPlayed,
       seconds_sent: s.secondsSent + (elapsed() ?? 0),
-      valid_commands: Object.keys(Commands).filter((name) => valid[name] ?? true),
+      valid_commands: Object.keys(Arguments).filter((name) => valid[name] ?? true),
     };
   };
   const changed = (withState = true): void => {
@@ -280,7 +448,7 @@ export const step: {
       const next = s.generation[0];
       if (s.building !== undefined || next === undefined) return;
       if (s.playout.length >= env.playoutCapacity) return;
-      if (estimateTokens(profile, next.prompt) > profile.prompt.maxTokens) {
+      if (next.prompt.length / documented.text.charactersPerToken > documented.text.tokens) {
         fail(next, "the prompt exceeds the model's text budget");
         continue;
       }
@@ -290,7 +458,7 @@ export const step: {
         emit({ _tag: "Continuation", clipId: next.clip_id, from, applied: continued });
       const t = token();
       set({ building: { clipId: next.clip_id, token: t, discarded: false } });
-      emit({ _tag: "Build", token: t, seconds: next.seconds, continued, prompt: next.prompt });
+      emit({ _tag: "Build", token: t, seconds: next.seconds, continued });
       return;
     }
   };
@@ -372,38 +540,30 @@ export const step: {
   };
 
   const enqueue = (id: string, args: Schema.JsonObject): void => {
-    const decoded = Schema.decodeResult(Commands.enqueue.args)({
-      prompt: "",
-      reference_images: null,
-      metadata: "",
-      ...args,
-    });
+    const decoded = Schema.decodeResult(Arguments.enqueue)(args);
     if (Result.isFailure(decoded)) return refuse(id, "enqueue", "invalid arguments");
     const a = decoded.success;
     const problem = refusal(a, s.generation.length, env);
     if (problem !== undefined) return refuse(id, "enqueue", problem);
+    const { images, audio } = referencesOf(a);
     // An unknown or dropped continuation falls back to an independent clip,
     // except for a clip whose audio would then have no image to go with.
     const from = a.continue_from_clip_id ?? "";
-    const audioOnly =
-      (a.reference_audios?.length ?? 0) > 0 && (a.reference_images?.length ?? 0) === 0;
-    if (from !== "" && !holds(s, from) && audioOnly)
+    if (from !== "" && !holds(s, from) && audio > 0 && images === 0)
       return refuse(id, "enqueue", "continue_from_clip_id names no clip the session holds");
-    const frames = a.seconds == null ? s.clipFrames : alignFrames(profile, a.seconds);
-    const images = a.reference_images?.length ?? 0;
-    const audios = a.reference_audios?.length ?? 0;
+    const frames = a.seconds == null ? s.clipFrames : framesFor(a.seconds);
     const clip: Clip = {
       clip_id: clipId(s.clips + 1),
-      prompt: a.prompt,
-      metadata: a.metadata,
+      prompt: a.prompt ?? "",
+      metadata: a.metadata ?? "",
       frames,
-      seconds: frames / profile.fps,
+      seconds: frames / documented.fps,
       seed: a.seed ?? s.seed,
       ready: false,
       has_reference_image: images > 0,
       reference_image_count: images,
-      has_reference_audio: audios > 0,
-      reference_audio_count: audios,
+      has_reference_audio: audio > 0,
+      reference_audio_count: audio,
     };
     // Position 0 goes ahead of every queued clip except the one building, as documented. One
     // hosted read (0.7.0 `scheduler-cut` run) listed it ahead of the running build as well.
@@ -422,10 +582,10 @@ export const step: {
   };
 
   const move = (id: string, args: Schema.JsonObject): void => {
-    const decoded = Schema.decodeUnknownResult(Commands.move.args)(args);
-    if (Result.isFailure(decoded) || decoded.success.position < 0)
+    const decoded = Schema.decodeResult(Arguments.move)(args);
+    if (Result.isFailure(decoded) || (decoded.success.position ?? 0) < 0)
       return refuse(id, "move", "position must be a natural number");
-    const { clip_id: wanted, position } = decoded.success;
+    const { clip_id: wanted = "", position = 0 } = decoded.success;
     const target = s.generation.some((clip) => clip.clip_id === wanted) ? "generation" : "playout";
     const list = target === "generation" ? s.generation : s.playout;
     const clip = list.find((entry) => entry.clip_id === wanted);
@@ -444,7 +604,7 @@ export const step: {
   };
 
   const pop = (id: string, args: Schema.JsonObject): void => {
-    const decoded = Schema.decodeUnknownResult(Commands.pop.args)(args);
+    const decoded = Schema.decodeResult(Arguments.pop)(args);
     const wanted = Result.isSuccess(decoded) ? decoded.success.clip_id : undefined;
     const clip = [...s.generation, ...s.playout].find((entry) => entry.clip_id === wanted);
     if (clip === undefined) return refuse(id, "pop", "no queued clip has that id");
@@ -462,11 +622,11 @@ export const step: {
   };
 
   const play = (id: string, args: Schema.JsonObject): void => {
-    const decoded = Schema.decodeResult(Commands.play.args)({ clip_id: "", ...args });
+    const decoded = Schema.decodeResult(Arguments.play)(args);
     if (Result.isFailure(decoded)) return refuse(id, "play", "invalid arguments");
     if (s.playing !== undefined || s.arming !== undefined)
       return refuse(id, "play", "a clip is already playing");
-    const wanted = decoded.success.clip_id;
+    const wanted = decoded.success.clip_id ?? "";
     const clip = wanted === "" ? s.playout[0] : s.playout.find((entry) => entry.clip_id === wanted);
     if (clip === undefined) return refuse(id, "play", "no matching ready clip");
     emit({ _tag: "Ack", requestId: id });
@@ -519,36 +679,36 @@ export const step: {
       case "stop":
         return stop(id);
       case "set_seed": {
-        const decoded = Schema.decodeUnknownResult(Commands.set_seed.args)(args);
-        if (Result.isFailure(decoded) || decoded.success.seed < 0)
-          return refuse(id, name, "seed must be a natural number");
-        set({ seed: decoded.success.seed });
+        const decoded = Schema.decodeResult(Arguments.set_seed)(args);
+        const seed = Result.isSuccess(decoded) ? (decoded.success.seed ?? 1000) : -1;
+        if (seed < 0) return refuse(id, name, "seed must be a natural number");
+        set({ seed });
         return accepted(id, { type: "seed_accepted", data: { seed: s.seed } });
       }
       case "set_clip_seconds": {
-        const decoded = Schema.decodeUnknownResult(Commands.set_clip_seconds.args)(args);
-        if (Result.isFailure(decoded) || !requestable(decoded.success.seconds))
-          return refuse(id, name, "seconds out of range");
-        set({ clipFrames: alignFrames(profile, decoded.success.seconds) });
-        const data = { clip_seconds: s.clipFrames / profile.fps, frames: s.clipFrames };
+        const decoded = Schema.decodeResult(Arguments.set_clip_seconds)(args);
+        const seconds = Result.isSuccess(decoded) ? (decoded.success.seconds ?? 15) : 0;
+        if (!requestable(seconds)) return refuse(id, name, "seconds out of range");
+        set({ clipFrames: framesFor(seconds) });
+        const data = { clip_seconds: s.clipFrames / documented.fps, frames: s.clipFrames };
         return accepted(id, { type: "clip_length_accepted", data });
       }
       case "set_canvas": {
-        const decoded = Schema.decodeUnknownResult(Commands.set_canvas.args)(args);
-        const canvas = profile.canvases.find(
-          (entry) => Result.isSuccess(decoded) && entry.aspect === decoded.success.aspect,
-        );
-        if (canvas === undefined) return refuse(id, name, "unsupported aspect");
+        const decoded = Schema.decodeResult(Arguments.set_canvas)(args);
+        const aspect = Result.isSuccess(decoded) ? (decoded.success.aspect ?? "16:9") : "";
+        if (!isAspect(aspect)) return refuse(id, name, "unsupported aspect");
         if (s.playing !== undefined || s.generation.length + s.playout.length > 0)
           return refuse(id, name, "the canvas changes only while idle and empty");
-        set({ aspect: canvas.aspect });
-        return accepted(id, { type: "canvas_accepted", data: canvas });
+        set({ aspect });
+        const data = { aspect, ...documented.canvases[aspect] };
+        return accepted(id, { type: "canvas_accepted", data });
       }
       case "set_autoplay":
       case "set_flush_on_clip_end": {
-        const decoded = Schema.decodeUnknownResult(Commands[name].args)(args);
+        const decoded = Schema.decodeResult(Arguments[name])(args);
         if (Result.isFailure(decoded)) return refuse(id, name, "enabled must be boolean");
-        const { enabled } = decoded.success;
+        // Autoplay is off unless asked for, and flushing on.
+        const enabled = decoded.success.enabled ?? name === "set_flush_on_clip_end";
         set(name === "set_autoplay" ? { autoplay: enabled } : { flush: enabled });
         const type = name === "set_autoplay" ? "autoplay_accepted" : "flush_accepted";
         accepted(id, { type, data: { enabled } });
@@ -620,42 +780,48 @@ export const step: {
   return [s, out];
 });
 
+/** The message each command replies with, as H3's schema names it. */
+const replies: Record<keyof typeof Arguments, string> = {
+  enqueue: "clip_queued",
+  move: "clip_moved",
+  pop: "clip_popped",
+  play: "accepted; emits clip_started",
+  stop: "accepted; emits clip_stopped",
+  set_seed: "seed_accepted",
+  set_clip_seconds: "clip_length_accepted",
+  set_canvas: "canvas_accepted",
+  set_autoplay: "autoplay_accepted",
+  set_flush_on_clip_end: "flush_accepted",
+  get_queue: "queue_update",
+  get_state: "state_update",
+  reset: "session_reset",
+};
+
 /**
- * The deployment document `request_schema` answers with, derived from the
- * client's own command and message Schemas, so the two cannot drift.
+ * The deployment document `request_schema` answers with: each command and
+ * its parameters, from this simulation's own statement of them. A deployment
+ * without reference audio declares none.
  */
-export const deployment = (referenceAudio: boolean) => {
-  const body = (schema: Schema.Top) => ({
-    required: true,
-    content: { "application/json": { schema: Schema.toJsonSchemaDocument(schema).schema } },
-  });
-  return {
-    openapi: "3.1.0",
-    info: { title: "H3 (ReactorTest)", version: documentedVersion },
-    paths: Object.fromEntries(
-      Object.entries(Commands).map(([name, { args, reply }]) => [
+export const deployment = (referenceAudio: boolean) => ({
+  openapi: "3.1.0",
+  info: { title: "H3 Reference Turbo Realtime (ReactorTest)", version: documented.version },
+  paths: Object.fromEntries(
+    Struct.keys(Arguments).map((name) => {
+      const args: Schema.Top =
+        name === "enqueue" && !referenceAudio
+          ? Arguments.enqueue.mapFields(Struct.omit(["reference_audio", "reference_audios"]))
+          : Arguments[name];
+      const schema = Schema.toJsonSchemaDocument(args).schema;
+      return [
         `/events/${name}`,
         {
           post: {
             operationId: name,
-            requestBody: body(
-              name === "enqueue" && !referenceAudio
-                ? Commands.enqueue.args.mapFields(Struct.omit(["reference_audios"]))
-                : args,
-            ),
-            responses:
-              reply === null
-                ? { "202": { description: "accepted" } }
-                : { "200": { description: reply, ...body(Payloads[reply]) } },
+            requestBody: { required: true, content: { "application/json": { schema } } },
+            responses: { "200": { description: replies[name] } },
           },
         },
-      ]),
-    ),
-    webhooks: Object.fromEntries(
-      Object.entries(Payloads).map(([name, payload]) => [
-        name,
-        { post: { operationId: name, requestBody: body(payload) } },
-      ]),
-    ),
-  };
-};
+      ];
+    }),
+  ),
+});

@@ -309,13 +309,11 @@ export const materialOf = (
       ? ValidatedAudio.material(reference)
       : undefined;
 
-const uploadedFile = (mimeTypes: ReadonlyArray<string>, maxBytes: number) =>
+const uploadedFile = <const M extends string>(mimeTypes: ReadonlyArray<M>, maxBytes: number) =>
   Schema.Struct({
     uploadId: Schema.String.check(Schema.isUUID()),
     name: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(1024)),
-    mimeType: Schema.String.check(
-      Schema.makeFilter((type) => mimeTypes.includes(type) || "an unsupported MIME type"),
-    ),
+    mimeType: Schema.Literals(mimeTypes),
     size: Schema.BigInt.check(Schema.isBetweenBigInt({ minimum: 1n, maximum: BigInt(maxBytes) })),
   });
 
@@ -345,17 +343,13 @@ const invalid = (message: string): ReactorError =>
 
 const image = (reference: Reference): Result.Result<ValidatedImage, string> => {
   if (reference._tag === "Uploaded")
-    return Result.mapBoth(Schema.decodeResult(UploadedImage)(reference.file), {
+    return Result.mapBoth(Schema.decodeUnknownResult(UploadedImage)(reference.file), {
       onFailure: () => "Uploaded reference has an invalid identity, type or size",
       onSuccess: (file) =>
-        new ValidatedImage(
-          // The Schema admitted only the image types.
-          file.mimeType as ImageMimeType,
-          Number(file.size),
-          null,
-          null,
-          { _tag: "Uploaded", file },
-        ),
+        new ValidatedImage(file.mimeType, Number(file.size), null, null, {
+          _tag: "Uploaded",
+          file,
+        }),
     });
   if (reference.bytes.byteLength === 0 || reference.bytes.byteLength > referenceLimits.maxBytes)
     return Result.fail("Image exceeds the SDK byte bound");
@@ -379,17 +373,13 @@ const image = (reference: Reference): Result.Result<ValidatedImage, string> => {
 
 const audio = (reference: Reference): Result.Result<ValidatedAudio, string> => {
   if (reference._tag === "Uploaded")
-    return Result.mapBoth(Schema.decodeResult(UploadedAudio)(reference.file), {
+    return Result.mapBoth(Schema.decodeUnknownResult(UploadedAudio)(reference.file), {
       onFailure: () => "Uploaded audio has an invalid identity, type or size",
       onSuccess: (file) =>
-        new ValidatedAudio(
-          // The Schema admitted only the audio types.
-          file.mimeType as AudioMimeType,
-          Number(file.size),
-          null,
-          null,
-          { _tag: "Uploaded", file },
-        ),
+        new ValidatedAudio(file.mimeType, Number(file.size), null, null, {
+          _tag: "Uploaded",
+          file,
+        }),
     });
   if (
     reference.bytes.byteLength === 0 ||

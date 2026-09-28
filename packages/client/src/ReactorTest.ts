@@ -2,13 +2,14 @@
  * Reactor in a box: Reactor's coordinator and an H3 model simulated in memory
  * at the network edge, so an application and every SDK layer above it run
  * unchanged without a paid session. Provide `layer({ timing })` beneath
- * `Reactor.layer()` in place of an HTTP client and a host.
+ * `Reactor.layer()` in place of an HTTP client and a host; `layerCoordinator`
+ * is the coordinator's HTTP API alone, with no host.
  *
  * It models what H3 does, not how fast it does it: every delay comes from the
  * `timing` the caller chooses. A scenario test states the timing it relies on
  * with `Timing.fixed`; a simulation test draws from wide ranges with
- * `Timing.random`, reproducibly for its seed; `Timing.hosted` replays what
- * paid runs measured, for demos. Every delay is an `Effect.sleep`: under
+ * `Timing.random`, reproducibly for its seed; `Timing.hosted` draws from
+ * ranges paid runs measured, for demos. Every delay is an `Effect.sleep`: under
  * `TestClock`, fork `flow()` and the run is deterministic; on the live clock
  * it plays in real time.
  */
@@ -53,6 +54,11 @@ export const Fault = Schema.Union([
     command: Schema.String,
     applied: Schema.optionalKey(Schema.Boolean),
   }),
+  /**
+   * The model takes the command on time and answers it this long late, over
+   * the connection the command came on, whichever transport then carries it.
+   */
+  Schema.TaggedStruct("LateReply", { ...nth, command: Schema.String, after: Schema.Duration }),
   /** A build never finishes and holds the build slot. */
   Schema.TaggedStruct("StallBuild", nth),
   /** A build fails: the model broadcasts `clip_failed` and drops the clip. */
@@ -71,13 +77,25 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("NoAudio", {}),
   /** An enqueue with reference images is refused because one of them is invalid. */
   Schema.TaggedStruct("InvalidImage", nth),
-  /** `POST /tokens` grants a longer session than was asked for. */
-  Schema.TaggedStruct("OverGrant", nth),
   /**
-   * Content moderation flags a clip, every one or those with `prompt`: as its
-   * build ends the model sends its verdict on the control channel and, for
-   * `terminate` (the default), ends the session instead of making the clip
-   * Ready, as Reactor documents; `warn` only reports it.
+   * `POST /tokens` misgrants: a longer session than was asked for (the
+   * default), none of the cap asked for, a session not asked to be bound, a
+   * token already expired, or no echo of what it granted.
+   */
+  Schema.TaggedStruct("OverGrant", {
+    ...nth,
+    grant: Schema.optionalKey(
+      Schema.Literals(["longer", "uncapped", "bound", "expired", "silent"]),
+    ),
+  }),
+  /** A recording's playlist is ready this long after the time its clip predicted. */
+  Schema.TaggedStruct("LateRecording", { ...nth, by: Schema.Duration }),
+  /**
+   * Content moderation flags an enqueue, every one or those with `prompt`.
+   * The enqueue is answered as usual; `timing.moderation` later the verdict
+   * arrives on the control channel naming no category, input, command or
+   * request, as it did in a paid run, and on `terminate` (the default) the
+   * session ends, as Reactor documents. `warn` only reports it.
    */
   Schema.TaggedStruct("Moderate", {
     ...nth,
@@ -85,7 +103,6 @@ export const Fault = Schema.Union([
     action: Schema.optionalKey(Schema.Literals(["terminate", "warn"])),
     /** False ends the session with no verdict sent, which Reactor's docs allow. */
     verdict: Schema.optionalKey(Schema.Boolean),
-    categories: Schema.String.pipe(Schema.Array, Schema.optionalKey),
   }),
 ]);
 export type Fault = typeof Fault.Type;
@@ -119,6 +136,8 @@ export interface Timing {
   readonly seam: Range;
   /** From a `stop`'s acknowledgement until it takes effect and its clip ends. */
   readonly stop: Range;
+  /** From a flagged enqueue until content moderation's verdict, and the session's end on `terminate`. */
+  readonly moderation: Range;
   /** Seconds of video built per second of build time; below 1 the queue starves. */
   readonly buildSpeed: { readonly min: number; readonly max: number };
   /** The same for a clip built continuing from another, which hosted H3 built slower. */
@@ -150,6 +169,7 @@ export const Timing = {
     readonly connect?: Duration.Input;
     readonly seam?: Duration.Input;
     readonly stop?: Duration.Input;
+    readonly moderation?: Duration.Input;
   }): Timing => ({
     label: "fixed",
     seed: 1,
@@ -160,6 +180,7 @@ export const Timing = {
     connect: point(input.connect),
     seam: point(input.seam),
     stop: point(input.stop),
+    moderation: point(input.moderation),
     buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
     continuedBuildSpeed: {
       min: input.continuedBuildSpeed ?? input.buildSpeed,
@@ -182,6 +203,7 @@ export const Timing = {
     readonly connect?: readonly [Duration.Input, Duration.Input];
     readonly seam?: readonly [Duration.Input, Duration.Input];
     readonly stop?: readonly [Duration.Input, Duration.Input];
+    readonly moderation?: readonly [Duration.Input, Duration.Input];
     readonly buildSpeed?: readonly [number, number];
     readonly continuedBuildSpeed?: readonly [number, number];
   }): Timing => ({
@@ -194,6 +216,7 @@ export const Timing = {
     connect: range(input.connect ?? [0, "2 seconds"]),
     seam: range(input.seam ?? [0, "500 millis"]),
     stop: range(input.stop ?? [0, "1 second"]),
+    moderation: range(input.moderation ?? [0, "2 seconds"]),
     buildSpeed: {
       min: input.buildSpeed?.[0] ?? 0.25,
       max: input.buildSpeed?.[1] ?? 10,
@@ -207,10 +230,11 @@ export const Timing = {
    * What two paid hosted H3 runs measured on 2026-09-27 (0.6.0 evidence):
    * connect steps of 0.2–0.9 s, eleven 5 s clips built about every 2.1 s
    * while playing, five seams of 30–110 ms and command round trips of 60–90
-   * ms; and, from 0.7.0's two runs on 2026-09-28, a stop landing about 20 ms
-   * after its acknowledgement and one continued 5 s clip built in 5.45 s.
-   * These are small samples: use them for demos and realism checks, not as
-   * what a test depends on.
+   * ms; from 0.7.0's two runs on 2026-09-28, a stop landing about 20 ms
+   * after its acknowledgement and one continued 5 s clip built in 5.45 s; and
+   * from 0.8.0's cut run, a moderation verdict 1.01 s after its enqueue. These
+   * are small samples, drawn as ranges and not replayed as a trace: use them
+   * for demos and realism checks, not as what a test depends on.
    */
   hosted: {
     label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28",
@@ -222,6 +246,7 @@ export const Timing = {
     connect: range(["600 millis", "900 millis"]),
     seam: range(["30 millis", "110 millis"]),
     stop: point("20 millis"),
+    moderation: point("1 second"),
     buildSpeed: { min: 2.3, max: 2.6 },
     continuedBuildSpeed: { min: 0.92, max: 0.92 },
   } satisfies Timing,
@@ -237,10 +262,10 @@ export const Options = Schema.Struct({
   generationCapacity: count(20),
   playoutCapacity: count(10),
   /**
-   * The rate the pricing API publishes, in credits a minute: 7,500 at 10,000
-   * a dollar is $0.75 a minute.
+   * The rate the pricing API publishes, in credits a second, as it stated
+   * H3's for the paid runs: 125 at 10,000 a dollar is $0.0125 a second.
    */
-  creditsPerMinute: count(7_500),
+  creditsPerSecond: count(125),
   creditsPerDollar: count(10_000),
   /** Sessions the account may run at once, as Reactor's default quota; more are refused with 429. */
   concurrentSessions: count(5),
@@ -261,6 +286,13 @@ export const Options = Schema.Struct({
   ),
   /** Whether the deployment's `enqueue` declares `reference_audios`. */
   referenceAudio: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(true))),
+  /**
+   * Whether the deployment records. A recorder answers a clip or recording
+   * request with an HLS playlist, ready when the clip says; without one the
+   * request fails as a disabled recorder does. Whether hosted H3 records is
+   * unobserved.
+   */
+  recorder: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(false))),
   faults: Schema.Array(Fault).pipe(Schema.withConstructorDefault(Effect.succeed([]))),
 });
 export type Options = typeof Options.Type;
@@ -269,29 +301,37 @@ export interface SessionInfo {
   readonly id: string;
   /** INACTIVE: its last connection dropped; it ends 30 s later unless one returns. */
   readonly state: "PENDING" | "ACTIVE" | "INACTIVE" | "STOPPING" | "CLOSED";
-  /** A peer is bound and both its channels are open. */
+  /** One of its connections at least is connected with both channels open. */
   readonly connected: boolean;
   /** DELETE requests received, repeats and ignored ones included. */
   readonly deletes: number;
   /** The creating token's cap, undefined for none, and when that token expires. */
   readonly grant: { readonly maxSessionSeconds: number | undefined; readonly expiresAt: number };
+  /** The SDK that created it, as its `client_info` named itself. */
+  readonly client: { readonly sdkVersion: string; readonly sdkType: string } | undefined;
 }
 
+/** What the sessions cost, billed per second as the pricing API states H3's rate. */
 export interface Billing {
-  /** From ACTIVE until the session ended, or now. */
+  /** From ACTIVE until each session ended, or now. */
   readonly seconds: number;
-  /** Whole billed minutes, counted per session. */
-  readonly minutes: number;
   readonly usd: number;
 }
 
-/** A command the model received, a message it sent, a track paused or resumed, or a session's lifecycle step. */
+/**
+ * A command the model received, a message it sent, a track paused or resumed,
+ * a session's lifecycle step, or a request the coordinator or storage served.
+ */
 export interface Entry {
   /** Monotonic milliseconds. */
   readonly at: number;
+  /** The session it concerns; empty for a request that names none. */
   readonly sessionId: string;
-  readonly kind: "session" | "command" | "message" | "upload" | "build" | "track";
+  readonly kind: "session" | "command" | "message" | "upload" | "build" | "track" | "request";
+  /** A request's is its method and URL. */
   readonly name: string;
+  /** The bearer a request carried: the API key or a token. */
+  readonly bearer?: "key" | "token";
   readonly clipId?: string;
   /**
    * A build that asked to continue from this clip: its name says whether it
@@ -317,35 +357,49 @@ export class ReactorTest extends Context.Service<
   }
 >()("reactor-effect-client/ReactorTest") {}
 
+type Input = Schema.Struct.MakeIn<typeof Options.fields> & { readonly timing: Timing };
+
+/** The simulated coordinator's state, and the services over it. */
+const simulate = Effect.fnUntraced(function* (input: Input) {
+  const { timing, ...rest } = input;
+  const options = Options.make(rest);
+  const sessions = yield* Sessions.make(options, yield* Sampler.make(timing));
+  const context = Context.make(
+    ReactorTest,
+    ReactorTest.of({
+      apiKey: Redacted.make(options.apiKey),
+      sessions: sessions.info,
+      billing: sessions.billing,
+      log: sessions.log,
+      inject: sessions.inject,
+    }),
+  ).pipe(Context.add(HttpClient.HttpClient, Coordinator.client(sessions)));
+  return { sessions, context };
+});
+
+/**
+ * The simulated coordinator alone: tokens, sessions and their lifetimes,
+ * uploads and recordings over its HTTP API, with no host. Its sessions run
+ * without a connection, as a session does before its first or after its last.
+ */
+export const layerCoordinator = (input: Input): Layer.Layer<ReactorTest | HttpClient.HttpClient> =>
+  Layer.effectContext(Effect.map(simulate(input), ({ context }) => context));
+
 /** The simulated Reactor, as the network edge `Reactor.layer` needs. */
 export const layer = (
-  input: Schema.Struct.MakeIn<typeof Options.fields> & { readonly timing: Timing },
+  input: Input,
 ): Layer.Layer<ReactorTest | HttpClient.HttpClient | PeerFactory> =>
   Layer.effectContext(
-    Effect.gen(function* () {
-      const { timing, ...rest } = input;
-      const options = Options.make(rest);
-      const sessions = yield* Sessions.make(options, yield* Sampler.make(timing));
-      return Context.make(
-        ReactorTest,
-        ReactorTest.of({
-          apiKey: Redacted.make(options.apiKey),
-          sessions: sessions.info,
-          billing: sessions.billing,
-          log: sessions.log,
-          inject: sessions.inject,
+    Effect.map(simulate(input), ({ sessions, context }) =>
+      Context.add(
+        context,
+        PeerFactory,
+        PeerFactory.of({
+          check: Effect.void,
+          make: Effect.acquireRelease(Peer.make(sessions), (peer) => peer.close),
         }),
-      ).pipe(
-        Context.add(HttpClient.HttpClient, Coordinator.client(sessions)),
-        Context.add(
-          PeerFactory,
-          PeerFactory.of({
-            check: Effect.void,
-            make: Effect.acquireRelease(Peer.make(sessions), (peer) => peer.close),
-          }),
-        ),
-      );
-    }),
+      ),
+    ),
   );
 
 /** The clip a simulated frame belongs to and its index in the clip; undefined when black. */

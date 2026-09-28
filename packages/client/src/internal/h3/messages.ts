@@ -114,9 +114,9 @@ export const Payloads = {
 } as const;
 export type MessageType = keyof typeof Payloads;
 export type Payload<K extends MessageType> = (typeof Payloads)[K]["Type"];
-export type Message = {
-  [K in MessageType]: { readonly type: K; readonly data: Payload<K> };
-}[MessageType];
+export type Message<K extends MessageType = MessageType> = {
+  [P in K]: { readonly type: P; readonly data: Payload<P> };
+}[K];
 export type DecodedMessage =
   | Message
   | {
@@ -139,15 +139,20 @@ export const decodeMessage = ({
   readonly data?: Schema.JsonObject | undefined;
 }): Result.Result<DecodedMessage, ReactorError> => {
   if (!isMessageType(type)) return Result.succeed({ type: "unknown", name: type, data });
-  return Result.mapBoth(Schema.decodeUnknownResult(Payloads[type])(data), {
+  return decodeKnown(type, data);
+};
+
+const decodeKnown = <K extends MessageType>(
+  type: K,
+  data: Schema.JsonObject | undefined,
+): Result.Result<Message<K>, ReactorError> =>
+  Result.mapBoth(Schema.decodeUnknownResult(Payloads[type])(data), {
     onFailure: (cause) =>
       ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
         operation: "H3 observation",
         detail: cause,
       }),
-    // TypeScript cannot correlate `type` with the payload its Schema decoded.
-    onSuccess: (decoded): DecodedMessage => ({ type, data: decoded }) as Message,
+    onSuccess: (decoded): Message<K> => ({ type, data: decoded }),
   });
-};
 
 const isMessageType = (type: string): type is MessageType => Object.hasOwn(Payloads, type);

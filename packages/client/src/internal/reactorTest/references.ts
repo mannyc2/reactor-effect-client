@@ -34,14 +34,13 @@ export const pngBytes = ({
   readonly width: number;
   readonly height: number;
 }): Uint8Array => {
-  const crcTable = new Uint32Array(256).map((_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) === 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
+  // CRC-32 bit by bit: the fixtures are small enough to need no table.
   const crc = (bytes: Uint8Array) => {
     let c = 0xffffffff;
-    for (const b of bytes) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+    for (const b of bytes) {
+      c ^= b;
+      for (let k = 0; k < 8; k++) c = (c & 1) === 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
     return (c ^ 0xffffffff) >>> 0;
   };
   const chunk = (type: string, data: Uint8Array) => {

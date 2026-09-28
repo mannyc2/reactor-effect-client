@@ -8,6 +8,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
@@ -103,9 +104,11 @@ export const open = Effect.fnUntraced(function* (
     Effect.flatMap(SubscriptionRef.updateAndGet(state, f), (local) =>
       publish({ _tag: "State", state: view(local) }),
     );
-  const when = (predicate: (local: Local) => boolean) =>
+  /** The first clip `pick` finds in the state, now or once it changes. */
+  const first = (pick: (local: Local) => Queued | undefined) =>
     SubscriptionRef.changes(state).pipe(
-      Stream.filter(predicate),
+      Stream.map(pick),
+      Stream.filter(Predicate.isNotUndefined),
       Stream.runHead,
       Effect.map(Option.getOrThrow),
     );
@@ -113,8 +116,7 @@ export const open = Effect.fnUntraced(function* (
   // One build slot: the head of the building queue builds, then waits Ready unless it was popped.
   yield* Effect.forever(
     Effect.gen(function* () {
-      const local = yield* when((value) => value.building.length > 0);
-      const next = local.building[0]!;
+      const next = yield* first((value) => value.building[0]);
       const built = yield* (
         options.build === undefined
           ? Effect.as(
@@ -143,10 +145,9 @@ export const open = Effect.fnUntraced(function* (
   // Autoplay: the head of the playout queue plays once nothing else does.
   yield* Effect.forever(
     Effect.gen(function* () {
-      const local = yield* when(
-        (value) => value.autoplay && value.playing === undefined && value.ready.length > 0,
+      const next = yield* first((value) =>
+        value.autoplay && value.playing === undefined ? value.ready[0] : undefined,
       );
-      const next = local.ready[0]!;
       const stopped = yield* Deferred.make<void>();
       yield* Ref.set(stop, stopped);
       yield* change((value) => ({ ...value, ready: value.ready.slice(1), playing: next }));

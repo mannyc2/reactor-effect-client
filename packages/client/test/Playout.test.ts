@@ -915,20 +915,33 @@ layer(hosted)("moderation with a verdict", (it) => {
   );
 });
 
-layer(hosted)("moderation without a verdict", (it) => {
-  // Screening ends the session as the flagged clip's build does, and says nothing.
+// Screening ends the session a while after the flagged enqueue, and says nothing. At builds of 1.2
+// times real time, the 8 s it takes lets the innocent clip air on the second session while the
+// flagged one is still building (any delay from 6 to 10 s does).
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 1.2,
+      seam: "70 millis",
+      http: "40 millis",
+      channel: "20 millis",
+      moderation: "8 seconds",
+    }),
+  }),
+)("moderation without a verdict", (it) => {
   it.effect(
     "fails a clip lost unbuilt twice in a row, and rebuilds a Ready one until it airs",
     () =>
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
         yield* test.inject({ _tag: "Moderate", prompt: "flagged", verdict: false });
-        const { playout } = yield* start();
+        const { playout, statuses } = yield* start();
         const submit = (name: string, seconds: number) =>
           playout.submit({ key: key(name), lane: "line", request: clip(name, seconds) });
-        // The opener plays while the innocent clip waits Ready and the flagged one builds.
+        // The opener plays while the innocent clip waits Ready, and then the flagged one is sent.
         yield* submit("opener", 15);
         const innocent = yield* submit("innocent", 5);
+        yield* eventually(statuses("innocent"), (all) => all.includes("Ready"));
         const flagged = yield* submit("flagged", 15);
         const failed = yield* flagged.outcome;
         assert.deepStrictEqual(

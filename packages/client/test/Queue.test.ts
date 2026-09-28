@@ -1,7 +1,10 @@
-import { Cause, Context, Effect, Exit, Fiber, Queue, Scheduler } from "effect";
-import { expect, onTestFinished, test } from "vitest";
+/** The queue take workaround: no offer is lost to a yield between an empty read and its waiter. */
+import { assert, it } from "@effect/vitest";
+import { Cause, Context, Effect, Exit, Queue, Scheduler } from "effect";
+import type { Fiber } from "effect";
 import { take, takeAll } from "../src/internal/queue.js";
 
+/** A synchronous scheduler that yields a fiber at the operation a test arms, then runs tasks on demand. */
 class PreemptionScheduler implements Scheduler.Scheduler {
   readonly executionMode = "sync";
   private readonly tasks: Array<() => void> = [];
@@ -36,209 +39,241 @@ class PreemptionScheduler implements Scheduler.Scheduler {
   }
 }
 
-const runtime = () => {
-  const scheduler = new PreemptionScheduler();
-  const context = Context.make(Scheduler.Scheduler, scheduler);
-  const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
-  const fork = <A, E>(effect: Effect.Effect<A, E>): Fiber.Fiber<A, E> => {
-    const fiber = Effect.runForkWith(context)(effect);
-    fibers.push(fiber);
-    return fiber;
-  };
-  onTestFinished(() => {
-    for (const fiber of fibers) fiber.interruptUnsafe();
-    scheduler.flush();
-  });
-  const run = <A, E>(effect: Effect.Effect<A, E>): A => {
-    // runSync installs its own scheduler, which would let queue dispatches
-    // escape this test's manually controlled task list.
-    const fiber = fork(effect);
-    scheduler.flush();
-    const exit = fiber.pollUnsafe();
-    if (exit === undefined) throw new Error("Expected the effect to finish synchronously");
-    if (Exit.isFailure(exit)) throw new Error(Cause.pretty(exit.cause));
-    return exit.value;
-  };
-  return { scheduler, fork, run };
-};
+/**
+ * Fibers on a scheduler of their own, so the test decides when each continuation
+ * runs; they are interrupted as the test's scope closes.
+ */
+const controlled = Effect.acquireRelease(
+  Effect.sync(() => {
+    const scheduler = new PreemptionScheduler();
+    const context = Context.make(Scheduler.Scheduler, scheduler);
+    const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
+    const fork = <A, E>(effect: Effect.Effect<A, E>): Fiber.Fiber<A, E> => {
+      const fiber = Effect.runForkWith(context)(effect);
+      fibers.push(fiber);
+      return fiber;
+    };
+    // runSync installs its own scheduler, which would let queue dispatches escape the task list.
+    const run = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+      Effect.suspend(() => {
+        const fiber = fork(effect);
+        scheduler.flush();
+        return fiber.pollUnsafe() ?? Effect.die("the effect did not finish synchronously");
+      });
+    return { scheduler, fork, run, fibers };
+  }),
+  ({ scheduler, fibers }) =>
+    Effect.sync(() => {
+      for (const fiber of fibers) fiber.interruptUnsafe();
+      scheduler.flush();
+    }),
+);
 
-test("negative control: upstream take loses an offer between the empty check and waiter registration", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.unbounded<number>());
-  // In rc.117, operation one checks the queue in suspend; operation two
-  // enters andThen before awaitTake has registered its callback.
-  scheduler.arm(2);
-  const consumer = fork(Queue.take(queue));
-  expect(scheduler.yielded).toBe(true);
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
+/** How many takers wait on `queue`. */
+const takers = <A, E>(queue: Queue.Queue<A, E>) =>
+  queue.state._tag === "Done" ? 0 : queue.state.takers.size;
 
-  expect(Queue.offerUnsafe(queue, 42)).toBe(true);
-  scheduler.flush();
+it.effect(
+  "negative control: upstream take loses an offer between the empty check and waiter registration",
+  () =>
+    Effect.gen(function* () {
+      const { scheduler, fork, run } = yield* controlled;
+      const queue = yield* run(Queue.unbounded<number>());
+      // In rc.117, operation one checks the queue in suspend; operation two
+      // enters andThen before awaitTake has registered its callback.
+      scheduler.arm(2);
+      const consumer = fork(Queue.take(queue));
+      assert.isTrue(scheduler.yielded);
+      assert.strictEqual(takers(queue), 0);
 
-  expect(consumer.pollUnsafe()).toBeUndefined();
-  expect(Queue.sizeUnsafe(queue)).toBe(1);
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(1);
-  consumer.interruptUnsafe();
-  scheduler.flush();
-  expect(consumer.pollUnsafe()?._tag).toBe("Failure");
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
-});
+      assert.isTrue(Queue.offerUnsafe(queue, 42));
+      scheduler.flush();
 
-test.each([1, 2, 3, 4, 5, 6])(
+      assert.isUndefined(consumer.pollUnsafe());
+      assert.strictEqual(Queue.sizeUnsafe(queue), 1);
+      assert.strictEqual(takers(queue), 1);
+      consumer.interruptUnsafe();
+      scheduler.flush();
+      assert.strictEqual(consumer.pollUnsafe()?._tag, "Failure");
+      assert.strictEqual(takers(queue), 0);
+    }),
+);
+
+it.effect.each([1, 2, 3, 4, 5, 6])(
   "take cannot lose a lone offer with preemption at operation %i",
-  (operation) => {
-    const { scheduler, fork, run } = runtime();
-    const queue = run(Queue.unbounded<number>());
-    scheduler.arm(operation);
-    const consumer = fork(take(queue));
+  (operation) =>
+    Effect.gen(function* () {
+      const { scheduler, fork, run } = yield* controlled;
+      const queue = yield* run(Queue.unbounded<number>());
+      scheduler.arm(operation);
+      const consumer = fork(take(queue));
 
-    // A later operation may be unreachable until the callback has parked.
-    // Either way, the offer happens before queued continuations can run.
-    expect(Queue.offerUnsafe(queue, 42)).toBe(true);
-    scheduler.flush();
+      // A later operation may be unreachable until the callback has parked.
+      // Either way, the offer happens before queued continuations can run.
+      assert.isTrue(Queue.offerUnsafe(queue, 42));
+      scheduler.flush();
 
-    expect(consumer.pollUnsafe()).toEqual(Exit.succeed(42));
-    expect(Queue.sizeUnsafe(queue)).toBe(0);
-    expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
-  },
+      assert.deepStrictEqual(consumer.pollUnsafe(), Exit.succeed(42));
+      assert.strictEqual(Queue.sizeUnsafe(queue), 0);
+      assert.strictEqual(takers(queue), 0);
+    }),
 );
 
-test.each([1, 2, 3, 4, 5, 6])(
+it.effect.each([1, 2, 3, 4, 5, 6])(
   "takeAll cannot lose an offered batch with preemption at operation %i",
-  (operation) => {
-    const { scheduler, fork, run } = runtime();
-    const queue = run(Queue.unbounded<number>());
-    scheduler.arm(operation);
-    const consumer = fork(takeAll(queue));
+  (operation) =>
+    Effect.gen(function* () {
+      const { scheduler, fork, run } = yield* controlled;
+      const queue = yield* run(Queue.unbounded<number>());
+      scheduler.arm(operation);
+      const consumer = fork(takeAll(queue));
 
-    expect(Queue.offerAllUnsafe(queue, [1, 2])).toEqual([]);
-    scheduler.flush();
+      assert.deepStrictEqual(Queue.offerAllUnsafe(queue, [1, 2]), []);
+      scheduler.flush();
 
-    expect(consumer.pollUnsafe()).toEqual(Exit.succeed([1, 2]));
-    expect(Queue.sizeUnsafe(queue)).toBe(0);
-    expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
-  },
+      assert.deepStrictEqual(consumer.pollUnsafe(), Exit.succeed([1, 2]));
+      assert.strictEqual(Queue.sizeUnsafe(queue), 0);
+      assert.strictEqual(takers(queue), 0);
+    }),
 );
 
-test("interrupting an idle take removes its waiter and leaves the next offer available", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.unbounded<number>());
-  const consumer = fork(take(queue));
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(1);
+it.effect("interrupting an idle take removes its waiter and leaves the next offer available", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number>());
+    const consumer = fork(take(queue));
+    assert.strictEqual(takers(queue), 1);
 
-  consumer.interruptUnsafe();
-  scheduler.flush();
-  const exit = consumer.pollUnsafe();
-  expect(exit !== undefined && Exit.hasInterrupts(exit)).toBe(true);
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
+    consumer.interruptUnsafe();
+    scheduler.flush();
+    const exit = consumer.pollUnsafe();
+    assert.strictEqual(exit !== undefined && Exit.hasInterrupts(exit), true);
+    assert.strictEqual(takers(queue), 0);
 
-  expect(Queue.offerUnsafe(queue, 7)).toBe(true);
-  scheduler.flush();
-  expect(run(take(queue))).toBe(7);
-});
+    assert.isTrue(Queue.offerUnsafe(queue, 7));
+    scheduler.flush();
+    assert.strictEqual(yield* run(take(queue)), 7);
+  }),
+);
 
-test("multiple idle takers consume successive offers exactly once", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.unbounded<number>());
-  const first = fork(take(queue));
-  const second = fork(take(queue));
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(2);
+it.effect("multiple idle takers consume successive offers exactly once", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number>());
+    const first = fork(take(queue));
+    const second = fork(take(queue));
+    assert.strictEqual(takers(queue), 2);
 
-  expect(Queue.offerUnsafe(queue, 1)).toBe(true);
-  scheduler.flush();
-  expect(first.pollUnsafe()).toEqual(Exit.succeed(1));
-  expect(second.pollUnsafe()).toBeUndefined();
+    assert.isTrue(Queue.offerUnsafe(queue, 1));
+    scheduler.flush();
+    assert.deepStrictEqual(first.pollUnsafe(), Exit.succeed(1));
+    assert.isUndefined(second.pollUnsafe());
 
-  expect(Queue.offerUnsafe(queue, 2)).toBe(true);
-  scheduler.flush();
-  expect(second.pollUnsafe()).toEqual(Exit.succeed(2));
-  expect(Queue.sizeUnsafe(queue)).toBe(0);
-  expect(queue.state._tag !== "Done" && queue.state.takers.size).toBe(0);
-});
+    assert.isTrue(Queue.offerUnsafe(queue, 2));
+    scheduler.flush();
+    assert.deepStrictEqual(second.pollUnsafe(), Exit.succeed(2));
+    assert.strictEqual(Queue.sizeUnsafe(queue), 0);
+    assert.strictEqual(takers(queue), 0);
+  }),
+);
 
-test("taking from a full bounded queue admits its suspended producer", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.bounded<number>(1));
-  expect(Queue.offerUnsafe(queue, 1)).toBe(true);
-  const producer = fork(Queue.offer(queue, 2));
-  expect(producer.pollUnsafe()).toBeUndefined();
+it.effect("taking from a full bounded queue admits its suspended producer", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.bounded<number>(1));
+    assert.isTrue(Queue.offerUnsafe(queue, 1));
+    const producer = fork(Queue.offer(queue, 2));
+    assert.isUndefined(producer.pollUnsafe());
 
-  expect(run(take(queue))).toBe(1);
-  scheduler.flush();
-  expect(producer.pollUnsafe()).toEqual(Exit.succeed(true));
-  expect(run(take(queue))).toBe(2);
-  expect(Queue.sizeUnsafe(queue)).toBe(0);
-});
+    assert.strictEqual(yield* run(take(queue)), 1);
+    scheduler.flush();
+    assert.deepStrictEqual(producer.pollUnsafe(), Exit.succeed(true));
+    assert.strictEqual(yield* run(take(queue)), 2);
+    assert.strictEqual(Queue.sizeUnsafe(queue), 0);
+  }),
+);
 
-test("take receives a pending offer from a zero-capacity queue", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.bounded<number>(0));
-  const producer = fork(Queue.offer(queue, 42));
-  expect(producer.pollUnsafe()).toBeUndefined();
+it.effect("take receives a pending offer from a zero-capacity queue", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.bounded<number>(0));
+    const producer = fork(Queue.offer(queue, 42));
+    assert.isUndefined(producer.pollUnsafe());
 
-  expect(run(take(queue))).toBe(42);
-  scheduler.flush();
-  expect(producer.pollUnsafe()).toEqual(Exit.succeed(true));
-});
+    assert.strictEqual(yield* run(take(queue)), 42);
+    scheduler.flush();
+    assert.deepStrictEqual(producer.pollUnsafe(), Exit.succeed(true));
+  }),
+);
 
-test("take rechecks a zero-capacity offer registered during preemption", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.bounded<number>(0));
-  scheduler.arm(2);
-  const consumer = fork(take(queue));
-  expect(scheduler.yielded).toBe(true);
-  const producer = fork(Queue.offer(queue, 42));
-  expect(queue.state._tag !== "Done" && queue.state.offers.size).toBe(1);
+it.effect("take rechecks a zero-capacity offer registered during preemption", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.bounded<number>(0));
+    scheduler.arm(2);
+    const consumer = fork(take(queue));
+    assert.isTrue(scheduler.yielded);
+    const producer = fork(Queue.offer(queue, 42));
+    assert.strictEqual(queue.state._tag === "Done" ? 0 : queue.state.offers.size, 1);
 
-  scheduler.flush();
-  expect(consumer.pollUnsafe()).toEqual(Exit.succeed(42));
-  expect(producer.pollUnsafe()).toEqual(Exit.succeed(true));
-});
+    scheduler.flush();
+    assert.deepStrictEqual(consumer.pollUnsafe(), Exit.succeed(42));
+    assert.deepStrictEqual(producer.pollUnsafe(), Exit.succeed(true));
+  }),
+);
 
-test("ending a queue wakes its idle taker with Done", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.unbounded<number, Cause.Done>());
-  const consumer = fork(take(queue));
-  const batchConsumer = fork(takeAll(queue));
+it.effect("ending a queue wakes its idle taker with Done", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number, Cause.Done>());
+    const consumer = fork(take(queue));
+    const batchConsumer = fork(takeAll(queue));
 
-  expect(Queue.endUnsafe(queue)).toBe(true);
-  scheduler.flush();
-  expect(consumer.pollUnsafe()).toEqual(Exit.fail(Cause.Done()));
-  expect(batchConsumer.pollUnsafe()).toEqual(Exit.fail(Cause.Done()));
-  expect(run(Effect.exit(take(queue)))).toEqual(Exit.fail(Cause.Done()));
-  expect(run(Effect.exit(takeAll(queue)))).toEqual(Exit.fail(Cause.Done()));
-});
+    assert.strictEqual(Queue.endUnsafe(queue), true);
+    scheduler.flush();
+    assert.deepStrictEqual(consumer.pollUnsafe(), Exit.fail(Cause.Done()));
+    assert.deepStrictEqual(batchConsumer.pollUnsafe(), Exit.fail(Cause.Done()));
+    assert.deepStrictEqual(yield* run(Effect.exit(take(queue))), Exit.fail(Cause.Done()));
+    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail(Cause.Done()));
+  }),
+);
 
-test("a closing queue drains its buffered value before Done", () => {
-  const { run } = runtime();
-  const queue = run(Queue.unbounded<number, Cause.Done>());
-  expect(Queue.offerUnsafe(queue, 42)).toBe(true);
-  expect(Queue.endUnsafe(queue)).toBe(true);
+it.effect("a closing queue drains its buffered value before Done", () =>
+  Effect.gen(function* () {
+    const { run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number, Cause.Done>());
+    assert.isTrue(Queue.offerUnsafe(queue, 42));
+    assert.strictEqual(Queue.endUnsafe(queue), true);
 
-  expect(run(take(queue))).toBe(42);
-  expect(run(Effect.exit(take(queue)))).toEqual(Exit.fail(Cause.Done()));
-});
+    assert.strictEqual(yield* run(take(queue)), 42);
+    assert.deepStrictEqual(yield* run(Effect.exit(take(queue))), Exit.fail(Cause.Done()));
+  }),
+);
 
-test("takeAll drains a closing queue's buffered batch before Done", () => {
-  const { run } = runtime();
-  const queue = run(Queue.unbounded<number, Cause.Done>());
-  expect(Queue.offerAllUnsafe(queue, [1, 2])).toEqual([]);
-  expect(Queue.endUnsafe(queue)).toBe(true);
+it.effect("takeAll drains a closing queue's buffered batch before Done", () =>
+  Effect.gen(function* () {
+    const { run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number, Cause.Done>());
+    assert.deepStrictEqual(Queue.offerAllUnsafe(queue, [1, 2]), []);
+    assert.strictEqual(Queue.endUnsafe(queue), true);
 
-  expect(run(takeAll(queue))).toEqual([1, 2]);
-  expect(run(Effect.exit(takeAll(queue)))).toEqual(Exit.fail(Cause.Done()));
-});
+    assert.deepStrictEqual(yield* run(takeAll(queue)), [1, 2]);
+    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail(Cause.Done()));
+  }),
+);
 
-test("queue failure reaches both a parked take and future takes unchanged", () => {
-  const { scheduler, fork, run } = runtime();
-  const queue = run(Queue.unbounded<number, string>());
-  const consumer = fork(take(queue));
-  const batchConsumer = fork(takeAll(queue));
+it.effect("queue failure reaches both a parked take and future takes unchanged", () =>
+  Effect.gen(function* () {
+    const { scheduler, fork, run } = yield* controlled;
+    const queue = yield* run(Queue.unbounded<number, string>());
+    const consumer = fork(take(queue));
+    const batchConsumer = fork(takeAll(queue));
 
-  expect(Queue.failCauseUnsafe(queue, Cause.fail("disconnected"))).toBe(true);
-  scheduler.flush();
-  expect(consumer.pollUnsafe()).toEqual(Exit.fail("disconnected"));
-  expect(batchConsumer.pollUnsafe()).toEqual(Exit.fail("disconnected"));
-  expect(run(Effect.exit(take(queue)))).toEqual(Exit.fail("disconnected"));
-  expect(run(Effect.exit(takeAll(queue)))).toEqual(Exit.fail("disconnected"));
-});
+    assert.strictEqual(Queue.failCauseUnsafe(queue, Cause.fail("disconnected")), true);
+    scheduler.flush();
+    assert.deepStrictEqual(consumer.pollUnsafe(), Exit.fail("disconnected"));
+    assert.deepStrictEqual(batchConsumer.pollUnsafe(), Exit.fail("disconnected"));
+    assert.deepStrictEqual(yield* run(Effect.exit(take(queue))), Exit.fail("disconnected"));
+    assert.deepStrictEqual(yield* run(Effect.exit(takeAll(queue))), Exit.fail("disconnected"));
+  }),
+);
