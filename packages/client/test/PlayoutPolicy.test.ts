@@ -563,6 +563,40 @@ describe("PlayoutPolicy", () => {
       );
     });
 
+  it("removes a retiring session's filler only while it takes commands, and once per refusal", () => {
+    const policy = drive();
+    const filler = (index: number) => clip(`f${String(index)}`, { _tag: "Filler", index });
+    const retiring = { playing: filler(0), ready: [filler(1)] };
+    const removes = () =>
+      commands(policy.actions).filter(
+        (action) => action.command._tag === "Remove" && action.sessionId === "s1",
+      ).length;
+    policy.tick(0);
+    policy.open("s1");
+    policy.observe(retiring, "s1");
+    policy.open("s2");
+    policy.submit(spec("x"));
+    assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["x"]);
+    policy.reply({ _tag: "Done", clipId: "cx" });
+    policy.event({ _tag: "Reconnecting" }, "s1");
+    policy.observe({ ready: [clip("cx", item("x"))] }, "s2");
+    assert.strictEqual(removes(), 0);
+    policy.observe(retiring, "s1");
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "f1" });
+    policy.reply({
+      _tag: "Failed",
+      cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the clip is armed"), {
+        operation: "pop",
+        outcome: "replied",
+        requestId: "request",
+        generation: 1n,
+      }),
+    });
+    policy.observe(retiring, "s1");
+    policy.tick();
+    assert.strictEqual(removes(), 1);
+  });
+
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {
     const { actions } = run([
       ...opened(),
