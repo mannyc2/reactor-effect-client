@@ -50,6 +50,46 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       lines.push(`**Switch:** at ${seconds(change.atMs)}, ${change.decision}`);
     if (playout.stops !== undefined) lines.push(`**Stops:** ${playout.stops}`);
   }
+  const tokens = evidence.tokens;
+  if (tokens !== undefined) {
+    for (const probe of tokens.probes)
+      lines.push(
+        `**Probe, ${probe.name}:** ${probe.status}${probe.code === undefined ? "" : ` ${probe.code}`}${probe.lifetimeSeconds === undefined ? "" : `; lives ${probe.lifetimeSeconds} s of ${probe.requestedSeconds ?? "?"} asked`}${
+          probe.echo === undefined
+            ? ""
+            : `; echo ${Object.entries(probe.echo)
+                .map(([key, value]) => `${key} ${String(value)}`)
+                .join(", ")}`
+        }`,
+      );
+    lines.push(
+      `**Tokens:** ${tokens.mints.map((mint) => `${mint.kind} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s`).join("; ")}`,
+    );
+    if (tokens.resumeStartedMs !== undefined && tokens.createExpiresMs !== undefined)
+      lines.push(
+        `**Adoption:** started ${seconds(tokens.resumeStartedMs - tokens.createExpiresMs)} after the creating token expired, ${tokens.ownerKilledMs === undefined ? "" : `${seconds(tokens.resumeStartedMs - tokens.ownerKilledMs)} after the owner died, `}attached ${tokens.attachedMs === undefined ? "never" : seconds(tokens.attachedMs - tokens.resumeStartedMs)} later; playing clip ${tokens.clipIdentified === true ? "identified" : "not identified"}`,
+      );
+    if (tokens.upload !== undefined)
+      lines.push(
+        `**Refreshed call:** ${tokens.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(tokens.refreshedMs)}`}; clip accepted ${tokens.upload.acceptedMs === undefined ? "never" : `in ${seconds(tokens.upload.acceptedMs - tokens.upload.startedMs)}`}, has_reference_audio ${String(tokens.upload.hasReferenceAudio)}`,
+      );
+    lines.push(
+      `**Refusals:** expired token ${tokens.expiredTokenStatus ?? "–"}, unbound token ${tokens.unboundTokenStatus ?? "–"}; API key termination ${tokens.apiKeyTermination === undefined ? "–" : `${tokens.apiKeyTermination.confirmed ? "confirmed" : "unconfirmed"} (DELETE ${String(tokens.apiKeyTermination.deleteStatus)})`}`,
+    );
+  }
+  const moderation = evidence.moderation;
+  if (moderation !== undefined) {
+    const verdict = moderation.verdict;
+    lines.push(
+      `**Moderation:** ${moderation.flagged ? "flagged" : "not flagged"}${moderation.aired ? ", aired" : ""}; enqueue ${moderation.enqueue === undefined ? "never sent" : `${moderation.enqueue.status}${moderation.enqueue.durationMs === undefined ? "" : ` in ${moderation.enqueue.durationMs} ms`}`}; item ${moderation.statuses.map((status) => status.status).join(" > ")}`,
+    );
+    lines.push(
+      `**Verdict:** ${verdict === undefined ? "none arrived" : `${verdict.action} at ${seconds(verdict.atMs - moderation.submittedMs)} after the submission, categories ${verdict.categories.join(", ") || "none"}, input ${verdict.inputKind ?? "unnamed"}, command ${verdict.command ?? "unnamed"}, ${verdict.namesEnqueue ? "names the enqueue" : "names no request of ours"}`}`,
+    );
+    lines.push(
+      `**Afterwards:** session ${moderation.session.map((entry) => entry.event).join(" > ") || "quiet"}; playout ${moderation.playout.map((entry) => entry.event).join(" > ") || "quiet"}${moderation.read === undefined ? "" : `; read ${moderation.read.status} ${moderation.read.state ?? ""} (keys ${moderation.read.keys.join(", ")})`}`,
+    );
+  }
   return lines;
 };
 
