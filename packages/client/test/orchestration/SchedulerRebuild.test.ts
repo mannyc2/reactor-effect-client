@@ -144,3 +144,60 @@ test("a clip lost before its enqueue reply arrives is still rebuilt, and later w
       expect((yield* d.started)._tag).toBe("Started");
     }),
   ));
+
+// Reactor's content-moderation docs: a session given a flagged prompt is terminated, with no
+// reason promised, and a moderation check admits a command still waiting after two seconds, so
+// the clip may be accepted first. Rebuilt on every replacement, it would end session after
+// session, each billed at least a minute.
+test("a clip lost unbuilt with two sessions in a row settles Failed, while built clips are still rebuilt", () =>
+  runClock(
+    Effect.gen(function* () {
+      let opened = 0;
+      const handle = yield* Renewal.make({
+        open: Effect.gen(function* () {
+          opened++;
+          // Any session is terminated while it builds the flagged prompt, once it accepted it.
+          return {
+            source: yield* Simulation.source({
+              build: (record) =>
+                record.request.prompt === "flagged"
+                  ? Effect.die("terminated for content")
+                  : Effect.sleep(300).pipe(Effect.as(record.durationSeconds)),
+            }),
+            lifetime: "Infinity",
+          };
+        }),
+      });
+      const scheduler = yield* makeScheduler({
+        lanes: [{ name: "line" }],
+        filler: {
+          runway: { floor: "0 seconds", target: "1 second" },
+          clip: ({ index }) => clip(`filler ${index}`),
+        },
+      }).pipe(Effect.provideService(Engine, handle.engine));
+      const statuses = new Map<string, AsRunStatus["_tag"][]>();
+      yield* scheduler.asRun.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            statuses.set(event.key, [...(statuses.get(event.key) ?? []), event.status._tag]);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* advance(1_000);
+      // long plays while a1 and a2 wait built behind it; f is sent next and ends the session.
+      const submit = (key: string, prompt = key, seconds = 5) =>
+        scheduler.submit({ key: ItemKey.make(key), lane: "line", request: clip(prompt, seconds) });
+      yield* submit("long", "long", 15);
+      yield* submit("a1");
+      const a2 = yield* submit("a2");
+      const f = yield* submit("f", "flagged");
+      const b = yield* submit("b");
+      yield* advance(60_000);
+      expect(opened, JSON.stringify(Object.fromEntries(statuses))).toBe(3);
+      expect((yield* f.outcome)._tag).toBe("Failed");
+      // a2 was built on both lost sessions, so it passed screening and is rebuilt again.
+      expect((yield* a2.started)._tag).toBe("Started");
+      expect((yield* b.started)._tag).toBe("Started");
+    }),
+  ));
