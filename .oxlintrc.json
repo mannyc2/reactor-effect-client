@@ -69,8 +69,6 @@
         "considerDefaultExhaustiveForUnions": true
       }
     ],
-    // Spreading a Schema class instance is how a changed copy is built.
-    "typescript/no-misused-spread": "off",
     // A runtime import cycle makes initialization order depend on who imports first.
     "import/no-cycle": "error"
   },

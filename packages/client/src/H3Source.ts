@@ -167,7 +167,8 @@ const track = <A>(
           () => frames,
         ),
       );
-      return frames.pipe(Stream.catchCause(() => Stream.empty));
+      // A retired generation's failure ends its frames until the next is ready; a defect stays one.
+      return frames.pipe(Stream.ignore);
     }),
   );
 
