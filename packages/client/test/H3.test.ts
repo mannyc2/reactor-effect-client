@@ -295,3 +295,91 @@ describe("the deployment and its messages", () => {
     assert.isTrue(Result.isSuccess(decoded));
   });
 });
+
+describe("references are refused before anything is uploaded", () => {
+  const bytes = (...parts: ReadonlyArray<string | ReadonlyArray<number>>) =>
+    new Uint8Array(
+      parts.flatMap((part) =>
+        typeof part === "string" ? Array.from(part, (char) => char.charCodeAt(0)) : [...part],
+      ),
+    );
+  const le32 = (value: number) => [
+    value & 255,
+    (value >> 8) & 255,
+    (value >> 16) & 255,
+    value >>> 24,
+  ];
+  const be32 = (value: number) => [
+    value >>> 24,
+    (value >> 16) & 255,
+    (value >> 8) & 255,
+    value & 255,
+  ];
+  const webp = (type: string, body: ReadonlyArray<number>) =>
+    bytes("RIFF", le32(22), "WEBP", type, le32(10), body);
+  const images: ReadonlyArray<readonly [string, Uint8Array, string | undefined]> = [
+    ["PNG", pngBytes(64, 64), "image/png"],
+    [
+      "JPEG",
+      bytes([255, 216, 255, 192, 0, 11, 8, 0, 64, 0, 64, 1, 1, 17, 0, 255, 217]),
+      "image/jpeg",
+    ],
+    ["lossy WebP", webp("VP8 ", [0, 0, 0, 157, 1, 42, 64, 0, 64, 0]), "image/webp"],
+    ["lossless WebP", webp("VP8L", [47, ...le32(63 | (63 << 14)), 0, 0, 0, 0, 0]), "image/webp"],
+    ["extended WebP", webp("VP8X", [0, 0, 0, 0, 63, 0, 0, 63, 0, 0]), "image/webp"],
+    ["a truncated PNG", pngBytes(64, 64).slice(0, 40), undefined],
+    ["a JPEG with no dimensions", bytes([255, 216, 255, 217]), undefined],
+    ["a truncated WebP", webp("VP8X", [0, 0, 0, 0]), undefined],
+    ["an image four times too wide", pngBytes(1000, 100), undefined],
+    ["text", bytes("not an image at all, only words"), undefined],
+  ];
+  it.effect.each(images)("%s", ([, image, mimeType]) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(H3.validateReference({ _tag: "Bytes", bytes: image }));
+      assert.strictEqual(
+        Result.isSuccess(result) ? result.success.mimeType : result.failure.context.outcome,
+        mimeType ?? "not-submitted",
+      );
+    }),
+  );
+
+  const flac = (rate: number, channels: number, samples: number) =>
+    bytes(
+      "fLaC",
+      [0, 0, 0, 34],
+      [0, 16, 0, 16, 0, 0, 0, 0, 0, 0],
+      [rate >> 12, (rate >> 4) & 255, ((rate & 15) << 4) | ((channels - 1) << 1), 0],
+      be32(samples),
+      new Array<number>(16).fill(0),
+    );
+  const audio: ReadonlyArray<readonly [string, Uint8Array, string | undefined]> = [
+    ["WAV", wavBytes(3), "audio/wav"],
+    ["stereo WAV", wavBytes(3, { channels: 2 }), "audio/wav"],
+    ["FLAC", flac(48_000, 2, 48_000 * 3), "audio/flac"],
+    [
+      "Opus in Ogg",
+      bytes("OggS", new Array<number>(22).fill(0), [1, 0], "OpusHead", [1, 2]),
+      "audio/ogg",
+    ],
+    ["M4A", bytes([0, 0, 0, 24], "ftypM4A ", new Array<number>(8).fill(0)), "audio/mp4"],
+    ["WebM", bytes([26, 69, 223, 163], new Array<number>(8).fill(0)), "audio/webm"],
+    ["MP3", bytes("ID3", new Array<number>(8).fill(0)), "audio/mpeg"],
+    ["AAC", bytes([255, 241], new Array<number>(8).fill(0)), "audio/aac"],
+    ["a WAV under 2 s", wavBytes(1), undefined],
+    ["a WAV over 15 s", wavBytes(16), undefined],
+    ["a FLAC over 15 s", flac(48_000, 2, 48_000 * 20), undefined],
+    ["a FLAC with no sample rate", flac(0, 2, 48_000 * 3), undefined],
+    ["text", bytes("not audio at all, only words"), undefined],
+  ];
+  it.effect.each(audio)("%s", ([, clip, mimeType]) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        H3.validateAudioReference({ _tag: "Bytes", bytes: clip }),
+      );
+      assert.strictEqual(
+        Result.isSuccess(result) ? result.success.mimeType : result.failure.context.outcome,
+        mimeType ?? "not-submitted",
+      );
+    }),
+  );
+});

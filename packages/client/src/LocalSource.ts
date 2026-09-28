@@ -126,6 +126,9 @@ export const open = Effect.fnUntraced(function* (
       const length =
         built._tag === "Success" && typeof built.value === "number" ? built.value : next.seconds;
       const popped = (yield* SubscriptionRef.get(state)).popped.has(next.clipId);
+      // The failure comes before the queue that no longer lists the clip, as H3 sends them.
+      if (built._tag === "Failure")
+        yield* publish({ _tag: "Failed", clip: clip(next), reason: "the local build failed" });
       yield* change((value) => ({
         ...value,
         building: value.building.filter((other) => other.clipId !== next.clipId),
@@ -133,9 +136,7 @@ export const open = Effect.fnUntraced(function* (
           popped || built._tag === "Failure" ? value.ready : [...value.ready, { ...next, length }],
         popped: new Set([...value.popped].filter((id) => id !== next.clipId)),
       }));
-      if (built._tag === "Failure")
-        yield* publish({ _tag: "Failed", clip: clip(next), reason: "the local build failed" });
-      else if (popped) yield* options.discard?.(next) ?? Effect.void;
+      if (built._tag === "Success" && popped) yield* options.discard?.(next) ?? Effect.void;
     }),
   ).pipe(Effect.forkScoped);
 
@@ -150,12 +151,18 @@ export const open = Effect.fnUntraced(function* (
       yield* Ref.set(stop, stopped);
       yield* change((value) => ({ ...value, ready: value.ready.slice(1), playing: next }));
       yield* publish({ _tag: "Started", clip: clip(next) });
+      // A presentation that fails did not air in full: it ends as stopped, and the failure is logged.
       const presentation =
         options.present === undefined
-          ? Effect.sleep(Duration.seconds(next.length))
-          : Effect.ignore(options.present(next, sink));
+          ? Effect.as(Effect.sleep(Duration.seconds(next.length)), true)
+          : options.present(next, sink).pipe(
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.as(Effect.logWarning("local presentation failed", cause), false),
+              ),
+            );
       const finished = yield* Effect.raceFirst(
-        Effect.as(presentation, true),
+        presentation,
         Effect.as(Deferred.await(stopped), false),
       );
       yield* Ref.set(stop, undefined);

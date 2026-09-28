@@ -3,7 +3,7 @@ import { assert, layer } from "@effect/vitest";
 import { Duration, Effect, Ref, Stream } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
-import { H3Source, LocalSource, Playout, ReactorTest } from "../src/index.js";
+import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
 import type { Options } from "../src/Playout.js";
 import { environment } from "./fixtures/Simulated.js";
 
@@ -198,6 +198,33 @@ layer(hosted)("cuts", (it) => {
   );
 });
 
+layer(hosted)("the cut's fence", (it) => {
+  it.effect("puts back the autoplay the playout asked for, not always on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const source = yield* H3Source.open({ mint: mint("10 minutes") });
+      const started = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* source.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "Started"
+            ? Ref.update(started, (all) => [...all, event.clip.clipId])
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* source.setAutoplay(false);
+      const first = yield* source.enqueue(clip("first"), { _tag: "Filler", index: 0 });
+      yield* source.enqueue(clip("second"), { _tag: "Filler", index: 1 });
+      yield* Effect.sleep("6 seconds");
+      // Nothing plays, so the stop is refused; the play starts the first clip.
+      yield* source.cut(first);
+      yield* Effect.sleep("12 seconds");
+      // Autoplay stayed off: the second clip, Ready all along, waits for a play.
+      assert.deepStrictEqual(yield* Ref.get(started), [first]);
+    }),
+  );
+});
+
 layer(hosted)("time", (it) => {
   it.effect("refuses a firm item that cannot start before its deadline", () =>
     Effect.gen(function* () {
@@ -375,6 +402,56 @@ layer(hosted)("local renderer", (it) => {
       );
       for (const item of items) yield* item.outcome;
       assert.deepStrictEqual(yield* Ref.get(presented), ["hello", "world"]);
+    }),
+  );
+
+  it.effect("reports what a local renderer failed, discarded or cut, and moves on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const discarded = yield* Ref.make<ReadonlyArray<string>>([]);
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) =>
+            local.request.prompt === "unbuildable"
+              ? Effect.fail(
+                  ReactorError.ReactorError.fromCode("InvalidState", "the renderer refused"),
+                )
+              : Effect.sleep("500 millis"),
+          present: (local) =>
+            local.request.prompt === "broken"
+              ? Effect.andThen(
+                  Effect.sleep("1 second"),
+                  Effect.fail(
+                    ReactorError.ReactorError.fromCode("InvalidState", "the speaker failed"),
+                  ),
+                )
+              : Effect.sleep(Duration.seconds(local.seconds)),
+          discard: (local) => Ref.update(discarded, (all) => [...all, local.request.prompt]),
+        }),
+        lanes: [{ name: "urgent", cut: true }, { name: "speech" }],
+      });
+      const submit = (name: string, lane = "speech", seconds = 5) =>
+        playout.submit({ key: key(name), lane, request: clip(name, seconds) });
+      const unbuildable = yield* submit("unbuildable");
+      const broken = yield* submit("broken");
+      const long = yield* submit("long", "speech", 15);
+      const spare = yield* submit("spare");
+      assert.strictEqual((yield* unbuildable.outcome)._tag, "Failed");
+      const cut = yield* broken.outcome;
+      assert.deepStrictEqual(cut._tag === "Ended" ? cut.termination : cut._tag, "stopped");
+      yield* long.started;
+      // The spare is Ready behind the long clip; withdrawing it hands it back to the renderer.
+      yield* Effect.sleep("2 seconds");
+      yield* playout.withdraw(key("spare"));
+      assert.strictEqual((yield* spare.outcome)._tag, "Dropped");
+      assert.deepStrictEqual(yield* Ref.get(discarded), ["spare"]);
+      const urgent = yield* submit("urgent", "urgent");
+      yield* urgent.started;
+      const stopped = yield* long.outcome;
+      assert.deepStrictEqual(
+        stopped._tag === "Ended" ? stopped.termination : stopped._tag,
+        "stopped",
+      );
     }),
   );
 });

@@ -231,10 +231,17 @@ const fromSession = Effect.fnUntraced(function* (
     ),
   );
   const replied = (error: CommandFailure) => error.context.outcome === "replied";
+  // The autoplay the playout last asked for, which a cut puts back when it is done.
+  const autoplay = yield* Ref.make(false);
   const withAutoplayOff = <A>(effect: Effect.Effect<A, CommandFailure>) =>
     provider.setAutoplay(false).pipe(
       Effect.andThen(Effect.exit(effect)),
-      Effect.flatMap((exit) => Effect.andThen(provider.setAutoplay(true), exit)),
+      Effect.flatMap((exit) =>
+        Effect.andThen(
+          Effect.flatMap(Ref.get(autoplay), (wanted) => provider.setAutoplay(wanted)),
+          exit,
+        ),
+      ),
     );
   return {
     sessionId: session.id,
@@ -264,7 +271,8 @@ const fromSession = Effect.fnUntraced(function* (
       }),
     remove: (clipId) => Effect.asVoid(provider.pop(clipId)),
     move: (clipId, position) => Effect.asVoid(provider.move(clipId, position)),
-    setAutoplay: (enabled) => Effect.asVoid(provider.setAutoplay(enabled)),
+    setAutoplay: (enabled) =>
+      provider.setAutoplay(enabled).pipe(Effect.andThen(Ref.set(autoplay, enabled))),
     // With autoplay off nothing starts between the stop and the play, so the stop can only
     // hit the clip that was playing; a refusal because nothing plays is harmless.
     cut: (next) =>
