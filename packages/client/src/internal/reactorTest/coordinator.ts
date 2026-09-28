@@ -12,13 +12,11 @@ import * as Headers from "effect/unstable/http/Headers";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { Mapping } from "../../Coordinator.js";
-import { SessionAuthorization } from "../../Coordinator.js";
-import { Refusal } from "./sessions.js";
+import { Authorization, Refusal } from "./sessions.js";
 import type { Sessions } from "./sessions.js";
 
 const Token = Schema.Struct({
-  authorization_details: Schema.Tuple([SessionAuthorization]),
+  authorization_details: Schema.Tuple([Authorization]),
   expires_after: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 const Create = Schema.Struct({
@@ -27,7 +25,17 @@ const Create = Schema.Struct({
     Schema.Struct({ protocol: Schema.String, version: Schema.String }),
   ),
 });
-const Offer = Schema.Struct({ sdp_offer: Schema.String, track_mapping: Schema.Array(Mapping) });
+const Offer = Schema.Struct({
+  sdp_offer: Schema.String,
+  track_mapping: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      kind: Schema.String,
+      direction: Schema.String,
+      mid: Schema.String,
+    }),
+  ),
+});
 const UploadRequest = Schema.Struct({
   name: Schema.String,
   mime_type: Schema.String,

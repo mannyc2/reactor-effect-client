@@ -12,12 +12,11 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { DescMessage, MessageInitShape } from "@bufbuild/protobuf";
-import type { Clip, Message } from "../h3/messages.js";
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import type { Entry, Fault, Options } from "../../ReactorTest.js";
 import * as Wire from "../wire.js";
 import type { Faults } from "./faults.js";
 import * as H3 from "./h3.js";
+import type { Clip, Message } from "./h3.js";
 import * as Media from "./media.js";
 import type { Link } from "./peer.js";
 import type { Sampler } from "./timing.js";
@@ -109,7 +108,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   const flush = (clip: Clip, at: number) =>
     until(at).pipe(
       Effect.andThen(
-        media(profile.tracks.video, (link) =>
+        media(H3.documented.tracks.video, (link) =>
           link.video({
             data: Media.render({
               clipId: clip.clip_id,
@@ -131,11 +130,11 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       const silent = yield* faults.standing((fault) => fault._tag === "NoAudio");
       const picture = video?._tag === "Video" ? video.video : "live";
       const delay = yield* latency;
-      const frameMs = 1000 / profile.fps;
+      const frameMs = 1000 / H3.documented.fps;
       const frame = (index: number) =>
         until(startedAt + delay + index * frameMs).pipe(
           Effect.andThen(
-            media(profile.tracks.video, (link) =>
+            media(H3.documented.tracks.video, (link) =>
               link.video({
                 data: Media.render({
                   clipId: clip.clip_id,
@@ -153,7 +152,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       const block = (index: number) =>
         until(startedAt + delay + index * Media.audioBlockMs).pipe(
           Effect.andThen(
-            media(profile.tracks.audio, (link) =>
+            media(H3.documented.tracks.audio, (link) =>
               link.audio(
                 Media.tone({ clipId: clip.clip_id, first: index * Media.samplesPerBlock }),
               ),
@@ -362,7 +361,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       Effect.flatMap(environment.timing.delay("channel"), (latency) =>
         Ref.set(connection, {
           link,
-          paused: new Set([profile.tracks.video, profile.tracks.audio]),
+          paused: new Set([H3.documented.tracks.video, H3.documented.tracks.audio]),
           latency,
         }),
       ).pipe(Effect.andThen(apply({ _tag: "Connected" }))),
