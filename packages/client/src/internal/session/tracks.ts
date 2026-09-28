@@ -232,7 +232,7 @@ export const make = ({
     for (const name of link.claimed) {
       // Closing has fenced ordinary requests; these are the last notifications.
       const sent = yield* Effect.exit(
-        Wire.encode(Wire.ControlClientMessageSchema, {
+        Wire.encode(Wire.ControlClientMessageSchema)({
           kind: Wire.MessageKind.NOTIFICATION,
           payload: { case: "unpublishTrack", value: { name } },
         }).pipe(

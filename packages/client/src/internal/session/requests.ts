@@ -223,7 +223,7 @@ export const make = ({
         correlator: data,
         operation: name,
         encode: (id) =>
-          Wire.encode(Wire.DataClientMessageSchema, {
+          Wire.encode(Wire.DataClientMessageSchema)({
             requestId: id,
             kind: Wire.MessageKind.REQUEST,
             payload: {
@@ -255,7 +255,7 @@ export const make = ({
       correlator: control,
       operation,
       encode: (id) =>
-        Wire.encode(Wire.ControlClientMessageSchema, {
+        Wire.encode(Wire.ControlClientMessageSchema)({
           requestId: id,
           kind: Wire.MessageKind.REQUEST,
           payload,
@@ -269,7 +269,7 @@ export const make = ({
   const notification = (c: Connection, payload: ControlPayload) =>
     current(c).pipe(
       Effect.andThen(
-        Wire.encode(Wire.ControlClientMessageSchema, {
+        Wire.encode(Wire.ControlClientMessageSchema)({
           kind: Wire.MessageKind.NOTIFICATION,
           payload,
         }),
