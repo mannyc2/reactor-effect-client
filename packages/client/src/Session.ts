@@ -167,6 +167,8 @@ export type EventPayload =
       readonly inputKind?: string;
       /** The command that carried it, when Reactor says. */
       readonly command?: string;
+      /** The request it answers, when Reactor names one. */
+      readonly requestId?: string;
     }
   | { readonly _tag: "Upload"; readonly progress: UploadProgress };
 
