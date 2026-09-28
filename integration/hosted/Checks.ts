@@ -693,9 +693,9 @@ export const takeover = (check: "takeover" | "resume") =>
           const termination = yield* inspector.terminate(sessionId);
           yield* closedWith(sessionId, requestedMs, { termination });
         } else {
-          // A resume reads the session and sets only the defaults a playout needs.
+          // A resume reads the session; the owner already gave it the defaults a playout needs.
           const writes = Object.keys(commands).filter(
-            (name) => !["get_state", "get_queue", "set_flush_on_clip_end"].includes(name),
+            (name) => !["get_state", "get_queue"].includes(name),
           );
           yield* run.judge(
             "only reads on resume",
