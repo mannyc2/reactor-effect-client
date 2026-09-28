@@ -74,7 +74,7 @@ Billing and presented output need separate dashboard or output evidence.
 
 ### The 0.7.0 edit checks
 
-0.7.0's scheduler inserts clips, applies edit batches, cuts from a lane and continues a clip from the one before it. `scheduler` showed that `move` and `pop` decide the next clip close to a boundary; these two checks put the scheduler's own edits on hosted H3, at $0.75 each. Both run the public renewing owner over one capped `openH3` source that it never renews, with filler off.
+0.7.0's scheduler inserts clips, applies edit batches, cuts from a lane and continues a clip from the one before it. `scheduler` showed that `move` and `pop` decide the next clip close to a boundary; these two checks put the scheduler's own edits on hosted H3, at $0.75 each. Both run the public renewing owner over one capped `openH3` source that it never renews, with filler off. The source holds the last frame at boundaries (`holdLastFrame: true`), as a show does; by default H3 flushes to black there, as its schema documents.
 
 `scheduler-edits` turns autoplay on and submits a group of three 5 s beats, `p1` to `p3`, and a fourth clip `w1` behind it. Once `p1` plays, it inserts `xc` before `p2` with `continuity: "previous"`, so `xc` continues from `p1`, and `xn` before `p3`, built on its own. Once `p3` plays, it sends one `edit` batch that withdraws `w1` and inserts `y` after `p3`. The batch goes one measured build plus a second before `p3` ends, so it should take effect about a second before that boundary. It passes only if:
 
@@ -105,6 +105,11 @@ The evidence stays narrow:
 - one prompt serves every clip, so independent clips already resemble each other, and one run cannot separate continuity from similar prompts;
 - one sample of each edit shows it can land, not a stable margin;
 - the queue-read probes show order on this deployment, three times, not a documented guarantee.
+
+Both ran once against published 0.7.0, in [its ledger](./evidence/0.7.0/summary.md), for $1.50, before their sessions held the last frame. Both failed:
+
+- **`scheduler-edits`** failed its order. The batch took effect 1.04 s before its boundary, and its withdrawn clip never started. The continued insert, though, waited behind a build in flight, and its continued build took 5.45 s against about 2.2 s for an independent one. It missed its place and aired after a clip it did not continue from, so no continued join was measured. Every clip ended on the one black frame that H3's default flush documents.
+- **`scheduler-cut`** found a defect, since fixed: the scheduler stopped the long clip twice, and H3's `stop`, which names no clip, cut the cut-lane clip 5 ms after it started. Its position-zero criterion failed too: the queue read listed position zero ahead of the running build. Its queue reads, each sent right behind an enqueue, all listed the new clip.
 
 ## Public scheduler renewal (offline implementation)
 
@@ -177,7 +182,7 @@ Reactor's documentation leaves these open. Each has a step that answers it, and 
    - that the native library loads.
 5. **Rehearsed end to end.** `rehearse <check>` runs the same code against `twin/`, a local stand-in for:
    - the coordinator's routes, including pricing (listed by bare model name, as the live endpoint does), tokens, termination and the session cap;
-   - the H3 model's messages, in the documented order (a command's reply before the broadcasts it causes, and autoplay off until a client turns it on), except where hosted H3 was seen to differ: an enqueue's queue broadcast comes before its reply;
+   - the H3 model's messages, in the documented order (a command's reply before the broadcasts it causes, and autoplay off until a client turns it on), except where hosted H3 was seen to differ: an enqueue's queue broadcast comes before its reply, and a stop lands about 20 ms after its acknowledgement, with another stop sent meanwhile handled once the next clip has started;
    - media, which each connection receives only once it resumes its tracks, as on hosted Reactor;
    - stats as the native host reports them: each candidate pair with its local candidate only, and the relay pair ICE nominated first left nominated beside the direct pair that carries the media.
 

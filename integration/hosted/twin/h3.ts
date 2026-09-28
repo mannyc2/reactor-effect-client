@@ -4,7 +4,10 @@
  * packages/client/test/h3/upstream/h3-schema.md), not from the client adapter.
  * Commands answer on the data channel with their named reply, correlated by
  * request id, before the events they cause; `play` and `stop` answer with a
- * bodyless acknowledgement. `enqueue` is the exception, as hosted H3 showed
+ * bodyless acknowledgement. As hosted H3 showed on September 28, 2026, a
+ * `stop` lands about 20 ms after its acknowledgement, and another `stop` sent
+ * meanwhile is handled once the next clip has started, so it stops that clip.
+ * `enqueue` is the exception, as hosted H3 showed
  * on September 24, 2026: it broadcasts the queue that lists the new clip
  * before its `clip_queued` reply, and the twin sends the state with that
  * queue. Queue and state changes are
@@ -31,6 +34,8 @@ import type { ChannelName, Media } from "./protocol.js";
 const buildMs = 500;
 /** Autoplay arms a ready clip for this long before it starts. */
 const armMs = 500;
+/** A stop lands this long after its acknowledgement. */
+const stopLagMs = 20;
 const fps = 24;
 const minFrames = 124;
 const maxFrames = 362;
@@ -128,6 +133,9 @@ export class H3Model {
   private secondsSent = 0;
   private readonly paused = new Set<string>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  /** A stop is landing: stops sent meanwhile wait for the next clip to start. */
+  private stopping = false;
+  private readonly afterStop: (() => void)[] = [];
   private closed = false;
 
   constructor(
@@ -332,10 +340,19 @@ export class H3Model {
       case "play":
         return this.play(id, args);
       case "stop": {
+        if (this.stopping) {
+          this.afterStop.push(() => this.command(id, type, args));
+          return;
+        }
         const playing = this.playing;
         if (playing === undefined) return this.refuse(id, type, "nothing is playing");
         this.acknowledge(id);
-        return this.end(playing, "clip_stopped");
+        this.stopping = true;
+        this.later(stopLagMs, () => {
+          this.end(playing, "clip_stopped");
+          if (this.arming === undefined) this.landed();
+        });
+        return;
       }
       case "set_seed":
         if (!isCount(args.seed)) return this.refuse(id, type, "seed must be a nonnegative integer");
@@ -521,6 +538,8 @@ export class H3Model {
     if (playing !== undefined)
       this.broadcast("clip_stopped", { clip: { ...playing.clip }, seconds_sent: this.secondsSent });
     this.host.changed();
+    // A reset cleared the landing stop's timer: the stops waiting on it are handled now.
+    if (this.stopping) this.landed();
   }
 
   private elapsedFrom(playing: { readonly clip: Clip; readonly startedAt: number }): number {
@@ -553,6 +572,12 @@ export class H3Model {
     });
   }
 
+  /** The stop that was landing has, and the stops sent meanwhile are handled. */
+  private landed(): void {
+    this.stopping = false;
+    for (const deferred of this.afterStop.splice(0)) deferred();
+  }
+
   private arm(): void {
     if (
       !this.autoplay ||
@@ -565,6 +590,7 @@ export class H3Model {
       this.arming = undefined;
       const clip = this.playout[0];
       if (clip !== undefined && this.autoplay && this.playing === undefined) this.start(clip);
+      else if (this.stopping) this.landed();
     });
   }
 
@@ -580,6 +606,7 @@ export class H3Model {
     this.broadcast("clip_started", { clip: { ...clip } });
     this.changedQueues();
     this.build();
+    if (this.stopping) this.landed();
   }
 
   /** A clip finished all its frames, or `stop` cut it. */

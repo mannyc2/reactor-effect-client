@@ -666,6 +666,8 @@ export const Evidence = Schema.Struct({
           /** Enqueued after the position-zero clip, at the end of the queue. */
           tailClipId: Schema.String,
           generationOrder: Schema.Array(Schema.String),
+          /** From submitting the running build to its clip being generated. */
+          buildingBuildMs: Schema.optionalKey(Ms),
         }),
       ),
       poppedBuild: Schema.optionalKey(

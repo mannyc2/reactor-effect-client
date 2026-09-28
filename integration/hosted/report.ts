@@ -257,7 +257,7 @@ const section = (evidence: Evidence): string => {
       ]);
       add(
         "Position zero",
-        `generation order ${zero.generationOrder.map((id) => names.get(id) ?? "other").join(", ") || "empty"}`,
+        `generation order ${zero.generationOrder.map((id) => names.get(id) ?? "other").join(", ") || "empty"}${zero.buildingBuildMs === undefined ? "" : `; the running build took ${seconds(zero.buildingBuildMs)}`}`,
       );
     }
     const popped = cut.poppedBuild;

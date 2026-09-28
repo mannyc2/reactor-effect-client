@@ -1121,6 +1121,9 @@ const ownedSession = <A, E>(
             );
           const opened = yield* Orchestration.openH3({
             mint: Effect.succeed(grant),
+            // H3 flushes to black at every clip boundary unless told to hold the last frame,
+            // as a show does: seams are measured as it airs them.
+            source: { holdLastFrame: true },
             onAllocated: ({ session }) =>
               Effect.gen(function* () {
                 deadline = (yield* Clock.currentTimeMillis) + workSeconds * 1000;
@@ -1609,7 +1612,12 @@ const schedulerCut = (target: Target, run: Run, budget: Budget) =>
       );
       yield* pop(zero.clipId);
       yield* pop(tail.clipId);
-      yield* session.seen(() => generated.get(first.clipId));
+      const firstReady = yield* session.seen(() => generated.get(first.clipId));
+      // H3 documents the running build as unaffected: it takes one build, as the lone one did.
+      evidence.positionZero = {
+        ...evidence.positionZero,
+        buildingBuildMs: firstReady - first.submittedMs,
+      };
       yield* pop(first.clipId);
       save(run);
 
@@ -1707,6 +1715,14 @@ const schedulerCut = (target: Target, run: Run, budget: Budget) =>
         cutterSubmittedMs,
         seam: measureSeam(session, window, long, cutter, false, "cut-long-cutter"),
       };
+      // H3's stop is not scoped to a clip: a second one stops whatever plays by then.
+      const stops = run.spans
+        .records()
+        .filter(
+          (span) =>
+            span.name === "reactor.session.command" &&
+            span.attributes["reactor.operation"] === "stop",
+        ).length;
       judge(
         run,
         "a cut lane's clip stops a lower lane's playing clip",
@@ -1714,7 +1730,11 @@ const schedulerCut = (target: Target, run: Run, budget: Budget) =>
           ? `the long clip ended ${long.termination ?? long.last}`
           : log.starts[log.starts.indexOf("long") + 1] !== "cutter"
             ? "the cut-lane clip did not start next"
-            : undefined,
+            : cutter.termination === "stopped"
+              ? `the cut-lane clip was itself stopped after ${cutter.airedSeconds ?? "?"} s`
+              : stops !== 1
+                ? `${stops} stops were sent for one cut`
+                : undefined,
       );
       save(run);
       yield* mark(run, "cut observed", `seam frames in ${session.directory}`);
