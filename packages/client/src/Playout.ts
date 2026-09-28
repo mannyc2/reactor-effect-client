@@ -544,7 +544,8 @@ export class Playout extends Context.Service<
     /**
      * A group key withdraws its unstarted parts, and answers `withdrawn` if any
      * part was, else `already-started` if any started; a part key withdraws that
-     * part and those after it, and answers for that part.
+     * part and those after it, and answers for that part. Once the playout has
+     * stopped, it answers from what became of the item or the parts.
      */
     readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
     /** Admits nothing more and completes once the chosen work has aired or settled. */

@@ -605,17 +605,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       }
       return { commit, outcomes, results: answer.results };
     });
-  /** What a withdrawal of `key` would have found once the playout stopped: its recorded fate. */
+  /**
+   * What a withdrawal of `key` would have found once the playout stopped: the
+   * recorded fate of its item, or of a group's parts.
+   */
   const stoppedOutcome = (key: ItemKey): Effect.Effect<Playout.WithdrawOutcome> =>
-    Effect.gen(function* () {
-      const value = (yield* Ref.get(handles)).get(key);
-      if (value === undefined || !(yield* Deferred.isDone(value.started))) return "not-found";
-      const started = yield* Deferred.await(value.started);
-      if (started._tag === "Dropped") return "withdrawn";
-      return started._tag === "Started" || started._tag === "Ended"
-        ? "already-started"
-        : "not-found";
-    });
+    Effect.map(Ref.get(state), (value) => Policy.fate(value, key));
   const toEdit = (edit: Playout.Edit): Effect.Effect<Policy.EditInput, InvalidItem> =>
     Effect.gen(function* () {
       switch (edit._tag) {

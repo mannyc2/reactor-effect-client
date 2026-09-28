@@ -1270,6 +1270,35 @@ layer(hosted)("closing and failing", (it) => {
       assert.deepStrictEqual(answers, Option.some(["already-started", "not-found"]));
     }),
   );
+
+  it.effect("a group's withdrawal after the playout closed answers from its parts' fates", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
+        lanes: [{ name: "line" }],
+      }).pipe(Scope.provide(scope));
+      const group = (name: string) =>
+        playout.submitGroup({
+          key: key(name),
+          lane: "line",
+          parts: [
+            { key: key(`${name}1`), request: clip(`${name} one`) },
+            { key: key(`${name}2`), request: clip(`${name} two`) },
+          ],
+        });
+      const cut = yield* group("cut");
+      assert.strictEqual(yield* playout.withdraw(key("cut2")), "withdrawn");
+      const whole = yield* group("whole");
+      for (const part of [...cut.parts, ...whole.parts]) yield* part.outcome;
+      yield* Scope.close(scope, Exit.void);
+      const answers = yield* Effect.forEach(["cut", "whole", "never"], (name) =>
+        playout.withdraw(key(name)),
+      ).pipe(Effect.timeoutOption("10 seconds"));
+      assert.deepStrictEqual(answers, Option.some(["withdrawn", "already-started", "not-found"]));
+    }),
+  );
 });
 
 // Its faults stay armed for the rest of a block, so it has one of its own.

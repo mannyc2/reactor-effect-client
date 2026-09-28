@@ -477,6 +477,20 @@ type Rank = readonly [number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
+/** A group's answer from its parts': `withdrawn` if any was, else `already-started` if any started. */
+const combined = (outcomes: ReadonlyArray<WithdrawOutcome>): WithdrawOutcome => {
+  if (outcomes.includes("withdrawn")) return "withdrawn";
+  return outcomes.includes("already-started") ? "already-started" : "not-found";
+};
+
+/** What a withdrawal finds of an item from its record: dropped, started, or neither. */
+const fateOf = (item: Item): WithdrawOutcome => {
+  if (item.status?._tag === "Dropped") return "withdrawn";
+  const started =
+    item.startedAt !== undefined || item.phase === "Started" || item.status?._tag === "Ended";
+  return started ? "already-started" : "not-found";
+};
+
 /** Applies one input: a pure function of the state, the input, the configuration and the time. */
 export const step: {
   (previous: State, input: Input, now: Now): (config: Config) => Step;
@@ -540,20 +554,13 @@ export const step: {
     else joins.delete(id);
     state = { ...state, joins };
     if (join.left > 1) return;
-    const combined = outcomes.includes("withdrawn")
-      ? "withdrawn"
-      : outcomes.includes("already-started")
-        ? "already-started"
-        : "not-found";
-    actions.push({ _tag: "Withdrawn", id: waiter.id, index: waiter.index, outcome: combined });
+    actions.push({
+      _tag: "Withdrawn",
+      id: waiter.id,
+      index: waiter.index,
+      outcome: combined(outcomes),
+    });
   };
-  /** What a withdrawal waiting on an item learns from how it settled. */
-  const outcomeOf = (item: Item, status: AsRunStatus): WithdrawOutcome =>
-    status._tag === "Dropped"
-      ? "withdrawn"
-      : item.startedAt !== undefined || status._tag === "Ended"
-        ? "already-started"
-        : "not-found";
   /** Settles an item for good, resolving withdrawals that wait on it and recording history. */
   const settle = (key: ItemKey, status: AsRunStatus): void => {
     const item = items.get(key);
@@ -561,7 +568,7 @@ export const step: {
     // The as-run goes out first, so a withdrawal's caller finds it already published.
     set(key, { phase: "Settled", waiting: [], withdraw: undefined });
     asRun(key, status);
-    const outcome = outcomeOf(item, status);
+    const outcome = fateOf({ ...item, status });
     for (const wait of item.waiting) answer(wait, outcome);
     state = { ...state, settled: [...state.settled, key] };
     // A part that fails or is dropped takes the parts after it with it; a replaced one does not,
@@ -2339,6 +2346,22 @@ export const step: {
     return times.length === 0 ? undefined : Math.min(...times);
   }
 });
+
+/**
+ * What a withdrawal of `key` finds once nothing can change: the recorded fate of
+ * the item, or of a group's parts, answered as a withdrawal waiting on them would be.
+ */
+export const fate: {
+  (key: ItemKey): (state: State) => WithdrawOutcome;
+  (state: State, key: ItemKey): WithdrawOutcome;
+} = dual(2, (state: State, key: ItemKey): WithdrawOutcome =>
+  combined(
+    (state.groups.get(key)?.parts ?? [key]).flatMap((part) => {
+      const item = state.items.get(part);
+      return item === undefined ? [] : [fateOf(item)];
+    }),
+  ),
+);
 
 /**
  * Equal clips that tile the gap to an anchor within the provider's lengths; else the shortest.
