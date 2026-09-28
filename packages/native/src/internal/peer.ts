@@ -123,6 +123,24 @@ const receiving = (tracks: ReadonlyArray<Track>, index: number, kind: Track["kin
     : Effect.fail(protocol(`native ${kind} was delivered without its declared receive mapping`));
 };
 
+/**
+ * A frame's bytes as the whole of an ArrayBuffer of their own, as a reader may
+ * transfer them. The addon hands each over so; Node's IPC delivers every typed
+ * array of a message as a view into one shared buffer, which is copied.
+ */
+function exact(view: Uint8Array): Uint8Array<ArrayBuffer>;
+function exact(view: Int16Array): Int16Array<ArrayBuffer>;
+function exact(view: Uint8Array | Int16Array): Uint8Array<ArrayBuffer> | Int16Array<ArrayBuffer> {
+  const { buffer } = view;
+  if (
+    buffer instanceof ArrayBuffer &&
+    view.byteOffset === 0 &&
+    view.byteLength === buffer.byteLength
+  )
+    return view instanceof Uint8Array ? new Uint8Array(buffer) : new Int16Array(buffer);
+  return view.slice();
+}
+
 const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
   Effect.flatMap(receiving(tracks, taken.track, "video"), (track) =>
     taken.width === 0 ||
@@ -138,9 +156,8 @@ const videoFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Video) =>
           frameId: taken.frameId,
           timestampMicros: taken.timestampUs,
           sequence: taken.sequence,
-          // The addon hands each frame over in an ArrayBuffer of its own.
-          data: taken.data as Uint8Array<ArrayBuffer>,
-          metadata: taken.metadata as Uint8Array<ArrayBuffer>,
+          data: exact(taken.data),
+          metadata: exact(taken.metadata),
         }),
   );
 
@@ -154,7 +171,7 @@ const audioFrame = (tracks: ReadonlyArray<Track>) => (taken: Binding.Audio) =>
           sampleRate: taken.sampleRate,
           channels: taken.channels,
           sequence: taken.sequence,
-          samples: taken.samples as Int16Array<ArrayBuffer>,
+          samples: exact(taken.samples),
         }),
   );
 
