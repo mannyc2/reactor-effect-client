@@ -89,6 +89,10 @@ export type Seam = typeof Seam.Type;
 
 /** One playout item as the run saw it, from its as-run. */
 export const Item = Schema.Struct({
+  /** Why it failed, in the library's words, and whether moderation or a lost session was why. */
+  failed: Schema.optionalKey(
+    Schema.Struct({ reason: Schema.String, moderated: Schema.Boolean, lost: Schema.Boolean }),
+  ),
   key: Schema.String,
   submittedMs: Ms,
   readyMs: Schema.optionalKey(Ms),
@@ -166,6 +170,129 @@ export const Boundary = Schema.Struct({
   pause: Schema.optionalKey(Pause),
 });
 export type Boundary = typeof Boundary.Type;
+
+/** One free question to the coordinator: its status, and only numbers, codes and key names. */
+export const Probe = Schema.Struct({
+  name: Schema.String,
+  /** The HTTP status; 0 when no reply came. */
+  status: Schema.Int,
+  requestedSeconds: Schema.optionalKey(Schema.Int),
+  /** `expires_at` less the time the request was sent. */
+  lifetimeSeconds: Schema.optionalKey(Schema.Finite),
+  code: Schema.optionalKey(Schema.String),
+  /** What the reply echoed of the grant. */
+  echo: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Union([Schema.Finite, Schema.Boolean, Schema.Null])),
+  ),
+  /** The reply's key paths and value types. */
+  shape: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+});
+export type Probe = typeof Probe.Type;
+
+/**
+ * `tokens`: a session outliving the token that created it. The owner creates
+ * it on a short token and dies; once that token expired, this process adopts
+ * the session with tokens bound to it, refreshes one, and ends the session
+ * with the API key.
+ */
+export const TokensRecord = Schema.Struct({
+  probes: Schema.Array(Probe),
+  /** Every token the check minted for the session, in order. */
+  mints: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      kind: Schema.Literals(["create", "bind", "unbound"]),
+      lifetimeSeconds: Schema.Finite,
+      echoed: Schema.Boolean,
+      bound: Schema.optionalKey(Schema.Int),
+    }),
+  ),
+  /** When the creating token expired. */
+  createExpiresMs: Schema.optionalKey(Ms),
+  ownerKilledMs: Schema.optionalKey(Ms),
+  resumeStartedMs: Schema.optionalKey(Ms),
+  attachedMs: Schema.optionalKey(Ms),
+  playingClipId: Schema.optionalKey(Nullable),
+  clipIdentified: Schema.optionalKey(Schema.Boolean),
+  firstFreshFrameMs: Schema.optionalKey(Ms),
+  video: Schema.optionalKey(VideoSummary),
+  /** When the next bound token was minted for a call, the refresh. */
+  refreshedMs: Schema.optionalKey(Ms),
+  /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+  upload: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      acceptedMs: Schema.optionalKey(Ms),
+      images: Schema.Int,
+      audio: Schema.Int,
+      reportedAudio: Schema.NullOr(Schema.Int),
+      hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+    }),
+  ),
+  /** Reading the session with the creating token after it expired: 401 is documented. */
+  expiredTokenStatus: Schema.optionalKey(Schema.Int),
+  /** Reading it with a fresh token not bound to it: 403 is documented. */
+  unboundTokenStatus: Schema.optionalKey(Schema.Int),
+  /** Ending it with the API key as the bearer. */
+  apiKeyTermination: Schema.optionalKey(Termination),
+  /** Commands the adopter sent the model, by name. */
+  commands: Schema.optionalKey(Counts),
+});
+export type TokensRecord = typeof TokensRecord.Type;
+
+/**
+ * The moderation tail of `cut`: a held item whose prompt is meant to be
+ * flagged, and what hosted Reactor, the session and the playout did.
+ * Observations, not criteria; the prompt itself is never kept.
+ */
+export const ModerationRecord = Schema.Struct({
+  promptLength: Schema.Int,
+  submittedMs: Ms,
+  /** The flagged item's as-run, in order. */
+  statuses: Schema.Array(
+    Schema.Struct({ atMs: Ms, status: Schema.String, detail: Schema.optionalKey(Schema.String) }),
+  ),
+  /** The item's enqueue command, from the library's span. */
+  enqueue: Schema.optionalKey(
+    Schema.Struct({
+      startMs: Ms,
+      durationMs: Schema.optionalKey(Ms),
+      status: Schema.Literals(["open", "ok", "error"]),
+      requestId: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  verdict: Schema.optionalKey(
+    Schema.Struct({
+      atMs: Ms,
+      action: Schema.String,
+      categories: Schema.Array(Schema.String),
+      inputKind: Schema.optionalKey(Schema.String),
+      command: Schema.optionalKey(Schema.String),
+      requestId: Schema.optionalKey(Schema.String),
+      /** Its request id is the enqueue's. */
+      namesEnqueue: Schema.Boolean,
+    }),
+  ),
+  /** The session's statuses, control messages and diagnostics from the submission on. */
+  session: Schema.Array(Schema.Struct({ atMs: Ms, event: Schema.String })),
+  /** The playout's session events and failure from the submission on. */
+  playout: Schema.Array(Schema.Struct({ atMs: Ms, event: Schema.String })),
+  /** The coordinator's read of the session afterwards: status, key names, state and codes. */
+  read: Schema.optionalKey(
+    Schema.Struct({
+      atMs: Ms,
+      status: Schema.Int,
+      keys: Schema.Array(Schema.String),
+      state: Schema.optionalKey(Schema.String),
+      codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+    }),
+  ),
+  /** A verdict arrived or the session ended while the item waited. */
+  flagged: Schema.Boolean,
+  /** The item started: moderation let it through. */
+  aired: Schema.Boolean,
+});
+export type ModerationRecord = typeof ModerationRecord.Type;
 
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
@@ -353,6 +480,8 @@ export const Evidence = Schema.Struct({
       audio: Schema.optionalKey(AudioSummary),
     }),
   ),
+  tokens: Schema.optionalKey(TokensRecord),
+  moderation: Schema.optionalKey(ModerationRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -372,6 +501,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   renewal: ["playout"],
   edits: ["playout"],
   cut: ["playout"],
+  tokens: ["tokens"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
