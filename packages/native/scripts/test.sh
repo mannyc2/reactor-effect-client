@@ -19,6 +19,8 @@ fi
 # Apply the native deployment target even when invoked from the SDK root.
 # Lint levels live in rust/Cargo.toml's [lints] table; warnings fail here.
 cargo fmt --manifest-path rust/Cargo.toml -- --check
+# build.rs reads the locked graph offline, which needs every platform's crates.
+cargo fetch --locked --manifest-path rust/Cargo.toml
 cargo test --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 cargo clippy --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items

@@ -26,6 +26,8 @@ esac
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/reactor-native.XXXXXX")
 trap 'rm -rf "$out"' EXIT HUP INT TERM
+# build.rs reads the locked graph offline, which needs every platform's crates.
+cargo fetch --locked --manifest-path rust/Cargo.toml
 node_modules/.bin/napi build --platform --release --no-const-enum \
   --manifest-path rust/Cargo.toml --package-json-path package.json \
   --output-dir "$out" --no-js --dts binding.d.ts
