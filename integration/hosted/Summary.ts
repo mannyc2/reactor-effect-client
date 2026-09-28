@@ -82,6 +82,31 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       `**Refusals:** expired token ${tokens.expiredTokenStatus ?? "–"}, unbound token ${tokens.unboundTokenStatus ?? "–"}; API key termination ${tokens.apiKeyTermination === undefined ? "–" : `${tokens.apiKeyTermination.confirmed ? "confirmed" : "unconfirmed"} (DELETE ${String(tokens.apiKeyTermination.deleteStatus)})`}`,
     );
   }
+  const show = evidence.show;
+  if (show !== undefined) {
+    lines.push(
+      `**Filler:** ${show.fills.length} clips asked for (${show.fills.map((fill) => `${fill.seconds} s at ${fill.runwaySeconds} s secured`).join(", ")}); ${show.starved.length === 0 ? "never starved" : `starved at ${show.starved.map((atMs) => seconds(atMs)).join(", ")}`}`,
+    );
+    lines.push(`**Sessions:** ${show.sessions.map((logged) => logged.event).join(" > ")}`);
+    const recovery = show.recovery;
+    if (recovery !== undefined)
+      lines.push(
+        `**Recovery:** ${recovery.dropped} connection dropped at ${seconds(recovery.droppedMs)} with ${recovery.runwaySeconds} s secured; ${recovery.statuses.map((status) => status.status).join(" > ")}; ready ${recovery.readyMs === undefined ? "never" : `${seconds(recovery.readyMs - recovery.droppedMs)} later`}, first frame ${recovery.firstFrameMs === undefined ? "never" : `${seconds(recovery.firstFrameMs - recovery.droppedMs)} after the drop`}`,
+      );
+    if (show.at !== undefined)
+      lines.push(
+        `**At:** due at ${seconds(show.at.dueMs)}, ${show.at.lateByMs === undefined ? "never started" : `started ${show.at.lateByMs} ms after it`}`,
+      );
+    if (show.cues.length > 0)
+      lines.push(
+        `**Cues:** ${show.cues.map((cue) => `${cue.key} ${cue.name} ${cue.lateByMs === undefined ? "at an unknown offset" : `${cue.lateByMs} ms from due`}`).join(", ")}`,
+      );
+    const loss = show.loss;
+    if (loss !== undefined)
+      lines.push(
+        `**Loss:** ${loss.sessionId} ended by ${loss.by === "key" ? "the API key" : "moderation"} from ${seconds(loss.requestedMs)}${loss.termination === undefined ? "" : ` (DELETE ${String(loss.termination.deleteStatus)}, ${loss.termination.confirmed ? "confirmed" : "unconfirmed"})`}; replaced ${loss.replacedMs === undefined ? "never" : `${seconds(loss.replacedMs - loss.requestedMs)} later`}; ${loss.nextSessionId ?? "no session"} opened${loss.nextOpenedMs === undefined ? "" : ` at ${seconds(loss.nextOpenedMs)}`}`,
+      );
+  }
   const moderation = evidence.moderation;
   if (moderation !== undefined) {
     const verdict = moderation.verdict;

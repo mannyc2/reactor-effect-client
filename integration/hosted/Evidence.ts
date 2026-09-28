@@ -304,6 +304,63 @@ export const ModerationRecord = Schema.Struct({
 });
 export type ModerationRecord = typeof ModerationRecord.Type;
 
+/**
+ * `show`: one playout across three sessions. What its filler asked for and
+ * when the air starved, the playout's session events, the cues, the first
+ * session's dropped connection, the second session ended mid-clip and the
+ * item due at a wall-clock instant. The items themselves are in `playout`.
+ */
+export const ShowRecord = Schema.Struct({
+  /** Each filler clip the playout asked for: its index, the runway then and the length it asked. */
+  fills: Schema.Array(
+    Schema.Struct({ index: Schema.Int, runwaySeconds: Schema.Finite, seconds: Schema.Finite }),
+  ),
+  /** When nothing was left to play while the playout still wanted air. */
+  starved: Schema.Array(Ms),
+  /** The playout's session events, in order. */
+  sessions: Schema.Array(Schema.Struct({ atMs: Ms, event: Schema.String })),
+  /** Each cue as it fired, and how long after it was due from its clip's observed start. */
+  cues: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      name: Schema.String,
+      atMs: Ms,
+      lateByMs: Schema.optionalKey(Schema.Finite),
+    }),
+  ),
+  /** The first session's connection, dropped while filler held the air, and its return. */
+  recovery: Schema.optionalKey(
+    Schema.Struct({
+      sessionId: Schema.String,
+      droppedMs: Ms,
+      /** Connections the drop cut. */
+      dropped: Schema.Int,
+      runwaySeconds: Schema.Finite,
+      /** The session's statuses from the drop on. */
+      statuses: Schema.Array(Schema.Struct({ atMs: Ms, status: Schema.String })),
+      /** When it read ready again, and the first frame after that. */
+      readyMs: Schema.optionalKey(Ms),
+      firstFrameMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  /** The session ended mid-clip, what ended it, and the session that took over. */
+  loss: Schema.optionalKey(
+    Schema.Struct({
+      sessionId: Schema.String,
+      by: Schema.Literals(["moderation", "key"]),
+      requestedMs: Ms,
+      /** Ending it with the API key as the bearer. */
+      termination: Schema.optionalKey(Termination),
+      replacedMs: Schema.optionalKey(Ms),
+      nextSessionId: Schema.optionalKey(Schema.String),
+      nextOpenedMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  /** The item due `At` a wall-clock instant: when, and how late its boundary came. */
+  at: Schema.optionalKey(Schema.Struct({ dueMs: Ms, lateByMs: Schema.optionalKey(Schema.Finite) })),
+});
+export type ShowRecord = typeof ShowRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -501,6 +558,7 @@ export const Evidence = Schema.Struct({
   ),
   tokens: Schema.optionalKey(TokensRecord),
   moderation: Schema.optionalKey(ModerationRecord),
+  show: Schema.optionalKey(ShowRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -521,6 +579,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   edits: ["playout"],
   cut: ["playout"],
   tokens: ["tokens"],
+  show: ["playout", "show"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
