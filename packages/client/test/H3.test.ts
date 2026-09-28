@@ -4,7 +4,16 @@
  * one flow across seeded random timings and checks what must hold for any.
  */
 import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, Exit, type Layer, Result, Schema, Scope } from "effect";
+import {
+  type Duration,
+  Effect,
+  Exit,
+  Inspectable,
+  type Layer,
+  Result,
+  Schema,
+  Scope,
+} from "effect";
 import * as H3 from "../src/H3.js";
 import { ReactorTest } from "../src/index.js";
 import { deploymentContract } from "../src/internal/h3/commands.js";
@@ -65,6 +74,20 @@ scenario("an enqueue with no evidence fails as unknown and is never sent again",
       (yield* commands("enqueue")).map((entry) => entry.dropped),
       ["command"],
     );
+  }),
+);
+
+scenario("a deadline option that is not a finite, non-negative duration refuses the provider", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const session = yield* connect;
+    // One `Duration` cannot parse, a NaN it reads as zero, and a negative.
+    const huge: number = 10 ** 999;
+    const bad: ReadonlyArray<Duration.Input> = [`${huge} seconds`, Number.NaN, -5];
+    for (const input of bad) {
+      const refused = yield* Effect.flip(H3.make(session, { reconcileWindow: input }));
+      assert.strictEqual(refused.reason._tag, "InvalidInput", Inspectable.toStringUnknown(input));
+    }
   }),
 );
 
@@ -227,9 +250,6 @@ scenario("enqueues at each documented limit, and refuses one step past it before
       local,
       "seconds",
     );
-    yield* provider.setClipSeconds(15.084);
-    const longer = yield* Effect.flip(provider.setClipSeconds(15.085));
-    assert.deepStrictEqual([longer.reason._tag, longer.context.outcome], local, "default length");
     const image = {
       _tag: "Bytes",
       bytes: ReactorTest.pngBytes({ width: 64, height: 64 }),
@@ -252,7 +272,6 @@ scenario("enqueues at each documented limit, and refuses one step past it before
       [9, 3],
     );
     assert.strictEqual((yield* commands("enqueue")).length, 5);
-    assert.strictEqual((yield* commands("set_clip_seconds")).length, 1);
   }),
 );
 

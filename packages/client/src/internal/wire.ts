@@ -6,7 +6,6 @@
  * plain JSON object, so no other module converts Struct.
  */
 import * as Effect from "effect/Effect";
-import { dual } from "effect/Function";
 import * as Schema from "effect/Schema";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { DescMessage, JsonObject, MessageInitShape, MessageShape } from "@bufbuild/protobuf";
@@ -34,44 +33,21 @@ const tooLarge = `a wire message exceeds ${maxMessageBytes} bytes`;
  * the objects one message could allocate; the byte bound caps them now, since
  * every field costs at least two bytes.
  */
-export const decode: {
-  <Desc extends DescMessage>(
-    bytes: Uint8Array,
-  ): (schema: Desc) => Effect.Effect<MessageShape<Desc>, ReactorError>;
-  <Desc extends DescMessage>(
-    schema: Desc,
-    bytes: Uint8Array,
-  ): Effect.Effect<MessageShape<Desc>, ReactorError>;
-} = dual(
-  2,
-  <Desc extends DescMessage>(
-    schema: Desc,
-    bytes: Uint8Array,
-  ): Effect.Effect<MessageShape<Desc>, ReactorError> =>
+export const decode =
+  <Desc extends DescMessage>(schema: Desc) =>
+  (bytes: Uint8Array): Effect.Effect<MessageShape<Desc>, ReactorError> =>
     bytes.byteLength > maxMessageBytes
       ? Effect.fail(ReactorError.fromCode("Protocol", tooLarge))
       : Effect.try({
           try: () => fromBinary(schema, bytes),
           catch: (cause) =>
             ReactorError.fromCode("Protocol", `malformed ${schema.typeName}`, { detail: cause }),
-        }),
-);
+        });
 
 /** A message built from its fields and encoded, or `InvalidInput` if a channel cannot carry it. */
-export const encode: {
-  <Desc extends DescMessage>(
-    init: MessageInitShape<Desc>,
-  ): (schema: Desc) => Effect.Effect<Uint8Array<ArrayBuffer>, ReactorError>;
-  <Desc extends DescMessage>(
-    schema: Desc,
-    init: MessageInitShape<Desc>,
-  ): Effect.Effect<Uint8Array<ArrayBuffer>, ReactorError>;
-} = dual(
-  2,
-  <Desc extends DescMessage>(
-    schema: Desc,
-    init: MessageInitShape<Desc>,
-  ): Effect.Effect<Uint8Array<ArrayBuffer>, ReactorError> =>
+export const encode =
+  <Desc extends DescMessage>(schema: Desc) =>
+  (init: MessageInitShape<Desc>): Effect.Effect<Uint8Array<ArrayBuffer>, ReactorError> =>
     Effect.try({
       try: () => toBinary(schema, create(schema, init)),
       catch: (cause) =>
@@ -81,8 +57,7 @@ export const encode: {
         (bytes) => bytes.byteLength <= maxMessageBytes,
         () => ReactorError.fromCode("InvalidInput", tooLarge),
       ),
-    ),
-);
+    );
 
 /** The JSON a `google.protobuf.Struct` field holds, typed as protobuf-es takes it. */
 export const StructJson = Schema.Record(Schema.String, Schema.MutableJson);

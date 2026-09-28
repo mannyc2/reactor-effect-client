@@ -53,7 +53,7 @@ export interface Allocated {
 
 export interface Options {
   /** Set before the first enqueue; left as the session has it when absent. */
-  readonly canvas?: H3.Aspect | undefined;
+  readonly canvas?: H3.CanvasAspect | undefined;
   /** Keep the last frame between clips instead of flushing to black; true by default. */
   readonly holdLastFrame?: boolean | undefined;
   readonly provider?: H3.Options | undefined;

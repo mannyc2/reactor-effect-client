@@ -75,78 +75,79 @@ export const make = <A>(options: Options<A> = {}): Effect.Effect<Hub<A>> =>
           ),
         );
       return {
-        publish: (value) =>
-          Effect.gen(function* () {
-            const { readers } = yield* Ref.get(state);
-            const weight = options.weigh?.(value) ?? 0;
-            for (const reader of readers) {
-              const held = yield* Ref.get(reader.held);
-              const fits = weight <= reader.maxWeight - held;
-              if (fits && (yield* Queue.offer(reader.queue, { value, weight }))) {
-                yield* Ref.update(reader.held, (total) => total + weight);
-                continue;
-              }
-              yield* drop(reader);
+        publish: Effect.fnUntraced(function* (value: A) {
+          const { readers } = yield* Ref.get(state);
+          const weight = options.weigh?.(value) ?? 0;
+          for (const reader of readers) {
+            const held = yield* Ref.get(reader.held);
+            const fits = weight <= reader.maxWeight - held;
+            if (fits && (yield* Queue.offer(reader.queue, { value, weight }))) {
+              yield* Ref.update(reader.held, (total) => total + weight);
+              continue;
             }
-          }),
-        subscribe: (capacity = 64, maxWeight = Number.POSITIVE_INFINITY) =>
-          Effect.gen(function* () {
-            const reader = yield* Effect.acquireRelease(
-              Effect.gen(function* () {
-                const opened: Reader<A> = {
-                  queue: yield* Queue.dropping<Entry<A>, ReactorError | Cause.Done>(capacity),
-                  held: yield* Ref.make(0),
-                  maxWeight,
-                };
-                const admitted = yield* Ref.modify(state, (current) => {
-                  if (current.end !== undefined || current.readers.size >= maxObservers)
-                    return [current, current] as const;
-                  return [
-                    undefined,
-                    { ...current, readers: new Set(current.readers).add(opened) },
-                  ] as const;
+            yield* drop(reader);
+          }
+        }),
+        subscribe: Effect.fnUntraced(function* (
+          capacity: number = 64,
+          maxWeight: number = Number.POSITIVE_INFINITY,
+        ) {
+          const reader = yield* Effect.acquireRelease(
+            Effect.gen(function* () {
+              const opened: Reader<A> = {
+                queue: yield* Queue.dropping<Entry<A>, ReactorError | Cause.Done>(capacity),
+                held: yield* Ref.make(0),
+                maxWeight,
+              };
+              const admitted = yield* Ref.modify(state, (current) => {
+                if (current.end !== undefined || current.readers.size >= maxObservers)
+                  return [current, current] as const;
+                return [
+                  undefined,
+                  { ...current, readers: new Set(current.readers).add(opened) },
+                ] as const;
+              });
+              if (admitted?.end === "Done") yield* Queue.end(opened.queue);
+              else if (admitted?.end !== undefined)
+                yield* Queue.failCause(opened.queue, admitted.end);
+              else if (admitted !== undefined)
+                return yield* ReactorError.fromCode("Overflow", "observer count bound reached", {
+                  outcome: "not-submitted",
                 });
-                if (admitted?.end === "Done") yield* Queue.end(opened.queue);
-                else if (admitted?.end !== undefined)
-                  yield* Queue.failCause(opened.queue, admitted.end);
-                else if (admitted !== undefined)
-                  return yield* ReactorError.fromCode("Overflow", "observer count bound reached", {
-                    outcome: "not-submitted",
-                  });
-                return opened;
-              }),
-              (opened) =>
-                Ref.update(state, (current) => {
-                  const remaining = new Set(current.readers);
-                  remaining.delete(opened);
-                  return { ...current, readers: remaining };
-                }).pipe(Effect.andThen(Queue.shutdown(opened.queue))),
-            );
-            const reading = yield* Ref.make(false);
-            return Stream.unwrap(
-              Effect.gen(function* () {
-                yield* Effect.acquireRelease(
-                  Ref.getAndSet(reading, true).pipe(
-                    Effect.filterOrFail(
-                      (busy) => !busy,
-                      () =>
-                        ReactorError.fromCode(
-                          "AlreadyReading",
-                          "this observation already has a reader",
-                        ),
-                    ),
+              return opened;
+            }),
+            (opened) =>
+              Ref.update(state, (current) => {
+                const remaining = new Set(current.readers);
+                remaining.delete(opened);
+                return { ...current, readers: remaining };
+              }).pipe(Effect.andThen(Queue.shutdown(opened.queue))),
+          );
+          const reading = yield* Ref.make(false);
+          return Stream.unwrap(
+            Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                Ref.getAndSet(reading, true).pipe(
+                  Effect.filterOrFail(
+                    (busy) => !busy,
+                    () =>
+                      ReactorError.fromCode(
+                        "AlreadyReading",
+                        "this observation already has a reader",
+                      ),
                   ),
-                  () => Ref.set(reading, false),
-                );
-                return Stream.fromEffectRepeat(
-                  take(reader.queue).pipe(
-                    Effect.tap((entry) => Ref.update(reader.held, (total) => total - entry.weight)),
-                    Effect.map((entry) => entry.value),
-                  ),
-                );
-              }),
-            );
-          }),
+                ),
+                () => Ref.set(reading, false),
+              );
+              return Stream.fromEffectRepeat(
+                take(reader.queue).pipe(
+                  Effect.tap((entry) => Ref.update(reader.held, (total) => total - entry.weight)),
+                  Effect.map((entry) => entry.value),
+                ),
+              );
+            }),
+          );
+        }),
         end: Effect.gen(function* () {
           const readers = yield* Ref.modify(
             state,
@@ -157,19 +158,18 @@ export const make = <A>(options: Options<A> = {}): Effect.Effect<Hub<A>> =>
           );
           yield* Effect.forEach(readers, (reader) => Queue.end(reader.queue), { discard: true });
         }),
-        fail: (cause) =>
-          Effect.gen(function* () {
-            const readers = yield* Ref.modify(
-              state,
-              (current): readonly [ReadonlySet<Reader<A>>, State<A>] =>
-                current.end === undefined
-                  ? [current.readers, { ...current, readers: new Set<Reader<A>>(), end: cause }]
-                  : [new Set<Reader<A>>(), current],
-            );
-            yield* Effect.forEach(readers, (reader) => Queue.failCause(reader.queue, cause), {
-              discard: true,
-            });
-          }),
+        fail: Effect.fnUntraced(function* (cause: Cause.Cause<ReactorError>) {
+          const readers = yield* Ref.modify(
+            state,
+            (current): readonly [ReadonlySet<Reader<A>>, State<A>] =>
+              current.end === undefined
+                ? [current.readers, { ...current, readers: new Set<Reader<A>>(), end: cause }]
+                : [new Set<Reader<A>>(), current],
+          );
+          yield* Effect.forEach(readers, (reader) => Queue.failCause(reader.queue, cause), {
+            discard: true,
+          });
+        }),
         observers: Effect.map(Ref.get(state), (current) => current.readers.size),
         overflows: Effect.map(Ref.get(state), (current) => current.overflows),
       };

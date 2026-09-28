@@ -444,9 +444,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const cap =
           asked === undefined || how === "uncapped"
             ? undefined
-            : how === "longer"
-              ? asked * 2
-              : asked;
+            : asked * (how === "longer" ? 2 : 1);
         const granted = how === "bound" ? [...bind, `sess_reactor_test_unasked_${n}`] : bind;
         const grant: Grant = {
           jwt: "",
@@ -469,11 +467,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           },
           constraints: {
             max_sessions: grant.maxSessions,
-            ...(cap === undefined
-              ? how === "uncapped"
-                ? { max_session_duration_seconds: null }
-                : {}
-              : { max_session_duration_seconds: cap }),
+            ...(cap !== undefined ? { max_session_duration_seconds: cap } : {}),
+            ...(how === "uncapped" ? { max_session_duration_seconds: null } : {}),
           },
         };
         // Bound sessions live on the server, not in the token's claims.

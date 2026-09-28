@@ -14,8 +14,8 @@ import {
   referenceLimits,
 } from "./profile.js";
 
-export type ImageMimeType = (typeof imageMimeTypes)[number];
-export type AudioMimeType = (typeof audioMimeTypes)[number];
+type ImageMimeType = (typeof imageMimeTypes)[number];
+type AudioMimeType = (typeof audioMimeTypes)[number];
 
 interface ImageFacts {
   readonly mimeType: ImageMimeType;
@@ -190,13 +190,11 @@ const inspectFlac = (bytes: Uint8Array): Result.Result<AudioFacts, string> => {
 /** An Ogg stream's channels from its first page's Opus or Vorbis header; its length stays null. */
 const inspectOgg = (bytes: Uint8Array): Result.Result<AudioFacts, string> => {
   const payload = bytes.length > 26 ? 27 + (bytes[26] ?? 0) : bytes.length;
-  const channels =
-    ascii(bytes, payload, 8) === "OpusHead"
-      ? bytes[payload + 9]
-      : bytes[payload] === 1 && ascii(bytes, payload + 1, 6) === "vorbis"
-        ? bytes[payload + 11]
-        : undefined;
-  return Result.succeed({ mimeType: "audio/ogg", seconds: null, channels: channels ?? null });
+  const facts = (channels: number | undefined) =>
+    Result.succeed({ mimeType: "audio/ogg", seconds: null, channels: channels ?? null } as const);
+  if (ascii(bytes, payload, 8) === "OpusHead") return facts(bytes[payload + 9]);
+  const vorbis = bytes[payload] === 1 && ascii(bytes, payload + 1, 6) === "vorbis";
+  return facts(vorbis ? bytes[payload + 11] : undefined);
 };
 
 /**
@@ -228,7 +226,7 @@ const inspectAudio = (bytes: Uint8Array): Result.Result<AudioFacts, string> => {
 };
 
 /** Bytes held for upload, or a file the session already holds. */
-export type Material =
+type Material =
   | { readonly _tag: "Bytes"; readonly bytes: Uint8Array<ArrayBuffer> }
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
 
@@ -302,12 +300,10 @@ export const ValidatedAudioReferenceSchema = Schema.declare(
 /** The bytes or file behind a validated reference; a lookalike object has none. */
 export const materialOf = (
   reference: ValidatedReference | ValidatedAudioReference,
-): Material | undefined =>
-  reference instanceof ValidatedImage
-    ? ValidatedImage.material(reference)
-    : reference instanceof ValidatedAudio
-      ? ValidatedAudio.material(reference)
-      : undefined;
+): Material | undefined => {
+  if (reference instanceof ValidatedImage) return ValidatedImage.material(reference);
+  return reference instanceof ValidatedAudio ? ValidatedAudio.material(reference) : undefined;
+};
 
 const uploadedFile = <const M extends string>(mimeTypes: ReadonlyArray<M>, maxBytes: number) =>
   Schema.Struct({
@@ -318,8 +314,8 @@ const uploadedFile = <const M extends string>(mimeTypes: ReadonlyArray<M>, maxBy
   });
 
 /** A file the session already uploaded, as a request names it. */
-export const UploadedImage = uploadedFile(imageMimeTypes, referenceLimits.maxBytes);
-export const UploadedAudio = uploadedFile(audioMimeTypes, audioReferenceLimits.maxBytes);
+const UploadedImage = uploadedFile(imageMimeTypes, referenceLimits.maxBytes);
+const UploadedAudio = uploadedFile(audioMimeTypes, audioReferenceLimits.maxBytes);
 
 /** A reference as a request supplies it: bytes to validate and upload, or an uploaded file. */
 export const Reference = Schema.Union([
@@ -387,32 +383,36 @@ const audio = (reference: Reference): Result.Result<ValidatedAudio, string> => {
   )
     return Result.fail("Audio exceeds the 25 MiB bound");
   const bytes = new Uint8Array(reference.bytes);
-  return Result.flatMap(inspectAudio(bytes), (facts) =>
-    facts.channels !== null &&
-    (facts.channels < 1 || facts.channels > audioReferenceLimits.maxChannels)
-      ? Result.fail("Audio must be mono or stereo")
-      : facts.seconds !== null &&
-          (facts.seconds < audioReferenceLimits.minSeconds ||
-            facts.seconds > audioReferenceLimits.maxSeconds)
-        ? Result.fail("Audio must be 2 to 15 seconds long")
-        : Result.succeed(
-            new ValidatedAudio(facts.mimeType, bytes.length, facts.seconds, facts.channels, {
-              _tag: "Bytes",
-              bytes,
-            }),
-          ),
-  );
+  return Result.flatMap(inspectAudio(bytes), (facts) => {
+    if (
+      facts.channels !== null &&
+      (facts.channels < 1 || facts.channels > audioReferenceLimits.maxChannels)
+    )
+      return Result.fail("Audio must be mono or stereo");
+    if (
+      facts.seconds !== null &&
+      (facts.seconds < audioReferenceLimits.minSeconds ||
+        facts.seconds > audioReferenceLimits.maxSeconds)
+    )
+      return Result.fail("Audio must be 2 to 15 seconds long");
+    return Result.succeed(
+      new ValidatedAudio(facts.mimeType, bytes.length, facts.seconds, facts.channels, {
+        _tag: "Bytes",
+        bytes,
+      }),
+    );
+  });
 };
 
 /** Validates an image reference once, so a request reuses it without checking it again. */
 export const validateReference = (
   reference: Reference | ValidatedReference,
-): Result.Result<ValidatedReference, ReactorError> =>
-  reference instanceof ValidatedImage
-    ? Result.succeed(reference)
-    : reference._tag === "ValidatedReference"
-      ? Result.fail(invalid("Reference was not returned by H3.validateReference"))
-      : Result.mapError(image(reference), invalid);
+): Result.Result<ValidatedReference, ReactorError> => {
+  if (reference instanceof ValidatedImage) return Result.succeed(reference);
+  return reference._tag === "ValidatedReference"
+    ? Result.fail(invalid("Reference was not returned by H3.validateReference"))
+    : Result.mapError(image(reference), invalid);
+};
 
 /**
  * Validates an audio reference once: its container, and for WAV and FLAC its
@@ -420,12 +420,12 @@ export const validateReference = (
  */
 export const validateAudioReference = (
   reference: Reference | ValidatedAudioReference,
-): Result.Result<ValidatedAudioReference, ReactorError> =>
-  reference instanceof ValidatedAudio
-    ? Result.succeed(reference)
-    : reference._tag === "ValidatedAudioReference"
-      ? Result.fail(invalid("Audio reference was not returned by H3.validateAudioReference"))
-      : Result.mapError(audio(reference), invalid);
+): Result.Result<ValidatedAudioReference, ReactorError> => {
+  if (reference instanceof ValidatedAudio) return Result.succeed(reference);
+  return reference._tag === "ValidatedAudioReference"
+    ? Result.fail(invalid("Audio reference was not returned by H3.validateAudioReference"))
+    : Result.mapError(audio(reference), invalid);
+};
 
 export const validateReferenceEffect = (
   reference: Reference | ValidatedReference,

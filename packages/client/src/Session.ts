@@ -12,7 +12,6 @@ import type { Capabilities, Descriptor, Transport } from "./Coordinator.js";
 import { Termination } from "./Coordinator.js";
 import type { Correlation } from "./internal/correlator.js";
 import type { Statistics } from "./internal/stats.js";
-import type * as Wire from "./internal/wire.js";
 import type { DecodedMedia, TrackMedia } from "./Media.js";
 import type { CommandFailure, ReactorError } from "./ReactorError.js";
 import { FailureSummary } from "./ReactorError.js";
@@ -20,7 +19,32 @@ import { FailureSummary } from "./ReactorError.js";
 export type { Correlation } from "./internal/correlator.js";
 export type { Statistics } from "./internal/stats.js";
 /** A recording the session prepared, with the playlist to download it from. */
-export type ClipReady = Wire.ClipReady;
+export const ClipReady = Schema.Struct({
+  sessionId: Schema.String,
+  kind: Schema.String,
+  startMarker: Schema.Finite,
+  endMarker: Schema.Finite,
+  nowMarker: Schema.Finite,
+  predictedReadyAtMs: Schema.BigInt,
+  playlistUrl: Schema.String,
+});
+export type ClipReady = typeof ClipReady.Type;
+
+/**
+ * A control-channel message Reactor sent. Provider text (a clip failure's
+ * reason, an error's code and message) stays `Redacted`.
+ */
+export const ControlMessage = Schema.Union([
+  Schema.TaggedStruct("ModelSchema", { openapi: Schema.optionalKey(Schema.JsonObject) }),
+  Schema.TaggedStruct("ClipReady", { clip: ClipReady }),
+  Schema.TaggedStruct("ClipFailed", { reason: Schema.Redacted(Schema.String) }),
+  Schema.TaggedStruct("TrackPublished", { name: Schema.String }),
+  Schema.TaggedStruct("Error", {
+    code: Schema.Redacted(Schema.String),
+    message: Schema.Redacted(Schema.String),
+  }),
+]);
+export type ControlMessage = typeof ControlMessage.Type;
 /** An uploaded file, as a command refers to it. */
 export interface UploadReference {
   readonly uploadId: string;
@@ -111,13 +135,8 @@ export type CommandReply = Attribution & {
   readonly _tag: "Model";
   readonly outcome: "replied";
 } & (
-    | { readonly kind: "ack"; readonly raw: Wire.DataServerMessage }
-    | {
-        readonly kind: "message";
-        readonly type: string;
-        readonly data?: Schema.JsonObject;
-        readonly raw: Wire.DataServerMessage;
-      }
+    | { readonly kind: "ack" }
+    | { readonly kind: "message"; readonly type: string; readonly data?: Schema.JsonObject }
   );
 
 export interface UploadProgress {
@@ -141,9 +160,11 @@ export type EventPayload =
       readonly requestId: string;
       readonly correlation: Correlation;
     }
+  /** A control message; a reply to this client's own request only when correlation says so. */
   | {
       readonly _tag: "Control";
-      readonly message: Wire.ControlServerMessage;
+      readonly message: ControlMessage;
+      readonly requestId: string;
       readonly correlation: Correlation;
     }
   | { readonly _tag: "Track"; readonly name: string; readonly mid: string }
@@ -223,18 +244,16 @@ export interface Session {
     data: unknown,
     options?: CommandOptions,
   ) => Effect.Effect<CommandReply, CommandFailure>;
-  readonly schema: Effect.Effect<
-    { readonly openapi?: Schema.JsonObject; readonly raw: Wire.ModelSchema },
-    ReactorError
-  >;
+  /** The deployment's OpenAPI document, when it publishes one. */
+  readonly schema: Effect.Effect<{ readonly openapi?: Schema.JsonObject }, ReactorError>;
   readonly upload: (
     name: string,
     mimeType: string,
     bytes: Uint8Array,
     options?: UploadOptions,
   ) => Effect.Effect<Uploaded, ReactorError>;
-  readonly requestRecordingClip: (seconds: number) => Effect.Effect<Wire.ClipReady, ReactorError>;
-  readonly recording: Effect.Effect<Wire.ClipReady, ReactorError>;
+  readonly requestRecordingClip: (seconds: number) => Effect.Effect<ClipReady, ReactorError>;
+  readonly recording: Effect.Effect<ClipReady, ReactorError>;
   readonly stats: Effect.Effect<Statistics, ReactorError>;
   /** The current generation's decoded media, from a host that decodes it. */
   readonly decoded: Effect.Effect<DecodedMedia, ReactorError>;

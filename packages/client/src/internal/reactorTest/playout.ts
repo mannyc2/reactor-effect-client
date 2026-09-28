@@ -114,7 +114,7 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
     Effect.gen(function* () {
       const open = yield* Ref.get(connections);
       const targets = to === "all" ? [...open.values()] : [open.get(to)];
-      const bytes = yield* Effect.orDie(Wire.encode(schema, message));
+      const bytes = yield* Effect.orDie(Wire.encode(schema)(message));
       for (const target of targets)
         if (target !== undefined) yield* target.link.deliver(channel, bytes);
     });
@@ -331,10 +331,14 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
   function apply(input: H3.Input, greeting?: number): Effect.Effect<void> {
     return lock.withPermit(
       Effect.gen(function* () {
-        const [next, outputs] = H3.step(yield* Ref.get(model), input, {
-          now: yield* monotonic,
-          generationCapacity: options.generationCapacity,
-          playoutCapacity: options.playoutCapacity,
+        const [next, outputs] = H3.step({
+          model: yield* Ref.get(model),
+          input,
+          env: {
+            now: yield* monotonic,
+            generationCapacity: options.generationCapacity,
+            playoutCapacity: options.playoutCapacity,
+          },
         });
         yield* Ref.set(model, next);
         for (const output of outputs) yield* perform(output, greeting);
@@ -481,8 +485,8 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
       Effect.gen(function* () {
         if ((yield* Ref.get(connections)).get(from)?.link !== link) return;
         if (channel === "control")
-          yield* control(from, yield* Wire.decode(Wire.ControlClientMessageSchema, bytes));
-        else yield* command(from, yield* Wire.decode(Wire.DataClientMessageSchema, bytes));
+          yield* control(from, yield* Wire.decode(Wire.ControlClientMessageSchema)(bytes));
+        else yield* command(from, yield* Wire.decode(Wire.DataClientMessageSchema)(bytes));
       }).pipe(Effect.orDie),
   };
 });

@@ -5,7 +5,6 @@
  */
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
@@ -28,6 +27,7 @@ import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
 import type { MessageCode } from "../../ReactorError.js";
 import type { CommandReply, Session, SessionEvent, UploadReference } from "../../Session.js";
 import * as Submission from "./submission.js";
+import * as Deadline from "../deadline.js";
 import * as Hub from "../hub.js";
 import { Commands, deploymentContract } from "./commands.js";
 import type {
@@ -38,9 +38,9 @@ import type {
   ReplyType,
 } from "./commands.js";
 import { decodeMessage, Payloads } from "./messages.js";
-import type { Clip } from "./messages.js";
+import type { Clip, Message } from "./messages.js";
 import * as Operations from "./operations.js";
-import { canvases, requestSeconds } from "./profile.js";
+import { canvases } from "./profile.js";
 import type { CanvasAspect } from "./profile.js";
 import { materialOf, validateAudioReference, validateReference } from "./references.js";
 import type { ValidatedAudioReference, ValidatedReference } from "./references.js";
@@ -89,10 +89,6 @@ const localFailure = (operation: string, cause: ReactorError | CommandFailure): 
 const refused = (operation: string, code: MessageCode, message: string): CommandFailure =>
   localFailure(operation, ReactorError.fromCode(code, message));
 
-/** A caller's own refusal already proves no dispatch; any other failure becomes one. */
-const preparationFailure = <E>(cause: ReactorError | CommandFailure | E): CommandFailure | E =>
-  ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure("enqueue", cause) : cause;
-
 const uncertain = (
   operation: string,
   source: CommandReply,
@@ -126,6 +122,25 @@ const rejected = (operation: string, source: CommandReply, reason: string): Comm
 const hex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
+/** The clips a message lists: a queue's three lists, or a lifecycle message's one clip. */
+const clipsOf = (message: Message) => {
+  if (message.type === "queue_update")
+    return [...message.data.generation, ...message.data.playout, ...message.data.history];
+  return "clip" in message.data ? [message.data.clip] : [];
+};
+
+/** An enqueue's outcome as its span records it; an interruption records none. */
+const outcomeOf = (exit: Exit.Exit<Acceptance, CommandFailure>) => {
+  if (Exit.isSuccess(exit)) return { "reactor.command.outcome": "replied" };
+  const error = Exit.findError(exit);
+  return error._tag === "Success"
+    ? {
+        "reactor.command.outcome": error.success.context.outcome,
+        "error.type": error.success.reason._tag,
+      }
+    : {};
+};
+
 /** Whether a snapshot at `revision` already reflects `event`. */
 const covered = (event: ProviderEvent, revision: bigint): boolean => {
   switch (event._tag) {
@@ -141,19 +156,11 @@ const covered = (event: ProviderEvent, revision: bigint): boolean => {
 const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
-  const limit = (name: string, input: Duration.Input | undefined, fallback: Duration.Input) =>
-    Effect.fromOption(Duration.fromInput(input ?? fallback)).pipe(
-      Effect.mapError(() =>
-        ReactorError.fromCode("InvalidInput", `H3 ${name} must be a duration`, {
-          outcome: "not-submitted",
-        }),
-      ),
-    );
   const limits = {
-    command: yield* limit("replyTimeout", options.replyTimeout, "15 seconds"),
-    upload: yield* limit("uploadTimeout", options.uploadTimeout, "60 seconds"),
-    setup: yield* limit("setupTimeout", options.setupTimeout, "60 seconds"),
-    reconcile: yield* limit("reconcileWindow", options.reconcileWindow, "5 seconds"),
+    command: yield* Deadline.decode("H3 replyTimeout")(options.replyTimeout ?? "15 seconds"),
+    upload: yield* Deadline.decode("H3 uploadTimeout")(options.uploadTimeout ?? "60 seconds"),
+    setup: yield* Deadline.decode("H3 setupTimeout")(options.setupTimeout ?? "60 seconds"),
+    reconcile: yield* Deadline.decode("H3 reconcileWindow")(options.reconcileWindow ?? "5 seconds"),
   };
   // A provider attaches to an already connected session. It neither allocates
   // nor connects it, and never takes ownership of its remote lifetime.
@@ -209,7 +216,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     if (acceptances.size >= bounds.acceptances)
       acceptances.delete(acceptances.keys().next().value ?? "");
     acceptances.set(entry.id, acceptance);
-    const [operations, settled] = Operations.accept(internal.operations, acceptance);
+    const [operations, settled] = Operations.accept({ table: internal.operations, acceptance });
     return [
       {
         ...withPending(internal, entry.id, { ...entry, held: undefined }),
@@ -255,7 +262,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const failed: Internal = {
         ...internal,
         fatal: error,
-        model: State.unavailable(internal.model, error),
+        model: State.unavailable({ model: internal.model, cause: error }),
       };
       const [decided, recorded] = sequence(
         failed,
@@ -277,19 +284,20 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const accept =
     (clip: Clip, source: CommandReply) =>
     (internal: Internal): Transition => {
-      const id = State.submissionFromMetadata(namespace, clip.metadata);
+      const id = State.submissionFromMetadata({ namespace, metadata: clip.metadata });
       if (id === undefined) return [internal, []];
       const entry = internal.pending.get(id);
-      const acceptance = entry === undefined ? undefined : State.acceptanceFor(entry, clip, source);
+      const acceptance =
+        entry === undefined ? undefined : State.acceptanceFor({ identity: entry, clip, source });
       if (entry === undefined || acceptance === undefined) {
         // After the reconcile window, or in a later generation, the evidence
         // can still resolve the operation, never the acceptances.
-        const [operations, settled] = Operations.lateEvidence(
-          internal.operations,
+        const [operations, settled] = Operations.lateEvidence({
+          table: internal.operations,
           id,
           clip,
           source,
-        );
+        });
         return [{ ...internal, operations }, settled];
       }
       const previous = internal.acceptances.get(id) ?? entry.held;
@@ -307,7 +315,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ? [
               {
                 ...withPending(internal, id, { ...entry, held: acceptance }),
-                operations: Operations.identify(internal.operations, acceptance),
+                operations: Operations.identify({ table: internal.operations, acceptance }),
               },
               [],
             ]
@@ -325,7 +333,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     (source: SessionEvent) =>
     (internal: Internal): Transition => {
       if (internal.closed || internal.fatal !== undefined) return [internal, []];
-      const [disposition, admitted] = State.admit(internal.model, source);
+      const [disposition, admitted] = State.admit({ model: internal.model, source });
       let current: Internal = { ...internal, model: admitted };
       const effects: Array<Effect.Effect<void>> = [];
       if (admitted.generation !== internal.model.generation) {
@@ -350,7 +358,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const message = decoded.success;
       let applied = disposition;
       if (disposition === "applied") {
-        const result = State.apply(current.model, message, source);
+        const result = State.apply({ model: current.model, message, source });
         if (Result.isFailure(result)) {
           const [failed, failure] = failProvider(result.failure)(current);
           return [failed, [...effects, ...failure]];
@@ -359,17 +367,16 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         current = { ...current, model: result.success[1] };
       }
       if (applied !== "stale" && message.type !== "unknown") {
-        const clips =
-          message.type === "queue_update"
-            ? [...message.data.generation, ...message.data.playout, ...message.data.history]
-            : "clip" in message.data
-              ? [message.data.clip]
-              : [];
+        const clips = clipsOf(message);
         const [accepted, acceptedEffects] = sequence(
           current,
           clips.map((clip) => accept(clip, source)),
         );
-        const [operations, observed] = Operations.observe(accepted.operations, message, source);
+        const [operations, observed] = Operations.observe({
+          table: accepted.operations,
+          message,
+          source,
+        });
         current = { ...accepted, operations };
         effects.push(...acceptedEffects, ...observed);
       }
@@ -662,8 +669,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const nextId = Ref.modify(counter, (n) => [`${namespace}:${n + 1n}`, n + 1n] as const);
 
   /** The enqueue itself, run once in the submission's own execution fiber. */
-  const execute = (id: string, args: CommandArgs<"enqueue">, entry: Pending) =>
-    Effect.gen(function* () {
+  const execute = Effect.fnUntraced(
+    function* (id: string, args: CommandArgs<"enqueue">, entry: Pending) {
       const sent = yield* Effect.result(
         session.command("enqueue", args, { replyTimeout: limits.command }),
       );
@@ -697,47 +704,40 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const acceptance = yield* Deferred.await(entry.deferred).pipe(
         Effect.timeoutOrElse({ duration: limits.reconcile, orElse: () => Effect.fail(original) }),
         Effect.mapError(() => original),
-        Effect.withSpan("reactor.h3.reconcile", {}, { captureStackTrace: false }),
+        Effect.withSpan("H3.reconcile", {}, { captureStackTrace: false }),
       );
       // An enqueue settles once the snapshots its reply implies are observed.
       yield* settled;
       return acceptance;
-    }).pipe(
-      Effect.onExit((exit) =>
+    },
+    (effect, id) =>
+      Effect.onExit(effect, (exit) =>
         step((internal) => {
           // However the enqueue ends, the evidence it saw still decides; only a
           // definite failure discards it.
           const error = Exit.findError(exit);
           const definite = error._tag === "Success" && error.success.context.outcome !== "unknown";
           const [decided, recorded] = definite ? [internal, []] : decideHeld(internal, id);
-          const [operations, settledOperation] = Operations.settle(decided.operations, id, exit);
+          const [operations, settledOperation] = Operations.settle({
+            table: decided.operations,
+            id,
+            exit,
+          });
           return [
             { ...withPending(decided, id, undefined), operations },
             [...recorded, ...settledOperation],
           ];
         }),
       ),
-      // The span belongs to the execution fiber, so it ends with the enqueue's
-      // outcome even when the caller stopped waiting.
-      Effect.onExit((exit) => {
-        const error = Exit.findError(exit);
-        return Effect.annotateCurrentSpan(
-          Exit.isSuccess(exit)
-            ? { "reactor.command.outcome": "replied" }
-            : error._tag === "Success"
-              ? {
-                  "reactor.command.outcome": error.success.context.outcome,
-                  "error.type": error.success.reason._tag,
-                }
-              : {},
-        );
-      }),
-      Effect.withSpan(
-        "reactor.h3.enqueue",
-        { kind: "client", attributes: { "reactor.h3.submission.id": id } },
-        { captureStackTrace: false },
-      ),
-    );
+    // The span belongs to the execution fiber, so it ends with the enqueue's
+    // outcome even when the caller stopped waiting.
+    Effect.onExit((exit) => exit.pipe(outcomeOf, Effect.annotateCurrentSpan)),
+    Effect.withSpan(
+      "H3.enqueue",
+      (id) => ({ kind: "client", attributes: { "reactor.h3.submission.id": id } }),
+      { captureStackTrace: false },
+    ),
+  );
 
   const observeResult = <E>(
     id: string,
@@ -767,19 +767,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ),
         );
 
-  const prepared = <E>(
-    id: string,
-    input: Effect.Effect<
-      { readonly request: Captured; readonly metadata: string },
-      ReactorError | CommandFailure | E,
-      Scope.Scope
-    >,
-    hooks: PrepareHooks<E>,
-  ) =>
+  const prepared = <E>(id: string, request: Captured, metadata: string, hooks: PrepareHooks<E>) =>
     Submission.make({
       id,
       prepare: Effect.gen(function* () {
-        const { request, metadata } = yield* input.pipe(Effect.mapError(preparationFailure));
         const staged = yield* stage(request, metadata);
         const entry: Pending = {
           id,
@@ -819,7 +810,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
                   ReactorError.fromCode("Overflow", "H3 pending acceptance bound reached"),
                   internal,
                 ];
-              const reserved = Operations.reserve(internal.operations, entry, waiters);
+              const reserved = Operations.reserve({
+                table: internal.operations,
+                identity: entry,
+                waiters,
+              });
               return Result.isFailure(reserved)
                 ? [reserved.failure, internal]
                 : [
@@ -834,7 +829,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
               Effect.onExitIf(Exit.isFailure, () =>
                 SubscriptionRef.update(state, (internal) => ({
                   ...withPending(internal, id, undefined),
-                  operations: Operations.abandon(internal.operations, id),
+                  operations: Operations.abandon({ table: internal.operations, id }),
                 })),
               ),
             );
@@ -846,31 +841,15 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         ),
     }).pipe(Scope.provide(executions));
 
-  const withMetadata = (id: string) => (input: Request) =>
-    capture(input).pipe(
-      Effect.flatMap((request) =>
-        Effect.fromResult(
-          State.encodeMetadata({ namespace, submission: id, caller: request.metadata }),
-        ).pipe(Effect.map((metadata) => ({ request, metadata }))),
-      ),
-    );
-
   const prepare: Provider["prepare"] = <E = never>(input: Request, hooks: PrepareHooks<E> = {}) =>
     Effect.gen(function* () {
       yield* active("enqueue", true);
       const id = yield* nextId;
-      const captured = yield* withMetadata(id)(input);
-      return yield* prepared(id, Effect.succeed(captured), hooks);
-    });
-
-  const prepareFrom: Provider["prepareFrom"] = <E = never>(
-    preparation: Effect.Effect<Request, ReactorError | CommandFailure | E, Scope.Scope>,
-    hooks: PrepareHooks<E> = {},
-  ) =>
-    Effect.gen(function* () {
-      yield* active("enqueue", true);
-      const id = yield* nextId;
-      return yield* prepared(id, Effect.flatMap(preparation, withMetadata(id)), hooks);
+      const request = yield* capture(input);
+      const metadata = yield* Effect.fromResult(
+        State.encodeMetadata({ namespace, submission: id, caller: request.metadata }),
+      );
+      return yield* prepared(id, request, metadata, hooks);
     });
 
   const clipId = (operation: string, id: string) =>
@@ -934,9 +913,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       }),
     events: (observeOptions) => Stream.unwrap(hub.subscribe(observeOptions?.capacity)),
     failure: Deferred.await(fatal),
-    acceptances: Effect.map(SubscriptionRef.get(state), (internal) => [
-      ...internal.acceptances.values(),
-    ]),
     acceptance: (id) =>
       Effect.map(SubscriptionRef.get(state), (internal) => internal.acceptances.get(id)),
     operation: (submission) =>
@@ -944,7 +920,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         SubscriptionRef.modify(
           state,
           (internal): readonly [Result.Result<Operations.Waiters, ReactorError>, Internal] => {
-            const held = Operations.hold(internal.operations, submission.id);
+            const held = Operations.hold({ table: internal.operations, id: submission.id });
             if (Result.isFailure(held)) return [Result.fail(held.failure), internal];
             const operation = held.success.operations.get(submission.id);
             return operation === undefined
@@ -958,7 +934,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         () =>
           SubscriptionRef.update(state, (internal) => ({
             ...internal,
-            operations: Operations.release(internal.operations, submission.id),
+            operations: Operations.release({ table: internal.operations, id: submission.id }),
           })),
       ).pipe(
         Effect.map((waiters) => ({
@@ -968,12 +944,14 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
             Deferred.await(phase === "generated" ? waiters.generated : waiters.started),
           ended: Deferred.await(waiters.finished),
           facts: Effect.map(SubscriptionRef.get(state), (internal) =>
-            Operations.factsOf(submission.id, internal.operations.operations.get(submission.id)),
+            Operations.factsOf({
+              id: submission.id,
+              operation: internal.operations.operations.get(submission.id),
+            }),
           ),
         })),
       ),
     prepare,
-    prepareFrom,
     enqueue: (request) =>
       prepare(request).pipe(
         Effect.mapError((error) =>
@@ -1005,20 +983,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         Effect.flatMap((clip) => control("play", { clip_id: clip })),
       ),
     stop: control("stop", {}),
-    setSeed: (value) =>
-      natural("set_seed", "seed", value).pipe(
-        Effect.flatMap((seed) => named("set_seed", { seed })),
-      ),
-    setClipSeconds: (value) =>
-      Number.isFinite(value) && value >= requestSeconds.min && value <= requestSeconds.max
-        ? named("set_clip_seconds", { seconds: value })
-        : Effect.fail(
-            refused(
-              "set_clip_seconds",
-              "InvalidInput",
-              "Clip duration is outside the request bounds",
-            ),
-          ),
     setCanvas: (aspect: CanvasAspect) =>
       Object.hasOwn(canvases, aspect)
         ? named("set_canvas", { aspect })

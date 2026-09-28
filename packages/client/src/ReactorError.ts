@@ -126,17 +126,7 @@ export const ReactorErrorReason = Schema.Union([
   ClipEnded,
 ]);
 export type ReactorErrorReason = typeof ReactorErrorReason.Type;
-/** Every reason tag, as the native host's IPC carries it. */
-export const ErrorCode = Schema.Literals([
-  ...FailureCode.literals,
-  "Http",
-  "Remote",
-  "RecorderDisabled",
-  "Native",
-  "IceFailed",
-  "TransportFailed",
-  "ClipEnded",
-]);
+/** Every reason tag. */
 export type ErrorCode = ReactorErrorReason["_tag"];
 /** The codes a reason can be built from with a message alone. */
 export type MessageCode = Exclude<ErrorCode, "IceFailed" | "TransportFailed" | "ClipEnded">;
