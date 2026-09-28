@@ -7,7 +7,6 @@
  * no rule from the client: a client limit that drifts from the documentation
  * then fails against the simulation instead of passing with it.
  */
-import { dual } from "effect/Function";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
@@ -370,10 +369,15 @@ const refusal = (args: Enqueue, queued: number, env: Env): string | undefined =>
 
 type Step = readonly [H3, ReadonlyArray<Output>];
 
-export const step: {
-  (input: Input, env: Env): (model: H3) => Step;
-  (model: H3, input: Input, env: Env): Step;
-} = dual(3, (model: H3, input: Input, env: Env): Step => {
+export const step = ({
+  model,
+  input,
+  env,
+}: {
+  readonly model: H3;
+  readonly input: Input;
+  readonly env: Env;
+}): Step => {
   let s = model;
   const out: Output[] = [];
   const set = (patch: Partial<H3>): void => {
@@ -778,7 +782,7 @@ export const step: {
     }
   }
   return [s, out];
-});
+};
 
 /** The message each command replies with, as H3's schema names it. */
 const replies: Record<keyof typeof Arguments, string> = {

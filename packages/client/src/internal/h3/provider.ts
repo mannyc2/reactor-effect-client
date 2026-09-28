@@ -197,7 +197,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     if (acceptances.size >= bounds.acceptances)
       acceptances.delete(acceptances.keys().next().value ?? "");
     acceptances.set(entry.id, acceptance);
-    const [operations, settled] = Operations.accept(internal.operations, acceptance);
+    const [operations, settled] = Operations.accept({ table: internal.operations, acceptance });
     return [
       {
         ...withPending(internal, entry.id, { ...entry, held: undefined }),
@@ -243,7 +243,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const failed: Internal = {
         ...internal,
         fatal: error,
-        model: State.unavailable(internal.model, error),
+        model: State.unavailable({ model: internal.model, cause: error }),
       };
       const [decided, recorded] = sequence(
         failed,
@@ -265,19 +265,20 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const accept =
     (clip: Clip, source: CommandReply) =>
     (internal: Internal): Transition => {
-      const id = State.submissionFromMetadata(namespace, clip.metadata);
+      const id = State.submissionFromMetadata({ namespace, metadata: clip.metadata });
       if (id === undefined) return [internal, []];
       const entry = internal.pending.get(id);
-      const acceptance = entry === undefined ? undefined : State.acceptanceFor(entry, clip, source);
+      const acceptance =
+        entry === undefined ? undefined : State.acceptanceFor({ identity: entry, clip, source });
       if (entry === undefined || acceptance === undefined) {
         // After the reconcile window, or in a later generation, the evidence
         // can still resolve the operation, never the acceptances.
-        const [operations, settled] = Operations.lateEvidence(
-          internal.operations,
+        const [operations, settled] = Operations.lateEvidence({
+          table: internal.operations,
           id,
           clip,
           source,
-        );
+        });
         return [{ ...internal, operations }, settled];
       }
       const previous = internal.acceptances.get(id) ?? entry.held;
@@ -295,7 +296,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ? [
               {
                 ...withPending(internal, id, { ...entry, held: acceptance }),
-                operations: Operations.identify(internal.operations, acceptance),
+                operations: Operations.identify({ table: internal.operations, acceptance }),
               },
               [],
             ]
@@ -313,7 +314,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     (source: SessionEvent) =>
     (internal: Internal): Transition => {
       if (internal.closed || internal.fatal !== undefined) return [internal, []];
-      const [disposition, admitted] = State.admit(internal.model, source);
+      const [disposition, admitted] = State.admit({ model: internal.model, source });
       let current: Internal = { ...internal, model: admitted };
       const effects: Array<Effect.Effect<void>> = [];
       if (admitted.generation !== internal.model.generation) {
@@ -338,7 +339,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       const message = decoded.success;
       let applied = disposition;
       if (disposition === "applied") {
-        const result = State.apply(current.model, message, source);
+        const result = State.apply({ model: current.model, message, source });
         if (Result.isFailure(result)) {
           const [failed, failure] = failProvider(result.failure)(current);
           return [failed, [...effects, ...failure]];
@@ -357,7 +358,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           current,
           clips.map((clip) => accept(clip, source)),
         );
-        const [operations, observed] = Operations.observe(accepted.operations, message, source);
+        const [operations, observed] = Operations.observe({
+          table: accepted.operations,
+          message,
+          source,
+        });
         current = { ...accepted, operations };
         effects.push(...acceptedEffects, ...observed);
       }
@@ -698,7 +703,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           const error = Exit.findError(exit);
           const definite = error._tag === "Success" && error.success.context.outcome !== "unknown";
           const [decided, recorded] = definite ? [internal, []] : decideHeld(internal, id);
-          const [operations, settledOperation] = Operations.settle(decided.operations, id, exit);
+          const [operations, settledOperation] = Operations.settle({
+            table: decided.operations,
+            id,
+            exit,
+          });
           return [
             { ...withPending(decided, id, undefined), operations },
             [...recorded, ...settledOperation],
@@ -798,7 +807,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
                   ReactorError.fromCode("Overflow", "H3 pending acceptance bound reached"),
                   internal,
                 ];
-              const reserved = Operations.reserve(internal.operations, entry, waiters);
+              const reserved = Operations.reserve({
+                table: internal.operations,
+                identity: entry,
+                waiters,
+              });
               return Result.isFailure(reserved)
                 ? [reserved.failure, internal]
                 : [
@@ -813,7 +826,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
               Effect.onExitIf(Exit.isFailure, () =>
                 SubscriptionRef.update(state, (internal) => ({
                   ...withPending(internal, id, undefined),
-                  operations: Operations.abandon(internal.operations, id),
+                  operations: Operations.abandon({ table: internal.operations, id }),
                 })),
               ),
             );
@@ -904,7 +917,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         SubscriptionRef.modify(
           state,
           (internal): readonly [Result.Result<Operations.Waiters, ReactorError>, Internal] => {
-            const held = Operations.hold(internal.operations, submission.id);
+            const held = Operations.hold({ table: internal.operations, id: submission.id });
             if (Result.isFailure(held)) return [Result.fail(held.failure), internal];
             const operation = held.success.operations.get(submission.id);
             return operation === undefined
@@ -918,7 +931,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         () =>
           SubscriptionRef.update(state, (internal) => ({
             ...internal,
-            operations: Operations.release(internal.operations, submission.id),
+            operations: Operations.release({ table: internal.operations, id: submission.id }),
           })),
       ).pipe(
         Effect.map((waiters) => ({
@@ -928,7 +941,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
             Deferred.await(phase === "generated" ? waiters.generated : waiters.started),
           ended: Deferred.await(waiters.finished),
           facts: Effect.map(SubscriptionRef.get(state), (internal) =>
-            Operations.factsOf(submission.id, internal.operations.operations.get(submission.id)),
+            Operations.factsOf({
+              id: submission.id,
+              operation: internal.operations.operations.get(submission.id),
+            }),
           ),
         })),
       ),

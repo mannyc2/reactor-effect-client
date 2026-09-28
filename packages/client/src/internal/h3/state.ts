@@ -4,17 +4,12 @@
  * lifecycle. Acceptance evidence is decided here too, from a clip's exact
  * captured prompt and namespaced metadata.
  */
-import { dual } from "effect/Function";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ReactorError } from "../../ReactorError.js";
 import type { CommandReply, SessionEvent } from "../../Session.js";
 import type { Clip, DecodedMessage, MessageType, Queue, State } from "./messages.js";
 import { metadataMaxChars } from "./profile.js";
-
-/** A function's data-first and data-last forms, as `Function.dual` builds them. */
-type Dual2<A, B, R> = { (b: B): (self: A) => R; (self: A, b: B): R };
-type Dual3<A, B, C, R> = { (b: B, c: C): (self: A) => R; (self: A, b: B, c: C): R };
 
 export interface ClipObservation {
   readonly clip: Clip;
@@ -63,7 +58,7 @@ export interface Model {
   readonly bodies: ReadonlyMap<string, bigint>;
 }
 
-export type Disposition = "applied" | "duplicate" | "stale";
+type Disposition = "applied" | "duplicate" | "stale";
 
 export const initial = ({
   sessionId,
@@ -145,10 +140,16 @@ const remember = (model: Model): Model =>
     ? { ...model, lastFacts: { state: model.state, queue: model.queue } }
     : model;
 
-export const unavailable: Dual2<Model, ReactorError, Model> = dual(
-  2,
-  (model: Model, cause: ReactorError): Model => ({ ...remember(model), cause }),
-);
+export const unavailable = ({
+  model,
+  cause,
+}: {
+  readonly model: Model;
+  readonly cause: ReactorError;
+}): Model => ({
+  ...remember(model),
+  cause,
+});
 
 const reread = (model: Model): Model => ({
   ...model,
@@ -159,52 +160,54 @@ const reread = (model: Model): Model => ({
 });
 
 /** Orders an event against the facts: a later generation starts over from fresh reads. */
-export const admit: Dual2<Model, SessionEvent, readonly [Disposition, Model]> = dual(
-  2,
-  (model: Model, source: SessionEvent): readonly [Disposition, Model] => {
-    if (source.generation < model.generation) return ["stale", model];
-    if (source.sequence <= model.revision) return ["duplicate", model];
-    let next: Model = { ...model, revision: source.sequence };
-    if (source.generation > model.generation)
-      next = {
-        ...reread(remember(next)),
-        generation: source.generation,
-        bodies: new Map(),
-        cause: undefined,
-      };
-    if (source._tag === "Model" && source.correlation === "stale-generation")
-      return ["stale", next];
-    // The correlator labels a body that follows an ACK duplicate; an ACK is never a payload.
-    if (source._tag === "Model" && source.kind === "message" && source.requestId !== "") {
-      if (
-        source.correlation === "duplicate" &&
-        next.bodies.get(source.requestId) === source.generation
-      )
-        return ["duplicate", next];
-      const bodies = new Map(next.bodies).set(source.requestId, source.generation);
-      if (bodies.size > 256) bodies.delete(bodies.keys().next().value ?? "");
-      next = { ...next, bodies };
-    }
-    if (source._tag === "Status") {
-      if (
-        source.status === "disconnected" ||
-        source.status === "closing" ||
-        source.status === "closed"
-      )
-        next = unavailable(
-          next,
-          ReactorError.fromCode(
-            source.status === "disconnected" ? "Disconnected" : "Closed",
-            `H3 session is ${source.status}`,
-            { operation: "H3 observation" },
-          ),
-        );
-      else if (source.status === "ready" && next.cause !== undefined)
-        next = { ...reread(next), cause: undefined };
-    }
-    return ["applied", next];
-  },
-);
+export const admit = ({
+  model,
+  source,
+}: {
+  readonly model: Model;
+  readonly source: SessionEvent;
+}): readonly [Disposition, Model] => {
+  if (source.generation < model.generation) return ["stale", model];
+  if (source.sequence <= model.revision) return ["duplicate", model];
+  let next: Model = { ...model, revision: source.sequence };
+  if (source.generation > model.generation)
+    next = {
+      ...reread(remember(next)),
+      generation: source.generation,
+      bodies: new Map(),
+      cause: undefined,
+    };
+  if (source._tag === "Model" && source.correlation === "stale-generation") return ["stale", next];
+  // The correlator labels a body that follows an ACK duplicate; an ACK is never a payload.
+  if (source._tag === "Model" && source.kind === "message" && source.requestId !== "") {
+    if (
+      source.correlation === "duplicate" &&
+      next.bodies.get(source.requestId) === source.generation
+    )
+      return ["duplicate", next];
+    const bodies = new Map(next.bodies).set(source.requestId, source.generation);
+    if (bodies.size > 256) bodies.delete(bodies.keys().next().value ?? "");
+    next = { ...next, bodies };
+  }
+  if (source._tag === "Status") {
+    if (
+      source.status === "disconnected" ||
+      source.status === "closing" ||
+      source.status === "closed"
+    )
+      next = unavailable({
+        model: next,
+        cause: ReactorError.fromCode(
+          source.status === "disconnected" ? "Disconnected" : "Closed",
+          `H3 session is ${source.status}`,
+          { operation: "H3 observation" },
+        ),
+      });
+    else if (source.status === "ready" && next.cause !== undefined)
+      next = { ...reread(next), cause: undefined };
+  }
+  return ["applied", next];
+};
 
 const overflow = (): ReactorError =>
   ReactorError.fromCode("Overflow", "H3 clip observation bound exceeded", {
@@ -218,82 +221,77 @@ const invalidate = (model: Model, state: boolean, queue: boolean): Model => ({
 });
 
 /** Applies a decoded message; only full state and queue reads make the facts current. */
-export const apply: Dual3<
-  Model,
-  DecodedMessage,
-  CommandReply,
-  Result.Result<readonly [Disposition, Model], ReactorError>
-> = dual(
-  3,
-  (
-    model: Model,
-    message: DecodedMessage,
-    source: CommandReply,
-  ): Result.Result<readonly [Disposition, Model], ReactorError> => {
-    const done = (next: Model): Result.Result<readonly [Disposition, Model], ReactorError> =>
-      Result.succeed(["applied", next.cause === undefined ? remember(next) : next]);
-    if (message.type === "unknown") return done(model);
-    if (message.type === "state_update")
-      return done({ ...model, state: message.data, stateDirty: false });
-    if (message.type === "queue_update") {
-      const listed = [...message.data.generation, ...message.data.playout, ...message.data.history];
-      const clips = new Map(model.clips);
-      for (const clip of listed)
-        clips.set(clip.clip_id, {
-          clip,
-          source,
-          lifecycle: clips.get(clip.clip_id)?.lifecycle ?? null,
-        });
-      if (clips.size > model.maxClips) return Result.fail(overflow());
-      return done({ ...model, queue: message.data, queueDirty: false, clips });
-    }
-    if (!("clip" in message.data)) return done(settingChanged(model, message));
-    const clip = message.data.clip;
-    const previous = model.clips.get(clip.clip_id);
-    if (previous === undefined && model.clips.size >= model.maxClips)
-      return Result.fail(overflow());
-    const put = (lifecycle: ClipObservation["lifecycle"]): Model => ({
-      ...model,
-      clips: new Map(model.clips).set(clip.clip_id, { clip, source, lifecycle }),
-    });
-    if (message.type === "clip_moved") {
-      const next = put(previous?.lifecycle ?? null);
-      const moved =
-        model.queue?.[message.data.queue][message.data.position]?.clip_id === clip.clip_id;
-      return done(moved ? next : invalidate(next, false, true));
-    }
-    // An end is final, and a later phase is never reversed by an earlier one.
-    if (
-      previous !== undefined &&
-      previous.lifecycle !== null &&
-      (previous.lifecycle === message.type ||
-        rank(previous.lifecycle) === 3 ||
-        rank(previous.lifecycle) > rank(message.type))
-    )
-      return Result.succeed(["duplicate", model]);
-    const next = put(message.type);
-    const queued = model.queue?.generation.some((entry) => entry.clip_id === clip.clip_id) === true;
-    const ready = model.queue?.playout.some((entry) => entry.clip_id === clip.clip_id) === true;
-    const playing = model.state?.playing_clip_id === clip.clip_id;
-    switch (message.type) {
-      case "clip_queued":
-        return done(!queued && !ready && !playing ? invalidate(next, true, true) : next);
-      case "clip_generated":
-        return done(!ready && !playing ? invalidate(next, true, true) : next);
-      case "clip_started":
-        return done(invalidate(next, !playing, queued || ready));
-      case "clip_failed":
-      case "clip_popped":
-        return done(queued || ready ? invalidate(next, true, true) : next);
-      case "clip_finished":
-      case "clip_stopped":
-        return done(playing || model.state === undefined ? invalidate(next, true, false) : next);
-      default:
-        // Only the clip lifecycle messages above carry a clip.
-        return done(model);
-    }
-  },
-);
+export const apply = ({
+  model,
+  message,
+  source,
+}: {
+  readonly model: Model;
+  readonly message: DecodedMessage;
+  readonly source: CommandReply;
+}): Result.Result<readonly [Disposition, Model], ReactorError> => {
+  const done = (next: Model): Result.Result<readonly [Disposition, Model], ReactorError> =>
+    Result.succeed(["applied", next.cause === undefined ? remember(next) : next]);
+  if (message.type === "unknown") return done(model);
+  if (message.type === "state_update")
+    return done({ ...model, state: message.data, stateDirty: false });
+  if (message.type === "queue_update") {
+    const listed = [...message.data.generation, ...message.data.playout, ...message.data.history];
+    const clips = new Map(model.clips);
+    for (const clip of listed)
+      clips.set(clip.clip_id, {
+        clip,
+        source,
+        lifecycle: clips.get(clip.clip_id)?.lifecycle ?? null,
+      });
+    if (clips.size > model.maxClips) return Result.fail(overflow());
+    return done({ ...model, queue: message.data, queueDirty: false, clips });
+  }
+  if (!("clip" in message.data)) return done(settingChanged(model, message));
+  const clip = message.data.clip;
+  const previous = model.clips.get(clip.clip_id);
+  if (previous === undefined && model.clips.size >= model.maxClips) return Result.fail(overflow());
+  const put = (lifecycle: ClipObservation["lifecycle"]): Model => ({
+    ...model,
+    clips: new Map(model.clips).set(clip.clip_id, { clip, source, lifecycle }),
+  });
+  if (message.type === "clip_moved") {
+    const next = put(previous?.lifecycle ?? null);
+    const moved =
+      model.queue?.[message.data.queue][message.data.position]?.clip_id === clip.clip_id;
+    return done(moved ? next : invalidate(next, false, true));
+  }
+  // An end is final, and a later phase is never reversed by an earlier one.
+  if (
+    previous !== undefined &&
+    previous.lifecycle !== null &&
+    (previous.lifecycle === message.type ||
+      rank(previous.lifecycle) === 3 ||
+      rank(previous.lifecycle) > rank(message.type))
+  )
+    return Result.succeed(["duplicate", model]);
+  const next = put(message.type);
+  const queued = model.queue?.generation.some((entry) => entry.clip_id === clip.clip_id) === true;
+  const ready = model.queue?.playout.some((entry) => entry.clip_id === clip.clip_id) === true;
+  const playing = model.state?.playing_clip_id === clip.clip_id;
+  switch (message.type) {
+    case "clip_queued":
+      return done(!queued && !ready && !playing ? invalidate(next, true, true) : next);
+    case "clip_generated":
+      return done(!ready && !playing ? invalidate(next, true, true) : next);
+    case "clip_started":
+      return done(invalidate(next, !playing, queued || ready));
+    case "clip_failed":
+    case "clip_popped":
+      return done(queued || ready ? invalidate(next, true, true) : next);
+    case "clip_finished":
+    case "clip_stopped":
+      return done(playing || model.state === undefined ? invalidate(next, true, false) : next);
+    default:
+      // Only the clip lifecycle messages above carry a clip.
+      return done(model);
+  }
+};
 
 /** A setting's acknowledgement invalidates the state only when it differs from it. */
 const settingChanged = (model: Model, message: DecodedMessage): Model => {
@@ -383,35 +381,40 @@ export const encodeMetadata = ({
   );
 
 /** The local submission a clip's metadata names; foreign or extended metadata names none. */
-export const submissionFromMetadata: Dual2<string, string, string | undefined> = dual(
-  2,
-  (namespace: string, value: string): string | undefined => {
-    const decoded = Schema.decodeResult(Envelope)(value, { onExcessProperty: "error" });
-    return Result.isSuccess(decoded) && decoded.success.namespace === namespace
-      ? decoded.success.submission
-      : undefined;
-  },
-);
+export const submissionFromMetadata = ({
+  namespace,
+  metadata,
+}: {
+  readonly namespace: string;
+  readonly metadata: string;
+}): string | undefined => {
+  const decoded = Schema.decodeResult(Envelope)(metadata, { onExcessProperty: "error" });
+  return Result.isSuccess(decoded) && decoded.success.namespace === namespace
+    ? decoded.success.submission
+    : undefined;
+};
 
 /** Only the exact captured prompt and metadata, in the submission's generation, prove acceptance. */
-export const acceptanceFor: Dual3<Identity, Clip, CommandReply, Acceptance | undefined> = dual(
-  3,
-  (identity: Identity, clip: Clip, source: CommandReply): Acceptance | undefined =>
+export const acceptanceFor = ({
+  identity,
+  clip,
+  source,
+}: {
+  readonly identity: Identity;
+  readonly clip: Clip;
+  readonly source: CommandReply;
+}): Acceptance | undefined => {
+  if (
     identity.generation !== source.generation ||
     identity.metadata !== clip.metadata ||
     identity.prompt !== clip.prompt
-      ? undefined
-      : {
-          submissionId: identity.id,
-          clip,
-          evidence: {
-            kind:
-              source.kind === "message" &&
-              source.type === "clip_queued" &&
-              source.correlation === "matched"
-                ? "correlated"
-                : "metadata",
-            source,
-          },
-        },
-);
+  )
+    return undefined;
+  const correlated =
+    source.kind === "message" && source.type === "clip_queued" && source.correlation === "matched";
+  return {
+    submissionId: identity.id,
+    clip,
+    evidence: { kind: correlated ? "correlated" : "metadata", source },
+  };
+};

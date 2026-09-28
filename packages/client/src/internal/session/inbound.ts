@@ -76,7 +76,7 @@ export const make = ({
   const { fail, readyGate, failedConnection } = generation;
 
   const receiveData = Effect.fnUntraced(function* (c: Connection, bytes: Uint8Array) {
-    const message = yield* Wire.decode(Wire.DataServerMessageSchema, bytes);
+    const message = yield* Wire.decode(Wire.DataServerMessageSchema)(bytes);
     const payload = message.payload;
     if (payload.case === "error") {
       const error = ReactorError.make({
@@ -128,7 +128,7 @@ export const make = ({
   });
 
   const receiveControl = Effect.fnUntraced(function* (c: Connection, bytes: Uint8Array) {
-    const message = yield* Wire.decode(Wire.ControlServerMessageSchema, bytes);
+    const message = yield* Wire.decode(Wire.ControlServerMessageSchema)(bytes);
     const payload = message.payload;
     // Unlike a data reply, a bodyless control message acknowledges nothing.
     if (payload.case === undefined)

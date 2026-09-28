@@ -362,7 +362,7 @@ const dyingPings = Layer.effectContext(
     const peers = yield* PeerFactory;
     const died = yield* Deferred.make<void>();
     const isPing = (bytes: Uint8Array) =>
-      Wire.decode(Wire.ControlClientMessageSchema, bytes).pipe(
+      Wire.decode(Wire.ControlClientMessageSchema)(bytes).pipe(
         Effect.map((message) => message.payload.case === "ping"),
         Effect.orElseSucceed(() => false),
       );

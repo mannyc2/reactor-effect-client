@@ -6,20 +6,11 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { dual } from "effect/Function";
 import * as Result from "effect/Result";
 import { ClipEnded, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { CommandReply } from "../../Session.js";
 import type { Clip, DecodedMessage, MessageType } from "./messages.js";
 import type { Acceptance, Identity } from "./state.js";
-
-/** A function's data-first and data-last forms, as `Function.dual` builds them. */
-type Dual2<A, B, R> = { (b: B): (self: A) => R; (self: A, b: B): R };
-type Dual3<A, B, C, R> = { (b: B, c: C): (self: A) => R; (self: A, b: B, c: C): R };
-type Dual4<A, B, C, D, R> = {
-  (b: B, c: C, d: D): (self: A) => R;
-  (self: A, b: B, c: C, d: D): R;
-};
 
 /** A phase a clip can be awaited to reach. */
 export type ClipPhase = "generated" | "started";
@@ -141,41 +132,47 @@ const fail = <A>(deferred: Deferred.Deferred<A, Failure>, error: Failure) =>
  * Takes a slot for a submission about to dispatch. Operations that ended are
  * evicted first, oldest first; a table of unresolved operations refuses.
  */
-export const reserve: Dual3<Table, Identity, Waiters, Result.Result<Table, ReactorError>> = dual(
-  3,
-  (table: Table, identity: Identity, waiters: Waiters): Result.Result<Table, ReactorError> => {
-    if (table.operations.has(identity.id)) return Result.succeed(table);
-    let next = table;
-    if (next.operations.size >= next.capacity) {
-      const evictable = [...next.operations.values()].find(settled);
-      if (evictable !== undefined) next = remove(next, evictable.identity.id);
-    }
-    if (next.operations.size >= next.capacity)
-      return Result.fail(
-        ReactorError.fromCode("Overflow", "H3 clip operation bound reached", {
-          operation: "enqueue",
-          outcome: "not-submitted",
-        }),
-      );
-    return Result.succeed(
-      put(next, {
-        identity,
-        waiters,
-        acceptance: undefined,
-        clipId: undefined,
-        generated: undefined,
-        started: undefined,
-        ended: undefined,
-        indeterminate: false,
-        rejected: false,
-        holders: 0,
+export const reserve = ({
+  table,
+  identity,
+  waiters,
+}: {
+  readonly table: Table;
+  readonly identity: Identity;
+  readonly waiters: Waiters;
+}): Result.Result<Table, ReactorError> => {
+  if (table.operations.has(identity.id)) return Result.succeed(table);
+  let next = table;
+  if (next.operations.size >= next.capacity) {
+    const evictable = [...next.operations.values()].find(settled);
+    if (evictable !== undefined) next = remove(next, evictable.identity.id);
+  }
+  if (next.operations.size >= next.capacity)
+    return Result.fail(
+      ReactorError.fromCode("Overflow", "H3 clip operation bound reached", {
+        operation: "enqueue",
+        outcome: "not-submitted",
       }),
     );
-  },
-);
+  return Result.succeed(
+    put(next, {
+      identity,
+      waiters,
+      acceptance: undefined,
+      clipId: undefined,
+      generated: undefined,
+      started: undefined,
+      ended: undefined,
+      indeterminate: false,
+      rejected: false,
+      holders: 0,
+    }),
+  );
+};
 
 /** A commit that failed after reserving sent nothing. */
-export const abandon: Dual2<Table, string, Table> = dual(2, remove);
+export const abandon = ({ table, id }: { readonly table: Table; readonly id: string }): Table =>
+  remove(table, id);
 
 /** What an operation established resolves its waiters, once its acceptance is decided. */
 const publish = (operation: Operation): ReadonlyArray<Effect.Effect<void>> => {
@@ -204,90 +201,110 @@ const publish = (operation: Operation): ReadonlyArray<Effect.Effect<void>> => {
 };
 
 /** The enqueue's own result: a definite failure decides the operation without a clip. */
-export const settle: Dual3<Table, string, Exit.Exit<Acceptance, unknown>, Step> = dual(
-  3,
-  (table: Table, id: string, exit: Exit.Exit<Acceptance, unknown>): Step => {
-    const operation = table.operations.get(id);
-    if (operation === undefined || operation.acceptance !== undefined || Exit.isSuccess(exit))
-      return [table, []];
-    const error = Exit.findError(exit);
-    if (error._tag !== "Success" || !CommandFailure.is(error.success)) return [table, []];
-    const failure = error.success;
-    if (failure.context.outcome === "unknown") return [table, []];
-    // No clip will ever carry this submission, and what a clip showed before the
-    // refusal is not its fact.
-    const rejected: Operation = {
-      ...operation,
-      rejected: true,
-      generated: undefined,
-      started: undefined,
-      ended: undefined,
-    };
-    const next = put(remove(table, id), { ...rejected, clipId: undefined });
-    const { waiters } = operation;
-    return [
-      next,
-      [
-        fail(waiters.accepted, failure),
-        fail(waiters.generated, failure),
-        fail(waiters.started, failure),
-        fail(waiters.finished, failure),
-      ],
-    ];
-  },
-);
+export const settle = ({
+  table,
+  id,
+  exit,
+}: {
+  readonly table: Table;
+  readonly id: string;
+  readonly exit: Exit.Exit<Acceptance, unknown>;
+}): Step => {
+  const operation = table.operations.get(id);
+  if (operation === undefined || operation.acceptance !== undefined || Exit.isSuccess(exit))
+    return [table, []];
+  const error = Exit.findError(exit);
+  if (error._tag !== "Success" || !CommandFailure.is(error.success)) return [table, []];
+  const failure = error.success;
+  if (failure.context.outcome === "unknown") return [table, []];
+  // No clip will ever carry this submission, and what a clip showed before the
+  // refusal is not its fact.
+  const rejected: Operation = {
+    ...operation,
+    rejected: true,
+    generated: undefined,
+    started: undefined,
+    ended: undefined,
+  };
+  const next = put(remove(table, id), { ...rejected, clipId: undefined });
+  const { waiters } = operation;
+  return [
+    next,
+    [
+      fail(waiters.accepted, failure),
+      fail(waiters.generated, failure),
+      fail(waiters.started, failure),
+      fail(waiters.finished, failure),
+    ],
+  ];
+};
 
 /**
  * Evidence the provider holds until the enqueue's reply decides the
  * acceptance: the clip's facts accrue meanwhile.
  */
-export const identify: Dual2<Table, Acceptance, Table> = dual(
-  2,
-  (table: Table, acceptance: Acceptance): Table => {
-    const operation = table.operations.get(acceptance.submissionId);
-    if (operation === undefined || operation.clipId !== undefined || operation.rejected)
-      return table;
-    return put(table, { ...operation, clipId: acceptance.clip.clip_id });
-  },
-);
+export const identify = ({
+  table,
+  acceptance,
+}: {
+  readonly table: Table;
+  readonly acceptance: Acceptance;
+}): Table => {
+  const operation = table.operations.get(acceptance.submissionId);
+  if (operation === undefined || operation.clipId !== undefined || operation.rejected) return table;
+  return put(table, { ...operation, clipId: acceptance.clip.clip_id });
+};
 
 /** The acceptance the provider recorded, on the same path that records it. */
-export const accept: Dual2<Table, Acceptance, Step> = dual(
-  2,
-  (table: Table, acceptance: Acceptance): Step => {
-    const operation = table.operations.get(acceptance.submissionId);
-    if (operation === undefined || operation.acceptance !== undefined) return [table, []];
-    const accepted: Operation = {
-      ...operation,
-      acceptance,
-      clipId: operation.clipId ?? acceptance.clip.clip_id,
-    };
-    return [
-      put(table, accepted),
-      [succeed(operation.waiters.accepted, acceptance), ...publish(accepted)],
-    ];
-  },
-);
+export const accept = ({
+  table,
+  acceptance,
+}: {
+  readonly table: Table;
+  readonly acceptance: Acceptance;
+}): Step => {
+  const operation = table.operations.get(acceptance.submissionId);
+  if (operation === undefined || operation.acceptance !== undefined) return [table, []];
+  const accepted: Operation = {
+    ...operation,
+    acceptance,
+    clipId: operation.clipId ?? acceptance.clip.clip_id,
+  };
+  return [
+    put(table, accepted),
+    [succeed(operation.waiters.accepted, acceptance), ...publish(accepted)],
+  ];
+};
 
 /**
  * A clip carrying a submission's exact prompt and metadata after its pending
  * acceptance expired, or in a later generation. It resolves the operation only.
  */
-export const lateEvidence: Dual4<Table, string, Clip, CommandReply, Step> = dual(
-  4,
-  (table: Table, id: string, clip: Clip, source: CommandReply): Step => {
-    const operation = table.operations.get(id);
-    if (
-      operation === undefined ||
-      operation.acceptance !== undefined ||
-      operation.rejected ||
-      operation.identity.metadata !== clip.metadata ||
-      operation.identity.prompt !== clip.prompt
-    )
-      return [table, []];
-    return accept(table, { submissionId: id, clip, evidence: { kind: "metadata", source } });
-  },
-);
+export const lateEvidence = ({
+  table,
+  id,
+  clip,
+  source,
+}: {
+  readonly table: Table;
+  readonly id: string;
+  readonly clip: Clip;
+  readonly source: CommandReply;
+}): Step => {
+  const operation = table.operations.get(id);
+  if (
+    operation === undefined ||
+    operation.acceptance !== undefined ||
+    operation.rejected ||
+    operation.identity.metadata !== clip.metadata ||
+    operation.identity.prompt !== clip.prompt
+  )
+    return [table, []];
+  return accept({
+    table,
+    acceptance: { submissionId: id, clip, evidence: { kind: "metadata", source } },
+  });
+};
 
 const fact = (clipId: string, message: MessageType, source: CommandReply): ClipFact => ({
   clipId,
@@ -323,40 +340,45 @@ const advance = (
 };
 
 /** Advances operations from a message the reducer applied. */
-export const observe: Dual3<Table, DecodedMessage, CommandReply, Step> = dual(
-  3,
-  (table: Table, message: DecodedMessage, source: CommandReply): Step => {
-    if (table.byClip.size === 0) return [table, []];
-    switch (message.type) {
-      case "queue_update": {
-        let next = table;
-        const effects: Array<Effect.Effect<void>> = [];
-        for (const clip of message.data.playout)
-          if (clip.ready) {
-            const [after, done] = advance(next, clip.clip_id, "queue_update", source, "generated");
-            next = after;
-            effects.push(...done);
-          }
-        return [next, effects];
-      }
-      case "state_update":
-        return message.data.playing_clip_id === null
-          ? [table, []]
-          : advance(table, message.data.playing_clip_id, "state_update", source, "started");
-      case "clip_generated":
-        return advance(table, message.data.clip.clip_id, message.type, source, "generated");
-      case "clip_started":
-        return advance(table, message.data.clip.clip_id, message.type, source, "started");
-      case "clip_finished":
-      case "clip_stopped":
-      case "clip_failed":
-      case "clip_popped":
-        return advance(table, message.data.clip.clip_id, message.type, source, "ended");
-      default:
-        return [table, []];
+export const observe = ({
+  table,
+  message,
+  source,
+}: {
+  readonly table: Table;
+  readonly message: DecodedMessage;
+  readonly source: CommandReply;
+}): Step => {
+  if (table.byClip.size === 0) return [table, []];
+  switch (message.type) {
+    case "queue_update": {
+      let next = table;
+      const effects: Array<Effect.Effect<void>> = [];
+      for (const clip of message.data.playout)
+        if (clip.ready) {
+          const [after, done] = advance(next, clip.clip_id, "queue_update", source, "generated");
+          next = after;
+          effects.push(...done);
+        }
+      return [next, effects];
     }
-  },
-);
+    case "state_update":
+      return message.data.playing_clip_id === null
+        ? [table, []]
+        : advance(table, message.data.playing_clip_id, "state_update", source, "started");
+    case "clip_generated":
+      return advance(table, message.data.clip.clip_id, message.type, source, "generated");
+    case "clip_started":
+      return advance(table, message.data.clip.clip_id, message.type, source, "started");
+    case "clip_finished":
+    case "clip_stopped":
+    case "clip_failed":
+    case "clip_popped":
+      return advance(table, message.data.clip.clip_id, message.type, source, "ended");
+    default:
+      return [table, []];
+  }
+};
 
 /** The provider retired: what evidence did not decide is `Indeterminate`. */
 export const retire = (table: Table): Step => {
@@ -387,42 +409,48 @@ export const retire = (table: Table): Step => {
 };
 
 /** A holder of an operation; releasing the last holder acknowledges it and frees its slot. */
-export const hold: Dual2<Table, string, Result.Result<Table, ReactorError>> = dual(
-  2,
-  (table: Table, id: string): Result.Result<Table, ReactorError> => {
-    const operation = table.operations.get(id);
-    return operation === undefined
-      ? Result.fail(
-          ReactorError.fromCode(
-            "InvalidState",
-            "H3 has no clip operation for this submission; it has not committed or was released",
-            { operation: "clip operation" },
-          ),
-        )
-      : Result.succeed(put(table, { ...operation, holders: operation.holders + 1 }));
-  },
-);
+export const hold = ({
+  table,
+  id,
+}: {
+  readonly table: Table;
+  readonly id: string;
+}): Result.Result<Table, ReactorError> => {
+  const operation = table.operations.get(id);
+  return operation === undefined
+    ? Result.fail(
+        ReactorError.fromCode(
+          "InvalidState",
+          "H3 has no clip operation for this submission; it has not committed or was released",
+          { operation: "clip operation" },
+        ),
+      )
+    : Result.succeed(put(table, { ...operation, holders: operation.holders + 1 }));
+};
 
-export const release: Dual2<Table, string, Table> = dual(2, (table: Table, id: string): Table => {
+export const release = ({ table, id }: { readonly table: Table; readonly id: string }): Table => {
   const operation = table.operations.get(id);
   if (operation === undefined) return table;
   return operation.holders <= 1
     ? remove(table, id)
     : put(table, { ...operation, holders: operation.holders - 1 });
-});
+};
 
 /** A clip's facts are the operation's once its acceptance is decided. */
-export const factsOf: Dual2<string, Operation | undefined, OperationFacts> = dual(
-  2,
-  (id: string, operation: Operation | undefined): OperationFacts =>
-    operation?.acceptance === undefined
-      ? { submissionId: id, indeterminate: operation?.indeterminate ?? false }
-      : {
-          submissionId: id,
-          acceptance: operation.acceptance,
-          ...(operation.generated === undefined ? {} : { generated: operation.generated }),
-          ...(operation.started === undefined ? {} : { started: operation.started }),
-          ...(operation.ended === undefined ? {} : { ended: operation.ended }),
-          indeterminate: operation.indeterminate,
-        },
-);
+export const factsOf = ({
+  id,
+  operation,
+}: {
+  readonly id: string;
+  readonly operation: Operation | undefined;
+}): OperationFacts =>
+  operation?.acceptance === undefined
+    ? { submissionId: id, indeterminate: operation?.indeterminate ?? false }
+    : {
+        submissionId: id,
+        acceptance: operation.acceptance,
+        ...(operation.generated === undefined ? {} : { generated: operation.generated }),
+        ...(operation.started === undefined ? {} : { started: operation.started }),
+        ...(operation.ended === undefined ? {} : { ended: operation.ended }),
+        indeterminate: operation.indeterminate,
+      };

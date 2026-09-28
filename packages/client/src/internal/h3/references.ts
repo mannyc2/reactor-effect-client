@@ -14,8 +14,8 @@ import {
   referenceLimits,
 } from "./profile.js";
 
-export type ImageMimeType = (typeof imageMimeTypes)[number];
-export type AudioMimeType = (typeof audioMimeTypes)[number];
+type ImageMimeType = (typeof imageMimeTypes)[number];
+type AudioMimeType = (typeof audioMimeTypes)[number];
 
 interface ImageFacts {
   readonly mimeType: ImageMimeType;
@@ -228,7 +228,7 @@ const inspectAudio = (bytes: Uint8Array): Result.Result<AudioFacts, string> => {
 };
 
 /** Bytes held for upload, or a file the session already holds. */
-export type Material =
+type Material =
   | { readonly _tag: "Bytes"; readonly bytes: Uint8Array<ArrayBuffer> }
   | { readonly _tag: "Uploaded"; readonly file: UploadReference };
 
@@ -318,8 +318,8 @@ const uploadedFile = <const M extends string>(mimeTypes: ReadonlyArray<M>, maxBy
   });
 
 /** A file the session already uploaded, as a request names it. */
-export const UploadedImage = uploadedFile(imageMimeTypes, referenceLimits.maxBytes);
-export const UploadedAudio = uploadedFile(audioMimeTypes, audioReferenceLimits.maxBytes);
+const UploadedImage = uploadedFile(imageMimeTypes, referenceLimits.maxBytes);
+const UploadedAudio = uploadedFile(audioMimeTypes, audioReferenceLimits.maxBytes);
 
 /** A reference as a request supplies it: bytes to validate and upload, or an uploaded file. */
 export const Reference = Schema.Union([
