@@ -77,7 +77,8 @@ export type Command =
   | { readonly _tag: "Remove"; readonly clipId: string }
   | { readonly _tag: "Move"; readonly clipId: string; readonly position: number }
   | { readonly _tag: "Autoplay"; readonly enabled: boolean }
-  | { readonly _tag: "Cut"; readonly next: string };
+  /** Stop `clipId`, if it still plays, and play `next`. */
+  | { readonly _tag: "Cut"; readonly clipId: string; readonly next: string };
 
 /** A command's result: the clip an enqueue created, or how a failure left the provider. */
 export type CommandResult =
@@ -262,7 +263,12 @@ export interface State {
     readonly length: ReadonlyArray<number>;
   };
   readonly blockedMove: string | undefined;
-  readonly blockedCut: string | undefined;
+  /**
+   * The clip last cut. It is never cut again, whatever its cut's result: H3's
+   * stop names no clip, and a stopped clip goes on looking like it plays until
+   * its end is reported, so a second cut would stop the clip after it.
+   */
+  readonly cut: string | undefined;
   readonly starving: boolean;
   readonly starved: number;
 }
@@ -302,7 +308,7 @@ export const initial: State = {
   closed: false,
   samples: { build: [], length: [] },
   blockedMove: undefined,
-  blockedCut: undefined,
+  cut: undefined,
   starving: false,
   starved: 0,
 };
@@ -1147,11 +1153,11 @@ export const step: {
         if (result._tag === "Failed")
           state = { ...state, blockedMove: signature(session(busy.sessionId)) + command.clipId };
         return;
-      case "Cut":
-        if (result._tag === "Failed") state = { ...state, blockedCut: command.next };
-        return;
       case "Autoplay":
         if (result._tag === "Done") updateSession(busy.sessionId, { autoplay: command.enabled });
+        return;
+      case "Cut":
+        // Its clip was marked cut when it was sent; neither result makes it cuttable again.
         return;
     }
   };
@@ -1578,7 +1584,7 @@ export const step: {
       cutItem !== undefined &&
       playing !== undefined &&
       config.lanes[cutItem.spec.lane]?.cut === true &&
-      state.blockedCut !== cutter.clipId &&
+      state.cut !== playing.clipId &&
       playingRestMs(onAirNow) > cutMarginMs
     ) {
       // Only filler or a clip of a strictly lower lane is cut, never one of the cutter's lane or above.
@@ -1586,8 +1592,14 @@ export const step: {
       const lower =
         playing.tag?._tag === "Filler" ||
         (playingItem !== undefined && playingItem.spec.lane > cutItem.spec.lane);
-      if (lower && airs(cutter))
-        return queueCommand(onAirNow.id, { _tag: "Cut", next: cutter.clipId });
+      if (lower && airs(cutter)) {
+        state = { ...state, cut: playing.clipId };
+        return queueCommand(onAirNow.id, {
+          _tag: "Cut",
+          clipId: playing.clipId,
+          next: cutter.clipId,
+        });
+      }
     }
     // A held item about to be next, or an At item Ready too early, is removed and rebuilt later.
     for (const value of state.sessions) {

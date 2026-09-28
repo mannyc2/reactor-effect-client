@@ -236,7 +236,7 @@ export const open = Effect.fnUntraced(function* (
         return { ...value, ready: [...rest.slice(0, position), moved, ...rest.slice(position)] };
       }),
     setAutoplay: (enabled) => change((value) => ({ ...value, autoplay: enabled })),
-    cut: (next) =>
+    cut: (clipId, next) =>
       Effect.gen(function* () {
         yield* change((value) => {
           const moved = value.ready.find((other) => other.clipId === next);
@@ -245,7 +245,8 @@ export const open = Effect.fnUntraced(function* (
             : { ...value, ready: [moved, ...value.ready.filter((other) => other !== moved)] };
         });
         const current = yield* Ref.get(stop);
-        if (current !== undefined) yield* Deferred.succeed(current, undefined);
+        if (current !== undefined && (yield* SubscriptionRef.get(state)).playing?.clipId === clipId)
+          yield* Deferred.succeed(current, undefined);
       }),
     video: Stream.fromPubSub(video),
     audio: Stream.fromPubSub(audio),

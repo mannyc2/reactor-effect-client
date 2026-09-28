@@ -105,11 +105,15 @@ const clipOf = (clip: (typeof H3.Clip)["Type"]): SourceClip => ({
   seconds: clip.seconds,
 });
 
+const factsOf = (snapshot: H3.ProviderSnapshot) =>
+  snapshot._tag === "Ready" ? { state: snapshot.state, queue: snapshot.queue } : snapshot.lastFacts;
+
+/** The clip H3 reports playing, or armed to play. */
+const playingOf = (snapshot: H3.ProviderSnapshot): string | undefined =>
+  factsOf(snapshot)?.state.playing_clip_id ?? undefined;
+
 const stateOf = (snapshot: H3.ProviderSnapshot): SourceState => {
-  const facts =
-    snapshot._tag === "Ready"
-      ? { state: snapshot.state, queue: snapshot.queue }
-      : snapshot.lastFacts;
+  const facts = factsOf(snapshot);
   const known = new Map(snapshot.clips.map((entry) => [entry.clip.clip_id, entry.clip]));
   const playingId = facts?.state.playing_clip_id ?? null;
   const playing = playingId === null ? undefined : known.get(playingId);
@@ -231,6 +235,31 @@ const fromSession = Effect.fnUntraced(function* (
     ),
   );
   const replied = (error: CommandFailure) => error.context.outcome === "replied";
+  const replyTimeout = Duration.fromInputUnsafe(options.provider?.replyTimeout ?? "15 seconds");
+  /**
+   * H3 answers `stop` before the clip ends; until H3 reports that, the clip
+   * plays and `play` would be refused.
+   */
+  const landed = (clipId: string, stop: H3.ControlResult) =>
+    provider.changes.pipe(
+      Stream.filter((snapshot) => playingOf(snapshot) !== clipId),
+      Stream.runHead,
+      Effect.timeoutOrElse({
+        duration: replyTimeout,
+        orElse: () =>
+          Effect.fail(
+            CommandFailure.from(
+              ReactorError.fromCode("Timeout", "H3 did not report the stopped clip ended"),
+              {
+                operation: "stop",
+                outcome: "unknown",
+                requestId: stop.source.requestId,
+                generation: stop.source.generation,
+              },
+            ),
+          ),
+      }),
+    );
   // The autoplay the playout last asked for, which a cut puts back when it is done.
   const autoplay = yield* Ref.make(false);
   const withAutoplayOff = <A>(effect: Effect.Effect<A, CommandFailure>) =>
@@ -273,15 +302,21 @@ const fromSession = Effect.fnUntraced(function* (
     move: (clipId, position) => Effect.asVoid(provider.move(clipId, position)),
     setAutoplay: (enabled) =>
       provider.setAutoplay(enabled).pipe(Effect.andThen(Ref.set(autoplay, enabled))),
-    // With autoplay off nothing starts between the stop and the play, so the stop can only
-    // hit the clip that was playing; a refusal because nothing plays is harmless.
-    cut: (next) =>
+    // With autoplay off nothing starts between the stop and the play, so the stop can only hit
+    // the clip that was playing. That clip may have ended on its own first: a refusal because
+    // nothing plays is harmless, and a clip that took its place is not stopped.
+    cut: (clipId, next) =>
       withAutoplayOff(
-        provider.stop.pipe(
-          Effect.catchIf(replied, () => Effect.void),
-          Effect.andThen(provider.play(next)),
-          Effect.asVoid,
-        ),
+        Effect.gen(function* () {
+          const playing = playingOf(yield* provider.snapshot);
+          if (playing !== undefined && playing !== clipId) return;
+          if (playing !== undefined)
+            yield* provider.stop.pipe(
+              Effect.flatMap((stopped) => landed(clipId, stopped)),
+              Effect.catchIf(replied, () => Effect.void),
+            );
+          yield* provider.play(next);
+        }),
       ),
     video: track(session, (media) => media.video(H3.h3ReferenceTurboRealtime.tracks.video)),
     audio: track(session, (media) => media.audio(H3.h3ReferenceTurboRealtime.tracks.audio)),
