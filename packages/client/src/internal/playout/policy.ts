@@ -192,6 +192,8 @@ interface Item {
   readonly generation: number;
   readonly group?: { readonly key: ItemKey; readonly index: number } | undefined;
   readonly inserted: boolean;
+  /** Where an insert was placed, which a resubmission under its key must repeat. */
+  readonly anchor?: { readonly key: ItemKey; readonly side: "before" | "after" } | undefined;
   readonly replaces?: ItemKey | undefined;
   /** The pending batch that added it: it builds, but does not air until the batch commits. */
   readonly batch?: number | undefined;
@@ -739,7 +741,15 @@ export const step: {
         const group = groups.get(key);
         if (
           (existing !== undefined && existing.spec.fingerprint !== fingerprint) ||
-          (group !== undefined && group.fingerprint !== fingerprint)
+          (group !== undefined && group.fingerprint !== fingerprint) ||
+          // An insert's place is part of it; a new group cannot take another item's key as a part.
+          (edit._tag === "Insert" &&
+            existing !== undefined &&
+            (existing.anchor?.key !== edit.anchor || existing.anchor.side !== edit.side)) ||
+          (edit._tag === "SubmitGroup" &&
+            key !== edit.key &&
+            existing !== undefined &&
+            !groups.has(edit.key))
         )
           return refuse({ _tag: "KeyMismatch", key: key });
       }
@@ -852,6 +862,7 @@ export const step: {
                       ? undefined
                       : { key: anchor.group.key, index: anchor.group.index },
                   inserted: true,
+                  anchor: { key: edit.anchor, side: edit.side },
                   mode: playing ? "follow" : anchor.mode,
                 },
               ),
@@ -1987,9 +1998,11 @@ export const step: {
     for (const clip of readyOf(target)) {
       const rank = rankClip(clip);
       const owner = itemOf(clip);
+      // What this item replaces, or a batch is taking off, is no predecessor.
       if (
         before(rank) &&
         owner?.withdraw === undefined &&
+        (owner === undefined || (!superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
         (best === undefined || compareRank(rank, best.rank) > 0)
       )
         best = { rank, clipId: clip.clipId };
