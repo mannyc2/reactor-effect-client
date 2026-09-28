@@ -8,15 +8,25 @@ export const repository = "mannyc2/reactor-effect-client";
 export const principal = "reactor-npm-publisher";
 export const journalRemote = `https://github.com/${repository}.git`;
 export const effectPin = "^4.0.0-rc.117";
-/** @typedef {"reactor-effect-client" | "reactor-effect-browser" | "reactor-effect-native"} PackageName */
+/** @typedef {"reactor-effect-client" | "reactor-effect-browser" | "reactor-effect-native-linux-x64-gnu" | "reactor-effect-native-darwin-arm64" | "reactor-effect-native"} PackageName */
 /** @typedef {{ readonly name: PackageName, readonly exports: readonly string[], readonly dependsOn: readonly PackageName[] }} WorkspacePackage */
 /** @type {PackageName} */
 export const nativePackage = "reactor-effect-native";
+/** Each platform package's addon, keyed by the platform its name ends with. */
+export const nativePlatforms = Object.freeze({
+  "darwin-arm64": "reactor-effect-native.darwin-arm64.node",
+  "linux-x64-gnu": "reactor-effect-native.linux-x64-gnu.node",
+});
+/** @typedef {keyof typeof nativePlatforms} NativePlatform */
+/** @param {NativePlatform} platform @returns {PackageName} */
+export const platformPackage = (platform) => `${nativePackage}-${platform}`;
 
 /**
  * The published workspace packages, in publication order. The host packages
  * pin the client as an exact peer, so the client is published first and each
- * host publication depends on it. Every package carries one release version.
+ * later publication depends on it. The native binding pins each platform
+ * package exactly as an optional dependency, so those precede it. Every
+ * package carries one release version.
  */
 /** @type {readonly WorkspacePackage[]} */
 export const packages = Object.freeze([
@@ -26,14 +36,23 @@ export const packages = Object.freeze([
     dependsOn: [],
   },
   { name: "reactor-effect-browser", exports: ["."], dependsOn: ["reactor-effect-client"] },
-  { name: nativePackage, exports: ["."], dependsOn: ["reactor-effect-client"] },
+  {
+    name: "reactor-effect-native-linux-x64-gnu",
+    exports: [],
+    dependsOn: ["reactor-effect-client"],
+  },
+  { name: "reactor-effect-native-darwin-arm64", exports: [], dependsOn: ["reactor-effect-client"] },
+  {
+    name: nativePackage,
+    exports: ["."],
+    dependsOn: [
+      "reactor-effect-client",
+      "reactor-effect-native-linux-x64-gnu",
+      "reactor-effect-native-darwin-arm64",
+    ],
+  },
 ]);
 export const packageNames = packages.map((entry) => entry.name);
-/** Native libraries the qualified native package must carry, keyed by platform. */
-export const nativePlatforms = Object.freeze({
-  "darwin-arm64": "libreactor_effect_native.dylib",
-  "linux-x64": "libreactor_effect_native.so",
-});
 
 export const digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 export const commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
@@ -45,6 +64,8 @@ const text = Schema.String.check(Schema.isMinLength(1));
 const PackageName = Schema.Literals([
   "reactor-effect-client",
   "reactor-effect-browser",
+  "reactor-effect-native-linux-x64-gnu",
+  "reactor-effect-native-darwin-arm64",
   nativePackage,
 ]);
 
@@ -69,15 +90,17 @@ export const Qualification = Schema.Struct({
     ),
   ),
 });
+/** The native-identity.json staging writes into each platform package. */
 const NativeIdentity = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
+  schemaVersion: Schema.Literal(2),
   platform: text,
-  library: text,
+  file: text,
   sha256: digest,
   build: Schema.Struct({
-    abiVersion: Schema.Literal(4),
+    schemaVersion: Schema.Literal(2),
     sourceSha256: digest,
     profile: Schema.Literal("release"),
+    target: text,
     /** The Reactor libwebrtc prebuilt linked in, which staging checked against its SBOM. */
     webrtcPrebuilt: Schema.String.check(Schema.isPattern(/^webrtc-\d+-[0-9a-f]{8}-p\d+$/)),
   }),
@@ -98,10 +121,12 @@ export const PackageIdentity = Schema.Struct({
   packages: Schema.Struct({
     "reactor-effect-client": PackageEntry,
     "reactor-effect-browser": PackageEntry,
+    "reactor-effect-native-linux-x64-gnu": PackageEntry,
+    "reactor-effect-native-darwin-arm64": PackageEntry,
     "reactor-effect-native": PackageEntry,
   }),
   nativeSourceSha256: digest,
-  native: Schema.Struct({ "darwin-arm64": NativeIdentity, "linux-x64": NativeIdentity }),
+  native: Schema.Struct({ "darwin-arm64": NativeIdentity, "linux-x64-gnu": NativeIdentity }),
 });
 export const CandidateIdentity = Schema.Struct({
   format: Schema.Literal("reactor-ts-release/v3"),
@@ -175,22 +200,23 @@ export const validatePackageIdentity = (raw) => {
         JSON.stringify(Object.keys(identity.fileSha256).sort())
     )
       reject("Incomplete package file inventory");
-    if (entry.name !== nativePackage && identity.files.some((path) => path.startsWith("lib/")))
+    const platform = entry.name.startsWith(`${nativePackage}-`);
+    if (!platform && identity.files.some((path) => path.endsWith(".node")))
       reject("A portable package carries native libraries");
   }
-  const native = value.packages[nativePackage];
   const prebuilts = new Set(
     Object.values(value.native).map((identity) => identity.build.webrtcPrebuilt),
   );
-  for (const [platform, library] of Object.entries(nativePlatforms)) {
-    const identity = value.native[/** @type {"darwin-arm64" | "linux-x64"} */ (platform)];
+  for (const [platform, file] of Object.entries(nativePlatforms)) {
+    const identity = value.native[/** @type {NativePlatform} */ (platform)];
+    const archive = value.packages[platformPackage(/** @type {NativePlatform} */ (platform))];
     if (
       identity.platform !== platform ||
-      identity.library !== library ||
+      identity.file !== file ||
       identity.build.sourceSha256 !== value.nativeSourceSha256 ||
       prebuilts.size !== 1 ||
-      native.fileSha256[`lib/${platform}/${library}`] !== identity.sha256 ||
-      native.fileSha256[`lib/${platform}/native-identity.json`] === undefined
+      archive.fileSha256[file] !== identity.sha256 ||
+      archive.fileSha256["native-identity.json"] === undefined
     )
       reject("Native platform qualification identity differs");
   }

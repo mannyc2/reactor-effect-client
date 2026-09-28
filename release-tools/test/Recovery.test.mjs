@@ -198,8 +198,8 @@ test("unauthorized execution and observation can record evidence but never dispa
     const observed = await observe(candidate, ports);
     assert.equal(ports.sent(), 0);
     assert.deepEqual([...ports.reads].sort(), [clientPackage, ...packageNames].sort());
-    assert.equal(ports.reads.length, 4);
-    assert.equal(ports.events.length, 4);
+    assert.equal(ports.reads.length, packageNames.length + 1);
+    assert.equal(ports.events.length, packageNames.length + 1);
     assert.ok(
       ports.events.every(
         (event) =>
@@ -280,8 +280,8 @@ test("an ambiguous npm response to the client publish never replays, keeps the h
     // while the client's ambiguous dispatch is never repeated.
     ports.respond(201);
     const continued = await run(candidate, ports, true);
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
+    assert.equal(ports.sent(), packageNames.length);
+    assert.equal(dispatchEvents(ports), packageNames.length);
     assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
     assert.equal(reportFor(continued, client).dispatches, 1);
     assert.equal(reportFor(continued, client).status, "Satisfied");
@@ -295,7 +295,7 @@ test("an ambiguous npm response to the client publish never replays, keeps the h
     ports.registry("matching");
     await observe(candidate, ports);
     assert.equal(visible(candidate, ports), "Satisfied");
-    assert.equal(ports.sent(), 3);
+    assert.equal(ports.sent(), packageNames.length);
   }));
 
 test("real npm receipts satisfy the client and then both hosts in one run while visibility waits for matching registry observations of every package", () =>
@@ -311,8 +311,8 @@ test("real npm receipts satisfy the client and then both hosts in one run while 
       assert.equal(line.dispatches, 1);
       assert.equal(line.observations, 1);
     }
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
+    assert.equal(ports.sent(), packageNames.length);
+    assert.equal(dispatchEvents(ports), packageNames.length);
     assert.equal(ports.dispatched[0], clientPackage);
     assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
     assert.deepEqual(ports.reads, ports.dispatched);
@@ -333,7 +333,7 @@ test("real npm receipts satisfy the client and then both hosts in one run while 
     assert.equal(reportFor(conflict, operationFor(candidate, browserPackage)).status, "Satisfied");
     assert.equal(visible(candidate, ports), "Conflict");
     const again = await run(candidate, ports, true);
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
+    assert.equal(ports.sent(), packageNames.length);
+    assert.equal(dispatchEvents(ports), packageNames.length);
     assert.ok(again.operations.every((line) => line.dispatches === 1));
   }));

@@ -16,23 +16,42 @@ export const sourceTree = "3".repeat(40);
 export const ciRunId = "7101";
 export const repository = "mannyc2/reactor-effect-client";
 export const effectPin = "^4.0.0-rc.117";
-/** @typedef {"reactor-effect-client" | "reactor-effect-browser" | "reactor-effect-native"} PackageName */
+/** @typedef {import("../model.mjs").PackageName} PackageName */
 /** @type {PackageName} */
 export const clientPackage = "reactor-effect-client";
 /** @type {PackageName} */
 export const browserPackage = "reactor-effect-browser";
 /** @type {PackageName} */
 export const nativePackage = "reactor-effect-native";
-/** The workspace packages in publication order: the client, then the hosts that pin it. */
-/** @type {readonly PackageName[]} */
-export const packageNames = Object.freeze([clientPackage, browserPackage, nativePackage]);
-/** @type {readonly PackageName[]} */
-export const hostPackages = Object.freeze([browserPackage, nativePackage]);
-/** Native libraries the fixture's native archive carries, keyed by platform. */
+/** Each platform package's addon, keyed by platform. */
 export const nativePlatforms = Object.freeze({
-  "darwin-arm64": "libreactor_effect_native.dylib",
-  "linux-x64": "libreactor_effect_native.so",
+  "darwin-arm64": "reactor-effect-native.darwin-arm64.node",
+  "linux-x64-gnu": "reactor-effect-native.linux-x64-gnu.node",
 });
+/** @type {PackageName} */
+export const linuxPackage = "reactor-effect-native-linux-x64-gnu";
+/** @type {PackageName} */
+export const darwinPackage = "reactor-effect-native-darwin-arm64";
+/** @type {readonly PackageName[]} */
+export const platformPackages = Object.freeze([linuxPackage, darwinPackage]);
+/** The workspace packages in publication order: the client, the packages that follow it,
+ * and last the native binding, which pins the platform packages. */
+/** @type {readonly PackageName[]} */
+export const packageNames = Object.freeze([
+  clientPackage,
+  browserPackage,
+  linuxPackage,
+  darwinPackage,
+  nativePackage,
+]);
+/** Every package published after the client. */
+/** @type {readonly PackageName[]} */
+export const hostPackages = Object.freeze([
+  browserPackage,
+  linuxPackage,
+  darwinPackage,
+  nativePackage,
+]);
 
 /** @param {string | Uint8Array} bytes @param {string} [algorithm] */
 export const digest = (bytes, algorithm = "sha256") =>
@@ -87,6 +106,14 @@ const workspace = {
     },
   },
   "reactor-effect-browser": { directory: "packages/browser", exports: { ".": entry("index") } },
+  "reactor-effect-native-linux-x64-gnu": {
+    directory: "packages/native/npm/linux-x64-gnu",
+    exports: {},
+  },
+  "reactor-effect-native-darwin-arm64": {
+    directory: "packages/native/npm/darwin-arm64",
+    exports: {},
+  },
   "reactor-effect-native": { directory: "packages/native", exports: { ".": entry("index") } },
 };
 
@@ -100,10 +127,10 @@ const workspace = {
  */
 /** @typedef {{ name: PackageName, tarball: string, tarballPath: string, bytes: Buffer, files: string[] }} FixtureArchive */
 /** @typedef {{ version: string, tarball: string, sha256: string, exports: string[], files: string[], fileSha256: Record<string, string> }} IdentityEntry */
-/** @typedef {{ schemaVersion: number, platform: string, library: string, sha256: string, build: { abiVersion: number, sourceSha256: string, profile: string, webrtcPrebuilt: string } }} NativeIdentity */
+/** @typedef {{ schemaVersion: number, platform: string, file: string, sha256: string, build: { schemaVersion: number, sourceSha256: string, profile: string, target: string, webrtcPrebuilt: string } }} NativeIdentity */
 
-/** Three real, tiny npm archives sharing one version. Only the native archive carries
- * independently hashed dummy native libraries; the portable archives have no lib/ files.
+/** Five real, tiny npm archives sharing one version. Only the platform archives carry
+ * independently hashed dummy addons; the others have no .node files.
  * Only the newly allocated directory is removed by withFixture.
  * @param {FixtureOptions} [options] */
 const fixture = (options = {}) => {
@@ -125,15 +152,22 @@ const fixture = (options = {}) => {
   try {
     for (const name of packageNames) {
       const { directory: workspaceDirectory, exports } = workspace[name];
+      const platform = Object.keys(nativePlatforms).find(
+        (key) => name === `${nativePackage}-${key}`,
+      );
       const manifest = {
         name,
         version,
         type: "module",
         exports,
-        peerDependencies:
-          name === clientPackage
-            ? { effect: effectPin }
-            : { effect: effectPin, [clientPackage]: version },
+        ...(platform === undefined
+          ? {
+              peerDependencies:
+                name === clientPackage
+                  ? { effect: effectPin }
+                  : { effect: effectPin, [clientPackage]: version },
+            }
+          : {}),
         repository: {
           type: "git",
           url: `git+https://github.com/${repository}.git`,
@@ -151,25 +185,27 @@ const fixture = (options = {}) => {
         contents[target.types.slice(2)] =
           `export declare const offline: ${JSON.stringify(name)};\n`;
       }
-      if (name === nativePackage)
-        for (const [platform, library] of Object.entries(nativePlatforms)) {
-          const bytes = `offline fixture only: ${platform}\n`;
-          const identity = {
-            schemaVersion: 1,
-            platform,
-            library,
-            sha256: digest(bytes),
-            build: {
-              abiVersion: 4,
-              sourceSha256: nativeSourceSha256,
-              profile: "release",
-              webrtcPrebuilt: "webrtc-7907-a5ddff60-p9",
-            },
-          };
-          contents[`lib/${platform}/${library}`] = bytes;
-          contents[`lib/${platform}/native-identity.json`] = JSON.stringify(identity) + "\n";
-          native[platform] = identity;
-        }
+      if (platform !== undefined) {
+        const file = nativePlatforms[/** @type {keyof typeof nativePlatforms} */ (platform)];
+        const bytes = `offline fixture only: ${platform}\n`;
+        const identity = {
+          schemaVersion: 2,
+          platform,
+          file,
+          sha256: digest(bytes),
+          build: {
+            schemaVersion: 2,
+            sourceSha256: nativeSourceSha256,
+            profile: "release",
+            target:
+              platform === "darwin-arm64" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-gnu",
+            webrtcPrebuilt: "webrtc-7907-a5ddff60-p9",
+          },
+        };
+        contents[file] = bytes;
+        contents["native-identity.json"] = JSON.stringify(identity) + "\n";
+        native[platform] = identity;
+      }
       const packageDirectory = join(directory, "source", name, "package");
       for (const [path, bytes] of Object.entries(contents)) {
         const destination = join(packageDirectory, path);
