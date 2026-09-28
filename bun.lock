@@ -5,9 +5,11 @@
     "": {
       "name": "reactor-effect",
       "devDependencies": {
+        "@effect/platform-node": "catalog:",
         "@effect/tsgo": "0.46.1",
         "@types/bun": "catalog:",
         "@types/node": "catalog:",
+        "effect": "catalog:",
         "oxfmt": "0.70.0",
         "oxlint": "1.81.0",
         "oxlint-tsgolint": "7.0.2001",
@@ -37,6 +39,7 @@
       "name": "reactor-effect-integration",
       "version": "0.7.1",
       "devDependencies": {
+        "@bufbuild/protobuf": "catalog:",
         "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",
         "@types/bun": "catalog:",
@@ -79,7 +82,7 @@
       "name": "reactor-effect-client",
       "version": "0.7.1",
       "dependencies": {
-        "@bufbuild/protobuf": "2.15.0",
+        "@bufbuild/protobuf": "catalog:",
       },
       "devDependencies": {
         "@bufbuild/buf": "1.73.0",
@@ -159,6 +162,7 @@
     "@effect/platform-node-shared": "^4.0.0-rc.117",
   },
   "catalog": {
+    "@bufbuild/protobuf": "2.15.0",
     "@effect/platform-bun": "^4.0.0-rc.117",
     "@effect/platform-node": "^4.0.0-rc.117",
     "@effect/vitest": "^4.0.0-rc.117",
