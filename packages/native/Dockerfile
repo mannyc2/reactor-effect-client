@@ -37,6 +37,8 @@ COPY rust/src ./rust/src
 # reactor-webrtc-sys downloads the pinned Linux x64 libwebrtc prebuilt,
 # verifies its published SHA-256, and compiles its C++ glue with pinned LLVM 21.
 RUN cargo fmt --manifest-path rust/Cargo.toml -- --check
+# build.rs reads the locked graph offline, which needs every platform's crates.
+RUN cargo fetch --locked --manifest-path rust/Cargo.toml
 RUN cargo test --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 RUN cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 RUN RUSTDOCFLAGS="-D warnings" cargo doc --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items
