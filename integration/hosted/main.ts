@@ -49,11 +49,14 @@ class Failed extends Schema.TaggedError<Failed>("reactor-effect-integration/host
 ) {}
 
 const check = Argument.Literals("check", Spend.checks);
-const ledger = Flag.String("ledger").pipe(Flag.withDescription("the evidence directory: the ledger"));
+const ledger = Flag.String("ledger").pipe(
+  Flag.withDescription("the evidence directory: the ledger"),
+);
 
 const report = Effect.fnUntraced(function* (evidence: Evidence) {
   yield* Console.log(summarize([evidence]));
-  if (evidence.verdict !== "pass") return yield* Failed.make({ message: evidence.reasons.join("; ") });
+  if (evidence.verdict !== "pass")
+    return yield* Failed.make({ message: evidence.reasons.join("; ") });
 });
 
 const apiUrl = Config.String("REACTOR_API_URL").pipe(Config.withDefault(Coordinator.defaultApiUrl));
@@ -75,7 +78,9 @@ const rehearse = Command.make(
   Effect.fnUntraced(function* (input) {
     const directory = Option.isSome(input.ledger)
       ? input.ledger.value
-      : yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({ prefix: "reactor-rehearsal-" });
+      : yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+          prefix: "reactor-rehearsal-",
+        });
     const evidence = yield* execute({
       authorization: {
         check: input.check,
@@ -91,7 +96,7 @@ const rehearse = Command.make(
     Target.rehearsal({
       faults: Option.getOrElse(input.faults, () => []),
       candidate: input.check === "turn" ? "relay" : "host",
-    }),
+    }).pipe(Layer.provideMerge(Target.movingClock)),
   ),
   Command.withDescription("Run a check against ReactorTest, for free"),
 );

@@ -92,7 +92,8 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
       if (closed || track === undefined) return Effect.void;
       if (delivered[kind]++ === 0n)
         signal({ type: "decoded", kind, name: track.name, mid: track.mid });
-      receivedBytes += value._tag === "VideoFrame" ? value.data.byteLength : value.samples.byteLength;
+      receivedBytes +=
+        value._tag === "VideoFrame" ? value.data.byteLength : value.samples.byteLength;
       return value._tag === "VideoFrame" ? video.publish(value) : audio.publish(value);
     });
   const stream = <A>(

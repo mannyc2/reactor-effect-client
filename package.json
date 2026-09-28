@@ -47,7 +47,7 @@
     "prepare": "effect-tsgo patch --typescript",
     "build": "bun run --filter './packages/*' build",
     "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' --ignore-pattern 'integration/hosted/**' --ignore-pattern 'integration/test/hosted-*' --ignore-pattern 'scripts/pack/**' .",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' --ignore-pattern 'scripts/pack/**' .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "generate:wire": "bun run --filter reactor-effect-client generate:wire",
