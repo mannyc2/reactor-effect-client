@@ -18,8 +18,8 @@ The SDK deliberately keeps several boundaries explicit:
 - Native control/data and media queues are bounded. Overflow is a typed failure or an explicit drop policy rather than unbounded retention.
 - Remote command errors distinguish `not-submitted`, `unknown`, and `replied` outcomes. A local cancellation after submission is not treated as proof that the remote mutation did not happen.
 - One canonical session owns the allocation or attachment. Its close report retains local cleanup failures and unconfirmed remote termination; closing an attachment does not acquire authority over the remote allocation.
-- H3 provider facts and acceptance evidence remain separate from orchestration's local annotations and playback/renewal policy. Acknowledgement alone cannot invent a model state transition.
-- Package/release validation installs the three npm tarballs into isolated consumers so undeclared workspace dependencies cannot be hidden by a parent `node_modules` tree.
+- H3 provider facts and acceptance evidence remain separate from the playout's local annotations and playback/renewal policy. Acknowledgement alone cannot invent a model state transition.
+- Package/release validation installs the npm tarballs into isolated consumers so undeclared workspace dependencies cannot be hidden by a parent `node_modules` tree.
 
 ## Supply chain
 

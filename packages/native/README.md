@@ -49,6 +49,12 @@ The current public native peer accepts at most one incoming video track and one 
 `NativePeer.layerIsolated(options)` supplies the same `PeerFactory` with each connection generation's native peer in a child process of its own, driven over Effect RPC. Use it where a native failure must end one connection rather than the application: a crash inside libwebrtc, or an owner join that never completes, then takes down only that child, and the session fails or closes as it would for a lost transport. The in-process `NativePeer.layer` stays the default.
 
 ```ts
+import { Layer } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { NativePeer } from "reactor-effect-native";
+
 const reactorLayer = Reactor.layer().pipe(
   Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layerIsolated())),
   Layer.provide(FetchHttpClient.layer),
@@ -71,7 +77,7 @@ It has costs the in-process host does not:
 
 ## Example
 
-[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples) is a command line that generates one H3 clip and writes its decoded frames and audio to an MP4, filling what the host dropped from `recorder`'s gaps; `--isolated` runs it on `NativePeer.layerIsolated()`. The repository's [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream) broadcasts an orchestration's decoded media to many browsers.
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples) is a command line that generates one H3 clip and writes its decoded frames and audio to an MP4, filling what the host dropped from `recorder`'s gaps; `--isolated` runs it on `NativePeer.layerIsolated()`. The repository's [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream) broadcasts a playout's decoded media to many browsers.
 
 ## Package layout
 
@@ -97,7 +103,7 @@ The crate's `src/` follows the peer's threads. `binding.rs` is the whole Node-AP
 
 The addon owns one libwebrtc peer on a Rust owner thread. Every peer in a process shares one libwebrtc factory, created on the first `prepare` and never destroyed, because reactor-webrtc requires one factory per process.
 
-libwebrtc callbacks copy each decoded frame once into a bounded, typed Rust queue and set a readiness bit. They never invoke or wait for JavaScript. The queues hold 8 video frames (333 ms at 24 fps), 256 PCM blocks (2.56 s of 10 ms blocks) and 1,024 transport events. The first bit set since the host last looked queues one non-blocking call of a Node-API threadsafe function; later bits coalesce into it, and the call, on the JavaScript thread, takes the bits and only opens a latch per queue. Each queue is read by one stream that takes items synchronously, each frame in an `ArrayBuffer` of its own at its exact size, and yields between items so observers run at their own pace. No wake is lost: a bit set after the host took the bits wakes it again.
+libwebrtc callbacks copy each decoded frame once into a bounded, typed Rust queue and set a readiness bit. They never invoke or wait for JavaScript. The queues hold 8 video frames (333 ms at 24 fps), 256 PCM blocks (2.56 s of 10 ms blocks) and 1,024 transport events. The first bit set since the host last looked queues one non-blocking call of a Node-API threadsafe function; later bits coalesce into it, and the call, on the JavaScript thread, takes the bits and only opens a latch per queue. Each queue is read by one stream that takes items synchronously, each frame in an `ArrayBuffer` of its own at its exact size, and yields between items so observers run at their own pace. No wake is lost: a bit set after the host took the bits wakes it again. The host fans each received track out to its readers, and each reader holds at most 24 video frames (a second at 24 fps, within 128 MiB) or 128 PCM blocks (within 4 MiB); a reader that falls further behind fails alone with `Overflow`, and `media.pressure` counts it in `readerOverflows`.
 
 Calls that run on the owner thread, such as `prepare`, `answer`, `send` and `stats`, return a promise of a typed reply, resolved when the owner answers. At most 128 are admitted at once; `media.pressure` reports those not yet taken up as `pendingRequests`.
 
