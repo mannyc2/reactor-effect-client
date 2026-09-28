@@ -32,6 +32,7 @@ import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
+import { tour } from "./checks/Tour.js";
 import type * as Evidence from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
@@ -2205,19 +2206,26 @@ export const renewal = onAir(
  */
 const pieces = {
   adopting,
+  allocated,
   binder,
   capMs,
   close,
+  closedWith,
   commandsSince,
+  contractTally,
   endHeld,
   factsOf,
   holding,
   judge,
   mint,
   readFresh,
+  readInto,
+  sampleStats,
   sleepUntil,
   statusOf,
+  until,
   waitFor,
+  window,
   withReferences,
   withSessions,
   withToken,
@@ -2235,6 +2243,7 @@ const all = {
   edits,
   cut,
   tokens,
+  tour: tour(pieces),
   adoption: adoption(pieces),
 };
 /** What a check can fail with, and what it needs. */

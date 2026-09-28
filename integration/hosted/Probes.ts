@@ -16,7 +16,7 @@ import * as H3 from "reactor-effect-client/H3";
 import type { Probe } from "./Evidence.js";
 
 /** A session id no account holds. */
-const unknownSession = "00000000-0000-4000-8000-000000000000";
+export const unknownSession = "00000000-0000-4000-8000-000000000000";
 /** Every probe token expires this soon; none is ever used. */
 const probeSeconds = 15;
 

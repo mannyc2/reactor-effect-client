@@ -265,6 +265,11 @@ export const rehearsal = (input: {
   readonly candidate: "host" | "relay";
   readonly adoptAfterMs?: number | undefined;
   readonly moderationPrompt?: Redacted.Redacted<string> | undefined;
+  /**
+   * Whether the simulated deployment records, so a clip request gets a
+   * playlist; by default it answers as a disabled recorder does.
+   */
+  readonly recorder?: boolean | undefined;
 }) =>
   Layer.effect(
     Target,
@@ -349,6 +354,7 @@ export const rehearsal = (input: {
         timing: ReactorTest.Timing.hosted,
         faults: input.faults,
         candidate: input.candidate,
+        recorder: input.recorder === true,
         width: 64,
         height: 36,
       }),

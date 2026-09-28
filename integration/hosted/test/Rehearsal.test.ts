@@ -20,6 +20,7 @@ const rehearse = (
     readonly faults?: ReadonlyArray<ReactorTest.Fault>;
     readonly moderationPrompt?: string;
     readonly adoptAfterMs?: number;
+    readonly recorder?: boolean;
     readonly judge: (evidence: Evidence) => void;
   },
 ) =>
@@ -30,6 +31,7 @@ const rehearse = (
       moderationPrompt:
         input.moderationPrompt === undefined ? undefined : Redacted.make(input.moderationPrompt),
       adoptAfterMs: input.adoptAfterMs,
+      recorder: input.recorder,
     }).pipe(Layer.provideMerge(NodeServices.layer)),
   )(name, (it) =>
     it.effect(
@@ -138,6 +140,46 @@ rehearse("tokens records the free probes and the documented refusals", {
       [401, 403, true],
     );
     assert.isAtLeast(tokens?.mints.filter((mint) => mint.kind === "bind").length ?? 0, 2);
+  },
+});
+
+// Reactor leaves recording to each deployment, so the paid tour may never download one.
+rehearse("tour downloads the recording clip when the deployment records", {
+  check: "tour",
+  recorder: true,
+  judge: (evidence) => {
+    passes(evidence);
+    const [clip] = evidence.tour?.recordings ?? [];
+    assert.deepStrictEqual(
+      [clip?.request, clip?.outcome, clip?.download?.outcome],
+      ["clip", "ClipReady", "downloaded"],
+    );
+    assert.isAbove(clip?.download?.segments ?? 0, 0);
+  },
+});
+
+// A phase that fails is a failed criterion, and the phases after it still run: the session
+// still refreshes its token, reconnects after the creating token expired, and ends.
+rehearse("tour goes on after clip 1 is refused, and still ends its session", {
+  check: "tour",
+  faults: [{ _tag: "InvalidImage", nth: 1 }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    const passed = (name: string) =>
+      evidence.criteria.find((criterion) => criterion.name === name)?.passed;
+    assert.deepStrictEqual(
+      [
+        passed("clip 1"),
+        passed("the session refreshes to a token bound to itself before its token expires"),
+        passed("a call after the creating token expired succeeds"),
+        passed("the reconnect makes the next generation"),
+        passed("the API key ends the session"),
+        passed("attaching to the ended session is refused"),
+        passed("confirmed termination"),
+      ],
+      [false, true, true, true, true, true, true],
+      evidence.reasons.join("; "),
+    );
   },
 });
 
