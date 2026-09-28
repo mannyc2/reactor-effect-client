@@ -8,10 +8,10 @@ import * as Stream from "effect/Stream";
 import { take } from "../queue.js";
 import type { Mapping } from "../../Coordinator.js";
 import { ReactorError } from "../../ReactorError.js";
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import { trackFeed } from "../../Peer.js";
 import type { Channel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
+import { documented } from "./h3.js";
 import { monotonic, until } from "./playout.js";
 import type { Sessions } from "./sessions.js";
 
@@ -141,7 +141,7 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     video: (frame) =>
       publish({
         _tag: "VideoFrame",
-        track: receiving("video")?.name ?? profile.tracks.video,
+        track: receiving("video")?.name ?? documented.tracks.video,
         width: sessions.options.width,
         height: sessions.options.height,
         frameId: frame.frameId,
@@ -154,9 +154,9 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     audio: (samples) =>
       publish({
         _tag: "AudioFrame",
-        track: receiving("audio")?.name ?? profile.tracks.audio,
-        sampleRate: profile.audio.sampleRate,
-        channels: profile.audio.channels,
+        track: receiving("audio")?.name ?? documented.tracks.audio,
+        sampleRate: documented.soundtrack.sampleRate,
+        channels: documented.soundtrack.channels,
         sequence: delivered.audio,
         samples,
       }),

@@ -12,17 +12,37 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import type { IceServersReply, Registered, SdpAnswer } from "../../Coordinator.js";
-import type { Descriptor } from "../../Coordinator.js";
-import type { SessionAuthorization } from "../../Coordinator.js";
-import { h3ReferenceTurboRealtime as profile } from "../h3/profile.js";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
 import * as Wire from "../wire.js";
 import * as Faults from "./faults.js";
-import { deployment } from "./h3.js";
+import { deployment, documented } from "./h3.js";
 import type { Link } from "./peer.js";
 import * as Playout from "./playout.js";
 import type { Sampler } from "./timing.js";
+
+const Id = Schema.String.check(Schema.isNonEmpty());
+/**
+ * A session-scoped token request, as Reactor's authentication docs state it:
+ * one `session` entry naming at least one model, optionally sessions to bind,
+ * up to 500 sessions and sessions of one second to a day.
+ */
+export const Authorization = Schema.Struct({
+  type: Schema.Literal("session"),
+  resources: Schema.Struct({
+    models: Schema.Struct({ match: Schema.NonEmptyArray(Id) }),
+    sessions: Schema.optionalKey(Schema.Struct({ bind: Schema.NonEmptyArray(Id) })),
+  }),
+  constraints: Schema.optionalKey(
+    Schema.Struct({
+      max_sessions: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 })),
+      ),
+      max_session_duration_seconds: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 86_400 })),
+      ),
+    }),
+  ),
+});
 
 /** A request the simulated coordinator refuses, with the status a client sees. */
 export class Refusal extends Schema.TaggedError<Refusal>(
@@ -87,27 +107,26 @@ interface Session {
   readonly playout: Playout.Playout;
 }
 
-const descriptor = (id: string, phase: Phase) =>
-  ({
-    session_id: id,
-    state: phase,
-    // Whether hosted Reactor still describes an INACTIVE session's capabilities and
-    // transport is unobserved (paid run tokens 83d17eb7 saw only the state), so the
-    // most permissive reading is modelled: they stay, and a reconnect can use them.
-    ...(phase === "ACTIVE" || phase === "INACTIVE"
-      ? {
-          capabilities: {
-            protocol_version: "1.0",
-            tracks: [
-              { name: profile.tracks.video, kind: "video", direction: "recvonly" },
-              { name: profile.tracks.audio, kind: "audio", direction: "recvonly" },
-            ],
-            emission_fps: profile.fps,
-          },
-          selected_transport: { protocol: "webrtc", version: "1.0" },
-        }
-      : {}),
-  }) satisfies (typeof Descriptor)["Encoded"];
+const descriptor = (id: string, phase: Phase) => ({
+  session_id: id,
+  state: phase,
+  // Whether hosted Reactor still describes an INACTIVE session's capabilities and
+  // transport is unobserved (paid run tokens 83d17eb7 saw only the state), so the
+  // most permissive reading is modelled: they stay, and a reconnect can use them.
+  ...(phase === "ACTIVE" || phase === "INACTIVE"
+    ? {
+        capabilities: {
+          protocol_version: "1.0",
+          tracks: [
+            { name: documented.tracks.video, kind: "video", direction: "recvonly" },
+            { name: documented.tracks.audio, kind: "audio", direction: "recvonly" },
+          ],
+          emission_fps: documented.fps,
+        },
+        selected_transport: { protocol: "webrtc", version: "1.0" },
+      }
+    : {}),
+});
 
 export const make = Effect.fnUntraced(function* (options: Options, timing: Sampler) {
   const scope = yield* Effect.scope;
@@ -286,7 +305,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       settings: { currency_code: "USD", credits_per_dollar: options.creditsPerDollar },
       models: [
         {
-          name: profile.modelName.slice(profile.modelName.lastIndexOf("/") + 1),
+          name: documented.modelName.slice(documented.modelName.lastIndexOf("/") + 1),
           rate: {
             amount_per_min: options.creditsPerMinute,
             unit: "credits",
@@ -297,7 +316,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     },
     mint: (
       key: string | undefined,
-      authorization: (typeof SessionAuthorization)["Type"],
+      authorization: (typeof Authorization)["Type"],
       expiresAfter: number | undefined,
     ) =>
       Effect.gen(function* () {
@@ -359,7 +378,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const grant = yield* authorize(jwt);
         if (grant === "key")
           return yield* refuse(403, "forbidden", "sessions are created with a session token");
-        if (model !== profile.modelName)
+        if (model !== documented.modelName)
           return yield* refuse(404, "unknown_model", "ReactorTest serves H3 only");
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
@@ -468,7 +487,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     iceServers: (jwt: string | undefined, id: string) =>
       Effect.as(owned(jwt, id), {
         ice_servers: [{ uris: ["stun:stun.reactor.test:3478"], credentials: null }],
-      } satisfies (typeof IceServersReply)["Encoded"]),
+      }),
     register: (jwt: string | undefined, id: string) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
@@ -479,7 +498,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           ...state,
           connections: new Map(state.connections).set(cid, { at: Infinity, sdp: "" }),
         }));
-        return { connection_id: cid } satisfies (typeof Registered)["Encoded"];
+        return { connection_id: cid };
       }),
     offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
       Effect.gen(function* () {
@@ -509,10 +528,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const negotiation = yield* connection(yield* owned(jwt, id), cid);
         const now = yield* Playout.monotonic;
         return negotiation !== undefined && negotiation.at <= now
-          ? Option.some({
-              sdp_answer: negotiation.sdp,
-              connection_id: cid,
-            } satisfies (typeof SdpAnswer)["Encoded"])
+          ? Option.some({ sdp_answer: negotiation.sdp, connection_id: cid })
           : Option.none();
       }),
     candidates: (jwt: string | undefined, id: string, cid: number) =>

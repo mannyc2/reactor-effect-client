@@ -198,6 +198,64 @@ scenario(
   { referenceAudio: false },
 );
 
+// H3's schema: requests of 5–15.084 s, nine images, twelve references in all, and metadata of 2,000
+// characters. The simulated H3 states them itself, so what the client lets through it must accept,
+// and one step past a limit the client refuses before anything is sent.
+scenario("enqueues at each documented limit, and refuses one step past it before sending", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const provider = yield* H3.make(yield* connect);
+    const refusal = (request: H3.Request) =>
+      Effect.map(Effect.flip(provider.enqueue(request)), (failure) => [
+        failure.reason._tag,
+        failure.context.outcome,
+      ]);
+    const local = ["InvalidInput", "not-submitted"];
+    // The limit counts the envelope that carries the caller's metadata; a probe measures its overhead.
+    const probe = yield* provider.enqueue({ prompt: "probe", metadata: "m" });
+    const room = 2_000 - (Array.from(probe.clip.metadata).length - 1);
+    const full = yield* provider.enqueue({ prompt: "full", metadata: "m".repeat(room) });
+    assert.strictEqual(Array.from(full.clip.metadata).length, 2_000);
+    assert.deepStrictEqual(
+      yield* refusal({ prompt: "over", metadata: "m".repeat(room + 1) }),
+      local,
+      "metadata",
+    );
+    yield* provider.enqueue({ prompt: "longest", seconds: 15.084 });
+    assert.deepStrictEqual(
+      yield* refusal({ prompt: "too long", seconds: 15.085 }),
+      local,
+      "seconds",
+    );
+    yield* provider.setClipSeconds(15.084);
+    const longer = yield* Effect.flip(provider.setClipSeconds(15.085));
+    assert.deepStrictEqual([longer.reason._tag, longer.context.outcome], local, "default length");
+    const image = {
+      _tag: "Bytes",
+      bytes: ReactorTest.pngBytes({ width: 64, height: 64 }),
+    } as const;
+    const voice = { _tag: "Bytes", bytes: ReactorTest.wavBytes({ seconds: 3 }) } as const;
+    const nine = Array.from({ length: 9 }, () => image);
+    yield* provider.enqueue({ prompt: "nine pictures", references: nine });
+    assert.deepStrictEqual(
+      yield* refusal({ prompt: "ten pictures", references: [...nine, image] }),
+      local,
+      "images",
+    );
+    const twelve = yield* provider.enqueue({
+      prompt: "nine pictures and three voices",
+      references: nine,
+      audio: [voice, voice, voice],
+    });
+    assert.deepStrictEqual(
+      [twelve.clip.reference_image_count, twelve.clip.reference_audio_count],
+      [9, 3],
+    );
+    assert.strictEqual((yield* commands("enqueue")).length, 5);
+    assert.strictEqual((yield* commands("set_clip_seconds")).length, 1);
+  }),
+);
+
 /**
  * One flow under timings drawn from wide ranges: builds from a quarter of real
  * time to ten times it, and every request and message delayed up to seconds.
