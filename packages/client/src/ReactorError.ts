@@ -180,12 +180,19 @@ export const CommandContext = Schema.Union([
 ]);
 export type CommandContext = typeof CommandContext.Type;
 
-const redact = <C extends { readonly detail?: unknown }>(
-  context: C,
-): Omit<C, "detail"> & { readonly detail?: Redacted.Redacted<unknown> } => {
-  if (context.detail === undefined || Redacted.isRedacted(context.detail))
-    return context as Omit<C, "detail"> & { readonly detail?: Redacted.Redacted<unknown> };
-  return { ...context, detail: Redacted.make(context.detail) };
+/** `C` with a plain `detail`, member by member, so a union keeps its members. */
+type PlainDetail<C> = C extends unknown ? Omit<C, "detail"> & { readonly detail?: unknown } : never;
+
+const redactErrorContext = (context: PlainDetail<ErrorContext>): ErrorContext => {
+  const { detail, ...rest } = context;
+  if (detail === undefined) return rest;
+  return { ...rest, detail: Redacted.isRedacted(detail) ? detail : Redacted.make(detail) };
+};
+
+const redactCommandContext = (context: PlainDetail<CommandContext>): CommandContext => {
+  const { detail, ...rest } = context;
+  if (detail === undefined) return rest;
+  return { ...rest, detail: Redacted.isRedacted(detail) ? detail : Redacted.make(detail) };
 };
 
 const reasonFor = (code: MessageCode, message: string): ReactorErrorReason => {
@@ -263,7 +270,10 @@ export class ReactorError extends Schema.TaggedError<ReactorError>(
 
   /** A failure whose reason is `code` with a library-written `message`. */
   static fromCode(code: MessageCode, message: string, context: ContextInput = {}): ReactorError {
-    return ReactorError.make({ reason: reasonFor(code, message), context: redact(context) });
+    return ReactorError.make({
+      reason: reasonFor(code, message),
+      context: redactErrorContext(context),
+    });
   }
 }
 
@@ -296,11 +306,11 @@ export class CommandFailure extends Schema.TaggedError<CommandFailure>(
   /** `error`'s reason with the dispatch evidence its command established. */
   static from(
     error: ReactorError | CommandFailure | AcquisitionFailure,
-    context: Omit<CommandContext, "detail"> & { readonly detail?: unknown },
+    context: PlainDetail<CommandContext>,
   ): CommandFailure {
     return CommandFailure.make({
       reason: error.reason,
-      context: redact(context) as CommandContext,
+      context: redactCommandContext(context),
     });
   }
 }

@@ -3,6 +3,7 @@
  * and the signaling a session runs. Built over the application's
  * `HttpClient`; constructing it makes no request.
  */
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -1126,7 +1127,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             type: "session",
             resources: {
               models: { match: [input.modelName] },
-              ...(bind.length === 0 ? {} : { sessions: { bind: [bind[0]!, ...bind.slice(1)] } }),
+              ...(Arr.isReadonlyArrayNonEmpty(bind) ? { sessions: { bind } } : {}),
             },
             ...(maxSessions === undefined && seconds === undefined
               ? {}
