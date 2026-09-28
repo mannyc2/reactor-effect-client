@@ -84,7 +84,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
           made.fail();
           yield* eventually({ condition: () => events.length > 0, message: "no event" });
           assert.deepStrictEqual(events, [{ type: "state", state: "failed" }]);
-          assert.deepStrictEqual(yield* addon.calls, ["prepare"]);
+          assert.notInclude(yield* addon.calls, "stats");
           assert.deepStrictEqual(yield* peer.stats, []);
         }),
     );

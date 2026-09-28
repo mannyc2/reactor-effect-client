@@ -4,8 +4,9 @@
  * wakes the host on a later turn of the event loop and never waits for it.
  *
  * Files in its directory steer it from any process: while `hold-stats` or
- * `hold-shutdown` exists, that call does not answer, and every call it
- * receives is appended to `calls.log`, so a test sees what reached a child.
+ * `hold-shutdown` exists, that call does not answer. Every call it receives,
+ * each call's answer and each item taken from a queue is appended to
+ * `calls.log`, so a test sees what reached a child and what it sent back.
  */
 // A stand-in for a Node-API module has no Effect services: it reads and appends the files
 // another process steers it with synchronously, as the addon's own calls return.
@@ -59,7 +60,7 @@ export const make = (directory: string) => {
     ): Promise<Binding.Reply> {
       log(name);
       if (this.closed) return Promise.resolve({ failure: { class: "Closed", message: "closed" } });
-      const call = Promise.resolve(answer());
+      const call = Promise.resolve(answer()).finally(() => log(`${name} answered`));
       this.calls.add(call);
       return call.finally(() => this.calls.delete(call));
     }
@@ -105,16 +106,23 @@ export const make = (directory: string) => {
       this.wake(1);
     }
 
+    take<A>(queue: string, items: Array<A>): A | null {
+      const item = this.closed ? undefined : items.shift();
+      if (item === undefined) return null;
+      log(`take ${queue}`);
+      return item;
+    }
+
     takeEvent(): Binding.PeerEvent | null {
-      return this.closed ? null : (this.events.shift() ?? null);
+      return this.take("event", this.events);
     }
 
     takeVideo(): Binding.Video | null {
-      return this.closed ? null : (this.video.shift() ?? null);
+      return this.take("video", this.video);
     }
 
     takeAudio(): Binding.Audio | null {
-      return this.closed ? null : (this.audio.shift() ?? null);
+      return this.take("audio", this.audio);
     }
 
     /**
