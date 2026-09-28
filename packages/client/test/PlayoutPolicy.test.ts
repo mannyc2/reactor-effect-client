@@ -951,3 +951,57 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
   });
 });
+describe("PlayoutPolicy, time", () => {
+  // The critique's 60 s cap: n10 was cut mid-clip at the cap and later items aired out of order.
+  it("builds on a capped session only what can air before its cap, and replaces it early", () => {
+    const policy = drive({ config: { ...config, leadMs: 5_000 } });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    const foreign = clip("x", undefined, 50);
+    policy.event({ _tag: "Started", clip: foreign }, "s1", 1_000);
+    policy.observe({ playing: foreign }, "s1", 1_000);
+    policy.submit(spec("a"), 1_010);
+    assert.deepStrictEqual(enqueued(policy.actions), ["a"]);
+    policy.reply({ _tag: "Done", clipId: "c-a" }, 1_020);
+    policy.observe({ playing: foreign, ready: [clip("c-a", item("a"))] }, "s1", 1_030);
+    const next = policy.submit(spec("b"), 1_040);
+    assert.deepStrictEqual(enqueued(policy.actions), ["a"]);
+    assert.isTrue(next.actions.some((action) => action._tag === "Open"));
+  });
+
+  it("times an end cue from the provider's length, not the requested one", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit({ ...spec("a"), cues: [{ name: "out", from: "end", offsetMs: 0 }] });
+    policy.reply({ _tag: "Done", clipId: "c-a" });
+    const aired = clip("c-a", item("a"), 5.167);
+    policy.event({ _tag: "Started", clip: aired }, "s1", 1_000);
+    const cues = (actions: ReadonlyArray<Policy.Action>) =>
+      actions.flatMap((action) =>
+        action._tag === "Emit" && action.event._tag === "Cue" ? [action.event.event.at] : [],
+      );
+    assert.deepStrictEqual(cues(policy.tick(6_000).actions), []);
+    assert.deepStrictEqual(cues(policy.tick(6_167).actions), [6_167]);
+  });
+
+  it("does not report starvation while a replacement waits to take the air", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1");
+    // Owed air: an item that may not start for a long while.
+    policy.submit({ ...spec("later"), window: { notBeforeMs: 3_600_000, firm: false } }, 5);
+    const x = clip("x", undefined, 5);
+    policy.observe({ ready: [x] }, "s1", 9);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10);
+    policy.observe({ playing: x }, "s1", 10);
+    policy.open("s2", 600_000, 20);
+    policy.observe({ ready: [clip("y", undefined, 5)] }, "s2", 30);
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" }, "s1", 5_010);
+    policy.observe({}, "s1", 5_011);
+    policy.tick(5_300);
+    assert.isFalse(
+      policy.actions.some((action) => action._tag === "Emit" && action.event._tag === "Starved"),
+    );
+  });
+});
