@@ -211,11 +211,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
         expect(result.report.localClosed).toBe(true);
         expect(result.report.localErrors).toEqual([]);
         // One child per generation, each ended by its own shutdown.
-        expect(peers.map((peer) => peer.link.exit)).toEqual([
+        expect(yield* Effect.forEach(peers, (peer) => Deferred.await(peer.child.exited))).toEqual([
           { code: 0, signal: null },
           { code: 0, signal: null },
         ]);
-        expect(new Set(peers.map((peer) => peer.link.child?.pid)).size).toBe(2);
+        expect(new Set(peers.map((peer) => peer.child.process.pid)).size).toBe(2);
       }),
     30_000,
   );
@@ -230,8 +230,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
             const peers = yield* isolatedPeers({ addon: addon.path });
             const peer = yield* peers.make;
             // Making the peer forks its child at once, while a session allocates.
-            const spawnedAtMake = peer.link.child?.pid !== undefined;
-            const pid = peer.link.child?.pid;
+            const spawnedAtMake = peer.child.process.pid !== undefined;
+            const pid = peer.child.process.pid;
             yield* peer.opened;
             const { events, emit } = recorded();
             yield* peer.prepare([], tracks, emit);
@@ -241,9 +241,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
               { startImmediately: true },
             );
             yield* addon.reached("send");
-            peer.link.child?.kill("SIGKILL");
+            peer.child.process.kill("SIGKILL");
             const pending = yield* Fiber.join(sending);
-            yield* Deferred.await(peer.link.exited);
+            yield* Deferred.await(peer.child.exited);
             yield* eventually({
               condition: () => events.some((event) => event.type === "error"),
               message: "no failure event",
@@ -256,8 +256,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
             // before dispatch, rather than buffered for a worker that is gone.
             const solo = yield* peers.make;
             yield* solo.opened;
-            solo.link.child?.kill("SIGKILL");
-            yield* Deferred.await(solo.link.exited);
+            solo.child.process.kill("SIGKILL");
+            yield* Deferred.await(solo.child.exited);
             const fenced = yield* Effect.result(solo.stats).pipe(Effect.timeoutOption("2 seconds"));
             yield* solo.shutdown;
             return {
@@ -269,7 +269,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
               events,
               shutdown,
               fenced,
-              link: peer.link,
+              child: peer.child,
             };
           }),
         );
@@ -289,7 +289,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
           failure: { context: { outcome: "not-submitted" } },
         });
         expect(result.laterMs).toBeLessThan(500);
-        expect(result.link.child?.pid).toBe(result.pid);
+        expect(result.child.process.pid).toBe(result.pid);
         expect((yield* addon.calls).filter((call) => call === "prepare")).toHaveLength(1);
         // The session hears of the death once, as a connection failure.
         expect(result.events.filter((event) => event.type === "error")).toHaveLength(1);
@@ -297,7 +297,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("isolated native host",
           type: "error",
           error: { reason: { _tag: "Native" }, message: "native WebRTC child process exited" },
         });
-        expect(result.link.exit).toEqual({ code: null, signal: "SIGKILL" });
+        expect(yield* Deferred.await(result.child.exited)).toEqual({
+          code: null,
+          signal: "SIGKILL",
+        });
         // Nothing of the child is left to join.
         expect(Exit.isSuccess(result.shutdown)).toBe(true);
         expect(result.fenced).toMatchObject({
@@ -337,7 +340,7 @@ Effect.runFork(
       const peer = yield* host.make(environment);
       yield* peer.opened;
       yield* Effect.forkChild(peer.stats, { startImmediately: true });
-      process.stdout.write(JSON.stringify({ child: peer.link.child.pid }) + "\\n");
+      process.stdout.write(JSON.stringify({ child: peer.child.process.pid }) + "\\n");
       yield* Effect.never;
     }),
   ),
@@ -420,8 +423,10 @@ Effect.runFork(
           evidence: "absent",
         });
         expect((yield* remote.deleted).has(sessionId)).toBe(true);
-        expect(peers.map((peer) => peer.link.exit)).toEqual([{ code: null, signal: "SIGKILL" }]);
-        const pid = peers[0]?.link.child?.pid;
+        expect(yield* Effect.forEach(peers, (peer) => Deferred.await(peer.child.exited))).toEqual([
+          { code: null, signal: "SIGKILL" },
+        ]);
+        const pid = peers[0]?.child.process.pid;
         assert(pid !== undefined, "the child was spawned");
         expect(yield* alive(pid)).toBe(false);
       }),
@@ -479,8 +484,8 @@ Effect.runFork(
               condition: () => bEvents.events.length === 3,
               message: "b never connected",
             });
-            b.link.child?.kill("SIGKILL");
-            yield* Deferred.await(b.link.exited);
+            b.child.process.kill("SIGKILL");
+            yield* Deferred.await(b.child.exited);
             yield* eventually({
               condition: () => bEvents.events.length === 4,
               message: "b's failure never came",
@@ -564,7 +569,7 @@ Effect.runFork(
             yield* addon.reached("stats");
             const shutdown = yield* Effect.exit(peer.shutdown);
             const stats = yield* Fiber.join(reading);
-            return { interrupted, snapshot, direction, stats, shutdown, link: peer.link };
+            return { interrupted, snapshot, direction, stats, shutdown, child: peer.child };
           }),
         );
         expect(Exit.hasInterrupts(result.interrupted)).toBe(true);
@@ -581,7 +586,10 @@ Effect.runFork(
             reason: { _tag: "Shutdown" },
             message: "native child shutdown exceeded its deadline; child process killed",
           });
-        expect(result.link.exit).toEqual({ code: null, signal: "SIGKILL" });
+        expect(yield* Deferred.await(result.child.exited)).toEqual({
+          code: null,
+          signal: "SIGKILL",
+        });
       }),
     20_000,
   );
@@ -644,7 +652,7 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
               yield* peer.close;
               yield* Fiber.interrupt(reader);
               yield* peer.shutdown;
-              return { stalledExit, pressure, failures, link: peer.link };
+              return { stalledExit, pressure, failures, child: peer.child };
             }),
           );
           expect(result.failures).toEqual([]);
@@ -654,7 +662,7 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
               reason: { _tag: "Overflow" },
             });
           expect(result.pressure.readerOverflows).toBe(1n);
-          expect(result.link.exit).toEqual({ code: 0, signal: null });
+          expect(yield* Deferred.await(result.child.exited)).toEqual({ code: 0, signal: null });
         }),
       60_000,
     );
@@ -732,7 +740,9 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
           expect(result.report.localErrors).toEqual([]);
           expect(result.report.remote).toMatchObject({ attempted: true, confirmed: true });
           expect(result.closeMs).toBeLessThan(closeBound);
-          expect(peers.map((peer) => peer.link.exit)).toEqual([{ code: 0, signal: null }]);
+          expect(yield* Effect.forEach(peers, (peer) => Deferred.await(peer.child.exited))).toEqual(
+            [{ code: 0, signal: null }],
+          );
         }),
       60_000,
     );
