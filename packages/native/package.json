@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect-native",
   "version": "0.7.0",
-  "description": "Native WebRTC host for reactor-effect-client over the reactor-effect-native Rust bridge: decoded media generations and explicit file upload",
+  "description": "Native WebRTC host for reactor-effect-client: the Peer port on the reactor-effect-native Rust bridge, in process or isolated per connection",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -36,9 +36,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./isolated-host": {
-      "types": "./dist/_internal/isolated/host.d.ts",
-      "import": "./dist/_internal/isolated/host.js"
+    "./NativePeer": {
+      "types": "./dist/NativePeer.d.ts",
+      "import": "./dist/NativePeer.js"
     }
   },
   "engines": {
@@ -57,7 +57,6 @@
     "@types/node": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*",
-    "reactor-effect-test-kit": "workspace:*",
     "vitest": "catalog:"
   },
   "scripts": {

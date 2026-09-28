@@ -51,9 +51,9 @@
       "name": "reactor-effect-browser",
       "version": "0.7.0",
       "devDependencies": {
+        "@effect/vitest": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
-        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
       "peerDependencies": {
@@ -112,7 +112,6 @@
         "@types/node": "catalog:",
         "effect": "catalog:",
         "reactor-effect-client": "workspace:*",
-        "reactor-effect-test-kit": "workspace:*",
         "vitest": "catalog:",
       },
       "optionalDependencies": {

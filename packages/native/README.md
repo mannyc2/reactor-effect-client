@@ -10,24 +10,26 @@ This is not an official Reactor SDK. Native WebRTC dependencies are attributed i
 npm install reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
 ```
 
-`reactor-effect-client`, Effect `4.0.0-rc.117` and `@effect/platform-node` `4.0.0-rc.117` are peer dependencies; caret ranges (`^4.0.0-rc.117`) allow later rc releases without a forced SDK bump. Koffi is an optional dependency; it and the shared library are loaded only when `Native.layer()` is built, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `Native.Isolated.layer()` is built. A consumer using the rc prerelease should retain the root override `"@effect/platform-node-shared": "^4.0.0-rc.117"` (matching their installed `@effect/platform-node`), because the platform's own caret range on its internal shared package can otherwise resolve to a different prerelease with a different Effect peer.
+`reactor-effect-client`, Effect `4.0.0-rc.117` and `@effect/platform-node` `4.0.0-rc.117` are peer dependencies; caret ranges (`^4.0.0-rc.117`) allow later rc releases without a forced SDK bump. Koffi is an optional dependency; it and the shared library are loaded only when `NativePeer.layer()` is built, so merely importing this module remains safe when the optional dependency is absent. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `NativePeer.layerIsolated()` is built. A consumer using the rc prerelease should retain the root override `"@effect/platform-node-shared": "^4.0.0-rc.117"` (matching their installed `@effect/platform-node`), because the platform's own caret range on its internal shared package can otherwise resolve to a different prerelease with a different Effect peer.
 
 ## Usage
 
 ```ts
-import { Effect, Layer } from "effect";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Reactor from "reactor-effect-client";
-import * as Native from "reactor-effect-native";
+import { Layer } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { NativePeer } from "reactor-effect-native";
 
-const clientLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, Native.layer())),
+const reactorLayer = Reactor.layer().pipe(
+  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(FetchHttpClient.layer),
 );
 ```
 
-`Native.layer(nativeOptions)` supplies the `PeerFactory` for `Reactor.layer()`. Building it loads Koffi and the library and verifies the staged artifact once, so a missing or invalid library fails the layer with a `Native` error, and an invalid option with `InvalidInput`, before any `Client` exists to allocate a remote session. Constructing a factory makes no allocation. `nativeOptions.libraryPath` can select a staged native artifact; its caller owns artifact provenance. `nativeOptions.shutdownTimeout`, a `Duration.Input` of 10 seconds by default, bounds how long closing a connection waits for the native owner join (see [Media path](#media-path-abi-3)). The separate `Native.uploadFile` helper requires the host file services when used.
+`NativePeer.layer(options)` supplies the `PeerFactory` for `Reactor.layer()`. Building it loads Koffi and the library and verifies the staged artifact once per library path, so a missing or invalid library fails the layer with a `Native` error, and an invalid option with `InvalidInput`, before any session is allocated. Constructing a factory makes no allocation. `options.libraryPath` can select a staged native artifact; its caller owns artifact provenance. `options.shutdownTimeout`, a `Duration.Input` of 10 seconds by default, bounds how long closing a connection waits for the native owner join (see [Media path](#media-path-abi-4)).
 
-`Native.media(session)` obtains a decoded-media generation after the session connects. `media.video(name)` emits owned BGRA frames and `media.audio(name)` emits owned interleaved signed 16-bit PCM. Frame IDs and microsecond timestamps use `bigint`. Retaining a frame retains JavaScript-owned bytes, and native media has no browser track handles. Media values stay bound to their negotiated generation: a reconnect creates a new generation and existing readers end or fail with their source.
+`session.decoded` returns the connected session's decoded media. `media.video(name)` emits owned BGRA frames and `media.audio(name)` emits owned interleaved signed 16-bit PCM. Frame IDs and microsecond timestamps use `bigint`. Retaining a frame retains JavaScript-owned bytes, and native media has no browser track handles. Media values stay bound to their negotiated generation: a reconnect creates a new generation and existing readers end or fail with their source.
 
 Native transport provides:
 
@@ -40,23 +42,22 @@ Native transport provides:
 - typed failure classes;
 - immediate close fencing plus joined callback quiescence during shutdown.
 
-The current public native peer accepts at most one incoming video track and one incoming audio track. Pinned `reactor-webrtc` delivers `RemoteTrack` callbacks without the transceiver MID/native identity needed to join multiple same-kind callbacks to SDP mappings without relying on arrival order. `NativePeer.prepare` therefore rejects an ambiguous declaration with `UnsupportedCapability` before native negotiation. Multiple outgoing tracks remain distinct by their declared transceivers.
+The current public native peer accepts at most one incoming video track and one incoming audio track. Pinned `reactor-webrtc` delivers `RemoteTrack` callbacks without the transceiver MID/native identity needed to join multiple same-kind callbacks to SDP mappings without relying on arrival order. `prepare` therefore rejects an ambiguous declaration with `UnsupportedCapability` before native negotiation. Multiple outgoing tracks remain distinct by their declared transceivers.
 
 ## Isolated host
 
-`Native.Isolated.layer(options)` supplies the same `PeerFactory` with each connection generation's native peer in a child process of its own, driven over Effect RPC. Use it where a native failure must end one connection rather than the application: a crash inside libwebrtc, or an owner join that never completes, then takes down only that child, and the session fails or closes as it would for a lost transport. The in-process `Native.layer` stays the default and is unchanged.
+`NativePeer.layerIsolated(options)` supplies the same `PeerFactory` with each connection generation's native peer in a child process of its own, driven over Effect RPC. Use it where a native failure must end one connection rather than the application: a crash inside libwebrtc, or an owner join that never completes, then takes down only that child, and the session fails or closes as it would for a lost transport. The in-process `NativePeer.layer` stays the default.
 
 ```ts
-const clientLayer = Reactor.layer().pipe(
-  Layer.provide(
-    Layer.mergeAll(Reactor.FetchHttp.layer, NodeServices.layer, Native.Isolated.layer()),
-  ),
+const reactorLayer = Reactor.layer().pipe(
+  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layerIsolated())),
+  Layer.provide(FetchHttpClient.layer),
 );
 ```
 
-It takes the same `libraryPath` and `shutdownTimeout` options, and `Native.media(session)` reads its media as it does the in-process host's.
+It takes the same `libraryPath` and `shutdownTimeout` options, and `session.decoded` reads its media as it does over the in-process host.
 
-- **Preflight.** Building the layer forks a probe child that loads and verifies the library and opens a native peer, then shuts it down, so a missing or invalid library fails the layer with a `Native` error before any `Client` exists.
+- **Preflight.** Building the layer forks a probe child that loads and verifies the library and opens a native peer, then shuts it down, so a missing or invalid library fails the layer with a `Native` error before any session is allocated.
 - **One child per peer.** `PeerFactory.make()` forks the peer's child at once, so it starts while the session allocates. The child is never respawned and nothing is replayed into it: when it dies, calls already handed to it fail with outcome `unknown`, later calls are refused as `not-submitted`, and the connection fails with `Native` ("native WebRTC child process exited"). A reconnect makes a new peer, and with it a new child. A child whose parent dies exits too.
 - **Credentials stay in the parent.** Allocation, the session token, command correlation and termination never leave the parent process. The child sees ICE configuration, SDP, channel bytes and media, and starts with an empty environment and none of the parent's runtime flags.
 - **Close.** `shutdown` asks the child to close and join its native peer and exit, within `shutdownTimeout` (10 seconds by default). On expiry the child is killed and the close reports `Shutdown` ("native child shutdown exceeded its deadline; child process killed"), which `Session.close` records in `localErrors` before it terminates the remote session. Nothing is retained, so unlike the in-process host a later peer is unaffected. `close()` retires the peer in the parent at once: no later event or frame from its child reaches the session.
@@ -70,7 +71,7 @@ It has costs the in-process host does not:
 
 ## Example
 
-[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples) is a command line that generates one H3 clip and writes its decoded frames and audio to an MP4, filling what the host dropped from `recorder`'s gaps; `--isolated` runs it on `Native.Isolated.layer()`. The repository's [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream) broadcasts an orchestration's decoded media to many browsers.
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples) is a command line that generates one H3 clip and writes its decoded frames and audio to an MP4, filling what the host dropped from `recorder`'s gaps; `--isolated` runs it on `NativePeer.layerIsolated()`. The repository's [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream) broadcasts an orchestration's decoded media to many browsers.
 
 ## Package layout
 
@@ -93,7 +94,7 @@ The bridge owns one libwebrtc peer on a Rust thread. Every peer in a process sha
 
 libwebrtc callbacks copy each decoded frame once into a bounded, typed Rust queue and set a readiness bit. They never invoke or wait for JavaScript. The queues hold 8 video frames (333 ms at 24 fps), 256 PCM blocks (2.56 s of 10 ms blocks) and 1,024 transport events. One notifier thread per peer passes the readiness bits to a Koffi callback; it is the only native thread that ever waits on JavaScript. The callback wakes one pump fiber per queue. Each pump reads with synchronous, nonblocking takes that copy a frame straight into memory its consumer then owns, and yields between items so observers run at their own pace. No media call uses the libuv thread pool, and none is in flight when a reader is interrupted.
 
-Each decoded frame and PCM block is numbered on its track, from 0, as it enters its queue and before the queue can evict anything, and the number reaches JavaScript as the frame's `sequence`. A full media queue evicts its oldest item and counts it, so `media.snapshot` reports what was dropped, delivered and still queued, and each eviction is a gap in the sequences a reader receives, at its position: `recorder(stream)` from `reactor-effect-client` turns a track's frames into the frames plus a `Lost { after, count }` for each gap. The stall load test checks that those counts add up to the bridge's own drop count. A full event queue is not pruned: it retires the connection with an `Overflow` failure.
+Each decoded frame and PCM block is numbered on its track, from 0, as it enters its queue and before the queue can evict anything, and the number reaches JavaScript as the frame's `sequence`. A full media queue evicts its oldest item and counts it, so `media.pressure` reports what was dropped, delivered and still queued, and each eviction is a gap in the sequences a reader receives, at its position: `recorder(stream)` from `reactor-effect-client` turns a track's frames into the frames plus a `Lost { after, count }` for each gap. The stall load test checks that those counts add up to the bridge's own drop count. A full event queue is not pruned: it retires the connection with an `Overflow` failure.
 
 The C header, `rust/include/reactor_effect_native.h`, is the ABI contract. Readiness is a callback passed to `reactor_effect_peer_create`; `reactor_effect_peer_take_event`, `_take_video` and `_take_audio` report `BUFFER_TOO_SMALL` with the required size and keep the item queued until a take succeeds.
 
@@ -165,7 +166,7 @@ The tests assert what the bridge owns: how many frames reach it, how many it dro
 
 The C fixture in `test/session-fixture.c` implements the same header without libwebrtc, including a notifier thread. It drives the canonical session, blocks foreign calls while interrupting their Effect waiters, and checks that the Koffi callback is unregistered only after shutdown joined the notifier. Holding a shutdown join open, it checks that `Session.close` returns at the deadline with `Shutdown` in `localErrors` and the remote session terminated, that the bridge is neither destroyed nor unregistered until the join completes, and that the process admits no new peer until then. Holding a statistics call open, it checks that a failed connection's classification ends on a `TestClock` with `Disconnected`. The lifetime fixture drains queued calls while one active call remains held, verifies that shutdown/destruction have not run, then releases the final call and verifies one destruction. Its tombstone reports unsafe ordering without intentionally dereferencing freed memory. These checks establish ownership and ordering; they do not claim an observed heap-corruption incident.
 
-`test/frame-allocation.test.ts` scripts the video queue of a minimal ABI library. Each take must hand over the one exact-size buffer native code copied the frame into, with no JavaScript copy of its pixels except the trim of a frame smaller than its predecessor, and a public media generation's Stream consumer must receive that same buffer. The frame-ownership check it shares with the client and browser suites, `reactor-effect-test-kit/frames`, also runs on the frames of the canonical far-peer session.
+`test/frame-allocation.test.ts` scripts the video queue of a minimal ABI library. Each take must hand over the one exact-size buffer native code copied the frame into, with no JavaScript copy of its pixels except the trim of a frame smaller than its predecessor, and a public media generation's Stream consumer must receive that same buffer. The same exact-allocation check runs on the frames of the canonical far-peer session.
 
 `test/isolated.test.ts` runs the isolated host with real child processes, on Node; on Bun it checks only that the layer refuses to build. Over the C fixture it checks that successive generations each reach their own child through one parent, that a child killed mid-call fails that call as `unknown`, refuses later calls before dispatch and is never respawned, that a child exits when its parent dies with a native call in flight, that a shutdown held past its deadline kills the child and still terminates the remote session, that events and frames a retired, shut down or killed child sends late never reach it or a later peer, and that a cancelled wait never takes a later call's reply. Over the far peer it checks that a reader that stops reading fails alone with `Overflow` while each stream holds one unacknowledged one-frame chunk, and that a canonical session's frames arrive as exact allocations after the IPC hop and the session closes cleanly. The child entry is the built one, so the suite needs `bun run build` first.
 

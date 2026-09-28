@@ -16,7 +16,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
-import type { AudioFrame, VideoFrame } from "reactor-effect-native";
+import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import * as Fmp4 from "./Fmp4.ts";
 
 /** The H3 profile's rate: 24 frames per second, and 48 kHz audio. */

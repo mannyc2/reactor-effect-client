@@ -304,7 +304,10 @@
               "**/packages/client/test/H3.test.ts",
               "**/packages/client/test/fixtures/*.ts",
               "**/packages/client/test/Recorder.test.ts",
-              "**/packages/client/test/stats.test.ts"
+              "**/packages/client/test/stats.test.ts",
+              "**/packages/browser/src/**/*.ts",
+              "**/packages/browser/test/**/*.ts",
+              "**/packages/native/src/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

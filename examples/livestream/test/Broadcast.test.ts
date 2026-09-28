@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Result, Stream } from "effect";
-import type { VideoFrame } from "reactor-effect-native";
+import type { VideoFrame } from "reactor-effect-client/Media";
 import { Broadcast, ChannelMedia } from "../src/Broadcast.ts";
 
 /** Two seconds of 64x36 frames, then 48x48 frames: a canvas change. */

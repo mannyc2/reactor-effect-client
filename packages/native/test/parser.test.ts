@@ -1,11 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { revealed } from "./support.js";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { Track } from "reactor-effect-client/Coordinator";
-import { failureCode, type NativeAudio, type NativeVideo } from "../src/_internal/bridge.js";
-import { nativePeerTesting } from "../src/_internal/peer.js";
+import { failureCode, type NativeAudio, type NativeVideo } from "../src/internal/bridge.js";
+import * as Events from "../src/internal/events.js";
 
 const tracks: readonly Track[] = [
   { name: "main_video", kind: "video", direction: "recvonly" },
@@ -34,15 +35,21 @@ const audio = (fields: Partial<NativeAudio> = {}): NativeAudio => ({
   ...fields,
 });
 
-const protocol = (body: () => unknown): void => {
-  try {
-    body();
-  } catch (error) {
-    expect(error).toBeInstanceOf(ReactorError);
-    expect((error as ReactorError).reason._tag).toBe("Protocol");
-    return;
-  }
-  throw new Error("expected Protocol failure");
+/** A decoder's value. */
+const ok = <A>(effect: Effect.Effect<A, ReactorError>): A => Effect.runSync(effect);
+const decodeEvent = (packet: {
+  readonly header: unknown;
+  readonly payload: Uint8Array<ArrayBuffer>;
+}) => Events.decodeEvent({ header: JSON.stringify(packet.header), payload: packet.payload });
+const event = (packet: Parameters<typeof decodeEvent>[0]) => {
+  const decoded = ok(decodeEvent(packet));
+  if (decoded === "Failed") throw new Error("unexpected failed state");
+  return decoded;
+};
+
+/** The decoder refuses its input with a Protocol failure. */
+const protocol = (effect: Effect.Effect<unknown, ReactorError>): void => {
+  expect(Effect.runSync(Effect.flip(effect)).reason._tag).toBe("Protocol");
 };
 
 const packet = (header: Record<string, unknown>) => ({ header, payload: new Uint8Array() });
@@ -50,7 +57,7 @@ const packet = (header: Record<string, unknown>) => ({ header, payload: new Uint
 describe("native media and event decoding", () => {
   test("names frames by their prepare index and hands over the taken bytes without copying", () => {
     const taken = video();
-    const frame = nativePeerTesting.videoFrame(tracks, taken);
+    const frame = ok(Events.videoFrame(tracks)(taken));
     expect(frame).toMatchObject({
       _tag: "VideoFrame",
       format: "BGRA",
@@ -64,25 +71,19 @@ describe("native media and event decoding", () => {
     expect(frame.metadata).toBe(taken.metadata);
 
     const block = audio();
-    const samples = nativePeerTesting.audioFrame(tracks, block);
+    const samples = ok(Events.audioFrame(tracks)(block));
     expect(samples).toMatchObject({ track: "main_audio", sampleRate: 48_000, channels: 2 });
     expect(samples.samples).toBe(block.samples);
     expect([...samples.samples]).toEqual([1, -2, 300, -400]);
   });
 
   test("rejects frames outside their declared receive track or with inconsistent shapes", () => {
-    for (const track of [1, 2, 3])
-      protocol(() => nativePeerTesting.videoFrame(tracks, video({ track })));
-    protocol(() => nativePeerTesting.videoFrame(tracks, video({ width: 2 })));
-    protocol(() =>
-      nativePeerTesting.videoFrame(tracks, video({ width: 0, data: new Uint8Array() })),
-    );
-    for (const track of [0, 2])
-      protocol(() => nativePeerTesting.audioFrame(tracks, audio({ track })));
-    protocol(() =>
-      nativePeerTesting.audioFrame(tracks, audio({ samples: Int16Array.of(1, 2, 3) })),
-    );
-    protocol(() => nativePeerTesting.audioFrame(tracks, audio({ sampleRate: 0 })));
+    for (const track of [1, 2, 3]) protocol(Events.videoFrame(tracks)(video({ track })));
+    protocol(Events.videoFrame(tracks)(video({ width: 2 })));
+    protocol(Events.videoFrame(tracks)(video({ width: 0, data: new Uint8Array() })));
+    for (const track of [0, 2]) protocol(Events.audioFrame(tracks)(audio({ track })));
+    protocol(Events.audioFrame(tracks)(audio({ samples: Int16Array.of(1, 2, 3) })));
+    protocol(Events.audioFrame(tracks)(audio({ sampleRate: 0 })));
   });
 
   test("maps every native failure class and keeps its diagnostic out of the message", () => {
@@ -97,10 +98,10 @@ describe("native media and event decoding", () => {
       "Native",
       "Native",
     ]);
-    const event = nativePeerTesting.parseEvent(
+    const overflow = event(
       packet({ type: "error", status: -3, message: "native transport event queue overflowed" }),
     );
-    const classified = event.type === "error" ? event.error : undefined;
+    const classified = overflow.type === "error" ? overflow.error : undefined;
     expect(classified === undefined ? undefined : revealed(classified)).toMatchObject({
       reason: { _tag: "Overflow" },
       message: "native peer failed (Overflow)",
@@ -112,18 +113,16 @@ describe("native media and event decoding", () => {
     expect(
       Redacted.isRedacted(detail?.backendMessage) && Redacted.value(detail.backendMessage),
     ).toBe("native transport event queue overflowed");
-    protocol(() => nativePeerTesting.parseEvent(packet({ type: "error", code: "Overflow" })));
-    protocol(() => nativePeerTesting.parseEvent(packet({ type: "channel", channel: "data" })));
+    protocol(decodeEvent(packet({ type: "error", code: "Overflow" })));
+    protocol(decodeEvent(packet({ type: "channel", channel: "data" })));
   });
 
   test("keeps libwebrtc text Redacted, out of the message, diagnostic JSON and the rendered cause", () => {
     const backend = "setRemoteDescription failed: a=ice-pwd:S3CR3TPWD a=fingerprint:sha-256 AB:CD";
     for (const status of [-2, -5]) {
-      const event = nativePeerTesting.parseEvent(
-        packet({ type: "error", status, message: backend }),
-      );
-      if (event.type !== "error") throw new Error("expected an error event");
-      const error = event.error;
+      const failed = event(packet({ type: "error", status, message: backend }));
+      if (failed.type !== "error") throw new Error("expected an error event");
+      const error = failed.error;
       expect(error.reason._tag).toBe(status === -2 ? "Native" : "SdpRejected");
       if (error.reason._tag === "Native") {
         expect(error.reason.status).toBe(-2);
@@ -147,18 +146,16 @@ describe("native media and event decoding", () => {
     const local = { type: "local-candidate", candidateType: "host" };
     const relay = { type: "local-candidate", candidateType: "relay" };
     expect(
-      nativePeerTesting.connectionFailure([
+      Events.connectionFailure([
         local,
         { type: "candidate-pair", state: "succeeded", nominated: false },
       ]),
     ).toMatchObject({ reason: { _tag: "TransportFailed" } });
     expect(
-      nativePeerTesting.connectionFailure([
-        { type: "candidate-pair", state: "failed", nominated: true },
-      ]),
+      Events.connectionFailure([{ type: "candidate-pair", state: "failed", nominated: true }]),
     ).toMatchObject({ reason: { _tag: "TransportFailed" } });
     expect(
-      nativePeerTesting.connectionFailure([
+      Events.connectionFailure([
         local,
         relay,
         local,
@@ -168,33 +165,35 @@ describe("native media and event decoding", () => {
     ).toMatchObject({
       reason: { _tag: "IceFailed", pairs: 2, candidateTypes: ["host", "relay"] },
     });
-    expect(nativePeerTesting.connectionFailure([])).toMatchObject({
+    expect(Events.connectionFailure([])).toMatchObject({
       reason: { _tag: "IceFailed", pairs: 0, candidateTypes: [] },
     });
   });
 
   test("validates snapshot counters and converts 64-bit stat counters without precision loss", () => {
     expect(
-      nativePeerTesting.parseSnapshot({
-        closed: false,
-        queuedControl: 1,
-        queuedVideo: 2,
-        queuedAudio: 3,
-        queuedBytes: 4,
-        droppedVideo: "18446744073709551615",
-        droppedAudio: "0",
-        pendingRequests: 5,
-        deliveredVideo: "6",
-        deliveredAudio: "7",
-      }),
+      ok(
+        Events.decodePressure({
+          closed: false,
+          queuedControl: 1,
+          queuedVideo: 2,
+          queuedAudio: 3,
+          queuedBytes: 4,
+          droppedVideo: "18446744073709551615",
+          droppedAudio: "0",
+          pendingRequests: 5,
+          deliveredVideo: "6",
+          deliveredAudio: "7",
+        }),
+      ),
     ).toEqual(
       expect.objectContaining({
         droppedVideo: 18446744073709551615n,
         deliveredAudio: 7n,
       }),
     );
-    protocol(() =>
-      nativePeerTesting.parseSnapshot({
+    protocol(
+      Events.decodePressure({
         closed: false,
         queuedControl: 0,
         queuedVideo: 0,
@@ -207,7 +206,7 @@ describe("native media and event decoding", () => {
         deliveredAudio: "0",
       }),
     );
-    const converted = nativePeerTesting.statsValue([
+    const converted = Events.statsValue([
       {
         type: "candidate-pair",
         bytesSent: "18446744073709551615",

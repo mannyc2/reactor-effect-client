@@ -4,12 +4,14 @@
  * to the simulated Reactor. A peer carries bytes and media; session
  * allocation, commands and correlation stay in the client.
  */
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import type * as Stream from "effect/Stream";
+import * as Stream from "effect/Stream";
 import { IceCandidate, Mapping } from "./Coordinator.js";
+import * as Hub from "./internal/hub.js";
 import type { IceServer, Track } from "./Coordinator.js";
 import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
 import { ReactorError } from "./ReactorError.js";
@@ -76,6 +78,36 @@ export type PeerMedia =
         track: MediaTrack | null,
       ) => Effect.Effect<void, ReactorError>;
     };
+
+/**
+ * How a decoded host delivers one received track. Every reader gets every
+ * frame; a reader that falls behind its bounds fails with `Overflow`, and is
+ * counted in `overflows`, rather than holding up the host or silently skipping
+ * frames. A reader that starts after the feed ended sees the same end.
+ */
+export interface TrackFeed<A> {
+  readonly publish: (frame: A) => Effect.Effect<void>;
+  /** A new reader each time the stream runs. */
+  readonly stream: Stream.Stream<A, ReactorError>;
+  readonly end: Effect.Effect<void>;
+  readonly fail: (error: ReactorError) => Effect.Effect<void>;
+  /** Readers that fell behind and failed; a host reports it as `readerOverflows`. */
+  readonly overflows: Effect.Effect<bigint>;
+}
+
+/** A track's feed, each reader holding at most `capacity` frames and `maxBytes` of them. */
+export const trackFeed = <A>(bounds: {
+  readonly capacity: number;
+  readonly maxBytes: number;
+  readonly bytes: (frame: A) => number;
+}): Effect.Effect<TrackFeed<A>> =>
+  Effect.map(Hub.make<A>({ weigh: bounds.bytes }), (hub): TrackFeed<A> => ({
+    publish: hub.publish,
+    stream: Stream.unwrap(hub.subscribe(bounds.capacity, bounds.maxBytes)),
+    end: hub.end,
+    fail: (error) => hub.fail(Cause.fail(error)),
+    overflows: hub.overflows,
+  }));
 
 /** One connection generation's transport. */
 export interface Peer {

@@ -1,7 +1,7 @@
 import { Cause, Effect, Option, Queue, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { recorder } from "reactor-effect-client/Media";
-import type { AudioFrame, VideoFrame } from "reactor-effect-native";
+import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 
 export class RecordingError extends Schema.TaggedError<RecordingError>()("RecordingError", {
   message: Schema.String,

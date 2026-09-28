@@ -21,9 +21,11 @@ import {
   ReactorError,
   TransportFailed,
 } from "reactor-effect-client/ReactorError";
-import { Mapping, Track } from "reactor-effect-client/Coordinator";
+import { IceCandidate, Mapping, Track } from "reactor-effect-client/Coordinator";
 import type { ErrorContext } from "reactor-effect-client/ReactorError";
+import { Channel, PeerState } from "reactor-effect-client/Peer";
 import type { PeerEvent } from "reactor-effect-client/Peer";
+import { Pressure } from "../events.js";
 
 /** A value structured clone carries unchanged, checked by its guard on each side. */
 const cloned = <T>(is: (u: unknown) => u is T, expected: string) =>
@@ -46,29 +48,15 @@ export const WireFailure = Schema.Struct({
   backendMessage: Schema.optionalKey(Schema.String),
   channel: Schema.optionalKey(Schema.String),
   pairs: Schema.optionalKey(Schema.Int),
-  candidateTypes: Schema.optionalKey(Schema.Array(Schema.String)),
+  candidateTypes: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 export type WireFailure = typeof WireFailure.Type;
 
-const Channel = Schema.Literals(["control", "data"]);
-
 const WireEvent = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("state"),
-    state: Schema.Literals(["new", "connecting", "connected", "disconnected", "failed", "closed"]),
-  }),
+  Schema.Struct({ type: Schema.Literal("state"), state: PeerState }),
   Schema.Struct({ type: Schema.Literal("channel"), channel: Channel, open: Schema.Boolean }),
   Schema.Struct({ type: Schema.Literal("message"), channel: Channel, bytes: Bytes }),
-  Schema.Struct({
-    type: Schema.Literal("ice"),
-    candidate: Schema.optionalKey(
-      Schema.Struct({
-        candidate: Schema.String,
-        sdp_mid: Schema.optionalKey(Schema.String),
-        sdp_mline_index: Schema.optionalKey(Schema.Int),
-      }),
-    ),
-  }),
+  Schema.Struct({ type: Schema.Literal("ice"), candidate: Schema.optionalKey(IceCandidate) }),
   Schema.Struct({ type: Schema.Literal("track"), name: Schema.String, mid: Schema.String }),
   Schema.Struct({
     type: Schema.Literal("decoded"),
@@ -109,22 +97,10 @@ export const WireAudio = Schema.Struct({
 });
 export type WireAudio = typeof WireAudio.Type;
 
-const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const Total = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
-
 /** The child's transport pressure, with its own readers' overflows. */
 export const WirePressure = Schema.Struct({
-  closed: Schema.Boolean,
-  queuedControl: Count,
-  queuedVideo: Count,
-  queuedAudio: Count,
-  queuedBytes: Count,
-  droppedVideo: Total,
-  droppedAudio: Total,
-  pendingRequests: Count,
-  deliveredVideo: Total,
-  deliveredAudio: Total,
-  readerOverflows: Total,
+  ...Pressure.fields,
+  readerOverflows: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
 });
 
 const IceServer = Schema.Struct({
@@ -241,8 +217,8 @@ export const fromWire = (wire: WireFailure): ReactorError => {
   const channel = wire.channel === undefined ? {} : { channel: wire.channel };
   switch (wire.code) {
     case "Native":
-      return new ReactorError({
-        reason: new Native({
+      return ReactorError.make({
+        reason: Native.make({
           message: wire.message,
           ...(wire.status === undefined ? {} : { status: wire.status }),
           ...(backendMessage === undefined ? {} : { backendMessage }),
@@ -251,8 +227,8 @@ export const fromWire = (wire: WireFailure): ReactorError => {
           wire.channel === undefined ? context : { ...context, detail: Redacted.make(channel) },
       });
     case "IceFailed":
-      return new ReactorError({
-        reason: new IceFailed({
+      return ReactorError.make({
+        reason: IceFailed.make({
           message: wire.message,
           pairs: wire.pairs ?? 0,
           candidateTypes: wire.candidateTypes ?? [],
@@ -260,8 +236,8 @@ export const fromWire = (wire: WireFailure): ReactorError => {
         context,
       });
     case "TransportFailed":
-      return new ReactorError({
-        reason: new TransportFailed({ message: wire.message, pairs: wire.pairs ?? 0 }),
+      return ReactorError.make({
+        reason: TransportFailed.make({ message: wire.message, pairs: wire.pairs ?? 0 }),
         context,
       });
     case "ClipEnded":
