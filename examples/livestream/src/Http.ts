@@ -53,7 +53,7 @@ const ChannelHandlers = HttpApiBuilder.group(
     const status = Effect.gen(function* () {
       const state = yield* playout.state;
       const onAir = state.sessions.find((session) => session.role === "on-air");
-      return new ChannelStatus({
+      return ChannelStatus.make({
         mode,
         session: onAir?.sessionId ?? null,
         media: onAir === undefined ? "Recovering" : "Ready",
@@ -123,7 +123,7 @@ const MediaHandlers = HttpApiBuilder.group(
       live: () =>
         broadcast.onAir.pipe(
           Effect.as(broadcast.viewer),
-          Effect.mapError((error) => new OffAir({ message: error.message })),
+          Effect.mapError((error) => OffAir.make({ message: error.message })),
         ),
     });
   }),

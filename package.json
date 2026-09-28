@@ -18,6 +18,7 @@
       "integration"
     ],
     "catalog": {
+      "@bufbuild/protobuf": "2.15.0",
       "@effect/platform-bun": "^4.0.0-rc.117",
       "@effect/platform-node": "^4.0.0-rc.117",
       "@effect/vitest": "^4.0.0-rc.117",
@@ -29,9 +30,12 @@
     }
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/tsgo": "0.46.1",
+    "@effect/vitest": "catalog:",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
+    "effect": "catalog:",
     "oxfmt": "0.70.0",
     "oxlint": "1.81.0",
     "oxlint-tsgolint": "7.0.2001",
@@ -48,11 +52,11 @@
     "prepare": "effect-tsgo patch --typescript",
     "build": "bun run --filter './packages/*' build",
     "typecheck": "bun run --filter '*' typecheck && tsc -p scripts/tsconfig.json --noEmit",
-    "lint": "oxlint -c .oxlintrc.json --deny-warnings --ignore-pattern 'release-tools/**' --ignore-pattern 'scripts/pack/**' .",
+    "lint": "oxlint -c .oxlintrc.json --deny-warnings --report-unused-disable-directives-severity=error --ignore-pattern 'release-tools/**' .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "generate:wire": "bun run --filter reactor-effect-client generate:wire",
-    "generate:check": "bun run --filter reactor-effect-client generate:check",
+    "generate:wire": "bun --no-env-file scripts/wire.ts",
+    "generate:check": "bun --no-env-file scripts/wire.ts --check",
     "check:examples": "bun --no-env-file scripts/examples.ts",
     "test": "bun --no-env-file scripts/test.ts portable",
     "test:portable": "bun --no-env-file scripts/test.ts portable",
@@ -63,6 +67,6 @@
     "native:build": "bun run --filter reactor-effect-native native:build",
     "native:test": "bun run --filter reactor-effect-native native:test",
     "native:linux-x64": "bun run --filter reactor-effect-native native:linux-x64",
-    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings release-tools && cd release-tools && bun --no-env-file test ./test"
+    "check:release": "tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings --report-unused-disable-directives-severity=error release-tools && cd release-tools && bun --no-env-file test ./test"
   }
 }

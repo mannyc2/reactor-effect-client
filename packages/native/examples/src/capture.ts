@@ -130,12 +130,9 @@ const capture = Command.make(
       Flag.withDefault(false),
     ),
   },
-  Effect.fn(function* ({ prompt, seconds, reference, out, isolated }) {
+  Effect.fn(function* ({ prompt, seconds, reference, out }) {
     const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
-    const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
-      Config.withDefault("https://api.reactor.inc"),
-    );
-    const coordinator = yield* Coordinator.make({ apiUrl });
+    const coordinator = yield* Coordinator.Coordinator;
     const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
     yield* Console.log(
       `at most ${((billedSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
@@ -154,19 +151,28 @@ const capture = Command.make(
       onSome: (path) =>
         fs.readFile(path).pipe(Effect.map((bytes): H3.Reference[] => [{ _tag: "Bytes", bytes }])),
     });
-    yield* record({ grant, prompt, seconds, references, out }).pipe(
-      Effect.provide(
-        Reactor.layer().pipe(
-          Layer.provide(Coordinator.layer({ apiUrl })),
-          Layer.provide(isolated ? NativePeer.layerIsolated() : NativePeer.layer()),
-        ),
-      ),
-    );
+    yield* record({ grant, prompt, seconds, references, out });
   }),
-).pipe(Command.withDescription("Generate one clip with Reactor H3 and save it as an MP4"));
+).pipe(
+  Command.provide(({ isolated }) =>
+    Layer.unwrap(
+      Effect.map(
+        Config.String("REACTOR_API_URL").pipe(Config.withDefault("https://api.reactor.inc")),
+        (apiUrl) =>
+          Reactor.layer().pipe(
+            Layer.provideMerge(Coordinator.layer({ apiUrl })),
+            Layer.provide(isolated ? NativePeer.layerIsolated() : NativePeer.layer()),
+          ),
+      ),
+    ),
+  ),
+  Command.withDescription("Generate one clip with Reactor H3 and save it as an MP4"),
+);
 
 capture.pipe(
   Command.run({ version: "0.7.1" }),
+  // The program's entry point.
+  // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
   NodeRuntime.runMain,
 );

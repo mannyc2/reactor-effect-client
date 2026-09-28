@@ -43,15 +43,13 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "vitest run",
-    "generate:wire": "buf generate --template wire/buf.gen.yaml",
-    "generate:check": "buf generate --template wire/buf.gen.yaml --output node_modules/.wire-check && diff -r node_modules/.wire-check/src/internal/proto src/internal/proto"
+    "test": "vitest run"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0"
+    "@bufbuild/protobuf": "catalog:"
   }
 }

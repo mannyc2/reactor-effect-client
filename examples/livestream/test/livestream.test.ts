@@ -4,11 +4,14 @@
  * through the typed client derived from the same `Api`. Sessions are short,
  * so a renewal happens within the test.
  */
+// Vitest decides which suites to run while it collects them, synchronously,
+// so whether ffmpeg is on PATH is asked with a synchronous child process.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, layer } from "@effect/vitest";
-import { ConfigProvider, Effect, FileSystem, Layer, Option, Stream } from "effect";
+import { ConfigProvider, Effect, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { Api } from "../src/Api.ts";
 import type { ChannelEvent } from "../src/Api.ts";
@@ -70,12 +73,13 @@ describe.skipIf(!hasFfmpeg)("livestream", () => {
       () =>
         Effect.gen(function* () {
           const client = yield* HttpApiClient.make(Api);
+          // The feed carries events from when it is opened, so it is opened first.
+          const events = yield* client.channel.events();
           const submitted = yield* client.channel.submit({
             payload: { prompt: "A red kite over a green hill" },
           });
           assert.strictEqual(submitted._tag, "Accepted");
           if (submitted._tag !== "Accepted") return;
-          const events = yield* client.channel.events();
           const started = yield* events.pipe(
             Stream.filter(
               (event): event is Extract<ChannelEvent, { _tag: "Clip" }> =>
@@ -99,10 +103,18 @@ describe.skipIf(!hasFfmpeg)("livestream", () => {
         Effect.gen(function* () {
           const client = yield* HttpApiClient.make(Api);
           // One viewer joins before the renewal and keeps reading through it.
-          const seen: string[] = [];
+          const seen = yield* SubscriptionRef.make<{
+            readonly first: ReadonlyArray<string>;
+            readonly moofs: number;
+          }>({ first: [], moofs: 0 });
           yield* (yield* client.live()).pipe(
             boxes,
-            Stream.runForEach((type) => Effect.sync(() => seen.push(type))),
+            Stream.runForEach((type) =>
+              SubscriptionRef.update(seen, ({ first, moofs }) => ({
+                first: first.length < 2 ? [...first, type] : first,
+                moofs: type === "moof" ? moofs + 1 : moofs,
+              })),
+            ),
             Effect.forkScoped,
           );
           const renewal = yield* (yield* client.channel.events()).pipe(
@@ -110,12 +122,16 @@ describe.skipIf(!hasFfmpeg)("livestream", () => {
             Stream.runHead,
           );
           assert.isTrue(Option.isSome(renewal));
-          const before = seen.filter((type) => type === "moof").length;
-          yield* Effect.sleep("3 seconds");
-          const after = seen.filter((type) => type === "moof").length;
-          assert.deepStrictEqual(seen.slice(0, 2), ["ftyp", "moov"]);
-          assert.isAbove(before, 0);
-          assert.isAbove(after, before);
+          const before = yield* SubscriptionRef.get(seen);
+          assert.deepStrictEqual(before.first, ["ftyp", "moov"]);
+          assert.isAbove(before.moofs, 0);
+          // The next fragment after the switch reaches the same viewer: no break.
+          const after = yield* SubscriptionRef.changes(seen).pipe(
+            Stream.filter(({ moofs }) => moofs > before.moofs),
+            Stream.runHead,
+            Effect.timeout("10 seconds"),
+          );
+          assert.isTrue(Option.isSome(after));
           const status = yield* client.channel.status();
           assert.isNotNull(status.session);
         }),
