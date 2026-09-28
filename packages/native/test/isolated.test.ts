@@ -460,11 +460,12 @@ Effect.runFork(
             yield* a.close;
             yield* Fiber.join(answering);
             yield* Fiber.join(releasing);
-            yield* addon.reached("answer");
-            // The child queued three events and a frame; none reaches anyone.
-            yield* Effect.sleep("100 millis");
-            const aReaderExit = yield* Fiber.await(aReader);
+            // The child took the three events and the frame they released and
+            // sent them on; once it has joined and exited, nothing more can come.
+            yield* addon.reached("take event", 3);
+            yield* addon.reached("take video");
             yield* a.shutdown;
+            const aReaderExit = yield* Fiber.await(aReader);
             yield* Scope.close(aScope, Exit.void);
 
             // Killed while connected: one failure event, then nothing.
@@ -551,10 +552,9 @@ Effect.runFork(
             yield* Fiber.interrupt(sending);
             const interrupted = yield* Fiber.await(sending);
             const snapshot = yield* decoded(peer).pressure;
-            // The abandoned send's reply arrives while the next call waits.
-            const direction = yield* Effect.exit(
-              Effect.andThen(Effect.sleep("60 millis"), peer.direction("main_video", true)),
-            );
+            // The abandoned send's reply is on its way as the next call is made.
+            yield* addon.reached("send answered");
+            const direction = yield* Effect.exit(peer.direction("main_video", true));
             // A statistics read the child never completes: its join waits for it,
             // and the shutdown deadline kills the child under it.
             yield* addon.hold("stats", true);
