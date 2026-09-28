@@ -40,6 +40,8 @@ export const Streaming = Schema.Struct({
   allocation: H3Source.Allocation,
   playing: Schema.String,
   queued: Schema.String,
+  /** The owner's runtime and native peer, when it reports them. */
+  host: Schema.optionalKey(Schema.String),
 });
 export type Streaming = typeof Streaming.Type;
 
@@ -81,13 +83,32 @@ export class Target extends Context.Service<
      * the creating token expired.
      */
     readonly adoptAfterMs: number | undefined;
-    /** Starts the takeover's owner on the grant; it returns once the owner streams. */
+    /**
+     * Starts the takeover's owner on the grant; it returns once the owner
+     * streams. With `isolated`, a paid owner runs under Node (`node` on the
+     * PATH, 22.18 or newer) with each connection's native peer in a child
+     * process of its own; a rehearsal's owner runs in this process on
+     * ReactorTest's peers either way.
+     */
     readonly owner: (
       grant: Coordinator.TokenGrant,
       marker: string,
+      options?: { readonly isolated?: boolean },
     ) => Effect.Effect<Owner, OwnerFailed, Scope.Scope | Crypto.Crypto>;
   }
 >()("reactor-effect-integration/hosted/Target") {}
+
+/**
+ * The isolated owner's arguments to `node`: `script`, this harness's
+ * `main.ts`, run from its TypeScript sources, with the isolated native peer.
+ */
+export const nodeOwnerArgs = (script: string): ReadonlyArray<string> => [
+  "--import",
+  new URL("./node.ts", import.meta.url).href,
+  script,
+  "owner",
+  "--isolated",
+];
 
 /**
  * The owner's whole life: open an H3 source, play a 15 s clip with a 5 s one
@@ -153,13 +174,13 @@ export const paid = (input: {
         moderationPrompt: input.moderationPrompt,
         // The owner is a child process, so killing it is a real crash. It gets the grant on
         // its stdin and never the API key.
-        owner: (grant, marker) =>
+        owner: (grant, marker, options) =>
           Effect.gen(function* () {
+            const environment = { env: { REACTOR_API_KEY: undefined }, extendEnv: true };
             const handle = yield* spawner.spawn(
-              ChildProcess.make(process.execPath, [input.script, "owner"], {
-                env: { REACTOR_API_KEY: undefined },
-                extendEnv: true,
-              }),
+              options?.isolated === true
+                ? ChildProcess.make("node", nodeOwnerArgs(input.script), environment)
+                : ChildProcess.make(process.execPath, [input.script, "owner"], environment),
             );
             const text = yield* Schema.encodeEffect(Schema.fromJsonString(OwnerGrant))({
               jwt: Redacted.value(grant.jwt),
@@ -202,7 +223,14 @@ export const paid = (input: {
   );
 
 /** The owner process's side of a paid takeover: read its grant, then own the session. */
-export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
+export const ownerProcess = <E>({
+  lines,
+  host,
+}: {
+  readonly lines: Stream.Stream<string, E>;
+  /** Its runtime and native peer, reported with its record when given. */
+  readonly host?: string | undefined;
+}) =>
   Effect.gen(function* () {
     const first = yield* Stream.runHead(lines);
     const input = yield* Schema.decodeEffect(Schema.fromJsonString(OwnerGrant))(
@@ -217,7 +245,9 @@ export const ownerProcess = <E>(lines: Stream.Stream<string, E>) =>
       grant,
       marker: input.marker,
       announce: (streaming) =>
-        Schema.encodeEffect(Schema.fromJsonString(Streaming))(streaming).pipe(
+        Schema.encodeEffect(Schema.fromJsonString(Streaming))(
+          host === undefined ? streaming : { ...streaming, host },
+        ).pipe(
           Effect.flatMap((text) => Console.log(text)),
           Effect.orDie,
         ),
@@ -304,6 +334,8 @@ export const rehearsal = (input: {
             const streaming = yield* Deferred.await(announced);
             return {
               ...streaming,
+              // The isolated native peer needs a real process, which a rehearsal has none of.
+              host: "in the rehearsal's process, on ReactorTest's peers",
               kill: Ref.set(cut, true).pipe(Effect.andThen(Fiber.interrupt(fiber))),
             };
           }),

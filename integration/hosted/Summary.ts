@@ -95,6 +95,42 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       `**Afterwards:** session ${moderation.session.map((entry) => entry.event).join(" > ") || "quiet"}; playout ${moderation.playout.map((entry) => entry.event).join(" > ") || "quiet"}${moderation.read === undefined ? "" : `; read ${moderation.read.status} ${moderation.read.state ?? ""} (keys ${moderation.read.keys.join(", ")})`}`,
     );
   }
+  const adoption = evidence.adoption;
+  if (adoption !== undefined) {
+    const commands = (counts: Readonly<Record<string, number>> | undefined) =>
+      Object.entries(counts ?? {})
+        .map(([name, count]) => `${name} ${count}`)
+        .join(", ") || "none";
+    const which = (clipId: string | null | undefined) => {
+      if (clipId === undefined) return "not read";
+      if (clipId === adoption.ownerClipIds?.playing) return "the owner's playing clip";
+      if (clipId === adoption.ownerClipIds?.queued) return "the owner's queued clip";
+      return clipId === null ? "no clip" : "neither of the owner's clips";
+    };
+    lines.push(
+      `**Owner:** ${adoption.ownerHost ?? "host not reported"}${adoption.ownerStreamingMs === undefined ? "" : `; streaming at ${seconds(adoption.ownerStreamingMs)}`}${adoption.killedMs === undefined ? "" : `, killed at ${seconds(adoption.killedMs)}`}${adoption.createExpiresMs === undefined ? "" : `; its creating token expired at ${seconds(adoption.createExpiresMs)}`}`,
+    );
+    const attach = adoption.attach;
+    if (attach !== undefined)
+      lines.push(
+        `**Raw attach:** ready ${seconds(attach.attachedMs - (adoption.killedMs ?? attach.startedMs))} after the kill; playing ${which(attach.playingClipId)}; the queued clip's metadata ${attach.queuedMetadata === true ? "read" : "not read"}; commands ${commands(attach.commands)}; ${attach.close === undefined ? "never closed" : attach.close.report.remote.attempted ? "its close attempted a termination" : "closed without ending the session"}`,
+      );
+    if (adoption.gap.length > 0)
+      lines.push(
+        `**With nothing connected:** ${adoption.gap.map((read) => `+${seconds(read.sinceConnectionMs)} ${read.status} ${read.state ?? "no state"}`).join("; ")}`,
+      );
+    const resume = adoption.resume;
+    if (resume !== undefined)
+      lines.push(
+        `**Resume:** ${adoption.createExpiresMs === undefined ? "started" : `started ${seconds(resume.startedMs - adoption.createExpiresMs)} after the creating token expired`}, ready ${seconds(resume.attachedMs - resume.startedMs)} later, ${resume.ownership}; playing ${which(resume.playingClipId)}; ${resume.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(resume.refreshedMs)}`}; ${resume.upload === undefined ? "no clip enqueued" : `clip accepted in ${seconds(resume.upload.acceptedMs - resume.upload.startedMs)}, has_reference_audio ${String(resume.upload.hasReferenceAudio)}`}; commands ${commands(resume.commands)}`,
+      );
+    lines.push(
+      `**Tokens:** ${adoption.mints.map((mint) => `${mint.kind} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s`).join("; ")}`,
+    );
+    lines.push(
+      `**Refusals:** expired token ${adoption.expiredTokenStatus ?? "–"}, unbound token ${adoption.unboundTokenStatus ?? "–"}`,
+    );
+  }
   return lines;
 };
 

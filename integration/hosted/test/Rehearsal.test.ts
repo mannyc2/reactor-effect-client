@@ -141,6 +141,29 @@ rehearse("tokens records the free probes and the documented refusals", {
   },
 });
 
+// A phase that fails is a failed criterion, and the phases after it still run: the refusals are
+// still read, and closing the resumed source still ends the session.
+rehearse("adoption records a refused clip and still ends the session it resumed", {
+  check: "adoption",
+  faults: [{ _tag: "InvalidImage" }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    const passed = (name: string) =>
+      evidence.criteria.find((criterion) => criterion.name === name)?.passed;
+    assert.deepStrictEqual(
+      [
+        passed("the refreshed clip"),
+        passed("an expired token is refused"),
+        passed("an unbound token is refused"),
+        passed("closing the resumed source ends the session"),
+        passed("confirmed termination"),
+      ],
+      [false, true, true, true, true],
+      evidence.reasons.join("; "),
+    );
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

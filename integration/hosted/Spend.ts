@@ -23,6 +23,7 @@ export const checks = [
   "edits",
   "cut",
   "tokens",
+  "adoption",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -53,6 +54,7 @@ export const plans: { readonly [C in Check]: Plan } = {
   edits: single,
   cut: single,
   tokens: single,
+  adoption: { sessions: 1, seconds: 75 },
 };
 
 /** A check's tokens outlive its sessions' cap by a minute, so cleanup still holds a valid one. */

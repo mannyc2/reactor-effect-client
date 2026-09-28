@@ -262,18 +262,29 @@ const summarizeRuns = Command.make(
 /** The takeover's owner process: its grant arrives on stdin. Never run by hand. */
 const owner = Command.make(
   "owner",
-  {},
-  Effect.fnUntraced(function* () {
+  {
+    isolated: Flag.Boolean("isolated").pipe(
+      Flag.withDescription("give each connection's native peer a child process; needs Node"),
+      Flag.withDefault(false),
+    ),
+  },
+  Effect.fnUntraced(function* (input) {
     const stdio = yield* Stdio.Stdio;
-    return yield* Target.ownerProcess(stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines));
+    // Bun's types declare its version on every runtime; only Bun's process has one.
+    const runtime =
+      "bun" in process.versions ? `bun ${process.versions.bun}` : `node ${process.version}`;
+    return yield* Target.ownerProcess({
+      lines: stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines),
+      host: input.isolated ? `${runtime}, the isolated native peer` : undefined,
+    });
   }),
 ).pipe(
-  Command.provide(
+  Command.provide((input) =>
     Layer.unwrap(
       Effect.map(apiUrl, (url) =>
         Reactor.layer().pipe(
           Layer.provide(Coordinator.layer({ apiUrl: url })),
-          Layer.provide(NativePeer.layer()),
+          Layer.provide(input.isolated ? NativePeer.layerIsolated() : NativePeer.layer()),
           Layer.provide(FetchHttpClient.layer),
         ),
       ),
