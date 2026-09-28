@@ -285,6 +285,7 @@
               "**/packages/client/src/ReactorTest.ts",
               "**/packages/client/src/Playout.ts",
               "**/packages/client/test/Playout.test.ts",
+              "**/packages/client/test/PlayoutPolicy.test.ts",
               "**/packages/client/examples/src/*.ts",
               "**/packages/client/examples/test/*.ts",
               "**/packages/client/src/H3Source.ts",
