@@ -476,13 +476,14 @@ export const make = Effect.fnUntraced(function* (sessionId: string, environment:
         });
         if (closed !== undefined) yield* Scope.close(closed.scope, Exit.void);
       }),
+    /** A message the client sent. One the simulation cannot decode is the client's bug. */
     receive: (from: number, link: Link, channel: "control" | "data", bytes: Uint8Array) =>
       Effect.gen(function* () {
         if ((yield* Ref.get(connections)).get(from)?.link !== link) return;
         if (channel === "control")
           yield* control(from, yield* Wire.decode(Wire.ControlClientMessageSchema, bytes));
         else yield* command(from, yield* Wire.decode(Wire.DataClientMessageSchema, bytes));
-      }).pipe(Effect.ignore),
+      }).pipe(Effect.orDie),
   };
 });
 
