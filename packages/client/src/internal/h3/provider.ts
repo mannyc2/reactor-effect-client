@@ -25,6 +25,7 @@ import type {
   Reply,
 } from "../../H3.js";
 import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
+import type { MessageCode } from "../../ReactorError.js";
 import type { CommandReply, Session, SessionEvent, UploadReference } from "../../Session.js";
 import * as Submission from "./submission.js";
 import * as Hub from "../hub.js";
@@ -84,6 +85,10 @@ type Transition = readonly [Internal, ReadonlyArray<Effect.Effect<void>>];
 const localFailure = (operation: string, cause: ReactorError | CommandFailure): CommandFailure =>
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
 
+/** `operation` refused before anything was sent. */
+const refused = (operation: string, code: MessageCode, message: string): CommandFailure =>
+  localFailure(operation, ReactorError.fromCode(code, message));
+
 /** A caller's own refusal already proves no dispatch; any other failure becomes one. */
 const preparationFailure = <E>(cause: ReactorError | CommandFailure | E): CommandFailure | E =>
   ReactorError.is(cause) || CommandFailure.is(cause) ? localFailure("enqueue", cause) : cause;
@@ -133,29 +138,22 @@ const covered = (event: ProviderEvent, revision: bigint): boolean => {
   }
 };
 
-const durationOf = (input: Duration.Input | undefined, fallback: Duration.Input) =>
-  Duration.fromInput(input ?? fallback);
-
 const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
-  const invalid = (name: string) =>
-    ReactorError.fromCode("InvalidInput", `H3 ${name} must be a duration`, {
-      outcome: "not-submitted",
-    });
+  const limit = (name: string, input: Duration.Input | undefined, fallback: Duration.Input) =>
+    Effect.fromOption(Duration.fromInput(input ?? fallback)).pipe(
+      Effect.mapError(() =>
+        ReactorError.fromCode("InvalidInput", `H3 ${name} must be a duration`, {
+          outcome: "not-submitted",
+        }),
+      ),
+    );
   const limits = {
-    command: yield* Effect.fromOption(durationOf(options.replyTimeout, "15 seconds")).pipe(
-      Effect.mapError(() => invalid("replyTimeout")),
-    ),
-    upload: yield* Effect.fromOption(durationOf(options.uploadTimeout, "60 seconds")).pipe(
-      Effect.mapError(() => invalid("uploadTimeout")),
-    ),
-    setup: yield* Effect.fromOption(durationOf(options.setupTimeout, "60 seconds")).pipe(
-      Effect.mapError(() => invalid("setupTimeout")),
-    ),
-    reconcile: yield* Effect.fromOption(durationOf(options.reconcileWindow, "5 seconds")).pipe(
-      Effect.mapError(() => invalid("reconcileWindow")),
-    ),
+    command: yield* limit("replyTimeout", options.replyTimeout, "15 seconds"),
+    upload: yield* limit("uploadTimeout", options.uploadTimeout, "60 seconds"),
+    setup: yield* limit("setupTimeout", options.setupTimeout, "60 seconds"),
+    reconcile: yield* limit("reconcileWindow", options.reconcileWindow, "5 seconds"),
   };
   // A provider attaches to an already connected session. It neither allocates
   // nor connects it, and never takes ownership of its remote lifetime.
@@ -198,8 +196,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       Effect.flatMap((effects) => Effect.forEach(effects, (effect) => effect, { discard: true })),
     );
 
-  const publish = (event: ProviderEvent): Effect.Effect<void> => hub.publish(event);
-
   const withPending = (internal: Internal, id: string, pending: Pending | undefined): Internal => {
     const next = new Map(internal.pending);
     if (pending === undefined) next.delete(id);
@@ -223,7 +219,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       [
         Effect.asVoid(Deferred.succeed(entry.deferred, acceptance)),
         ...settled,
-        publish({ _tag: "Acceptance", acceptance }),
+        hub.publish({ _tag: "Acceptance", acceptance }),
       ],
     ];
   };
@@ -273,7 +269,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ...[...decided.pending.values()].map((entry) =>
             Effect.asVoid(Deferred.fail(entry.deferred, error)),
           ),
-          publish({ _tag: "Diagnostic", error }),
+          hub.publish({ _tag: "Diagnostic", error }),
         ],
       ];
     };
@@ -343,9 +339,9 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           }
       }
       if (source._tag !== "Model")
-        return [current, [...effects, publish({ _tag: "Session", source })]];
+        return [current, [...effects, hub.publish({ _tag: "Session", source })]];
       if (source.kind === "ack")
-        return [current, [...effects, publish({ _tag: "Acknowledged", source })]];
+        return [current, [...effects, hub.publish({ _tag: "Acknowledged", source })]];
       const decoded = decodeMessage(source);
       if (Result.isFailure(decoded)) {
         const [failed, failure] = failProvider(decoded.failure)(current);
@@ -379,7 +375,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       }
       return [
         current,
-        [...effects, publish({ _tag: "Message", message, source, disposition: applied })],
+        [...effects, hub.publish({ _tag: "Message", message, source, disposition: applied })],
       ];
     };
 
@@ -486,12 +482,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     needsFacts: boolean,
   ) {
     if (!contract.commands.has(operation))
-      return yield* localFailure(
+      return yield* refused(
         operation,
-        ReactorError.fromCode(
-          "UnsupportedCapability",
-          `The deployment does not offer H3 ${operation}`,
-        ),
+        "UnsupportedCapability",
+        `The deployment does not offer H3 ${operation}`,
       );
     yield* active(operation, needsFacts);
     const source = yield* session.command(operation, args, { replyTimeout: limits.command });
@@ -568,20 +562,12 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   ) {
     const material = materialOf(reference);
     if (material === undefined)
-      return yield* localFailure(
-        "enqueue",
-        ReactorError.fromCode("InvalidInput", "Reference was not validated by H3"),
-      );
+      return yield* refused("enqueue", "InvalidInput", "Reference was not validated by H3");
     if (material._tag === "Uploaded") return material.file;
     const digest = yield* crypto
       .digest("SHA-256", material.bytes)
       .pipe(
-        Effect.mapError(() =>
-          localFailure(
-            "enqueue",
-            ReactorError.fromCode("InvalidState", "Could not hash an H3 reference"),
-          ),
-        ),
+        Effect.mapError(() => refused("enqueue", "InvalidState", "Could not hash an H3 reference")),
       );
     const key = `${generation}:${hex(digest)}`;
     return yield* uploadGate.withPermit(
@@ -597,14 +583,12 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           uploaded.file.size !== BigInt(reference.size) ||
           uploaded.file.mimeType !== reference.mimeType
         )
-          return yield* localFailure(
-            "enqueue",
-            ReactorError.fromCode("Protocol", "H3 upload returned different file facts"),
-          );
+          return yield* refused("enqueue", "Protocol", "H3 upload returned different file facts");
         if ((yield* SubscriptionRef.get(state)).model.generation !== generation)
-          return yield* localFailure(
+          return yield* refused(
             "enqueue",
-            ReactorError.fromCode("Disconnected", "H3 reference upload crossed a generation"),
+            "Disconnected",
+            "H3 reference upload crossed a generation",
           );
         yield* Ref.update(uploads, (all) => {
           const next = new Map(all);
@@ -642,26 +626,22 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     const internal = yield* SubscriptionRef.get(state);
     const snapshot = State.snapshot(internal.model);
     if (snapshot._tag !== "Ready")
-      return yield* localFailure(
-        "enqueue",
-        ReactorError.fromCode("InvalidState", "H3 is not ready"),
-      );
+      return yield* refused("enqueue", "InvalidState", "H3 is not ready");
     if (
       request.seconds !== undefined &&
       (request.seconds < snapshot.state.clip_seconds_min ||
         request.seconds > snapshot.state.clip_seconds_max)
     )
-      return yield* localFailure(
+      return yield* refused(
         "enqueue",
-        ReactorError.fromCode("InvalidInput", "Clip duration is outside H3's accepted range"),
+        "InvalidInput",
+        "Clip duration is outside H3's accepted range",
       );
     if (request.audio.length > 0 && !contract.referenceAudio)
-      return yield* localFailure(
+      return yield* refused(
         "enqueue",
-        ReactorError.fromCode(
-          "UnsupportedCapability",
-          "The H3 deployment does not declare reference audio",
-        ),
+        "UnsupportedCapability",
+        "The H3 deployment does not declare reference audio",
       );
     const generation = snapshot.transportGeneration;
     const images = yield* Effect.forEach(request.references, (reference) =>
@@ -770,7 +750,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           Effect.exit,
           Effect.flatMap((exit) =>
             Exit.isFailure(exit)
-              ? publish({
+              ? hub.publish({
                   _tag: "Diagnostic",
                   error: ReactorError.fromCode("InvalidState", "H3 result hook failed", {
                     operation: "H3 result hook",
@@ -814,7 +794,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           );
           // The operation's slot and the pending acceptance are taken together,
           // before anything is sent.
-          const refused = yield* SubscriptionRef.modify(
+          const conflict = yield* SubscriptionRef.modify(
             state,
             (internal): readonly [ReactorError | undefined, Internal] => {
               if (
@@ -842,7 +822,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
                   ];
             },
           );
-          if (refused !== undefined) return yield* localFailure("enqueue", refused);
+          if (conflict !== undefined) return yield* localFailure("enqueue", conflict);
           if (hooks.commit !== undefined)
             yield* hooks.commit(id).pipe(
               Effect.onExitIf(Exit.isFailure, () =>
@@ -889,9 +869,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 
   const clipId = (operation: string, id: string) =>
     Schema.decodeEffect(Schema.String.check(Schema.isUUID()))(id).pipe(
-      Effect.mapError(() =>
-        localFailure(operation, ReactorError.fromCode("InvalidInput", "clipId must be a UUID")),
-      ),
+      Effect.mapError(() => refused(operation, "InvalidInput", "clipId must be a UUID")),
     );
   const natural = (
     operation: string,
@@ -901,10 +879,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     Number.isSafeInteger(value) && value >= 0
       ? Effect.succeed(value)
       : Effect.fail(
-          localFailure(
-            operation,
-            ReactorError.fromCode("InvalidInput", `${name} must be a nonnegative safe integer`),
-          ),
+          refused(operation, "InvalidInput", `${name} must be a nonnegative safe integer`),
         );
 
   const contract = yield* session.schema.pipe(
@@ -1032,20 +1007,16 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       Number.isFinite(value) && value >= requestSeconds.min && value <= requestSeconds.max
         ? named("set_clip_seconds", { seconds: value })
         : Effect.fail(
-            localFailure(
+            refused(
               "set_clip_seconds",
-              ReactorError.fromCode("InvalidInput", "Clip duration is outside the request bounds"),
+              "InvalidInput",
+              "Clip duration is outside the request bounds",
             ),
           ),
     setCanvas: (aspect: CanvasAspect) =>
       Object.hasOwn(canvases, aspect)
         ? named("set_canvas", { aspect })
-        : Effect.fail(
-            localFailure(
-              "set_canvas",
-              ReactorError.fromCode("InvalidInput", "Unsupported H3 canvas aspect"),
-            ),
-          ),
+        : Effect.fail(refused("set_canvas", "InvalidInput", "Unsupported H3 canvas aspect")),
     setAutoplay: (enabled) => named("set_autoplay", { enabled }),
     setFlushOnClipEnd: (enabled) => named("set_flush_on_clip_end", { enabled }),
     reset: named("reset", {}),

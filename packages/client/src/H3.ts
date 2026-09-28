@@ -129,7 +129,6 @@ export interface Options {
   readonly setupTimeout?: Duration.Input | undefined;
   /** How long an uncertain enqueue waits for evidence that settles it; 5 seconds by default. */
   readonly reconcileWindow?: Duration.Input | undefined;
-  readonly observation?: ObservationOptions | undefined;
 }
 
 export interface Provider {
