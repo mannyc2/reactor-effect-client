@@ -1,214 +1,78 @@
-import type * as Effect from "effect/Effect";
-import type * as Redacted from "effect/Redacted";
+/**
+ * The client's public API as a Node consumer without DOM types sees it through
+ * the installed declarations: each module's main entry points, by type.
+ */
 import type * as Crypto from "effect/Crypto";
+import type * as Effect from "effect/Effect";
+import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import type * as Queue from "effect/Queue";
 import type * as Stream from "effect/Stream";
-import * as Schema from "effect/Schema";
-import type * as Http from "effect/unstable/http/HttpClient";
-import * as Root from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/H3";
-import * as Orchestration from "reactor-effect-client/orchestration";
-import * as Simulation from "reactor-effect-client/simulation";
-import * as Testing from "reactor-effect-client/testing";
-import * as Wire from "reactor-effect-client/wire";
-import * as Host from "reactor-effect-client/host";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
+import {
+  Coordinator,
+  H3,
+  H3Source,
+  LocalSource,
+  Media,
+  Peer,
+  Playout,
+  Reactor,
+  ReactorError,
+  ReactorTest,
+  Session,
+} from "reactor-effect-client";
+import * as PlayoutModule from "reactor-effect-client/Playout";
 
-declare const hostQueue: Queue.Dequeue<number, Root.ReactorError>;
-const hostTake: Effect.Effect<number, Root.ReactorError> = Host.takeQueue(hostQueue);
-const hostTakeAll: Effect.Effect<[number, ...number[]], Root.ReactorError> =
-  Host.takeAllQueue(hostQueue);
-void [hostTake, hostTakeAll];
+const coordinator: Layer.Layer<
+  Coordinator.Coordinator,
+  ReactorError.ReactorError,
+  HttpClient.HttpClient
+> = Coordinator.layer();
+const reactor: Layer.Layer<
+  Reactor.Reactor,
+  ReactorError.ReactorError,
+  Coordinator.Coordinator | Peer.PeerFactory
+> = Reactor.layer();
+const simulated: Layer.Layer<ReactorTest.ReactorTest | HttpClient.HttpClient | Peer.PeerFactory> =
+  ReactorTest.layer({ timing: ReactorTest.Timing.hosted });
 
-declare const continuousOptions: Orchestration.ContinuousOptions;
-const continuous: Effect.Effect<
-  Orchestration.ContinuousHandleShape,
-  Root.ReactorError | Root.AcquisitionFailure,
-  Crypto.Crypto | Scope.Scope
-> = Orchestration.makeContinuous(continuousOptions);
-declare const continuousHandle: Orchestration.ContinuousHandleShape;
-const continuousClose: Effect.Effect<Orchestration.CleanupSummary> = continuousHandle.close;
-const continuousEngine: Orchestration.EngineShape = continuousHandle.engine;
-const continuousSequences: Orchestration.HandleShape["sequences"] = continuousHandle.sequences;
-const continuousCodec = Schema.toCodecJson(Orchestration.CleanupSummary);
-void [continuous, continuousClose, continuousEngine, continuousSequences, continuousCodec];
-
-declare const factory: Root.Factory;
-const owner = factory.create({ model: "fixture/installed-consumer" });
-const attached = factory.attach({ sessionId: "sess_fixture_existing" });
-const adopted = factory.attach({ sessionId: "sess_fixture_existing", adopt: true });
-declare const record: Orchestration.Allocation;
-declare const token: Redacted.Redacted<string>;
-const endsAt: number | undefined = record.endsAt;
-const resumed: Effect.Effect<Orchestration.OpenedH3, Root.AcquisitionFailure, unknown> =
-  Orchestration.resumeH3({ allocation: record, jwt: token, source: { holdLastFrame: true } });
-declare const session: Root.Session;
-// H3 composes through the public canonical Session without introducing
-// filesystem/path requirements into portable provider construction.
+declare const reactorService: Reactor.Reactor["Service"];
+const created: Effect.Effect<Session.Session, ReactorError.AcquisitionFailure, Scope.Scope> =
+  reactorService.create({ model: "helios" });
+declare const session: Session.Session;
+const closed: Effect.Effect<Session.CloseReport> = session.close;
+const decoded: Effect.Effect<Media.DecodedMedia, ReactorError.ReactorError> = session.decoded;
 const provider: Effect.Effect<
   H3.Provider,
-  Root.ReactorError | Root.CommandFailure,
+  ReactorError.ReactorError | ReactorError.CommandFailure,
   Crypto.Crypto | Scope.Scope
 > = H3.make(session);
-const coordinator: Effect.Effect<Root.Coordinator.Client, Root.ReactorError, Http.HttpClient> =
-  Root.Coordinator.make();
-declare const simulated: Effect.Success<ReturnType<typeof Simulation.make>>;
-const engine: Orchestration.EngineShape = simulated.engine;
-declare const priorClip: Orchestration.ClipId;
-const sameOwner = new Orchestration.ClipRequest({
-  prompt: "Keep a dependent clip on its physical session",
-  references: [],
-  durationSeconds: 5,
-  metadata: {},
-  sameSessionAs: priorClip,
-});
-void engine.prepare(sameOwner);
-// Reference audio travels beside an image, from bytes the /testing fixture writes.
-const voiced = new Orchestration.ClipRequest({
-  prompt: "Audio 1 is the host's voice",
-  references: [{ uri: "file:///host.png" }],
-  audio: [{ uri: "file:///voice.wav" }],
-  durationSeconds: 5,
-  metadata: {},
-});
-void engine.prepare(voiced);
-const spoken: H3.Request = {
-  prompt: "Audio 1 is the host's voice",
-  references: [{ _tag: "Bytes", bytes: Testing.pngBytes(2, 2) }],
-  audio: [{ _tag: "Bytes", bytes: Testing.wavBytes(3) }],
-};
-const audioBounds: number = H3.audioReferenceLimits.maxAudio;
-const validatedAudio: Effect.Effect<H3.ValidatedAudioReference, Root.ReactorError> =
-  H3.validateAudioReference({ _tag: "Bytes", bytes: Testing.wavBytes(3) });
-const media: Orchestration.MediaShape = simulated.media;
-// The lineup preset is one scheduler policy over the same Engine.
-const scheduler: Effect.Effect<
-  Orchestration.SchedulerShape,
-  Root.ReactorError | Orchestration.PolicyFailure,
-  Orchestration.Engine | Scope.Scope
-> = Orchestration.makeScheduler({
-  ...Orchestration.lineup({
-    runway: { floor: "5 seconds", target: "15 seconds" },
-    clip: ({ index }) =>
-      new Orchestration.ClipRequest({
-        prompt: `The host waits at the desk (${index})`,
-        references: [],
-        durationSeconds: 5,
-        metadata: {},
-      }),
-  }),
-  unknownRecoveryTimeout: "10 minutes",
-});
-const itemKey: Orchestration.ItemKey = Orchestration.ItemKey.make("fixture");
-declare const queued: Orchestration.ItemHandle;
-const started: Effect.Effect<Orchestration.AsRunStatus> = queued.started;
-declare const schedulerHandle: Orchestration.SchedulerShape;
-declare const lineParts: Orchestration.GroupSpec["parts"];
-const line: Effect.Effect<
-  Orchestration.GroupHandle,
-  | Orchestration.KeyMismatch
-  | Orchestration.WouldMissDeadline
-  | Orchestration.LaneBusy
-  | Orchestration.EngineError
-> = schedulerHandle.submitGroup({
-  key: Orchestration.ItemKey.make("line"),
-  lane: "line",
-  parts: lineParts,
-});
-declare const amendment: Orchestration.ReplacementSpec;
-const amended: Effect.Effect<
-  Orchestration.ItemHandle,
-  Orchestration.KeyMismatch | Orchestration.EngineError
-> = schedulerHandle.replace(Orchestration.ItemKey.make("beat"), amendment);
-declare const acknowledgement: Orchestration.InsertSpec;
-const inserted: Effect.Effect<
-  Orchestration.ItemHandle,
-  Orchestration.KeyMismatch | Orchestration.WouldMissDeadline | Orchestration.EngineError
-> = schedulerHandle.insert(acknowledgement);
-const edits: ReadonlyArray<Orchestration.Edit> = [
-  { _tag: "Withdraw", key: Orchestration.ItemKey.make("wrong") },
-  { _tag: "Insert", insert: acknowledgement },
-];
-const edited: Effect.Effect<
-  Orchestration.EditHandle,
-  | Orchestration.KeyMismatch
-  | Orchestration.WouldMissDeadline
-  | Orchestration.LaneBusy
-  | Orchestration.EngineError
-> = schedulerHandle.edit(edits);
-const lanes: ReadonlyArray<Orchestration.LaneSpec> = [
-  { name: "urgent", cut: true },
-  { name: "status", conflict: "replace" },
-  { name: "ack", conflict: "skip" },
-];
-const continued: Orchestration.ItemSpec["continuity"] = "previous";
-const cue: Orchestration.Cue = { name: "open chart", at: { from: "start", offset: "2 seconds" } };
-const cues: Stream.Stream<Orchestration.CueEvent> = schedulerHandle.cues;
-const starts: ReadonlyArray<Orchestration.StartMode> = [{ _tag: "Asap" }, { _tag: "Manual" }];
-const released: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.release(
-  Orchestration.ItemKey.make("cue"),
+const reference: Effect.Effect<H3.ValidatedAudioReference, ReactorError.ReactorError> =
+  H3.validateAudioReference({ _tag: "Bytes", bytes: ReactorTest.wavBytes({ seconds: 3 }) });
+const image: Uint8Array = ReactorTest.pngBytes({ width: 64, height: 64 });
+
+declare const mint: H3Source.OpenOptions["mint"];
+const source: Effect.Effect<
+  Playout.Source,
+  ReactorError.AcquisitionFailure,
+  Reactor.Reactor | Crypto.Crypto | Scope.Scope
+> = H3Source.open({ mint });
+declare const localOptions: LocalSource.Options;
+const local = LocalSource.open(localOptions);
+const playout: Layer.Layer<Playout.Playout, never, Reactor.Reactor | Crypto.Crypto> = Playout.layer(
+  {
+    open: H3Source.open({ mint }),
+    lanes: [{ name: "show" }, { name: "urgent", cut: true }],
+  },
 );
-const cut: Effect.Effect<void, Orchestration.EngineError> = engine.cut(
-  Orchestration.ClipId.make("playing"),
-);
-const drainOptions: Orchestration.DrainOptions = { finish: "accepted" };
-const drained: Effect.Effect<void, Orchestration.EngineError> = schedulerHandle.drain(drainOptions);
-const terminalFailure: Effect.Effect<Root.ReactorFailure> = schedulerHandle.failure;
-const stoppedRenewal: Effect.Effect<void, Orchestration.EngineError> = engine.stopRenewal;
-type Switched = Extract<Orchestration.Renewal, { readonly _tag: "Switched" }>;
-declare const historicalTail: Switched["tail"];
-const historicalSwitched: Orchestration.Renewal = {
-  _tag: "Switched",
-  sessionId: "retiring-fixture",
-  ageSeconds: 30,
-  tail: historicalTail,
-};
-declare const switched: Switched;
-const handoff: Switched["handoff"] = switched.handoff;
-const handoffDecision: "no-observed-start" | "count-complete" | "grace-elapsed" | undefined =
-  handoff?.decision;
-const encoded = Wire.ControlClientMessage.encode({
-  request_id: "fixture",
-  kind: 1,
-  payload: { case: "ping", value: {} },
+declare const service: Playout.Playout["Service"];
+const handle: Effect.Effect<Playout.ItemHandle, Playout.SubmitError> = service.submit({
+  key: Playout.ItemKey.make("opening"),
+  lane: "show",
+  request: { prompt: "A curtain rising on a painted forest", seconds: 5 },
 });
-const fixtureBytes: Uint8Array = Testing.pngBytes(2, 2);
-void [
-  Root.make,
-  H3,
-  Orchestration,
-  Simulation,
-  owner,
-  attached,
-  adopted,
-  endsAt,
-  resumed,
-  provider,
-  coordinator,
-  engine,
-  media,
-  encoded,
-  fixtureBytes,
-  spoken,
-  audioBounds,
-  validatedAudio,
-  scheduler,
-  itemKey,
-  started,
-  drained,
-  line,
-  amended,
-  inserted,
-  edited,
-  lanes,
-  continued,
-  cue,
-  cues,
-  starts,
-  released,
-  cut,
-  terminalFailure,
-  stoppedRenewal,
-  historicalSwitched,
-  handoffDecision,
-];
+const asRun: Stream.Stream<Playout.AsRunEvent> = service.asRun;
+const video: Stream.Stream<Media.VideoFrame, ReactorError.ReactorError> = service.video;
+const sameModule: typeof Playout.layer = PlayoutModule.layer;
+void [coordinator, reactor, simulated, created, closed, decoded, provider, reference, image];
+void [source, local, playout, handle, asRun, video, sameModule];
