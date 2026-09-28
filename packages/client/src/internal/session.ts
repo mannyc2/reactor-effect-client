@@ -45,9 +45,11 @@ import {
   summarize,
   TransportFailed,
 } from "../ReactorError.js";
+import { ClipReady } from "../Session.js";
 import type {
   CloseReport,
   CommandOptions,
+  ControlMessage,
   CommandReply,
   EventPayload,
   Observation,
@@ -171,7 +173,39 @@ type ControlPayload = Exclude<
   MessageInitShape<typeof Wire.ControlClientMessageSchema>["payload"],
   { readonly case: undefined } | undefined
 >;
-type ControlReply = Exclude<Wire.ControlServerMessage["payload"], { readonly case: undefined }>;
+type ControlPayloadIn = Exclude<
+  Wire.ControlServerMessage["payload"],
+  { readonly case: undefined | "moderation" }
+>;
+
+/** A control message as the library reads it; provider text stays redacted. */
+const controlMessage = (payload: ControlPayloadIn): Effect.Effect<ControlMessage, ReactorError> => {
+  switch (payload.case) {
+    case "modelSchema": {
+      const openapi = payload.value.openapi;
+      return openapi === undefined
+        ? Effect.succeed({ _tag: "ModelSchema" })
+        : Effect.map(Wire.json(openapi), (json) => ({ _tag: "ModelSchema", openapi: json }));
+    }
+    case "clipReady":
+      return Schema.decodeEffect(ClipReady)(payload.value).pipe(
+        Effect.map((clip) => ({ _tag: "ClipReady", clip }) as const),
+        Effect.mapError((cause) =>
+          ReactorError.fromCode("Protocol", "invalid clip_ready", { detail: cause }),
+        ),
+      );
+    case "clipFailed":
+      return Effect.succeed({ _tag: "ClipFailed", reason: Redacted.make(payload.value.reason) });
+    case "publishTrack":
+      return Effect.succeed({ _tag: "TrackPublished", name: payload.value.name });
+    case "error":
+      return Effect.succeed({
+        _tag: "Error",
+        code: Redacted.make(payload.value.code),
+        message: Redacted.make(payload.value.message),
+      });
+  }
+};
 
 const UploadReference = Schema.Struct({
   uploadId: Schema.NonEmptyString,
@@ -284,7 +318,7 @@ export const make = Effect.fnUntraced(function* (input: {
     limit: settings.maxPending,
     namespace: settings.namespace,
   });
-  const control = yield* Correlator.make<ControlReply>({
+  const control = yield* Correlator.make<ControlMessage>({
     prefix: "ctrl",
     limit: settings.maxPending,
     namespace: settings.namespace,
@@ -467,14 +501,13 @@ export const make = Effect.fnUntraced(function* (input: {
       }
       const body =
         payload.case === undefined
-          ? { kind: "ack" as const, raw: message }
+          ? { kind: "ack" as const }
           : {
               kind: "message" as const,
               type: payload.value.type,
               ...(payload.value.data === undefined
                 ? {}
                 : { data: yield* Wire.json(payload.value.data) }),
-              raw: message,
             };
       yield* data.settle(
         message.requestId,
@@ -561,6 +594,7 @@ export const make = Effect.fnUntraced(function* (input: {
             }),
           );
       }
+      const read = yield* Effect.exit(controlMessage(payload));
       const result =
         payload.case === "error"
           ? Effect.fail(
@@ -573,10 +607,14 @@ export const make = Effect.fnUntraced(function* (input: {
                 },
               }),
             )
-          : Effect.succeed(payload);
+          : read;
       const correlation = yield* control.settle(message.requestId, c.generation, () => result);
+      if (Exit.isFailure(read)) return yield* read;
       if (payload.case !== "error" || correlation !== "matched")
-        yield* publish({ _tag: "Control", message, correlation }, c.generation);
+        yield* publish(
+          { _tag: "Control", message: read.value, requestId: message.requestId, correlation },
+          c.generation,
+        );
     });
 
   /**
@@ -1209,31 +1247,31 @@ export const make = Effect.fnUntraced(function* (input: {
   const clip = (operation: string, payload: ControlPayload) =>
     controlRequest(operation, payload).pipe(
       Effect.flatMap((reply) => {
-        if (reply.case === "clipFailed")
+        if (reply._tag === "ClipFailed")
           return Effect.fail(
             ReactorError.make({
               reason: Remote.make({
                 // The one classification of provider text: a clip failure carries
                 // only a reason string, and a disabled recorder must be told apart.
-                _tag: /recorder disabled|encoder crashed/i.test(reply.value.reason)
+                _tag: /recorder disabled|encoder crashed/i.test(Redacted.value(reply.reason))
                   ? "RecorderDisabled"
                   : "Remote",
                 message: "clip failed",
-                body: Redacted.make(reply.value.reason),
+                body: reply.reason,
               }),
               context: { outcome: "replied" },
             }),
           );
-        if (reply.case !== "clipReady")
-          return Effect.fail(unexpected(`clip reply was ${reply.case}`));
-        const playlist = URL.parse(reply.value.playlistUrl, `${coordinator.apiUrl}/`);
+        if (reply._tag !== "ClipReady")
+          return Effect.fail(unexpected(`clip reply was ${reply._tag}`));
+        const playlist = URL.parse(reply.clip.playlistUrl, `${coordinator.apiUrl}/`);
         return playlist === null
           ? Effect.fail(
               ReactorError.fromCode("Protocol", "clip playlist URL is malformed", {
                 outcome: "replied",
               }),
             )
-          : Effect.succeed({ ...reply.value, playlistUrl: playlist.href });
+          : Effect.succeed({ ...reply.clip, playlistUrl: playlist.href });
       }),
     );
 
@@ -1382,7 +1420,7 @@ export const make = Effect.fnUntraced(function* (input: {
               { case: "publishTrack", value: { name } },
               c,
             );
-            if (reply.case !== "publishTrack" || reply.value.name !== name)
+            if (reply._tag !== "TrackPublished" || reply.name !== name)
               return yield* unexpected("publisher claim reply mismatch");
             yield* Ref.update(c.link, (link): Link => ({
               ...link,
@@ -1726,14 +1764,9 @@ export const make = Effect.fnUntraced(function* (input: {
     command,
     schema: controlRequest("request_schema", { case: "requestSchema", value: {} }).pipe(
       Effect.flatMap((reply) =>
-        reply.case === "modelSchema"
-          ? reply.value.openapi === undefined
-            ? Effect.succeed({ raw: reply.value })
-            : Effect.map(Wire.json(reply.value.openapi), (openapi) => ({
-                raw: reply.value,
-                openapi,
-              }))
-          : Effect.fail(unexpected(`schema reply was ${reply.case}`)),
+        reply._tag === "ModelSchema"
+          ? Effect.succeed(reply.openapi === undefined ? {} : { openapi: reply.openapi })
+          : Effect.fail(unexpected(`schema reply was ${reply._tag}`)),
       ),
     ),
     upload,

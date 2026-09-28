@@ -11,7 +11,7 @@ import * as Result from "effect/Result";
 import type * as Headers from "effect/unstable/http/Headers";
 import { ReactorError } from "../ReactorError.js";
 import type { Descriptor } from "../Coordinator.js";
-import type { ClipReady } from "./wire.js";
+import type { ClipReady } from "../Session.js";
 
 export interface Segment {
   readonly url: string;
