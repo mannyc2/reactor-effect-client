@@ -58,11 +58,15 @@ const seamMs = 1_500;
 const until = (deadline: number) =>
   Effect.map(Clock.currentTimeMillis, (now) => Duration.millis(Math.max(0, deadline - now)));
 
-/** How long a check reads media: the target's window, never past `deadline`. */
+/**
+ * How long a clip's media is read once it started, and fresh frames after an attach. It outlasts
+ * a clip, so a clip's end is read too. Rehearsals read as long, on their simulated clock.
+ */
+const windowMs = 6_000;
+
+/** How long a check reads media: the window, never past `deadline`. */
 const window = (deadline: number) =>
-  Effect.flatMap(Target, (target) =>
-    Effect.map(until(deadline), (left) => Duration.min(Duration.millis(target.windowMs), left)),
-  );
+  Effect.map(until(deadline), (left) => Duration.min(Duration.millis(windowMs), left));
 
 /** Sleeps until `atMs` after the run's start, never past `deadline`. */
 const sleepUntil = Effect.fnUntraced(function* (atMs: number, deadline: number) {
