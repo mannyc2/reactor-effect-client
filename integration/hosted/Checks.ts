@@ -973,8 +973,9 @@ export const tokens = Effect.gen(function* () {
         ...tokens,
         resumeStartedMs,
         attachedMs,
+        ownerClipIds: { playing: owner.playing, queued: owner.queued },
         playingClipId,
-        clipIdentified: playingClipId === owner.playing,
+        clipIdentified: playingClipId === owner.playing || playingClipId === owner.queued,
         ...(firstFreshFrameMs === undefined ? {} : { firstFreshFrameMs }),
         video: video.summary(),
       }));
@@ -1067,11 +1068,13 @@ export const tokens = Effect.gen(function* () {
           ? undefined
           : `the creating token lived ${Math.round((createExpiresMs - resumeStartedMs) / 1000)} s past the adoption`,
       );
+      // The owner's first clip may have ended while the creating token ran out, so the
+      // clip queued behind it counts too.
       yield* run.judge(
         "clip identified",
-        playingClipId === owner.playing
+        playingClipId === owner.playing || playingClipId === owner.queued
           ? undefined
-          : `the adopted state named ${playingClipId ?? "no clip"} playing, not the owner's`,
+          : `the adopted state named ${playingClipId ?? "no clip"} playing, neither of the owner's clips`,
       );
       yield* run.judge(
         "fresh frames",
