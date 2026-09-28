@@ -19,8 +19,8 @@ class FakeTrack {
   }
 }
 
-/** A media element whose `play` never settles unless a test says otherwise. */
-const element = (play: () => Promise<void> = () => Effect.runPromise(Effect.never)) => {
+/** A media element whose `play` never settles (an empty race) unless a test says otherwise. */
+const element = (play: () => Promise<void> = () => Promise.race<void>([])) => {
   const fake = {
     srcObject: null as unknown,
     paused: 0,
