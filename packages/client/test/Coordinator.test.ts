@@ -126,7 +126,11 @@ layer(recorder([{ _tag: "LateRecording", nth: 1, by: Duration.seconds(1) }]))(
           const clip = yield* session.requestRecordingClip(3);
           const service = yield* downloader(session.id);
           const before = (yield* requests).length;
+          const started = yield* Clock.currentTimeMillis;
           const downloaded = yield* service.downloadClip(clip);
+          // The pending playlist named a Retry-After of one second, sooner than the two a
+          // playlist that names none waits.
+          assert.isBelow((yield* Clock.currentTimeMillis) - started, 2_000);
           // The init segment, then two of two seconds each, in order.
           assert.deepStrictEqual(
             downloaded.segments.map((segment) => segment.kind),
@@ -237,6 +241,14 @@ layer(recorder([{ _tag: "LateRecording", nth: 2, by: Duration.minutes(1) }]))(
             Inspectable.toStringUnknown(input),
           );
         }
+        // A bound is a whole number of bytes or segments.
+        const fractional = yield* Effect.flip(
+          service.downloadClip(clip, { maxTotalBytes: 1_000.5 }),
+        );
+        assert.deepStrictEqual(
+          [fractional.reason._tag, fractional.context.outcome],
+          ["InvalidInput", "not-submitted"],
+        );
       }),
     );
   },
