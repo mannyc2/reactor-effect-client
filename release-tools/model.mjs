@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
+// Effect's FileSystem cannot open with O_NOFOLLOW, which keeps a candidate-supplied symlink
+// from being followed, so release inputs are read through node:fs.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { Effect, Schema } from "effect";
+import { Crypto, Effect, Encoding, Schema, Struct } from "effect";
 import { ReleaseError } from "@mannyc1/ts-release";
 import * as Npm from "@mannyc1/ts-release-npm";
 
@@ -167,79 +169,125 @@ export const ApplicationInput = Schema.Struct({
   authorize: Schema.Boolean,
 });
 
-/** @param {string} message @returns {never} */
-export function reject(message) {
-  throw new Error(message);
-}
+// JavaScript cannot pass the class type argument Schema.TaggedError asks for,
+// so the constructor is annotated with it instead.
+/** @type {typeof Schema.TaggedError<Rejection>} */
+const RejectionClass = Schema.TaggedError;
+/** A release input that breaks one of this workspace's release rules. */
+export class Rejection extends RejectionClass()("Rejection", { message: Schema.String }) {}
+/** @param {string} message */
+export const reject = (message) => Rejection.make({ message });
 /** @param {string} phase */
 export const releaseFailure = (phase) =>
-  new ReleaseError({
+  ReleaseError.make({
     code: `reactor-release-${phase}`,
     message: `Release ${phase} validation failed`,
   });
-/** @param {Uint8Array | string} bytes */
-export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-/** Read only a bounded regular file; never follow a candidate-supplied symlink.
- * @param {string} path @param {number} [maximum] */
-export const readBytes = (path, maximum = 32 * 1024 * 1024) => {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > maximum) reject("Expected a bounded regular release file");
-    const bytes = readFileSync(fd);
-    if (bytes.length !== stat.size) reject("Release input changed during reading");
-    return bytes;
-  } finally {
-    closeSync(fd);
-  }
-};
-/** @template A @param {string} phase @param {() => A} body */
-export const checked = (phase, body) =>
-  Effect.try({
-    try: body,
-    catch: () => releaseFailure(phase),
-  });
+/** Every failure of a release step reports as that phase's release failure.
+ * @param {string} phase */
+export const checked = (phase) => Effect.mapError(() => releaseFailure(phase));
 
-/** @param {unknown} raw */
-export const validatePackageIdentity = (raw) => {
-  const value = Schema.decodeUnknownSync(PackageIdentity)(raw);
-  const versions = new Set(packages.map((entry) => value.packages[entry.name].version));
-  if (versions.size !== 1) reject("Workspace packages must share one release version");
-  for (const entry of packages) {
-    const identity = value.packages[entry.name];
-    if (identity.tarball !== `${entry.name}-${identity.version}.tgz`)
-      reject("Unexpected archive filename");
-    if (JSON.stringify([...identity.exports].sort()) !== JSON.stringify([...entry.exports].sort()))
-      reject("Public exports changed");
-    if (
-      new Set(identity.files).size !== identity.files.length ||
-      JSON.stringify([...identity.files].sort()) !==
-        JSON.stringify(Object.keys(identity.fileSha256).sort())
-    )
-      reject("Incomplete package file inventory");
-    const platform = entry.name.startsWith(`${nativePackage}-`);
-    if (!platform && identity.files.some((path) => path.endsWith(".node")))
-      reject("A portable package carries native libraries");
-  }
-  const prebuilts = new Set(
-    Object.values(value.native).map((identity) => identity.build.webrtcPrebuilt),
+export const sha256 = Effect.fnUntraced(
+  /** @param {Uint8Array} bytes */
+  function* (bytes) {
+    const crypto = yield* Crypto.Crypto;
+    // Node's SHA-256 digest of bytes in memory cannot fail.
+    const hash = yield* crypto.digest("SHA-256", bytes).pipe(Effect.orDie);
+    return Encoding.encodeHex(hash);
+  },
+);
+
+const maximumReleaseFile = 32 * 1024 * 1024;
+/** Read only a bounded regular file; never follow a candidate-supplied symlink.
+ * @param {string} path */
+export const readBytes = (path) => {
+  const unreadable = () => reject(`Cannot read release input ${path}`);
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK),
+      catch: unreadable,
+    }),
+    (fd) =>
+      Effect.gen(function* () {
+        const stat = yield* Effect.try({ try: () => fstatSync(fd), catch: unreadable });
+        if (!stat.isFile() || stat.size > maximumReleaseFile)
+          return yield* reject("Expected a bounded regular release file");
+        const bytes = yield* Effect.try({ try: () => readFileSync(fd), catch: unreadable });
+        if (bytes.length !== stat.size)
+          return yield* reject("Release input changed during reading");
+        return bytes;
+      }),
+    (fd) => Effect.sync(() => closeSync(fd)),
   );
-  for (const [platform, file] of Object.entries(nativePlatforms)) {
-    const identity = value.native[/** @type {NativePlatform} */ (platform)];
-    const archive = value.packages[platformPackage(/** @type {NativePlatform} */ (platform))];
-    if (
-      identity.platform !== platform ||
-      identity.file !== file ||
-      identity.build.sourceSha256 !== value.nativeSourceSha256 ||
-      prebuilts.size !== 1 ||
-      archive.fileSha256[file] !== identity.sha256 ||
-      archive.fileSha256["native-identity.json"] === undefined
-    )
-      reject("Native platform qualification identity differs");
-  }
-  return value;
 };
-/** @typedef {ReturnType<typeof validatePackageIdentity>} ValidatedIdentity */
+
+/** JSON text as JSON.stringify writes it: compact for one line, indented for a file. */
+const JsonLine = Schema.fromJsonString(Schema.Unknown);
+const JsonDocument = Schema.fromJsonString(Schema.Unknown, { space: 2 });
+/** @param {string} text */
+export const decodeJson = (text) => Schema.decodeEffect(JsonLine)(text);
+/** @param {unknown} value */
+export const jsonLine = (value) => Schema.encodeEffect(JsonLine)(value);
+/** @param {unknown} value */
+export const jsonDocument = (value) => Schema.encodeEffect(JsonDocument)(value);
+/** The JSON value of one bounded release file.
+ * @param {string} path */
+export const readJson = (path) =>
+  readBytes(path).pipe(Effect.flatMap((bytes) => decodeJson(bytes.toString())));
+
+/** Whether two lists hold the same strings in any order.
+ * @param {{ readonly left: readonly string[], readonly right: readonly string[] }} lists */
+export const sameStrings = ({ left, right }) => {
+  const expected = [...right].sort();
+  return (
+    left.length === right.length &&
+    [...left].sort().every((value, index) => value === expected[index])
+  );
+};
+
+export const validatePackageIdentity = Effect.fnUntraced(
+  /** @param {unknown} raw */
+  function* (raw) {
+    const value = yield* Schema.decodeUnknownEffect(PackageIdentity)(raw);
+    const versions = new Set(packages.map((entry) => value.packages[entry.name].version));
+    if (versions.size !== 1)
+      return yield* reject("Workspace packages must share one release version");
+    for (const entry of packages) {
+      const identity = value.packages[entry.name];
+      if (identity.tarball !== `${entry.name}-${identity.version}.tgz`)
+        return yield* reject("Unexpected archive filename");
+      if (!sameStrings({ left: identity.exports, right: entry.exports }))
+        return yield* reject("Public exports changed");
+      if (
+        new Set(identity.files).size !== identity.files.length ||
+        !sameStrings({ left: identity.files, right: Object.keys(identity.fileSha256) })
+      )
+        return yield* reject("Incomplete package file inventory");
+      const platform = entry.name.startsWith(`${nativePackage}-`);
+      if (!platform && identity.files.some((path) => path.endsWith(".node")))
+        return yield* reject("A portable package carries native libraries");
+    }
+    const prebuilts = new Set(
+      Object.values(value.native).map((identity) => identity.build.webrtcPrebuilt),
+    );
+    for (const platform of Struct.keys(nativePlatforms)) {
+      const file = nativePlatforms[platform];
+      const identity = value.native[platform];
+      const archive = value.packages[platformPackage(platform)];
+      if (
+        identity.platform !== platform ||
+        identity.file !== file ||
+        identity.build.sourceSha256 !== value.nativeSourceSha256 ||
+        prebuilts.size !== 1 ||
+        archive.fileSha256[file] !== identity.sha256 ||
+        archive.fileSha256["native-identity.json"] === undefined
+      )
+        return yield* reject("Native platform qualification identity differs");
+    }
+    return value;
+  },
+);
+/** @typedef {Effect.Success<ReturnType<typeof validatePackageIdentity>>} ValidatedIdentity */
 /** @param {ValidatedIdentity} identity */
 export const releaseVersion = (identity) => identity.packages["reactor-effect-client"].version;
 /** Publication coordinates in publication order.
@@ -251,8 +299,8 @@ export const qualifiedPackages = (identity) =>
     sha256: identity.packages[entry.name].sha256,
   }));
 /** A qualification names exactly the archives of one validated identity.
- * @param {typeof Qualification.Type} qualification @param {ValidatedIdentity} identity */
-export const qualificationMatches = (qualification, identity) => {
+ * @param {{ readonly qualification: typeof Qualification.Type, readonly identity: ValidatedIdentity }} candidate */
+export const qualificationMatches = ({ qualification, identity }) => {
   const expected = qualifiedPackages(identity);
   return (
     qualification.version === releaseVersion(identity) &&
@@ -272,16 +320,20 @@ export const qualificationMatches = (qualification, identity) => {
  * @param {typeof Qualification.Type} qualification */
 export const confirmationFor = (qualification) =>
   `publish ${qualification.packages.map((entry) => `${entry.name}@${qualification.version}`).join(" ")}`;
-/** Dependency evidence for an offline provider preparation: declared, never dispatched.
- * @param {import("@mannyc1/ts-release").Plan} plan @param {import("@mannyc1/ts-release").Operation} operation */
-export const preparationContext = (plan, operation) => ({
-  own: { operation, receipts: [], observations: [] },
-  dependencies: operation.dependsOn.map((id) => {
-    const dependency = plan.operations.find((entry) => entry.operationId === id);
-    if (dependency === undefined) reject("Plan dependency is absent");
-    return { operation: dependency, receipts: [], observations: [] };
-  }),
-});
+/** Dependency evidence for an offline provider preparation: declared, never dispatched. */
+export const preparationContext = Effect.fnUntraced(
+  /** @param {import("@mannyc1/ts-release").Plan} plan @param {import("@mannyc1/ts-release").Operation} operation */
+  function* (plan, operation) {
+    const dependencies = [];
+    for (const id of operation.dependsOn) {
+      const dependency = plan.operations.find((entry) => entry.operationId === id);
+      // A loaded Plan has no dangling dependency.
+      if (dependency === undefined) return yield* Effect.die("Plan dependency is absent");
+      dependencies.push({ operation: dependency, receipts: [], observations: [] });
+    }
+    return { own: { operation, receipts: [], observations: [] }, dependencies };
+  },
+);
 /** A release coordinate keeps one journal even when an operator prepares different bytes.
  * @param {string} selectedVersion */
 export const journalId = (selectedVersion) => `reactor-npm:${repository}:${selectedVersion}`;
@@ -298,18 +350,20 @@ const WorkflowRun = Schema.Struct({
   repository: Schema.Struct({ full_name: Schema.Literal(repository) }),
   head_repository: Schema.Struct({ full_name: Schema.Literal(repository) }),
 });
-/** Only artifacts from the real successful workflow on this repository's main are eligible.
- * @param {unknown} raw @param {string} id @param {"ci" | "release"} kind */
-export const validateRun = (raw, id, kind) => {
-  Schema.decodeSync(runId)(id);
-  const run = Schema.decodeUnknownSync(WorkflowRun)(raw);
-  if (
-    String(run.id) !== id ||
-    !Number.isSafeInteger(run.id) ||
-    run.run_attempt < 1 ||
-    run.path !== `.github/workflows/${kind}.yml` ||
-    (kind === "release" && run.event !== "workflow_dispatch")
-  )
-    reject("Run identity or workflow differs");
-  return run;
-};
+/** Only artifacts from the real successful workflow on this repository's main are eligible. */
+export const validateRun = Effect.fnUntraced(
+  /** @param {unknown} raw @param {string} id @param {"ci" | "release"} kind */
+  function* (raw, id, kind) {
+    yield* Schema.decodeEffect(runId)(id);
+    const run = yield* Schema.decodeUnknownEffect(WorkflowRun)(raw);
+    if (
+      String(run.id) !== id ||
+      !Number.isSafeInteger(run.id) ||
+      run.run_attempt < 1 ||
+      run.path !== `.github/workflows/${kind}.yml` ||
+      (kind === "release" && run.event !== "workflow_dispatch")
+    )
+      return yield* reject("Run identity or workflow differs");
+    return run;
+  },
+);
