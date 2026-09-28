@@ -259,6 +259,89 @@ export const SessionRead = Schema.Struct({
 export type SessionRead = typeof SessionRead.Type;
 
 /**
+ * `adoption`: one session taken over three ways in turn. An owner on the
+ * isolated native host creates it on a short token and is killed; a raw
+ * attach reads it and closes without ending it; nothing is connected until
+ * that token has expired; then `H3Source.resume` adopts it with tokens bound
+ * to it, refreshes one for a clip with references, and ends it by closing.
+ */
+export const AdoptionRecord = Schema.Struct({
+  /** Every token the check minted for the session, in order. */
+  mints: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      kind: Schema.Literals(["create", "read", "attach", "resume", "unbound"]),
+      lifetimeSeconds: Schema.Finite,
+      echoed: Schema.Boolean,
+      bound: Schema.optionalKey(Schema.Int),
+    }),
+  ),
+  /** Where the owner ran, as it reported it: its runtime and native peer. */
+  ownerHost: Schema.optionalKey(Schema.String),
+  /** The owner's clips: the one it played, and the one queued behind it. */
+  ownerClipIds: Schema.optionalKey(
+    Schema.Struct({ playing: Schema.String, queued: Schema.String }),
+  ),
+  ownerStreamingMs: Schema.optionalKey(Ms),
+  killedMs: Schema.optionalKey(Ms),
+  /** When the creating token expired. */
+  createExpiresMs: Schema.optionalKey(Ms),
+  /** The raw attach, which does not adopt: what it read, and its close. */
+  attach: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      attachedMs: Ms,
+      playingClipId: Schema.optionalKey(Nullable),
+      /** The owner's queued clip was listed with its metadata. */
+      queuedMetadata: Schema.optionalKey(Schema.Boolean),
+      firstFreshFrameMs: Schema.optionalKey(Ms),
+      video: Schema.optionalKey(VideoSummary),
+      /** Commands it sent the model, by name. */
+      commands: Schema.optionalKey(Counts),
+      close: Schema.optionalKey(
+        Schema.Struct({ requestedMs: Ms, reportedMs: Ms, report: CloseReport }),
+      ),
+    }),
+  ),
+  /**
+   * Reads of the session while nothing was connected, each with the time since
+   * the last connection closed.
+   */
+  gap: Schema.Array(Schema.Struct({ ...SessionRead.fields, sinceConnectionMs: Ms })),
+  /** `H3Source.resume`: its adoption, what it read, and its clip on a refreshed token. */
+  resume: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      attachedMs: Ms,
+      ownership: Schema.Literals(["owned", "attached"]),
+      playingClipId: Schema.optionalKey(Nullable),
+      firstFreshFrameMs: Schema.optionalKey(Ms),
+      video: Schema.optionalKey(VideoSummary),
+      /** When the next bound token was minted for a call, the refresh. */
+      refreshedMs: Schema.optionalKey(Ms),
+      /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+      upload: Schema.optionalKey(
+        Schema.Struct({
+          startedMs: Ms,
+          acceptedMs: Ms,
+          images: Schema.Int,
+          audio: Schema.Int,
+          reportedAudio: Schema.NullOr(Schema.Int),
+          hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+        }),
+      ),
+      /** Commands it sent the model, by name. */
+      commands: Schema.optionalKey(Counts),
+    }),
+  ),
+  /** Reading the session with the creating token after it expired: 401 is documented. */
+  expiredTokenStatus: Schema.optionalKey(Schema.Int),
+  /** Reading it with a fresh token not bound to it: 403 is documented. */
+  unboundTokenStatus: Schema.optionalKey(Schema.Int),
+});
+export type AdoptionRecord = typeof AdoptionRecord.Type;
+
+/**
  * The moderation tail of `cut`: a held item whose prompt is meant to be
  * flagged, and what hosted Reactor, the session and the playout did.
  * Observations, not criteria; the prompt itself is never kept.
@@ -501,6 +584,7 @@ export const Evidence = Schema.Struct({
   ),
   tokens: Schema.optionalKey(TokensRecord),
   moderation: Schema.optionalKey(ModerationRecord),
+  adoption: Schema.optionalKey(AdoptionRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -521,6 +605,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   edits: ["playout"],
   cut: ["playout"],
   tokens: ["tokens"],
+  adoption: ["adoption"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
