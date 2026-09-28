@@ -5,6 +5,93 @@ import { cleanupInstructions } from "./Evidence.js";
 const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
 const usd = (value: number | undefined) => (value === undefined ? "–" : `$${value.toFixed(3)}`);
 
+const listed = (names: ReadonlyArray<string>) => names.join(", ") || "none";
+
+/** `tour`'s phases, a line each. */
+const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> => {
+  const lines: Array<string> = [];
+  const expires = tour.createExpiresMs;
+  lines.push(
+    `**Tokens:** ${tour.mints.map((mint) => `${mint.kind}${mint.ownSession ? " (its own id)" : ""} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s`).join("; ")}${expires === undefined ? "" : `; the creating token expired at ${seconds(expires)}, refresh due at ${seconds(tour.refreshDueMs ?? expires)}`}`,
+  );
+  const call = (label: string, value: NonNullable<typeof tour.refreshCall>) =>
+    `${label} ${value.what} at ${seconds(value.startedMs)}, ${value.ok ? "succeeded" : "failed"}`;
+  if (tour.refreshCall !== undefined || tour.afterExpiryCall !== undefined)
+    lines.push(
+      `**Calls:** ${[
+        ...(tour.refreshCall === undefined
+          ? []
+          : [call("past the refresh point,", tour.refreshCall)]),
+        ...(tour.afterExpiryCall === undefined
+          ? []
+          : [call("after the expiry,", tour.afterExpiryCall)]),
+      ].join("; ")}`,
+    );
+  if (tour.canvas !== undefined)
+    lines.push(
+      `**Canvas:** asked ${tour.canvas.requested} (${tour.canvas.listed ? "listed" : "not listed"} in valid_commands); accepted ${tour.canvas.reply === undefined ? "nothing" : `${tour.canvas.reply.aspect} at ${tour.canvas.reply.width}x${tour.canvas.reply.height}`}; state ${tour.canvas.state?.aspect ?? "unread"}`,
+    );
+  const clip = (value: NonNullable<typeof tour.clip2>) =>
+    `accepted ${value.acceptance} in ${seconds(value.acceptedMs - value.submitMs)}${value.generatedMs === undefined ? "" : `, generated at ${seconds(value.generatedMs)}`}${value.startedMs === undefined ? "" : `, started at ${seconds(value.startedMs)}`}${value.ended === undefined ? "" : `, ended by ${value.ended}`}; ${value.references.uploads} upload(s); reports ${String(value.references.reportedImages ?? "no")} image and ${String(value.references.reportedAudio ?? "no")} audio reference(s), has_reference_audio ${String(value.references.hasReferenceAudio)}`;
+  if (tour.clip1 !== undefined)
+    lines.push(
+      `**Clip 1:** ${clip(tour.clip1)}; seed ${tour.clip1.seed.sent} sent, ${String(tour.clip1.seed.echoed)} echoed, default ${String(tour.clip1.seed.defaultBefore)} before and ${String(tour.clip1.seed.defaultAfter)} after; ${tour.clip1.video?.frames ?? 0} frames while it played`,
+    );
+  if (tour.clip2 !== undefined) lines.push(`**Clip 2:** ${clip(tour.clip2)}`);
+  const queue = tour.queue;
+  if (queue !== undefined)
+    lines.push(
+      `**Queue:** generation ${listed(queue.enqueued)}${queue.move === undefined ? "" : `; moved to ${queue.move.queue} ${queue.move.position}, then ${listed(queue.move.generation)}`}; pops ${queue.pops.map((pop) => `${pop.name}${pop.building ? " (building)" : ""}${pop.generatedAfter === true ? " generated after" : ""}${pop.startedAfter === true ? " started after" : ""}`).join(", ") || "none"}; round trips ${Object.entries(
+        queue.replies,
+      )
+        .map(([name, ms]) => `${name} ${ms} ms`)
+        .join(", ")}`,
+    );
+  const stopPlay = tour.stopPlay;
+  if (stopPlay !== undefined)
+    lines.push(
+      `**Stop and play:** stop (${stopPlay.stop}) cut ${stopPlay.stopped}${stopPlay.stoppedMs === undefined ? "" : `, clip_stopped ${Math.round(stopPlay.stoppedMs - stopPlay.stopSentMs)} ms after it was sent`}; started before the play: ${listed(stopPlay.startedBetween)}; play (${stopPlay.play ?? "unsent"}) of ${stopPlay.played ?? "nothing"}${stopPlay.playStartedMs === undefined || stopPlay.playSentMs === undefined ? "" : ` started ${Math.round(stopPlay.playStartedMs - stopPlay.playSentMs)} ms after it was sent`}`,
+    );
+  const failed = tour.failedBuild;
+  if (failed !== undefined)
+    lines.push(
+      `**Build past the text budget:** ${failed.promptChars} characters, ended by ${failed.ended ?? "nothing"}${failed.endedMs === undefined || failed.acceptedMs === undefined ? "" : ` ${seconds(failed.endedMs - failed.acceptedMs)} after its acceptance`}; waiting for it to generate failed with ${failed.generatedFailure ?? "nothing"}${failed.clipEnded === undefined ? "" : ` (${failed.clipEnded.lifecycle}, ${failed.clipEnded.sameClip ? "its own clip" : "another clip"})`}; reason ${failed.reasonChars ?? "?"} characters; ${failed.started ? "started" : "never started"}`,
+    );
+  for (const recording of tour.recordings ?? [])
+    lines.push(
+      `**Recording, ${recording.request}:** ${recording.outcome}${recording.kind === undefined ? "" : ` (${recording.kind}, markers ${String(recording.markers)}, ready in ${String(recording.readyInMs)} ms)`}${recording.download === undefined ? "" : `; download ${recording.download.outcome} in ${seconds(recording.download.ms)}${recording.download.bytes === undefined ? "" : `, ${recording.download.bytes} bytes in ${String(recording.download.segments)} segment(s)${recording.download.init === true ? " with an init" : ""}`}`}`,
+    );
+  const reconnect = tour.reconnect;
+  if (reconnect !== undefined)
+    lines.push(
+      `**Reconnect:** generation ${reconnect.generationBefore} to ${reconnect.generationAfter ?? "none"}${reconnect.readyMs === undefined ? "" : ` in ${seconds(reconnect.readyMs - reconnect.startedMs)}`}${expires === undefined ? "" : `, from ${seconds(reconnect.startedMs - expires)} after the creating token expired`}; the long clip ${reconnect.keptClip === true ? "still ready" : "not ready"}; ${reconnect.video === undefined ? "no frames read" : `${reconnect.video.frames} frames${reconnect.firstFreshFrameMs === undefined || reconnect.playStartedMs === undefined ? "" : `, the first ${Math.round(reconnect.firstFreshFrameMs - reconnect.playStartedMs)} ms after the start`}`}; get_state ${reconnect.stateRead === true ? "answered" : "failed"}`,
+    );
+  const reset = tour.reset;
+  if (reset !== undefined) {
+    const settings = (value: typeof reset.before) =>
+      `${value.aspect}, seed ${value.seed}, autoplay ${value.autoplay ? "on" : "off"}, ${value.queued} queued, ${value.playingClip ?? "nothing"} playing`;
+    lines.push(
+      `**Reset:** was_playing ${String(reset.wasPlaying)}, ${String(reset.clearedClips)} cleared${reset.stoppedMs === undefined ? "" : `, clip_stopped ${Math.round(reset.stoppedMs - reset.sentMs)} ms after it was sent`}; before ${settings(reset.before)}; after ${reset.after === undefined ? "unread" : settings(reset.after)}`,
+    );
+  }
+  const termination = (value: NonNullable<typeof tour.apiKeyTermination>) =>
+    `DELETE ${String(value.deleteStatus ?? "unanswered")}, ${value.confirmed ? `confirmed ${value.state ?? value.evidence ?? ""}` : "unconfirmed"}`;
+  if (tour.apiKeyTermination !== undefined)
+    lines.push(
+      `**Ended:** the API key: ${termination(tour.apiKeyTermination)}; the session's own close: ${tour.ownedClose === undefined ? "none" : termination(tour.ownedClose.remote)}`,
+    );
+  const afterEnd = tour.afterEnd;
+  if (afterEnd !== undefined)
+    lines.push(
+      `**After the end:** attaching ${afterEnd.attach}${afterEnd.attachStatus === undefined ? "" : ` ${afterEnd.attachStatus}`}; the key reading an unknown session ${afterEnd.inspectUnknown}, ending it ${afterEnd.terminateUnknown === undefined ? "unsent" : termination(afterEnd.terminateUnknown)}`,
+    );
+  if (tour.freeMints.length > 0)
+    lines.push(
+      `**Free mints:** ${tour.freeMints.map((mint) => `${mint.name}: ${mint.outcome}${mint.maxSessions === undefined ? "" : `, max_sessions ${String(mint.maxSessions)}`}${mint.maxSessionSeconds === undefined ? "" : `, cap ${String(mint.maxSessionSeconds)}`}`).join("; ")}`,
+    );
+  return lines;
+};
+
 const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   const lines: Array<string> = [];
   const clip = evidence.clip;
@@ -95,6 +182,8 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       `**Afterwards:** session ${moderation.session.map((entry) => entry.event).join(" > ") || "quiet"}; playout ${moderation.playout.map((entry) => entry.event).join(" > ") || "quiet"}${moderation.read === undefined ? "" : `; read ${moderation.read.status} ${moderation.read.state ?? ""} (keys ${moderation.read.keys.join(", ")})`}`,
     );
   }
+  const tour = evidence.tour;
+  if (tour !== undefined) lines.push(...tourLines(tour));
   return lines;
 };
 

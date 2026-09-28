@@ -304,6 +304,265 @@ export const ModerationRecord = Schema.Struct({
 });
 export type ModerationRecord = typeof ModerationRecord.Type;
 
+/** A token the tour's session minted for itself. */
+const TourMint = Schema.Struct({
+  sentMs: Ms,
+  atMs: Ms,
+  kind: Schema.Literals(["create", "bind"]),
+  lifetimeSeconds: Schema.Finite,
+  echoed: Schema.Boolean,
+  /** How many sessions it names, and whether it names exactly the session's own id. */
+  bound: Schema.Int,
+  ownSession: Schema.Boolean,
+});
+
+/** A session call the tour made either side of the creating token's expiry. */
+const TourCall = Schema.Struct({
+  what: Schema.String,
+  startedMs: Ms,
+  endedMs: Schema.optionalKey(Ms),
+  ok: Schema.Boolean,
+});
+
+const Canvas = Schema.Struct({ aspect: Schema.String, width: Schema.Int, height: Schema.Int });
+
+/** A clip the tour enqueued, from its submission to what became of it. */
+const TourClip = Schema.Struct({
+  clipId: Schema.String,
+  acceptance: Schema.Literals(["correlated", "metadata"]),
+  submitMs: Ms,
+  acceptedMs: Ms,
+  generatedMs: Schema.optionalKey(Ms),
+  startedMs: Schema.optionalKey(Ms),
+  endedMs: Schema.optionalKey(Ms),
+  /** The lifecycle message that ended it. */
+  ended: Schema.optionalKey(Schema.String),
+  /** The references it was sent, the uploads its preparation made, and what the clip reports. */
+  references: Schema.Struct({
+    images: Schema.Int,
+    audio: Schema.Int,
+    uploads: Schema.Int,
+    reportedImages: Schema.NullOr(Schema.Int),
+    reportedAudio: Schema.NullOr(Schema.Int),
+    hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+  }),
+});
+
+/** What H3's state and queue said at one moment; clips go by the tour's names for them. */
+const TourSettings = Schema.Struct({
+  ...Canvas.fields,
+  autoplay: Schema.Boolean,
+  flushOnClipEnd: Schema.Boolean,
+  seed: Schema.Int,
+  clipSeconds: Schema.Finite,
+  playing: Schema.Boolean,
+  playingClip: Nullable,
+  /** Clips in both queues. */
+  queued: Schema.Int,
+});
+
+/** A recording request and, when a clip came back, its download: sizes and counts, never content. */
+const TourRecording = Schema.Struct({
+  request: Schema.Literals(["clip", "recording"]),
+  /** `ClipReady`, or the reason the request failed with. */
+  outcome: Schema.String,
+  kind: Schema.optionalKey(Schema.String),
+  /** Its end marker less its start marker, in the recorder's own unit. */
+  markers: Schema.optionalKey(Schema.Finite),
+  /** How long after the reply it was predicted to be ready. */
+  readyInMs: Schema.optionalKey(Schema.Finite),
+  download: Schema.optionalKey(
+    Schema.Struct({
+      /** `downloaded`, or the reason the download failed with. */
+      outcome: Schema.String,
+      ms: Ms,
+      bytes: Schema.optionalKey(Schema.Int),
+      segments: Schema.optionalKey(Schema.Int),
+      init: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+});
+
+/** A token minted only to see what Reactor echoes of it and how the SDK reads that. */
+const TourFreeMint = Schema.Struct({
+  name: Schema.String,
+  /** `granted`, or the reason the mint failed with. */
+  outcome: Schema.String,
+  lifetimeSeconds: Schema.optionalKey(Schema.Finite),
+  echoed: Schema.optionalKey(Schema.Boolean),
+  maxSessions: Schema.Int.pipe(Schema.NullOr, Schema.optionalKey),
+  /** The cap the SDK read from the echo: seconds, `unlimited` for a null cap, `absent` for none. */
+  maxSessionSeconds: Schema.optionalKey(
+    Schema.Union([Schema.Int, Schema.Literals(["unlimited", "absent"])]),
+  ),
+  bound: Schema.optionalKey(Schema.Int),
+});
+
+/**
+ * `tour`: one session through the raw API, a phase at a time. Clips in queue
+ * reads go by the tour's names for them; provider text is never kept.
+ */
+export const TourRecord = Schema.Struct({
+  /** Every token the session's `Tokens` minted, in order. */
+  mints: Schema.Array(TourMint),
+  /** When the creating token expired, and from when the session refreshes it. */
+  createExpiresMs: Schema.optionalKey(Ms),
+  refreshDueMs: Schema.optionalKey(Ms),
+  /** The session's first call from the refresh point on, and one after the creating token expired. */
+  refreshCall: Schema.optionalKey(TourCall),
+  afterExpiryCall: Schema.optionalKey(TourCall),
+  /** The commands the tour sends that the deployment does not offer. */
+  missingCommands: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+  canvas: Schema.optionalKey(
+    Schema.Struct({
+      requested: Schema.String,
+      /** `valid_commands` listed `set_canvas` while the session was empty. */
+      listed: Schema.Boolean,
+      reply: Schema.optionalKey(Canvas),
+      state: Schema.optionalKey(Canvas),
+    }),
+  ),
+  clip1: Schema.optionalKey(
+    Schema.Struct({
+      ...TourClip.fields,
+      /** The seed sent, the one the clip reports, and the session's default before and after. */
+      seed: Schema.Struct({
+        sent: Schema.Int,
+        echoed: Schema.NullOr(Schema.Int),
+        defaultBefore: Schema.NullOr(Schema.Int),
+        defaultAfter: Schema.NullOr(Schema.Int),
+      }),
+      /** Later messages that listed the clip with its metadata, by type. */
+      echoes: Counts,
+      /** What arrived while it played, until it ended or the window closed. */
+      video: Schema.optionalKey(VideoSummary),
+      audio: Schema.optionalKey(AudioSummary),
+    }),
+  ),
+  clip2: Schema.optionalKey(TourClip),
+  queue: Schema.optionalKey(
+    Schema.Struct({
+      /** The generation queue once a clip at position zero, then one more, were enqueued. */
+      enqueued: Schema.Array(Schema.String),
+      /** The move's reply, and the generation queue read after it. */
+      move: Schema.optionalKey(
+        Schema.Struct({
+          queue: Schema.String,
+          position: Schema.Int,
+          generation: Schema.Array(Schema.String),
+        }),
+      ),
+      pops: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          /** It headed the generation queue when popped: the build in flight. */
+          building: Schema.Boolean,
+          sentMs: Ms,
+          repliedMs: Ms,
+          /** Whether it was built, or started, after the pop's reply; read once the session reset. */
+          generatedAfter: Schema.optionalKey(Schema.Boolean),
+          startedAfter: Schema.optionalKey(Schema.Boolean),
+        }),
+      ),
+      /** The reads after the edits. */
+      after: Schema.optionalKey(
+        Schema.Struct({
+          generation: Schema.Array(Schema.String),
+          playout: Schema.Array(Schema.String),
+          generationQueued: Schema.Int,
+          playoutQueued: Schema.Int,
+          refreshed: Schema.Boolean,
+        }),
+      ),
+      /** Each queue command's round trip, in milliseconds. */
+      replies: Schema.Record(Schema.String, Ms),
+    }),
+  ),
+  stopPlay: Schema.optionalKey(
+    Schema.Struct({
+      stopped: Schema.String,
+      stopSentMs: Ms,
+      stop: Schema.Literals(["Acknowledged", "Reply"]),
+      /** When the stopped clip's `clip_stopped` arrived. */
+      stoppedMs: Schema.optionalKey(Ms),
+      /** Clips that started between the stop and the play. */
+      startedBetween: Schema.Array(Schema.String),
+      played: Schema.optionalKey(Schema.String),
+      playSentMs: Schema.optionalKey(Ms),
+      play: Schema.optionalKey(Schema.Literals(["Acknowledged", "Reply"])),
+      playStartedMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  failedBuild: Schema.optionalKey(
+    Schema.Struct({
+      promptChars: Schema.Int,
+      submitMs: Ms,
+      acceptedMs: Schema.optionalKey(Ms),
+      acceptance: Schema.optionalKey(Schema.Literals(["correlated", "metadata"])),
+      endedMs: Schema.optionalKey(Ms),
+      /** The lifecycle message that ended it. */
+      ended: Schema.optionalKey(Schema.String),
+      /** How the operation's wait for `generated` failed: its reason, and `ClipEnded`'s fields. */
+      generatedFailure: Schema.optionalKey(Schema.String),
+      clipEnded: Schema.optionalKey(
+        Schema.Struct({
+          lifecycle: Schema.String,
+          sameClip: Schema.Boolean,
+          transportGeneration: Schema.String,
+        }),
+      ),
+      /** How long `clip_failed`'s reason was; its text is never kept. */
+      reasonChars: Schema.optionalKey(Schema.Int),
+      started: Schema.Boolean,
+    }),
+  ),
+  recordings: TourRecording.pipe(Schema.Array, Schema.optionalKey),
+  reconnect: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      readyMs: Schema.optionalKey(Ms),
+      generationBefore: Schema.String,
+      generationAfter: Schema.optionalKey(Schema.String),
+      /** The long clip was still ready to play after the reconnect. */
+      keptClip: Schema.optionalKey(Schema.Boolean),
+      /** The clip played on the new generation, and the frames that came of it. */
+      playSentMs: Schema.optionalKey(Ms),
+      playStartedMs: Schema.optionalKey(Ms),
+      firstFreshFrameMs: Schema.optionalKey(Ms),
+      video: Schema.optionalKey(VideoSummary),
+      stateRead: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  reset: Schema.optionalKey(
+    Schema.Struct({
+      before: TourSettings,
+      sentMs: Ms,
+      clearedClips: Schema.optionalKey(Schema.Int),
+      wasPlaying: Schema.optionalKey(Schema.Boolean),
+      /** When the playing clip's `clip_stopped` arrived. */
+      stoppedMs: Schema.optionalKey(Ms),
+      after: Schema.optionalKey(TourSettings),
+    }),
+  ),
+  /** Ending the session with the API key as the bearer, then the owned session's own close. */
+  apiKeyTermination: Schema.optionalKey(Termination),
+  ownedClose: Schema.optionalKey(CloseReport),
+  afterEnd: Schema.optionalKey(
+    Schema.Struct({
+      /** How attaching to the ended session failed, and the HTTP status if one came. */
+      attach: Schema.String,
+      attachStatus: Schema.optionalKey(Schema.Int),
+      /** The API key reading an unknown session: its HTTP status, or 0 if none came. */
+      inspectUnknown: Schema.Int,
+      terminateUnknown: Schema.optionalKey(Termination),
+    }),
+  ),
+  freeMints: Schema.Array(TourFreeMint),
+  /** Commands the tour sent the model, by name. */
+  commands: Schema.optionalKey(Counts),
+});
+export type TourRecord = typeof TourRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -501,6 +760,7 @@ export const Evidence = Schema.Struct({
   ),
   tokens: Schema.optionalKey(TokensRecord),
   moderation: Schema.optionalKey(ModerationRecord),
+  tour: Schema.optionalKey(TourRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -521,6 +781,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   edits: ["playout"],
   cut: ["playout"],
   tokens: ["tokens"],
+  tour: ["contract", "server", "media", "network", "tour"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

@@ -10,7 +10,8 @@ import * as Schema from "effect/Schema";
  * capability added one: `audio` (reference audio), `resume` (adopting a dead
  * owner's session), `queue` (H3's own move and pop near a boundary), the
  * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
- * token that created it).
+ * token that created it). `tour` then walks the raw API through one longer
+ * session.
  */
 export const checks = [
   "vertical",
@@ -23,6 +24,7 @@ export const checks = [
   "edits",
   "cut",
   "tokens",
+  "tour",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -53,6 +55,7 @@ export const plans: { readonly [C in Check]: Plan } = {
   edits: single,
   cut: single,
   tokens: single,
+  tour: { sessions: 1, seconds: 90 },
 };
 
 /** A check's tokens outlive its sessions' cap by a minute, so cleanup still holds a valid one. */
@@ -201,6 +204,34 @@ export const provenGrant = (grant: {
     })),
     Effect.catch(() => refuse("the token proves neither its session count nor its cap")),
   );
+};
+
+/**
+ * What a token bound to one open session provably grants. Reactor counts a
+ * bound session in `max_sessions`, so a token whose echo binds exactly that
+ * session and counts no more creates none: it acts only on that session, whose
+ * cap its creating token proved. Refused unless the echo says so.
+ */
+export const provenBind = (input: {
+  readonly sessionId: string;
+  /** The bound session's cap, as its creating token proved it. */
+  readonly sessionSeconds: number;
+  readonly granted?:
+    | { readonly maxSessions: number | undefined; readonly bound: ReadonlyArray<string> }
+    | undefined;
+}): Effect.Effect<
+  { readonly maxSessions: number; readonly maxSessionSeconds: number },
+  Refused
+> => {
+  const echoed = input.granted;
+  if (echoed?.bound.length !== 1 || echoed.bound[0] !== input.sessionId)
+    return refuse("the bound token's echo does not bind exactly its session");
+  if (echoed.maxSessions === undefined || echoed.maxSessions > echoed.bound.length)
+    return refuse("the bound token may create sessions");
+  return Effect.succeed({
+    maxSessions: echoed.maxSessions,
+    maxSessionSeconds: input.sessionSeconds,
+  });
 };
 
 /** Refuses a token granting more than one session, or a longer one than a check may hold. */
