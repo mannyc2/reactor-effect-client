@@ -69,8 +69,8 @@ layer(environment({ timing }))("replies", (it) => {
         assert.strictEqual(failure.reason._tag, "RecorderDisabled");
         // Observers see the reply too, its provider text kept out of what logs print.
         const control = Option.getOrThrow(yield* Fiber.join(observed));
-        assert.isTrue(control._tag === "Control" && control.message._tag === "ClipFailed");
-        if (control._tag !== "Control" || control.message._tag !== "ClipFailed") return;
+        assert.strictEqual(control.message._tag, "ClipFailed");
+        if (control.message._tag !== "ClipFailed") return;
         assert.strictEqual(Redacted.value(control.message.reason), "recorder disabled");
         assert.notInclude(Inspectable.toStringUnknown(control), "recorder disabled");
       }),
