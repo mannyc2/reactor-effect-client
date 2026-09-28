@@ -1,15 +1,23 @@
 /** The canonical session over the in-process native host, driven through the scripted fake addon. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { layer } from "@effect/vitest";
+import { assert, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import { PeerFactory } from "reactor-effect-client/Peer";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { Session } from "reactor-effect-client/Session";
 import { expect } from "vitest";
-import { coordinator, fakeAddon, nativeClient } from "./support.js";
+import { coordinator, fakeAddon, nativeClient, nativePeer } from "./support.js";
+import type { FakeAddon } from "./support.js";
 
 const sessionId = "sess_native_fixture";
 const tracks = [
@@ -231,3 +239,84 @@ layer(NodeServices.layer, { excludeTestServices: true })(
     );
   },
 );
+
+/**
+ * The canonical client over in-process peers on the fake's in-process module,
+ * whose controls a test drives.
+ */
+const clientOver = (addon: FakeAddon) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(Coordinator.layer(settings));
+    return yield* Reactor.make().pipe(
+      Effect.provide(services),
+      Effect.provideService(
+        PeerFactory,
+        PeerFactory.of({ check: Effect.void, make: nativePeer({ addon: addon.module }) }),
+      ),
+    );
+  });
+
+/** The first snapshot at which the session has lost its connection. */
+const disconnected = (client: Session) =>
+  client.changes.pipe(
+    Stream.filter((snapshot) => snapshot.status === "disconnected"),
+    Stream.runHead,
+    Effect.map(Option.getOrThrow),
+  );
+
+layer(NodeServices.layer)("native canonical session on the fiber's Clock", (it) => {
+  it.effect("classifies a failed native connection from its statistics", () =>
+    Effect.gen(function* () {
+      const addon = yield* fakeAddon;
+      const remote = yield* fixture;
+      const { ready, lost } = yield* Effect.gen(function* () {
+        const factory = yield* clientOver(addon);
+        const client = yield* factory.create(create);
+        const ready = yield* client.ready;
+        const [made] = addon.module.controls.peers;
+        assert(made !== undefined, "the session opened an addon peer");
+        made.fail();
+        return { ready, lost: yield* disconnected(client) };
+      }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, remote.client));
+      // The fake's statistics list no candidate pair: nothing ICE could use.
+      expect(lost.lastError).toMatchObject({
+        reason: { _tag: "IceFailed", pairs: 0, candidateTypes: [] },
+        context: { generation: ready.generation },
+      });
+    }),
+  );
+
+  it.effect(
+    "reports Disconnected when the failed connection's statistics never return, on the fiber's Clock",
+    () =>
+      Effect.gen(function* () {
+        const addon = yield* fakeAddon;
+        const remote = yield* fixture;
+        const { held, lost } = yield* Effect.gen(function* () {
+          const factory = yield* clientOver(addon);
+          const client = yield* factory.create(create);
+          yield* addon.hold("stats", true);
+          // Release the held read before the session's close joins its peer.
+          yield* Effect.addFinalizer(() => addon.hold("stats", false));
+          const [made] = addon.module.controls.peers;
+          assert(made !== undefined, "the session opened an addon peer");
+          made.fail();
+          yield* TestClock.withLive(addon.reached("stats"));
+          // The read never answers, and only the fiber's Clock ends the wait.
+          const held = yield* client.snapshot;
+          yield* TestClock.adjust("2 seconds");
+          return { held, lost: yield* disconnected(client) };
+        }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, remote.client));
+        expect(held.status).toBe("ready");
+        const error = lost.lastError;
+        assert(error !== undefined, "the failed connection was reported");
+        expect(error).toMatchObject({
+          reason: { _tag: "Disconnected" },
+          message: "peer state failed",
+        });
+        const detail = error.context.detail && Redacted.value(error.context.detail);
+        assert(ReactorError.is(detail), "the failure carries why classification ended");
+        expect(detail.reason._tag).toBe("Timeout");
+      }),
+  );
+});

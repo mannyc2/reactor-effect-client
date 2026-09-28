@@ -2,7 +2,7 @@
  * The native peer: the client's `Peer` port over the addon's `NativePeer`,
  * whether that runs in this process or in a child process. The addon's
  * queues arrive as streams; this module names frames, fans them out to
- * bounded readers, classifies failures and bounds the owner join.
+ * bounded readers, maps the addon's failure classes and bounds the owner join.
  */
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -17,12 +17,7 @@ import type { IceServer, Track } from "reactor-effect-client/Coordinator";
 import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
 import { PeerState, trackFeed } from "reactor-effect-client/Peer";
 import type { Channel, Peer, PeerEvent, TrackFeed } from "reactor-effect-client/Peer";
-import {
-  IceFailed,
-  Native,
-  ReactorError,
-  TransportFailed,
-} from "reactor-effect-client/ReactorError";
+import { Native, ReactorError } from "reactor-effect-client/ReactorError";
 import type * as Binding from "./binding.js";
 
 /** What a peer drives: one addon `NativePeer`, here or in a child process. */
@@ -61,9 +56,6 @@ export interface NativePeer extends Peer {
  */
 export const defaultShutdownTimeout: Duration.Duration = Duration.seconds(10);
 
-/** How long reading statistics may take when classifying a failed connection. */
-const classifyTimeout = Duration.seconds(2);
-
 /** Failure classes the addon returns only when it refused a call before running it. */
 const refusals: ReadonlySet<Binding.FailureClass> = new Set([
   "Closed",
@@ -95,32 +87,6 @@ export const nativeFailure =
   };
 
 const protocol = (message: string): ReactorError => ReactorError.fromCode("Protocol", message);
-
-/** Report a failed connection as IceFailed or TransportFailed, from its candidate pairs. */
-export const connectionFailure = (stats: ReadonlyArray<unknown>): ReactorError => {
-  const entries = stats.filter(Predicate.isObject);
-  const pairs = entries.filter((entry) => entry.type === "candidate-pair");
-  if (pairs.some((pair) => pair.state === "succeeded" || pair.nominated === true))
-    return ReactorError.make({
-      reason: TransportFailed.make({
-        message: "native peer failed after ICE connectivity succeeded",
-        pairs: pairs.length,
-      }),
-    });
-  const candidateTypes = new Set(
-    entries
-      .filter((entry) => entry.type === "local-candidate")
-      .map((entry) => entry.candidateType)
-      .filter(Predicate.isString),
-  );
-  return ReactorError.make({
-    reason: IceFailed.make({
-      message: "native peer found no working ICE candidate pair",
-      pairs: pairs.length,
-      candidateTypes: [...candidateTypes],
-    }),
-  });
-};
 
 const counters = new Set([
   "bytesSent",
@@ -269,27 +235,12 @@ export const make = Effect.fnUntraced(function* (
       yield* close;
     });
 
-  /** Classify a failed connection from the statistics read before the next event. */
-  const classify = native.stats.pipe(
-    Effect.map(connectionFailure),
-    Effect.timeoutOrElse({
-      duration: classifyTimeout,
-      orElse: () =>
-        Effect.fail(ReactorError.fromCode("Timeout", "native failure classification timed out")),
-    }),
-    Effect.catch((cause) =>
-      Effect.succeed(ReactorError.fromCode("Disconnected", "peer state failed", { detail: cause })),
-    ),
-    Effect.flatMap(fail),
-  );
-
   const deliver = (event: PeerEvent) =>
     Effect.flatMap(Ref.get(state), (current) => Effect.sync(() => current.emit?.(event)));
 
   const handle = (event: Binding.PeerEvent): Effect.Effect<void> => {
     switch (event.type) {
       case "state":
-        if (event.state === "failed") return classify;
         return isPeerState(event.state)
           ? deliver({ type: "state", state: event.state })
           : fail(protocol(`native peer reported an unknown state: ${event.state}`));
