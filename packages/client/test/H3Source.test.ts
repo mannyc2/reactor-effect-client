@@ -2,6 +2,7 @@
 import { assert, layer } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  Clock,
   Deferred,
   Duration,
   Effect,
@@ -27,6 +28,31 @@ const opened = Effect.gen(function* () {
     onAllocated: ({ session }) => Deferred.succeed(allocated, session),
   });
   return { source, session: yield* Deferred.await(allocated) };
+});
+
+// Allocating and connecting take over 3 s here, of a session capped at five minutes.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      http: "100 millis",
+      allocation: "2 seconds",
+      negotiation: "500 millis",
+      connect: "500 millis",
+    }),
+  }),
+)("a source's lifetime", (it) => {
+  it.effect("is what remains of its cap when open returns, counted from the request", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const started = yield* Clock.currentTimeMillis;
+      const source = yield* H3Source.open({ tokens: yield* tokens });
+      const elapsed = (yield* Clock.currentTimeMillis) - started;
+      const lifetime = Duration.toMillis(source.lifetime);
+      assert.isBelow(lifetime, 300_000 - 3_000);
+      assert.isAtLeast(lifetime, 300_000 - elapsed);
+    }),
+  );
 });
 
 /** Each block's first connection drops 5 s after it opens, and its session goes on. */

@@ -41,8 +41,11 @@ export const Allocation = Schema.Struct({
   ownership: Schema.Literals(["owned", "attached"]),
   model: Schema.String,
   /**
-   * When the session's cap ends it at the latest, in seconds since the epoch;
-   * absent for a session without a cap, which runs until it is terminated.
+   * The end of the session's cap counted from the allocation request, in
+   * seconds since the epoch; absent for a session without a cap, which runs
+   * until it is terminated. The server starts the cap no earlier than the
+   * request, so the cap cannot end the session before this: plan to be done
+   * by it, and read the session before counting it ended.
    */
   endsAt: Schema.optionalKey(Schema.Finite),
 });
@@ -68,7 +71,7 @@ export interface Options {
 export interface OpenOptions<E = never, R = never> extends Options {
   /**
    * The session's tokens; the API key never reaches the opener. The `create`
-   * token's cap is the session's lifetime: without one the source never
+   * token's cap bounds the session's lifetime: without one the source never
    * expires, and the playout renews it only when it is lost.
    */
   readonly tokens: Tokens;
@@ -175,10 +178,10 @@ const track = <A>(
     }),
   );
 
-/** A connected session as a playout source that lives `lifetime`. */
+/** A connected session as a playout source, all but its lifetime. */
 const fromSession = Effect.fnUntraced(function* (
   session: Session,
-  options: Options & { readonly lifetime: Duration.Duration; readonly resumed: boolean },
+  options: Options & { readonly resumed: boolean },
 ) {
   const provider = yield* H3.make(session, options.provider);
   // A resumed session usually has the setting its owner gave it, so resuming only reads.
@@ -362,7 +365,6 @@ const fromSession = Effect.fnUntraced(function* (
     );
   return {
     sessionId: session.id,
-    lifetime: options.lifetime,
     events,
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
@@ -405,16 +407,23 @@ const fromSession = Effect.fnUntraced(function* (
       overflowed("audio"),
     ),
     close: session.close,
-  } satisfies Source;
+  } satisfies Omit<Source, "lifetime">;
 });
 
 const failAcquisition = (session: Session) => (error: ReactorError | CommandFailure) =>
   Effect.flatMap(session.close, (report) => Effect.fail(AcquisitionFailure.from(error, report)));
 
+/** What remains now until `endsAt`, in milliseconds since the epoch; unending without one. */
+const lifetimeUntil = (endsAt: number | undefined): Effect.Effect<Duration.Duration> =>
+  endsAt === undefined
+    ? Effect.succeed(Duration.infinity)
+    : Effect.map(Clock.currentTimeMillis, (now) => Duration.millis(Math.max(0, endsAt - now)));
+
 /**
  * Opens a paid H3 session as a playout source: mint its token, allocate it, run
- * `onAllocated`, connect, and set it up. Its lifetime is the token's session
- * cap, or unending without one.
+ * `onAllocated`, connect, and set it up. Its lifetime is what remains, when it
+ * returns, of the token's session cap counted from the allocation request, or
+ * unending without a cap.
  * `Playout.make({ open: H3Source.open({ tokens }), ... })`.
  */
 export const open = <E = never, R = never>(
@@ -426,8 +435,10 @@ export const open = <E = never, R = never>(
       Effect.mapError((error) => AcquisitionFailure.from(error, noAcquisition)),
     );
     const cap = grant.maxSessionSeconds;
-    // The server starts the granted length no earlier than the request.
+    // The server starts the granted length no earlier than the request, so the cap counted
+    // from here ends no later than the session.
     const requested = yield* Clock.currentTimeMillis;
+    const endsAt = cap === undefined ? undefined : requested + cap * 1000;
     const onAllocated = options.onAllocated;
     const session = yield* reactor.create({
       ...options.create,
@@ -449,11 +460,10 @@ export const open = <E = never, R = never>(
               }),
           }),
     });
-    return yield* fromSession(session, {
-      ...options,
-      lifetime: cap === undefined ? Duration.infinity : Duration.seconds(cap),
-      resumed: false,
-    }).pipe(Effect.catch(failAcquisition(session)));
+    const source = yield* fromSession(session, { ...options, resumed: false }).pipe(
+      Effect.catch(failAcquisition(session)),
+    );
+    return { ...source, lifetime: yield* lifetimeUntil(endsAt) };
   }).pipe(
     Effect.withSpan("reactor.playout.open", { kind: "client" }, { captureStackTrace: false }),
   );
@@ -461,8 +471,8 @@ export const open = <E = never, R = never>(
 /**
  * Adopts a session `open` allocated, from its owner record and a token bound
  * to it, after its owner died: this process then owns its remote lifetime. It
- * keeps the session's canvas, queue and playback; its lifetime is what remains
- * until the record's `endsAt`, if it has one.
+ * keeps the session's canvas, queue and playback; its lifetime is what remains,
+ * when it returns, until the record's `endsAt`, if it has one.
  */
 export const resume = (
   options: ResumeOptions,
@@ -479,22 +489,19 @@ export const resume = (
     const { allocation } = options;
     if (allocation.model !== H3.modelName)
       return yield* refuse("the allocation is not an H3 session");
-    const remainingMs =
-      allocation.endsAt === undefined
-        ? Infinity
-        : allocation.endsAt * 1000 - (yield* Clock.currentTimeMillis);
-    if (!(remainingMs > 0)) return yield* refuse("the allocation's granted length has ended");
+    const endsAt = allocation.endsAt === undefined ? undefined : allocation.endsAt * 1000;
+    if (endsAt !== undefined && !(endsAt > (yield* Clock.currentTimeMillis)))
+      return yield* refuse("the allocation's granted length has ended");
     const reactor = yield* Reactor;
     const session = yield* reactor.attach({
       sessionId: allocation.sessionId,
       tokens: options.tokens,
       adopt: true,
     });
-    return yield* fromSession(session, {
-      ...options,
-      lifetime: Number.isFinite(remainingMs) ? Duration.millis(remainingMs) : Duration.infinity,
-      resumed: true,
-    }).pipe(Effect.catch(failAcquisition(session)));
+    const source = yield* fromSession(session, { ...options, resumed: true }).pipe(
+      Effect.catch(failAcquisition(session)),
+    );
+    return { ...source, lifetime: yield* lifetimeUntil(endsAt) };
   }).pipe(
     Effect.withSpan("reactor.playout.resume", { kind: "client" }, { captureStackTrace: false }),
   );
