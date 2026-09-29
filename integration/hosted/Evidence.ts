@@ -813,6 +813,15 @@ const Answer = {
 };
 
 /**
+ * Each state a session's reads found, in order, with the first and last read
+ * that found it. A read answered 404 is `gone`; one that failed otherwise is
+ * its HTTP status or its reason's tag.
+ */
+const StateReads = Schema.Array(
+  Schema.Struct({ state: Schema.String, firstMs: Ms, lastMs: Ms, reads: Schema.Int }),
+);
+
+/**
  * `unconnected`: a session allocated and never connected, on a token used for
  * nothing else, read with the API key until it ended or its window closed;
  * and, on a second token, a session and then a second create, which finds
@@ -853,6 +862,23 @@ export const UnconnectedRecord = Schema.Struct({
           sessionId: Schema.optionalKey(Schema.String),
         }),
       ),
+      /**
+       * Each session the token made, once the second create was answered: the
+       * key's reads every 0.5 s until one found it connectable, for at most
+       * 5 s, and the hold before the key ended it.
+       */
+      held: Schema.Struct({
+        sessionId: Schema.String,
+        states: StateReads,
+        connectableMs: Schema.optionalKey(Ms),
+        /**
+         * When its hold began: its connectable read, or the end of the wait
+         * without one. Absent when a read found it ended.
+         */
+        heldFromMs: Schema.optionalKey(Ms),
+        /** When the key was to end it: 10 s later, or sooner if its hold in the plan ran out. */
+        endsMs: Schema.optionalKey(Ms),
+      }).pipe(Schema.Array, Schema.optionalKey),
     }),
   ),
   /**
@@ -862,14 +888,8 @@ export const UnconnectedRecord = Schema.Struct({
    * ends past the cap and the 30 s after it, counted from each of the three.
    */
   windowEndsMs: Schema.optionalKey(Ms),
-  /**
-   * Each state the reads found, in order, with the first and last read that
-   * found it. A read answered 404 is `gone`; one that failed otherwise is its
-   * HTTP status or its reason's tag.
-   */
-  states: Schema.Array(
-    Schema.Struct({ state: Schema.String, firstMs: Ms, lastMs: Ms, reads: Schema.Int }),
-  ),
+  /** Each state the watch's reads found. */
+  states: StateReads,
   /** The first read that found its capabilities and a transport, which the SDK connects on. */
   connectableMs: Schema.optionalKey(Ms),
   /** The coordinator's read once the reads stopped: status, key names, state and codes. */

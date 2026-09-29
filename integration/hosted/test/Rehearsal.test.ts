@@ -22,6 +22,7 @@ const rehearse = (
     readonly moderationPrompt?: string;
     readonly adoptAfterMs?: number;
     readonly recorder?: boolean;
+    readonly timing?: ReactorTest.Timing;
     readonly judge: (evidence: Evidence) => void;
   },
 ) =>
@@ -33,6 +34,7 @@ const rehearse = (
         input.moderationPrompt === undefined ? undefined : Redacted.make(input.moderationPrompt),
       adoptAfterMs: input.adoptAfterMs,
       recorder: input.recorder,
+      timing: input.timing,
     }).pipe(Layer.provideMerge(NodeServices.layer)),
   )(name, (it) =>
     it.effect(
@@ -297,9 +299,19 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
       [second?.answer, second?.outcome, second?.status, second?.codes?.["error.code"]],
       ["Http", "replied", 403, "session_limit"],
     );
-    // The key ends the spent token's session as soon as its second create is answered.
+    // After the second create, the key reads the spent token's session until it is ready, and
+    // ends it 10 s later, well within its hold.
+    const held = spent?.held?.[0];
+    assert.strictEqual(held?.sessionId, spending?.id);
+    assert.isAtLeast(held?.states[0]?.firstMs ?? 0, second?.answeredMs ?? Infinity);
     assert.isTrue(spending?.close?.termination?.confirmed);
-    assert.isBelow(spending.close.requestedMs - (second?.answeredMs ?? 0), 1_000);
+    const heldMs = spending.close.requestedMs - (held?.connectableMs ?? Infinity);
+    assert.isAtLeast(heldMs, 10_000);
+    assert.isBelow(heldMs, 10_100);
+    assert.isAtMost(
+      spending.close.reportedMs - (spent?.requestedMs ?? 0),
+      (holdsFor("unconnected")[1] ?? 0) * 1000,
+    );
     // The time the summary gives is the refusal's.
     assert.match(
       summarize([evidence]),
@@ -355,19 +367,26 @@ rehearse("unconnected ends together the spent token's session and one its second
     const spent = probe?.spentToken;
     const [session, spending, extra] = evidence.sessions;
     assert.lengthOf(evidence.sessions, 3);
+    assert.isDefined(spending);
+    assert.isDefined(extra);
     assert.deepStrictEqual(
       [spent?.second?.answer, spent?.second?.sessionId],
-      ["allocated", extra?.id],
+      ["allocated", extra.id],
     );
-    // Both DELETEs go out at once as the second create is answered, so neither waits on the
-    // other's tries, and each session ends within its hold.
-    assert.isTrue(spending?.close?.termination?.confirmed);
-    assert.isTrue(extra?.close?.termination?.confirmed);
-    assert.strictEqual(spending.close.requestedMs, extra.close.requestedMs);
-    assert.isBelow(extra.close.requestedMs - (spent?.second?.answeredMs ?? 0), 1_000);
+    // Each is held 10 s past its own ready, so neither waits on the other's reads or tries, and
+    // each session ends within its hold.
     const [, spendingHold = 0, extraHold = 0] = holdsFor("unconnected");
-    assert.isAtMost(spending.close.reportedMs - (spent?.requestedMs ?? 0), spendingHold * 1000);
-    assert.isAtMost(extra.close.reportedMs - (spent?.second?.sentMs ?? 0), extraHold * 1000);
+    for (const [ended, holdSeconds, sentMs] of [
+      [spending, spendingHold, spent?.requestedMs],
+      [extra, extraHold, spent?.second?.sentMs],
+    ] as const) {
+      const held = spent?.held?.find((entry) => entry.sessionId === ended.id);
+      assert.isTrue(ended.close?.termination?.confirmed);
+      const heldMs = ended.close.requestedMs - (held?.connectableMs ?? Infinity);
+      assert.isAtLeast(heldMs, 10_000);
+      assert.isBelow(heldMs, 10_100);
+      assert.isAtMost(ended.close.reportedMs - (sentMs ?? 0), holdSeconds * 1000);
+    }
     // The watched session is none of the spent token's: its cap still ends it.
     assert.strictEqual(probe?.ended?.by, "reactor");
     assert.isAtLeast((probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0), 60_000);
@@ -377,7 +396,7 @@ rehearse("unconnected ends together the spent token's session and one its second
     // A row a session for the dashboard's duration and charge, which the maintainer fills in.
     assert.include(
       summary,
-      "| Session | Made by | Requested | Allocated | First ACTIVE read | Ended by | Ended | Allocated to ended | Dashboard duration | Dashboard charge |",
+      "| Session | Made by | Requested | Allocated | First ACTIVE read | Ready | Held | Ended by | Ended | Allocated to ended | Ready to ended | Dashboard duration | Dashboard charge |",
     );
     const rows = summary.split("\n").flatMap((line) =>
       evidence.sessions.some((held) => line.startsWith(`| ${held.id} |`))
@@ -390,11 +409,27 @@ rehearse("unconnected ends together the spent token's session and one its second
         : [],
     );
     assert.deepStrictEqual(
-      rows.map((cells) => [cells[0], cells[1], cells[4] === "–", cells[5], cells[8], cells[9]]),
+      rows.map((cells) => [
+        cells[0],
+        cells[1],
+        cells[4] === "–" || cells[5] === "–",
+        cells[6],
+        cells[7],
+        cells[11],
+        cells[12],
+      ]),
       [
-        [session?.id, "the watched token's create", false, "Reactor", "", ""],
-        [spending.id, "the spent token's first create", true, "the key", "", ""],
-        [extra.id, "its second create", true, "the key", "", ""],
+        [session?.id, "the watched token's create", false, "–", "Reactor", "", ""],
+        [
+          spending.id,
+          "the spent token's first create",
+          false,
+          "10.00 s past ready",
+          "the key",
+          "",
+          "",
+        ],
+        [extra.id, "its second create", false, "10.00 s past ready", "the key", "", ""],
       ],
     );
     // A DELETE that found no session came after the session had ended, whatever ended it.
@@ -414,13 +449,13 @@ rehearse("unconnected ends together the spent token's session and one its second
     };
     assert.include(
       summarize([gone]),
-      `| ${spending.id} | the spent token's first create | ${rows[1]?.slice(2, 5).join(" | ") ?? "?"} | before the key's DELETE |`,
+      `| ${spending.id} | the spent token's first create | ${rows[1]?.slice(2, 7).join(" | ") ?? "?"} | before the key's DELETE |`,
     );
     // Reactor's end lies between the last read that found the session running and the first
     // that found it ended, 2 s apart; the times count from the watched session's request.
     assert.match(
       summary,
-      /^\| \S+ \| the watched token's create \| 0\.00 s \| \d+\.\d\d s \| \d+\.\d\d s \| Reactor \| \d+\.\d\d–\d+\.\d\d s \| 6\d\.\d\d–6\d\.\d\d s \|  \|  \|$/m,
+      /^\| \S+ \| the watched token's create \| 0\.00 s \| \d+\.\d\d s \| \d+\.\d\d s \| \d+\.\d\d s \| – \| Reactor \| \d+\.\d\d–\d+\.\d\d s \| 6\d\.\d\d–6\d\.\d\d s \| \d+\.\d\d–\d+\.\d\d s \|  \|  \|$/m,
     );
   },
 });
@@ -591,6 +626,56 @@ rehearse("unconnected keeps its watch on schedule while the second create hangs"
   },
 });
 
+// A session allocated more slowly than the 5 s the key waits for it to be ready is held 10 s
+// from the end of that wait instead, so its dashboard duration is still a known one.
+rehearse("unconnected holds a spent token's session 10 s past a wait it never became ready in", {
+  check: "unconnected",
+  timing: {
+    ...ReactorTest.Timing.hosted,
+    allocation: { min: Duration.seconds(7), max: Duration.seconds(7) },
+  },
+  judge: (evidence) => {
+    passes(evidence);
+    const spent = evidence.unconnected?.spentToken;
+    const held = spent?.held?.[0];
+    const spending = evidence.sessions[1];
+    assert.isUndefined(held?.connectableMs);
+    assert.deepStrictEqual([...new Set(held?.states.map((entry) => entry.state))], ["PENDING"]);
+    assert.isAtLeast((held?.heldFromMs ?? 0) - (spent?.second?.answeredMs ?? Infinity), 5_000);
+    assert.strictEqual((held?.endsMs ?? 0) - (held?.heldFromMs ?? Infinity), 10_000);
+    assert.isAtLeast(spending?.close?.requestedMs ?? 0, held?.endsMs ?? Infinity);
+    assert.include(summarize([evidence]), " | 10.00 s past the wait | ");
+  },
+});
+
+// Whatever ends the spent token's session after its second create, the reads after that create
+// find it ended: it is not held, and the key ends it at once. Here each session ends as it goes
+// ACTIVE, so neither is ever ready.
+rehearse("unconnected ends at once a spent token's session found ended after the second create", {
+  check: "unconnected",
+  faults: [{ _tag: "Expire", after: Duration.zero }],
+  judge: (evidence) => {
+    passes(evidence);
+    const spent = evidence.unconnected?.spentToken;
+    const held = spent?.held?.[0];
+    const spending = evidence.sessions[1];
+    assert.strictEqual(held?.states.at(-1)?.state, "CLOSED");
+    assert.isUndefined(held?.connectableMs);
+    assert.isUndefined(held?.heldFromMs);
+    assert.isBelow(
+      (spending?.close?.requestedMs ?? Infinity) - (held?.states.at(-1)?.firstMs ?? 0),
+      100,
+    );
+    assert.match(
+      summarize([evidence]),
+      new RegExp(
+        `^\\| ${spending?.id ?? "?"} \\| the spent token's first create \\|.*\\| none: found ended \\| Reactor \\|`,
+        "m",
+      ),
+    );
+  },
+});
+
 // A run that stops hard, as a crash stops it, leaves the evidence as last saved: a create sent
 // and no answer recorded says where to look too, whichever of the three it was.
 rehearse("unconnected says where to look when the run stops with a create unanswered", {
@@ -676,10 +761,12 @@ rehearse("unconnected credits no end the read at the end contradicts", {
 });
 
 // One read answered 404 may be the coordinator's slip at the end as in the watch: alone, it
-// credits Reactor with no end, and the key's end is the one recorded.
+// credits Reactor with no end, and the key's end is the one recorded. The read at the end is the
+// 64th of any session: after the watch's 61, and the spent token's session's read that found it
+// ready and the read that confirmed its end.
 rehearse("unconnected credits no end to a lone 404 on the read at the end", {
   check: "unconnected",
-  faults: [{ _tag: "IgnoreCap" }, { _tag: "MissingSession", nth: 63 }],
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "MissingSession", nth: 64 }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;

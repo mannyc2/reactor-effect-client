@@ -432,6 +432,8 @@ export const rehearsal = (input: {
    * playlist; by default it answers as a disabled recorder does.
    */
   readonly recorder?: boolean | undefined;
+  /** The simulated Reactor's timing: what paid runs measured, unless a test needs other. */
+  readonly timing?: ReactorTest.Timing | undefined;
 }) =>
   Layer.effect(
     Target,
@@ -517,7 +519,7 @@ export const rehearsal = (input: {
     Layer.provideMerge(severable),
     Layer.provideMerge(
       ReactorTest.layer({
-        timing: ReactorTest.Timing.hosted,
+        timing: input.timing ?? ReactorTest.Timing.hosted,
         faults: input.faults,
         candidate: input.candidate,
         recorder: input.recorder === true,

@@ -292,11 +292,23 @@ const unconnectedLines = (
         ? `**Unconnected:** requested ${probe.requestedAt}; no answer to its create was recorded`
         : `**Unconnected:** no session named; its create failed with ${failure(create)}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
     ];
+  // A time from a session's allocation, where the evidence has it.
+  const afterAllocation = (sessionId: string) => {
+    const allocatedMs = evidence.sessions.find((session) => session.id === sessionId)?.allocatedMs;
+    return (atMs: number) =>
+      allocatedMs === undefined ? seconds(atMs) : `${seconds(atMs - allocatedMs)} after allocation`;
+  };
   const allocatedMs = evidence.sessions.find(
     (session) => session.id === probe.sessionId,
   )?.allocatedMs;
-  const since = (atMs: number) =>
-    allocatedMs === undefined ? seconds(atMs) : `${seconds(atMs - allocatedMs)} after allocation`;
+  const since = afterAllocation(probe.sessionId);
+  const readsOf = (states: typeof probe.states, from: (atMs: number) => string) =>
+    states
+      .map(
+        (entry) =>
+          `${entry.state} from ${from(entry.firstMs)} to ${from(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`,
+      )
+      .join(" > ") || "none";
   const ended = probe.ended;
   const spent = probe.spentToken;
   const read = probe.read;
@@ -339,8 +351,13 @@ const unconnectedLines = (
       : [
           `**Window:** reads until ${seconds(windowEndsMs - probe.requestedMs)} after the request, past the cap and 30 s by ${past(allocatedMs, "allocation")}, ${past(probe.states.find((entry) => entry.state === "ACTIVE")?.firstMs, "ACTIVE")} and ${past(probe.connectableMs, "ready")}`,
         ]),
-    `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`).join(" > ") || "none"}`,
+    `**Reads:** ${readsOf(probe.states, since)}`,
     ...(spent === undefined ? [] : [spentLine(spent)]),
+    // The spent token's sessions, read from the second create's answer until ready.
+    ...(spent?.held ?? []).map((held) => {
+      const after = afterAllocation(held.sessionId);
+      return `**Held:** ${held.sessionId} ${held.connectableMs === undefined ? "never read connectable" : `connectable ${after(held.connectableMs)}`}; ${readsOf(held.states, after)}`;
+    }),
     ...(read === undefined
       ? []
       : [
@@ -352,10 +369,12 @@ const unconnectedLines = (
 /**
  * `unconnected`'s sessions as a table for the Reactor dashboard: each one's
  * times, from the watched session's request, beside the duration and charge
- * the maintainer reads there. Each end lies between two times: for Reactor's,
- * the last read that found the session running and the first that found it
- * ended; for the key's, its DELETE and the read that confirmed it; and before
- * a DELETE that found no session, its allocation and that DELETE.
+ * the maintainer reads there. Ready is the first read that found a session
+ * connectable, and each spent token's session's hold is planned from it, or
+ * from the end of a wait without it. Each end lies between two times: for
+ * Reactor's, the last read that found the session running and the first that
+ * found it ended; for the key's, its DELETE and the read that confirmed it;
+ * and before a DELETE that found no session, its allocation and that DELETE.
  */
 const billing = (
   evidence: Evidence,
@@ -388,13 +407,35 @@ const billing = (
   // A failed read, or one that found it gone, says nothing of whether the session ran.
   const running = (state: string) =>
     !isTerminal(state) && state !== "gone" && !/^(?:http|error):/.test(state);
+  const heldOf = (session: Evidence["sessions"][number]) =>
+    spent?.held?.find((held) => held.sessionId === session.id);
+  // The reads of a session, the watch's or the ones after the second create.
+  const statesOf = (session: Evidence["sessions"][number]) =>
+    session.id === probe.sessionId ? probe.states : (heldOf(session)?.states ?? []);
+  const readyOf = (session: Evidence["sessions"][number]) =>
+    session.id === probe.sessionId ? probe.connectableMs : heldOf(session)?.connectableMs;
+  const heldText = (session: Evidence["sessions"][number]) => {
+    const held = heldOf(session);
+    if (held === undefined) return "–";
+    if (held.heldFromMs === undefined || held.endsMs === undefined) return "none: found ended";
+    return `${seconds(held.endsMs - held.heldFromMs)} past ${held.connectableMs === undefined ? "the wait" : "ready"}`;
+  };
   const endOf = (session: Evidence["sessions"][number]) => {
     const ended = probe.ended;
-    if (session.id === probe.sessionId && ended?.by === "reactor") {
-      const runningMs = probe.states
-        .filter((entry) => entry.lastMs < ended.atMs && running(entry.state))
+    const states = statesOf(session);
+    // Reactor's end, for the watched session as the watch found it, and for a spent token's as
+    // the first read that found it closed.
+    const endedMs =
+      session.id === probe.sessionId
+        ? ended?.by === "reactor"
+          ? ended.atMs
+          : undefined
+        : states.find((entry) => isTerminal(entry.state))?.firstMs;
+    if (endedMs !== undefined) {
+      const runningMs = states
+        .filter((entry) => entry.lastMs < endedMs && running(entry.state))
         .reduce((latest, entry) => Math.max(latest, entry.lastMs), session.allocatedMs);
-      return { by: "Reactor", fromMs: runningMs, toMs: ended.atMs };
+      return { by: "Reactor", fromMs: runningMs, toMs: endedMs };
     }
     const close = session.close;
     if (close?.confirmed !== true) return undefined;
@@ -405,18 +446,18 @@ const billing = (
   };
   return [
     "",
-    `**Billing, for the dashboard:** seconds from the watched session's request, ${probe.requestedAt}. Each end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it; and before a DELETE that found no session, its allocation and that DELETE. Fill in the last two columns from the Reactor dashboard.`,
+    `**Billing, for the dashboard:** seconds from the watched session's request, ${probe.requestedAt}. Ready is the first read that found the session connectable; the spent token's sessions are read from its second create's answer, and each is held the time given past its ready, or past a 5 s wait it never became ready in. Each end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it; and before a DELETE that found no session, its allocation and that DELETE. Fill in the last two columns from the Reactor dashboard.`,
     "",
-    "| Session | Made by | Requested | Allocated | First ACTIVE read | Ended by | Ended | Allocated to ended | Dashboard duration | Dashboard charge |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Session | Made by | Requested | Allocated | First ACTIVE read | Ready | Held | Ended by | Ended | Allocated to ended | Ready to ended | Dashboard duration | Dashboard charge |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...evidence.sessions.map((session) => {
       const role = made.find((entry) => entry.sessionId === session.id);
-      const active =
-        session.id === probe.sessionId
-          ? probe.states.find((entry) => entry.state === "ACTIVE")?.firstMs
-          : undefined;
+      const active = statesOf(session).find((entry) => entry.state === "ACTIVE")?.firstMs;
+      const ready = readyOf(session);
       const end = endOf(session);
-      return `| ${session.id} | ${role?.by ?? "–"} | ${since(role?.requestedMs)} | ${since(session.allocatedMs)} | ${since(active)} | ${end?.by ?? "unconfirmed"} | ${end === undefined ? "–" : between(end.fromMs, end.toMs, probe.requestedMs)} | ${end === undefined ? "–" : between(end.fromMs, end.toMs, session.allocatedMs)} |  |  |`;
+      const span = (startMs: number | undefined) =>
+        end === undefined || startMs === undefined ? "–" : between(end.fromMs, end.toMs, startMs);
+      return `| ${session.id} | ${role?.by ?? "–"} | ${since(role?.requestedMs)} | ${since(session.allocatedMs)} | ${since(active)} | ${since(ready)} | ${heldText(session)} | ${end?.by ?? "unconfirmed"} | ${span(probe.requestedMs)} | ${span(session.allocatedMs)} | ${span(ready)} |  |  |`;
     }),
   ];
 };

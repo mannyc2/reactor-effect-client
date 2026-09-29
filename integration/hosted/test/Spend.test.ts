@@ -65,20 +65,20 @@ describe("the spending gates", () => {
   );
 
   // unconnected watches its session past the cap, to 155 s at most from its request. On a second
-  // token, the key ends a session within 55 s of its request, and one its second create
-  // allocates within 40 s.
+  // token, the key holds a session past its ready and ends it within 59 s of its request, and one
+  // its second create allocates within 56 s: each within a started minute.
   it.effect("a session held past its cap reserves the whole hold, per second and per minute", () =>
     Effect.gen(function* () {
       assert.strictEqual(Spend.ceilingFor("unconnected"), 3.75);
       assert.strictEqual(Spend.tokenSecondsFor("unconnected"), 215);
       const authorization = { check: "unconnected", budgetUsd: 3.75, totalUsd: 3.75 } as const;
-      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 3.125);
+      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 3.375);
       assert.strictEqual(
         yield* Spend.admit({ rate: perMinute, authorization, reservedUsd: 0 }),
         3.75,
       );
       yield* refused(
-        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 3.12 }, reservedUsd: 0 }),
+        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 3.37 }, reservedUsd: 0 }),
       );
       yield* refused(Spend.authorize({ check: "unconnected", budgetUsd: 3.76, totalUsd: 5 }));
       // The checks that end their sessions by the cap reserve as before.

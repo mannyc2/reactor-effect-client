@@ -19,10 +19,15 @@
  *
  * Beside the watch, as soon as the watched session is allocated, the second
  * token allocates a session, which spends it, and at once sends a second
- * create, as a retry of a create whose outcome is unknown would. The key then
- * ends at once that session and any the second create allocated. Every end is
- * confirmed. What Reactor billed for each session comes from its dashboard,
- * against the times the evidence records.
+ * create, as a retry of a create whose outcome is unknown would. Once that is
+ * answered, the key reads that session, and any the second create allocated,
+ * every 0.5 s until it is ready, for 5 s at most, and ends each 10 s past its
+ * ready, or past that wait if it never became ready. So each short session
+ * runs a known time from ready, and a known time from creation, well within a
+ * started minute: what the dashboard bills for them tells billing from
+ * creation from billing from ready, and by the second from by the minute.
+ * Every end is confirmed. What Reactor billed for each session comes from its
+ * dashboard, against the times the evidence records.
  *
  * Unlike every other check, its work runs past its session's cap: the cap is
  * what it watches.
@@ -43,7 +48,7 @@ import type { Pieces } from "../Checks.js";
 import type { UnconnectedRecord } from "../Evidence.js";
 import * as Probes from "../Probes.js";
 import { recorded, Run } from "../Run.js";
-import { plans } from "../Spend.js";
+import { holdsFor, plans } from "../Spend.js";
 import { Target } from "../Target.js";
 
 /** How often the API key reads the watched session. */
@@ -60,6 +65,17 @@ const capMs = plans.unconnected.seconds * 1000;
 const graceMs = 30_000;
 /** How far the window runs past the latest end it allows for, for Reactor's own timers. */
 const spareMs = 15_000;
+/** How often the key reads a spent token's session until it is ready, and for how long at most. */
+const readyEveryMs = 500;
+const readyWithinMs = 5_000;
+/** How long the key holds a spent token's session past its ready, or past a wait without one. */
+const heldPastMs = 10_000;
+/**
+ * How long before its hold in the plan runs out the key must begin to end a
+ * spent token's session: its tries take 22 s at most, and a last read in the
+ * wait may run 1 s past it.
+ */
+const endBeforeMs = 3 * 6_000 + 2 * 2_000 + 3_000;
 /**
  * Ends a session with the key, and again, twice at most and 2 s apart, while
  * its end is unconfirmed: nothing here trusts the cap to end it. Each try, a
@@ -87,30 +103,6 @@ const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: st
       }),
     ),
   );
-
-/**
- * Ends each session with the key, side by side, so none bills while another's
- * tries run, and records the ends once all are done, so a save that fails
- * skips none.
- */
-const endTogether = Effect.fnUntraced(function* (
-  pieces: Pieces,
-  inspector: Coordinator.Coordinator["Service"],
-  sessionIds: ReadonlyArray<string>,
-) {
-  const run = yield* Run;
-  const ends = yield* Effect.forEach(
-    sessionIds,
-    Effect.fnUntraced(function* (sessionId) {
-      const requestedMs = yield* run.now;
-      const termination = yield* endWithKey(inspector, sessionId);
-      return { sessionId, requestedMs, reportedMs: yield* run.now, termination };
-    }),
-    { concurrency: "unbounded" },
-  );
-  for (const { sessionId, requestedMs, reportedMs, termination } of ends)
-    yield* pieces.closedWith(sessionId, requestedMs, { termination }, reportedMs);
-});
 
 type Answered = Result.Result<Coordinator.Allocation, ReactorError>;
 
@@ -141,6 +133,11 @@ const allocate = Effect.fnUntraced(function* (
 
 type States = UnconnectedRecord["states"];
 type SpentToken = NonNullable<UnconnectedRecord["spentToken"]>;
+type Held = NonNullable<SpentToken["held"]>[number];
+
+/** The SDK connects once a session publishes its capabilities and a transport. */
+const connectable = (inspection: Coordinator.Inspection) =>
+  inspection.hasCapabilities && inspection.selectedTransport !== null;
 
 /** The states read so far, and one more read: the last state runs on, or a new one begins. */
 const withRead = (states: States, state: string, atMs: number): States => {
@@ -149,6 +146,58 @@ const withRead = (states: States, state: string, atMs: number): States => {
     ? [...states.slice(0, -1), { ...last, lastMs: atMs, reads: last.reads + 1 }]
     : [...states, { state, firstMs: atMs, lastMs: atMs, reads: 1 }];
 };
+
+/**
+ * Reads a spent token's session with the key every 0.5 s until a read finds
+ * it connectable or ended, for 5 s at most; holds it 10 s past that read, or
+ * past the wait if none found it connectable; and ends it with the key. A
+ * session found ended is ended at once. Neither the wait nor the hold runs
+ * past `latestMs`, when the key must begin to end it. `change` records each
+ * read and the hold in the session's entry.
+ */
+const holdAndEnd = Effect.fnUntraced(function* (
+  pieces: Pieces,
+  inspector: Coordinator.Coordinator["Service"],
+  sessionId: string,
+  latestMs: number,
+  change: (sessionId: string, change: (held: Held) => Held) => Effect.Effect<void>,
+) {
+  const run = yield* Run;
+  let readMs = yield* run.now;
+  const waitEndsMs = Math.min(readMs + readyWithinMs, latestMs);
+  // Past the wait, if no read finds the session ready; none if one finds it ended.
+  let heldFromMs: number | undefined = waitEndsMs;
+  for (;;) {
+    yield* pieces.sleepUntil(readMs, Number.POSITIVE_INFINITY);
+    const read = yield* Effect.result(inspector.inspect(sessionId));
+    const atMs = yield* run.now;
+    const state = Result.isSuccess(read)
+      ? Probes.keptText(read.success.state)
+      : pieces.failedRead(read.failure);
+    yield* change(sessionId, (held) => ({ ...held, states: withRead(held.states, state, atMs) }));
+    if (Coordinator.isTerminal(state)) {
+      heldFromMs = undefined;
+      break;
+    }
+    if (Result.isSuccess(read) && connectable(read.success)) {
+      yield* change(sessionId, (held) => ({ ...held, connectableMs: atMs }));
+      heldFromMs = atMs;
+      break;
+    }
+    if (readMs >= waitEndsMs) break;
+    readMs = Math.min(readMs + readyEveryMs, waitEndsMs);
+  }
+  if (heldFromMs !== undefined) {
+    const endsMs = Math.min(heldFromMs + heldPastMs, latestMs);
+    yield* change(sessionId, (held) => ({ ...held, heldFromMs, endsMs }));
+    // Saved as the hold begins, so even a crash leaves the reads that timed it.
+    yield* run.mark("held", sessionId);
+    yield* pieces.sleepUntil(endsMs, Number.POSITIVE_INFINITY);
+  }
+  const requestedMs = yield* run.now;
+  const termination = yield* endWithKey(inspector, sessionId);
+  return { sessionId, requestedMs, reportedMs: yield* run.now, termination };
+});
 
 /** A reply body's key names and codes, as the evidence keeps them. */
 const bodyOf = (body: unknown) => {
@@ -273,12 +322,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             if (state !== last?.state) yield* run.mark(`read ${state}`);
             last = { state, known: Result.isSuccess(read) || state === "gone" };
             if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) goneMs = undefined;
-            // The SDK connects once the session publishes its capabilities and a transport.
-            if (
-              Result.isSuccess(read) &&
-              read.success.hasCapabilities &&
-              read.success.selectedTransport !== null
-            )
+            if (Result.isSuccess(read) && connectable(read.success))
               yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
             if (Coordinator.isTerminal(state)) {
               endedMs = goneMs ?? atMs;
@@ -343,7 +387,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
 
         // The second token allocates a session, which spends it, and at once a second create on
         // it asks what a retry of a create whose outcome is unknown would meet. The key then
-        // ends at once that session and any the second create allocated.
+        // holds that session, and any the second create allocated, past its ready and ends it.
         const spending = Effect.gen(function* () {
           const signaling = coordinator.signaling(Effect.succeed(spentGrant.jwt));
           const spentMs = yield* run.now;
@@ -385,11 +429,35 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
               ? second.success.sessionId
               : undefined;
           if (extra !== undefined) yield* run.mark("allocated", extra);
-          yield* endTogether(
-            pieces,
-            inspector,
-            extra === undefined ? [spentSession] : [spentSession, extra],
+          // Each is held side by side, so none waits on another's reads or tries, and within its
+          // hold in the plan, counted from its create's request. The ends are recorded once all
+          // are done, so a save that fails skips none.
+          const [, spentHold = 0, extraHold = 0] = holdsFor("unconnected");
+          const followed = [
+            { sessionId: spentSession, latestMs: spentMs + spentHold * 1000 - endBeforeMs },
+            ...(extra === undefined
+              ? []
+              : [{ sessionId: extra, latestMs: sentMs + extraHold * 1000 - endBeforeMs }]),
+          ];
+          yield* recordSpent((spent) => ({
+            ...spent,
+            held: followed.map(({ sessionId }) => ({ sessionId, states: [] })),
+          }));
+          const changeHeld = (sessionId: string, change: (held: Held) => Held) =>
+            recordSpent((spent) => ({
+              ...spent,
+              held: (spent.held ?? []).map((held) =>
+                held.sessionId === sessionId ? change(held) : held,
+              ),
+            }));
+          const ends = yield* Effect.forEach(
+            followed,
+            ({ sessionId, latestMs }) =>
+              holdAndEnd(pieces, inspector, sessionId, latestMs, changeHeld),
+            { concurrency: "unbounded" },
           );
+          for (const { sessionId, requestedMs, reportedMs, termination } of ends)
+            yield* pieces.closedWith(sessionId, requestedMs, { termination }, reportedMs);
         });
 
         // Side by side, so no read of the watched session waits on the spent token's creates or
