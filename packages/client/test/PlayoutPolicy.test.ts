@@ -1346,6 +1346,111 @@ describe("PlayoutPolicy, time", () => {
   });
 });
 
+// Each decision that waits on the time comes at its own deadline, which the wake names; the
+// property below checks that nothing falls due between wakes.
+describe("PlayoutPolicy, wakes", () => {
+  it("wakes as the runway falls to the filler's floor, and does not poll below it", () => {
+    const policy = drive({ config: protecting("order") });
+    policy.tick(0);
+    policy.open("s1", 600_000, 1);
+    const filler = clip("f0", { _tag: "Filler", index: 0 }, 20);
+    policy.observe({ ready: [filler] });
+    policy.reply({ _tag: "Done", clipId: "f0" });
+    policy.event({ _tag: "Started", clip: filler }, "s1", 1_000);
+    // 20 s from 1 s: the runway falls to the floor of 5 s at 16 s.
+    assert.strictEqual(policy.observe({ playing: filler }, "s1", 1_001).wake, 16_000);
+    const floor = policy.tick(16_000);
+    assert.deepStrictEqual(enqueued(floor.actions), ["filler"]);
+    // Below the floor nothing else is due until the lead ahead of the session's cap.
+    assert.strictEqual(floor.wake, 570_001);
+    assert.strictEqual(policy.reply({ _tag: "Done", clipId: "f1" }, 16_010).wake, 570_001);
+  });
+
+  it("drops a firm item once its projection reaches its startBy, when it does", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    // a builds from 10 ms to 2,010: b, 2 s of build after it, could start by 4,010.
+    policy.submit(spec("a"), 10);
+    policy.reply({ _tag: "Done", clipId: "c-a" }, 11);
+    const firm = { ...spec("b"), window: { startByMs: 4_000, firm: true } };
+    // Past 2,010 its projection grows with the time, and reaches 4,020 at 2,020.
+    assert.strictEqual(policy.submit(firm, 20).wake, 2_020);
+    assert.deepStrictEqual(statuses(policy.tick(2_019).actions, "b"), []);
+    assert.deepStrictEqual(statuses(policy.tick(2_020).actions, "b"), ["Dropped"]);
+  });
+
+  it("drops an At item that has not started by its time, at that time", () => {
+    const policy = drive();
+    policy.tick(0);
+    const at = { ...spec("a"), start: { _tag: "At", time: 5_000, late: "drop" } } as const;
+    assert.strictEqual(policy.submit(at, 10).wake, 5_000);
+    assert.deepStrictEqual(statuses(policy.tick(5_000).actions, "a"), ["Dropped"]);
+  });
+
+  it("takes back a held item Ready behind the clip on air as it comes within the margin", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit({ ...spec("h"), start: { _tag: "Manual" } }, 10);
+    const playing = clip("x", undefined, 10);
+    policy.event({ _tag: "Started", clip: playing }, "s1", 20);
+    // x ends at 10,020 and 1 s of y airs after it: h is 1.5 s from airing at 9,520.
+    const ready = [clip("y", undefined, 1), clip("c-h", item("h"))];
+    assert.strictEqual(policy.observe({ playing, ready }, "s1", 21).wake, 9_520);
+    assert.deepStrictEqual(commands(policy.tick(9_519).actions), []);
+    assert.deepStrictEqual(
+      commands(policy.tick(9_520).actions).map((action) => action.command),
+      [{ _tag: "Remove", clipId: "c-h" }],
+    );
+  });
+
+  it("builds an At item once the air secured lasts to its time, though nothing plays", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const x = clip("x", undefined, 5);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x, ready: [clip("y", undefined, 5)] }, "s1", 21);
+    const at = { ...spec("a"), start: { _tag: "At", time: 20_000, late: "nextBoundary" } } as const;
+    policy.submit(at, 30);
+    // x overran its 5 s without an end reported: y's 5 s last to 20 s from 15 s on.
+    assert.strictEqual(policy.tick(5_020).wake, 15_000);
+    assert.deepStrictEqual(enqueued(policy.tick(15_000).actions), ["a"]);
+  });
+
+  it("drops in the same step a firm item that the build it sends makes late", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    // b may not build before 1,010, and has 2 s of build to start by 4,010.
+    const firm = { ...spec("b"), window: { notBeforeMs: 1_000, startByMs: 4_000, firm: true } };
+    policy.submit(firm, 10);
+    // a builds meanwhile, from 20 ms to 2,020: b could then start at 4,020 at the earliest.
+    const sent = policy.submit(spec("a"), 20);
+    assert.deepStrictEqual(enqueued(sent.actions), ["a"]);
+    assert.deepStrictEqual(statuses(sent.actions, "b"), ["Dropped"]);
+  });
+
+  it("cuts for no item settled while its clip is still listed Ready", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(
+      { ...spec("u", 0), start: { _tag: "At", time: 5_000, late: "nextBoundary" } },
+      10,
+    );
+    const filler = clip("f", { _tag: "Filler", index: 0 }, 20);
+    policy.event({ _tag: "Started", clip: filler }, "s1", 20);
+    policy.observe({ playing: filler, ready: [clip("c-u", item("u"))] }, "s1", 21);
+    policy.edit([{ _tag: "Withdraw", key: key("u") }], false, 30);
+    policy.reply({ _tag: "Done" }, 40);
+    assert.deepStrictEqual(statuses(policy.actions, "u"), ["Accepted", "Ready", "Dropped"]);
+    // Its clip is gone, though no read has shown it yet; its time comes and cuts nothing.
+    assert.deepStrictEqual(commands(policy.tick(5_000).actions), []);
+  });
+});
+
 /**
  * A provider for the property below: it answers the command in flight as the
  * script says, builds and plays clips when told, and loses sessions. Time
@@ -1426,6 +1531,22 @@ const simulate = (script: Script, from: Policy.State) => {
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     wake = result.wake;
+    // Nothing falls due before the wake: a Tick at any instant before it does nothing, and wakes
+    // at the same time. It is sampled just after the input, halfway, and just before the wake.
+    const gap = result.wake === undefined ? 3_600_000 : result.wake - clock;
+    for (const at of new Set([Math.min(1, gap / 2), gap / 2, gap - Math.min(1, gap / 2)])) {
+      const quiet = Policy.step(
+        settings,
+        state,
+        { _tag: "Tick" },
+        { mono: clock + at, wall: clock + at },
+      );
+      if (quiet.actions.length > 0 || quiet.wake !== result.wake)
+        problems.push(
+          `a Tick ${String(at)} ms after ${input._tag} at ${String(clock)}, before its wake at ${String(result.wake)}, ` +
+            `gave ${quiet.actions.map((action) => (action._tag === "Command" ? action.command._tag : action._tag === "Emit" ? action.event._tag : action._tag)).join(", ") || "nothing"} and a wake at ${String(quiet.wake)}`,
+        );
+    }
     for (const action of result.actions) {
       actions.push(action);
       if (action._tag === "Command") {
@@ -1788,6 +1909,13 @@ const simulate = (script: Script, from: Policy.State) => {
 const check = (script: Script): void => {
   for (const from of [Policy.initial, measured]) keeps(script, from);
 };
+/** A script's wakes, run as `check` runs it: nothing falls due before one, and lanes stay single. */
+const wakes = (script: Script): void => {
+  for (const from of [Policy.initial, measured]) {
+    const { problems } = simulate(script, from);
+    assert.deepStrictEqual(problems, [], problems.join("; "));
+  }
+};
 const keeps = (script: Script, from: Policy.State): void => {
   const { actions, edits, drains, problems, groups, named, replaced } = simulate(script, from);
   // One provider command at a time on each session, so a refusal is always attributable.
@@ -1999,6 +2127,17 @@ describe("PlayoutPolicy, any script", () => {
       [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
       ([script]) => Effect.sync(() => check(script)),
       { arbitrary: { runs, ...(seed === undefined ? {} : { seed }) }, timeout: 600_000 },
+    );
+
+  // The plan wakes when something falls due and never polls. The scripts above stay short, as
+  // their length grows with the arbitrary's size, 10 by default, and scarcely a clip plays in
+  // them; these run to 80 steps, so that clips play, the runway falls and deadlines come due.
+  for (const { seed, runs } of propertyRuns)
+    it.effect.prop(
+      `wakes only when something falls due (seed ${seed ?? "drawn"}, ${String(runs)} scripts)`,
+      [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
+      ([script]) => Effect.sync(() => wakes(script)),
+      { arbitrary: { runs, size: 80, ...(seed === undefined ? {} : { seed }) }, timeout: 600_000 },
     );
 });
 

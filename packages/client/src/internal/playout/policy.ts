@@ -409,7 +409,10 @@ export interface State {
 export interface Step {
   readonly state: State;
   readonly actions: ReadonlyArray<Action>;
-  /** Monotonic milliseconds at which a `Tick` is due, if nothing comes sooner. */
+  /**
+   * Monotonic milliseconds at which a `Tick` is due, if nothing comes sooner. Before it
+   * nothing falls due: a `Tick` then decides nothing and names the same wake.
+   */
   readonly wake: number | undefined;
 }
 
@@ -451,6 +454,11 @@ const retryDelayMs = 1_000;
 const cutMarginMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
+/**
+ * Looks one step takes at most. None in the property's scripts decided anything past its
+ * second look: the bound only keeps a fault from spinning the loop.
+ */
+const maxLooks = 16;
 const maxSamples = 32;
 const minimumSamples = 3;
 
@@ -502,16 +510,25 @@ const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
     .find((value) => !value.retiring && !value.indeterminate && value.source?.available === true);
 
 /**
+ * When `value`'s playing clip ends, counted from its observed start. Undefined for a clip of
+ * unknown length or whose start was not seen: what is left of it does not fall with the time.
+ */
+const playingEndOf = (value: Session | undefined): number | undefined => {
+  const playing = value?.source?.playing;
+  const observed = value?.playing;
+  if (playing?.seconds === undefined || observed?.clipId !== playing.clipId) return undefined;
+  return observed.at + playing.seconds * 1000;
+};
+
+/**
  * What is left of `value`'s playing clip at `mono`, counted from its observed start. A clip
  * of unknown length may end at any moment, so nothing is counted for it and the plan builds ahead.
  */
 const playingRestOf = (value: Session | undefined, mono: number): number => {
   const playing = value?.source?.playing;
   if (playing?.seconds === undefined) return 0;
-  const since = value?.playing?.clipId === playing.clipId ? value.playing.at : undefined;
-  return since === undefined
-    ? playing.seconds * 1000
-    : Math.max(0, playing.seconds * 1000 - (mono - since));
+  const end = playingEndOf(value);
+  return end === undefined ? playing.seconds * 1000 : Math.max(0, end - mono);
 };
 
 /**
@@ -563,11 +580,8 @@ const fateOf = (item: Item): WithdrawOutcome => {
   return started ? "already-started" : "not-found";
 };
 
-/** Applies one input: a pure function of the state, the input, the configuration and the time. */
-export const step: {
-  (previous: State, input: Input, now: Now): (config: Config) => Step;
-  (config: Config, previous: State, input: Input, now: Now): Step;
-} = dual(4, (config: Config, previous: State, input: Input, now: Now): Step => {
+/** One look at the plan: applies the input, then decides what is due at `now`. */
+const decide = (config: Config, previous: State, input: Input, now: Now): Step => {
   const items = new Map(previous.items);
   const groups = new Map(previous.groups);
   let state: State = previous;
@@ -789,20 +803,43 @@ export const step: {
   const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
   const playingRestMs = (value: Session | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
+  /**
+   * The runway as the time passes: at `time` it is `(Math.max(end, time) - time) / 1000 +
+   * seconds`. It falls while the clip on air plays, to that clip's end, and holds still with
+   * none, or with one whose length or start is unknown, counted as `playingRestOf` counts it.
+   */
+  const runwayTerms = (): { readonly end: number; readonly seconds: number } => {
+    const target = preferred() ?? session(state.air);
+    if (target === undefined) return { end: -Infinity, seconds: 0 };
+    const onAir = target.id === state.air;
+    const end = onAir ? playingEndOf(target) : undefined;
+    const ready = readyOf(target)
+      .filter(airs)
+      .reduce((total, clip) => total + clip.seconds, 0);
+    return end === undefined
+      ? { end: -Infinity, seconds: (onAir ? playingRestMs(target) / 1000 : 0) + ready }
+      : { end, seconds: ready };
+  };
   /** Seconds of air secured on the session that takes new work. */
   const runway = (): number => {
-    const target = preferred() ?? session(state.air);
-    if (target === undefined) return 0;
-    const onAir = target.id === state.air ? playingRestMs(target) / 1000 : 0;
-    return (
-      onAir +
-      readyOf(target)
-        .filter(airs)
-        .reduce((total, clip) => total + clip.seconds, 0)
-    );
+    const { end, seconds } = runwayTerms();
+    return (Math.max(end, now.mono) - now.mono) / 1000 + seconds;
   };
-  /** The earliest a clip in `item`'s place could start, optimistically. */
-  const projectedStart = (item: Item): number => {
+  /** When the runway falls to `seconds` as the clip on air plays; undefined if it doesn't. */
+  const fallsTo = (seconds: number): number | undefined => {
+    const { end, seconds: after } = runwayTerms();
+    return Number.isFinite(end) && seconds > after ? end - (seconds - after) * 1000 : undefined;
+  };
+  /** Whether the runway is below `seconds`: it is from the instant it falls there. */
+  const below = (seconds: number): boolean =>
+    runway() < seconds || now.mono >= (fallsTo(seconds) ?? Infinity);
+  /**
+   * The earliest a clip in `item`'s place could start, optimistically, as the time passes: at
+   * `time` it is `Math.max(from, time + after)`. The end of the clip on air and the builds in
+   * flight fix `from`; the air ahead and the builds it waits for add `after` to the time, as
+   * they do once that clip is over.
+   */
+  const projection = (item: Item): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankItem(item);
     const aheadMs = (target === undefined ? [] : readyOf(target))
@@ -810,7 +847,12 @@ export const step: {
         (clip) => compareRank(rankClip(clip), rank) < 0 && itemOf(clip)?.withdraw === undefined,
       )
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    const playable = now.mono + playingRestMs(session(state.air)) + aheadMs;
+    const air = session(state.air);
+    const end = playingEndOf(air);
+    const playable = {
+      from: (end ?? -Infinity) + aheadMs,
+      after: (end === undefined ? playingRestMs(air) : 0) + aheadMs,
+    };
     const perSecond = estimates().build?.median;
     if (perSecond === undefined) return playable;
     const buildMs = (seconds: number) => seconds * perSecond * 1000;
@@ -839,8 +881,27 @@ export const step: {
           buildOrder(other, item) < 0,
       )
       .reduce((total, other) => total + buildMs(other.spec.seconds), 0);
-    return Math.max(playable, Math.max(now.mono, ...inFlight) + first + buildMs(item.spec.seconds));
+    const waits = first + buildMs(item.spec.seconds);
+    return {
+      from: Math.max(playable.from, Math.max(...inFlight) + waits),
+      after: Math.max(playable.after, waits),
+    };
   };
+  /**
+   * Whether a clip in `item`'s place could not start before `startBy`, as projected. Once
+   * nothing holds it, the projection grows with the time: it misses from `startBy - after` on.
+   */
+  const misses = (item: Item, startBy: number): boolean => {
+    const { from, after } = projection(item);
+    return Math.max(from, now.mono + after) >= startBy || now.mono >= startBy - after;
+  };
+  /** Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. */
+  const lateWhenProjected = (item: Item): item is Item & { readonly startBy: number } =>
+    item.phase === "Accepted" &&
+    item.spec.window?.firm === true &&
+    item.startBy !== undefined &&
+    item.dispatchedAt === undefined &&
+    estimates().build !== undefined;
 
   const newItem = (spec: Spec, place: Partial<Item> = {}): Item => ({
     spec,
@@ -1090,7 +1151,7 @@ export const step: {
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        projectedStart(item) > item.startBy
+        misses(item, item.startBy)
       ) {
         for (const added of adds) items.delete(added);
         for (const [group, value] of groups)
@@ -1845,16 +1906,15 @@ export const step: {
   }
   if (state.closed) return { state: { ...state, items }, actions, wake: undefined };
 
-  // Sweep every waiting item, not only the heads: expiry must not strand behind a live one.
+  // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
+  // is late from the instant its deadline falls due, where the wake is.
   const boundaryLate = (item: Item): boolean => {
     const at = atMono(item);
     if (at === undefined || item.spec.start._tag !== "At") return false;
     const late = item.spec.start.late;
     return late === "nextBoundary"
       ? false
-      : late === "drop"
-        ? now.mono > at
-        : now.mono - at > late.skipAfterMs;
+      : now.mono >= (late === "drop" ? at : at + late.skipAfterMs);
   };
   for (const item of [...items.values()]) {
     if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
@@ -1863,15 +1923,7 @@ export const step: {
       boundaryLate(item)
     )
       withdraw(item.spec.key, "late");
-    else if (
-      item.phase === "Accepted" &&
-      item.spec.window?.firm === true &&
-      item.startBy !== undefined &&
-      item.dispatchedAt === undefined &&
-      estimates().build !== undefined &&
-      projectedStart(item) > item.startBy
-    )
-      withdraw(item.spec.key, "late");
+    else if (lateWhenProjected(item) && misses(item, item.startBy)) withdraw(item.spec.key, "late");
   }
   // A replacement takes the place once Ready, or at once if nothing was built for what it
   // replaces; if what it replaces starts first, the replacement goes instead.
@@ -1910,7 +1962,7 @@ export const step: {
   // it takes no new work and a replacement takes over, now rather than at the next input. One
   // not on air has nothing to finish, so it goes at once.
   const expired = (since: number | undefined): boolean =>
-    since !== undefined && now.mono - since >= config.unknownTimeoutMs;
+    since !== undefined && now.mono >= since + config.unknownTimeoutMs;
   for (const value of [...state.sessions]) {
     if (value.indeterminate) continue;
     const stuck =
@@ -2203,7 +2255,7 @@ export const step: {
     const playing = value.source?.playing;
     if (
       front !== undefined &&
-      cutItem !== undefined &&
+      cutItem?.phase === "Ready" &&
       playing !== undefined &&
       state.cutting === undefined &&
       config.lanes[cutItem.spec.lane]?.cut === true &&
@@ -2233,16 +2285,12 @@ export const step: {
     for (const [index, clip] of actual.entries()) {
       const item = itemOf(clip);
       if (item?.phase !== "Ready") continue;
-      const aheadMs =
-        playingRestMs(value) +
-        actual
-          .slice(0, index)
-          .filter(airs)
-          .reduce((total, other) => total + other.seconds * 1000, 0);
+      const readyMs = readyAheadMs(value, index);
+      const aheadMs = playingRestMs(value) + readyMs;
       const at = atMono(item);
       const exposed =
         item.mode === "held"
-          ? aheadMs < exposureMarginMs
+          ? aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity)
           : at !== undefined && at > now.mono && aheadMs < at - now.mono;
       if (exposed && value.source?.available === true) {
         // It goes back to the plan, to be built again once the air ahead covers its wait.
@@ -2311,9 +2359,9 @@ export const step: {
     );
     const targetSeconds = Math.max(filler.target, floorSeconds);
     const refilling =
-      anchorGap > room || (state.filler.refilling ? room < targetSeconds : room < floorSeconds);
+      anchorGap > room || (state.filler.refilling ? below(targetSeconds) : below(floorSeconds));
     state = { ...state, filler: { ...state.filler, refilling } };
-    if (!refilling || room >= Math.max(targetSeconds, anchorGap) || !drainingNeeds) return;
+    if (!refilling || (!below(targetSeconds) && room >= anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
     if (!fits(target, seconds)) return;
     sendFiller(filler, target, seconds, room);
@@ -2408,7 +2456,6 @@ export const step: {
   }
   /** Items that may be built now, first in build order. */
   function eligible(floorSeconds: number): ReadonlyArray<Item> {
-    const room = runway();
     const target = preferred();
     return [...items.values()]
       .filter(
@@ -2423,12 +2470,42 @@ export const step: {
             item.unsent.changes !== target.changes) &&
           (item.notBefore ?? -Infinity) <= now.mono &&
           // Autoplay cannot hold a Ready clip: build a future anchor once air ahead covers the wait.
-          ((atMono(item) ?? -Infinity) <= now.mono ||
-            room >= ((atMono(item) ?? 0) - now.mono) / 1000) &&
+          covered(item) &&
           // A held item is built ahead only while filler keeps the runway at its floor.
-          (item.mode !== "held" || (floorSeconds > 0 && room >= floorSeconds)),
+          (item.mode !== "held" || (floorSeconds > 0 && !below(floorSeconds))),
       )
       .sort(buildOrder);
+  }
+  /**
+   * Whether the air secured lasts to an `At` item's time, so that its build may go. Once the
+   * runway stops falling, the item's time comes within it, at `coveredAt`.
+   */
+  function covered(item: Item): boolean {
+    const at = atMono(item);
+    if (at === undefined || at <= now.mono) return true;
+    const { end, seconds } = runwayTerms();
+    return Math.max(end, now.mono) + seconds * 1000 >= at || now.mono >= at - seconds * 1000;
+  }
+  function coveredAt(item: Item): number | undefined {
+    const at = atMono(item);
+    return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
+  }
+  /** Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays. */
+  function readyAheadMs(value: Session, index: number): number {
+    return readyOf(value)
+      .slice(0, index)
+      .filter(airs)
+      .reduce((total, other) => total + other.seconds * 1000, 0);
+  }
+  /**
+   * When a held item Ready on `value` behind `aheadMs` of Ready air comes within the margin of
+   * airing, as the clip playing there airs; undefined if it doesn't before that clip ends.
+   */
+  function exposedAt(value: Session, aheadMs: number): number | undefined {
+    const end = playingEndOf(value);
+    return end === undefined || aheadMs >= exposureMarginMs
+      ? undefined
+      : end + aheadMs - exposureMarginMs;
   }
   /**
    * Whether a clip of `seconds` built on `target` now would finish airing before
@@ -2581,12 +2658,14 @@ export const step: {
       if (at !== undefined && at > now.mono && Number.isFinite(at)) times.push(at);
     };
     for (const item of items.values()) {
+      const at = atMono(item);
+      // A settled item's clip may still be listed Ready until a read shows it gone: its time
+      // still ranks it there.
+      later(at);
       if (item.phase === "Settled") continue;
       later(item.notBefore);
       later(item.startBy);
       later(item.retryAt);
-      const at = atMono(item);
-      later(at);
       if (
         at !== undefined &&
         item.spec.start._tag === "At" &&
@@ -2597,28 +2676,47 @@ export const step: {
       if (item.phase === "Started")
         for (const [index, cue] of item.spec.cues.entries())
           if (!item.fired.includes(index)) later(cueAt(item, cue));
+      if (item.phase === "Accepted") later(coveredAt(item));
+      if (lateWhenProjected(item)) later(item.startBy - projection(item).after);
     }
     for (const value of state.sessions) {
       for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
       if (value.lastEndedAt !== undefined) later(value.lastEndedAt + config.graceMs);
+      for (const [index, clip] of readyOf(value).entries()) {
+        const item = itemOf(clip);
+        if (item?.phase === "Ready" && item.mode === "held")
+          later(exposedAt(value, readyAheadMs(value, index)));
+      }
     }
     later(state.openRetryAt);
     later(state.filler.retryAt);
-    // The runway falls while a clip plays: wake when it will cross the filler floor, or a cut's margin.
-    const onAirNow = session(state.air);
-    if (onAirNow?.source?.playing !== undefined) {
-      const room = runway();
-      later(now.mono + Math.max(1, (room - clipFloor()) * 1000));
-      // Protecting the air, the floor also covers the next item's build: wake as the runway falls to it.
-      const floor = fillerFloor();
-      if (room > floor) later(now.mono + (room - floor) * 1000);
-      later(now.mono + Math.max(1, playingRestMs(onAirNow) - cutMarginMs));
-      later(now.mono + playingRestMs(onAirNow) + 1);
-    }
+    // The runway falls while a clip plays: wake as it falls to the filler's floor, which,
+    // protecting the air, also covers the next item's build. Below it, filler goes at once.
+    later(fallsTo(clipFloor()));
+    later(fallsTo(fillerFloor()));
     return times.length === 0 ? undefined : Math.min(...times);
   }
+};
+
+/**
+ * Applies one input: a pure function of the state, the input, the configuration and the time.
+ * A decision can make another due at the same instant, as a build sent can leave a firm item
+ * projected late, or a session lost at its cap settle what a batch waits on: the plan looks
+ * again until nothing more is due, so none of it waits for a later input or wake.
+ */
+export const step: {
+  (previous: State, input: Input, now: Now): (config: Config) => Step;
+  (config: Config, previous: State, input: Input, now: Now): Step;
+} = dual(4, (config: Config, previous: State, input: Input, now: Now): Step => {
+  let result = decide(config, previous, input, now);
+  for (let look = 1, decided = result.actions.length; decided > 0 && look < maxLooks; look++) {
+    const again = decide(config, result.state, { _tag: "Tick" }, now);
+    result = { ...again, actions: [...result.actions, ...again.actions] };
+    decided = again.actions.length;
+  }
+  return result;
 });
 
 /**
