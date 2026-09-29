@@ -114,7 +114,8 @@ interface SnapshotDetails {
    * without it is lasting: only `session.reconnect` connects the session again. A drop no attempt
    * could reconnect, once content moderation or Reactor has ended the session or Reactor refuses
    * this client's protocol (`VersionMismatch`), is lasting from the drop on, and `lastError` says
-   * why.
+   * why. A connection that drops before it has been ready 10 seconds, once the reconnect's time
+   * has run out, reads `reconnecting` for one change before the reconnect stops.
    */
   readonly reconnecting: boolean;
   readonly pending: { readonly data: number; readonly control: number };

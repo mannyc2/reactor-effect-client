@@ -587,7 +587,9 @@ export const open = <E = never, R = never>(
  * Adopts a session `open` allocated, from its owner record and a token bound
  * to it, after its owner died: this process then owns its remote lifetime. It
  * keeps the session's canvas, queue and playback; its lifetime is what remains,
- * when it returns, until the record's `endsAt`, if it has one.
+ * when it returns, until the record's `endsAt`, if it has one. A resume that
+ * fails ends the session it adopted, as a failed adopting attach does, one
+ * whose first connection drops as it becomes ready included.
  */
 export const resume = (
   options: ResumeOptions,
