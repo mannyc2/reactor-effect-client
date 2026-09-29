@@ -325,6 +325,18 @@ rehearse("unconnected ends at once a second session its spent token allocated", 
   },
 });
 
+// Nothing ended the session, so its cap cannot be counted on to: the cleanup says to end it.
+rehearse("unconnected fails, and says to end the session, when the key cannot end it", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "IgnoreDelete" }],
+  judge: (evidence) => {
+    failed("confirmed termination")(evidence);
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", evidence.sessions[0]?.id ?? "no session");
+    assert.include(instruction ?? "", "may not end it");
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

@@ -1115,13 +1115,20 @@ export const judged = (input: {
   return { ...evidence, missing: absent, reasons, verdict: reasons.length === 0 ? "pass" : "fail" };
 };
 
-/** What a person must confirm in the Reactor dashboard: sessions whose end the run could not confirm. */
+/**
+ * What a person must confirm in the Reactor dashboard: sessions whose end the
+ * run could not confirm. Nothing connected to `unconnected`'s sessions, and
+ * whether a cap ends such a session is what that check asks, so its
+ * instruction promises no end.
+ */
 export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> =>
   evidence.sessions.flatMap((session) =>
     session.close?.confirmed === true
       ? []
       : [
-          `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
+          evidence.check === "unconnected"
+            ? `Session ${session.id} was not confirmed ended, and nothing connected to it, so its cap at ${session.capEndsAt} may not end it. End it in the Reactor dashboard, and note what it cost.`
+            : `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
         ],
   );
 
