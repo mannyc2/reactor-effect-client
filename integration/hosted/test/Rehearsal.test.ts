@@ -372,7 +372,37 @@ rehearse("unconnected ends together the spent token's session and one its second
     assert.strictEqual(probe?.ended?.by, "reactor");
     assert.isAtLeast((probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0), 60_000);
     // The time the summary gives is the allocation's; the termination line says how it ended.
-    assert.include(summarize([evidence]), `a second create allocated ${extra.id} in `);
+    const summary = summarize([evidence]);
+    assert.include(summary, `a second create allocated ${extra.id} in `);
+    // A row a session for the dashboard's duration and charge, which the maintainer fills in.
+    assert.include(
+      summary,
+      "| Session | Made by | Requested | Allocated | First ACTIVE read | Ended by | Ended | Allocated to ended | Dashboard duration | Dashboard charge |",
+    );
+    const rows = summary.split("\n").flatMap((line) =>
+      evidence.sessions.some((held) => line.startsWith(`| ${held.id} |`))
+        ? [
+            line
+              .split("|")
+              .slice(1, -1)
+              .map((cell) => cell.trim()),
+          ]
+        : [],
+    );
+    assert.deepStrictEqual(
+      rows.map((cells) => [cells[0], cells[1], cells[4] === "–", cells[5], cells[8], cells[9]]),
+      [
+        [session?.id, "the watched token's create", false, "Reactor", "", ""],
+        [spending.id, "the spent token's first create", true, "the key", "", ""],
+        [extra.id, "its second create", true, "the key", "", ""],
+      ],
+    );
+    // Reactor's end lies between the last read that found the session running and the first
+    // that found it ended, 2 s apart; the times count from the watched session's request.
+    assert.match(
+      summary,
+      /^\| \S+ \| the watched token's create \| 0\.00 s \| \d+\.\d\d s \| \d+\.\d\d s \| Reactor \| \d+\.\d\d–\d+\.\d\d s \| 6\d\.\d\d–6\d\.\d\d s \|  \|  \|$/m,
+    );
   },
 });
 

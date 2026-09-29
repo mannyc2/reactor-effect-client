@@ -1,4 +1,5 @@
 /** A ledger's runs as Markdown, for `summary.md` and the release notes. */
+import { isTerminal } from "reactor-effect-client/Coordinator";
 import type { Evidence } from "./Evidence.js";
 import { cleanupInstructions } from "./Evidence.js";
 
@@ -348,6 +349,75 @@ const unconnectedLines = (
   ];
 };
 
+/**
+ * `unconnected`'s sessions as a table for the Reactor dashboard: each one's
+ * times, from the watched session's request, beside the duration and charge
+ * the maintainer reads there. Each end lies between two times: for Reactor's,
+ * the last read that found the session running and the first that found it
+ * ended; for the key's, its DELETE and the read that confirmed it.
+ */
+const billing = (
+  evidence: Evidence,
+  probe: NonNullable<Evidence["unconnected"]>,
+): ReadonlyArray<string> => {
+  if (evidence.sessions.length === 0) return [];
+  const since = (atMs: number | undefined) =>
+    atMs === undefined ? "–" : seconds(atMs - probe.requestedMs);
+  // No end comes before the allocation, though the DELETE after it may share its instant.
+  const between = (fromMs: number, toMs: number, startMs: number) =>
+    `${(Math.max(0, fromMs - startMs) / 1000).toFixed(2)}–${seconds(toMs - startMs)}`;
+  const spent = probe.spentToken;
+  const made = [
+    {
+      sessionId: probe.sessionId,
+      by: "the watched token's create",
+      requestedMs: probe.requestedMs,
+    },
+    {
+      sessionId: spent?.sessionId,
+      by: "the spent token's first create",
+      requestedMs: spent?.requestedMs,
+    },
+    {
+      sessionId: spent?.second?.sessionId,
+      by: "its second create",
+      requestedMs: spent?.second?.sentMs,
+    },
+  ];
+  // A failed read, or one that found it gone, says nothing of whether the session ran.
+  const running = (state: string) =>
+    !isTerminal(state) && state !== "gone" && !/^(?:http|error):/.test(state);
+  const endOf = (session: Evidence["sessions"][number]) => {
+    const ended = probe.ended;
+    if (session.id === probe.sessionId && ended?.by === "reactor") {
+      const runningMs = probe.states
+        .filter((entry) => entry.lastMs < ended.atMs && running(entry.state))
+        .reduce((latest, entry) => Math.max(latest, entry.lastMs), session.allocatedMs);
+      return { by: "Reactor", fromMs: runningMs, toMs: ended.atMs };
+    }
+    const close = session.close;
+    return close?.confirmed === true
+      ? { by: "the key", fromMs: close.requestedMs, toMs: close.reportedMs }
+      : undefined;
+  };
+  return [
+    "",
+    `**Billing, for the dashboard:** seconds from the watched session's request, ${probe.requestedAt}. Each end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it. Fill in the last two columns from the Reactor dashboard.`,
+    "",
+    "| Session | Made by | Requested | Allocated | First ACTIVE read | Ended by | Ended | Allocated to ended | Dashboard duration | Dashboard charge |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...evidence.sessions.map((session) => {
+      const role = made.find((entry) => entry.sessionId === session.id);
+      const active =
+        session.id === probe.sessionId
+          ? probe.states.find((entry) => entry.state === "ACTIVE")?.firstMs
+          : undefined;
+      const end = endOf(session);
+      return `| ${session.id} | ${role?.by ?? "–"} | ${since(role?.requestedMs)} | ${since(session.allocatedMs)} | ${since(active)} | ${end?.by ?? "unconfirmed"} | ${end === undefined ? "–" : between(end.fromMs, end.toMs, probe.requestedMs)} | ${end === undefined ? "–" : between(end.fromMs, end.toMs, session.allocatedMs)} |  |  |`;
+    }),
+  ];
+};
+
 /** One run as a section. */
 const section = (evidence: Evidence): string => {
   const environment = evidence.environment;
@@ -371,6 +441,7 @@ const section = (evidence: Evidence): string => {
     `- **Criteria:** ${evidence.criteria.map((criterion) => `${criterion.passed ? "✓" : "✗"} ${criterion.name}`).join(" · ")}`,
     ...evidence.reasons.map((reason) => `  - ${reason}`),
     ...cleanupInstructions(evidence).map((line) => `- **Cleanup:** ${line}`),
+    ...(evidence.unconnected === undefined ? [] : billing(evidence, evidence.unconnected)),
   ].join("\n");
 };
 
