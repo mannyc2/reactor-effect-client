@@ -464,6 +464,19 @@ rehearse("unconnected leaves Q1 unanswered when its session ends right after the
   },
 });
 
+// Reactor gives a session 30 s once its last connection drops, so an end about 30 s after the
+// second create may be that create's doing too.
+rehearse("unconnected leaves Q1 unanswered when its session ends 30 s after the second create", {
+  check: "unconnected",
+  faults: [{ _tag: "Expire", after: Duration.seconds(30) }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.include(probe?.unanswered ?? "", "about 30 s after that create was answered");
+  },
+});
+
 // A coordinator may lose a session for one read: only a second read in a row answered 404, or a
 // read at the end that agrees, ends the watch.
 rehearse("unconnected takes a single read answered 404 for no end", {
