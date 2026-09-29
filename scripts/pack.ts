@@ -104,7 +104,6 @@ const NewConsumerManifest = Schema.fromJsonString(
   Schema.Struct({
     private: Schema.Literal(true),
     type: Schema.Literal("module"),
-    overrides: Schema.optionalKey(Dependencies),
   }),
   { space: 2 },
 );
@@ -691,16 +690,12 @@ const program = Effect.gen(function* () {
   const releaseConsumer = (directory: string) =>
     keep ? Effect.void : fs.remove(directory, { recursive: true, force: true });
 
-  const initConsumer = Effect.fnUntraced(function* (
-    name: string,
-    overrides?: Readonly<Record<string, string>>,
-  ) {
+  const initConsumer = Effect.fnUntraced(function* (name: string) {
     const directory = path.join(isolated, name);
     yield* fs.makeDirectory(directory, { recursive: true });
     const manifest = yield* Schema.encodeEffect(NewConsumerManifest)({
       private: true,
       type: "module",
-      ...(overrides === undefined ? {} : { overrides }),
     });
     yield* fs.writeFileString(path.join(directory, "package.json"), manifest);
     yield* fs.copyFile(
@@ -734,7 +729,6 @@ const program = Effect.gen(function* () {
       [
         ...installArgs,
         ...(omitOptional ? ["--omit=optional"] : []),
-        `effect@${selected.effect}`,
         ...installed.map((archive) => archive.installTarball),
         ...packages,
       ],
@@ -1043,7 +1037,7 @@ const program = Effect.gen(function* () {
   yield* install(
     portable,
     [client],
-    [...compilerPackages, `@types/node@${nodeTypesVersion}`],
+    [`effect@${selected.effect}`, ...compilerPackages, `@types/node@${nodeTypesVersion}`],
     true,
   );
   const portableStack = yield* checkConsumerStack(portable, "portable-node");
@@ -1093,7 +1087,12 @@ const program = Effect.gen(function* () {
   yield* releaseConsumer(portable);
 
   const browser = yield* initConsumer("browser");
-  yield* install(browser, [client, browserArchive], compilerPackages, true);
+  yield* install(
+    browser,
+    [client, browserArchive],
+    [`effect@${selected.effect}`, ...compilerPackages],
+    true,
+  );
   const browserStack = yield* checkConsumerStack(browser, "browser");
   yield* fs.copyFile(fixture("browser-import.mjs"), path.join(browser, "browser-import.mjs"));
   const browserOutput = yield* run(
@@ -1158,20 +1157,15 @@ const program = Effect.gen(function* () {
     if (addonArchive === undefined) return yield* failure("no addon archive for this host");
     const hostIdentity = identities.get(hostAddon ?? "");
     if (hostIdentity === undefined) return yield* failure("no native identity for this host");
-    // npm applies overrides only at the consumer root. The platform's prerelease
-    // caret range otherwise admits a later shared platform and a second Effect.
-    const native = yield* initConsumer("native", {
-      "@effect/platform-node-shared": selected.nodeShared,
-    });
+    // Runs only in CI, where the addons are staged. Like the fresh consumer, it names no Effect
+    // package and sets no override: the installer takes Effect, the Node platform and the shared
+    // platform from the archives' exact peers, and the tree check requires the selection.
+    const native = yield* initConsumer("native");
     yield* install(
       native,
       // The binding's optional dependency on this host's package resolves to its archive.
       [client, nativeArchive, addonArchive],
-      [
-        `@effect/platform-node@${selected.nodePlatform}`,
-        ...compilerPackages,
-        `@types/node@${nodeTypesVersion}`,
-      ],
+      [...compilerPackages, `@types/node@${nodeTypesVersion}`],
       false,
     );
     const nativeStack = yield* checkConsumerStack(native, "native");

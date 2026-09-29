@@ -138,7 +138,6 @@ export const ConsumerManifest = Schema.StructWithRest(
   Schema.Struct({
     private: Schema.Literal(true),
     type: Schema.Literal("module"),
-    overrides: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     dependencies: Schema.Record(Schema.String, Schema.String),
   }),
   [Schema.Record(Schema.String, Schema.Json)],
