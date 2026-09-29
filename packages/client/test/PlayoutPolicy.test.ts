@@ -1898,9 +1898,23 @@ const steps = [
 ] as const;
 type Script = ReadonlyArray<(typeof steps)[number]>;
 
-const simulate = (script: Script, from: Policy.State) => {
+/**
+ * How long the harness's sessions last, and how long before its cap each is renewed. Sessions
+ * of two minutes, renewed 30 s before, leave most scripts one session. Sessions of 20 s,
+ * renewed 10 s before, renew and switch within many a script, and two lanes carry commands at
+ * once in some.
+ */
+interface Lifetimes {
+  readonly lifetimeMs: number;
+  readonly leadMs: number;
+}
+const lasting: Lifetimes = { lifetimeMs: 120_000, leadMs: 30_000 };
+const renewing: Lifetimes = { lifetimeMs: 20_000, leadMs: 10_000 };
+
+const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting) => {
   const settings: Policy.Config = {
     ...config,
+    leadMs: lifetimes.leadMs,
     filler: {
       floor: 5,
       target: 10,
@@ -1946,6 +1960,12 @@ const simulate = (script: Script, from: Policy.State) => {
   const replaced = new Map<string, string>();
   /** Each session's command in flight, by session. */
   const outstanding = new Map<string, number>();
+  /** Sessions the plan closed: it sends them nothing more. */
+  const closed = new Set<string>();
+  /** Filler enqueues whose result is still to come, by command. */
+  const fillers = new Map<number, { readonly index: number; readonly sessionId: string }>();
+  /** Where an enqueue of each filler clip may have applied: in flight, done, or its reply lost. */
+  const applied = new Map<number, ReadonlySet<string>>();
   /** When the plan last asked to be woken. */
   let wake: number | undefined;
 
@@ -1955,6 +1975,17 @@ const simulate = (script: Script, from: Policy.State) => {
     if (input._tag === "Result")
       for (const [sessionId, id] of outstanding) if (id === input.id) outstanding.delete(sessionId);
     if (input._tag === "Lost") outstanding.delete(input.sessionId);
+    // A filler enqueue refused, sent or not, made no clip there.
+    const filler = input._tag === "Result" ? fillers.get(input.id) : undefined;
+    if (input._tag === "Result" && filler !== undefined) {
+      fillers.delete(input.id);
+      const result = input.result;
+      if (result._tag === "Failed" && result.cause.context.outcome !== "unknown")
+        applied.set(
+          filler.index,
+          new Set([...(applied.get(filler.index) ?? [])].filter((id) => id !== filler.sessionId)),
+        );
+    }
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     wake = result.wake;
@@ -1977,6 +2008,23 @@ const simulate = (script: Script, from: Policy.State) => {
     for (const action of result.actions) {
       actions.push(action);
       if (action._tag === "Command") {
+        const command = action.command;
+        if (closed.has(action.sessionId))
+          problems.push(`command ${String(action.id)} sent to ${action.sessionId}, closed`);
+        if (command._tag === "Autoplay" && command.enabled && action.sessionId !== state.air)
+          problems.push(`autoplay turned on for ${action.sessionId}, which is not on air`);
+        // A filler clip goes to one session at a time: never where, or while, an enqueue of it
+        // on a session still open may have applied.
+        if (command._tag === "Enqueue" && command.tag._tag === "Filler") {
+          const index = command.tag.index;
+          const where = [...(applied.get(index) ?? [])].filter((id) => !closed.has(id));
+          if (where.length > 0)
+            problems.push(
+              `filler ${String(index)} sent to ${action.sessionId} while its enqueue on ${where.join(", ")} may have applied`,
+            );
+          fillers.set(action.id, { index, sessionId: action.sessionId });
+          applied.set(index, new Set([...where, action.sessionId]));
+        }
         const unsettled = outstanding.get(action.sessionId);
         if (unsettled !== undefined)
           problems.push(
@@ -1984,7 +2032,6 @@ const simulate = (script: Script, from: Policy.State) => {
           );
         outstanding.set(action.sessionId, action.id);
         // A cut stops only filler, a clip the plan does not own, or a strictly lower lane's clip.
-        const command = action.command;
         if (command._tag === "Stop") {
           const value = sessions.get(action.sessionId);
           const cutter = value?.ready.find((clip) => clip.clipId === state.cutting?.next)?.tag;
@@ -2000,6 +2047,7 @@ const simulate = (script: Script, from: Policy.State) => {
       if (action._tag === "Close") {
         sessions.delete(action.sessionId);
         outstanding.delete(action.sessionId);
+        closed.add(action.sessionId);
       }
       if (action._tag === "Open") wanted++;
     }
@@ -2027,6 +2075,8 @@ const simulate = (script: Script, from: Policy.State) => {
     const keys = new Map<number, string>();
     const parts = new Map<number, ReadonlyArray<string>>();
     const fresh: Array<string> = [];
+    /** Replacements it makes, with the place each took in its part's group. */
+    const replacing: Array<{ readonly key: string; readonly group: string | undefined }> = [];
     list.forEach((value, position) => {
       if (value._tag === "Withdraw") {
         keys.set(position, value.key);
@@ -2047,13 +2097,16 @@ const simulate = (script: Script, from: Policy.State) => {
       }
       if (value._tag === "Submit" || value._tag === "Insert" || value._tag === "Replace")
         known.push(value.spec.key);
-      if (value._tag === "Replace") {
+      // A replacement under a key the plan holds already is that item, not a new one.
+      if (value._tag === "Replace" && !state.items.has(value.spec.key)) {
         replaced.set(value.spec.key, value.key);
         const part = partOf.get(value.key);
-        if (part !== undefined && !partOf.has(value.spec.key)) {
+        const joins = part !== undefined && !partOf.has(value.spec.key);
+        if (joins) {
           partOf.set(value.spec.key, part);
           groups.get(part.group)?.push({ key: value.spec.key, place: part.place });
         }
+        replacing.push({ key: value.spec.key, group: joins ? part.group : undefined });
       }
       if (value._tag === "SubmitGroup" && !groups.has(value.key)) {
         fresh.push(value.key);
@@ -2082,12 +2135,22 @@ const simulate = (script: Script, from: Policy.State) => {
         const lane = state.items.get(action.event.event.key)?.spec.lane;
         if (lane !== undefined) lanes.set(action.event.event.key, lane);
       }
-    // A group the plan refused is none: its key may yet name an item of its own.
-    if (actions.some((action) => action._tag === "Refused" && action.id === id))
+    // A group or a replacement the plan refused is none: its key may yet name an item of its own.
+    if (actions.some((action) => action._tag === "Refused" && action.id === id)) {
       for (const group of fresh) {
         groups.delete(group);
         for (const [part, place] of partOf) if (place.group === group) partOf.delete(part);
       }
+      for (const { key: next, group } of replacing) {
+        replaced.delete(next);
+        if (group === undefined) continue;
+        partOf.delete(next);
+        groups.set(
+          group,
+          (groups.get(group) ?? []).filter((other) => other.key !== next),
+        );
+      }
+    }
   };
   const lates: ReadonlyArray<Policy.Late> = ["nextBoundary", "drop", { skipAfterMs: 1_000 }];
   // Some items start at an instant, some within a window, and some are held and never released:
@@ -2189,7 +2252,7 @@ const simulate = (script: Script, from: Policy.State) => {
     wanted--;
     const sessionId = `s${String(++opened)}`;
     sessions.set(sessionId, { building: [], ready: [], playing: undefined });
-    send({ _tag: "Opened", sessionId, lifetimeMs: 120_000 });
+    send({ _tag: "Opened", sessionId, lifetimeMs: lifetimes.lifetimeMs });
     observe(sessionId);
   };
 
@@ -2207,6 +2270,11 @@ const simulate = (script: Script, from: Policy.State) => {
       )
       .sort((a, b) => a.id - b.id);
     const busy = index % 2 === 0 ? lanes[0] : lanes.at(-1);
+    // A session with a clip building, the oldest or the newest, so both sessions' builds end.
+    const builder = () => {
+      const building = [...sessions].filter(([, entry]) => entry.building.length > 0);
+      return index % 2 === 0 ? building[0] : building.at(-1);
+    };
     switch (step) {
       case "submit":
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
@@ -2264,15 +2332,13 @@ const simulate = (script: Script, from: Policy.State) => {
           result: failed(step === "unknown" ? "unknown" : "replied"),
         });
       case "fail": {
-        const [sessionId, value] =
-          [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
+        const [sessionId, value] = builder() ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
         send({ _tag: "Source", sessionId, event: buildFailed(value.building.shift()!) });
         return observe(sessionId);
       }
       case "ready": {
-        const [sessionId, value] =
-          [...sessions].find(([, entry]) => entry.building.length > 0) ?? [];
+        const [sessionId, value] = builder() ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
         value.ready.push(value.building.shift()!);
         return observe(sessionId);
@@ -2340,19 +2406,27 @@ const simulate = (script: Script, from: Policy.State) => {
  * three, so that filler protects the air from the start; the property and the
  * pinned counterexamples check them.
  */
-const check = (script: Script): void => {
-  for (const from of [Policy.initial, measured]) keeps(script, from);
+const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
+  for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes);
 };
-/** A script's wakes, run as `check` runs it: nothing falls due before one, and lanes stay single. */
-const wakes = (script: Script): void => {
+/**
+ * What a script keeps as it runs, from each start `check` runs it from: nothing falls due before
+ * a wake; each lane carries one command at a time, and only to a session still open; autoplay is
+ * on only on air; and a filler clip goes to one session at a time.
+ */
+const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
   for (const from of [Policy.initial, measured]) {
-    const { problems } = simulate(script, from);
+    const { problems } = simulate(script, from, lifetimes);
     assert.deepStrictEqual(problems, [], problems.join("; "));
   }
 };
-const keeps = (script: Script, from: Policy.State): void => {
-  const { actions, edits, drains, problems, groups, named, replaced } = simulate(script, from);
-  // One provider command at a time on each session, so a refusal is always attributable.
+const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
+  const { actions, edits, drains, problems, groups, named, replaced } = simulate(
+    script,
+    from,
+    lifetimes,
+  );
+  // What `wakes` checks as the script runs: a refusal is then always attributable.
   assert.deepStrictEqual(problems, []);
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
   for (const action of actions)
@@ -2508,12 +2582,13 @@ const keeps = (script: Script, from: Policy.State): void => {
 };
 
 /**
- * The seeds the gate runs, 3,000 scripts each, so every run of it is the same.
- * 6763954388057357 found a replacement's withdrawal leaving the replacement on
- * air (pinned above). To explore wider, set `PLAYOUT_PROPERTY_RUNS` to a count
- * and optionally `PLAYOUT_PROPERTY_SEED`; without a seed each run draws one and
- * a failure reports it. A seed that finds something joins this list, and its
- * shrunk script becomes a unit test.
+ * The seeds the gate runs, so every run of it is the same: 3,000 scripts each,
+ * and 1,000 of the longer scripts across renewals. 6763954388057357 found a
+ * replacement's withdrawal leaving the replacement on air (pinned above). To
+ * explore wider, set `PLAYOUT_PROPERTY_RUNS` to a count and optionally
+ * `PLAYOUT_PROPERTY_SEED`; without a seed each run draws one and a failure
+ * reports it. A seed that finds something joins this list, and its shrunk
+ * script becomes a unit test.
  */
 const gateSeeds: ReadonlyArray<string> = ["6763954388057357", "1", "2"];
 const explore = Effect.runSync(
@@ -2522,7 +2597,9 @@ const explore = Effect.runSync(
     seed: Config.String("PLAYOUT_PROPERTY_SEED").pipe(Config.option),
   }),
 );
-const propertyRuns: ReadonlyArray<{ readonly seed: string | undefined; readonly runs: number }> =
+const propertyRuns = (
+  gate: number,
+): ReadonlyArray<{ readonly seed: string | undefined; readonly runs: number }> =>
   explore.runs > 0
     ? [
         {
@@ -2533,7 +2610,7 @@ const propertyRuns: ReadonlyArray<{ readonly seed: string | undefined; readonly 
           runs: explore.runs,
         },
       ]
-    : gateSeeds.map((seed) => ({ seed, runs: 3_000 }));
+    : gateSeeds.map((seed) => ({ seed, runs: gate }));
 
 /**
  * Scripts the property falsified, each shrunk: the plan's promises hold for
@@ -2548,6 +2625,38 @@ const counterexamples: ReadonlyArray<Script> = [
   ["urgent", "withdraw", "lost", "batch"],
   // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
   ["submit", "open", "done", "done", "ready", "replace", "start"],
+  // A withdrawal of a key before any item had it answers not-found: the item submitted under it
+  // afterwards, which airs, is another.
+  ["withdraw", "withdraw", "open", "ready", "end", "submit", "done", "done", "ready", "start"],
+  // A refused replacement is none: k0 and r0, submitted afterwards, are two items, and both air.
+  [
+    "replace",
+    "batch",
+    "lost",
+    "tick",
+    "insert",
+    "insert",
+    "done",
+    "tick",
+    "unknown",
+    "unknown",
+    "submit",
+    "refused",
+    "done",
+    "batch",
+    "fail",
+    "unknown",
+    "done",
+    "end",
+    "ready",
+    "withdraw",
+    "open",
+    "batch",
+    "start",
+    "submit",
+    "lost",
+    "start",
+  ],
   // A group's withdrawal was checked against a part's replacement made after it: the plan's
   // answer from the parts the group had then was right, and the check was not.
   [
@@ -2598,7 +2707,7 @@ describe("PlayoutPolicy, any script", () => {
 
   // Any sequence of edits, provider answers, builds, plays and losses keeps the plan's promises,
   // the invariants #64's review pinned among them.
-  for (const { seed, runs } of propertyRuns)
+  for (const { seed, runs } of propertyRuns(3_000))
     it.effect.prop(
       `keeps every promise of the plan (seed ${seed ?? "drawn"}, ${String(runs)} scripts)`,
       [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
@@ -2606,10 +2715,21 @@ describe("PlayoutPolicy, any script", () => {
       { arbitrary: { runs, ...(seed === undefined ? {} : { seed }) }, timeout: 600_000 },
     );
 
-  // The plan wakes when something falls due and never polls. The scripts above stay short, as
-  // their length grows with the arbitrary's size, 10 by default, and scarcely a clip plays in
-  // them; these run to 80 steps, so that clips play, the runway falls and deadlines come due.
-  for (const { seed, runs } of propertyRuns)
+  // Scripts of 60 to 80 steps on sessions of 20 s, renewed 10 s before their cap: sessions renew
+  // and switch within a script, two lanes carry commands at once, and covers go out.
+  for (const { seed, runs } of propertyRuns(1_000))
+    it.effect.prop(
+      `keeps every promise of the plan across renewals (seed ${seed ?? "drawn"}, ${String(runs)} scripts)`,
+      [Schema.Array(Schema.Literals(steps)).check(Schema.isMinLength(60), Schema.isMaxLength(80))],
+      ([script]) => Effect.sync(() => check(script, renewing)),
+      { arbitrary: { runs, size: 80, ...(seed === undefined ? {} : { seed }) }, timeout: 600_000 },
+    );
+
+  // The plan wakes when something falls due and never polls. The first property's scripts stay
+  // short, as their length grows with the arbitrary's size, 10 by default, and scarcely a clip
+  // plays in them; these run to 80 steps, so that clips play, the runway falls and deadlines
+  // come due.
+  for (const { seed, runs } of propertyRuns(3_000))
     it.effect.prop(
       `wakes only when something falls due (seed ${seed ?? "drawn"}, ${String(runs)} scripts)`,
       [Schema.Array(Schema.Literals(steps)).check(Schema.isMaxLength(80))],
