@@ -1348,7 +1348,8 @@ describe("PlayoutPolicy, time", () => {
 
 /**
  * A provider for the property below: it answers the command in flight as the
- * script says, builds and plays clips when told, and loses sessions.
+ * script says, builds and plays clips when told, and loses sessions. Time
+ * passes five seconds at a tick, and to the plan's own deadline at a wake.
  */
 const steps = [
   "submit",
@@ -1369,6 +1370,7 @@ const steps = [
   "lost",
   "open",
   "tick",
+  "wake",
 ] as const;
 type Script = ReadonlyArray<(typeof steps)[number]>;
 
@@ -1412,15 +1414,18 @@ const simulate = (script: Script, from: Policy.State) => {
   const replaced = new Map<string, string>();
   /** Each session's command in flight, by session. */
   const outstanding = new Map<string, number>();
+  /** When the plan last asked to be woken. */
+  let wake: number | undefined;
 
-  const send = (input: Policy.Input) => {
-    clock += 7;
+  const send = (input: Policy.Input, at = clock + 7) => {
+    clock = at;
     inputs.push(input);
     if (input._tag === "Result")
       for (const [sessionId, id] of outstanding) if (id === input.id) outstanding.delete(sessionId);
     if (input._tag === "Lost") outstanding.delete(input.sessionId);
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
+    wake = result.wake;
     for (const action of result.actions) {
       actions.push(action);
       if (action._tag === "Command") {
@@ -1472,6 +1477,7 @@ const simulate = (script: Script, from: Policy.State) => {
   const edit = (index: number, list: ReadonlyArray<Policy.EditInput>, batch = false) => {
     const id = 100 + index;
     const keys = new Map<number, string>();
+    const fresh: Array<string> = [];
     list.forEach((value, position) => {
       if (value._tag === "Withdraw") {
         keys.set(position, value.key);
@@ -1484,10 +1490,8 @@ const simulate = (script: Script, from: Policy.State) => {
             : (groups.get(part.group) ?? []).filter((other) => other.place >= part.place));
         for (const other of reached) named.add(other.key);
       }
-      if (value._tag === "Submit" || value._tag === "Insert" || value._tag === "Replace") {
-        lanes.set(value.spec.key, value.spec.lane);
+      if (value._tag === "Submit" || value._tag === "Insert" || value._tag === "Replace")
         known.push(value.spec.key);
-      }
       if (value._tag === "Replace") {
         replaced.set(value.spec.key, value.key);
         const part = partOf.get(value.key);
@@ -1497,26 +1501,142 @@ const simulate = (script: Script, from: Policy.State) => {
         }
       }
       if (value._tag === "SubmitGroup" && !groups.has(value.key)) {
+        fresh.push(value.key);
         groups.set(
           value.key,
           value.parts.map((part, place) => ({ key: part.key, place })),
         );
         known.push(value.key);
         value.parts.forEach((part, place) => {
-          lanes.set(part.key, part.lane);
           known.push(part.key);
           if (!partOf.has(part.key)) partOf.set(part.key, { group: value.key, place });
         });
       }
     });
     edits.set(id, { batch, keys });
+    const before = actions.length;
     send({ _tag: "Edit", id, edits: list, batch });
+    // An item takes its lane when accepted, a replacement its item's and an insert its anchor's;
+    // a key the plan holds already keeps the one it has.
+    for (const action of actions.slice(before))
+      if (
+        action._tag === "Emit" &&
+        action.event._tag === "AsRun" &&
+        action.event.event.status._tag === "Accepted"
+      ) {
+        const lane = state.items.get(action.event.event.key)?.spec.lane;
+        if (lane !== undefined) lanes.set(action.event.event.key, lane);
+      }
+    // A group the plan refused is none: its key may yet name an item of its own.
+    if (actions.some((action) => action._tag === "Refused" && action.id === id))
+      for (const group of fresh) {
+        groups.delete(group);
+        for (const [part, place] of partOf) if (place.group === group) partOf.delete(part);
+      }
   };
+  const lates: ReadonlyArray<Policy.Late> = ["nextBoundary", "drop", { skipAfterMs: 1_000 }];
+  // Some items start at an instant, some within a window, and some are held and never released:
+  // each brings deadlines of its own.
+  const timing = (index: number): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
+    index % 5 === 1
+      ? {
+          start: { _tag: "At", time: clock + 2_000 + (index % 3) * 3_000, late: lates[index % 3]! },
+        }
+      : index % 5 === 2
+        ? {
+            window: {
+              startByMs: 4_000 + (index % 3) * 4_000,
+              firm: index % 4 < 2,
+              ...(index % 2 === 0 ? { notBeforeMs: 1_000 } : {}),
+            },
+          }
+        : index % 7 === 6
+          ? { start: { _tag: "Manual" } }
+          : { start: { _tag: "Follow" } };
   const cued = (name: string, lane: number, index: number): Policy.Spec => ({
     ...spec(name, lane, 5 + (index % 3) * 5),
     cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
     continuity: index % 4 === 3,
+    ...timing(index),
   });
+
+  /** The provider carries out the command in flight on a lane, and answers it. */
+  const complete = (busy: {
+    readonly id: number;
+    readonly command: Policy.Command;
+    readonly sessionId: string;
+  }) => {
+    const value = sessions.get(busy.sessionId);
+    const command = busy.command;
+    let clipId: string | undefined;
+    let refused = false;
+    if (value !== undefined)
+      switch (command._tag) {
+        case "Enqueue":
+          clipId = `c${String(clips++)}`;
+          value.building.push({
+            clipId,
+            tag: command.tag,
+            seconds: command.request.seconds ?? 5,
+          });
+          break;
+        case "Remove":
+          // It pops only a queued clip, as H3 does: one that started playing meanwhile stays.
+          refused = ![...value.building, ...value.ready].some(
+            (clip) => clip.clipId === command.clipId,
+          );
+          value.building = value.building.filter((clip) => clip.clipId !== command.clipId);
+          value.ready = value.ready.filter((clip) => clip.clipId !== command.clipId);
+          break;
+        case "Move": {
+          const moved = value.ready.find((clip) => clip.clipId === command.clipId);
+          if (moved !== undefined) {
+            value.ready = value.ready.filter((clip) => clip !== moved);
+            value.ready.splice(command.position, 0, moved);
+          }
+          break;
+        }
+        case "Stop": {
+          if (value.playing?.clipId !== command.clipId) break;
+          const cut = value.playing;
+          value.playing = undefined;
+          send({
+            _tag: "Source",
+            sessionId: busy.sessionId,
+            event: { _tag: "Ended", clip: cut, termination: "stopped" },
+          });
+          break;
+        }
+        case "Play": {
+          const next = value.ready.find((clip) => clip.clipId === command.clipId);
+          if (next === undefined || value.playing !== undefined) break;
+          value.ready = value.ready.filter((clip) => clip !== next);
+          value.playing = next;
+          send({
+            _tag: "Source",
+            sessionId: busy.sessionId,
+            event: { _tag: "Started", clip: next },
+          });
+          break;
+        }
+        case "Autoplay":
+          break;
+      }
+    send({
+      _tag: "Result",
+      id: busy.id,
+      result: refused ? failed("replied") : { _tag: "Done", clipId },
+    });
+    observe(busy.sessionId);
+  };
+  /** The provider opens the session the plan asked for. */
+  const open = () => {
+    wanted--;
+    const sessionId = `s${String(++opened)}`;
+    sessions.set(sessionId, { building: [], ready: [], playing: undefined });
+    send({ _tag: "Opened", sessionId, lifetimeMs: 120_000 });
+    observe(sessionId);
+  };
 
   send({ _tag: "Tick" });
   script.forEach((step, index) => {
@@ -1578,62 +1698,8 @@ const simulate = (script: Script, from: Policy.State) => {
           id: 100 + index,
           finish: index % 2 === 0 ? "accepted" : "playing",
         });
-      case "done": {
-        if (busy === undefined) return send({ _tag: "Tick" });
-        const value = sessions.get(busy.sessionId);
-        const command = busy.command;
-        let clipId: string | undefined;
-        if (value !== undefined)
-          switch (command._tag) {
-            case "Enqueue":
-              clipId = `c${String(clips++)}`;
-              value.building.push({
-                clipId,
-                tag: command.tag,
-                seconds: command.request.seconds ?? 5,
-              });
-              break;
-            case "Remove":
-              value.building = value.building.filter((clip) => clip.clipId !== command.clipId);
-              value.ready = value.ready.filter((clip) => clip.clipId !== command.clipId);
-              break;
-            case "Move": {
-              const moved = value.ready.find((clip) => clip.clipId === command.clipId);
-              if (moved !== undefined) {
-                value.ready = value.ready.filter((clip) => clip !== moved);
-                value.ready.splice(command.position, 0, moved);
-              }
-              break;
-            }
-            case "Stop": {
-              if (value.playing?.clipId !== command.clipId) break;
-              const cut = value.playing;
-              value.playing = undefined;
-              send({
-                _tag: "Source",
-                sessionId: busy.sessionId,
-                event: { _tag: "Ended", clip: cut, termination: "stopped" },
-              });
-              break;
-            }
-            case "Play": {
-              const next = value.ready.find((clip) => clip.clipId === command.clipId);
-              if (next === undefined || value.playing !== undefined) break;
-              value.ready = value.ready.filter((clip) => clip !== next);
-              value.playing = next;
-              send({
-                _tag: "Source",
-                sessionId: busy.sessionId,
-                event: { _tag: "Started", clip: next },
-              });
-              break;
-            }
-            case "Autoplay":
-              break;
-          }
-        send({ _tag: "Result", id: busy.id, result: { _tag: "Done", clipId } });
-        return observe(busy.sessionId);
-      }
+      case "done":
+        return busy === undefined ? send({ _tag: "Tick" }) : complete(busy);
       case "unknown":
       case "refused":
         if (busy === undefined) return send({ _tag: "Tick" });
@@ -1657,10 +1723,28 @@ const simulate = (script: Script, from: Policy.State) => {
         return observe(sessionId);
       }
       case "start": {
+        // The provider brings the air to a clip: it opens the session the plan asked for and,
+        // with nothing there to play, carries out the autoplay and enqueue asked of it and
+        // finishes the clip it builds first.
+        if (onAir() === undefined && wanted > 0) open();
+        for (let asked = 0; asked < 2 && onAir()?.building.length === 0; asked++) {
+          const air = state.sessions.find((value) => value.id === state.air);
+          const command = air?.busy?.command._tag;
+          if (onAir()?.ready.length !== 0 || air?.busy === undefined) break;
+          if (command !== "Autoplay" && command !== "Enqueue") break;
+          complete({ ...air.busy, sessionId: air.id });
+        }
         const value = onAir();
-        if (value === undefined || value.playing !== undefined || value.ready.length === 0)
-          return send({ _tag: "Tick" });
-        const next = value.ready.shift()!;
+        if (value === undefined || value.playing !== undefined) return send({ _tag: "Tick" });
+        // A removal asked of it lands first, as H3 takes commands in order.
+        const pending = state.sessions.find((other) => other.id === state.air)?.busy;
+        if (pending?.command._tag === "Remove") complete({ ...pending, sessionId: state.air! });
+        if (value.ready.length === 0 && value.building.length > 0) {
+          value.ready.push(value.building.shift()!);
+          observe(state.air!);
+        }
+        const next = value.ready.shift();
+        if (next === undefined) return send({ _tag: "Tick" });
         value.playing = next;
         send({ _tag: "Source", sessionId: state.air!, event: { _tag: "Started", clip: next } });
         return observe(state.air!);
@@ -1683,17 +1767,13 @@ const simulate = (script: Script, from: Policy.State) => {
         sessions.delete(sessionId);
         return send({ _tag: "Lost", sessionId, reason: "gone" });
       }
-      case "open": {
-        if (wanted === 0) return send({ _tag: "Tick" });
-        wanted--;
-        const sessionId = `s${String(++opened)}`;
-        sessions.set(sessionId, { building: [], ready: [], playing: undefined });
-        send({ _tag: "Opened", sessionId, lifetimeMs: 120_000 });
-        return observe(sessionId);
-      }
+      case "open":
+        return wanted === 0 ? send({ _tag: "Tick" }) : open();
       case "tick":
         clock += 5_000;
         return send({ _tag: "Tick" });
+      case "wake":
+        return send({ _tag: "Tick" }, wake);
     }
   });
   send({ _tag: "Close" });
@@ -1790,11 +1870,26 @@ const keeps = (script: Script, from: Policy.State): void => {
         : "not-found";
     assert.strictEqual(action.outcome, expected, `group ${name ?? ""}: ${so.join(",")}`);
   }
-  for (const action of actions)
+  // It answers for the item under that key then: one accepted under it afterwards is another.
+  const itemThen = (name: string, position: number): ReadonlyArray<string> => {
+    const events = actions.flatMap((action, index) =>
+      action._tag === "Emit" && action.event._tag === "AsRun" && action.event.event.key === name
+        ? [{ index, status: action.event.event.status._tag }]
+        : [],
+    );
+    const from = events.findLastIndex(
+      (event) => event.index < position && event.status === "Accepted",
+    );
+    const next = events.findIndex(
+      (event, index) => index > from && event.index > position && event.status === "Accepted",
+    );
+    return events.slice(Math.max(0, from), next < 0 ? undefined : next).map(({ status }) => status);
+  };
+  for (const [position, action] of actions.entries())
     if (action._tag === "Withdrawn") {
       const name = edits.get(action.id)?.keys.get(action.index);
       if (name === undefined || groups.has(name)) continue;
-      const statuses = tags(name);
+      const statuses = itemThen(name, position);
       if (action.outcome === "withdrawn")
         assert.include(statuses, "Dropped", `${name} withdrawn: ${statuses.join(",")}`);
       if (action.outcome === "already-started")
