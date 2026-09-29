@@ -94,12 +94,17 @@ const opened = (id = "s1"): ReadonlyArray<Policy.Input> => [
 /** Steps one input at `at` milliseconds, on both clocks. */
 const at = (state: Policy.State, input: Policy.Input, time: number) =>
   Policy.step(config, state, input, { mono: time, wall: time });
-/** The answer to the command in flight. */
-const answer = (state: Policy.State, result: Policy.CommandResult): Policy.Input => ({
-  _tag: "Result",
-  id: state.busy?.id ?? -1,
-  result,
-});
+/** The command in flight on `sessionId`'s lane, or on the first lane that has one. */
+const inFlight = (state: Policy.State, sessionId?: string) =>
+  state.sessions.find(
+    (value) => value.busy !== undefined && (sessionId === undefined || value.id === sessionId),
+  )?.busy;
+/** The answer to the command in flight on `sessionId`'s lane, or on the first busy one. */
+const answer = (
+  state: Policy.State,
+  result: Policy.CommandResult,
+  sessionId?: string,
+): Policy.Input => ({ _tag: "Result", id: inFlight(state, sessionId)?.id ?? -1, result });
 
 /**
  * A policy driven input by input, each at the time given: the state it reached and every action,
@@ -126,7 +131,8 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
     open: (id = "s1", lifetimeMs = 600_000, time?: number) => {
       send({ _tag: "Opened", sessionId: id, lifetimeMs }, time);
       send({ _tag: "Source", sessionId: id, event: { _tag: "State", state: source() } });
-      if (state.busy?.command._tag === "Autoplay") send(answer(state, { _tag: "Done" }));
+      if (inFlight(state, id)?.command._tag === "Autoplay")
+        send(answer(state, { _tag: "Done" }, id));
     },
     submit: (value: Policy.Spec, time?: number) =>
       send(
@@ -140,8 +146,9 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
       ),
     edit: (edits: ReadonlyArray<Policy.EditInput>, batch = false, time?: number) =>
       send({ _tag: "Edit", id: 1000 + actions.length, edits, batch }, time),
-    /** Answers the command in flight. */
-    reply: (result: Policy.CommandResult, time?: number) => send(answer(state, result), time),
+    /** Answers the command in flight on `id`'s lane, or on the first busy one. */
+    reply: (result: Policy.CommandResult, time?: number, id?: string) =>
+      send(answer(state, result, id), time),
     observe: (partial: Partial<SourceState>, id = "s1", time?: number) =>
       send(
         { _tag: "Source", sessionId: id, event: { _tag: "State", state: source(partial) } },
@@ -150,8 +157,8 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
     event: (event: SourceEvent, id = "s1", time?: number) =>
       send({ _tag: "Source", sessionId: id, event }, time),
     tick: (time?: number) => send({ _tag: "Tick" }, time),
-    /** The command in flight, if any. */
-    busy: () => state.busy?.command,
+    /** The command in flight on `id`'s lane, or on the first busy one, if any. */
+    busy: (id?: string) => inFlight(state, id)?.command,
   };
 };
 
@@ -338,7 +345,7 @@ describe("PlayoutPolicy", () => {
     // Once the anchor has ended, the insert still airs ahead of the item that followed it.
     const after = run(
       [
-        { _tag: "Result", id: state.busy?.id ?? -1, result: { _tag: "Done", clipId: "cn" } },
+        answer(state, { _tag: "Done", clipId: "cn" }),
         {
           _tag: "Source",
           sessionId: "s1",
@@ -821,20 +828,20 @@ const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
       : [],
   );
 const unknown = failed("unknown");
+/** A filler floor of 5 s and a target of 10 s, in clips of 5 s. */
+const filled: Policy.Config = {
+  ...config,
+  filler: {
+    floor: 5,
+    target: 10,
+    clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
+    lengths: { min: 5, max: 15 },
+    invalid: () => undefined,
+  },
+};
 
 // What 0.7.0's scheduler guaranteed and the first Playout lost, found by an independent critique.
 describe("PlayoutPolicy, uncertainty and loss", () => {
-  const filled: Policy.Config = {
-    ...config,
-    filler: {
-      floor: 5,
-      target: 10,
-      clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
-      lengths: { min: 5, max: 15 },
-      invalid: () => undefined,
-    },
-  };
-
   // 0.7.0 SchedulerRenewal "uncertain filler on the retiring source does not hold replacement
   // runway", and SchedulerUnknownRecovery's per-source filler identities.
   for (const lifetimeMs of [600_000, Infinity])
@@ -891,6 +898,31 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
     );
   });
 });
+describe("PlayoutPolicy, lanes", () => {
+  // The filler's index follows from its enqueue's result, and a replacement's lane is free while
+  // the session on air still carries one.
+  it("sends one filler enqueue at a time, whichever session's lane is free", () => {
+    const policy = drive({ config: filled });
+    const fillers = () =>
+      commands(policy.actions).flatMap((action) =>
+        action.command._tag === "Enqueue" && action.command.tag._tag === "Filler"
+          ? [`${action.sessionId} ${String(action.command.tag.index)}`]
+          : [],
+      );
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    // A clip of its own keeps s1 on air while its replacement opens.
+    const playing = clip("x", undefined, 50);
+    policy.event({ _tag: "Started", clip: playing });
+    policy.observe({ playing });
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.open("s2", 60_000);
+    assert.deepStrictEqual(fillers(), ["s1 0"]);
+    policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
+    assert.deepStrictEqual(fillers(), ["s1 0", "s2 1"]);
+  });
+});
+
 const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>
   actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : []));
 
@@ -1244,24 +1276,26 @@ const simulate = (script: Script) => {
   const named = new Set<string>();
   /** Each replacement's key, and the key it replaces. */
   const replaced = new Map<string, string>();
-  let outstanding: { readonly id: number; readonly sessionId: string } | undefined;
+  /** Each session's command in flight, by session. */
+  const outstanding = new Map<string, number>();
 
   const send = (input: Policy.Input) => {
     clock += 7;
     inputs.push(input);
-    if (input._tag === "Result" && outstanding?.id === input.id) outstanding = undefined;
-    if (input._tag === "Lost" && outstanding?.sessionId === input.sessionId)
-      outstanding = undefined;
+    if (input._tag === "Result")
+      for (const [sessionId, id] of outstanding) if (id === input.id) outstanding.delete(sessionId);
+    if (input._tag === "Lost") outstanding.delete(input.sessionId);
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     for (const action of result.actions) {
       actions.push(action);
       if (action._tag === "Command") {
-        if (outstanding !== undefined)
+        const unsettled = outstanding.get(action.sessionId);
+        if (unsettled !== undefined)
           problems.push(
-            `command ${String(action.id)} sent while ${String(outstanding.id)} was unsettled`,
+            `command ${String(action.id)} sent to ${action.sessionId} while ${String(unsettled)} was unsettled there`,
           );
-        outstanding = { id: action.id, sessionId: action.sessionId };
+        outstanding.set(action.sessionId, action.id);
         // A cut stops only filler, a clip the plan does not own, or a strictly lower lane's clip.
         const command = action.command;
         if (command._tag === "Stop") {
@@ -1278,7 +1312,7 @@ const simulate = (script: Script) => {
       }
       if (action._tag === "Close") {
         sessions.delete(action.sessionId);
-        if (outstanding?.sessionId === action.sessionId) outstanding = undefined;
+        outstanding.delete(action.sessionId);
       }
       if (action._tag === "Open") wanted++;
     }
@@ -1356,7 +1390,13 @@ const simulate = (script: Script) => {
       index % 2 === 0 || known.length === 0
         ? `k${String(index % 5)}`
         : known[(index * 7) % known.length]!;
-    const busy = state.busy;
+    // A command in flight on some lane: the oldest or the newest, so lanes answer in either order.
+    const lanes = state.sessions
+      .flatMap((value) =>
+        value.busy === undefined ? [] : [{ ...value.busy, sessionId: value.id }],
+      )
+      .sort((a, b) => a.id - b.id);
+    const busy = index % 2 === 0 ? lanes[0] : lanes.at(-1);
     switch (step) {
       case "submit":
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
@@ -1528,7 +1568,7 @@ const simulate = (script: Script) => {
 /** The plan's promises for one script; the property and the pinned counterexamples check them. */
 const check = (script: Script): void => {
   const { actions, edits, drains, problems, groups, named, replaced } = simulate(script);
-  // One provider command at a time, so a refusal is always attributable.
+  // One provider command at a time on each session, so a refusal is always attributable.
   assert.deepStrictEqual(problems, []);
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
   for (const action of actions)

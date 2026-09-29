@@ -6,10 +6,10 @@
  * reported as as-run evidence, kept apart from what was asked for.
  *
  * A pure policy makes every decision. The service applies them one command at
- * a time, wakes on a submission, a session's evidence or the policy's next
- * deadline, and never polls. Sessions are supplied by an `open` effect, such
- * as `H3Source.open`, so the same plan runs on paid H3, a local renderer
- * (`LocalSource`) or the simulated Reactor in `ReactorTest`.
+ * a time on each session, wakes on a submission, a session's evidence or the
+ * policy's next deadline, and never polls. Sessions are supplied by an `open`
+ * effect, such as `H3Source.open`, so the same plan runs on paid H3, a local
+ * renderer (`LocalSource`) or the simulated Reactor in `ReactorTest`.
  */
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
@@ -452,9 +452,9 @@ export type SourceEvent =
  *   leaves the clip out until its `Ended` or `Failed`.
  * - `events` fails only when the session is lost for good; the source
  *   recovers a dropped connection itself, and reports it.
- * - Each command ends, done or failed, in bounded time. The playout sends
- *   commands one at a time, to every session, so one that never ends holds
- *   up the rest.
+ * - Each command ends, done or failed, in bounded time. The playout sends a
+ *   session its commands one at a time, so one that never ends holds up the
+ *   rest of that session's, though no other session's.
  */
 export interface Source {
   readonly sessionId: string;

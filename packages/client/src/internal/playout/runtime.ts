@@ -2,8 +2,10 @@
  * The playout's shell around its pure policy. One fiber owns the policy state:
  * it takes an input (a caller's edit, a session's evidence, a command's result)
  * or wakes at the policy's next deadline, runs `step`, and carries out what the
- * step asks. Provider commands go through one worker, one at a time; session
- * opens and closes run in their own fibers and report back through the inbox.
+ * step asks. Each session's provider commands go through a worker of its own,
+ * one at a time and in order, so a slow command holds up only its own
+ * session's; session opens and closes run in their own fibers. Each reports
+ * back through the inbox.
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -52,6 +54,7 @@ type Handle = {
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
+type Command = Extract<Policy.Action, { _tag: "Command" }>;
 
 /** Close reports kept beyond the unconfirmed ones. */
 const retainedReports = 8;
@@ -153,7 +156,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<R>();
   const inbox = yield* Queue.unbounded<Policy.Input>();
-  const work = yield* Queue.unbounded<Extract<Policy.Action, { _tag: "Command" }>>();
   const events = yield* PubSub.unbounded<Playout.Event>();
   const state = yield* Ref.make(Policy.initial);
   const ids = yield* Ref.make(0);
@@ -166,8 +168,16 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   );
   const drains = yield* Ref.make(new Map<number, Deferred.Deferred<void>>());
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
+  // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
-    new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
+    new Map<
+      string,
+      {
+        readonly source: Playout.Source;
+        readonly scope: Scope.Closeable;
+        readonly lane: Queue.Queue<Command>;
+      }
+    >(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
   // Why the playout stopped; it dies with a defect that stopped it.
@@ -257,6 +267,50 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       yield* Scope.close(entry.scope, Exit.void);
     });
 
+  /** What a command for a session already gone gets: it was never sent. */
+  const gone = (command: Policy.Command): Policy.CommandResult => ({
+    _tag: "Failed",
+    cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
+      operation: command._tag,
+      outcome: "not-submitted",
+    }),
+  });
+
+  const run = (action: Command): Effect.Effect<Policy.CommandResult> =>
+    Effect.gen(function* () {
+      const entry = (yield* Ref.get(sources)).get(action.sessionId);
+      if (entry === undefined) return gone(action.command);
+      const source = entry.source;
+      const command = action.command;
+      const result = ((): Effect.Effect<string | void, CommandFailure> => {
+        switch (command._tag) {
+          case "Enqueue":
+            return source.enqueue(command.request, command.tag, command.continueFrom);
+          case "Remove":
+            return source.remove(command.clipId);
+          case "Move":
+            return source.move(command.clipId, command.position);
+          case "Autoplay":
+            return source.setAutoplay(command.enabled);
+          case "Stop":
+            return source.stop(command.clipId);
+          case "Play":
+            return source.play(command.clipId);
+        }
+      })();
+      const exit = yield* Effect.exit(result);
+      if (Exit.isSuccess(exit))
+        return {
+          _tag: "Done",
+          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
+        } as const;
+      const error = Exit.findErrorOption(exit);
+      if (Option.isSome(error)) return { _tag: "Failed", cause: error.value } as const;
+      // Whether the command went out can't be told: the plan treats it as unknown.
+      yield* ErrorReporter.report(exit.cause);
+      return { _tag: "Died" } as const;
+    });
+
   const open = Effect.gen(function* () {
     const child = yield* Scope.fork(scope);
     const opened = yield* options.open.pipe(
@@ -307,8 +361,16 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       });
     }
     yield* Ref.set(lastOpenError, undefined);
+    // The session's commands, one at a time and in order. Its worker lives in the session's
+    // scope, so the lane ends with the session.
+    const lane = yield* Queue.unbounded<Command>();
+    yield* Effect.forever(
+      Effect.flatMap(take(lane), (action) =>
+        Effect.flatMap(run(action), (result) => offer({ _tag: "Result", id: action.id, result })),
+      ),
+    ).pipe(Effect.forkIn(child));
     yield* Ref.update(sources, (all) =>
-      new Map(all).set(source.sessionId, { source, scope: child }),
+      new Map(all).set(source.sessionId, { source, scope: child, lane }),
     );
     const lifetimeMs = Duration.toMillis(source.lifetime);
     yield* offer({
@@ -340,50 +402,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     );
   });
 
-  const run = (
-    action: Extract<Policy.Action, { _tag: "Command" }>,
-  ): Effect.Effect<Policy.CommandResult> =>
-    Effect.gen(function* () {
-      const entry = (yield* Ref.get(sources)).get(action.sessionId);
-      if (entry === undefined)
-        return {
-          _tag: "Failed",
-          cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
-            operation: action.command._tag,
-            outcome: "not-submitted",
-          }),
-        } as const;
-      const source = entry.source;
-      const command = action.command;
-      const result = ((): Effect.Effect<string | void, CommandFailure> => {
-        switch (command._tag) {
-          case "Enqueue":
-            return source.enqueue(command.request, command.tag, command.continueFrom);
-          case "Remove":
-            return source.remove(command.clipId);
-          case "Move":
-            return source.move(command.clipId, command.position);
-          case "Autoplay":
-            return source.setAutoplay(command.enabled);
-          case "Stop":
-            return source.stop(command.clipId);
-          case "Play":
-            return source.play(command.clipId);
-        }
-      })();
-      const exit = yield* Effect.exit(result);
-      if (Exit.isSuccess(exit))
-        return {
-          _tag: "Done",
-          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
-        } as const;
-      const error = Exit.findErrorOption(exit);
-      if (Option.isSome(error)) return { _tag: "Failed", cause: error.value } as const;
-      // Whether the command went out can't be told: the plan treats it as unknown.
-      yield* ErrorReporter.report(exit.cause);
-      return { _tag: "Died" } as const;
-    });
-
   /**
    * Why the plan failed the playout: the error behind a failed open or a loss,
    * or the defect when there was no error.
@@ -412,8 +430,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const act = (action: Policy.Action): Effect.Effect<void> =>
     Effect.gen(function* () {
       switch (action._tag) {
-        case "Command":
-          return yield* Queue.offer(work, action);
+        case "Command": {
+          const entry = (yield* Ref.get(sources)).get(action.sessionId);
+          if (entry !== undefined) return yield* Queue.offer(entry.lane, action);
+          return yield* offer({ _tag: "Result", id: action.id, result: gone(action.command) });
+        }
         case "Open":
           return yield* Effect.forkIn(open, scope);
         case "Close":
@@ -492,13 +513,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       yield* Effect.forEach(result.actions, act, { discard: true });
       return result.wake;
     });
-
-  // The worker: provider commands one at a time, each result back through the inbox.
-  yield* Effect.forever(
-    Effect.flatMap(take(work), (action) =>
-      Effect.flatMap(run(action), (result) => offer({ _tag: "Result", id: action.id, result })),
-    ),
-  ).pipe(Effect.forkIn(scope));
 
   // When the scope closes: the loop stops first, then every waiting item settles and each session closes.
   yield* Effect.addFinalizer(() =>

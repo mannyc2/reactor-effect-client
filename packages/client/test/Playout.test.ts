@@ -686,6 +686,38 @@ layer(hosted)("uncertainty", (it) => {
   );
 });
 
+// Its fault stays armed for the rest of a block, so it has one of its own.
+layer(hosted)("command lanes", (it) => {
+  it.effect("an enqueue whose reply was lost holds up no other session's commands", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      // The first enqueue's reply is lost: it holds its session's commands for the provider's
+      // reply timeout and then its reconcile window, about 20 s.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+      const { playout, events, statuses } = yield* start({
+        lifetime: "60 seconds",
+        renewal: { lead: "55 seconds" },
+      });
+      yield* playout.submit({ key: key("lost"), lane: "line", request: clip("lost") });
+      // The replacement opens at the lead, about 5 s in, and new work goes to it.
+      yield* eventually(
+        events,
+        (all) =>
+          all.filter((event) => event._tag === "Session" && event.event._tag === "Opened")
+            .length === 2,
+      );
+      yield* playout.submit({ key: key("next"), lane: "line", request: clip("next") });
+      yield* eventually(statuses("next"), (all) => all.includes("Ready"));
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun" && event.event.key === "next")
+          times.set(event.event.status._tag, event.event.at);
+      const waited = times.get("Ready")! - times.get("Accepted")!;
+      assert.isBelow(waited, 5_000, `next was Ready ${waited} ms after it was submitted`);
+    }),
+  );
+});
+
 layer(
   environment({
     timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "40 millis", channel: "20 millis" }),
