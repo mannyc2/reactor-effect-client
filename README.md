@@ -19,9 +19,9 @@ This is not an official Reactor SDK. Protocol material and native WebRTC depende
 - The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. Each implements the client's `Peer` port (`reactor-effect-client/Peer`), which an application needs only to write a host of its own. Tests need no host: `ReactorTest.layer` provides the simulated coordinator and peers.
 
 ```sh
-npm install reactor-effect-client effect@4.0.0-rc.117
-npm install reactor-effect-browser                                      # browsers
-npm install reactor-effect-native @effect/platform-node@4.0.0-rc.117    # Node
+npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-browser                                      # browsers
+npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117    # Node
 ```
 
 ```ts
