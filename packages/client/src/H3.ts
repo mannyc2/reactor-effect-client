@@ -123,7 +123,12 @@ export interface Options {
   readonly uploadTimeout?: Duration.Input | undefined;
   /** Reading the deployment schema, then the first state and queue; 60 seconds each by default. */
   readonly setupTimeout?: Duration.Input | undefined;
-  /** How long an uncertain enqueue waits for evidence that settles it; 5 seconds by default. */
+  /**
+   * Bounds both waits of an enqueue its reply has not settled; 5 seconds by
+   * default. Evidence of the clip that came before the reply decides once it
+   * has waited this long without the reply, and an enqueue whose reply is lost
+   * waits this long for evidence.
+   */
   readonly reconcileWindow?: Duration.Input | undefined;
 }
 
