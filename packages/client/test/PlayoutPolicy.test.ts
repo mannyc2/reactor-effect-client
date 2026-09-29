@@ -1524,6 +1524,35 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
   });
 
+  // A group key's withdrawal answers for the parts the group had when it was made. A part's
+  // replacement made afterwards is no part of it, and its drop leaves that answer as it was.
+  it("answers a group's withdrawal from its parts then, not from a replacement made after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    built(policy, ["p1"]);
+    const first = clip("c-p1", item("p1"));
+    policy.event({ _tag: "Started", clip: first });
+    policy.observe({ playing: first });
+    // p2's enqueue is in flight: the group's withdrawal waits on it.
+    policy.edit([{ _tag: "Withdraw", key: key("g") }]);
+    policy.edit([{ _tag: "Replace", key: key("p2"), spec: spec("r") }]);
+    policy.edit([{ _tag: "Withdraw", key: key("r") }]);
+    policy.reply(failed("unknown"));
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted", "Dropped"]);
+    assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn", "already-started"]);
+  });
+
   // An edit refused as it would miss a deadline took back its items only: a part's replacement
   // in it took its whole group with it, so a later withdrawal of a part was never answered, and
   // a withdrawal in it of a key the plan did not know was answered beside the refusal.
@@ -1893,7 +1922,15 @@ const simulate = (script: Script, from: Policy.State) => {
     { building: Array<SourceClip>; ready: Array<SourceClip>; playing: SourceClip | undefined }
   >();
   const lanes = new Map<string, number>();
-  const edits = new Map<number, { readonly batch: boolean; readonly keys: Map<number, string> }>();
+  const edits = new Map<
+    number,
+    {
+      readonly batch: boolean;
+      readonly keys: Map<number, string>;
+      /** For each withdrawal of a group key, the group's parts when it was made. */
+      readonly parts: Map<number, ReadonlyArray<string>>;
+    }
+  >();
   const drains: Array<number> = [];
   const problems: Array<string> = [];
   /** Keys submitted so far, group keys among them, and what a withdrawal may drop. */
@@ -1988,10 +2025,17 @@ const simulate = (script: Script, from: Policy.State) => {
   const edit = (index: number, list: ReadonlyArray<Policy.EditInput>, batch = false) => {
     const id = 100 + index;
     const keys = new Map<number, string>();
+    const parts = new Map<number, ReadonlyArray<string>>();
     const fresh: Array<string> = [];
     list.forEach((value, position) => {
       if (value._tag === "Withdraw") {
         keys.set(position, value.key);
+        const group = groups.get(value.key);
+        if (group !== undefined)
+          parts.set(
+            position,
+            group.map((part) => part.key),
+          );
         // A group key withdraws its parts; a part key, the parts from its place on.
         const part = partOf.get(value.key);
         const reached =
@@ -2024,7 +2068,7 @@ const simulate = (script: Script, from: Policy.State) => {
         });
       }
     });
-    edits.set(id, { batch, keys });
+    edits.set(id, { batch, keys, parts });
     const before = actions.length;
     send({ _tag: "Edit", id, edits: list, batch });
     // An item takes its lane when accepted, a replacement its item's and an insert its anchor's;
@@ -2367,8 +2411,9 @@ const keeps = (script: Script, from: Policy.State): void => {
           1,
           `the withdrawal of ${value.keys.get(position) ?? ""} was answered other than once`,
         );
-  // A withdrawal answers what became of its item. A group key's answers `withdrawn` if any
-  // part was dropped by then, else `already-started` if any started, else `not-found`.
+  // A withdrawal answers what became of its item. A group key's answers for the parts the group
+  // had when it was made: `withdrawn` if any was dropped by then, else `already-started` if any
+  // started, else `not-found`. A part's replacement made afterwards is no part of it.
   const seen = new Map<string, ReadonlyArray<string>>();
   for (const action of actions) {
     if (action._tag === "Emit" && action.event._tag === "AsRun")
@@ -2378,9 +2423,9 @@ const keeps = (script: Script, from: Policy.State): void => {
       ]);
     if (action._tag !== "Withdrawn") continue;
     const name = edits.get(action.id)?.keys.get(action.index);
-    const parts = name === undefined ? undefined : groups.get(name);
+    const parts = edits.get(action.id)?.parts.get(action.index);
     if (parts === undefined) continue;
-    const so = parts.flatMap((part) => seen.get(part.key) ?? []);
+    const so = parts.flatMap((part) => seen.get(part) ?? []);
     const expected = so.includes("Dropped")
       ? "withdrawn"
       : so.includes("Started")
@@ -2503,6 +2548,24 @@ const counterexamples: ReadonlyArray<Script> = [
   ["urgent", "withdraw", "lost", "batch"],
   // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
   ["submit", "open", "done", "done", "ready", "replace", "start"],
+  // A group's withdrawal was checked against a part's replacement made after it: the plan's
+  // answer from the parts the group had then was right, and the check was not.
+  [
+    "group",
+    "lost",
+    "start",
+    "withdraw",
+    "unknown",
+    "replace",
+    "withdraw",
+    "batch",
+    "drain",
+    "lost",
+    "group",
+    "batch",
+    "lost",
+    "withdraw",
+  ],
   // An edit refused as it would miss a deadline took a replaced part's group with it, and the
   // withdrawal of that group's part was never answered.
   [
