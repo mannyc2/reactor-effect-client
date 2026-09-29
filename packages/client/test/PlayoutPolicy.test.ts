@@ -1054,6 +1054,50 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.isUndefined(refill("order"));
     assert.strictEqual(refill("air"), "filler of 5.00 s");
   });
+
+  // A refused filler clip is asked for again as it was: 15 s of it, asked to cover a long build,
+  // take 6 s to build, and the 5 s item only 2 s, so the item goes first rather than wait for it.
+  it("covers an item with a refused filler clip only if that clip builds sooner", () => {
+    const { policy } = airing(protecting("air", { min: 1, max: 15 }, 0), 1);
+    policy.submit(long, 10);
+    assert.strictEqual(sent(policy.busy()), "filler of 15.00 s");
+    policy.edit([{ _tag: "Withdraw", key: key("long") }], false, 20);
+    policy.reply(failed("replied"), 30);
+    policy.submit(spec("short"), 1_100);
+    assert.strictEqual(sent(policy.busy()), "short");
+  });
+
+  it("projects a refused filler clip's build at the length it is asked for again", () => {
+    const { policy, playing } = airing(protecting("air"), 6);
+    // x's start is seen, so the runway falls with the time: below the 5 s floor from 1,004 on.
+    policy.event({ _tag: "Started", clip: playing }, "s1", 4);
+    policy.submit(long, 10);
+    assert.strictEqual(sent(policy.busy()), "filler of 15.00 s");
+    policy.edit([{ _tag: "Withdraw", key: key("long") }], false, 20);
+    policy.reply(failed("replied"), 30);
+    // Below the floor the refill asks for the shortest clip, and the refused 15 s one goes again.
+    policy.tick(1_030);
+    assert.strictEqual(sent(policy.busy()), "filler of 15.00 s");
+    // It builds until 7,030, and a 5 s item 2 s after it: one that must start by 8,040 cannot.
+    const firm = { ...spec("firm"), window: { startByMs: 7_000, firm: true } };
+    const refused = policy
+      .submit(firm, 1_040)
+      .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
+    assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
+  });
+
+  // With 14.5 s left before s2's cap, the refill's shortest clip would air whole there, but the
+  // refused 15 s clip it asks for again would not: that waits for a session it fits on.
+  it("sends a refused filler clip again only where it airs whole before the cap", () => {
+    const { policy } = airing(protecting("air"), 6);
+    policy.submit(long, 10);
+    policy.edit([{ _tag: "Withdraw", key: key("long") }], false, 20);
+    policy.reply(failed("replied"), 30);
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" }, 40);
+    policy.open("s2", 16_500, 50);
+    policy.tick(1_030);
+    assert.strictEqual(sent(policy.busy("s2")), undefined);
+  });
 });
 
 const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>

@@ -2363,7 +2363,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     state = { ...state, filler: { ...state.filler, refilling } };
     if (!refilling || (!below(targetSeconds) && room >= anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
-    if (!fits(target, seconds)) return;
+    if (!fits(target, fillerLength(seconds))) return;
     sendFiller(filler, target, seconds, room);
   }
   /**
@@ -2395,11 +2395,16 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // A requested second airs as long as asked, or as a provider that cuts clips short leaves it.
     const airs = Math.min(1, estimates().length);
     if (short <= 0 || airs <= rate) return false;
+    // Sized as if the clip's build starts now and the item's once it ends, as with one build in
+    // flight, the default. With more, a build already in flight here goes ahead of both, and
+    // neither the air it drains meanwhile nor the air it adds is counted.
     const seconds = Math.min(
       filler.lengths.max,
       Math.max(filler.lengths.min, Math.min(short / (airs - rate), build / airs)),
     );
-    if (rate * seconds >= build || !fits(target, seconds)) return false;
+    // A refused clip goes again as it was asked for: it must build sooner and fit at its length.
+    const length = fillerLength(seconds);
+    if (rate * length >= build || !fits(target, length)) return false;
     set(item.spec.key, { covered: true });
     sendFiller(filler, target, seconds, room);
     return true;
@@ -2430,7 +2435,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       )
     );
   }
-  /** Sends the next filler clip to `target`, asking for `seconds` the first time it is asked for. */
+  /**
+   * Seconds the next filler clip asks for: a refused one is asked for again as it was, at its own
+   * length, and a new one for `seconds`.
+   */
+  function fillerLength(seconds: number): number {
+    const request = state.filler.request;
+    return request === undefined ? seconds : (request.seconds ?? requestSeconds.min);
+  }
+  /** Sends the next filler clip to `target`, a new one asked for `seconds`. */
   function sendFiller(
     filler: NonNullable<Config["filler"]>,
     target: Session,
@@ -2447,7 +2460,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       actions.push({ _tag: "Fail", reason: invalid, cause: "filler", index: state.filler.index });
       return;
     }
-    state = { ...state, filler: { ...state.filler, request, dispatchedAt: now.mono, seconds } };
+    state = {
+      ...state,
+      filler: {
+        ...state.filler,
+        request,
+        dispatchedAt: now.mono,
+        seconds: request.seconds ?? requestSeconds.min,
+      },
+    };
     queueCommand(target.id, {
       _tag: "Enqueue",
       request,
