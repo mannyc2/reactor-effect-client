@@ -835,7 +835,7 @@ const slowDirection = (slow: Duration.Input) =>
     }),
   );
 
-// Resuming the reconnected connection's tracks takes 3 s, past the reconnect's 2 s.
+// Resuming each track takes 3 s, so the reconnected connection's pass the reconnect's 2 s.
 layer(
   Reactor.layer({ reconnectTimeout: "2 seconds" }).pipe(
     Layer.provideMerge(Coordinator.layer()),
@@ -848,7 +848,8 @@ layer(
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      yield* test.inject(drop);
+      // The first connection drops once its two tracks have resumed.
+      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(10) });
       const session = yield* connect;
       const reported = yield* statuses(session);
       yield* session.changes.pipe(
@@ -866,6 +867,115 @@ layer(
           (yield* session.snapshot).lastError?.reason._tag,
         ],
         [false, "Timeout"],
+      );
+    }),
+  );
+});
+
+/**
+ * ReactorTest's peers, but resuming or pausing a track takes 50 ms, and one interrupted takes 5 ms
+ * more to end, as a call to another process that sends its cancel first does.
+ */
+const slowToCancel = Layer.effect(
+  PeerFactory,
+  Effect.gen(function* () {
+    const peers = yield* PeerFactory;
+    return PeerFactory.of({
+      check: peers.check,
+      make: Effect.map(peers.make, (peer) => ({
+        ...peer,
+        direction: (name: string, active: boolean) =>
+          Effect.sleep("50 millis").pipe(
+            Effect.onInterrupt(() => Effect.sleep("5 millis")),
+            Effect.andThen(peer.direction(name, active)),
+          ),
+      })),
+    });
+  }),
+);
+
+/** A connection that drops 10 ms after its channels open, as its tracks resume. */
+const dropAsTracksResume = (nth: number): ReactorTest.Fault => ({
+  _tag: "Disconnect",
+  nth,
+  after: Duration.millis(10),
+});
+
+// A connection drops while its tracks resume, and the host takes a moment to end the call it
+// interrupts: by then the drop has left the session disconnected.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowToCancel),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a connection that drops as its tracks resume, on a host slow to end the call", (it) => {
+  it.effect("fails the session's own attempt, which it tries again, and is back", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject(dropAsTracksResume(2));
+      const { bugs, reporters } = keepingBugs();
+      const session = yield* connect.pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 2n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.deepStrictEqual([Option.getOrUndefined(back)?.generation, bugs], [3n, []]);
+    }),
+  );
+
+  it.effect("fails a reconnect asked for with the drop, never readying the next generation", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(dropAsTracksResume(2));
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      // The session's own reconnect has begun the next generation: it, not the reconnect asked
+      // for, makes that one ready.
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready"),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const ready = yield* session.ready;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), Option.getOrUndefined(back)?.generation, ready.generation],
+        [["Disconnected"], 3n, 3n],
+      );
+    }),
+  );
+});
+
+// A reconnect's connection drops while its tracks resume, on a host that ends an interrupted call
+// at once, as every shipped host does.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowDirection("50 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection drops as its tracks resume", (it) => {
+  it.effect("fails with the drop, rather than report ready a connection already down", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(dropAsTracksResume(2));
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), snapshot.status, snapshot.generation],
+        [["Disconnected"], "disconnected", 2n],
       );
     }),
   );

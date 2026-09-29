@@ -49,6 +49,10 @@ const connectionFailure = (stats: ReadonlyArray<unknown>, generation: bigint): R
   });
 };
 
+/** Why work fenced to `c` stops once another generation, or the close, has taken `c`'s place. */
+export const retired = (c: Connection) =>
+  ReactorError.fromCode("Aborted", "retired connection generation", { generation: c.generation });
+
 export const make = (core: Core) => {
   const { state, data, control, publish } = core;
 
@@ -57,10 +61,7 @@ export const make = (core: Core) => {
     const link = yield* Ref.get(c.link);
     if (link.failure !== undefined) return yield* link.failure;
     const session = yield* SubscriptionRef.get(state);
-    if (session.connection !== c || isClosing(session.status))
-      return yield* ReactorError.fromCode("Aborted", "retired connection generation", {
-        generation: c.generation,
-      });
+    if (session.connection !== c || isClosing(session.status)) return yield* retired(c);
   });
 
   /** The ready generation and what it negotiated. */

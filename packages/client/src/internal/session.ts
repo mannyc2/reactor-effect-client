@@ -131,8 +131,8 @@ export const make = Effect.fnUntraced(function* (input: {
             {
               ...current,
               status,
-              // A ready connection, or the close, ends the session's own reconnect.
-              reconnecting: current.reconnecting && status !== "ready" && status !== "closing",
+              // The close ends the session's own reconnect.
+              reconnecting: current.reconnecting && status !== "closing",
             },
           ] as const)
         : ([current.status, current] as const),

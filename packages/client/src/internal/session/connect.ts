@@ -30,7 +30,7 @@ import type { ReadyDescriptor } from "../../Session.js";
 import { take } from "../queue.js";
 import * as Stats from "../stats.js";
 import type { Token } from "../token.js";
-import type { Generation } from "./generation.js";
+import { type Generation, retired } from "./generation.js";
 import type { Ice } from "./ice.js";
 import type { Inbound } from "./inbound.js";
 import type { Connection, Core, Known, Link, RemoteSession, State } from "./model.js";
@@ -68,6 +68,10 @@ const afterCreateFailure = (error: ReactorError): RemoteSession | undefined => {
   return refused ? undefined : { ownership: "unknown" };
 };
 
+/** How an attempt, or a step of one, fails once the session's close has overtaken it. */
+const closed = () =>
+  ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" });
+
 /** A connection attempt: the first connect, a reconnect asked for, or the session's own. */
 type Attempt = "connect" | "reconnect" | "own";
 
@@ -93,10 +97,7 @@ const refusal = (attempt: Attempt, session: State) =>
 const joined =
   (from: State) =>
   (session: State): Exit.Exit<void, ReactorError> | undefined => {
-    if (isClosing(session.status))
-      return Exit.fail(
-        ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" }),
-      );
+    if (isClosing(session.status)) return Exit.fail(closed());
     const readyFrom = from.status === "disconnected" ? from.generation + 1n : from.generation;
     if (session.status === "ready") return session.generation >= readyFrom ? Exit.void : undefined;
     const stopped =
@@ -161,10 +162,7 @@ export const make = ({
   const allocate: Effect.Effect<string, ReactorError> = Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       const session = yield* SubscriptionRef.get(state);
-      if (isClosing(session.status))
-        return yield* ReactorError.fromCode("Closed", "session is closed", {
-          outcome: "not-submitted",
-        });
+      if (isClosing(session.status)) return yield* closed();
       if (isKnown(session.remote)) return session.remote.id;
       if (session.remote !== undefined)
         return yield* ReactorError.fromCode(
@@ -343,21 +341,38 @@ export const make = ({
     return c;
   });
 
-  /** Moves the session on for a negotiation, which fails once the session's close has begun. */
-  const reach = (status: "waiting" | "ready") =>
-    Effect.flatMap(transition(status), (moved) =>
-      moved
-        ? Effect.void
-        : Effect.fail(
-            ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" }),
-          ),
+  /** Moves the session on to waiting, which fails once the session's close has begun. */
+  const reachWaiting = Effect.flatMap(transition("waiting"), (moved) =>
+    moved ? Effect.void : Effect.fail(closed()),
+  );
+
+  /**
+   * Moves the session to ready on `c`, in one step with the checks that it may: `c` is the
+   * session's connection, waiting, and has not failed. Otherwise this fails as `current(c)` does,
+   * with `c`'s own failure first, or as closed once the session's close has begun.
+   */
+  const reachReady = Effect.fnUntraced(function* (c: Connection) {
+    const refused = yield* SubscriptionRef.modify(
+      state,
+      (session): readonly [ReactorError | undefined, State] => {
+        if (isClosing(session.status)) return [closed(), session];
+        // Read with the move: a drop fails `c` before it moves the session on.
+        const failure = Ref.getUnsafe(c.link).failure;
+        if (failure !== undefined) return [failure, session];
+        if (session.connection !== c || session.status !== "waiting") return [retired(c), session];
+        // A ready connection ends the session's own reconnect.
+        return [undefined, { ...session, status: "ready", reconnecting: false }];
+      },
     );
+    if (refused !== undefined) return yield* refused;
+    yield* publish({ _tag: "Status", status: "ready" }, c.generation);
+  });
 
   /** Negotiates `c` through to ready, its tracks resumed and its heartbeat running. */
   const negotiate = Effect.fnUntraced(function* (c: Connection, reconnect: boolean) {
     if (!reconnect) yield* guard(c, allocate);
     yield* current(c);
-    yield* reach("waiting");
+    yield* reachWaiting;
     const known = (yield* SubscriptionRef.get(state)).remote;
     if (!isKnown(known)) return yield* ReactorError.fromCode("InvalidState", "no known session id");
     yield* Effect.annotateCurrentSpan("reactor.session.id", known.id);
@@ -452,9 +467,9 @@ export const make = ({
           .notification(c, { case: "ping", value: {} })
           .pipe(Effect.repeat(Schedule.spaced(settings.heartbeat)), Effect.asVoid),
       );
-    // Last, so a deadline can cut only work before the connection is ready, never one the
-    // session has said is ready.
-    yield* reach("ready");
+    // Last, so a deadline can cut only work before the connection is ready. It readies `c` alone,
+    // and only while `c` is up: a drop meanwhile fails the negotiation with that drop.
+    yield* reachReady(c);
   });
 
   /**
