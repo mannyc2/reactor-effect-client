@@ -1055,6 +1055,19 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.strictEqual(refill("air"), "filler of 5.00 s");
   });
 
+  // The review's F2: the plan woke as the runway reached this floor, sent nothing there, and
+  // refilled only at the clip floor, 11 s later. Here only the plan's own wakes come.
+  it("refills as the runway falls to the floor that covers the next item's build", () => {
+    const { policy } = airing(protecting("air"), 30);
+    policy.submit({ ...spec("first"), window: { notBeforeMs: 60_000, firm: false } });
+    let wake = policy.submit(long).wake;
+    for (let guard = 0; guard < 10 && policy.busy() === undefined && wake !== undefined; guard++)
+      wake = policy.tick(wake).wake;
+    // x was seen playing at 2 ms with 30 s left: the runway falls to long's floor, 16 s, at 14 s.
+    assert.strictEqual(policy.now(), 14_002);
+    assert.strictEqual(sent(policy.busy()), "filler of 5.00 s");
+  });
+
   // A refused filler clip is asked for again as it was: 15 s of it, asked to cover a long build,
   // take 6 s to build, and the 5 s item only 2 s, so the item goes first rather than wait for it.
   it("covers an item with a refused filler clip only if that clip builds sooner", () => {
@@ -1523,6 +1536,27 @@ describe("PlayoutPolicy, wakes", () => {
     const sent = policy.submit(spec("a"), 20);
     assert.deepStrictEqual(enqueued(sent.actions), ["a"]);
     assert.deepStrictEqual(statuses(sent.actions, "b"), ["Dropped"]);
+  });
+
+  // The review's F3: during a renewal the runway measured is the replacement's, which does not
+  // fall while the session on air airs, and the plan asked again and again to be woken as it fell.
+  it("wakes for no floor while the replacement's runway, which does not fall, is above it", () => {
+    const policy = drive({ config: protecting("air"), from: measured });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    const x = clip("x", undefined, 60);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10);
+    policy.observe({ playing: x, continuable: ["x"] }, "s1", 10);
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.open("s2", 600_000, 30_020);
+    const fillers = [0, 1, 2].map((index) =>
+      clip(`f${String(index)}`, { _tag: "Filler", index }, index === 2 ? 6.001 : 5),
+    );
+    policy.observe({ ready: fillers, continuable: ["f0", "f1", "f2"] }, "s2", 30_030);
+    policy.submit({ ...spec("first"), window: { notBeforeMs: 60_000, firm: false } }, 30_040);
+    const long: Policy.Spec = { ...spec("long", 1, 15), continuity: true };
+    // s2's 16.001 s stay Ready 1 ms above long's floor: the next deadline is s1's cap.
+    assert.strictEqual(policy.submit(long, 30_050).wake, 60_001);
   });
 
   it("cuts for no item settled while its clip is still listed Ready", () => {
