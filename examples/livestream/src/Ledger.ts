@@ -1,5 +1,5 @@
 import { Config, Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
-import { ReactorError } from "reactor-effect-client/ReactorError";
+import type { PlatformError } from "effect";
 import { H3Source, Session } from "reactor-effect-client";
 import type { Playout } from "reactor-effect-client";
 
@@ -13,7 +13,9 @@ import type { Playout } from "reactor-effect-client";
 export class Ledger extends Context.Service<
   Ledger,
   {
-    readonly allocated: (allocation: H3Source.Allocation) => Effect.Effect<void, ReactorError>;
+    readonly allocated: (
+      allocation: H3Source.Allocation,
+    ) => Effect.Effect<void, PlatformError.PlatformError | Schema.SchemaError>;
     readonly closed: (report: Playout.Cleanup) => Effect.Effect<void>;
   }
 >()("reactor-effect-example-livestream/Ledger") {
@@ -38,15 +40,13 @@ export class Ledger extends Context.Service<
       );
 
       // An owner that cannot be recorded fails the open, so the SDK closes the
-      // session it just allocated instead of connecting an unrecorded one.
+      // session it just allocated instead of connecting an unrecorded one. The
+      // open fails with the close's report and this failure as its detail, which
+      // logs redact, so the ledger logs the failure itself.
       const allocated = Effect.fn("Ledger.allocated")(function* (allocation: H3Source.Allocation) {
         yield* encodeAllocation(allocation).pipe(
           Effect.flatMap((encoded) => append("allocations.jsonl", encoded)),
-          Effect.mapError((cause) =>
-            ReactorError.fromCode("InvalidState", "could not record the session owner", {
-              detail: cause,
-            }),
-          ),
+          Effect.tapError((cause) => Effect.logError("could not record the session owner", cause)),
         );
         yield* Effect.logInfo("session allocated", {
           sessionId: allocation.sessionId,

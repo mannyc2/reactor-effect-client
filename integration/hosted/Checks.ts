@@ -1576,9 +1576,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
                 Effect.ignore,
                 Effect.forkScoped,
               );
-            }).pipe(
-              Effect.mapError((error) => ReactorError.fromCode("InvalidState", error.message)),
-            ),
+            }),
         });
         const wrapped: Playout.Source = {
           ...source,
