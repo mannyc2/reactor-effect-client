@@ -1927,6 +1927,31 @@ describe("PlayoutPolicy, time", () => {
     assert.deepStrictEqual(waits, [1_000, 2_000]);
   });
 
+  // s1's renewal is refused with a Retry-After of 20 s, then s1 is lost before the item sent to it
+  // started: a failed setup, whose own wait, 2 s as the second failure in a row, is shorter.
+  it("waits out a refusal's Retry-After after a session lost before any clip", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    const opens = () => policy.actions.filter((action) => action._tag === "Open").length;
+    policy.tick(0);
+    policy.open("s1", 30_000);
+    policy.submit(spec("a"));
+    // s1's cap is within the lead, so its renewal opens at once.
+    const asked = opens();
+    policy.send({
+      _tag: "OpenFailed",
+      reason: "429",
+      fatal: false,
+      allocated: false,
+      retryAfterMs: 20_000,
+    });
+    const refusedAt = policy.now();
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    policy.tick(refusedAt + 19_999);
+    assert.strictEqual(opens(), asked);
+    policy.tick(refusedAt + 20_000);
+    assert.strictEqual(opens(), asked + 1);
+  });
+
   it("times an end cue from the provider's length, not the requested one", () => {
     const policy = drive();
     policy.tick(0);
