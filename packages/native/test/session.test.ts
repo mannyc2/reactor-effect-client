@@ -242,12 +242,13 @@ layer(NodeServices.layer, { excludeTestServices: true })(
 
 /**
  * The canonical client over in-process peers on the fake's in-process module,
- * whose controls a test drives.
+ * whose controls a test drives. These sessions do not reconnect themselves, so
+ * a failed connection stays failed for the test to read.
  */
 const clientOver = (addon: FakeAddon) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(Coordinator.layer(settings));
-    return yield* Reactor.make().pipe(
+    return yield* Reactor.make({ reconnect: false }).pipe(
       Effect.provide(services),
       Effect.provideService(
         PeerFactory,
