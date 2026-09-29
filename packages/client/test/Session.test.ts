@@ -13,6 +13,7 @@ import {
   Layer,
   Option,
   Path,
+  Random,
   Redacted,
   Ref,
   Stream,
@@ -434,6 +435,137 @@ layer(
         ],
         ["disconnected", 2n, false, "Timeout"],
       );
+    }),
+  );
+});
+
+/** A Random that always draws `value`: 0 is the bottom of its range, and 0.5 its middle. */
+const drawing = (value: number): Random.Random => ({
+  nextIntUnsafe: () => 0,
+  nextDoubleUnsafe: () => value,
+});
+
+/**
+ * How long after each refused reconnect of the session `id` the next attempt sent its first
+ * request, on the TestClock: after every reconnect's offer but the last, which was accepted.
+ */
+const waitsAfterRefusals = (id: string) =>
+  Effect.map(ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.log)), (log) => {
+    const requests = log.filter((entry) => entry.sessionId === id && entry.kind === "request");
+    const waits = requests.flatMap((entry, index) => {
+      const next = requests[index + 1];
+      const reoffer = entry.name.startsWith("PUT ") && entry.name.endsWith("/sdp_params");
+      return reoffer && next !== undefined ? [next.at - entry.at] : [];
+    });
+    return waits.slice(0, -1);
+  });
+
+// Reactor refuses the session's first six reconnects; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+  }),
+)("a session's own reconnect, refused", (it) => {
+  /** Each wait after a refusal before the next attempt, when every jitter draws `draw`. */
+  const waits = (draw: number) =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3, 4, 5, 6], (nth) =>
+        test.inject({ _tag: "RefuseReconnect", nth }),
+      );
+      const session = yield* connect;
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      // Six generations refused, and the seventh ready.
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 8n);
+      // The next attempt's first request takes 20 ms.
+      return (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
+    }).pipe(Effect.provideService(Random.Random, drawing(draw)));
+
+  it.effect(
+    "tries again 250 ms after the first refusal, then twice as long each time, to 4 s",
+    () =>
+      Effect.map(waits(0.5), (all) => {
+        assert.deepStrictEqual(all, [250, 500, 1_000, 2_000, 4_000, 4_000]);
+      }),
+  );
+
+  it.effect("jitters each wait: at the bottom of its range, a fifth shorter", () =>
+    Effect.map(waits(0), (all) => {
+      assert.deepStrictEqual(all, [200, 400, 800, 1_600, 3_200, 3_200]);
+    }),
+  );
+});
+
+// Reactor refuses the session's first three reconnects.
+layer(environment({ timing }))("a session's own reconnect, refused three times", (it) => {
+  it.effect("recovers on the fourth attempt, each on a new generation of the same session", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3], (nth) => test.inject({ _tag: "RefuseReconnect", nth }));
+      const session = yield* connect;
+      const seen = yield* (yield* statuses(session)).pipe(
+        Stream.takeUntil(([status]) => status === "ready"),
+        Stream.runCollect,
+        Effect.timeoutOption("30 seconds"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["disconnected", 2n],
+          ["connecting", 3n],
+          ["waiting", 3n],
+          ["disconnected", 3n],
+          ["connecting", 4n],
+          ["waiting", 4n],
+          ["disconnected", 4n],
+          ["connecting", 5n],
+          ["waiting", 5n],
+          ["ready", 5n],
+        ]),
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [snapshot.reconnecting, yield* remoteState(session.id), (yield* test.sessions).length],
+        [false, "ACTIVE", 1],
+      );
+    }),
+  );
+});
+
+// Reactor answers the session's reconnect as if it knew no such session.
+layer(environment({ timing }))("a session's own reconnect answered 404", (it) => {
+  it.effect("stops at once, saying why", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const last = Option.getOrUndefined(stopped)?.lastError;
+      assert.deepStrictEqual(
+        [last?.reason._tag, last?.reason._tag === "Http" ? last.reason.status : undefined],
+        ["Http", 404],
+      );
+      // One attempt, on the generation after the dropped one.
+      assert.strictEqual((yield* session.snapshot).generation, 2n);
     }),
   );
 });
