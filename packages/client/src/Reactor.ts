@@ -64,7 +64,10 @@ export interface Options {
    * host), so space its attempts as the default does. The session reconnects in its acquisition's
    * context, with the tracer, `ErrorReporter`s and clock `create` or `attach` ran with, and each
    * attempt's `Session.reconnect` span begins a trace of its own, linked to the acquisition's.
-   * `false` leaves a dropped connection dropped until `session.reconnect`.
+   * Reconnecting keeps a session alive, and billed: an owned session its application never closed,
+   * or one a viewer holds after its owner has gone, runs on until its cap. `false` leaves a dropped
+   * connection dropped until `session.reconnect`, so that Reactor ends a session 30 seconds after
+   * its last connection drops.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
