@@ -1001,11 +1001,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
       }
     }
+    // An edit refused below, as an item it adds would miss its deadline, leaves the plan as it was.
+    const saved = { items: new Map(items), groups: new Map(groups), nextOrder: state.nextOrder };
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
     const targets: Array<Batch["targets"][number]> = [];
     /** Group-key withdrawals by position, and how many parts each waits on. */
     const joined: Array<{ readonly index: number; readonly parts: number }> = [];
+    /** Withdrawals of keys the plan does not know, answered once the edit is accepted. */
+    const notFound: Array<number> = [];
     const put = (item: Item): void => {
       items.set(item.spec.key, item);
       adds.push(item.spec.key);
@@ -1122,7 +1126,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           const group = groups.get(edit.key);
           const keys = group === undefined ? [edit.key] : group.parts;
           const known = keys.some((key) => items.has(key));
-          if (!known) actions.push({ _tag: "Withdrawn", id, index, outcome: "not-found" });
+          if (!known) notFound.push(index);
           else if (group !== undefined) {
             // A group key withdraws every part, and answers once each part has.
             joined.push({ index, parts: group.parts.length });
@@ -1157,12 +1161,16 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         item.startBy !== undefined &&
         misses(item, item.startBy)
       ) {
-        for (const added of adds) items.delete(added);
-        for (const [group, value] of groups)
-          if (value.parts.some((part) => adds.includes(part))) groups.delete(group);
+        items.clear();
+        for (const [other, value] of saved.items) items.set(other, value);
+        groups.clear();
+        for (const [group, value] of saved.groups) groups.set(group, value);
+        state = { ...state, nextOrder: saved.nextOrder };
         return refuse({ _tag: "WouldMissDeadline", key });
       }
     }
+    for (const index of notFound)
+      actions.push({ _tag: "Withdrawn", id, index, outcome: "not-found" });
     if (joined.length > 0) {
       const joins = new Map(state.joins);
       for (const join of joined)

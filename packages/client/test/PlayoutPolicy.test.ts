@@ -1484,6 +1484,39 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(statuses(policy.actions, "b").at(-1), "Dropped");
     assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
   });
+
+  // An edit refused as it would miss a deadline took back its items only: a part's replacement
+  // in it took its whole group with it, so a later withdrawal of a part was never answered, and
+  // a withdrawal in it of a key the plan did not know was answered beside the refusal.
+  it("leaves the plan as it was when it refuses an edit that would miss a deadline", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    const before = policy.state();
+    const refused = policy.edit([
+      { _tag: "Replace", key: key("p2"), spec: spec("p2b") },
+      { _tag: "Withdraw", key: key("unknown") },
+      { _tag: "Submit", spec: { ...spec("late"), window: { startByMs: 1_000, firm: true } } },
+    ]);
+    const answers = refused.actions.flatMap((action) =>
+      action._tag === "Refused" || action._tag === "Withdrawn" ? [action._tag] : [],
+    );
+    assert.deepStrictEqual(answers, ["Refused"]);
+    assert.deepStrictEqual(policy.state().items, before.items);
+    assert.deepStrictEqual(policy.state().groups, before.groups);
+    assert.strictEqual(policy.state().nextOrder, before.nextOrder);
+    const withdrawal = policy.edit([{ _tag: "Withdraw", key: key("p2") }]);
+    assert.deepStrictEqual(withdrawn(withdrawal.actions), ["withdrawn"]);
+  });
 });
 describe("PlayoutPolicy, time", () => {
   // The critique's 60 s cap: n10 was cut mid-clip at the cap and later items aired out of order.
@@ -2401,6 +2434,30 @@ const counterexamples: ReadonlyArray<Script> = [
   ["urgent", "withdraw", "lost", "batch"],
   // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
   ["submit", "open", "done", "done", "ready", "replace", "start"],
+  // An edit refused as it would miss a deadline took a replaced part's group with it, and the
+  // withdrawal of that group's part was never answered.
+  [
+    "open",
+    "done",
+    "open",
+    "wake",
+    "fail",
+    "open",
+    "batch",
+    "group",
+    "withdraw",
+    "done",
+    "end",
+    "end",
+    "urgent",
+    "withdraw",
+    "submit",
+    "group",
+    "fail",
+    "replace",
+    "lost",
+    "batch",
+  ],
 ];
 
 describe("PlayoutPolicy, any script", () => {
