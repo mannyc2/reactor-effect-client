@@ -202,6 +202,11 @@ export interface Config {
         readonly lengths: { readonly min: number; readonly max: number };
         /** Where the filler clip at `index` asks for more than H3 takes, or undefined. */
         readonly invalid: (request: Request, index: number) => string | undefined;
+        /**
+         * What goes first when an item's build would outlast the air secured: a
+         * filler clip covering it, or the item.
+         */
+        readonly protect: "air" | "order";
       }
     | undefined;
   readonly maxBuildsInFlight: number;
@@ -242,6 +247,8 @@ interface Item {
   readonly dispatchedAt?: number | undefined;
   /** Its build in flight continues from another clip, so its build time is measured apart. */
   readonly continued?: boolean | undefined;
+  /** A filler clip went ahead of its build to cover it: it waits for no other. */
+  readonly covered?: boolean | undefined;
   /**
    * The Ready clip it continues from when that clip airs after its place: it
    * was projected Ready only after the clip before its place ended. It waits
@@ -522,6 +529,20 @@ const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): 
     (at === undefined || at <= now.mono) &&
     item.withdraw === undefined
   );
+};
+
+/**
+ * Seconds of air secured: the playing clip's rest, then the Ready clips that
+ * air from the session on air and from its replacement once that takes over.
+ */
+const securedOf = (state: Pick<State, "items" | "sessions" | "air">, now: Now): number => {
+  const air = state.sessions.find((value) => value.id === state.air);
+  const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
+  const ready = (value: Session | undefined): number =>
+    (value?.source?.ready ?? [])
+      .filter((clip) => airsOf(state.items, clip, now))
+      .reduce((total, clip) => total + clip.seconds, 0);
+  return playingRestOf(air, now.mono) / 1000 + ready(air) + ready(replacement);
 };
 
 type Rank = readonly [number, number, number, number];
@@ -2253,7 +2274,8 @@ export const step: {
     if (inFlight >= config.maxBuildsInFlight) return;
     const room = runway();
     const floorSeconds = fillerFloor();
-    for (const item of eligible()) {
+    const drainingNeeds = state.drains.length === 0 || fillerNeeded;
+    for (const item of eligible(floorSeconds)) {
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;
@@ -2261,6 +2283,7 @@ export const step: {
         ? continuation(item, target)
         : { _tag: "from" as const, clipId: undefined, follows: undefined };
       if (from._tag === "wait") continue;
+      if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
       set(item.spec.key, {
         phase: "Building",
         sessionId: target.id,
@@ -2277,12 +2300,7 @@ export const step: {
       });
     }
     const filler = config.filler;
-    // One filler enqueue at a time, on whichever lane: the next clip's index follows from its
-    // result, and a replacement's free lane would otherwise ask for the same clip again.
-    const fillerSent = state.sessions.some(
-      ({ busy }) => busy?.command._tag === "Enqueue" && busy.command.tag._tag === "Filler",
-    );
-    if (filler === undefined || now.mono < state.filler.retryAt || fillerSent) return;
+    if (filler === undefined || !fillerFree()) return;
     const anchorGap = Math.max(
       0,
       ...[...items.values()].flatMap((item) => {
@@ -2294,10 +2312,82 @@ export const step: {
     const refilling =
       anchorGap > room || (state.filler.refilling ? room < targetSeconds : room < floorSeconds);
     state = { ...state, filler: { ...state.filler, refilling } };
-    const drainingNeeds = state.drains.length === 0 || fillerNeeded;
     if (!refilling || room >= Math.max(targetSeconds, anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
     if (!fits(target, seconds)) return;
+    sendFiller(filler, target, seconds, room);
+  }
+  /**
+   * `item`'s p95 build in seconds, at the continued rate if it continues a
+   * clip. Unknown until three builds were measured.
+   */
+  function buildOf(item: Item, continued: boolean): number | undefined {
+    const p95 = estimates().build?.p95;
+    if (p95 === undefined) return undefined;
+    return (continued ? (continuedBuildRate(state.samples) ?? p95) : p95) * item.spec.seconds;
+  }
+  /**
+   * Protecting the air, sends a filler clip ahead of `item` when its p95 build
+   * and a margin would outlast the air secured. The clip is long enough, within
+   * the filler's lengths, that the air it adds less what its own build drains
+   * covers the rest, but airs no longer than the item builds, which a longer
+   * clip would only delay. An item waits for one such clip at most, and for
+   * none that cannot be sent now, would add no air or build no sooner than the
+   * item, or would not air before the session's cap.
+   */
+  function coverFirst(target: Session, item: Item, continued: boolean, room: number): boolean {
+    const filler = config.filler;
+    if (filler === undefined || !protects(item) || item.covered === true || !fillerFree())
+      return false;
+    const build = buildOf(item, continued);
+    const rate = estimates().build?.p95;
+    if (build === undefined || rate === undefined) return false;
+    const short = build + lookaheadMarginSeconds - securedOf({ ...state, items }, now);
+    // A requested second airs as long as asked, or as a provider that cuts clips short leaves it.
+    const airs = Math.min(1, estimates().length);
+    if (short <= 0 || airs <= rate) return false;
+    const seconds = Math.min(
+      filler.lengths.max,
+      Math.max(filler.lengths.min, Math.min(short / (airs - rate), build / airs)),
+    );
+    if (rate * seconds >= build || !fits(target, seconds)) return false;
+    set(item.spec.key, { covered: true });
+    sendFiller(filler, target, seconds, room);
+    return true;
+  }
+  /**
+   * Whether filler protects the air ahead of `item`'s build. What has a time to
+   * meet, an `At` start or a `startBy`, goes as soon as it may: filler ahead
+   * would only make it later, and a firm one late enough to be dropped.
+   */
+  function protects(item: Item): boolean {
+    return (
+      config.filler?.protect === "air" &&
+      item.startBy === undefined &&
+      item.spec.start._tag !== "At"
+    );
+  }
+  /**
+   * Whether a filler clip may be sent: none waits out a refused one, and one
+   * enqueue at a time, on whichever lane. The next clip's index follows from
+   * its result, and a replacement's free lane would otherwise ask for the same
+   * clip again.
+   */
+  function fillerFree(): boolean {
+    return (
+      now.mono >= state.filler.retryAt &&
+      !state.sessions.some(
+        ({ busy }) => busy?.command._tag === "Enqueue" && busy.command.tag._tag === "Filler",
+      )
+    );
+  }
+  /** Sends the next filler clip to `target`, asking for `seconds` the first time it is asked for. */
+  function sendFiller(
+    filler: NonNullable<Config["filler"]>,
+    target: Session,
+    seconds: number,
+    room: number,
+  ): void {
     const request =
       state.filler.request ??
       filler.clip({ index: state.filler.index, runwaySeconds: room, seconds });
@@ -2316,9 +2406,8 @@ export const step: {
     });
   }
   /** Items that may be built now, first in build order. */
-  function eligible(): ReadonlyArray<Item> {
+  function eligible(floorSeconds: number): ReadonlyArray<Item> {
     const room = runway();
-    const floorSeconds = fillerFloor();
     const target = preferred();
     return [...items.values()]
       .filter(
@@ -2377,7 +2466,16 @@ export const step: {
       target.openedAt + target.lifetimeMs - marginMs
     );
   }
+  /** The runway filler refills below; protecting the air, it covers the next item's build too. */
   function fillerFloor(): number {
+    const floor = clipFloor();
+    if (floor <= 0 || config.filler?.protect !== "air") return floor;
+    const next = eligible(floor)[0];
+    const build =
+      next === undefined || !protects(next) ? undefined : buildOf(next, next.spec.continuity);
+    return build === undefined ? floor : Math.max(floor, build + lookaheadMarginSeconds);
+  }
+  function clipFloor(): number {
     const filler = config.filler;
     if (filler === undefined || filler.floor <= 0) return 0;
     const p95 = estimates().build?.p95;
@@ -2510,7 +2608,11 @@ export const step: {
     // The runway falls while a clip plays: wake when it will cross the filler floor, or a cut's margin.
     const onAirNow = session(state.air);
     if (onAirNow?.source?.playing !== undefined) {
-      later(now.mono + Math.max(1, (runway() - fillerFloor()) * 1000));
+      const room = runway();
+      later(now.mono + Math.max(1, (room - clipFloor()) * 1000));
+      // Protecting the air, the floor also covers the next item's build: wake as the runway falls to it.
+      const floor = fillerFloor();
+      if (room > floor) later(now.mono + (room - floor) * 1000);
       later(now.mono + Math.max(1, playingRestMs(onAirNow) - cutMarginMs));
       later(now.mono + playingRestMs(onAirNow) + 1);
     }
@@ -2559,17 +2661,10 @@ export const view: {
 } = dual(3, (config: Config, state: State, now: Now): PublicState => {
   const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
-  const air = state.sessions.find((value) => value.id === state.air);
-  const playing = air?.playing;
-  // What airs from the session on air, then from its replacement once that takes over.
-  const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
-  const secured = (value: Session | undefined): number =>
-    (value?.source?.ready ?? [])
-      .filter((clip) => airsOf(state.items, clip, now))
-      .reduce((total, clip) => total + clip.seconds, 0);
+  const playing = state.sessions.find((value) => value.id === state.air)?.playing;
   return {
     accepting: state.accepting,
-    runwaySeconds: playingRestOf(air, now.mono) / 1000 + secured(air) + secured(replacement),
+    runwaySeconds: securedOf(state, now),
     playing:
       playing === undefined
         ? null

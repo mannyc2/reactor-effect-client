@@ -494,8 +494,9 @@ export interface FillContext {
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
    * equal clips that tile the uncovered gap, none asking for less than its
-   * share; otherwise the shortest, which keeps boundaries, and so reactions,
-   * frequent.
+   * share; ahead of an item whose build it covers (`filler.protect`), as long
+   * as that takes; otherwise the shortest, which keeps boundaries, and so
+   * reactions, frequent.
    */
   readonly seconds: number;
 }
@@ -516,6 +517,19 @@ export interface Options<R = never> {
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
+        /**
+         * What goes first when an item's build would outlast the air secured.
+         * With `"air"`, the default, once three builds were measured, an item
+         * whose p95 build, at the continued rate if it continues a clip, and a
+         * second more exceed `State.runwaySeconds` waits for one filler clip
+         * that builds sooner than it does: long enough, within `lengths`, to
+         * cover the rest, and airing no longer than the item builds. The floor
+         * covers the next item's build too. An item with a time to meet, an
+         * `At` start or a `startBy`, goes as soon as it may. `"order"` builds
+         * each item as soon as it may: it airs sooner, but the air may go dark
+         * while it builds.
+         */
+        readonly protect?: "air" | "order" | undefined;
       }
     | undefined;
   /**

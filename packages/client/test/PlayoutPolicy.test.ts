@@ -837,6 +837,7 @@ const filled: Policy.Config = {
     clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
     lengths: { min: 5, max: 15 },
     invalid: () => undefined,
+    protect: "air",
   },
 };
 
@@ -920,6 +921,111 @@ describe("PlayoutPolicy, lanes", () => {
     assert.deepStrictEqual(fillers(), ["s1 0"]);
     policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
     assert.deepStrictEqual(fillers(), ["s1 0", "s2 1"]);
+  });
+});
+
+/** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
+const measured: Policy.State = {
+  ...Policy.initial,
+  samples: { build: [0.4, 0.4, 0.4], continued: [], length: [] },
+};
+/** Filler with a floor and twice that as its target, asking for the length the plan wants. */
+const protecting = (
+  protect: "air" | "order",
+  lengths = { min: 5, max: 15 },
+  floor = 5,
+): Policy.Config => ({
+  ...config,
+  filler: {
+    floor,
+    target: floor * 2,
+    clip: ({ index, seconds }) => ({ prompt: `filler ${String(index)}`, seconds }),
+    lengths,
+    invalid: () => undefined,
+    protect,
+  },
+});
+
+describe("PlayoutPolicy, air before queue order", () => {
+  /** s1 on air playing a clip of its own that may be continued, `rest` seconds of it left. */
+  const airing = (settings: Policy.Config, rest: number, from = measured) => {
+    const policy = drive({ config: settings, from });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 });
+    const playing = clip("x", undefined, rest);
+    policy.observe({ playing, continuable: ["x"] });
+    if (policy.busy()?._tag === "Autoplay") policy.reply({ _tag: "Done" });
+    return { policy, playing };
+  };
+  const sent = (command: Policy.Command | undefined) =>
+    command?._tag !== "Enqueue"
+      ? undefined
+      : command.tag._tag === "Item"
+        ? String(command.tag.key)
+        : `filler of ${command.request.seconds?.toFixed(2) ?? "?"} s`;
+  const long: Policy.Spec = { ...spec("long", 1, 15), continuity: true };
+
+  // The review's measured case, in the plan: a 15 s continued build projected at 16 s with its
+  // margin, against 12 s secured.
+  it("sends a filler clip ahead of a build that would outlast the air secured, then the build", () => {
+    const order = airing(protecting("order"), 12).policy;
+    order.submit(long);
+    assert.strictEqual(sent(order.busy()), "long");
+    const { policy, playing } = airing(protecting("air"), 12);
+    policy.submit(long);
+    // Its own build runs the air down 0.4 s a second, so 6.67 s of it covers the 4 s missing.
+    assert.strictEqual(sent(policy.busy()), "filler of 6.67 s");
+    const cover = clip("f0", { _tag: "Filler", index: 0 }, 5);
+    policy.observe({ playing, building: [cover], continuable: ["x"] });
+    policy.reply({ _tag: "Done", clipId: "f0" });
+    assert.isUndefined(policy.busy());
+    // Built shorter than asked, it leaves the runway short: the item waits for no second one.
+    policy.observe({ playing, ready: [cover], continuable: ["x", "f0"] }, "s1", 2_700);
+    assert.strictEqual(sent(policy.busy()), "long");
+  });
+
+  // At 0.8 s a second, covering the 3 s missing takes more than a 15 s clip, whose build alone
+  // outlasts the air; one airing while the item builds, 8 s, leaves the air dark least.
+  it("sends a filler clip that airs no longer than the item takes to build", () => {
+    const slow = { ...measured, samples: { build: [0.8, 0.8, 0.8], continued: [], length: [] } };
+    const { policy } = airing(protecting("air"), 6, slow);
+    policy.submit(spec("ten", 1, 10));
+    assert.strictEqual(sent(policy.busy()), "filler of 8.00 s");
+  });
+
+  it("builds each item at once until three builds were measured", () => {
+    const { policy } = airing(protecting("air"), 12, Policy.initial);
+    policy.submit(long);
+    assert.strictEqual(sent(policy.busy()), "long");
+  });
+
+  // Filler only where it covers a build, in clips of at least 10 s: one builds in 4 s, the item
+  // in 2 s, so sending it first would leave the air dark longer.
+  it("sends no filler clip that would build no sooner than the item", () => {
+    const { policy } = airing(protecting("air", { min: 10, max: 15 }, 0), 1);
+    policy.submit(spec("short"));
+    assert.strictEqual(sent(policy.busy()), "short");
+  });
+
+  // A filler clip first would put its projected start at 8.4 s, past the 7 s it must start by,
+  // and the plan would drop it as late.
+  it("builds an item with a time to meet at once", () => {
+    const { policy } = airing(protecting("air", { min: 5, max: 15 }, 0), 3);
+    policy.submit({ ...spec("firm", 1, 15), window: { startByMs: 7_000, firm: true } });
+    assert.strictEqual(sent(policy.busy()), "firm");
+  });
+
+  // The item it continues may not start for a minute, so it cannot be built yet; once it can, the
+  // air its build needs is already there.
+  it("keeps the runway at the build of the item next in line while that item waits", () => {
+    const refill = (protect: "air" | "order") => {
+      const { policy } = airing(protecting(protect), 12);
+      policy.submit({ ...spec("first"), window: { notBeforeMs: 60_000, firm: false } });
+      policy.submit(long);
+      return sent(policy.busy());
+    };
+    assert.isUndefined(refill("order"));
+    assert.strictEqual(refill("air"), "filler of 5.00 s");
   });
 });
 
@@ -1239,18 +1345,19 @@ const steps = [
 ] as const;
 type Script = ReadonlyArray<(typeof steps)[number]>;
 
-const simulate = (script: Script) => {
+const simulate = (script: Script, from: Policy.State) => {
   const settings: Policy.Config = {
     ...config,
     filler: {
       floor: 5,
       target: 10,
-      clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
+      clip: ({ index, seconds }) => ({ prompt: `filler ${String(index)}`, seconds }),
       lengths: { min: 5, max: 15 },
       invalid: () => undefined,
+      protect: "air",
     },
   };
-  let state = Policy.initial;
+  let state = from;
   let clock = 0;
   let clips = 0;
   let opened = 0;
@@ -1381,6 +1488,7 @@ const simulate = (script: Script) => {
   const cued = (name: string, lane: number, index: number): Policy.Spec => ({
     ...spec(name, lane, 5 + (index % 3) * 5),
     cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
+    continuity: index % 4 === 3,
   });
 
   send({ _tag: "Tick" });
@@ -1565,9 +1673,16 @@ const simulate = (script: Script) => {
   return { actions, inputs, edits, drains, problems, groups, named, replaced };
 };
 
-/** The plan's promises for one script; the property and the pinned counterexamples check them. */
+/**
+ * The plan's promises for one script, run with no build measured and with
+ * three, so that filler protects the air from the start; the property and the
+ * pinned counterexamples check them.
+ */
 const check = (script: Script): void => {
-  const { actions, edits, drains, problems, groups, named, replaced } = simulate(script);
+  for (const from of [Policy.initial, measured]) keeps(script, from);
+};
+const keeps = (script: Script, from: Policy.State): void => {
+  const { actions, edits, drains, problems, groups, named, replaced } = simulate(script, from);
   // One provider command at a time on each session, so a refusal is always attributable.
   assert.deepStrictEqual(problems, []);
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();

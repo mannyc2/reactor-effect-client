@@ -1037,6 +1037,57 @@ layer(hosted)("filler", (it) => {
   );
 });
 
+// Filler airs alone for 40 s, then a 15 s item continuing the clip before it arrives with about
+// 10 s of air secured. A continued build ran at 0.92 times real time on hosted H3, so it takes
+// about 16 s; building it at once left 6.4 s of dead air.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      continuedBuildSpeed: 0.92,
+      seam: "70 millis",
+      http: "40 millis",
+      channel: "20 millis",
+    }),
+  }),
+)("air before queue order", (it) => {
+  for (const protect of ["air", "order"] as const)
+    it.effect(
+      `a long continued item submitted on a thin runway, with filler protecting the ${protect}`,
+      () =>
+        Effect.gen(function* () {
+          const { playout, events } = yield* start({
+            filler: {
+              runway: { floor: "5 seconds", target: "10 seconds" },
+              clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+              protect,
+            },
+          });
+          yield* Effect.sleep("40 seconds");
+          const secured = (yield* playout.state).runwaySeconds;
+          const long = yield* playout.submit({
+            key: key("long"),
+            lane: "line",
+            request: clip("long", 15),
+            continuity: "previous",
+          });
+          const started = yield* long.started;
+          assert.strictEqual((yield* long.outcome)._tag, "Ended");
+          const starved = (yield* events).flatMap((event) =>
+            event._tag === "Starved" ? [event.at] : [],
+          );
+          const dark = starved.map((at) => (started._tag === "Started" ? started.at : at) - at);
+          // Filler covering its build goes first; building it at once leaves the air dark.
+          assert.strictEqual(
+            starved.length,
+            protect === "air" ? 0 : 1,
+            `${secured.toFixed(1)} s secured at submission, dark for ${dark.join(", ")} ms`,
+          );
+        }),
+      { timeout: 60_000 },
+    );
+});
+
 layer(hosted)("local renderer", (it) => {
   it.effect("runs the same plan on a local renderer", () =>
     Effect.gen(function* () {

@@ -142,6 +142,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
                 ? undefined
                 : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
             },
+            protect: options.filler.protect ?? "air",
           },
     maxBuildsInFlight: options.maxBuildsInFlight ?? 1,
     maxHistory: options.maxHistory ?? 4096,
