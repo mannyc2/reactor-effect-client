@@ -542,7 +542,11 @@ export interface Options<R = never> {
     | undefined;
 }
 
-/** Close reports of the sessions this playout retired: every unconfirmed one and the latest others. */
+/**
+ * Close reports of the sessions this playout retired, failed opens that
+ * allocated included: every one that may still bill (`Session.mayStillBill`)
+ * and the latest others.
+ */
 export interface Cleanup {
   readonly sessions: number;
   readonly retained: ReadonlyArray<CloseReport>;
@@ -593,7 +597,9 @@ export class Playout extends Context.Service<
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
     /**
      * Why the playout stopped: a session could not be opened or kept, a filler
-     * request was outside H3's limits (`InvalidFiller`), or its scope closed.
+     * request was outside H3's limits (`InvalidFiller`), or its scope closed
+     * (`Closed`). A defect that stopped it, such as a throwing `filler.clip`,
+     * stays a defect: this dies with it.
      */
     readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
     readonly cleanup: Effect.Effect<Cleanup>;

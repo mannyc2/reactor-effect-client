@@ -1,14 +1,17 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
 import {
+  Cause,
   Clock,
   Deferred,
   Duration,
   Effect,
+  ErrorReporter,
   Exit,
   Option,
   Redacted,
   Ref,
+  Result,
   Scope,
   Stream,
 } from "effect";
@@ -1214,6 +1217,28 @@ layer(hosted)("failure reasons", (it) => {
   );
 });
 
+layer(hosted)("sources", (it) => {
+  it.effect("refuses a source whose session id a live source already holds", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const grant = yield* tokens("60 seconds");
+      // A source that names every session alike, as a custom one might by mistake.
+      const playout = yield* Playout.make({
+        open: Effect.map(H3Source.open({ tokens: grant }), (source) => ({
+          ...source,
+          sessionId: "shared",
+        })),
+        lanes: [{ name: "line" }],
+        renewal: { lead: "30 seconds" },
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
+      assert.isTrue(Option.isSome(failure));
+      if (Option.isSome(failure)) assert.include(failure.value.message, "session id");
+    }),
+  );
+});
+
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
 // SDK "observes the session leaving the ready state"; a verdict may or may not come first.
 layer(hosted)("moderation with a verdict", (it) => {
@@ -1388,29 +1413,45 @@ layer(hosted)("closing and failing", (it) => {
     }),
   );
 
-  it.effect("a defect in the plan fails the playout and closes its sessions, never hanging", () =>
-    Effect.gen(function* () {
-      const test = yield* ReactorTest.ReactorTest;
-      const { playout } = yield* start({
-        filler: {
-          runway: { floor: "5 seconds", target: "10 seconds" },
-          clip: ({ index }) => {
-            if (index > 0) throw new Error("the filler generator broke");
-            return clip("filler 0");
+  it.effect(
+    "a defect in the plan kills the playout with it, reported, and closes its sessions",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const reported: Array<unknown> = [];
+        const reporter = ErrorReporter.make(({ cause }) => {
+          reported.push(Cause.findDefect(cause).pipe(Result.getOrUndefined));
+        });
+        const broke = new Error("the filler generator broke on a prompt for user alice");
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index }) => {
+              if (index > 0) throw broke;
+              return clip("filler 0");
+            },
           },
-        },
-      });
-      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
-      assert.isTrue(Option.isSome(failure));
-      const refused = yield* playout
-        .submit({ key: key("after"), lane: "line", request: clip("after") })
-        .pipe(Effect.flip, Effect.timeoutOption("10 seconds"));
-      assert.deepStrictEqual(
-        Option.map(refused, (error) => error._tag),
-        Option.some("PlayoutClosed"),
-      );
-      yield* eventually(test.sessions, (all) => all.every((value) => value.state === "CLOSED"));
-    }),
+        }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+        const exit = yield* Effect.exit(playout.failure).pipe(Effect.timeoutOption("2 minutes"));
+        // A bug stays a defect: its text never becomes a library message.
+        assert.deepStrictEqual(
+          Option.map(exit, (value) =>
+            Exit.isFailure(value)
+              ? Cause.findDefect(value.cause).pipe(Result.getOrUndefined)
+              : value,
+          ),
+          Option.some<unknown>(broke),
+        );
+        assert.deepStrictEqual(reported, [broke]);
+        const refused = yield* playout
+          .submit({ key: key("after"), lane: "line", request: clip("after") })
+          .pipe(Effect.flip, Effect.timeoutOption("10 seconds"));
+        assert.deepStrictEqual(
+          Option.map(refused, (error) => error._tag),
+          Option.some("PlayoutClosed"),
+        );
+        yield* eventually(test.sessions, (all) => all.every((value) => value.state === "CLOSED"));
+      }),
   );
 
   it.effect("a withdrawal after the playout closed answers what became of the item", () =>
@@ -1480,6 +1521,61 @@ layer(hosted)("closing and failing", (it) => {
 });
 
 // Its faults stay armed for the rest of a block, so it has one of its own.
+layer(hosted)("cleanup evidence", (it) => {
+  it.effect(
+    "keeps the report of an open that failed after allocating, while it may still bill",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first setup command's reply is lost, so the first open fails after allocating;
+        // DELETE is ignored, so its termination stays unconfirmed.
+        yield* test.inject({ _tag: "DropReply", command: "set_flush_on_clip_end", nth: 1 });
+        yield* test.inject({ _tag: "IgnoreDelete" });
+        const { playout, events } = yield* start();
+        yield* eventually(events, (all) =>
+          all.some((event) => event._tag === "Session" && event.event._tag === "Opened"),
+        );
+        const [failedOpen] = yield* test.sessions;
+        const cleanup = yield* playout.cleanup;
+        assert.deepStrictEqual(
+          cleanup.retained.map((report) => [report.sessionId, report.remote.confirmed]),
+          [[failedOpen?.id, false]],
+        );
+      }),
+  );
+
+  it.effect("keeps the report of an open whose allocation is unknown", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const unknown = {
+        ...Reactor.noAcquisition,
+        localClosed: true,
+        allocation: "unknown" as const,
+      };
+      const playout = yield* Playout.make({
+        open: Effect.fail(
+          ReactorError.AcquisitionFailure.from(
+            ReactorError.ReactorError.fromCode("Timeout", "create session timed out", {
+              operation: "create session",
+              outcome: "unknown",
+            }),
+            unknown,
+          ),
+        ),
+        lanes: [{ name: "line" }],
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* playout.failure;
+      // Nobody learned its id, so nothing confirms it ended: it may bill until its cap.
+      const cleanup = yield* playout.cleanup;
+      assert.strictEqual(
+        cleanup.retained.filter((report) => report.allocation === "unknown").length,
+        3,
+      );
+    }),
+  );
+});
+
 layer(hosted)("failing after a recovered open", (it) => {
   it.effect("reports why it failed, not an open failure it had recovered from", () =>
     Effect.gen(function* () {

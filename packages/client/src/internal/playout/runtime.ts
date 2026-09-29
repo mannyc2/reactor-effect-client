@@ -10,6 +10,7 @@ import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -27,8 +28,9 @@ import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
 import { Request } from "../h3/request.js";
 import { take } from "../queue.js";
-import { CommandFailure, ReactorError } from "../../ReactorError.js";
+import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
+import { mayStillBill } from "../../Session.js";
 import type { CloseReport } from "../../Session.js";
 import {
   InvalidFiller,
@@ -168,10 +170,16 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
+  // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
-  // Why the latest open failed while no open has succeeded since, and why the latest session was lost.
-  const lastOpenError = yield* Ref.make<ReactorFailure | undefined>(undefined);
-  const lastLostError = yield* Ref.make<ReactorError | undefined>(undefined);
+  // Why the latest open failed while no open has succeeded since, and why the latest session was
+  // lost: the error, or the defect when there was no error.
+  const lastOpenError = yield* Ref.make<
+    Result.Result<ReactorFailure, Cause.Cause<never>> | undefined
+  >(undefined);
+  const lastLostError = yield* Ref.make<
+    Result.Result<ReactorError, Cause.Cause<never>> | undefined
+  >(undefined);
   const cleanup = yield* Ref.make<Playout.Cleanup>({ sessions: 0, retained: [] });
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
@@ -216,7 +224,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   ): Effect.Effect<A, E | E2> => {
     const settled: Effect.Effect<A, E> = Deferred.await(deferred);
     const stopped: Effect.Effect<A, E | E2> = Effect.andThen(
-      Deferred.await(failure),
+      Deferred.await(failure).pipe(Effect.exit),
       Effect.flatMap(Deferred.isDone(deferred), (done): Effect.Effect<A, E | E2> =>
         done ? settled : closed,
       ),
@@ -226,13 +234,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
 
   const record = (report: CloseReport): Effect.Effect<void> =>
     Ref.update(cleanup, (value) => {
-      const unconfirmed = (entry: CloseReport) =>
-        entry.allocation !== "none" && entry.ownership === "owned" && !entry.remote.confirmed;
       const all = [...value.retained, report];
-      const confirmed = all.filter((entry) => !unconfirmed(entry)).slice(-retainedReports);
+      const settled = all.filter((entry) => !mayStillBill(entry)).slice(-retainedReports);
       return {
         sessions: value.sessions + 1,
-        retained: all.filter((entry) => unconfirmed(entry) || confirmed.includes(entry)),
+        retained: all.filter((entry) => mayStillBill(entry) || settled.includes(entry)),
       };
     });
 
@@ -263,17 +269,34 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     );
     if (Exit.isFailure(opened)) {
       yield* Scope.close(child, opened);
-      const error = Exit.findErrorOption(opened).pipe(Option.getOrUndefined);
-      yield* Ref.set(lastOpenError, error);
+      const found = Cause.findError(opened.cause);
+      yield* Ref.set(lastOpenError, found);
+      if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
+      const error = Result.getOrUndefined(found);
+      // A failed acquisition still reports what it allocated, and that may still bill.
+      if (AcquisitionFailure.is(error) && error.cleanup.allocation !== "none")
+        yield* record(error.cleanup);
       const retryAfter = error?.retryAfter;
       return yield* offer({
         _tag: "OpenFailed",
-        reason: error?.message ?? "opening a session failed",
+        reason: error?.message ?? "opening a session died",
         fatal: false,
         ...(retryAfter === undefined ? {} : { retryAfterMs: Duration.toMillis(retryAfter) }),
       });
     }
     const source = opened.value;
+    if ((yield* Ref.get(sources)).has(source.sessionId)) {
+      // The plan knows a session by its id: a second live source under one would be taken for
+      // the first. It is closed unused, and the playout fails, since opening again gives the same.
+      yield* record(yield* source.close);
+      yield* Scope.close(child, Exit.void);
+      const duplicate = ReactorError.fromCode(
+        "InvalidState",
+        "an opened source's session id is already in use",
+      );
+      yield* Ref.set(lastOpenError, Result.succeed(duplicate));
+      return yield* offer({ _tag: "OpenFailed", reason: duplicate.message, fatal: true });
+    }
     yield* Ref.set(lastOpenError, undefined);
     yield* Ref.update(sources, (all) =>
       new Map(all).set(source.sessionId, { source, scope: child }),
@@ -287,22 +310,23 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     yield* source.events.pipe(
       Stream.runForEach((event) => offer({ _tag: "Source", sessionId: source.sessionId, event })),
       Effect.exit,
-      Effect.flatMap((exit) => {
-        const error = Exit.isSuccess(exit)
-          ? undefined
-          : Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
-        return Ref.set(lastLostError, error).pipe(
-          Effect.andThen(
-            offer({
-              _tag: "Lost",
-              sessionId: source.sessionId,
-              reason: Exit.isSuccess(exit)
+      Effect.flatMap((exit) =>
+        Effect.gen(function* () {
+          const found = Exit.isSuccess(exit) ? undefined : Cause.findError(exit.cause);
+          yield* Ref.set(lastLostError, found);
+          if (Exit.isFailure(exit) && found !== undefined && Result.isFailure(found))
+            yield* ErrorReporter.report(exit.cause);
+          const error = found === undefined ? undefined : Result.getOrUndefined(found);
+          yield* offer({
+            _tag: "Lost",
+            sessionId: source.sessionId,
+            reason:
+              found === undefined
                 ? "the session ended"
-                : (error?.message ?? "the session failed"),
-            }),
-          ),
-        );
-      }),
+                : (error?.message ?? "the session's events died"),
+          });
+        }),
+      ),
       Effect.forkIn(child),
     );
   });
@@ -345,28 +369,36 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           clipId: Predicate.isString(exit.value) ? exit.value : undefined,
         } as const;
       const error = Exit.findErrorOption(exit);
-      return Option.isSome(error)
-        ? ({ _tag: "Failed", cause: error.value } as const)
-        : ({ _tag: "Died" } as const);
+      if (Option.isSome(error)) return { _tag: "Failed", cause: error.value } as const;
+      // Whether the command went out can't be told: the plan treats it as unknown.
+      yield* ErrorReporter.report(exit.cause);
+      return { _tag: "Died" } as const;
     });
 
-  /** Why the plan failed the playout: the error behind a failed open or a loss, when there was one. */
-  const failureOf = (
+  /**
+   * Why the plan failed the playout: the error behind a failed open or a loss,
+   * or the defect when there was no error.
+   */
+  const failureOf = Effect.fnUntraced(function* (
     action: Extract<Policy.Action, { _tag: "Fail" }>,
-  ): Effect.Effect<ReactorFailure | InvalidFiller> => {
-    const otherwise = (error: ReactorFailure | undefined) =>
-      error ?? ReactorError.fromCode("InvalidState", action.reason);
+  ): Effect.fn.Return<Result.Result<ReactorFailure | InvalidFiller, Cause.Cause<never>>> {
     switch (action.cause) {
       case "filler":
-        return Effect.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
+        return Result.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
       case "moderation":
-        return Effect.succeed(ReactorError.fromCode("Moderated", action.reason));
+        return Result.succeed(ReactorError.fromCode("Moderated", action.reason));
       case "open":
-        return Effect.map(Ref.get(lastOpenError), otherwise);
+        return (
+          (yield* Ref.get(lastOpenError)) ??
+          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+        );
       case "lost":
-        return Effect.map(Ref.get(lastLostError), otherwise);
+        return (
+          (yield* Ref.get(lastLostError)) ??
+          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+        );
     }
-  };
+  });
 
   const act = (action: Policy.Action): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -431,7 +463,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             return next;
           });
         case "Fail": {
-          yield* Deferred.succeed(failure, yield* failureOf(action));
+          const why = yield* failureOf(action);
+          yield* Result.isSuccess(why)
+            ? Deferred.succeed(failure, why.success)
+            : Deferred.failCause(failure, why.failure);
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
           yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, {
             discard: true,
@@ -466,15 +501,14 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   );
   /**
    * The loop died of a defect, such as a throwing `filler.clip`: the playout
-   * fails, settles what it can, and closes every session, so nothing waits on a
-   * loop that is gone and no owned session bills on.
+   * dies with it, settles what it can, and closes every session, so nothing
+   * waits on a loop that is gone and no owned session bills on. The defect is
+   * reported, and its text never becomes a message of the library's.
    */
   const crashed = (cause: Cause.Cause<never>) =>
     Effect.gen(function* () {
-      yield* Deferred.succeed(
-        failure,
-        ReactorError.fromCode("InvalidState", `the playout's plan failed: ${Cause.pretty(cause)}`),
-      );
+      yield* ErrorReporter.report(cause);
+      yield* Deferred.failCause(failure, cause);
       yield* apply({ _tag: "Close" }).pipe(Effect.catchCause(() => Effect.void));
       for (const value of (yield* Ref.get(handles)).values()) {
         yield* Deferred.succeed(value.started, Policy.indeterminate);

@@ -80,6 +80,16 @@ export const CloseReport = Schema.Struct({
 });
 export type CloseReport = typeof CloseReport.Type;
 
+/**
+ * Whether the session a report closed may still bill: this process owned it
+ * and no read confirmed it ended, or it asked for an allocation whose outcome,
+ * and so whose id, never arrived. Nothing can confirm the second ended; the
+ * session's cap bounds it.
+ */
+export const mayStillBill = (report: CloseReport): boolean =>
+  report.allocation === "unknown" ||
+  (report.allocation === "known" && report.ownership === "owned" && !report.remote.confirmed);
+
 export interface ReadyDescriptor extends Descriptor {
   readonly capabilities: Capabilities;
   readonly selected_transport: typeof Transport.Type;
