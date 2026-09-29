@@ -52,7 +52,9 @@ export interface Options {
    * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds, the
    * schedule stops, the session is closing or ended (by Reactor or its moderation), Reactor refuses
    * this client's protocol (`VersionMismatch`), or `reconnectTimeout` has passed. A refusal that
-   * may lift is tried again, a 401 or 403 included, since the next attempt may carry a fresh token.
+   * may lift is tried again, a 401 or 403 included, though the session mints its next token only
+   * within a minute of its current one's expiry (a quarter of the token's life, if that is
+   * shorter), so until then each attempt sends the token that was refused.
    * Each failed attempt is a `Diagnostic` event, and a reconnect that runs out of time stops with a
    * `Timeout` `lastError` whose `Redacted` `context.detail` is the last attempt's failure, or why
    * the connection ready as the time ran out dropped. Each attempt is a new connection generation
