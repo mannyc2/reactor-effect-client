@@ -59,10 +59,12 @@ export interface Options {
    * connection generation of the same session: it allocates nothing and never replays a command. By
    * default the second attempt comes 250 ms after the first fails and each wait doubles, to at most
    * 4 seconds, jittered by up to a fifth either way, and never sooner than a refusal's
-   * `Retry-After`. The session reconnects in its acquisition's context, with the tracer,
-   * `ErrorReporter`s and clock `create` or `attach` ran with, and each attempt's
-   * `Session.reconnect` span begins a trace of its own, linked to the acquisition's. `false` leaves
-   * a dropped connection dropped until `session.reconnect`.
+   * `Retry-After`. A schedule with no delay of its own tries again at once, for all of
+   * `reconnectTimeout`, each time with a new peer (a process of its own on the isolated native
+   * host), so space its attempts as the default does. The session reconnects in its acquisition's
+   * context, with the tracer, `ErrorReporter`s and clock `create` or `attach` ran with, and each
+   * attempt's `Session.reconnect` span begins a trace of its own, linked to the acquisition's.
+   * `false` leaves a dropped connection dropped until `session.reconnect`.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
