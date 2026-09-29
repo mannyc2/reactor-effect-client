@@ -114,7 +114,13 @@ export type Input =
   | { readonly _tag: "Release"; readonly id: number; readonly key: ItemKey }
   | { readonly _tag: "Drain"; readonly id: number; readonly finish: "playing" | "accepted" }
   | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetimeMs: number }
-  | { readonly _tag: "OpenFailed"; readonly reason: string; readonly fatal: boolean }
+  | {
+      readonly _tag: "OpenFailed";
+      readonly reason: string;
+      readonly fatal: boolean;
+      /** How long the refusal asked to wait before asking again. */
+      readonly retryAfterMs?: number | undefined;
+    }
   | { readonly _tag: "Source"; readonly sessionId: string; readonly event: SourceEvent }
   | { readonly _tag: "Lost"; readonly sessionId: string; readonly reason: string }
   | { readonly _tag: "Result"; readonly id: number; readonly result: CommandResult }
@@ -631,6 +637,10 @@ export const step: {
   const live = (item: Item | undefined): item is Item =>
     item !== undefined && item.phase !== "Settled";
   const readyOf = (value: Session): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
+  /** Whether a session still holds the air: it takes new work, or has clips of its own to air. */
+  const holding = (value: Session | undefined): boolean =>
+    value !== undefined &&
+    (!value.indeterminate || value.source?.playing !== undefined || readyOf(value).length > 0);
   const itemOf = (clip: PlayingClip | undefined): Item | undefined =>
     clip?.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
 
@@ -1385,8 +1395,11 @@ export const step: {
           consecutive,
         },
       });
-      if (consecutive >= config.maxSetupFailures)
-        actions.push({ _tag: "Fail", reason, cause: "lost" });
+      if (consecutive >= config.maxSetupFailures) {
+        if (state.air !== sessionId && holding(session(state.air)))
+          state = { ...state, openRetryAt: Infinity };
+        else actions.push({ _tag: "Fail", reason, cause: "lost" });
+      }
     }
     state = {
       ...state,
@@ -1625,11 +1638,16 @@ export const step: {
         ...state,
         opening: false,
         setupFailures: consecutive,
-        openRetryAt: now.mono + retryDelayMs * consecutive,
+        // A refusal that says when to ask again is not asked sooner.
+        openRetryAt: now.mono + Math.max(retryDelayMs * consecutive, input.retryAfterMs ?? 0),
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
-      if (input.fatal || consecutive >= config.maxSetupFailures)
-        actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
+      if (input.fatal) actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
+      else if (consecutive >= config.maxSetupFailures) {
+        // The session on air airs on: opening pauses until it no longer holds the air.
+        if (holding(session(state.air))) state = { ...state, openRetryAt: Infinity };
+        else actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
+      }
       break;
     }
     case "Source": {
@@ -1796,8 +1814,14 @@ export const step: {
   }
 
   // Renewal.
-  const air = session(state.air);
   const expiresAt = (value: Session) => value.openedAt + value.lifetimeMs;
+  for (const value of state.sessions)
+    if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity)
+      lose(value.id, "the session's granted length ended");
+  // Setups ran out while a session held the air; once none does, one more open is tried.
+  if (state.openRetryAt === Infinity && !holding(session(state.air)))
+    state = { ...state, openRetryAt: now.mono };
+  const air = session(state.air);
   const wantsAir =
     state.accepting ||
     state.drains.some((drain) => drain.finish === "accepted") ||
@@ -1817,9 +1841,6 @@ export const step: {
       actions.push({ _tag: "Open" });
     }
   }
-  for (const value of state.sessions)
-    if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity)
-      lose(value.id, "the session's granted length ended");
   const current = session(state.air);
   const next = state.sessions.find((value) => value.id !== state.air && !value.retiring);
   if (current !== undefined && next !== undefined && next.source?.available === true) {

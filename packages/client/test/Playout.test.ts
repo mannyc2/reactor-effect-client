@@ -14,7 +14,14 @@ import {
 } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
-import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
+import {
+  H3Source,
+  LocalSource,
+  Playout,
+  Reactor,
+  ReactorError,
+  ReactorTest,
+} from "../src/index.js";
 import type { Options } from "../src/Playout.js";
 import { commands, environment } from "./fixtures/Simulated.js";
 
@@ -648,6 +655,34 @@ layer(hosted)("uncertainty", (it) => {
   );
 });
 
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "40 millis", channel: "20 millis" }),
+    sessionsPerMinute: 1,
+  }),
+)("refusals", (it) => {
+  it.effect("asks for a session again only after the wait a refusal names", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reactor = yield* Reactor.Reactor;
+      const grant = yield* tokens("10 minutes");
+      // Three sessions back to back use the account's burst: the next is refused for a minute.
+      for (let index = 0; index < 3; index++)
+        yield* reactor.create({ model: H3.modelName, tokens: grant });
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: grant }),
+        lanes: [{ name: "line" }],
+      });
+      const handle = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const outcome = yield* Effect.raceFirst(
+        handle.outcome,
+        Effect.flatMap(playout.failure, (failure) => Effect.die(failure)),
+      );
+      assert.strictEqual(outcome._tag, "Ended");
+    }),
+  );
+});
+
 layer(hosted)("renewal", (it) => {
   it.effect(
     "opens a replacement before the lifetime ends and switches at a boundary, in order",
@@ -707,6 +742,43 @@ layer(hosted)("renewal", (it) => {
         const second = yield* created(opened[1]);
         // What will not fit before the cap waits for the replacement; it doesn't open it early.
         assert.isAtLeast(second! - first!, 60_000);
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "refused replacements leave the session on air airing until its cap, then open once more",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first allocation succeeds; the three renewal attempts are refused.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 503 });
+        const { playout, events } = yield* start({
+          lifetime: "120 seconds",
+          renewal: { lead: "60 seconds" },
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        yield* Effect.sleep("70 seconds");
+        const late = yield* playout.submit({
+          key: key("late"),
+          lane: "line",
+          request: clip("late"),
+        });
+        assert.strictEqual((yield* late.outcome)._tag, "Ended");
+        assert.isTrue(
+          Option.isNone(yield* playout.failure.pipe(Effect.timeoutOption("90 seconds"))),
+        );
+        const sessions = (yield* events).flatMap((event) =>
+          event._tag === "Session" ? [event.event._tag] : [],
+        );
+        assert.deepStrictEqual(
+          sessions.filter((tag) => tag === "Opened" || tag === "SetupFailed"),
+          ["Opened", "SetupFailed", "SetupFailed", "SetupFailed", "Opened"],
+        );
       }),
     { timeout: 60_000 },
   );

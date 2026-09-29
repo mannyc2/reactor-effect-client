@@ -265,10 +265,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       yield* Scope.close(child, opened);
       const error = Exit.findErrorOption(opened).pipe(Option.getOrUndefined);
       yield* Ref.set(lastOpenError, error);
+      const retryAfter = error?.retryAfter;
       return yield* offer({
         _tag: "OpenFailed",
         reason: error?.message ?? "opening a session failed",
         fatal: false,
+        ...(retryAfter === undefined ? {} : { retryAfterMs: Duration.toMillis(retryAfter) }),
       });
     }
     const source = opened.value;
