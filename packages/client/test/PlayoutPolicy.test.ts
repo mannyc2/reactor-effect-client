@@ -1587,7 +1587,7 @@ describe("PlayoutPolicy, time", () => {
     }
     // Each retry waits a second longer; the third failure pauses opening until s1's cap.
     assert.deepStrictEqual(failed, [62_100, 65_100, 69_100]);
-    assert.strictEqual(policy.state().openRetryAt, Infinity);
+    assert.isTrue(policy.state().openingPaused);
   });
 
   it("ends a run of failed setups at a session's first clip, seen in a read or at its start", () => {
@@ -1607,6 +1607,36 @@ describe("PlayoutPolicy, time", () => {
       else policy.event({ _tag: "Started", clip: first }, "s2");
       assert.strictEqual(policy.state().setupFailures, 0, how);
     }
+  });
+
+  // The review's F4: the pause took the place of the last refusal's Retry-After, so the one more
+  // open went out as soon as the session on air was gone.
+  it("waits out the last refusal's Retry-After for the open after a pause", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    const opens = () => policy.actions.filter((action) => action._tag === "Open").length;
+    const fail = (retryAfterMs?: number) =>
+      policy.send({
+        _tag: "OpenFailed",
+        reason: "503",
+        fatal: false,
+        allocated: true,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
+    policy.tick(0);
+    policy.open("s1", 120_000);
+    policy.tick(60_010);
+    fail();
+    policy.tick(policy.now() + 1_000);
+    fail();
+    policy.tick(policy.now() + 2_000);
+    fail(60_000);
+    const refused = policy.now();
+    const asked = opens();
+    const lost = policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" }, refused + 5_000);
+    assert.strictEqual(opens(), asked);
+    assert.strictEqual(lost.wake, refused + 60_000);
+    policy.tick(refused + 60_000);
+    assert.strictEqual(opens(), asked + 1);
   });
 
   it("times an end cue from the provider's length, not the requested one", () => {

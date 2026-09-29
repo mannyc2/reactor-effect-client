@@ -348,7 +348,17 @@ export interface State {
   readonly sessions: ReadonlyArray<Session>;
   readonly air: string | undefined;
   readonly opening: boolean;
+  /**
+   * No open goes out before it: after a failure, a second for each in a row,
+   * or the refusal's `Retry-After` if that is longer.
+   */
   readonly openRetryAt: number;
+  /**
+   * Setups that may bill ran out while a session held the air: nothing opens
+   * until none does, and then one more open is tried, at `openRetryAt` at the
+   * soonest.
+   */
+  readonly openingPaused: boolean;
   readonly setupFailures: number;
   /** Of those, the setups that allocated a session, or may have, and so may bill. */
   readonly allocatedFailures: number;
@@ -433,6 +443,7 @@ export const initial: State = {
   air: undefined,
   opening: false,
   openRetryAt: 0,
+  openingPaused: false,
   setupFailures: 0,
   allocatedFailures: 0,
   moderations: 0,
@@ -1504,9 +1515,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * After a failed setup, once `maxSetupFailures` have failed in a row: with no
    * session holding the air, the playout fails. While `air` holds it, only
    * setups that allocated a session, or may have, count, and they pause
-   * opening until it no longer holds the air, when one more open is tried. A
-   * refusal that allocated nothing billed nothing, so it is asked again after
-   * its delay however often it comes.
+   * opening until it no longer holds the air, when one more open is tried once
+   * the last failure's wait is over. A refusal that allocated nothing billed
+   * nothing, so it is asked again after its delay however often it comes.
    */
   const pauseOrFail = (
     reason: string,
@@ -1518,7 +1529,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (state.setupFailures >= config.maxSetupFailures)
         actions.push({ _tag: "Fail", reason, cause });
     } else if (allocated && state.allocatedFailures >= config.maxSetupFailures)
-      state = { ...state, openRetryAt: Infinity };
+      state = { ...state, openingPaused: true };
   };
   /**
    * A session that is gone: its unaired clips are rebuilt from the plan, never
@@ -1995,15 +2006,16 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   for (const value of state.sessions)
     if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity)
       lose(value.id, "the session's granted length ended");
-  // Setups ran out while a session held the air; once none does, one more open is tried.
-  if (state.openRetryAt === Infinity && !holding(session(state.air)))
-    state = { ...state, openRetryAt: now.mono };
+  // Setups ran out while a session held the air; once none does, one more open is tried, once
+  // the last failure's wait is over.
+  if (state.openingPaused && !holding(session(state.air)))
+    state = { ...state, openingPaused: false };
   const air = session(state.air);
   const wantsAir =
     state.accepting ||
     state.drains.some((drain) => drain.finish === "accepted") ||
     [...items.values()].some(live);
-  if (!state.opening && now.mono >= state.openRetryAt && wantsAir) {
+  if (!state.opening && !state.openingPaused && now.mono >= state.openRetryAt && wantsAir) {
     const replacementLive = state.sessions.some(
       (value) => !value.retiring && value.id !== state.air,
     );
@@ -2721,7 +2733,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           later(exposedAt(value, readyAheadMs(value, index)));
       }
     }
-    later(state.openRetryAt);
+    if (!state.openingPaused) later(state.openRetryAt);
     later(state.filler.retryAt);
     // The runway falls while a clip plays: wake as it falls to the filler's floor, which,
     // protecting the air, also covers the next item's build. Below it, filler goes at once.
