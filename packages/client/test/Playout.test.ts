@@ -1465,6 +1465,48 @@ layer(hosted)("local renderer", (it) => {
       assert.deepStrictEqual(reported, ["a source bug"]);
     }),
   );
+
+  // The first open fails, and the second session's events 2 s in, each as a finalizer dies. The
+  // failures alone decide: the open is asked again, and the second session is lost and replaced.
+  it.effect("reports a defect beside an open's failure, or its source's events'", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const failing = (what: string) =>
+        Effect.fail(ReactorError.ReactorError.fromCode("Timeout", `the ${what} failed`)).pipe(
+          Effect.ensuring(Effect.die(new Error(`an ${what} bug`))),
+        );
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.suspend(() => {
+          const nth = ++opens;
+          if (nth === 1) return failing("open");
+          return Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) =>
+            nth === 2
+              ? {
+                  ...source,
+                  events: Stream.merge(
+                    source.events,
+                    Stream.fromEffectDrain(
+                      Effect.andThen(Effect.sleep("2 seconds"), failing("events")),
+                    ),
+                  ),
+                }
+              : source,
+          );
+        }),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      yield* Effect.sleep("5 seconds");
+      const item = yield* playout.submit({ key: key("a"), lane: "speech", request: clip("a") });
+      assert.strictEqual((yield* item.outcome)._tag, "Ended");
+      assert.strictEqual(opens, 3);
+      assert.deepStrictEqual(reported, ["an open bug", "an events bug"]);
+    }),
+  );
 });
 
 // The invariants hold across seeded random timing: builds from a quarter of real time to ten

@@ -72,6 +72,16 @@ const untilWake = (ms: number): Duration.Duration =>
   Duration.nanos(BigInt(Math.max(0, Math.ceil(ms * 1_000_000))));
 
 /**
+ * Reports the defects of `cause`, whose failure decides what it was for. A defect beside a
+ * failure, such as a finalizer's that died as the effect failed, is still one; the failure, which
+ * the plan handles, is not reported.
+ */
+const reportDefects = (cause: Cause.Cause<unknown>): Effect.Effect<void> => {
+  const dies = cause.reasons.filter(Cause.isDieReason);
+  return dies.length > 0 ? ErrorReporter.report(Cause.fromReasons(dies)) : Effect.void;
+};
+
+/**
  * Where a request for the clip `tag` names falls outside H3's documented
  * limits, field by field, or undefined within them: its metadata counted as
  * sent, wrapped with the tag and H3's own identity. Each issue names its field
@@ -316,10 +326,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         } as const;
       const error = Exit.findErrorOption(exit);
       if (Option.isSome(error)) {
-        // The failure alone decides the command. A defect beside it, such as a finalizer's that
-        // died as it failed, is still one, and is reported without the failure.
-        const dies = exit.cause.reasons.filter(Cause.isDieReason);
-        if (dies.length > 0) yield* ErrorReporter.report(Cause.fromReasons(dies));
+        yield* reportDefects(exit.cause);
         return { _tag: "Failed", cause: error.value } as const;
       }
       // Whether the command went out can't be told: the plan treats it as unknown.
@@ -344,6 +351,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const found = Cause.findError(opened.cause);
       yield* Ref.set(lastOpenError, found);
       if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
+      else yield* reportDefects(opened.cause);
       const error = Result.getOrUndefined(found);
       // A failed acquisition still reports what it allocated, and that may still bill. Any other
       // failure, a timeout or a defect among them, may have allocated unseen.
@@ -401,8 +409,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         Effect.gen(function* () {
           const found = Exit.isSuccess(exit) ? undefined : Cause.findError(exit.cause);
           yield* Ref.set(lastLostError, found);
-          if (Exit.isFailure(exit) && found !== undefined && Result.isFailure(found))
-            yield* ErrorReporter.report(exit.cause);
+          if (Exit.isFailure(exit) && found !== undefined) {
+            if (Result.isFailure(found)) yield* ErrorReporter.report(exit.cause);
+            else yield* reportDefects(exit.cause);
+          }
           const error = found === undefined ? undefined : Result.getOrUndefined(found);
           yield* offer({
             _tag: "Lost",
