@@ -296,6 +296,10 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
       summarize([evidence]),
       /\*\*Spent token:\*\* a second create failed in \d+\.\d\d s with Http 403, outcome replied;/,
     );
+    assert.match(
+      summarize([evidence]),
+      /> CLOSED from [\d.]+ s after allocation to [\d.]+ s after allocation \(1 read\)$/m,
+    );
     assert.lengthOf(evidence.sessions, 1);
     assert.isTrue(session?.close?.termination?.confirmed);
   },

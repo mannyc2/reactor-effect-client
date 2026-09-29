@@ -288,7 +288,7 @@ const unconnectedLines = (
   const read = probe.read;
   return [
     `**Unconnected:** ${probe.sessionId} requested ${probe.requestedAt}; ${probe.connectableMs === undefined ? "never read connectable" : `connectable ${since(probe.connectableMs)}`}; ${ended === undefined ? "its end unconfirmed" : `ended by ${ended.by === "reactor" ? "Reactor" : "the API key"} ${since(ended.atMs)}, ${ended.at}`}`,
-    `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} reads)`).join(" > ") || "none"}`,
+    `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`).join(" > ") || "none"}`,
     ...(spent === undefined
       ? []
       : [
