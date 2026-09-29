@@ -107,3 +107,39 @@ layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
     }),
   );
 });
+
+// Timed by the real clock: the coordinator's answers take real milliseconds.
+layer(NodeServices.layer, { excludeTestServices: true })(
+  "the sessions a failed check left open, in real time",
+  (it) => {
+    // A session held for a second one's slow tries bills the while: every DELETE goes out at once.
+    it.effect("are ended together, and each end is recorded when it was confirmed", () =>
+      Effect.gen(function* () {
+        let inFlight = 0;
+        let most = 0;
+        const http = HttpClient.make((request, url) =>
+          Effect.gen(function* () {
+            inFlight += 1;
+            most = Math.max(most, inFlight);
+            yield* Effect.sleep(url.pathname.endsWith("_1") ? "20 millis" : "200 millis");
+            inFlight -= 1;
+            return HttpClientResponse.fromWeb(request, new Response(null, { status: 404 }));
+          }),
+        );
+        const run = yield* Run.make(holdingTwo("held_timing"), "never-written.json");
+        yield* endHeld(
+          Coordinator.make({
+            apiUrl: "https://api.reactor.test",
+            apiKey: Redacted.make("reactor-test-key"),
+          }).pipe(Effect.provideService(HttpClient.HttpClient, http)),
+        ).pipe(Effect.provideService(Run.Run, run));
+        const [first, second] = (yield* run.evidence).sessions;
+        assert.strictEqual(most, 2);
+        assert.isBelow(
+          first?.close?.reportedMs ?? Infinity,
+          (second?.close?.reportedMs ?? 0) - 100,
+        );
+      }),
+    );
+  },
+);

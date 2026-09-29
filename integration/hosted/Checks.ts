@@ -290,16 +290,17 @@ const allocated = Effect.fnUntraced(function* (sessionId: string, grant: Coordin
   return deadline;
 });
 
-/** Records how a session's close went. */
+/** Records how a session's close went: reported now, or at `reportedMs` when it came earlier. */
 const closedWith = Effect.fnUntraced(function* (
   sessionId: string,
   requestedMs: number,
   close:
     | { readonly report: Session.CloseReport }
     | { readonly termination: Coordinator.Termination },
+  reportedAt?: number,
 ) {
   const run = yield* Run;
-  const reportedMs = yield* run.now;
+  const reportedMs = reportedAt ?? (yield* run.now);
   const confirmed = "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
   // The state a read confirmed is the provider's text: kept as the evidence keeps any.
   const keep = (termination: Coordinator.Termination): Coordinator.Termination =>
@@ -364,8 +365,9 @@ const owned = Effect.fnUntraced(function* (
 
 /**
  * Whatever failed, ends each session the check still holds with a coordinator
- * from `ender`. Every DELETE goes out before any end is recorded, so a save
- * that fails skips no session.
+ * from `ender`. Every DELETE goes out at once, so no session bills while
+ * another's tries run, and before any end is recorded, so a save that fails
+ * skips no session. Each end is recorded as reported when it was confirmed.
  */
 export const endHeld = Effect.fnUntraced(
   function* <E, R>(ender: Effect.Effect<Coordinator.Coordinator["Service"], E, R>) {
@@ -373,17 +375,17 @@ export const endHeld = Effect.fnUntraced(
     const open = (yield* run.evidence).sessions.filter((session) => session.close === undefined);
     if (open.length === 0) return;
     const coordinator = yield* ender;
-    const ends = yield* Effect.forEach(open, (session) =>
-      Effect.flatMap(run.now, (requestedMs) =>
-        Effect.map(coordinator.terminate(session.id), (termination) => ({
-          sessionId: session.id,
-          requestedMs,
-          termination,
-        })),
-      ),
+    const ends = yield* Effect.forEach(
+      open,
+      Effect.fnUntraced(function* (session) {
+        const requestedMs = yield* run.now;
+        const termination = yield* coordinator.terminate(session.id);
+        return { sessionId: session.id, requestedMs, reportedMs: yield* run.now, termination };
+      }),
+      { concurrency: "unbounded" },
     );
-    for (const { sessionId, requestedMs, termination } of ends)
-      yield* Effect.ignore(closedWith(sessionId, requestedMs, { termination }));
+    for (const { sessionId, requestedMs, reportedMs, termination } of ends)
+      yield* Effect.ignore(closedWith(sessionId, requestedMs, { termination }, reportedMs));
   },
   (effect) => Effect.ignore(effect),
 );
