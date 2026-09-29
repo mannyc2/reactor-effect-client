@@ -1428,6 +1428,43 @@ layer(hosted)("local renderer", (it) => {
       assert.deepStrictEqual(reported, [bug]);
     }),
   );
+
+  // b's enqueue fails, and a finalizer dies as it does, so its cause holds both. The failure alone
+  // decides b; the defect is reported once, and the failure, which the plan handles, is not.
+  it.effect("reports a defect beside a source method's failure, which alone decides it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const refusal = ReactorError.CommandFailure.from(
+        ReactorError.ReactorError.fromCode("InvalidInput", "the renderer refused it"),
+        { operation: "enqueue", outcome: "not-submitted" },
+      );
+      const playout = yield* Playout.make({
+        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
+          ...source,
+          enqueue: (request, tag, continueFrom) =>
+            request.prompt === "b"
+              ? Effect.fail(refusal).pipe(Effect.ensuring(Effect.die(new Error("a source bug"))))
+              : source.enqueue(request, tag, continueFrom),
+        })),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "speech", request: clip(name) }),
+      );
+      const outcome = yield* items[1]!.outcome;
+      const reason = outcome._tag === "Failed" ? outcome.reason : undefined;
+      assert.deepStrictEqual(
+        reason?._tag === "Command" ? [reason._tag, reason.cause.message] : reason,
+        ["Command", "the renderer refused it"],
+      );
+      assert.strictEqual((yield* items[2]!.outcome)._tag, "Ended");
+      assert.deepStrictEqual(reported, ["a source bug"]);
+    }),
+  );
 });
 
 // The invariants hold across seeded random timing: builds from a quarter of real time to ten

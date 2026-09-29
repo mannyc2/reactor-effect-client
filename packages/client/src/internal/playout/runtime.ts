@@ -315,7 +315,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           clipId: Predicate.isString(exit.value) ? exit.value : undefined,
         } as const;
       const error = Exit.findErrorOption(exit);
-      if (Option.isSome(error)) return { _tag: "Failed", cause: error.value } as const;
+      if (Option.isSome(error)) {
+        // The failure alone decides the command. A defect beside it, such as a finalizer's that
+        // died as it failed, is still one, and is reported without the failure.
+        const dies = exit.cause.reasons.filter(Cause.isDieReason);
+        if (dies.length > 0) yield* ErrorReporter.report(Cause.fromReasons(dies));
+        return { _tag: "Failed", cause: error.value } as const;
+      }
       // Whether the command went out can't be told: the plan treats it as unknown.
       yield* ErrorReporter.report(exit.cause);
       return { _tag: "Died" } as const;
