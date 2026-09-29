@@ -1124,6 +1124,23 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
   });
 
+  // The review's F5: an item carried from a lost session kept the cover it had there, and on the
+  // next, with no air secured, it went out with none.
+  it("covers a carried item again on the session it is carried to", () => {
+    const { policy, playing } = airing(protecting("air"), 12);
+    policy.submit(long);
+    assert.strictEqual(sent(policy.busy()), "filler of 6.67 s");
+    policy.reply({ _tag: "Done", clipId: "f0" });
+    const cover = clip("f0", { _tag: "Filler", index: 0 }, 6.67);
+    policy.observe({ playing, ready: [cover], continuable: ["x", "f0"] });
+    assert.strictEqual(sent(policy.busy()), "long");
+    policy.reply({ _tag: "Done", clipId: "c-long" });
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    policy.open("s2");
+    // With no clip to continue there, it builds in 6 s, and a clip that airs as long covers it.
+    assert.strictEqual(sent(policy.busy("s2")), "filler of 6.00 s");
+  });
+
   // With 14.5 s left before s2's cap, the refill's shortest clip would air whole there, but the
   // refused 15 s clip it asks for again would not: that waits for a session it fits on.
   it("sends a refused filler clip again only where it airs whole before the cap", () => {

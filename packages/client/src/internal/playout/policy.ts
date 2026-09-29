@@ -247,7 +247,11 @@ interface Item {
   readonly dispatchedAt?: number | undefined;
   /** Its build in flight continues from another clip, so its build time is measured apart. */
   readonly continued?: boolean | undefined;
-  /** A filler clip went ahead of its build to cover it: it waits for no other. */
+  /**
+   * A filler clip went ahead of its build to cover it: it waits for no other,
+   * though its enqueue goes again. Carried to another session, or taken off to
+   * be built again later, it may be covered again.
+   */
   readonly covered?: boolean | undefined;
   /**
    * The Ready clip it continues from when that clip airs after its place: it
@@ -1562,6 +1566,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           clipId: undefined,
           sessionId: undefined,
           dispatchedAt: undefined,
+          covered: undefined,
           ...(!planned && item.phase === "Building"
             ? { unbuiltLosses: item.unbuiltLosses + 1 }
             : {}),
@@ -2326,6 +2331,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           dispatchedAt: undefined,
           clipId: undefined,
           sessionId: undefined,
+          covered: undefined,
           discarded: { sessionId: value.id, clipId: clip.clipId },
         });
         return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
