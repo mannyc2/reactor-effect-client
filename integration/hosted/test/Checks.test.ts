@@ -39,7 +39,41 @@ const holdingTwo = (secret: string): Evidence => ({
   missing: [],
 });
 
+/** A coordinator answering every DELETE 200 and every read with `state`, its requests counted. */
+const answering = (state: string) =>
+  HttpClient.make((request, url) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        request.method === "DELETE"
+          ? new Response(null, { status: 200 })
+          : Response.json({
+              session_id: decodeURIComponent(url.pathname.split("/")[2] ?? ""),
+              state,
+            }),
+      ),
+    ),
+  );
+
 layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
+  // A state is provider text, so the close record keeps it only as a code.
+  it.effect("are recorded with a state that is no code kept only by its length", () =>
+    Effect.gen(function* () {
+      const run = yield* Run.make(holdingTwo("held_record"), "never-written.json");
+      yield* endHeld(
+        Coordinator.make({
+          apiUrl: "https://api.reactor.test",
+          apiKey: Redacted.make("reactor-test-key"),
+        }).pipe(Effect.provideService(HttpClient.HttpClient, answering("10.0.0.7:8443"))),
+      ).pipe(Effect.provideService(Run.Run, run));
+      const evidence = yield* run.evidence;
+      assert.deepStrictEqual(
+        evidence.sessions.map((session) => session.close?.termination?.state),
+        ["(text, 13 chars)", "(text, 13 chars)"],
+      );
+    }),
+  );
+
   it.effect("are each sent their DELETE before any is recorded, so a failed save skips none", () =>
     Effect.gen(function* () {
       const deleted = yield* Ref.make<ReadonlyArray<string>>([]);

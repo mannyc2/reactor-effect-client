@@ -301,11 +301,20 @@ const closedWith = Effect.fnUntraced(function* (
   const run = yield* Run;
   const reportedMs = yield* run.now;
   const confirmed = "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
+  // The state a read confirmed is the provider's text: kept as the evidence keeps any.
+  const keep = (termination: Coordinator.Termination): Coordinator.Termination =>
+    termination.state === null
+      ? termination
+      : { ...termination, state: Probes.keptText(termination.state) };
+  const kept =
+    "report" in close
+      ? { report: { ...close.report, remote: keep(close.report.remote) } }
+      : { termination: keep(close.termination) };
   yield* run.update((evidence) => ({
     ...evidence,
     sessions: evidence.sessions.map((session) =>
       session.id === sessionId
-        ? { ...session, close: { requestedMs, reportedMs, confirmed, ...close } }
+        ? { ...session, close: { requestedMs, reportedMs, confirmed, ...kept } }
         : session,
     ),
   }));
@@ -396,11 +405,12 @@ const settle = Effect.fnUntraced(
       const trail: Array<{ readonly atMs: number; readonly state: string }> = [];
       let terminalMs: number | undefined;
       while (terminalMs === undefined && (yield* Clock.currentTimeMillis) < deadline) {
-        const state = yield* inspector
-          .inspect(sessionId)
-          .pipe(
-            Effect.match({ onFailure: failedRead, onSuccess: (inspection) => inspection.state }),
-          );
+        const state = yield* inspector.inspect(sessionId).pipe(
+          Effect.match({
+            onFailure: failedRead,
+            onSuccess: (inspection) => Probes.keptText(inspection.state),
+          }),
+        );
         const atMs = yield* run.now;
         if (trail.at(-1)?.state !== state) trail.push({ atMs, state });
         if (state === "gone" || Coordinator.isTerminal(state)) terminalMs = atMs;

@@ -29,9 +29,13 @@ const probeSeconds = 15;
 const isCode = (text: string) =>
   /^[\w-]{1,64}$/.test(text) && !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text);
 
+/** A text as evidence may keep it, a session's state among them: a code, else only its length. */
+export const keptText = (text: string): string =>
+  isCode(text) ? text : `(text, ${text.length} chars)`;
+
 /** A value as evidence may keep it: a code, a number or a boolean; other text only by its length. */
 const kept = (value: unknown): string | undefined => {
-  if (Predicate.isString(value)) return isCode(value) ? value : `(text, ${value.length} chars)`;
+  if (Predicate.isString(value)) return keptText(value);
   return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
 };
 

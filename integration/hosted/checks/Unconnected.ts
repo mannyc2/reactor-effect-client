@@ -77,7 +77,7 @@ const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: st
           : run
               .mark(
                 "end unconfirmed",
-                `${sessionId}: DELETE ${termination.deleteStatus ?? "unanswered"}, then ${termination.state ?? "no state"}`,
+                `${sessionId}: DELETE ${termination.deleteStatus ?? "unanswered"}, then ${termination.state === null ? "no state" : Probes.keptText(termination.state)}`,
               )
               .pipe(Effect.ignore),
       ),
@@ -242,7 +242,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           const read = yield* Effect.result(inspector.inspect(sessionId));
           const atMs = yield* run.now;
           const state = Result.isSuccess(read)
-            ? read.success.state
+            ? Probes.keptText(read.success.state)
             : pieces.failedRead(read.failure);
           yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
           if (state !== last?.state) yield* run.mark(`read ${state}`);

@@ -84,6 +84,16 @@ layer(FetchHttpClient.layer)("a request with the API key", (it) => {
   );
 });
 
+describe("a session's state", () => {
+  // States come from provider replies too, and go into the evidence.
+  it("is kept only when it reads as a code", () => {
+    assert.deepStrictEqual(
+      ["ACTIVE", "CLOSED", "10.0.0.7:8443", "https://reactor.example/s"].map(Probes.keptText),
+      ["ACTIVE", "CLOSED", "(text, 13 chars)", "(text, 25 chars)"],
+    );
+  });
+});
+
 describe("a session read's body", () => {
   // The evidence is committed, so nothing kept from a body may be a URL or an address.
   it("keeps no URL or address under any key, whatever joins it", () => {
