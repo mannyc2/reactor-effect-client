@@ -48,7 +48,7 @@ export {
 export type { CanvasAspect, ModelProfile } from "./internal/h3/profile.js";
 export { Clip, Queue, State } from "./internal/h3/messages.js";
 export type { DecodedMessage, Message, MessageType, Payload } from "./internal/h3/messages.js";
-export type { Contract } from "./internal/h3/commands.js";
+export type { CommandName, Contract } from "./internal/h3/commands.js";
 export type {
   ClipFact,
   ClipOperation,
@@ -56,6 +56,7 @@ export type {
   OperationFacts,
 } from "./internal/h3/operations.js";
 export type { Acceptance, ClipObservation, Facts, ProviderSnapshot } from "./internal/h3/state.js";
+export type { State as SubmissionState, Submission } from "./internal/h3/submission.js";
 export { Reference } from "./internal/h3/references.js";
 export type { ValidatedAudioReference, ValidatedReference } from "./internal/h3/references.js";
 
