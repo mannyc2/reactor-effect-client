@@ -762,7 +762,8 @@ layer(hosted)("command lanes", (it) => {
     }),
   );
 
-  // The review's F6: s1's filler enqueue, its command lost, held s2's filler for 20 s.
+  // A filler enqueue whose command is lost holds its own session's filler for about 20 s, and no
+  // other session's.
   it.effect(
     "a filler enqueue whose command was lost holds up no other session's filler",
     () =>
@@ -1355,8 +1356,8 @@ layer(hosted)("local renderer", (it) => {
     }),
   );
 
-  // The review's F10: a source method that threw when called, rather than returning an effect,
-  // ended its lane's worker. Its session took no command again, and nothing reported it.
+  // A source method that throws when called, rather than returning an effect, is reported, and its
+  // lane's worker goes on to the session's next command.
   it.effect("reports a source method that throws when called, and its lane carries on", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));

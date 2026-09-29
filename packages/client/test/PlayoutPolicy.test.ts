@@ -922,8 +922,8 @@ describe("PlayoutPolicy, lanes", () => {
     return policy;
   };
 
-  // The review's F6: s1's filler enqueue, its command lost, held the replacement's filler and its
-  // covers for 20 s. Each clip takes its index as its enqueue goes out, so none needs the other.
+  // A filler enqueue whose command is lost holds its own lane for about 20 s, and no other: each
+  // clip takes its index as its enqueue goes out, so the replacement sends filler of its own.
   it("sends filler on the replacement's lane while the session on air carries some", () => {
     const policy = renewing();
     assert.deepStrictEqual(fillersOf(policy), ["s1 0 filler 0", "s2 1 filler 1"]);
@@ -1017,8 +1017,7 @@ describe("PlayoutPolicy, air before queue order", () => {
         : `filler of ${command.request.seconds?.toFixed(2) ?? "?"} s`;
   const long: Policy.Spec = { ...spec("long", 1, 15), continuity: true };
 
-  // The review's measured case, in the plan: a 15 s continued build projected at 16 s with its
-  // margin, against 12 s secured.
+  // A 15 s continued build, projected at 16 s with its margin, against 12 s secured.
   it("sends a filler clip ahead of a build that would outlast the air secured, then the build", () => {
     const order = airing(protecting("order"), 12).policy;
     order.submit(long);
@@ -1080,8 +1079,8 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.strictEqual(refill("air"), "filler of 5.00 s");
   });
 
-  // The review's F2: the plan woke as the runway reached this floor, sent nothing there, and
-  // refilled only at the clip floor, 11 s later. Here only the plan's own wakes come.
+  // The plan refills as the runway reaches this floor, not only at the clip floor, 11 s later.
+  // Here only the plan's own wakes come.
   it("refills as the runway falls to the floor that covers the next item's build", () => {
     const { policy } = airing(protecting("air"), 30);
     policy.submit({ ...spec("first"), window: { notBeforeMs: 60_000, firm: false } });
@@ -1124,8 +1123,8 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
   });
 
-  // The review's F8, as the integrator decided: a cover goes out for dark air projected, not for
-  // the margin alone. A 15 s item builds in 6 s, and nearly 7 s are secured.
+  // A cover goes out for dark air projected, not for the margin alone. A 15 s item builds in 6 s,
+  // and nearly 7 s are secured.
   it("sends no filler clip ahead of a build the air secured outlasts, by less than the margin", () => {
     const { policy } = airing(protecting("air"), 7);
     policy.submit(spec("item", 1, 15));
@@ -1146,8 +1145,8 @@ describe("PlayoutPolicy, air before queue order", () => {
     }
   });
 
-  // The review's F5: an item carried from a lost session kept the cover it had there, and on the
-  // next, with no air secured, it went out with none.
+  // The cover an item had went with its lost session, and on the next no air is secured: it is
+  // covered again there.
   it("covers a carried item again on the session it is carried to", () => {
     const { policy, playing } = airing(protecting("air"), 12);
     policy.submit(long);
@@ -1177,7 +1176,7 @@ describe("PlayoutPolicy, air before queue order", () => {
   });
 });
 
-// The review's F7: ReactorTest numbers clip ids per session, so two sessions' clips can share one.
+// ReactorTest numbers clip ids per session, so two sessions' clips can share one.
 // A clip is looked up by id only on the session it was reported by or a command went to.
 describe("PlayoutPolicy, clip ids", () => {
   const filler = (clipId: string, index: number) => clip(clipId, { _tag: "Filler", index });
@@ -1665,9 +1664,9 @@ describe("PlayoutPolicy, time", () => {
     assert.isTrue(unheld.actions.some((action) => action._tag === "Fail"));
   });
 
-  // The review's case: s1 airs a 5 s clip after another while each renewal open fails 2 s after
-  // it is asked, having allocated a session or maybe so. A clip on the session that already held
-  // the air says nothing of those opens: only a session's first clip ends their run.
+  // s1 airs a 5 s clip after another while each renewal open fails 2 s after it is asked, having
+  // allocated a session or maybe so. A clip on the session that already held the air says nothing
+  // of those opens: only a session's first clip ends their run.
   it("pauses renewal after three opens that may bill, though the session on air airs clips", () => {
     const policy = drive({ config: { ...config, leadMs: 60_000 } });
     policy.tick(0);
@@ -1714,8 +1713,8 @@ describe("PlayoutPolicy, time", () => {
     }
   });
 
-  // The review's F4: the pause took the place of the last refusal's Retry-After, so the one more
-  // open went out as soon as the session on air was gone.
+  // The one more open after a pause waits out the last refusal's Retry-After, though the session
+  // on air is gone sooner.
   it("waits out the last refusal's Retry-After for the open after a pause", () => {
     const policy = drive({ config: { ...config, leadMs: 60_000 } });
     const opens = () => policy.actions.filter((action) => action._tag === "Open").length;
@@ -1867,8 +1866,8 @@ describe("PlayoutPolicy, wakes", () => {
     assert.deepStrictEqual(statuses(sent.actions, "b"), ["Dropped"]);
   });
 
-  // The review's F3: during a renewal the runway measured is the replacement's, which does not
-  // fall while the session on air airs, and the plan asked again and again to be woken as it fell.
+  // During a renewal the runway measured is the replacement's, which does not fall while the
+  // session on air airs: the plan names no wake for it to fall to the floor.
   it("wakes for no floor while the replacement's runway, which does not fall, is above it", () => {
     const policy = drive({ config: protecting("air"), from: measured });
     policy.tick(0);
