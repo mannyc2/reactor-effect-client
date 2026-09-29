@@ -65,6 +65,13 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
 
 /**
+ * The wait until a wake `ms` away, in whole nanoseconds rounded up: the clock counts whole
+ * nanoseconds, and a wake between two of them comes at the later one.
+ */
+const untilWake = (ms: number): Duration.Duration =>
+  Duration.nanos(BigInt(Math.max(0, Math.ceil(ms * 1_000_000))));
+
+/**
  * Where a request for the clip `tag` names falls outside H3's documented
  * limits, field by field, or undefined within them: its metadata counted as
  * sent, wrapped with the tag and H3's own identity. Each issue names its field
@@ -547,7 +554,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const input =
         wake === undefined
           ? Option.some(yield* take(inbox))
-          : yield* take(inbox).pipe(Effect.timeoutOption(Math.max(0, wake - mono)));
+          : yield* take(inbox).pipe(Effect.timeoutOption(untilWake(wake - mono)));
+      // Nothing falls due before the wake: a wait that ends short of it, on a clock coarser than
+      // the wake, waits on.
+      if (Option.isNone(input) && wake !== undefined && (yield* monotonic) < wake) continue;
       wake = yield* apply(Option.getOrElse(input, (): Policy.Input => ({ _tag: "Tick" })));
     }
   }).pipe(

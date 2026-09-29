@@ -610,6 +610,51 @@ layer(hosted)("time", (it) => {
       assert.strictEqual(cues.length, 1);
     }),
   );
+
+  // A projected time is seldom a whole nanosecond, as the virtual clock counts: the playout waits
+  // until the clock reaches it, rather than just short of it and on until the clock steps again.
+  it.effect("drops a firm item as its projection reaches its startBy, not at a later step", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const median = (yield* playout.state).estimates.build?.median ?? 0;
+      assert.isAbove(median, 0);
+      // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
+      // its own build on, a time for each length.
+      const lengths = [8, 9, 10, 11, 12, 13];
+      const firm = yield* Effect.forEach(lengths, (seconds) =>
+        playout.submit({
+          key: key(`firm ${String(seconds)}`),
+          lane: "line",
+          request: clip(`firm ${String(seconds)}`, seconds),
+          window: { notBefore: "5 seconds", startBy: "8 seconds", firm: true },
+        }),
+      );
+      for (const handle of firm)
+        assert.deepStrictEqual(yield* handle.outcome, { _tag: "Dropped", reason: "late" });
+      const all = yield* events;
+      const at = (name: string, status: string) =>
+        all.flatMap((event) =>
+          event._tag === "AsRun" && event.event.key === name && event.event.status._tag === status
+            ? [event.event.at]
+            : [],
+        )[0] ?? Number.NaN;
+      const late = lengths.map((seconds) => {
+        const name = `firm ${String(seconds)}`;
+        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - seconds * median * 1_000);
+      });
+      // The virtual clock's wall and monotonic readings part by less than a microsecond here.
+      assert.deepStrictEqual(
+        late.map((ms) => Math.abs(ms) < 0.01),
+        lengths.map(() => true),
+        `dropped late by ${late.map((ms) => ms.toFixed(6)).join(", ")} ms`,
+      );
+    }),
+  );
 });
 
 layer(hosted)("uncertainty", (it) => {
