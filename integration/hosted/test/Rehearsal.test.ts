@@ -11,6 +11,7 @@ import { cleanupInstructions } from "../Evidence.js";
 import { execute, staleBuild } from "../Qualify.js";
 import type { Check } from "../Spend.js";
 import { ceilingFor, checks, maxTotalUsd } from "../Spend.js";
+import { summarize } from "../Summary.js";
 import * as Target from "../Target.js";
 
 const rehearse = (
@@ -290,6 +291,11 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
       [spent?.answer, spent?.outcome, spent?.status, spent?.codes?.["error.code"]],
       ["Http", "replied", 403, "session_limit"],
     );
+    // The time the summary gives is the refusal's.
+    assert.match(
+      summarize([evidence]),
+      /\*\*Spent token:\*\* a second create failed in \d+\.\d\d s with Http 403, outcome replied;/,
+    );
     assert.lengthOf(evidence.sessions, 1);
     assert.isTrue(session?.close?.termination?.confirmed);
   },
@@ -322,6 +328,8 @@ rehearse("unconnected ends at once a second session its spent token allocated", 
     assert.deepStrictEqual([spent?.answer, spent?.sessionId], ["allocated", second?.id]);
     assert.isTrue(second?.close?.termination?.confirmed);
     assert.isBelow(second.close.requestedMs - (spent?.answeredMs ?? 0), 1_000);
+    // The time the summary gives is the allocation's; the termination line says how it ended.
+    assert.include(summarize([evidence]), `a second create allocated ${second.id} in `);
   },
 });
 
