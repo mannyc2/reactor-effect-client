@@ -657,6 +657,37 @@ layer(
   );
 });
 
+// The session's peer dies of a bug as the session's close fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(fenceBug)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a session whose peer dies of a bug as its close fences it", (it) => {
+  it.effect("still closes and ends the remote session, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const closed = yield* Effect.exit(session.close).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(closed), []);
+      assert.deepStrictEqual(
+        [
+          Exit.isSuccess(closed) && closed.value.remote.confirmed,
+          yield* remoteState(session.id),
+          (yield* session.snapshot).status,
+        ],
+        [true, "CLOSED", "closed"],
+      );
+      assert.deepStrictEqual(bugs, [fenceBug]);
+    }),
+  );
+});
+
 // A reconnect is refused, and its own peer's host fails to shut down, with a bug besides.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
