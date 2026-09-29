@@ -25,7 +25,13 @@ const later = "4.0.0-rc.118";
 const names = ["effect", "@effect/platform-node", "@effect/platform-node-shared"] as const;
 /** A root manifest whose catalog and override require the stack as `requirement`. */
 const pinned = (requirement: string) => ({
-  workspaces: { catalog: { effect: requirement, "@effect/platform-node": requirement } },
+  workspaces: {
+    catalog: {
+      effect: requirement,
+      "@effect/platform-node": requirement,
+      "@effect/platform-node-shared": requirement,
+    },
+  },
   overrides: { "@effect/platform-node-shared": requirement },
 });
 const manifest = pinned(baseline);
@@ -143,6 +149,25 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
       assert.match(
         yield* rejection(selectStack(ranged, lock(baseline, ranged))),
         /effect requirement \^4\.0\.0-rc\.117 must be exactly the locked 4\.0\.0-rc\.117/,
+      );
+    }),
+  );
+
+  it.effect("refuses a shared-platform catalog entry its override and lock do not match", () =>
+    Effect.gen(function* () {
+      const drifted = {
+        ...manifest,
+        workspaces: {
+          catalog: { ...manifest.workspaces.catalog, "@effect/platform-node-shared": later },
+        },
+      };
+      assert.match(
+        yield* rejection(selectStack(drifted, lock(baseline, drifted))),
+        /shared-platform catalog entry 4\.0\.0-rc\.118 must match its override 4\.0\.0-rc\.117/,
+      );
+      assert.match(
+        yield* rejection(selectStack(manifest, lock(baseline, drifted))),
+        /lock catalog @effect\/platform-node-shared differs from manifest/,
       );
     }),
   );
@@ -457,6 +482,7 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
       const native = {
         effect: baseline,
         "@effect/platform-node": baseline,
+        "@effect/platform-node-shared": baseline,
         "reactor-effect-client": "0.8.0",
       };
       yield* checkArchivePeers("reactor-effect-native", native, stack);

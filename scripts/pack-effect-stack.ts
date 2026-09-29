@@ -87,6 +87,7 @@ const StackManifest = Schema.Struct({
     catalog: Schema.Struct({
       effect: Schema.NonEmptyString,
       "@effect/platform-node": Schema.NonEmptyString,
+      "@effect/platform-node-shared": Schema.NonEmptyString,
     }),
   }),
   overrides: Schema.Struct({ "@effect/platform-node-shared": Schema.NonEmptyString }),
@@ -291,6 +292,12 @@ export const selectStack = Effect.fnUntraced(function* (
   };
   if (requirements.nodeSharedOverride !== requirements.effect)
     return yield* failure("the shared-platform override must match the Effect catalog requirement");
+  // The override resolves the shared platform in the workspace; the catalog entry is the native
+  // package's peer on it, which must name the same version.
+  if (catalog[packages.nodeShared] !== requirements.nodeSharedOverride)
+    return yield* failure(
+      `the shared-platform catalog entry ${catalog[packages.nodeShared]} must match its override ${requirements.nodeSharedOverride}`,
+    );
   const parsed = yield* Effect.try({
     try: () =>
       Bun.JSONC.parse(
@@ -303,7 +310,7 @@ export const selectStack = Effect.fnUntraced(function* (
   const lock = yield* Schema.decodeUnknownEffect(Lockfile)(parsed).pipe(
     Effect.mapError((error) => failure(`bun.lock: ${error.message}`)),
   );
-  for (const name of [packages.effect, packages.nodePlatform])
+  for (const name of [packages.effect, packages.nodePlatform, packages.nodeShared])
     if (lock.catalog[name] !== catalog[name])
       return yield* failure(
         `lock catalog ${name} differs from manifest; run bun install --frozen-lockfile`,

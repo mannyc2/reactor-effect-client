@@ -21,6 +21,7 @@
       "@bufbuild/protobuf": "2.15.0",
       "@effect/platform-bun": "4.0.0-rc.117",
       "@effect/platform-node": "4.0.0-rc.117",
+      "@effect/platform-node-shared": "4.0.0-rc.117",
       "@effect/vitest": "4.0.0-rc.117",
       "@types/bun": "1.4.2",
       "@types/node": "22.20.2",

@@ -36,6 +36,7 @@
   },
   "peerDependencies": {
     "@effect/platform-node": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*"
   },
