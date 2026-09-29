@@ -15,6 +15,7 @@ import {
 } from "effect";
 import { Coordinator, H3Source, Reactor, ReactorTest } from "../src/index.js";
 import { PeerFactory } from "../src/Peer.js";
+import { ReactorError } from "../src/ReactorError.js";
 import type { Session } from "../src/Session.js";
 import { environment, tokens } from "./fixtures/Simulated.js";
 
@@ -77,43 +78,59 @@ layer(dropped)("a dropped connection two readers of the source's events see", (i
   );
 });
 
-/** ReactorTest's peers, but their decoded video dies, as a host with a bug would. */
-const dyingVideo = Layer.effect(
-  PeerFactory,
-  Effect.gen(function* () {
-    const peers = yield* PeerFactory;
-    return PeerFactory.of({
-      check: peers.check,
-      make: Effect.map(peers.make, (peer) =>
-        peer.media._tag === "Decoded"
-          ? { ...peer, media: { ...peer.media, video: () => Stream.die("a host's frame bug") } }
-          : peer,
-      ),
-    });
-  }),
-);
-
-// A retired generation's failure ends its frames until the next one is ready; a bug stays a defect.
-layer(
+/** The simulated Reactor, its peers' decoded video replaced by `video`, as a host's might be. */
+const hostVideo = (video: Stream.Stream<never, ReactorError>) =>
   Reactor.layer().pipe(
     Layer.provideMerge(Coordinator.layer()),
-    Layer.provideMerge(dyingVideo),
+    Layer.provideMerge(
+      Layer.effect(
+        PeerFactory,
+        Effect.gen(function* () {
+          const peers = yield* PeerFactory;
+          return PeerFactory.of({
+            check: peers.check,
+            make: Effect.map(peers.make, (peer) =>
+              peer.media._tag === "Decoded"
+                ? { ...peer, media: { ...peer.media, video: () => video } }
+                : peer,
+            ),
+          });
+        }),
+      ),
+    ),
     Layer.provideMerge(
       ReactorTest.layer({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }),
     ),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
-  ),
-)("a source's video", (it) => {
+  );
+
+/** How a source's video ends, if it ends within a minute. */
+const videoEnd = Effect.gen(function* () {
+  yield* Effect.forkScoped(ReactorTest.flow());
+  const source = yield* H3Source.open({ tokens: yield* tokens });
+  return yield* source.video.pipe(Stream.runDrain, Effect.exit, Effect.timeoutOption("1 minute"));
+});
+
+// A retired generation's failure ends its frames until the next one is ready; a bug stays a defect.
+layer(hostVideo(Stream.die("a host's frame bug")))("a source's video", (it) => {
   it.effect("carries a host's defect in its frames, rather than going quiet", () =>
     Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow());
-      const source = yield* H3Source.open({ tokens: yield* tokens });
-      const ended = yield* source.video.pipe(
-        Stream.runDrain,
-        Effect.exit,
-        Effect.timeoutOption("1 minute"),
-      );
+      const ended = yield* videoEnd;
       assert.isTrue(Option.isSome(ended) && Exit.hasDies(ended.value));
+    }),
+  );
+});
+
+// A host refuses a track it cannot decode with UnsupportedCapability, as a browser host, with
+// platform tracks and no decoded media, refuses them all.
+layer(
+  hostVideo(Stream.fail(ReactorError.fromCode("UnsupportedCapability", "no decoded video here"))),
+)("a source's video on a host that cannot decode it", (it) => {
+  it.effect("fails with the host's refusal, rather than going quiet", () =>
+    Effect.gen(function* () {
+      const ended = yield* videoEnd;
+      const failure = Option.flatMap(ended, Exit.findErrorOption);
+      assert.strictEqual(Option.getOrUndefined(failure)?.reason._tag, "UnsupportedCapability");
     }),
   );
 });

@@ -14,6 +14,7 @@ import type * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
@@ -133,12 +134,12 @@ const track = <A>(
   session: Session,
   read: (media: DecodedMedia) => Stream.Stream<A, ReactorError>,
   overflowed: (pressure: MediaPressure) => Effect.Effect<void>,
-) =>
+): Stream.Stream<A, ReactorError> =>
   session.changes.pipe(
     Stream.filter((snapshot) => snapshot.status === "ready"),
     Stream.map((snapshot) => snapshot.generation),
     Stream.changes,
-    Stream.switchMap(() => {
+    Stream.switchMap((generation) => {
       const frames: Stream.Stream<A, ReactorError> = Stream.unwrap(
         Effect.map(session.decoded, (media) =>
           read(media).pipe(
@@ -153,8 +154,24 @@ const track = <A>(
           ),
         ),
       );
-      // A retired generation's failure ends its frames until the next is ready; a defect stays one.
-      return frames.pipe(Stream.ignore);
+      // A retired generation's failure ends its frames until the next is ready. A generation
+      // retires before its media fails for it, so a failure while it is still the ready one is
+      // the host's or the reader's, such as a host without decoded media, and fails the track.
+      // A defect stays one.
+      return frames.pipe(
+        Stream.catch((error) =>
+          Stream.unwrap(
+            session.ready.pipe(
+              Effect.option,
+              Effect.map((ready) =>
+                Option.isSome(ready) && ready.value.generation === generation
+                  ? Stream.fail(error)
+                  : Stream.empty,
+              ),
+            ),
+          ),
+        ),
+      );
     }),
   );
 
