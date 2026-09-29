@@ -283,7 +283,7 @@ const unconnectedLines = (
     return [
       create === undefined
         ? `**Unconnected:** requested ${probe.requestedAt}; no answer to its create was recorded`
-        : `**Unconnected:** no session; its create failed with ${create.answer}${create.status === undefined ? "" : ` ${create.status}`}, outcome ${create.outcome ?? "unknown"}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
+        : `**Unconnected:** no session named; its create failed with ${create.answer}${create.status === undefined ? "" : ` ${create.status}`}, outcome ${create.outcome ?? "unknown"}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
     ];
   const allocatedMs = evidence.sessions.find(
     (session) => session.id === probe.sessionId,

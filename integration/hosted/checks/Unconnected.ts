@@ -43,8 +43,8 @@ import { Target } from "../Target.js";
 const readEveryMs = 2_000;
 /**
  * How long after the request the window allows for allocation, `ACTIVE` and
- * ready to come in: the create's own limit. Every paid run so far had its
- * session connected within 3.2 s of allocation.
+ * ready to come in: the create's own limit. Every paid run that timed it so
+ * far connected its session within 3.2 s of allocation.
  */
 const startsWithinMs = 15_000;
 /** The cap the token asks for, which bounds the one it is granted. */

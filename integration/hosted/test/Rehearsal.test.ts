@@ -10,7 +10,7 @@ import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
 import { execute, staleBuild } from "../Qualify.js";
 import type { Check } from "../Spend.js";
-import { ceilingFor, checks, maxTotalUsd } from "../Spend.js";
+import { ceilingFor, checks, holdsFor, maxTotalUsd } from "../Spend.js";
 import { summarize } from "../Summary.js";
 import * as Target from "../Target.js";
 
@@ -322,9 +322,15 @@ rehearse("unconnected ends with the key a session its cap did not end", {
     const active = probe?.states.find((entry) => entry.state === "ACTIVE")?.firstMs;
     for (const startMs of [session?.allocatedMs, active, probe?.connectableMs])
       assert.isAtLeast(windowEndsMs - (startMs ?? Infinity) - 90_000, 15_000);
-    // Its last read came at the window's end, and the key's end right after.
+    // Its last read came at the window's end, and the key's end right after: within the 9 s of
+    // the last read and the read at the end, and within the 155 s the session is reserved for.
     assert.isAtLeast(probe?.states.at(-1)?.lastMs ?? 0, windowEndsMs);
     assert.isAtLeast(session?.close?.requestedMs ?? 0, windowEndsMs);
+    assert.isAtMost((session?.close?.requestedMs ?? Infinity) - windowEndsMs, 9_000);
+    assert.isAtMost(
+      (session?.close?.reportedMs ?? Infinity) - (probe?.requestedMs ?? 0),
+      (holdsFor("unconnected")[0] ?? 0) * 1000,
+    );
     assert.isTrue(session?.close?.termination?.confirmed);
     assert.match(
       summarize([evidence]),
@@ -573,7 +579,7 @@ rehearse("unconnected keeps the codes of a create reply that names no session", 
     assert.include(instruction ?? "", "Its reply's codes: state PENDING.");
     assert.include(
       summarize([evidence]),
-      "**Unconnected:** no session; its create failed with Protocol",
+      "**Unconnected:** no session named; its create failed with Protocol",
     );
   },
 });
