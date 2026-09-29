@@ -8,8 +8,10 @@
  * `flush_on_clip_end` is set as asked when the session has it otherwise, and
  * the canvas is set before the first enqueue, the only moment H3 accepts it.
  */
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
@@ -185,18 +187,56 @@ const fromSession = Effect.fnUntraced(function* (
         : error,
     ),
   );
-  const reconnect: Stream.Stream<SourceEvent, ReactorError> = Stream.concat(
-    Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
-    Stream.fromIterableEffect(
-      Effect.gen(function* () {
-        const [after] = yield* Effect.timed(recover);
-        return [
-          { _tag: "Reconnected", afterMillis: Duration.toMillis(after) },
-          { _tag: "State", state: stateOf(yield* provider.snapshot) },
-        ] satisfies ReadonlyArray<SourceEvent>;
-      }),
-    ),
+  // The source recovers each dropped connection once, in its own scope, however many read
+  // its events. Every reader reports that one recovery where it sees the drop, in order, and
+  // fails there once recovering has failed for good.
+  const recoveries = yield* Ref.make<ReadonlyMap<bigint, Deferred.Deferred<number, ReactorError>>>(
+    new Map(),
   );
+  /** The recovery of `generation`'s drop, shared by every reader: how long it took, or why it failed. */
+  const recoveryOf = (generation: bigint) =>
+    Effect.flatMap(Deferred.make<number, ReactorError>(), (fresh) =>
+      Ref.modify(recoveries, (all) => {
+        const known = all.get(generation);
+        return known === undefined ? [fresh, new Map(all).set(generation, fresh)] : [known, all];
+      }),
+    );
+  /** Why the source stopped recovering: the failure of its last recovery. */
+  const lost = yield* Deferred.make<never, ReactorError>();
+  yield* session.changes.pipe(
+    Stream.filter((snapshot) => snapshot.status === "disconnected"),
+    Stream.map((snapshot) => snapshot.generation),
+    Stream.changes,
+    Stream.runForEach((generation) =>
+      Effect.flatMap(recoveryOf(generation), (outcome) =>
+        recover.pipe(
+          Effect.timed,
+          Effect.map(([after]) => Duration.toMillis(after)),
+          Effect.onExit((exit) => Deferred.done(outcome, exit)),
+        ),
+      ),
+    ),
+    Effect.onError((cause) =>
+      Cause.hasInterruptsOnly(cause) ? Effect.void : Deferred.failCause(lost, cause),
+    ),
+    Effect.forkScoped,
+  );
+  const reconnect = (generation: bigint): Stream.Stream<SourceEvent, ReactorError> =>
+    Stream.concat(
+      Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
+      Stream.fromIterableEffect(
+        Effect.gen(function* () {
+          // A drop after the source was lost is never recovered.
+          const afterMillis = yield* Effect.flatMap(recoveryOf(generation), (outcome) =>
+            Effect.raceFirst(Deferred.await(outcome), Deferred.await(lost)),
+          );
+          return [
+            { _tag: "Reconnected", afterMillis },
+            { _tag: "State", state: stateOf(yield* provider.snapshot) },
+          ] satisfies ReadonlyArray<SourceEvent>;
+        }),
+      ),
+    );
   const translate = (
     event: H3.ProviderEvent,
   ): Effect.Effect<ReadonlyArray<SourceEvent>, ReactorError> =>
@@ -254,20 +294,28 @@ const fromSession = Effect.fnUntraced(function* (
   const overflowed = (track: "video" | "audio") => (pressure: MediaPressure) =>
     Effect.asVoid(PubSub.publish(overflows, { _tag: "ReaderOverflow", track, pressure }));
   const events: Stream.Stream<SourceEvent, ReactorError> = Stream.unwrap(
-    Effect.map(provider.observe({ capacity: 1024 }), (observation) =>
-      Stream.concat(
-        Stream.succeed<SourceEvent>({ _tag: "State", state: stateOf(observation.initial) }),
+    Effect.gen(function* () {
+      const observation = yield* provider.observe({ capacity: 1024 });
+      const initial = Stream.succeed<SourceEvent>({
+        _tag: "State",
+        state: stateOf(observation.initial),
+      });
+      // A reader that comes after the source was lost learns it at once.
+      if (yield* Deferred.isDone(lost))
+        return Stream.concat(initial, Stream.fromEffectDrain(Deferred.await(lost)));
+      return Stream.concat(
+        initial,
         observation.events.pipe(
           Stream.flatMap((event) =>
             event._tag === "Session" &&
             event.source._tag === "Status" &&
             event.source.status === "disconnected"
-              ? reconnect
+              ? reconnect(event.source.generation)
               : Stream.fromIterableEffect(translate(event)),
           ),
         ),
-      ),
-    ),
+      );
+    }),
   ).pipe(Stream.merge(Stream.fromPubSub(overflows), { haltStrategy: "left" }));
   const replied = (error: CommandFailure) => error.context.outcome === "replied";
   const replyTimeout = Duration.fromInputUnsafe(options.provider?.replyTimeout ?? "15 seconds");
