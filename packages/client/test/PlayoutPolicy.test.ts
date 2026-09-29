@@ -1122,6 +1122,28 @@ describe("PlayoutPolicy, time", () => {
     assert.isTrue(policy.tick(56_000).actions.some((action) => action._tag === "Open"));
   });
 
+  // A refusal that allocated nothing billed nothing, so while a session holds the air it neither
+  // pauses renewal nor counts toward the opens that do.
+  it("pauses renewal only once enough opens that may bill have failed, and fails with no air", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    policy.tick(0);
+    policy.open("s1", 120_000);
+    assert.isTrue(policy.tick(60_010).actions.some((action) => action._tag === "Open"));
+    // Each retry waits a second longer than the one before.
+    const retried = (allocated: boolean) => {
+      policy.send({ _tag: "OpenFailed", reason: "refused", fatal: false, allocated });
+      return policy.tick(policy.now() + 7_000).actions.some((action) => action._tag === "Open");
+    };
+    const opened = [true, false, false, true, false, true].map(retried);
+    // The third open that may bill pauses renewal while s1 holds the air.
+    assert.deepStrictEqual(opened, [true, true, true, true, true, false]);
+    const unheld = drive();
+    unheld.tick(0);
+    for (let attempt = 0; attempt < 3; attempt++)
+      unheld.send({ _tag: "OpenFailed", reason: "refused", fatal: false, allocated: false });
+    assert.isTrue(unheld.actions.some((action) => action._tag === "Fail"));
+  });
+
   it("times an end cue from the provider's length, not the requested one", () => {
     const policy = drive();
     policy.tick(0);

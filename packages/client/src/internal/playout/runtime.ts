@@ -275,14 +275,16 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       yield* Ref.set(lastOpenError, found);
       if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
       const error = Result.getOrUndefined(found);
-      // A failed acquisition still reports what it allocated, and that may still bill.
-      if (AcquisitionFailure.is(error) && error.cleanup.allocation !== "none")
-        yield* record(error.cleanup);
+      // A failed acquisition still reports what it allocated, and that may still bill. Any other
+      // failure, a timeout or a defect among them, may have allocated unseen.
+      const allocated = !AcquisitionFailure.is(error) || error.cleanup.allocation !== "none";
+      if (AcquisitionFailure.is(error) && allocated) yield* record(error.cleanup);
       const retryAfter = error?.retryAfter;
       return yield* offer({
         _tag: "OpenFailed",
         reason: error?.message ?? "opening a session died",
         fatal: false,
+        allocated,
         ...(retryAfter === undefined ? {} : { retryAfterMs: Duration.toMillis(retryAfter) }),
       });
     }
@@ -297,7 +299,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         "an opened source's session id is already in use",
       );
       yield* Ref.set(lastOpenError, Result.succeed(duplicate));
-      return yield* offer({ _tag: "OpenFailed", reason: duplicate.message, fatal: true });
+      return yield* offer({
+        _tag: "OpenFailed",
+        reason: duplicate.message,
+        fatal: true,
+        allocated: true,
+      });
     }
     yield* Ref.set(lastOpenError, undefined);
     yield* Ref.update(sources, (all) =>

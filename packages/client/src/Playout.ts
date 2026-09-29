@@ -561,8 +561,12 @@ export interface Options<R = never> {
          * sessions lost before any clip sent to them started. 3 by default. Each
          * open is retried a second longer after each failure, and never sooner
          * than a refusal's `Retry-After`. While a session holds the air, running
-         * out doesn't end it: opening pauses until that session's cap ends it or
-         * it is lost, and then one more open is tried.
+         * out doesn't end it, and only setups that allocated a session, or may
+         * have, count: opening pauses until that session's cap ends it or it is
+         * lost, and then one more open is tried. An open that failed with an
+         * `AcquisitionFailure` whose `cleanup.allocation` is `"none"`, such as a
+         * refusal with a 4xx status, billed nothing, so it is asked again however
+         * often it fails.
          */
         readonly maxSetupFailures?: number | undefined;
       }

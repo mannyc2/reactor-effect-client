@@ -121,6 +121,8 @@ export type Input =
       readonly _tag: "OpenFailed";
       readonly reason: string;
       readonly fatal: boolean;
+      /** It allocated a session, or may have: all but a refusal known to have allocated nothing. */
+      readonly allocated: boolean;
       /** How long the refusal asked to wait before asking again. */
       readonly retryAfterMs?: number | undefined;
     }
@@ -323,6 +325,8 @@ export interface State {
   readonly opening: boolean;
   readonly openRetryAt: number;
   readonly setupFailures: number;
+  /** Of those, the setups that allocated a session, or may have, and so may bill. */
+  readonly allocatedFailures: number;
   /** Sessions content moderation ended. */
   readonly moderations: number;
   readonly busy:
@@ -409,6 +413,7 @@ export const initial: State = {
   opening: false,
   openRetryAt: 0,
   setupFailures: 0,
+  allocatedFailures: 0,
   moderations: 0,
   busy: undefined,
   nextCommand: 1,
@@ -1137,7 +1142,7 @@ export const step: {
   const started = (sessionId: string, clip: PlayingClip): void => {
     nowPlaying(sessionId, clip);
     // A clip on air ends a run of sessions that failed to set up or to play anything.
-    state = { ...state, setupFailures: 0 };
+    state = { ...state, setupFailures: 0, allocatedFailures: 0 };
     if (clip.tag?._tag !== "Item") return;
     const item = items.get(clip.tag.key);
     if (item === undefined || item.startedAt !== undefined || item.phase === "Settled") return;
@@ -1395,6 +1400,26 @@ export const step: {
         );
   };
   /**
+   * After a failed setup, once `maxSetupFailures` have failed in a row: with no
+   * session holding the air, the playout fails. While `air` holds it, only
+   * setups that allocated a session, or may have, count, and they pause
+   * opening until it no longer holds the air, when one more open is tried. A
+   * refusal that allocated nothing billed nothing, so it is asked again after
+   * its delay however often it comes.
+   */
+  const pauseOrFail = (
+    reason: string,
+    cause: "open" | "lost",
+    allocated: boolean,
+    air: Session | undefined,
+  ): void => {
+    if (!holding(air)) {
+      if (state.setupFailures >= config.maxSetupFailures)
+        actions.push({ _tag: "Fail", reason, cause });
+    } else if (allocated && state.allocatedFailures >= config.maxSetupFailures)
+      state = { ...state, openRetryAt: Infinity };
+  };
+  /**
    * A session that is gone: its unaired clips are rebuilt from the plan, never
    * replayed. Reactor ends a session over flagged content, and need not say
    * so, so rebuilding is bounded twice. A clip lost before it was built with
@@ -1434,7 +1459,11 @@ export const step: {
     }
     if (!planned && !lost.startedAny && lost.lastEnqueue !== undefined) {
       const consecutive = state.setupFailures + 1;
-      state = { ...state, setupFailures: consecutive };
+      state = {
+        ...state,
+        setupFailures: consecutive,
+        allocatedFailures: state.allocatedFailures + 1,
+      };
       emit({
         _tag: "Session",
         event: {
@@ -1443,11 +1472,7 @@ export const step: {
           consecutive,
         },
       });
-      if (consecutive >= config.maxSetupFailures) {
-        if (state.air !== sessionId && holding(session(state.air)))
-          state = { ...state, openRetryAt: Infinity };
-        else actions.push({ _tag: "Fail", reason, cause: "lost" });
-      }
+      pauseOrFail(reason, "lost", true, state.air === sessionId ? undefined : session(state.air));
     }
     state = {
       ...state,
@@ -1702,16 +1727,13 @@ export const step: {
         ...state,
         opening: false,
         setupFailures: consecutive,
+        allocatedFailures: state.allocatedFailures + (input.allocated ? 1 : 0),
         // A refusal that says when to ask again is not asked sooner.
         openRetryAt: now.mono + Math.max(retryDelayMs * consecutive, input.retryAfterMs ?? 0),
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
       if (input.fatal) actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
-      else if (consecutive >= config.maxSetupFailures) {
-        // The session on air airs on: opening pauses until it no longer holds the air.
-        if (holding(session(state.air))) state = { ...state, openRetryAt: Infinity };
-        else actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
-      }
+      else pauseOrFail(input.reason, "open", input.allocated, session(state.air));
       break;
     }
     case "Source": {

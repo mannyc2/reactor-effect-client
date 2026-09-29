@@ -778,11 +778,12 @@ layer(hosted)("renewal", (it) => {
   );
 
   it.effect(
-    "refused replacements leave the session on air airing until its cap, then open once more",
+    "replacements refused with a server error leave the session on air airing until its cap, then open once more",
     () =>
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
-        // The first allocation succeeds; the three renewal attempts are refused. No clip starts
+        // The first allocation succeeds; the three renewal attempts are refused with 503, after
+        // which nobody can tell whether a session was allocated, so each may bill. No clip starts
         // meanwhile, which would end the run of failures.
         for (const nth of [2, 3, 4])
           yield* test.inject({ _tag: "RefuseAllocation", nth, status: 503 });
@@ -872,6 +873,45 @@ layer(hosted)("renewal", (it) => {
             event.event.status.carried !== undefined,
         );
         assert.isTrue(carried);
+      }),
+    { timeout: 60_000 },
+  );
+});
+
+// A refusal with a 4xx status allocated nothing, so it bills nothing. Its faults stay armed for
+// the rest of a block, so it has one of its own.
+layer(hosted)("renewal refused with nothing allocated", (it) => {
+  it.effect(
+    "keeps asking for the replacement while the session on air holds it, and no air is lost",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first allocation succeeds, the next three are refused over quota, and the fifth
+        // succeeds. No clip starts meanwhile, which would end the run of failures.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 429 });
+        const { playout, events } = yield* start({
+          lifetime: "120 seconds",
+          renewal: { lead: "60 seconds" },
+        });
+        yield* Effect.sleep("70 seconds");
+        const names = Array.from({ length: 12 }, (_, index) => `n${index}`);
+        const handles = yield* Effect.forEach(names, (name) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of handles) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+        const times = new Map<string, number>();
+        for (const event of yield* events)
+          if (event._tag === "AsRun")
+            times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+        const gaps = names
+          .slice(1)
+          .map(
+            (name, index) =>
+              (times.get(`${name}:Started`) ?? Infinity) -
+              (times.get(`${names[index]}:Ended`) ?? -Infinity),
+          );
+        assert.isBelow(Math.max(...gaps), 1_000, `gaps between clips: ${gaps.join(", ")} ms`);
       }),
     { timeout: 60_000 },
   );
