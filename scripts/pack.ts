@@ -4,9 +4,11 @@
  * Every package is packed with `bun pm pack`, which rewrites `workspace:` and
  * `catalog:` protocols to exact versions. Each archive is validated on its own
  * (public exports, declaration/import closure, declared dependencies, native
- * identity), then installed into isolated consumers: a portable Node consumer
- * without optional dependencies, a browser consumer bundled without Node
- * globals, and a native consumer that verifies the installed addon's identity.
+ * identity), then installed into isolated consumers: a fresh Node consumer in
+ * which npm takes Effect from the client's published peer, as an application's
+ * own install does, a portable Node consumer without optional dependencies, a
+ * browser consumer bundled without Node globals, and a native consumer that
+ * verifies the installed addon's identity.
  * Each staged platform addon is packed as its own package. `--portable` packs
  * and checks only the client and browser packages, for hosts without a staged
  * addon; CI and release run the full gate.
@@ -29,6 +31,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import {
   ConsumerManifest,
   QualificationStack,
+  checkArchivePeers,
   completeQualification,
   inspectConsumerTree,
   resolveStackPackage,
@@ -101,7 +104,6 @@ const NewConsumerManifest = Schema.fromJsonString(
   Schema.Struct({
     private: Schema.Literal(true),
     type: Schema.Literal("module"),
-    overrides: Schema.optionalKey(Dependencies),
   }),
   { space: 2 },
 );
@@ -351,7 +353,7 @@ const program = Effect.gen(function* () {
   if (typescriptVersion === undefined) return yield* failure("catalog must pin typescript");
   const nodeTypesVersion = catalog["@types/node"];
   if (nodeTypesVersion === undefined) return yield* failure("catalog must pin @types/node");
-  // Release qualification selects frozen bytes; archive peers keep their ranges.
+  // Release qualification selects frozen bytes, and the archives' Effect peers pin that selection.
   const stack = yield* selectStack(workspace, yield* fs.readFile(path.join(root, "bun.lock")));
   const { requirements, selected } = stack;
   const workspaceResolution = yield* resolveWorkspaceStack(root, stack);
@@ -422,10 +424,7 @@ const program = Effect.gen(function* () {
             `${manifest.name}: ${name} uses unpublished dependency protocol ${version}`,
           );
       }
-    if (manifest.peerDependencies?.effect !== requirements.effect)
-      return yield* failure(
-        `${manifest.name} must declare the Effect peer range ${requirements.effect}`,
-      );
+    yield* checkArchivePeers(manifest.name, manifest.peerDependencies, stack);
     // Effect's shape: the index, one subpath per top-level module, internals and the
     // index's own path closed. TypeScript finds each module's declarations beside it.
     if (!isExportMap(manifest.exports))
@@ -691,16 +690,12 @@ const program = Effect.gen(function* () {
   const releaseConsumer = (directory: string) =>
     keep ? Effect.void : fs.remove(directory, { recursive: true, force: true });
 
-  const initConsumer = Effect.fnUntraced(function* (
-    name: string,
-    overrides?: Readonly<Record<string, string>>,
-  ) {
+  const initConsumer = Effect.fnUntraced(function* (name: string) {
     const directory = path.join(isolated, name);
     yield* fs.makeDirectory(directory, { recursive: true });
     const manifest = yield* Schema.encodeEffect(NewConsumerManifest)({
       private: true,
       type: "module",
-      ...(overrides === undefined ? {} : { overrides }),
     });
     yield* fs.writeFileString(path.join(directory, "package.json"), manifest);
     yield* fs.copyFile(
@@ -734,7 +729,6 @@ const program = Effect.gen(function* () {
       [
         ...installArgs,
         ...(omitOptional ? ["--omit=optional"] : []),
-        `effect@${selected.effect}`,
         ...installed.map((archive) => archive.installTarball),
         ...packages,
       ],
@@ -983,11 +977,67 @@ const program = Effect.gen(function* () {
   const browserArchive = archives.get("browser");
   if (browserArchive === undefined) return yield* failure("browser archive was not produced");
 
+  // What an application's own `npm install reactor-effect-client` resolves. The other consumers
+  // install the selected Effect by name; this one names no Effect version and sets no override,
+  // so npm takes Effect from the registry through the archive's peer, whatever PACK_INSTALLER
+  // says, and every module of the client must then import on Node.
+  const fresh = yield* initConsumer("fresh-node");
+  const freshInstall = yield* execute(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-package-lock",
+      "--no-audit",
+      "--no-fund",
+      "--prefer-online",
+      client.tarball,
+    ],
+    fresh,
+  );
+  yield* fs.writeFileString(
+    path.join(packDirectory, "install-fresh-node.log"),
+    `${freshInstall.stdout}${freshInstall.stderr}`,
+  );
+  if (freshInstall.status !== exited)
+    return yield* failure(
+      `npm install failed in ${fresh}\n${freshInstall.stdout}${freshInstall.stderr}`,
+    );
+  yield* verifyInstalledArchive(fresh, {
+    name: client.manifest.name,
+    version: client.manifest.version,
+    specifier: client.tarball,
+    fileSha256: client.fileSha256,
+  });
+  yield* fs.copyFile(fixture("portable-import.mjs"), path.join(fresh, "portable-import.mjs"));
+  const freshOutput = yield* run(
+    node,
+    ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
+    fresh,
+    guarded(fresh, true),
+  );
+  if (!freshOutput.includes("portable-import-ok"))
+    return yield* failure("fresh install import smoke did not complete");
+  // npm ls fails on a peer npm had to override to finish the install.
+  yield* fs.writeFileString(
+    path.join(packDirectory, "fresh-node-dependencies.json"),
+    yield* run("npm", ["ls", "--all", "--json"], fresh),
+  );
+  const freshEffect = yield* resolveStackPackage(
+    path.join(fresh, "node_modules", client.manifest.name, "package.json"),
+    "effect",
+    stack,
+  );
+  yield* Console.log(
+    `fresh-install-ok ${client.manifest.name}@${client.manifest.version} effect@${freshEffect.version}`,
+  );
+  yield* releaseConsumer(fresh);
+
   const portable = yield* initConsumer("portable-node");
   yield* install(
     portable,
     [client],
-    [...compilerPackages, `@types/node@${nodeTypesVersion}`],
+    [`effect@${selected.effect}`, ...compilerPackages, `@types/node@${nodeTypesVersion}`],
     true,
   );
   const portableStack = yield* checkConsumerStack(portable, "portable-node");
@@ -1037,7 +1087,12 @@ const program = Effect.gen(function* () {
   yield* releaseConsumer(portable);
 
   const browser = yield* initConsumer("browser");
-  yield* install(browser, [client, browserArchive], compilerPackages, true);
+  yield* install(
+    browser,
+    [client, browserArchive],
+    [`effect@${selected.effect}`, ...compilerPackages],
+    true,
+  );
   const browserStack = yield* checkConsumerStack(browser, "browser");
   yield* fs.copyFile(fixture("browser-import.mjs"), path.join(browser, "browser-import.mjs"));
   const browserOutput = yield* run(
@@ -1102,20 +1157,15 @@ const program = Effect.gen(function* () {
     if (addonArchive === undefined) return yield* failure("no addon archive for this host");
     const hostIdentity = identities.get(hostAddon ?? "");
     if (hostIdentity === undefined) return yield* failure("no native identity for this host");
-    // npm applies overrides only at the consumer root. The platform's prerelease
-    // caret range otherwise admits a later shared platform and a second Effect.
-    const native = yield* initConsumer("native", {
-      "@effect/platform-node-shared": selected.nodeShared,
-    });
+    // Runs only in CI, where the addons are staged. Like the fresh consumer, it names no Effect
+    // package and sets no override: the installer takes Effect, the Node platform and the shared
+    // platform from the archives' exact peers, and the tree check requires the selection.
+    const native = yield* initConsumer("native");
     yield* install(
       native,
       // The binding's optional dependency on this host's package resolves to its archive.
       [client, nativeArchive, addonArchive],
-      [
-        `@effect/platform-node@${selected.nodePlatform}`,
-        ...compilerPackages,
-        `@types/node@${nodeTypesVersion}`,
-      ],
+      [...compilerPackages, `@types/node@${nodeTypesVersion}`],
       false,
     );
     const nativeStack = yield* checkConsumerStack(native, "native");

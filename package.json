@@ -19,12 +19,13 @@
     ],
     "catalog": {
       "@bufbuild/protobuf": "2.15.0",
-      "@effect/platform-bun": "^4.0.0-rc.117",
-      "@effect/platform-node": "^4.0.0-rc.117",
-      "@effect/vitest": "^4.0.0-rc.117",
+      "@effect/platform-bun": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117",
+      "@effect/platform-node-shared": "4.0.0-rc.117",
+      "@effect/vitest": "4.0.0-rc.117",
       "@types/bun": "1.4.2",
       "@types/node": "22.20.2",
-      "effect": "^4.0.0-rc.117",
+      "effect": "4.0.0-rc.117",
       "typescript": "7.0.2",
       "vitest": "5.0.0"
     }
@@ -46,7 +47,7 @@
     "vitest": "catalog:"
   },
   "overrides": {
-    "@effect/platform-node-shared": "^4.0.0-rc.117"
+    "@effect/platform-node-shared": "4.0.0-rc.117"
   },
   "scripts": {
     "prepare": "effect-tsgo patch --typescript",

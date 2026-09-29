@@ -7,10 +7,10 @@ This is not an official Reactor SDK. Native WebRTC dependencies are attributed i
 ## Install
 
 ```sh
-npm install reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
 ```
 
-`reactor-effect-client`, Effect `4.0.0-rc.117` and `@effect/platform-node` `4.0.0-rc.117` are peer dependencies; caret ranges (`^4.0.0-rc.117`) allow later rc releases without a forced SDK bump. The addon is loaded only when `NativePeer.layer()` is built, so merely importing this module is safe on a host with no platform package, such as one installed with `--omit=optional`. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `NativePeer.layerIsolated()` is built. A consumer using the rc prerelease should retain the root override `"@effect/platform-node-shared": "^4.0.0-rc.117"` (matching their installed `@effect/platform-node`), because the platform's own caret range on its internal shared package can otherwise resolve to a different prerelease with a different Effect peer.
+`reactor-effect-client`, Effect `4.0.0-rc.117`, `@effect/platform-node` `4.0.0-rc.117` and `@effect/platform-node-shared` `4.0.0-rc.117` are exact peer dependencies: a later Effect rc needs a new SDK release. The addon is loaded only when `NativePeer.layer()` is built, so merely importing this module is safe on a host with no platform package, such as one installed with `--omit=optional`. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `NativePeer.layerIsolated()` is built. This package never imports `@effect/platform-node-shared`, but the platform depends on it with a caret range, under which npm would install a later rc that fails to load on this Effect; as a peer, it is installed once, at `4.0.0-rc.117`, and the platform reuses it, so no override is needed. Install `@effect/platform-node` with `--save-exact`: under the caret range npm saves by default, a later install without a lockfile takes a later rc of it, and npm fails with `ERESOLVE`.
 
 ## Usage
 

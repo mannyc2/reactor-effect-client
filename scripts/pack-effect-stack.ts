@@ -1,7 +1,7 @@
 /**
  * Selects the Effect stack pack qualifies from the frozen bun.lock, and checks that the workspace
  * owners and every installed consumer resolve exactly that stack. It runs on Bun, which reads
- * bun.lock with Bun.JSONC and compares versions with Bun.semver.
+ * bun.lock with Bun.JSONC and parses versions with Bun.semver.
  */
 import { createRequire } from "node:module";
 import * as Crypto from "effect/Crypto";
@@ -38,7 +38,7 @@ const Versions = Schema.Struct({
   nodeShared: Schema.String,
 });
 
-/** The exact stack a frozen bun.lock selects, and the public ranges it must satisfy. */
+/** The exact stack a frozen bun.lock selects, and the requirements that pin it. */
 const StackSelection = Schema.Struct({
   lockfileVersion: Schema.Literal(2),
   lockfileSha256: Schema.String,
@@ -81,12 +81,13 @@ export const QualificationStack = Schema.Struct({
 });
 type QualificationStack = typeof QualificationStack.Type;
 
-/** What selection reads of the root manifest: the Effect ranges its catalog and overrides pin. */
+/** What selection reads of the root manifest: the Effect versions its catalog and overrides pin. */
 const StackManifest = Schema.Struct({
   workspaces: Schema.Struct({
     catalog: Schema.Struct({
       effect: Schema.NonEmptyString,
       "@effect/platform-node": Schema.NonEmptyString,
+      "@effect/platform-node-shared": Schema.NonEmptyString,
     }),
   }),
   overrides: Schema.Struct({ "@effect/platform-node-shared": Schema.NonEmptyString }),
@@ -137,7 +138,6 @@ export const ConsumerManifest = Schema.StructWithRest(
   Schema.Struct({
     private: Schema.Literal(true),
     type: Schema.Literal("module"),
-    overrides: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     dependencies: Schema.Record(Schema.String, Schema.String),
   }),
   [Schema.Record(Schema.String, Schema.Json)],
@@ -271,7 +271,11 @@ const packageAt = (location: string): string => {
   return scope?.startsWith("@") === true ? `${scope}/${parts.at(-1)}` : (parts.at(-1) ?? "");
 };
 
-/** Selection comes only from frozen bytes; requirements remain public compatibility ranges. */
+/**
+ * Selection comes only from frozen bytes, and the requirements must name exactly that selection:
+ * the archives' peers come from them, and a range would let a fresh install take a later RC that
+ * nothing here qualified.
+ */
 export const selectStack = Effect.fnUntraced(function* (
   manifest: unknown,
   lockBytes: string | Uint8Array,
@@ -287,6 +291,12 @@ export const selectStack = Effect.fnUntraced(function* (
   };
   if (requirements.nodeSharedOverride !== requirements.effect)
     return yield* failure("the shared-platform override must match the Effect catalog requirement");
+  // The override resolves the shared platform in the workspace; the catalog entry is the native
+  // package's peer on it, which must name the same version.
+  if (catalog[packages.nodeShared] !== requirements.nodeSharedOverride)
+    return yield* failure(
+      `the shared-platform catalog entry ${catalog[packages.nodeShared]} must match its override ${requirements.nodeSharedOverride}`,
+    );
   const parsed = yield* Effect.try({
     try: () =>
       Bun.JSONC.parse(
@@ -299,7 +309,7 @@ export const selectStack = Effect.fnUntraced(function* (
   const lock = yield* Schema.decodeUnknownEffect(Lockfile)(parsed).pipe(
     Effect.mapError((error) => failure(`bun.lock: ${error.message}`)),
   );
-  for (const name of [packages.effect, packages.nodePlatform])
+  for (const name of [packages.effect, packages.nodePlatform, packages.nodeShared])
     if (lock.catalog[name] !== catalog[name])
       return yield* failure(
         `lock catalog ${name} differs from manifest; run bun install --frozen-lockfile`,
@@ -332,11 +342,13 @@ export const selectStack = Effect.fnUntraced(function* (
     nodeShared: yield* fromTuple("nodeShared"),
   };
   for (const key of stackKeys) {
-    const requirement = key === "nodeShared" ? requirements.nodeSharedOverride : requirements[key];
-    if (!Bun.semver.satisfies(selected[key], requirement))
-      return yield* failure(`${packages[key]}@${selected[key]} does not satisfy ${requirement}`);
     if (selected[key] !== selected.effect)
       return yield* failure("Effect/node/shared selections must be aligned");
+    const requirement = key === "nodeShared" ? requirements.nodeSharedOverride : requirements[key];
+    if (requirement !== selected[key])
+      return yield* failure(
+        `${packages[key]} requirement ${requirement} must be exactly the locked ${selected[key]}`,
+      );
   }
   // Bun may add qualified keys for a second instance. Inspect its coordinate as
   // well as its key so a nested conflicting version cannot hide behind an alias.
@@ -356,6 +368,23 @@ export const selectStack = Effect.fnUntraced(function* (
     selected,
   };
   return selection;
+});
+
+/** A packed archive peers on Effect, and on every stack package, at exactly the selection. */
+export const checkArchivePeers = Effect.fnUntraced(function* (
+  name: string,
+  peers: Readonly<Record<string, string>> | undefined,
+  stack: StackSelection,
+) {
+  if (peers?.[packages.effect] === undefined)
+    return yield* failure(`${name} must declare its ${packages.effect} peer`);
+  for (const [peer, requirement] of Object.entries(peers)) {
+    const key = keyFor(peer);
+    if (key !== undefined && requirement !== stack.selected[key])
+      return yield* failure(
+        `${name} must pin its ${peer} peer to exactly ${stack.selected[key]}, not ${requirement}`,
+      );
+  }
 });
 
 /** This small filesystem seam is shared by production and disposable resolver fixtures. */
@@ -427,7 +456,7 @@ export const resolveWorkspaceStack = Effect.fnUntraced(function* (
       if (requirement === undefined) return yield* failure(`${owner} must declare ${requested}`);
       const key = keyFor(requested);
       if (key === undefined) return yield* failure(`unsupported package ${requested}`);
-      if (requirement !== "catalog:" && !Bun.semver.satisfies(stack.selected[key], requirement))
+      if (requirement !== "catalog:" && requirement !== stack.selected[key])
         return yield* failure(
           `${owner} declared ${requested} requirement differs from frozen selection`,
         );

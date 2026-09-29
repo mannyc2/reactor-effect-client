@@ -45,7 +45,7 @@ const flippedLastByte = (bytes) => {
   return changed;
 };
 
-test("qualification stack metadata survives candidate retention as exact raw identity bytes while Effect remains range-valued", () =>
+test("qualification stack metadata survives candidate retention as exact raw identity bytes while Effect stays pinned exactly", () =>
   runTest(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -93,7 +93,9 @@ test("qualification stack metadata survives candidate retention as exact raw ide
       const augmented = { ...fixture.identity, qualificationStack };
       assert.equal((yield* validatePackageIdentity(augmented)).effect, effectPin);
       assert.match(
-        String(yield* Effect.flip(validatePackageIdentity({ ...augmented, effect: version }))),
+        String(
+          yield* Effect.flip(validatePackageIdentity({ ...augmented, effect: `^${version}` })),
+        ),
         /SchemaError/,
       );
       // The release schema validates its original fields. Pack owns validation of

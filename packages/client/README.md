@@ -12,7 +12,7 @@ This is not an official Reactor SDK. Protocol material is attributed in [NOTICE]
 npm install reactor-effect-client effect@4.0.0-rc.117
 ```
 
-Effect is a peer dependency (`^4.0.0-rc.117`); later rc releases are accepted without a forced SDK release. Every module in this package is portable: importing it selects no host and loads no native code. Add `reactor-effect-browser` or `reactor-effect-native` for a transport, or run on `ReactorTest` without one.
+Effect is a peer dependency at exactly `4.0.0-rc.117`: Effect's release candidates can move modules, and `4.0.0-rc.118` moved the `effect/unstable/*` modules this package imports, so a later rc needs a new SDK release. An application that adds `@effect/platform-node` itself should install it with `--save-exact`, since a later rc of it peers on a later Effect. The platform depends on `@effect/platform-node-shared` with a caret range, under which npm installs a later rc that fails to load on this Effect, so an application without `reactor-effect-native`, which peers on that package exactly, should pin it in its own manifest: `"overrides": { "@effect/platform-node-shared": "4.0.0-rc.117" }`. Every module in this package is portable: importing it selects no host and loads no native code. Add `reactor-effect-browser` or `reactor-effect-native` for a transport, or run on `ReactorTest` without one.
 
 ## Modules
 
