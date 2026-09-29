@@ -76,7 +76,10 @@ const bodyOf = (body: unknown) => {
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
-/** A failed create as the evidence keeps it: its reason, outcome and status, and its body's codes. */
+/**
+ * A failed create as the evidence keeps it: its reason, outcome and status,
+ * and its body's codes under whatever keys hold them.
+ */
 const refusal = (error: ReactorError) => {
   const reason = error.reason;
   const http = reason._tag === "Http" ? reason : undefined;
@@ -88,7 +91,7 @@ const refusal = (error: ReactorError) => {
     answer: reason._tag,
     ...(error.context.outcome === undefined ? {} : { outcome: error.context.outcome }),
     ...(http?.status === undefined ? {} : { status: http.status }),
-    ...bodyOf(body),
+    ...Probes.summarizeRefusal(body),
   };
 };
 

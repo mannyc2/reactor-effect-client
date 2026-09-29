@@ -186,30 +186,54 @@ export const readSession = (input: {
   ).pipe(Effect.map(summarize));
 
 /**
- * A reply's body as evidence may keep it: top-level key names, the state, and
- * identifier-like values under keys that may say why a session ended.
+ * A body's top-level key names, and the values under the keys `kept` picks,
+ * to one level down: numbers, booleans and strings `code` matches as they
+ * are, other strings only by their length.
  */
-export const summarizeBody = (content: unknown) => {
+const reduceBody = (
+  content: unknown,
+  kept: (key: string) => boolean,
+  code: RegExp,
+): { readonly keys: ReadonlyArray<string>; readonly codes?: Record<string, string> } => {
   const body = Predicate.isObject(content) ? content : {};
   const codes: Record<string, string> = {};
   const note = (key: string, value: unknown) => {
     if (Predicate.isString(value))
-      codes[key] = /^[\w.:/-]{1,64}$/.test(value) ? value : `(text, ${value.length} chars)`;
+      codes[key] = code.test(value) ? value : `(text, ${value.length} chars)`;
     else if (typeof value === "number" || typeof value === "boolean") codes[key] = String(value);
   };
   for (const [key, value] of Object.entries(body)) {
-    if (!telling.test(key)) continue;
+    if (!kept(key)) continue;
     if (Predicate.isObject(value) && !Array.isArray(value))
       for (const [inner, item] of Object.entries(value)) note(`${key}.${inner}`, item);
     else note(key, value);
   }
-  const state = Predicate.isString(body.state) ? body.state : undefined;
+  return { keys: Object.keys(body), ...(Object.keys(codes).length === 0 ? {} : { codes }) };
+};
+
+/**
+ * A reply's body as evidence may keep it: top-level key names, the state, and
+ * identifier-like values under keys that may say why a session ended.
+ */
+export const summarizeBody = (content: unknown) => {
+  const { keys, codes } = reduceBody(content, (key) => telling.test(key), /^[\w.:/-]{1,64}$/);
+  const state =
+    Predicate.isObject(content) && Predicate.isString(content.state) ? content.state : undefined;
   return {
-    keys: Object.keys(body),
+    keys,
     ...(state === undefined ? {} : { state }),
-    ...(Object.keys(codes).length === 0 ? {} : { codes }),
+    ...(codes === undefined ? {} : { codes }),
   };
 };
+
+/**
+ * A refusal's body as evidence may keep it: its key names, and each value
+ * under any key that reads as a code, to one level down; other text only by
+ * its length. Such a code has no spaces, colons or slashes, so no sentence,
+ * URL or address passes for one.
+ */
+export const summarizeRefusal = (content: unknown) =>
+  reduceBody(content, () => true, /^[\w.-]{1,64}$/);
 
 /** A session reply as evidence may keep it: its status, and its body as `summarizeBody` keeps it. */
 export const summarize = (reply: Reply) => ({ status: reply.status, ...summarizeBody(reply.body) });
