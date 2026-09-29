@@ -493,6 +493,44 @@ layer(
   );
 });
 
+// Each connection's answer takes 5 s, so the session's own reconnect is still negotiating when the
+// application asks for one.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      channel: "10 millis",
+      negotiation: "5 seconds",
+    }),
+  }),
+)("a reconnect asked for while the session reconnects on its own", (it) => {
+  it.effect("is refused, saying so, and the session's own goes on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "waiting" && snapshot.generation === 2n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const refused = yield* Effect.flip(session.reconnect);
+      assert.deepStrictEqual(
+        [refused.reason._tag, refused.message],
+        ["InvalidState", "reconnect while the session reconnects on its own"],
+      );
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready"),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 2n);
+    }),
+  );
+});
+
 // Each connection's answer takes 5 s, so the session's reconnect is still negotiating when it closes.
 layer(
   environment({

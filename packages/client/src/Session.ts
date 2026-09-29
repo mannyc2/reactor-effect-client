@@ -284,7 +284,9 @@ export interface Session {
   /**
    * A new connection generation now, from a ready or a dropped connection; it never replays a
    * command. A session reconnects a dropped connection on its own unless `Reactor.Options`
-   * turns `reconnect` off.
+   * turns `reconnect` off. While one of its own attempts is under way (`reconnecting`, and
+   * `connecting` or `waiting`) this fails with `InvalidState`, and `changes` shows how that
+   * attempt ends.
    */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */

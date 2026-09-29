@@ -75,6 +75,15 @@ const beginsFrom: Record<Attempt, (session: State) => boolean> = {
   own: (session) => session.status === "disconnected" && session.reconnecting,
 };
 
+/** Why `attempt` cannot begin from `session`: the session's own attempt is under way, say. */
+const refusal = (attempt: Attempt, session: State) =>
+  ReactorError.fromCode(
+    "InvalidState",
+    session.reconnecting
+      ? `${attempt} while the session reconnects on its own`
+      : `${attempt} while ${session.status}`,
+  );
+
 /**
  * How long the session's own reconnect waits on a connection it made ready before it counts the
  * connection as back: one that drops sooner fails that reconnect's attempt.
@@ -224,7 +233,7 @@ export const make = ({
     const reconnect = attempt !== "connect";
     if (!beginsFrom[attempt](session)) {
       if (attempt === "own") return undefined;
-      return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
+      return yield* refusal(attempt, session);
     }
     if (reconnect && !isKnown(session.remote))
       return yield* ReactorError.fromCode(
@@ -263,8 +272,7 @@ export const make = ({
     if (!claimed) {
       yield* shutDown(scope, Exit.void);
       if (attempt === "own") return undefined;
-      const held = yield* SubscriptionRef.get(state);
-      return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${held.status}`);
+      return yield* refusal(attempt, yield* SubscriptionRef.get(state));
     }
     // The previous generation is retired whatever happens, and a defect meanwhile fails and
     // closes this one.
