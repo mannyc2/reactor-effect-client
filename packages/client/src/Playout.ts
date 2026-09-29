@@ -452,6 +452,9 @@ export type SourceEvent =
  *   leaves the clip out until its `Ended` or `Failed`.
  * - `events` fails only when the session is lost for good; the source
  *   recovers a dropped connection itself, and reports it.
+ * - Each command ends, done or failed, in bounded time. The playout sends
+ *   commands one at a time, to every session, so one that never ends holds
+ *   up the rest.
  */
 export interface Source {
   readonly sessionId: string;
