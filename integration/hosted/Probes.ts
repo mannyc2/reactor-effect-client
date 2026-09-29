@@ -23,11 +23,17 @@ const probeSeconds = 15;
 
 /**
  * Whether evidence, which is committed, may keep a text: letters, digits, `_`
- * and `-`, at most 64 of them, and no IPv4 address however its numbers are
- * joined. No URL, dotted host name, IPv6 address or port has that shape.
+ * and `-`, at most 40 of them, so a UUID but no long digest or token; no IPv4
+ * address however its numbers are joined; and no IPv6 or MAC address, so no
+ * doubled `-` or `_` and no six groups of hex digits joined. No URL, dotted
+ * host name or port has that shape. A bare name such as `gpu-7` still does:
+ * only its key tells it for a host.
  */
 const isCode = (text: string) =>
-  /^[\w-]{1,64}$/.test(text) && !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text);
+  /^[\w-]{1,40}$/.test(text) &&
+  !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text) &&
+  !/[-_]{2}/.test(text) &&
+  !/(?:^|[-_])(?:[0-9a-f]{1,4}[-_]){5,}[0-9a-f]{1,4}(?:$|[-_])/i.test(text);
 
 /** A text as evidence may keep it, a session's state among them: a code, else only its length. */
 export const keptText = (text: string): string =>
@@ -45,24 +51,32 @@ const named = (key: string) => (isCode(key) ? key : `(key, ${key.length} chars)`
 /** A body's key names as evidence may keep them. */
 const keysOf = (body: object) => Object.keys(body).map(named);
 
-/** Words that name an address in a key, however the key is cased or joined. */
-const addressWords = new Set([
-  "ip",
-  "addr",
-  "address",
-  "host",
-  "hostname",
-  "url",
-  "uri",
-  "endpoint",
+/** Words that name an address or a secret in a key, however the key is cased or joined. */
+const withheldWords = new Set([
+  ...["ip", "ipv4", "ipv6", "addr", "address", "host", "hostname", "url", "uri", "endpoint"],
+  ...["port", "domain", "fqdn", "origin", "peer", "mac"],
+  ...["token", "jwt", "secret", "password", "passwd", "pass", "credential", "key", "apikey"],
+  ...["signature", "sig", "auth", "authorization", "cookie", "bearer"],
 ]);
 
-/** Whether a value may be read under a key: one that is a code and names no address. */
+/** A key's words: split at anything but a letter or digit, and where its case turns. */
+const wordsOf = (key: string) =>
+  key
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
+    .map((word) => word.toLowerCase());
+
+/**
+ * Whether a value may be read under a key: one that is a code and names no
+ * address or secret, in the singular or the plural.
+ */
 const readable = (key: string) =>
   isCode(key) &&
-  !key
-    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
-    .some((word) => addressWords.has(word.toLowerCase()));
+  !wordsOf(key).some(
+    (word) =>
+      withheldWords.has(word) ||
+      withheldWords.has(word.replace(/es$/, "")) ||
+      withheldWords.has(word.replace(/s$/, "")),
+  );
 
 /** Each leaf under `path`: its path and type, never its value. */
 const leaves = (value: unknown, path: string): ReadonlyArray<string> => {

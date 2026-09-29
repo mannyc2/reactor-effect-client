@@ -108,8 +108,8 @@ describe("a session read's body", () => {
         "https://reactor.example/status": "ended",
         error: {
           code: "session_limit",
-          origin: "wss://gpu-7.reactor.example",
-          peer: "ip-10-0-0-7",
+          via: "wss://gpu-7.reactor.example",
+          seen: "ip-10-0-0-7",
           route: "gpu/7",
           endpoint: "gpu-7",
           "203.0.113.9": "refused",
@@ -133,8 +133,8 @@ describe("a session read's body", () => {
           closed_by: "(text, 13 chars)",
           terminated_at: "1790000000",
           "error.code": "session_limit",
-          "error.origin": "(text, 27 chars)",
-          "error.peer": "(text, 11 chars)",
+          "error.via": "(text, 27 chars)",
+          "error.seen": "(text, 11 chars)",
           "error.route": "(text, 5 chars)",
         },
       },
@@ -160,20 +160,65 @@ describe("a refusal's body", () => {
         type: "https://errors.example/session-limit",
         seen: "203.0.113.5",
         via: "edge.reactor.example",
-        peer: "ip-203-0-113-5",
+        last_seen: "ip-203-0-113-5",
         error: { code: "session_limit", retryable: false },
       }),
       {
-        keys: ["code", "detail", "type", "seen", "via", "peer", "error"],
+        keys: ["code", "detail", "type", "seen", "via", "last_seen", "error"],
         codes: {
           code: "SESSION_LIMIT",
           detail: "(text, 29 chars)",
           type: "(text, 36 chars)",
           seen: "(text, 11 chars)",
           via: "(text, 20 chars)",
-          peer: "(text, 14 chars)",
+          last_seen: "(text, 14 chars)",
           "error.code": "session_limit",
           "error.retryable": "false",
+        },
+      },
+    );
+  });
+
+  // A 2xx reply that names no session is summarized so too, and it may carry what a refusal
+  // would not: a session's addresses and credentials.
+  it("keeps no IPv6 or MAC address, no long digest, and nothing under an address or secret", () => {
+    assert.deepStrictEqual(
+      Probes.summarizeRefusal({
+        code: "session_limit",
+        session_id: "0de7cc3a-aaa4-45b7-8286-bc0711636013",
+        seen_v6: "2001-db8--1",
+        seen_v6_full: "2600-1f18-0-0-0-0-0-1",
+        seen_hw: "00-1A-2B-3C-4D-5E",
+        digest: "a".repeat(64),
+        IPAddress: "gpu-7",
+        endpoints: ["gpu-7"],
+        port: 3478,
+        token: "t0k3n",
+        credentials: { api_key: "k3y", password: "pw" },
+        signature: "s1g",
+      }),
+      {
+        keys: [
+          "code",
+          "session_id",
+          "seen_v6",
+          "seen_v6_full",
+          "seen_hw",
+          "digest",
+          "IPAddress",
+          "endpoints",
+          "port",
+          "token",
+          "credentials",
+          "signature",
+        ],
+        codes: {
+          code: "session_limit",
+          session_id: "0de7cc3a-aaa4-45b7-8286-bc0711636013",
+          seen_v6: "(text, 11 chars)",
+          seen_v6_full: "(text, 21 chars)",
+          seen_hw: "(text, 17 chars)",
+          digest: "(text, 64 chars)",
         },
       },
     );
