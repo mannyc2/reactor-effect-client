@@ -1756,6 +1756,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       case "Autoplay":
         if (result._tag === "Done") return updateSession(sessionId, { autoplay: command.enabled });
         updateSession(sessionId, {
+          // One that may have applied leaves autoplay unknown, so the value wanted goes again.
+          ...(uncertain(result) ? { autoplay: undefined } : {}),
           autoplayRetry: { enabled: command.enabled, at: now.mono + retryDelayMs },
         });
         if (!command.enabled) cutFailed(sessionId);

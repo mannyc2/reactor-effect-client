@@ -464,10 +464,13 @@ export type SourceEvent =
  *   effect dies is, and whether its command applied is taken as unknown. An
  *   `enqueue` is never sent again, and unless a read of the session's queues
  *   shows its clip within `unknownTimeout`, a replacement takes over. A
- *   `remove` is asked again once the session's queues change, and a `move` or
- *   `setAutoplay` a second later; nothing else goes to a session before its
- *   autoplay. A `stop` or `play` ends its cut, and the cutter airs at the next
- *   boundary.
+ *   `remove` is asked again once the session's queues change, and a `move` a
+ *   second later. After such a `setAutoplay` the session's autoplay is
+ *   unknown, and the value the playout wants goes again: a second later if it
+ *   is the one that died, and at once if not. Until its autoplay is as wanted,
+ *   a session is sent nothing else but, as it retires, the removal of its
+ *   filler once its replacement has an item Ready. A `stop` or `play` ends its
+ *   cut, and the cutter airs at the next boundary.
  */
 export interface Source {
   readonly sessionId: string;

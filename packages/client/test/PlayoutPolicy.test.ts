@@ -1053,6 +1053,30 @@ describe("PlayoutPolicy, lanes", () => {
       assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: true });
     }
   });
+
+  // A cut begins with autoplay off, and the cut ends if that fails. One that died, or whose reply
+  // was lost, may have applied, so autoplay on goes again; one refused applied nothing.
+  it("turns autoplay on again once a cut's autoplay off may have applied", () => {
+    const again = { _tag: "Autoplay", enabled: true } as const;
+    for (const [result, after] of [
+      [{ _tag: "Died" } as const, again],
+      [failed("unknown"), again],
+      [failed("replied"), undefined],
+    ] as const) {
+      const policy = drive();
+      policy.tick(0);
+      policy.open();
+      const f = clip("f", { _tag: "Filler", index: 0 }, 30);
+      policy.event({ _tag: "Started", clip: f }, "s1", 10);
+      policy.observe({ playing: f }, "s1", 10);
+      policy.submit(spec("u", 0), 20);
+      policy.reply({ _tag: "Done", clipId: "c-u" }, 30);
+      policy.observe({ playing: f, ready: [clip("c-u", item("u"))] }, "s1", 40);
+      assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+      policy.reply(result, 50);
+      assert.deepStrictEqual(policy.busy(), after);
+    }
+  });
 });
 
 /** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
