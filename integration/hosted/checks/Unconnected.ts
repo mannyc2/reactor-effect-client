@@ -176,6 +176,8 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           states: [],
         };
         yield* run.update((evidence) => ({ ...evidence, unconnected: initial }));
+        // Saved before each create, so even a crash leaves which create went unanswered.
+        yield* run.mark("create sent");
         const record = (change: (probe: UnconnectedRecord) => UnconnectedRecord) =>
           run.update((evidence) => ({
             ...evidence,
@@ -198,6 +200,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         const inspector = yield* keyed;
 
         // A second create on the same token, sent while the first session is live.
+        yield* run.mark("spent token sent");
         const sentMs = yield* run.now;
         const second = yield* allocate(pieces, signaling, grant, grants).pipe(Effect.result);
         const answeredMs = yield* run.now;

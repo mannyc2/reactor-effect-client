@@ -447,6 +447,36 @@ rehearse(
   },
 );
 
+// A run that stops hard, as a crash stops it, leaves the evidence as last saved: a create sent
+// and no answer recorded says where to look too.
+rehearse("unconnected says where to look when the run stops with a create unanswered", {
+  check: "unconnected",
+  judge: (evidence) => {
+    passes(evidence);
+    const { finishedAt: _finished, verdict: _verdict, ...unfinished } = evidence;
+    const probe = evidence.unconnected;
+    assert.isDefined(probe);
+    const { sessionId: _session, spentToken: _spent, ...sent } = probe;
+    const [first] = cleanupInstructions({
+      ...unfinished,
+      sessions: [],
+      milestones: evidence.milestones.filter((milestone) => milestone.step === "create sent"),
+      unconnected: { ...sent, states: [] },
+    });
+    assert.include(first ?? "", "The create went unanswered, as the run stopped");
+    assert.include(first ?? "", probe.requestedAt);
+    const { spentToken: _answer, ...allocated } = probe;
+    const [second] = cleanupInstructions({
+      ...unfinished,
+      milestones: evidence.milestones.filter(
+        (milestone) => milestone.step !== "spent token answered",
+      ),
+      unconnected: allocated,
+    });
+    assert.include(second ?? "", "The spent token's second create went unanswered");
+  },
+});
+
 // A spent token's create could end the session the token made. An end found before any read
 // showed the session running 10 s after that create's answer is not taken for Reactor's own.
 rehearse("unconnected leaves Q1 unanswered when its session ends right after the second create", {

@@ -1150,18 +1150,27 @@ export const judged = (input: {
  * commands whose outcome is recorded are its two creates, and once the
  * check's record names a session the first is known to have allocated: the
  * unknown one is then the second, whether or not an interrupt kept its answer
- * from being recorded.
+ * from being recorded. A run that stopped unfinished, as a crash leaves it,
+ * with a create sent and no answer recorded, may have allocated one too.
  */
 const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
-  if (evidence.check !== "unconnected" || !evidence.outcomes.includes("unknown")) return [];
+  if (evidence.check !== "unconnected") return [];
   const probe = evidence.unconnected;
-  const [create, answer] =
-    probe?.sessionId === undefined
-      ? ["The create", probe?.create]
-      : ["The spent token's second create", probe.spentToken];
+  const first = probe?.sessionId === undefined;
+  const unrecorded =
+    evidence.finishedAt === undefined &&
+    probe !== undefined &&
+    (first
+      ? probe.create === undefined
+      : probe.spentToken === undefined &&
+        evidence.milestones.some((milestone) => milestone.step === "spent token sent"));
+  if (!evidence.outcomes.includes("unknown") && !unrecorded) return [];
+  const [create, answer] = first
+    ? ["The create", probe?.create]
+    : ["The spent token's second create", probe.spentToken];
   const codes = Object.entries(answer?.codes ?? {}).map(([key, code]) => `${key} ${code}`);
   return [
-    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${probe?.requestedAt ?? evidence.startedAt}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
+    `${create} ${unrecorded ? "went unanswered, as the run stopped before recording its answer" : "has an unknown outcome"}, so it may have allocated a session the run never learned of, shortly after ${probe?.requestedAt ?? evidence.startedAt}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
   ];
 };
 
