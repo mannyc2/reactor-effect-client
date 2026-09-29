@@ -514,7 +514,12 @@ export class Coordinator extends Context.Service<
       clip: ClipReady,
       options?: DownloadOptions,
     ) => Effect.Effect<DownloadedClip, ReactorError>;
-    /** The calls one session makes, each with the token `credential` then gives. */
+    /**
+     * The calls one session makes, each with the token `credential` then gives.
+     * It is the session's own seam, not an application's: its `create`
+     * allocates a session that nothing owns, closes or reports on, so allocate
+     * with `Reactor.create`.
+     */
     readonly signaling: (credential: Credential) => Signaling;
   }
 >()("reactor-effect-client/Coordinator") {}
