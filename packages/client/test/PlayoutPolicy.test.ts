@@ -645,6 +645,10 @@ describe("PlayoutPolicy", () => {
     policy.observe(retiring, "s1");
     policy.tick();
     assert.strictEqual(removes(), 1);
+    // Once its queues change it is asked again, and at once after an answer that may have applied.
+    policy.observe({ ...retiring, ready: [filler(1), filler(2)] }, "s1");
+    policy.reply(failed("unknown"));
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "f1" });
   });
 
   it("a drain withdraws a held Manual item and finishes although it was never released", () => {
@@ -948,6 +952,24 @@ describe("PlayoutPolicy, lanes", () => {
     assert.strictEqual(policy.state().sessions[0]?.fillers.get("f0")?.index, 0);
   });
 
+  // An enqueue in flight as its session goes made no clip that can still air, so its clip is
+  // asked for on the next session: unless moderation flagged it, which would end that one too.
+  it("asks for a lost session's filler clip again on the next, unless moderation flagged it", () => {
+    for (const flagged of [false, true]) {
+      const policy = drive({ config: filled });
+      policy.tick(0);
+      policy.open("s1");
+      if (flagged)
+        policy.event({ _tag: "Moderated", action: "terminate", categories: ["test"] }, "s1");
+      policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+      policy.open("s2", 600_000, 2_000);
+      assert.deepStrictEqual(
+        fillersOf(policy),
+        flagged ? ["s1 0 filler 0", "s2 1 filler 1"] : ["s1 0 filler 0", "s2 0 filler 0"],
+      );
+    }
+  });
+
   // With one refused move remembered for the whole plan, a second session's refusal made the
   // first's move look new, and the two sessions' moves were sent again in turn.
   it("sends a refused move again only once its own session's queues have changed", () => {
@@ -1151,6 +1173,21 @@ describe("PlayoutPolicy, air before queue order", () => {
       .submit(firm, 1_040)
       .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
     assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
+  });
+
+  // Refused, the clip builds nothing. A 5 s item that must start by 7,040 can, as x ends at
+  // 6,002, and is not refused as if 15 s of filler built ahead of it until 6,010.
+  it("projects no build for a filler clip the provider refused", () => {
+    const { policy } = airing(protecting("air"), 6);
+    policy.submit(long, 10);
+    assert.strictEqual(sent(policy.busy()), "filler of 15.00 s");
+    policy.edit([{ _tag: "Withdraw", key: key("long") }], false, 20);
+    policy.reply(failed("replied"), 30);
+    const firm = { ...spec("firm"), window: { startByMs: 7_000, firm: true } };
+    const refused = policy
+      .submit(firm, 40)
+      .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
+    assert.deepStrictEqual(refused, []);
   });
 
   // A cover goes out for dark air projected, not for the margin alone. A 15 s item builds in 6 s,
