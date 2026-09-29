@@ -1026,6 +1026,33 @@ describe("PlayoutPolicy, lanes", () => {
     policy.tick(1_010);
     assert.deepStrictEqual(policy.busy(), { _tag: "Move", clipId: "a", position: 0 });
   });
+
+  // s2 opens as s1's replacement, and its autoplay off dies at 40 s. Within the second, s1 goes
+  // idle or is lost and s2 takes the air: autoplay on is not the value that failed, so it goes.
+  it("turns autoplay on as a session takes the air, though its autoplay off just failed", () => {
+    for (const how of ["idle", "lost"] as const) {
+      const policy = drive();
+      policy.tick(0);
+      policy.open("s1", 60_000);
+      const x = clip("x", undefined, 40);
+      policy.event({ _tag: "Started", clip: x }, "s1", 100);
+      policy.observe({ playing: x }, "s1", 100);
+      assert.isTrue(policy.tick(30_001).actions.some((action) => action._tag === "Open"));
+      policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 600_000 }, 30_100);
+      policy.observe({}, "s2", 30_200);
+      assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: false });
+      policy.reply({ _tag: "Died" }, 40_000, "s2");
+      if (how === "idle") {
+        policy.event({ _tag: "Ended", clip: x, termination: "finished" }, "s1", 40_100);
+        policy.observe({}, "s1", 40_100);
+        policy.tick(40_350);
+      } else policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" }, 40_200);
+      assert.isTrue(
+        policy.actions.some((action) => action._tag === "OnAir" && action.sessionId === "s2"),
+      );
+      assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: true });
+    }
+  });
 });
 
 /** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */

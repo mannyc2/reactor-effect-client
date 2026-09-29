@@ -297,11 +297,12 @@ interface Session {
   readonly autoplay: boolean | undefined;
   readonly wantAutoplay: boolean;
   /**
-   * No autoplay change goes out before it: one that failed, refused or
-   * uncertain, is asked again a second later. Nothing but asking shows whether
-   * it applied, and a provider that refused autoplay on would air nothing.
+   * The last autoplay change that failed, refused or uncertain, and when it is
+   * asked again: a second later. Nothing but asking shows whether it applied,
+   * and a provider that refused autoplay on would air nothing. Only that value
+   * waits; a change the other way goes at once.
    */
-  readonly autoplayRetryAt: number;
+  readonly autoplayRetry: { readonly enabled: boolean; readonly at: number } | undefined;
   readonly retiring: boolean;
   readonly lastEndedAt: number | undefined;
   readonly startedAny: boolean;
@@ -1754,7 +1755,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         return;
       case "Autoplay":
         if (result._tag === "Done") return updateSession(sessionId, { autoplay: command.enabled });
-        updateSession(sessionId, { autoplayRetryAt: now.mono + retryDelayMs });
+        updateSession(sessionId, {
+          autoplayRetry: { enabled: command.enabled, at: now.mono + retryDelayMs },
+        });
         if (!command.enabled) cutFailed(sessionId);
         return;
       // Its clip was marked cut when the cut began; no result makes it cuttable again.
@@ -1819,7 +1822,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             changes: 0,
             autoplay: undefined,
             wantAutoplay: first,
-            autoplayRetryAt: 0,
+            autoplayRetry: undefined,
             retiring: false,
             lastEndedAt: undefined,
             startedAny: false,
@@ -2245,7 +2248,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id;
     if (value.source?.available === true && value.autoplay !== autoplay) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
-      if (now.mono >= value.autoplayRetryAt)
+      const retry = value.autoplayRetry;
+      if (retry === undefined || retry.enabled !== autoplay || now.mono >= retry.at)
         queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
       return;
     }
@@ -2777,7 +2781,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
       if (value.lastEndedAt !== undefined) later(value.lastEndedAt + config.graceMs);
-      later(value.autoplayRetryAt);
+      later(value.autoplayRetry?.at);
       later(value.moveRetryAt);
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
