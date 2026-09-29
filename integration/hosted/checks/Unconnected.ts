@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/H3";
@@ -41,6 +42,20 @@ const readEveryMs = 2_000;
  * ends a connected session 30 s after its last connection drops.
  */
 const pastCapMs = 30_000;
+
+/**
+ * Ends a session with the key, and again, twice at most and 2 s apart, while
+ * its end is unconfirmed: nothing here trusts the cap to end it. Each try, a
+ * DELETE and a read, takes up to 6 s.
+ */
+const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: string) =>
+  inspector.terminate(sessionId).pipe(
+    Effect.repeat({
+      schedule: Schedule.spaced("2 seconds"),
+      until: (termination) => termination.confirmed,
+      times: 2,
+    }),
+  );
 
 type States = UnconnectedRecord["states"];
 type SpentToken = NonNullable<UnconnectedRecord["spentToken"]>;
@@ -148,7 +163,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           });
           const endRequestedMs = yield* run.now;
           yield* pieces.closedWith(extra, endRequestedMs, {
-            termination: yield* inspector.terminate(extra),
+            termination: yield* endWithKey(inspector, extra),
           });
         } else yield* recordSpent({ sentMs, answeredMs, ...refusal(second.failure) });
 
@@ -194,7 +209,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         // The key ends the session whether or not Reactor did, so its end is confirmed as
         // every check confirms one. Ending a session Reactor has closed ends nothing more.
         const endRequestedMs = yield* run.now;
-        const termination = yield* inspector.terminate(sessionId);
+        const termination = yield* endWithKey(inspector, sessionId);
         const terminatedMs = yield* run.now;
         yield* pieces.closedWith(sessionId, endRequestedMs, { termination });
         if (endedMs !== undefined)

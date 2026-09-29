@@ -367,6 +367,18 @@ rehearse("unconnected watches on when its spent token answers with the session i
   },
 });
 
+// Nothing here trusts the cap to end a session, so an end the key cannot confirm is tried again.
+rehearse("unconnected ends its session with the key again until the end is confirmed", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "SlowDelete", for: Duration.seconds(3) }],
+  judge: (evidence) => {
+    passes(evidence);
+    const session = evidence.sessions[0];
+    assert.strictEqual(evidence.unconnected?.ended?.by, "key");
+    assert.isTrue(session?.close?.termination?.confirmed);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {
