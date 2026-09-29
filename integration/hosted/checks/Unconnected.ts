@@ -77,139 +77,138 @@ const refusal = (error: ReactorError) => {
   };
 };
 
-export const unconnected = (pieces: Pieces) =>
-  Effect.gen(function* () {
-    const run = yield* Run;
-    const target = yield* Target;
-    const coordinator = yield* Coordinator.Coordinator;
-    const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
-    const instant = (atMs: number) => DateTime.formatIso(DateTime.makeUnsafe(run.origin + atMs));
-    const grant = yield* pieces.mint("unconnected");
-    yield* pieces.withSessions(
-      (grants) =>
-        Effect.gen(function* () {
-          // The session's own seam, on purpose: its create allocates a session that nothing
-          // owns, connects to or closes, and such a session is what this check asks about.
-          // The session is recorded as soon as the reply names it, so the key ends it however
-          // the check ends.
-          const signaling = coordinator.signaling(Effect.succeed(grant.jwt));
-          const requestedMs = yield* run.now;
-          const allocation = yield* recorded(signaling.create({ name: H3.modelName }));
-          const sessionId = allocation.sessionId;
-          const allocatedAt = yield* Clock.currentTimeMillis;
-          grants.set(sessionId, grant);
-          yield* pieces.holding(sessionId, allocatedAt, allocatedAt + pieces.capMs(grant));
-          yield* run.mark("allocated", sessionId);
-          const initial: UnconnectedRecord = {
-            sessionId,
-            requestedMs,
-            requestedAt: instant(requestedMs),
-            states: [],
-          };
-          yield* run.update((evidence) => ({ ...evidence, unconnected: initial }));
-          const record = (change: (probe: UnconnectedRecord) => UnconnectedRecord) =>
-            run.update((evidence) => ({
-              ...evidence,
-              unconnected: change(evidence.unconnected ?? initial),
-            }));
-          const recordSpent = (spentToken: SpentToken) =>
-            record((probe) => ({ ...probe, spentToken })).pipe(
-              Effect.andThen(run.mark("spent token answered", spentToken.answer)),
-            );
-          const inspector = yield* keyed;
-
-          // A second create on the same token, sent while the first session is live.
-          const sentMs = yield* run.now;
-          const second = yield* signaling
-            .create({ name: H3.modelName })
-            .pipe(recorded, Effect.result);
-          const answeredMs = yield* run.now;
-          if (Result.isSuccess(second)) {
-            // A session nothing asked for: recorded first, so the key ends it however the check
-            // ends, then ended with the key at once.
-            const extra = second.success.sessionId;
-            grants.set(extra, grant);
-            yield* pieces.allocated(extra, grant);
-            yield* recordSpent({
-              sentMs,
-              answeredMs,
-              answer: "allocated",
-              ...bodyOf(second.success.reply),
-              sessionId: extra,
-            });
-            const endRequestedMs = yield* run.now;
-            yield* pieces.closedWith(extra, endRequestedMs, {
-              termination: yield* inspector.terminate(extra),
-            });
-          } else yield* recordSpent({ sentMs, answeredMs, ...refusal(second.failure) });
-
-          // The key reads the session every 2 s until a read finds it ended, or until its cap
-          // and 30 s more have passed, when it reads it once more.
-          const windowEndsAt = allocatedAt + pieces.capMs(grant) + pastCapMs;
-          let readAt = yield* Clock.currentTimeMillis;
-          let last: { readonly state: string; readonly known: boolean } | undefined;
-          let endedMs: number | undefined;
-          for (;;) {
-            yield* pieces.sleepUntil(readAt - run.origin, windowEndsAt);
-            const read = yield* Effect.result(inspector.inspect(sessionId));
-            const atMs = yield* run.now;
-            const state = Result.isSuccess(read)
-              ? read.success.state
-              : pieces.failedRead(read.failure);
-            yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
-            if (state !== last?.state) yield* run.mark(`read ${state}`);
-            last = { state, known: Result.isSuccess(read) || state === "gone" };
-            // The SDK connects once the session publishes its capabilities and a transport.
-            if (
-              Result.isSuccess(read) &&
-              read.success.hasCapabilities &&
-              read.success.selectedTransport !== null
-            )
-              yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
-            if (state === "gone" || Coordinator.isTerminal(state)) {
-              endedMs = atMs;
-              break;
-            }
-            if (readAt >= windowEndsAt) break;
-            readAt = Math.min(readAt + readEveryMs, windowEndsAt);
-          }
-
-          // What the coordinator says of the session now: why it ended, if it says.
-          const read = yield* Probes.readSession({
-            apiUrl: target.apiUrl,
-            sessionId,
-            credential: target.apiKey,
-          });
-          const readMs = yield* run.now;
-          yield* record((probe) => ({ ...probe, read: { atMs: readMs, ...read } }));
-          // The key ends the session whether or not Reactor did, so its end is confirmed as
-          // every check confirms one. Ending a session Reactor has closed ends nothing more.
-          const endRequestedMs = yield* run.now;
-          const termination = yield* inspector.terminate(sessionId);
-          const terminatedMs = yield* run.now;
-          yield* pieces.closedWith(sessionId, endRequestedMs, { termination });
-          if (endedMs !== undefined)
-            yield* record((probe) => ({
-              ...probe,
-              ended: { by: "reactor", atMs: endedMs, at: instant(endedMs) },
-            }));
-          else if (termination.confirmed)
-            yield* record((probe) => ({
-              ...probe,
-              ended: { by: "key", atMs: terminatedMs, at: instant(terminatedMs) },
-            }));
-          const spent = (yield* run.evidence).unconnected?.spentToken;
-          yield* pieces.judge(
-            "the probe completed",
-            [
-              spent?.answer === "allocated" || spent?.outcome === "replied",
-              `the second create on the spent token got no reply: ${spent?.answer ?? "it was never sent"}`,
-            ],
-            [last.known, `the last read of the session failed with ${last.state}`],
+export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
+  const run = yield* Run;
+  const target = yield* Target;
+  const coordinator = yield* Coordinator.Coordinator;
+  const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  const instant = (atMs: number) => DateTime.formatIso(DateTime.makeUnsafe(run.origin + atMs));
+  const grant = yield* pieces.mint("unconnected");
+  yield* pieces.withSessions(
+    (grants) =>
+      Effect.gen(function* () {
+        // The session's own seam, on purpose: its create allocates a session that nothing
+        // owns, connects to or closes, and such a session is what this check asks about.
+        // The session is recorded as soon as the reply names it, so the key ends it however
+        // the check ends.
+        const signaling = coordinator.signaling(Effect.succeed(grant.jwt));
+        const requestedMs = yield* run.now;
+        const allocation = yield* recorded(signaling.create({ name: H3.modelName }));
+        const sessionId = allocation.sessionId;
+        const allocatedAt = yield* Clock.currentTimeMillis;
+        grants.set(sessionId, grant);
+        yield* pieces.holding(sessionId, allocatedAt, allocatedAt + pieces.capMs(grant));
+        yield* run.mark("allocated", sessionId);
+        const initial: UnconnectedRecord = {
+          sessionId,
+          requestedMs,
+          requestedAt: instant(requestedMs),
+          states: [],
+        };
+        yield* run.update((evidence) => ({ ...evidence, unconnected: initial }));
+        const record = (change: (probe: UnconnectedRecord) => UnconnectedRecord) =>
+          run.update((evidence) => ({
+            ...evidence,
+            unconnected: change(evidence.unconnected ?? initial),
+          }));
+        const recordSpent = (spentToken: SpentToken) =>
+          record((probe) => ({ ...probe, spentToken })).pipe(
+            Effect.andThen(run.mark("spent token answered", spentToken.answer)),
           );
-          yield* run.mark("unconnected observed");
-        }),
-      // Whatever failed, the key ends every session the check allocated.
-      pieces.endHeld(keyed),
-    );
-  });
+        const inspector = yield* keyed;
+
+        // A second create on the same token, sent while the first session is live.
+        const sentMs = yield* run.now;
+        const second = yield* signaling
+          .create({ name: H3.modelName })
+          .pipe(recorded, Effect.result);
+        const answeredMs = yield* run.now;
+        if (Result.isSuccess(second)) {
+          // A session nothing asked for: recorded first, so the key ends it however the check
+          // ends, then ended with the key at once.
+          const extra = second.success.sessionId;
+          grants.set(extra, grant);
+          yield* pieces.allocated(extra, grant);
+          yield* recordSpent({
+            sentMs,
+            answeredMs,
+            answer: "allocated",
+            ...bodyOf(second.success.reply),
+            sessionId: extra,
+          });
+          const endRequestedMs = yield* run.now;
+          yield* pieces.closedWith(extra, endRequestedMs, {
+            termination: yield* inspector.terminate(extra),
+          });
+        } else yield* recordSpent({ sentMs, answeredMs, ...refusal(second.failure) });
+
+        // The key reads the session every 2 s until a read finds it ended, or until its cap
+        // and 30 s more have passed, when it reads it once more.
+        const windowEndsAt = allocatedAt + pieces.capMs(grant) + pastCapMs;
+        let readAt = yield* Clock.currentTimeMillis;
+        let last: { readonly state: string; readonly known: boolean } | undefined;
+        let endedMs: number | undefined;
+        for (;;) {
+          yield* pieces.sleepUntil(readAt - run.origin, windowEndsAt);
+          const read = yield* Effect.result(inspector.inspect(sessionId));
+          const atMs = yield* run.now;
+          const state = Result.isSuccess(read)
+            ? read.success.state
+            : pieces.failedRead(read.failure);
+          yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
+          if (state !== last?.state) yield* run.mark(`read ${state}`);
+          last = { state, known: Result.isSuccess(read) || state === "gone" };
+          // The SDK connects once the session publishes its capabilities and a transport.
+          if (
+            Result.isSuccess(read) &&
+            read.success.hasCapabilities &&
+            read.success.selectedTransport !== null
+          )
+            yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
+          if (state === "gone" || Coordinator.isTerminal(state)) {
+            endedMs = atMs;
+            break;
+          }
+          if (readAt >= windowEndsAt) break;
+          readAt = Math.min(readAt + readEveryMs, windowEndsAt);
+        }
+
+        // What the coordinator says of the session now: why it ended, if it says.
+        const read = yield* Probes.readSession({
+          apiUrl: target.apiUrl,
+          sessionId,
+          credential: target.apiKey,
+        });
+        const readMs = yield* run.now;
+        yield* record((probe) => ({ ...probe, read: { atMs: readMs, ...read } }));
+        // The key ends the session whether or not Reactor did, so its end is confirmed as
+        // every check confirms one. Ending a session Reactor has closed ends nothing more.
+        const endRequestedMs = yield* run.now;
+        const termination = yield* inspector.terminate(sessionId);
+        const terminatedMs = yield* run.now;
+        yield* pieces.closedWith(sessionId, endRequestedMs, { termination });
+        if (endedMs !== undefined)
+          yield* record((probe) => ({
+            ...probe,
+            ended: { by: "reactor", atMs: endedMs, at: instant(endedMs) },
+          }));
+        else if (termination.confirmed)
+          yield* record((probe) => ({
+            ...probe,
+            ended: { by: "key", atMs: terminatedMs, at: instant(terminatedMs) },
+          }));
+        const spent = (yield* run.evidence).unconnected?.spentToken;
+        yield* pieces.judge(
+          "the probe completed",
+          [
+            spent?.answer === "allocated" || spent?.outcome === "replied",
+            `the second create on the spent token got no reply: ${spent?.answer ?? "it was never sent"}`,
+          ],
+          [last.known, `the last read of the session failed with ${last.state}`],
+        );
+        yield* run.mark("unconnected observed");
+      }),
+    // Whatever failed, the key ends every session the check allocated.
+    pieces.endHeld(keyed),
+  );
+});
