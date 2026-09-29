@@ -1803,6 +1803,30 @@ describe("PlayoutPolicy, time", () => {
     assert.deepStrictEqual(failed, [false, false, true]);
   });
 
+  // Three renewal opens that may have billed ran out while s1 held the air, and the one open
+  // after s1's cap gave s2, which holds the air before it airs a clip. A refusal of s2's renewal
+  // that allocated nothing counts toward no limit, so it pauses nothing either.
+  it("asks again after a refusal that allocated nothing once the setups that count ran out", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    const opens = () => policy.actions.filter((action) => action._tag === "Open").length;
+    policy.tick(0);
+    policy.open("s1", 120_000);
+    policy.tick(60_010);
+    for (let failure = 0; failure < 3; failure++) {
+      policy.send({ _tag: "OpenFailed", reason: "503", fatal: false, allocated: true });
+      policy.tick(policy.now() + 5_000);
+    }
+    assert.isTrue(policy.state().openingPaused);
+    const paused = opens();
+    policy.tick(120_010);
+    policy.open("s2", 30_000);
+    // s2's cap is within the lead, so its renewal opens at once.
+    assert.strictEqual(opens(), paused + 2);
+    policy.send({ _tag: "OpenFailed", reason: "429", fatal: false, allocated: false });
+    policy.tick(policy.now() + 5_000);
+    assert.strictEqual(opens(), paused + 3);
+  });
+
   // s1 airs a 5 s clip after another while each renewal open fails 2 s after it is asked, having
   // allocated a session or maybe so. A clip on the session that already held the air says nothing
   // of those opens: only a session's first clip ends their run.
