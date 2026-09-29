@@ -475,12 +475,15 @@ export interface Signaling {
 export interface Options {
   readonly apiUrl?: string | undefined;
   /**
-   * The API key `mintToken` uses when its options name none. A server that
-   * holds it also terminates with it when no `credential` is set, since the
-   * key may end any session of its account.
+   * The API key `mintToken` uses when its options name none. Without a
+   * `credential` it also authorizes `inspect`, `terminate` and `downloadClip`,
+   * since the key may act on any session of its account.
    */
   readonly apiKey?: Redacted.Redacted<string> | undefined;
-  /** The session token that authorizes `inspect`, `terminate` and `downloadClip`. */
+  /**
+   * The session token that authorizes `inspect`, `terminate` and
+   * `downloadClip`, in place of the API key.
+   */
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
 }
 
@@ -1062,14 +1065,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     };
   };
 
-  const configured = options.credential ?? Effect.undefined;
+  // A server holding the key reads, ends and downloads any session of its account with the
+  // key as the bearer. It goes only to the API's own origin, as every credential does.
+  const configured =
+    options.credential ??
+    (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey));
   const app = (spec: Call) => call(configured, spec);
   const appSignaling = signaling(configured);
-  // A server holding the key ends any session of its account with the key as the bearer.
-  const terminator = signaling(
-    options.credential ??
-      (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey)),
-  );
 
   const mintToken = Effect.fn("Coordinator.mintToken")(function* (input: TokenOptions) {
     const invalid = (message: string) =>
@@ -1225,7 +1227,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         serverVersion: value.server_info?.server_version ?? null,
       } satisfies Inspection;
     }),
-    terminate: terminator.terminate,
+    terminate: appSignaling.terminate,
     downloadClip: appSignaling.downloadClip,
   });
 });
@@ -1238,7 +1240,8 @@ export const layer = (
 
 /**
  * A Coordinator configured from the environment: `REACTOR_API_URL` (optional)
- * and `REACTOR_API_KEY` (optional, for `mintToken`).
+ * and `REACTOR_API_KEY` (optional, for `mintToken`, `inspect`, `terminate`
+ * and `downloadClip`).
  */
 export const layerConfig: Layer.Layer<
   Coordinator,

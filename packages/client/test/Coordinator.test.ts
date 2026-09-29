@@ -307,6 +307,18 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
   }),
 );
 
+// A server that holds only the key can ask whether a session it recorded still runs, and not end it.
+alone("a Coordinator with only the key inspects a session with the key", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    const { id } = yield* created;
+    const server = yield* Coordinator.make({ apiKey: test.apiKey });
+    yield* server.inspect(id);
+    assert.deepStrictEqual((yield* requests).at(-1), [`/sessions/${id}`, "key"]);
+  }),
+);
+
 alone("termination stays unconfirmed when the DELETE was refused", () =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());
