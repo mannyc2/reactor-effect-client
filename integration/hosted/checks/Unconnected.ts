@@ -46,15 +46,29 @@ const pastCapMs = 30_000;
 /**
  * Ends a session with the key, and again, twice at most and 2 s apart, while
  * its end is unconfirmed: nothing here trusts the cap to end it. Each try, a
- * DELETE and a read, takes up to 6 s.
+ * DELETE and a read, takes up to 6 s. Each unconfirmed one goes in the
+ * timeline with what its DELETE and its read met; a save that fails there
+ * stops no try.
  */
 const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: string) =>
-  inspector.terminate(sessionId).pipe(
-    Effect.repeat({
-      schedule: Schedule.spaced("2 seconds"),
-      until: (termination) => termination.confirmed,
-      times: 2,
-    }),
+  Effect.flatMap(Run, (run) =>
+    inspector.terminate(sessionId).pipe(
+      Effect.tap((termination) =>
+        termination.confirmed
+          ? Effect.void
+          : run
+              .mark(
+                "end unconfirmed",
+                `${sessionId}: DELETE ${termination.deleteStatus ?? "unanswered"}, then ${termination.state ?? "no state"}`,
+              )
+              .pipe(Effect.ignore),
+      ),
+      Effect.repeat({
+        schedule: Schedule.spaced("2 seconds"),
+        until: (termination) => termination.confirmed,
+        times: 2,
+      }),
+    ),
   );
 
 /**
@@ -261,7 +275,13 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         );
         yield* run.mark("unconnected observed");
       }),
-    // Whatever failed, the key ends every session the check allocated.
-    pieces.endHeld(keyed),
+    // Whatever failed, the key ends every session the check allocated, trying as above.
+    pieces.endHeld(
+      Effect.map(keyed, (coordinator) => ({
+        ...coordinator,
+        terminate: (sessionId: string) =>
+          endWithKey(coordinator, sessionId).pipe(Effect.provideService(Run, run)),
+      })),
+    ),
   );
 });

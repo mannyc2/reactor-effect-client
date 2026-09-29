@@ -842,7 +842,9 @@ export const UnconnectedRecord = Schema.Struct({
   read: Schema.optionalKey(SessionRead),
   /**
    * Its end, once confirmed: by Reactor at the first read that found it `CLOSED`
-   * or gone, or by the key's termination after the window.
+   * or gone, the read at the end included; or by the key, when a termination
+   * was confirmed, after any unconfirmed tries the timeline shows. The
+   * session's `close.requestedMs` is the key's first DELETE.
    */
   ended: Schema.optionalKey(
     Schema.Struct({ by: Schema.Literals(["reactor", "key"]), atMs: Ms, at: Schema.String }),

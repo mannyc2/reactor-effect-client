@@ -380,6 +380,13 @@ rehearse("unconnected ends its session with the key again until the end is confi
     const session = evidence.sessions[0];
     assert.strictEqual(evidence.unconnected?.ended?.by, "key");
     assert.isTrue(session?.close?.termination?.confirmed);
+    // Each try the key could not confirm is in the timeline; the close keeps the first DELETE's time.
+    const unconfirmed = evidence.milestones.filter(
+      (milestone) => milestone.step === "end unconfirmed",
+    );
+    assert.lengthOf(unconfirmed, 2);
+    assert.include(unconfirmed[0]?.detail ?? "", `${session.id}: DELETE 200, then STOPPING`);
+    assert.isBelow(session.close.requestedMs, unconfirmed[0]?.atMs ?? 0);
   },
 });
 
