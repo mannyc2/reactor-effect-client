@@ -264,6 +264,7 @@ export interface Session {
   ) => Effect.Effect<Uploaded, ReactorError>;
   readonly requestRecordingClip: (seconds: number) => Effect.Effect<ClipReady, ReactorError>;
   readonly recording: Effect.Effect<ClipReady, ReactorError>;
+  /** A sample of the connection's statistics; its `rates` run from the session's previous sample. */
   readonly stats: Effect.Effect<Statistics, ReactorError>;
   /** The current generation's decoded media, from a host that decodes it. */
   readonly decoded: Effect.Effect<DecodedMedia, ReactorError>;

@@ -18,6 +18,12 @@ export interface Statistics {
     readonly availableOutgoingBitrate?: number;
     readonly availableIncomingBitrate?: number;
   };
+  /**
+   * Over the interval since the session's previous sample, whoever took it,
+   * and absent from a sample taken within 200 ms of that one. Every caller of
+   * `stats` on one session shares the baseline: of two monitors polling it
+   * 100 ms apart, one never gets rates.
+   */
   readonly rates?: {
     readonly sentBitsPerSecond: number;
     readonly receivedBitsPerSecond: number;
