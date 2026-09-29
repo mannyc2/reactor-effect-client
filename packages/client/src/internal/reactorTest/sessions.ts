@@ -644,7 +644,14 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           ? yield* faults.trip((fault) => fault._tag === "RefuseReconnect")
           : undefined;
         if (refusal?._tag === "RefuseReconnect")
-          return yield* refuse(refusal.status ?? 503, "reconnect_refused", "reconnect refused");
+          return yield* Refusal.make({
+            status: refusal.status ?? 503,
+            code: "reconnect_refused",
+            reason: "reconnect refused",
+            ...(refusal.retryAfter === undefined
+              ? {}
+              : { retryAfter: Math.ceil(Duration.toSeconds(refusal.retryAfter)) }),
+          });
         const previous = (yield* connection(session, cid)).link;
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);

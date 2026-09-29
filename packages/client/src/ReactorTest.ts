@@ -61,12 +61,15 @@ export const Fault = Schema.Union([
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /**
-   * A reconnect is refused with 503, or with `status`: the offer that replaces a connection's SDP
-   * (`PUT sdp_params`) takes no effect.
+   * A reconnect is refused with 503, or with `status`, saying to try again `retryAfter` later
+   * when it is set: the offer that replaces a connection's SDP (`PUT sdp_params`) takes no
+   * effect.
    */
   Schema.TaggedStruct("RefuseReconnect", {
     ...nth,
     status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
+    /** Sent as `Retry-After`, in whole seconds. */
+    retryAfter: Schema.optionalKey(Schema.Duration),
   }),
   /** The model never answers the command; with `applied` it takes effect and only the reply is lost. */
   Schema.TaggedStruct("DropReply", {
