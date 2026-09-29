@@ -2031,8 +2031,9 @@ describe("PlayoutPolicy, wakes", () => {
 
 /**
  * A provider for the property below: it answers the command in flight as the
- * script says, builds and plays clips when told, and loses sessions. Time
- * passes five seconds at a tick, and to the plan's own deadline at a wake.
+ * script says, builds and plays clips when told, opens or refuses the session
+ * the plan asks for, and loses sessions. Time passes five seconds at a tick,
+ * and to the plan's own deadline at a wake.
  */
 const steps = [
   "submit",
@@ -2052,6 +2053,7 @@ const steps = [
   "end",
   "lost",
   "open",
+  "denied",
   "tick",
   "wake",
 ] as const;
@@ -2127,10 +2129,30 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   const applied = new Map<number, ReadonlySet<string>>();
   /** When the plan last asked to be woken. */
   let wake: number | undefined;
+  /** The wait the latest refused open asked for, and when it was refused. */
+  let retryAfter: { readonly at: number; readonly until: number } | undefined;
+  /**
+   * Failed setups since a session's first clip that the plan may count toward its limit: all but
+   * refusals that allocated nothing while the session on air had a clip playing or Ready, which
+   * holds the air whatever else, and each session gone before a clip sent to it started.
+   */
+  let failures = 0;
+  const aired = new Set<string>();
+  const enqueued = new Set<string>();
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
     inputs.push(input);
+    if (input._tag === "OpenFailed") {
+      if (input.retryAfterMs !== undefined) retryAfter = { at, until: at + input.retryAfterMs };
+      const air = sessions.get(state.air ?? "");
+      if (input.allocated || !(air?.playing !== undefined || (air?.ready.length ?? 0) > 0))
+        failures++;
+    }
+    if (input._tag === "Source" && input.event._tag === "Started" && !aired.has(input.sessionId)) {
+      aired.add(input.sessionId);
+      failures = 0;
+    }
     if (input._tag === "Result")
       for (const [sessionId, id] of outstanding) if (id === input.id) outstanding.delete(sessionId);
     if (input._tag === "Lost") outstanding.delete(input.sessionId);
@@ -2207,8 +2229,27 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         sessions.delete(action.sessionId);
         outstanding.delete(action.sessionId);
         closed.add(action.sessionId);
+        if (!aired.has(action.sessionId) && enqueued.has(action.sessionId)) failures++;
       }
-      if (action._tag === "Open") wanted++;
+      if (action._tag === "Command" && action.command._tag === "Enqueue")
+        enqueued.add(action.sessionId);
+      // Only enough failed setups that count end the playout.
+      if (
+        action._tag === "Fail" &&
+        (action.cause === "open" || action.cause === "lost") &&
+        failures < settings.maxSetupFailures
+      )
+        problems.push(
+          `the plan failed (${action.cause}) at ${String(clock)} after ${String(failures)} failed setups that count`,
+        );
+      if (action._tag === "Open") {
+        wanted++;
+        // No open goes out before the wait a refusal asked for.
+        if (retryAfter !== undefined && clock < retryAfter.until)
+          problems.push(
+            `an open went out at ${String(clock)}, though the refusal at ${String(retryAfter.at)} asked to wait until ${String(retryAfter.until)}`,
+          );
+      }
     }
   };
   const observe = (sessionId: string) => {
@@ -2549,6 +2590,25 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       }
       case "open":
         return wanted === 0 ? send({ _tag: "Tick" }) : open();
+      case "denied": {
+        // The provider refuses the open the plan asked for, and each next one it asks for within
+        // 5 s, three at most. All of them allocated a session, or may have, or none did, and some
+        // ask to wait before the next.
+        if (wanted === 0) return send({ _tag: "Tick" });
+        const retryAfterMs = index % 3 === 0 ? 2_000 + (index % 4) * 4_000 : undefined;
+        for (let refused = 0; refused < 3 && wanted > 0; refused++) {
+          wanted--;
+          send({
+            _tag: "OpenFailed",
+            reason: "refused",
+            fatal: false,
+            allocated: index % 2 === 0,
+            ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+          });
+          if (wake !== undefined && wake <= clock + 5_000) send({ _tag: "Tick" }, wake);
+        }
+        return;
+      }
       case "tick":
         clock += 5_000;
         return send({ _tag: "Tick" });
@@ -2571,7 +2631,8 @@ const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
 /**
  * What a script keeps as it runs, from each start `check` runs it from: nothing falls due before
  * a wake; each lane carries one command at a time, and only to a session still open; autoplay is
- * on only on air; and a filler clip goes to one session at a time.
+ * on only on air; a filler clip goes to one session at a time; no open goes out before a
+ * refusal's `Retry-After` has passed; and only enough failed setups that count end the playout.
  */
 const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
   for (const from of [Policy.initial, measured]) {
