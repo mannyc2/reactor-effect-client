@@ -1,0 +1,4 @@
+# The Reactor wire protocol's canonical sources; google/protobuf/struct.proto comes with buf.
+version: v2
+modules:
+  - path: proto

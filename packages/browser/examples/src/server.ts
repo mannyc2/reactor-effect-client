@@ -1,19 +1,23 @@
+// NodeHttpServer serves on a server made by Node's own http module.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, FileSystem, Layer, Path, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import * as Reactor from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as H3 from "reactor-effect-client/H3";
 import { Api, TokenUnavailable } from "./Api.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
- * Mints one short session token per request. The token caps the session it
- * starts at five minutes, so a page closed without cleanup leaves it running
- * no longer than that; Reactor bills it by the minute. A real deployment
- * authenticates and rate-limits this endpoint: every token it hands out can
- * start a paid session.
+ * Mints one token per request. A token that creates a session caps it at five
+ * minutes, so a page closed without cleanup leaves it running no longer than
+ * that; Reactor bills it by the minute. A bound token lets that session go on
+ * past its first token. A real deployment authenticates and rate-limits this
+ * endpoint, and binds only sessions the caller created: every token it hands
+ * out can start or act on a paid session.
  */
 const SessionHandlers = HttpApiBuilder.group(
   Api,
@@ -23,29 +27,30 @@ const SessionHandlers = HttpApiBuilder.group(
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
       Config.withDefault("https://api.reactor.inc"),
     );
-    const coordinator = yield* Reactor.Coordinator.make({ apiUrl });
+    const coordinator = yield* Coordinator.make({ apiUrl });
+    const tokens = coordinator.tokens({
+      apiKey,
+      modelName: H3.modelName,
+      maxSessionDuration: "5 minutes",
+      expiresAfter: "6 minutes",
+    });
     return handlers.handleAll({
-      token: () =>
-        coordinator
-          .mintToken({
-            apiKey,
-            modelName: H3.modelName,
-            maxSessionDuration: "5 minutes",
-            expiresAfter: "6 minutes",
-          })
-          .pipe(
-            Effect.map((grant) => ({
-              jwt: Redacted.value(grant.jwt),
-              expiresAt: grant.expiresAt,
-              maxSessionSeconds: grant.granted.maxSessionSeconds,
-            })),
-            Effect.tapError((error) =>
-              Effect.logWarning("token refused", { reason: error.reason._tag }),
-            ),
-            Effect.mapError(
-              () => new TokenUnavailable({ message: "No session token is available" }),
-            ),
+      token: ({ payload }) =>
+        (payload.session === undefined ? tokens.create : tokens.bind(payload.session)).pipe(
+          Effect.map((grant) => ({
+            jwt: Redacted.value(grant.jwt),
+            expiresAt: grant.expiresAt,
+            ...(grant.maxSessionSeconds === undefined
+              ? {}
+              : { maxSessionSeconds: grant.maxSessionSeconds }),
+          })),
+          Effect.tapError((error) =>
+            Effect.logWarning("token refused", { reason: error.reason._tag }),
           ),
+          Effect.mapError(() =>
+            TokenUnavailable.make({ message: "No session token is available" }),
+          ),
+        ),
     });
   }),
 );
@@ -76,7 +81,7 @@ const Page = HttpRouter.use(
 HttpRouter.serve(
   Layer.mergeAll(HttpApiBuilder.layer(Api).pipe(Layer.provide(SessionHandlers)), Page),
 ).pipe(
-  Layer.provide(Reactor.FetchHttp.layer),
+  Layer.provide(FetchHttpClient.layer),
   // Local only: anyone who can reach this server can start paid sessions.
   Layer.provide(
     NodeHttpServer.layerConfig(createServer, {

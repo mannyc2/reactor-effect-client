@@ -1,6 +1,9 @@
+// ts-release's host asks for a synchronous unique id for each journal event, and Effect's
+// Crypto only offers one as an effect.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
-import { Config, Effect, Schema } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Config, Effect, Path, Schema } from "effect";
 import { loadPlan, ReleaseError } from "@mannyc1/ts-release";
 import { loadBundle, verifiedArtifacts } from "@mannyc1/ts-release/bundle";
 import { sameData } from "@mannyc1/ts-release/http";
@@ -17,36 +20,46 @@ import {
   CandidateIdentity,
   Qualification,
   checked,
+  decodeJson,
   journalId,
   journalRemote,
   packages,
   preparationContext,
   qualificationMatches,
   readBytes,
+  readJson,
   reject,
   releaseFailure,
+  sameStrings,
   sha256,
   validatePackageIdentity,
 } from "./model.mjs";
-import { authorization, verifyProvenance, workflowRef } from "./provenance.mjs";
+import { authorization, provenanceVerifier, workflowRef } from "./provenance.mjs";
 import { currentExecutionHost } from "./host.mjs";
 
-/** Admit saved bytes and the workspace's npm operations before acquiring any credentials or journal.
- * @param {unknown} raw
- * @param {Npm.VerifyProvenance} [verify] */
-export const loadCandidate = (raw, verify = verifyProvenance) =>
-  Effect.gen(function* () {
-    const input = yield* checked("input", () =>
-      Schema.decodeUnknownSync(ApplicationInput, { onExcessProperty: "error" })(raw),
-    );
-    const directory = resolve(input.candidateDirectory);
-    const saved = yield* checked("identity", () => {
-      const identity = Schema.decodeUnknownSync(CandidateIdentity, { onExcessProperty: "error" })(
-        JSON.parse(readBytes(join(directory, "identity.json")).toString()),
+/** Whether two values are the same data. A value without a canonical form is rejected.
+ * @param {unknown} left @param {unknown} right */
+const same = (left, right) =>
+  Effect.try({ try: () => sameData(left, right), catch: () => reject("Value is not canonical") });
+
+/** Admit saved bytes and the workspace's npm operations before acquiring any credentials or journal. */
+export const loadCandidate = Effect.fn("loadCandidate")(
+  /** @param {unknown} raw @param {Npm.VerifyProvenance} verify */
+  function* (raw, verify) {
+    const path = yield* Path.Path;
+    const input = yield* Schema.decodeUnknownEffect(ApplicationInput, {
+      onExcessProperty: "error",
+    })(raw).pipe(checked("input"));
+    const directory = path.resolve(input.candidateDirectory);
+    const saved = yield* Effect.gen(function* () {
+      const identity = yield* readJson(path.join(directory, "identity.json")).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(CandidateIdentity, { onExcessProperty: "error" }),
+        ),
       );
-      const bundleBytes = readBytes(join(directory, "bundle.json"));
+      const bundleBytes = yield* readBytes(path.join(directory, "bundle.json"));
       if (
-        sha256(bundleBytes) !== input.bundleSha256 ||
+        (yield* sha256(bundleBytes)) !== input.bundleSha256 ||
         identity.bundleSha256 !== input.bundleSha256 ||
         identity.planId !== input.planId ||
         identity.applicationCommit !== input.applicationCommit ||
@@ -54,17 +67,14 @@ export const loadCandidate = (raw, verify = verifyProvenance) =>
         identity.provenance.runId !== input.candidateRunId ||
         identity.qualification.sourceCommit !== input.sourceCommit
       )
-        reject("Candidate identity does not match the selected preparation");
+        return yield* reject("Candidate identity does not match the selected preparation");
       return { identity, bundleBytes };
-    });
+    }).pipe(checked("identity"));
     const version = saved.identity.qualification.version;
-    const owner = fileContentOwner(join(directory, "content"));
-    const bundle = yield* loadBundle(owner, saved.bundleBytes).pipe(
-      Effect.mapError(() => releaseFailure("bundle")),
-    );
+    const owner = fileContentOwner(path.join(directory, "content"));
+    const bundle = yield* loadBundle(owner, saved.bundleBytes).pipe(checked("bundle"));
     /** @type {import("@mannyc1/ts-release/bundle").ReadContent} */
-    const readContent = (content) =>
-      owner.read(content).pipe(Effect.mapError(() => releaseFailure("content")));
+    const readContent = (content) => owner.read(content).pipe(checked("content"));
     const files = verifiedArtifacts({ bundle, readContent }, 32 * 1024 * 1024);
     /** @param {string} logicalName */
     const ownedFile = (logicalName) => {
@@ -88,123 +98,137 @@ export const loadCandidate = (raw, verify = verifyProvenance) =>
       identityFile === undefined ||
       qualificationFile === undefined
     )
-      return yield* checked("content", () => reject("Unexpected candidate content set"));
+      return yield* releaseFailure("content");
     const identityBytes = yield* files.read(identityFile);
     const qualificationBytes = yield* files.read(qualificationFile);
-    yield* checked("qualified-content", () => {
-      const identity = validatePackageIdentity(JSON.parse(new TextDecoder().decode(identityBytes)));
-      const qualification = Schema.decodeUnknownSync(Qualification)(
-        JSON.parse(new TextDecoder().decode(qualificationBytes)),
+    yield* Effect.gen(function* () {
+      const identity = yield* decodeJson(new TextDecoder().decode(identityBytes)).pipe(
+        Effect.flatMap(validatePackageIdentity),
+      );
+      const qualification = yield* decodeJson(new TextDecoder().decode(qualificationBytes)).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Qualification)),
       );
       if (
-        !sameData(qualification, saved.identity.qualification) ||
-        !qualificationMatches(qualification, identity) ||
+        !(yield* same(qualification, saved.identity.qualification)) ||
+        !qualificationMatches({ qualification, identity }) ||
         packages.some(
           (entry) =>
             identity.packages[entry.name].sha256 !== archives.get(entry.name)?.content.sha256,
         )
       )
-        reject("Retained qualification does not identify these archives");
-    });
-    const noRead = () =>
-      checked("admission-network", () => reject("Admission cannot contact the registry"));
+        return yield* reject("Retained qualification does not identify these archives");
+    }).pipe(checked("qualified-content"));
+    const noRead = () => Effect.fail(releaseFailure("admission-network"));
     const providers = Npm.definitions({
       bundle,
       readContent,
       read: noRead,
       verifyProvenance: verify,
     });
-    const planValue = yield* checked("plan", () =>
-      JSON.parse(readBytes(join(directory, "plan.json")).toString()),
-    );
+    const planValue = yield* readJson(path.join(directory, "plan.json")).pipe(checked("plan"));
     const plan = yield* loadPlan(planValue, providers);
-    const intents = yield* checked("publication-policy", () => {
+    const intents = yield* Effect.gen(function* () {
       if (
         plan.planId !== input.planId ||
         plan.bundleId !== input.bundleSha256 ||
         plan.journalId !== journalId(version) ||
         plan.operations.length !== packages.length
       )
-        reject("Only the original workspace publication is allowed");
+        return yield* reject("Only the original workspace publication is allowed");
       /** @type {Map<string, { operation: import("@mannyc1/ts-release").Operation, intent: Npm.PublishIntent }>} */
       const byName = new Map();
       for (const operation of plan.operations) {
-        if (operation.definitionId !== "npm.publish") reject("Only npm publications are allowed");
-        const intent = Schema.decodeUnknownSync(Npm.PublishIntent)(operation.intent);
-        if (byName.has(intent.name)) reject("Duplicate package publication");
+        if (operation.definitionId !== "npm.publish")
+          return yield* reject("Only npm publications are allowed");
+        const intent = yield* Schema.decodeUnknownEffect(Npm.PublishIntent)(operation.intent);
+        if (byName.has(intent.name)) return yield* reject("Duplicate package publication");
         byName.set(intent.name, { operation, intent });
       }
       /** @type {Map<string, Npm.PublishIntent>} */
       const admitted = new Map();
       for (const entry of packages) {
-        const selected = byName.get(entry.name) ?? reject(`Missing publication for ${entry.name}`);
+        const selected = byName.get(entry.name);
+        if (selected === undefined) return yield* reject(`Missing publication for ${entry.name}`);
         const { operation, intent } = selected;
-        const dependencies = entry.dependsOn.map(
-          (name) => byName.get(name)?.operation.operationId ?? reject("Missing dependency"),
-        );
+        const dependencies = [];
+        for (const name of entry.dependsOn) {
+          const dependency = byName.get(name);
+          if (dependency === undefined) return yield* reject("Missing dependency");
+          dependencies.push(dependency.operation.operationId);
+        }
         if (
-          JSON.stringify([...operation.dependsOn].sort()) !==
-            JSON.stringify([...dependencies].sort()) ||
+          !sameStrings({ left: operation.dependsOn, right: dependencies }) ||
           intent.version !== version ||
-          !sameData(intent.tarball, archives.get(entry.name)) ||
-          intent.access !== "public" ||
+          !(yield* same(intent.tarball, archives.get(entry.name))) ||
           intent.initialTag !== (version.includes("-") ? "next" : "latest") ||
-          !sameData(intent.authorization, authorization) ||
+          !(yield* same(intent.authorization, authorization)) ||
           intent.provenance._tag !== "GitHubActionsProvenance" ||
-          !sameData(intent.provenance.bundle, proofs.get(entry.name)) ||
-          !sameData(intent.provenance.source, saved.identity.provenance) ||
+          !(yield* same(intent.provenance.bundle, proofs.get(entry.name))) ||
+          !(yield* same(intent.provenance.source, saved.identity.provenance)) ||
           intent.provenance.source.sourceCommit !== input.sourceCommit ||
           intent.provenance.source.sourceCommit !== input.applicationCommit ||
           intent.provenance.source.sourceRef !== workflowRef ||
           intent.provenance.source.eventName !== "workflow_dispatch" ||
           intent.provenance.source.runnerEnvironment !== "github-hosted"
         )
-          reject("Publication destination, bytes, authentication or policy changed");
+          return yield* reject("Publication destination, bytes, authentication or policy changed");
         admitted.set(entry.name, intent);
       }
       return admitted;
-    });
-    const provider =
-      providers.find((entry) => entry.definitionId === "npm.publish") ??
-      reject("Missing npm provider");
+    }).pipe(checked("publication-policy"));
+    const provider = providers.find((entry) => entry.definitionId === "npm.publish");
+    // The npm provider's definitions always include its publication.
+    if (provider === undefined) return yield* Effect.die("Missing npm provider");
     for (const operation of plan.operations)
-      yield* provider.prepare(operation, preparationContext(plan, operation));
+      yield* provider.prepare(operation, yield* preparationContext(plan, operation));
     return { input, bundle, plan, intents, readContent };
-  });
+  },
+);
 
-/** Keep read/observe credential-free and acquire npm OIDC only for an admitted package write.
- * @param {import("@mannyc1/ts-release/http").CredentialBinding} binding
- * @param {{ intents: ReadonlyMap<string, Npm.PublishIntent>, authorize: boolean, trusted: import("@mannyc1/ts-release/http").TrustedPublisherHost }} options */
-export const npmCredentials = (binding, options) =>
-  Effect.gen(function* () {
+/** Keep read/observe credential-free and acquire npm OIDC only for an admitted package write. */
+export const npmCredentials = Effect.fn("npmCredentials")(
+  /**
+   * @param {import("@mannyc1/ts-release/http").CredentialBinding} binding
+   * @param {{ intents: ReadonlyMap<string, Npm.PublishIntent>, authorize: boolean, trusted: import("@mannyc1/ts-release/http").TrustedPublisherHost }} options
+   */
+  function* (binding, options) {
     const selected = yield* Npm.authorizationBinding(binding);
     const intent = options.intents.get(selected.packageName);
-    yield* checked("credential-binding", () => {
+    yield* Effect.gen(function* () {
       if (
         intent === undefined ||
-        !sameData(selected.authorization, authorization) ||
-        !sameData(selected.authorization, intent.authorization)
+        !(yield* same(selected.authorization, authorization)) ||
+        !(yield* same(selected.authorization, intent.authorization))
       )
-        reject("Credential request is outside this release");
-    });
+        return yield* reject("Credential request is outside this release");
+    }).pipe(checked("credential-binding"));
     if (binding.method === "GET" || binding.method === "HEAD") return {};
-    if (!options.authorize || binding.method !== "PUT" || !binding.bodyDigest)
-      return yield* checked("authorization", () => reject("Publication was not authorized"));
+    if (
+      !options.authorize ||
+      binding.method !== "PUT" ||
+      binding.bodyDigest === undefined ||
+      binding.bodyDigest === ""
+    )
+      return yield* releaseFailure("authorization");
     return yield* Npm.authorizeTrusted(
       { authorization, packageName: selected.packageName, binding },
       options.trusted,
     );
-  });
+  },
+);
 
 /** @type {import("@mannyc1/ts-release/node").CreateApplication} */
 export const createApplication = (raw) =>
   Effect.gen(function* () {
-    const executionHostCommit = yield* checked("execution-host", currentExecutionHost);
-    const { input, bundle, plan, intents, readContent } = yield* loadCandidate(raw);
-    yield* checked("execution-host", () => {
-      if (input.executionHostCommit !== executionHostCommit)
-        reject("Application input names a different execution host");
-    });
+    const path = yield* Path.Path;
+    const executionHostCommit = yield* currentExecutionHost.pipe(checked("execution-host"));
+    const verifyProvenance = yield* provenanceVerifier;
+    const { input, bundle, plan, intents, readContent } = yield* loadCandidate(
+      raw,
+      verifyProvenance,
+    );
+    if (input.executionHostCommit !== executionHostCommit)
+      return yield* releaseFailure("execution-host");
     const bounds = { timeoutMilliseconds: 30_000, maximumResponseBytes: 16 * 1024 * 1024 };
     /** @type {import("@mannyc1/ts-release/http").ResolveCredentials} */
     const credentials = (binding) =>
@@ -221,7 +245,7 @@ export const createApplication = (raw) =>
     });
     const store = yield* openGitJournal({
       remote: journalRemote,
-      cacheDirectory: resolve(".release/journal-cache"),
+      cacheDirectory: path.resolve(".release/journal-cache"),
       // This application runs on the selected Ubuntu GitHub-hosted runner. Core
       // verifies the absolute executable and isolates Git configuration itself.
       gitExecutable: "/usr/bin/git",
@@ -231,14 +255,12 @@ export const createApplication = (raw) =>
       maximumOutputBytes: 16 * 1024 * 1024,
       credentials: (coordinate) =>
         Effect.gen(function* () {
-          yield* checked("journal-binding", () => {
-            if (
-              coordinate.remote !== journalRemote ||
-              coordinate.principal !== "reactor-release-journal" ||
-              coordinate.scope !== "npm-publication"
-            )
-              reject("Journal credential destination changed");
-          });
+          if (
+            coordinate.remote !== journalRemote ||
+            coordinate.principal !== "reactor-release-journal" ||
+            coordinate.scope !== "npm-publication"
+          )
+            return yield* releaseFailure("journal-binding");
           return { _tag: "Basic", username: "x-access-token", password: yield* secret("GH_TOKEN") };
         }),
     });
@@ -253,16 +275,19 @@ export const createApplication = (raw) =>
         uniqueId: randomUUID,
       },
     };
-  });
+  }).pipe(
+    // ts-release runs the application without services of its own, so this is its entry point.
+    // @effect-diagnostics-next-line strictEffectProvide:off
+    Effect.provide(NodeServices.layer),
+  );
 
 /** @param {string} name */
 const secret = (name) =>
   Config.Redacted(name).pipe(
-    Effect.mapError(
-      () =>
-        new ReleaseError({
-          code: "reactor-release-credential",
-          message: "An explicitly selected release credential is unavailable",
-        }),
+    Effect.mapError(() =>
+      ReleaseError.make({
+        code: "reactor-release-credential",
+        message: "An explicitly selected release credential is unavailable",
+      }),
     ),
   );

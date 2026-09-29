@@ -1,0 +1,32 @@
+{
+  "name": "reactor-effect-native-darwin-arm64",
+  "version": "0.7.1",
+  "description": "The macOS arm64 libwebrtc addon of reactor-effect-native",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mannyc2/reactor-effect-client.git",
+    "directory": "packages/native/npm/darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "reactor-effect-native.darwin-arm64.node",
+  "files": [
+    "reactor-effect-native.darwin-arm64.node",
+    "native-identity.json",
+    "notices",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

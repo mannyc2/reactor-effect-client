@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { Host, createPlan, observeRelease, runRelease } from "@mannyc1/ts-release";
 import * as Npm from "@mannyc1/ts-release-npm";
+import { jsonLine } from "../model.mjs";
 import { visibility } from "../report.mjs";
 import {
   browserPackage,
   clientPackage,
   hostPackages,
   loadOffline,
+  makeFixture,
   nativePackage,
   operationFor,
   packageNames,
   prepared,
   reportFor,
+  runTest,
   verifyOffline,
-  withFixture,
 } from "./Fixture.mjs";
+
+/** The package a publication request's scope names. */
+const PublicationScope = Schema.fromJsonString(
+  Schema.Struct({ intent: Schema.Struct({ name: Schema.String }) }),
+);
 
 /** @typedef {"missing" | "matching" | "conflict"} RegistryState */
 
@@ -60,7 +67,7 @@ const offlineHost = (candidate, initialStatus) => {
   };
   /** @type {import("@mannyc1/ts-release/http").HttpRead} */
   const read = (request) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       assert.equal(request.method, "GET");
       const prefix = "https://registry.npmjs.org/";
       assert.ok(request.url.startsWith(prefix), request.url);
@@ -71,26 +78,21 @@ const offlineHost = (candidate, initialStatus) => {
       reads.push(intent.name);
       const state = registry.get(name) ?? "missing";
       if (state === "missing") return { status: 404, headers: {}, body: new Uint8Array() };
-      return {
-        status: 200,
-        headers: {},
-        body: new TextEncoder().encode(
-          JSON.stringify({
+      const document = yield* jsonLine({
+        name: intent.name,
+        "dist-tags": { [intent.initialTag]: intent.version },
+        versions: {
+          [intent.version]: {
             name: intent.name,
-            "dist-tags": { [intent.initialTag]: intent.version },
-            versions: {
-              [intent.version]: {
-                name: intent.name,
-                version: intent.version,
-                dist: {
-                  integrity: intent.integrity,
-                  shasum: state === "conflict" ? "0".repeat(40) : intent.shasum,
-                },
-              },
+            version: intent.version,
+            dist: {
+              integrity: intent.integrity,
+              shasum: state === "conflict" ? "0".repeat(40) : intent.shasum,
             },
-          }),
-        ),
-      };
+          },
+        },
+      }).pipe(Effect.orDie);
+      return { status: 200, headers: {}, body: new TextEncoder().encode(document) };
     });
   /** Recreate the host while preserving its journal to model a fresh invocation.
    * @returns {import("@mannyc1/ts-release").HostShape} */
@@ -117,12 +119,15 @@ const offlineHost = (candidate, initialStatus) => {
             assert.equal(started.length, sent + 1);
             assert.equal(request.facts.method, "PUT");
             assert.equal(request.facts.replay._tag, "None");
-            const name = String(JSON.parse(request.facts.scope).intent.name);
+            const scope = yield* Schema.decodeEffect(PublicationScope)(request.facts.scope).pipe(
+              Effect.orDie,
+            );
+            const name = scope.intent.name;
             assert.ok(candidate.intents.has(name), `PUT outside the workspace: ${name}`);
             assert.equal(request.facts.endpoint, `https://registry.npmjs.org/${name}`);
             const latest = started.at(-1);
             assert.ok(latest?.body._tag === "DispatchStarted");
-            assert.equal(latest.body.operationId, operationFor(candidate, name).operationId);
+            assert.equal(latest.body.operationId, operationFor({ candidate, name }).operationId);
             dispatched.push(name);
             sent++;
             return yield* provider.decodeResponse(request, {
@@ -152,15 +157,11 @@ const offlineHost = (candidate, initialStatus) => {
 };
 
 /** @param {import("./Fixture.mjs").Candidate} candidate @param {ReturnType<typeof offlineHost>} ports @param {boolean} authorize */
-const run = (candidate, ports, authorize) =>
-  Effect.runPromise(
-    runRelease({ plan: candidate.plan, authorize }).pipe(Effect.provideService(Host, ports.host())),
-  );
+const release = (candidate, ports, authorize) =>
+  runRelease({ plan: candidate.plan, authorize }).pipe(Effect.provideService(Host, ports.host()));
 /** @param {import("./Fixture.mjs").Candidate} candidate @param {ReturnType<typeof offlineHost>} ports */
 const observe = (candidate, ports) =>
-  Effect.runPromise(
-    observeRelease({ plan: candidate.plan }).pipe(Effect.provideService(Host, ports.host())),
-  );
+  observeRelease({ plan: candidate.plan }).pipe(Effect.provideService(Host, ports.host()));
 /** @param {import("./Fixture.mjs").Candidate} candidate @param {ReturnType<typeof offlineHost>} ports */
 const visible = (candidate, ports) =>
   visibility(
@@ -177,163 +178,195 @@ const dispatchEvents = (ports) =>
 // publication is Satisfied, while observeRelease refreshes every package regardless.
 
 test("unauthorized execution and observation can record evidence but never dispatch", () =>
-  withFixture(async (fixture) => {
-    const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadOffline(input));
-    const ports = offlineHost(candidate, 200);
-    const result = await run(candidate, ports, false);
-    for (const name of packageNames) {
-      const line = reportFor(result, operationFor(candidate, name));
-      assert.equal(line.status, "Unattempted");
-      assert.equal(line.dispatches, 0);
-      assert.equal(line.receipts, 0);
-      // Only the client, whose dependencies are met, is observed by an unauthorized run.
-      assert.equal(line.observations, name === clientPackage ? 1 : 0);
-    }
-    assert.equal(ports.sent(), 0);
-    assert.deepEqual(ports.reads, [clientPackage]);
-    assert.deepEqual(ports.dispatched, []);
-    assert.equal(dispatchEvents(ports), 0);
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    const observed = await observe(candidate, ports);
-    assert.equal(ports.sent(), 0);
-    assert.deepEqual([...ports.reads].sort(), [clientPackage, ...packageNames].sort());
-    assert.equal(ports.reads.length, 4);
-    assert.equal(ports.events.length, 4);
-    assert.ok(
-      ports.events.every(
-        (event) =>
-          event.body._tag === "ObservationRecorded" &&
-          event.body.evidenceKind === "Observation" &&
-          event.body.status === "Absent",
-      ),
-    );
-    for (const name of packageNames) {
-      const line = reportFor(observed, operationFor(candidate, name));
-      assert.equal(line.status, "Unattempted");
-      assert.equal(line.observations, name === clientPackage ? 2 : 1);
-    }
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-  }));
+  runTest(
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      const { input } = yield* prepared(fixture);
+      const candidate = yield* loadOffline(input);
+      const ports = offlineHost(candidate, 200);
+      const result = yield* release(candidate, ports, false);
+      for (const name of packageNames) {
+        const line = reportFor({ report: result, operation: operationFor({ candidate, name }) });
+        assert.equal(line.status, "Unattempted");
+        assert.equal(line.dispatches, 0);
+        assert.equal(line.receipts, 0);
+        // Only the client, whose dependencies are met, is observed by an unauthorized run.
+        assert.equal(line.observations, name === clientPackage ? 1 : 0);
+      }
+      assert.equal(ports.sent(), 0);
+      assert.deepEqual(ports.reads, [clientPackage]);
+      assert.deepEqual(ports.dispatched, []);
+      assert.equal(dispatchEvents(ports), 0);
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      const observed = yield* observe(candidate, ports);
+      assert.equal(ports.sent(), 0);
+      assert.deepEqual([...ports.reads].sort(), [clientPackage, ...packageNames].sort());
+      assert.equal(ports.reads.length, packageNames.length + 1);
+      assert.equal(ports.events.length, packageNames.length + 1);
+      assert.ok(
+        ports.events.every(
+          (event) =>
+            event.body._tag === "ObservationRecorded" &&
+            event.body.evidenceKind === "Observation" &&
+            event.body.status === "Absent",
+        ),
+      );
+      for (const name of packageNames) {
+        const line = reportFor({ report: observed, operation: operationFor({ candidate, name }) });
+        assert.equal(line.status, "Unattempted");
+        assert.equal(line.observations, name === clientPackage ? 2 : 1);
+      }
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+    }),
+  ));
 
 test("an ambiguous npm response to the client publish never replays, keeps the hosts unattempted and cannot escape through a new Plan", () =>
-  withFixture(async (fixture) => {
-    const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadOffline(input));
-    const ports = offlineHost(candidate, 503);
-    const client = operationFor(candidate, clientPackage);
-    const first = await run(candidate, ports, true);
-    assert.equal(reportFor(first, client).status, "Inconclusive");
-    assert.equal(reportFor(first, client).dispatches, 1);
-    for (const name of hostPackages) {
-      const line = reportFor(first, operationFor(candidate, name));
-      assert.equal(line.status, "Unattempted");
-      assert.equal(line.dispatches, 0);
-      assert.equal(line.observations, 0);
-    }
-    assert.equal(ports.sent(), 1);
-    assert.deepEqual(ports.dispatched, [clientPackage]);
-    assert.deepEqual(ports.reads, [clientPackage]);
-    const failure = ports.events.find(
-      (event) =>
-        event.body._tag === "ObservationRecorded" && event.body.evidenceKind === "DispatchError",
-    );
-    assert.ok(failure?.body._tag === "ObservationRecorded");
-    assert.equal(failure.body.operationId, client.operationId);
-    assert.equal(failure.body.evidenceVersion, "npm-native-failure/1");
-    assert.equal(failure.body.status, "Inconclusive");
-    assert.ok(typeof failure.body.evidence === "object" && failure.body.evidence !== null);
-    assert.equal(Reflect.get(failure.body.evidence, "status"), 503);
-    const resumed = await run(candidate, ports, true);
-    assert.equal(reportFor(resumed, client).dispatches, 1);
-    assert.equal(reportFor(resumed, client).status, "Inconclusive");
-    for (const name of hostPackages) {
-      assert.equal(reportFor(resumed, operationFor(candidate, name)).status, "Unattempted");
-      assert.equal(reportFor(resumed, operationFor(candidate, name)).dispatches, 0);
-    }
-    assert.equal(ports.sent(), 1);
-    assert.equal(dispatchEvents(ports), 1);
-    assert.deepEqual(ports.reads, [clientPackage, clientPackage]);
-    const changed = await Effect.runPromise(
-      createPlan("different-bundle", candidate.plan.operations, candidate.plan.journalId),
-    );
-    const escaped = await Effect.runPromise(
-      Effect.result(
+  runTest(
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      const { input } = yield* prepared(fixture);
+      const candidate = yield* loadOffline(input);
+      const ports = offlineHost(candidate, 503);
+      const client = operationFor({ candidate, name: clientPackage });
+      const first = yield* release(candidate, ports, true);
+      assert.equal(reportFor({ report: first, operation: client }).status, "Inconclusive");
+      assert.equal(reportFor({ report: first, operation: client }).dispatches, 1);
+      for (const name of hostPackages) {
+        const line = reportFor({ report: first, operation: operationFor({ candidate, name }) });
+        assert.equal(line.status, "Unattempted");
+        assert.equal(line.dispatches, 0);
+        assert.equal(line.observations, 0);
+      }
+      assert.equal(ports.sent(), 1);
+      assert.deepEqual(ports.dispatched, [clientPackage]);
+      assert.deepEqual(ports.reads, [clientPackage]);
+      const failure = ports.events.find(
+        (event) =>
+          event.body._tag === "ObservationRecorded" && event.body.evidenceKind === "DispatchError",
+      );
+      assert.ok(failure?.body._tag === "ObservationRecorded");
+      assert.equal(failure.body.operationId, client.operationId);
+      assert.equal(failure.body.evidenceVersion, "npm-native-failure/1");
+      assert.equal(failure.body.status, "Inconclusive");
+      assert.ok(typeof failure.body.evidence === "object" && failure.body.evidence !== null);
+      assert.equal(Reflect.get(failure.body.evidence, "status"), 503);
+      const resumed = yield* release(candidate, ports, true);
+      assert.equal(reportFor({ report: resumed, operation: client }).dispatches, 1);
+      assert.equal(reportFor({ report: resumed, operation: client }).status, "Inconclusive");
+      for (const name of hostPackages) {
+        assert.equal(
+          reportFor({ report: resumed, operation: operationFor({ candidate, name }) }).status,
+          "Unattempted",
+        );
+        assert.equal(
+          reportFor({ report: resumed, operation: operationFor({ candidate, name }) }).dispatches,
+          0,
+        );
+      }
+      assert.equal(ports.sent(), 1);
+      assert.equal(dispatchEvents(ports), 1);
+      assert.deepEqual(ports.reads, [clientPackage, clientPackage]);
+      const changed = yield* createPlan(
+        "different-bundle",
+        candidate.plan.operations,
+        candidate.plan.journalId,
+      );
+      const escaped = yield* Effect.result(
         runRelease({ plan: changed, authorize: true }).pipe(
           Effect.provideService(Host, ports.host()),
         ),
-      ),
-    );
-    assert.ok(Result.isFailure(escaped));
-    assert.equal(escaped.failure.code, "journal-envelope");
-    assert.equal(ports.sent(), 1);
-    // Registry confirmation of the client alone satisfies it without any resend.
-    ports.registry("matching", [clientPackage]);
-    const observed = await observe(candidate, ports);
-    assert.equal(reportFor(observed, client).status, "Satisfied");
-    assert.equal(reportFor(observed, client).receipts, 0);
-    for (const name of hostPackages)
-      assert.equal(reportFor(observed, operationFor(candidate, name)).status, "Unattempted");
-    assert.equal(ports.sent(), 1);
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    // Only then does an authorized run dispatch the host publications, once each,
-    // while the client's ambiguous dispatch is never repeated.
-    ports.respond(201);
-    const continued = await run(candidate, ports, true);
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
-    assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
-    assert.equal(reportFor(continued, client).dispatches, 1);
-    assert.equal(reportFor(continued, client).status, "Satisfied");
-    for (const name of hostPackages) {
-      const line = reportFor(continued, operationFor(candidate, name));
-      assert.equal(line.status, "Satisfied");
-      assert.equal(line.dispatches, 1);
-      assert.equal(line.receipts, 1);
-    }
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    ports.registry("matching");
-    await observe(candidate, ports);
-    assert.equal(visible(candidate, ports), "Satisfied");
-    assert.equal(ports.sent(), 3);
-  }));
+      );
+      assert.ok(Result.isFailure(escaped));
+      assert.equal(escaped.failure.code, "journal-envelope");
+      assert.equal(ports.sent(), 1);
+      // Registry confirmation of the client alone satisfies it without any resend.
+      ports.registry("matching", [clientPackage]);
+      const observed = yield* observe(candidate, ports);
+      assert.equal(reportFor({ report: observed, operation: client }).status, "Satisfied");
+      assert.equal(reportFor({ report: observed, operation: client }).receipts, 0);
+      for (const name of hostPackages)
+        assert.equal(
+          reportFor({ report: observed, operation: operationFor({ candidate, name }) }).status,
+          "Unattempted",
+        );
+      assert.equal(ports.sent(), 1);
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      // Only then does an authorized run dispatch the host publications, once each,
+      // while the client's ambiguous dispatch is never repeated.
+      ports.respond(201);
+      const continued = yield* release(candidate, ports, true);
+      assert.equal(ports.sent(), packageNames.length);
+      assert.equal(dispatchEvents(ports), packageNames.length);
+      assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
+      assert.equal(reportFor({ report: continued, operation: client }).dispatches, 1);
+      assert.equal(reportFor({ report: continued, operation: client }).status, "Satisfied");
+      for (const name of hostPackages) {
+        const line = reportFor({ report: continued, operation: operationFor({ candidate, name }) });
+        assert.equal(line.status, "Satisfied");
+        assert.equal(line.dispatches, 1);
+        assert.equal(line.receipts, 1);
+      }
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      ports.registry("matching");
+      yield* observe(candidate, ports);
+      assert.equal(yield* visible(candidate, ports), "Satisfied");
+      assert.equal(ports.sent(), packageNames.length);
+    }),
+  ));
 
 test("real npm receipts satisfy the client and then both hosts in one run while visibility waits for matching registry observations of every package", () =>
-  withFixture(async (fixture) => {
-    const { input } = await prepared(fixture);
-    const candidate = await Effect.runPromise(loadOffline(input));
-    const ports = offlineHost(candidate, 201);
-    const accepted = await run(candidate, ports, true);
-    for (const name of packageNames) {
-      const line = reportFor(accepted, operationFor(candidate, name));
-      assert.equal(line.status, "Satisfied");
-      assert.equal(line.receipts, 1);
-      assert.equal(line.dispatches, 1);
-      assert.equal(line.observations, 1);
-    }
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
-    assert.equal(ports.dispatched[0], clientPackage);
-    assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
-    assert.deepEqual(ports.reads, ports.dispatched);
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    await observe(candidate, ports);
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    ports.registry("matching", [clientPackage, browserPackage]);
-    await observe(candidate, ports);
-    assert.equal(visible(candidate, ports), "Unconfirmed");
-    ports.registry("matching");
-    const satisfied = await observe(candidate, ports);
-    assert.ok(satisfied.operations.every((line) => line.status === "Satisfied"));
-    assert.equal(visible(candidate, ports), "Satisfied");
-    ports.registry("conflict", [nativePackage]);
-    const conflict = await observe(candidate, ports);
-    assert.equal(reportFor(conflict, operationFor(candidate, nativePackage)).status, "Conflict");
-    assert.equal(reportFor(conflict, operationFor(candidate, clientPackage)).status, "Satisfied");
-    assert.equal(reportFor(conflict, operationFor(candidate, browserPackage)).status, "Satisfied");
-    assert.equal(visible(candidate, ports), "Conflict");
-    const again = await run(candidate, ports, true);
-    assert.equal(ports.sent(), 3);
-    assert.equal(dispatchEvents(ports), 3);
-    assert.ok(again.operations.every((line) => line.dispatches === 1));
-  }));
+  runTest(
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture();
+      const { input } = yield* prepared(fixture);
+      const candidate = yield* loadOffline(input);
+      const ports = offlineHost(candidate, 201);
+      const accepted = yield* release(candidate, ports, true);
+      for (const name of packageNames) {
+        const line = reportFor({ report: accepted, operation: operationFor({ candidate, name }) });
+        assert.equal(line.status, "Satisfied");
+        assert.equal(line.receipts, 1);
+        assert.equal(line.dispatches, 1);
+        assert.equal(line.observations, 1);
+      }
+      assert.equal(ports.sent(), packageNames.length);
+      assert.equal(dispatchEvents(ports), packageNames.length);
+      assert.equal(ports.dispatched[0], clientPackage);
+      assert.deepEqual(ports.dispatched.slice(1).sort(), [...hostPackages].sort());
+      assert.deepEqual(ports.reads, ports.dispatched);
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      yield* observe(candidate, ports);
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      ports.registry("matching", [clientPackage, browserPackage]);
+      yield* observe(candidate, ports);
+      assert.equal(yield* visible(candidate, ports), "Unconfirmed");
+      ports.registry("matching");
+      const satisfied = yield* observe(candidate, ports);
+      assert.ok(satisfied.operations.every((line) => line.status === "Satisfied"));
+      assert.equal(yield* visible(candidate, ports), "Satisfied");
+      ports.registry("conflict", [nativePackage]);
+      const conflict = yield* observe(candidate, ports);
+      assert.equal(
+        reportFor({ report: conflict, operation: operationFor({ candidate, name: nativePackage }) })
+          .status,
+        "Conflict",
+      );
+      assert.equal(
+        reportFor({ report: conflict, operation: operationFor({ candidate, name: clientPackage }) })
+          .status,
+        "Satisfied",
+      );
+      assert.equal(
+        reportFor({
+          report: conflict,
+          operation: operationFor({ candidate, name: browserPackage }),
+        }).status,
+        "Satisfied",
+      );
+      assert.equal(yield* visible(candidate, ports), "Conflict");
+      const again = yield* release(candidate, ports, true);
+      assert.equal(ports.sent(), packageNames.length);
+      assert.equal(dispatchEvents(ports), packageNames.length);
+      assert.ok(again.operations.every((line) => line.dispatches === 1));
+    }),
+  ));

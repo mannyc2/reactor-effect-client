@@ -1,0 +1,279 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "83d17eb7",
+  "check": "tokens",
+  "mode": "paid",
+  "startedAt": "2026-09-28T04:51:39.053Z",
+  "finishedAt": "2026-09-28T04:52:01.544Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "8458d081da703c15655c50faaafab8d1a92d1922",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.7.1",
+      "reactor-effect-native": "0.7.1",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "4fdccf92059868e48b6f5cb8e5174b1663476dfaf4d0e3d95da5914aab90a847",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.75,
+    "totalUsd": 2,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 0.625,
+    "estimatedUsd": 0.275
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 50,
+      "expiresAt": 1790571120
+    }
+  ],
+  "sessions": [
+    {
+      "id": "9737e480-528a-4bf8-93b9-ec09f49c97a7",
+      "allocatedMs": 1352,
+      "capEndsAt": "2026-09-28T04:52:30.419Z",
+      "close": {
+        "requestedMs": 22192,
+        "reportedMs": 22473,
+        "confirmed": true,
+        "termination": {
+          "attempted": true,
+          "responseReceived": true,
+          "confirmed": true,
+          "evidence": "terminal",
+          "deleteStatus": 200,
+          "state": "CLOSED"
+        }
+      },
+      "trail": []
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $0.6250"
+    },
+    {
+      "atMs": 1129,
+      "step": "probed"
+    },
+    {
+      "atMs": 1216,
+      "step": "minted"
+    },
+    {
+      "atMs": 12509,
+      "step": "owner killed",
+      "detail": "12d228d9-2e10-4038-8dac-c6334f234aee"
+    },
+    {
+      "atMs": 22473,
+      "step": "closed",
+      "detail": "9737e480-528a-4bf8-93b9-ec09f49c97a7 confirmed"
+    },
+    {
+      "atMs": 22476,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "reactor.coordinator.mintToken",
+      "startMs": 1130.2,
+      "durationMs": 85.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "reactor.session.attach",
+      "startMs": 21434.7,
+      "durationMs": 756.5,
+      "status": "error",
+      "attributes": {
+        "reactor.session.id": "9737e480-528a-4bf8-93b9-ec09f49c97a7",
+        "reactor.session.adopt": true
+      }
+    },
+    {
+      "name": "reactor.session.connect",
+      "startMs": 21438.3,
+      "durationMs": 199.2,
+      "status": "error",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "9737e480-528a-4bf8-93b9-ec09f49c97a7"
+      }
+    },
+    {
+      "name": "reactor.coordinator.mintToken",
+      "startMs": 21458.5,
+      "durationMs": 87.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "reactor.session.close",
+      "startMs": 21637.7,
+      "durationMs": 553.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "reactor.coordinator.terminate",
+      "startMs": 21638.6,
+      "durationMs": 551.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "9737e480-528a-4bf8-93b9-ec09f49c97a7",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "reactor.coordinator.terminate",
+      "startMs": 22192,
+      "durationMs": 280.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "9737e480-528a-4bf8-93b9-ec09f49c97a7",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    }
+  ],
+  "tokens": {
+    "probes": [
+      {
+        "name": "a 15 s token",
+        "status": 200,
+        "requestedSeconds": 15,
+        "lifetimeSeconds": 15,
+        "echo": {
+          "echoed": true,
+          "maxSessions": 1,
+          "maxSessionSeconds": 50,
+          "capStated": true,
+          "bound": 0
+        },
+        "shape": [
+          "jwt: string",
+          "expires_at: number",
+          "authorization_details[].type: string",
+          "authorization_details[].resources.models.match[]: string",
+          "authorization_details[].constraints.max_sessions: number",
+          "authorization_details[].constraints.max_session_duration_seconds: number"
+        ]
+      },
+      {
+        "name": "a 7 h token",
+        "status": 200,
+        "requestedSeconds": 25200,
+        "lifetimeSeconds": 21600,
+        "echo": {
+          "echoed": true,
+          "maxSessions": 1,
+          "maxSessionSeconds": 1,
+          "capStated": true,
+          "bound": 0
+        }
+      },
+      {
+        "name": "an uncapped token",
+        "status": 200,
+        "requestedSeconds": 15,
+        "lifetimeSeconds": 15,
+        "echo": {
+          "echoed": true,
+          "maxSessions": 1,
+          "maxSessionSeconds": null,
+          "capStated": false,
+          "bound": 0
+        }
+      },
+      {
+        "name": "a token for three sessions",
+        "status": 200,
+        "requestedSeconds": 15,
+        "lifetimeSeconds": 14,
+        "echo": {
+          "echoed": true,
+          "maxSessions": 3,
+          "maxSessionSeconds": 50,
+          "capStated": true,
+          "bound": 0
+        }
+      },
+      {
+        "name": "a token bound to an unknown session",
+        "status": 403,
+        "requestedSeconds": 15
+      },
+      {
+        "name": "the API key reading an unknown session",
+        "status": 404
+      },
+      {
+        "name": "the API key ending an unknown session",
+        "status": 404
+      }
+    ],
+    "mints": [
+      {
+        "atMs": 1217,
+        "kind": "create",
+        "lifetimeSeconds": 19.8,
+        "echoed": true,
+        "bound": 0
+      },
+      {
+        "atMs": 21546,
+        "kind": "bind",
+        "lifetimeSeconds": 11.5,
+        "echoed": true,
+        "bound": 1
+      }
+    ],
+    "createExpiresMs": 20933,
+    "ownerKilledMs": 12509
+  },
+  "verdict": "fail",
+  "reasons": [
+    "TerminalSession: INACTIVE"
+  ],
+  "missing": []
+}

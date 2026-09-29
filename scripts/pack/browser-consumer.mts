@@ -1,41 +1,23 @@
-import * as Effect from "effect/Effect";
-import type * as Crypto from "effect/Crypto";
+/** The browser host's public API as a DOM consumer sees it through the installed declarations. */
+import type * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import * as Schema from "effect/Schema";
-import * as Root from "reactor-effect-client";
-import * as Browser from "reactor-effect-browser";
-import * as H3 from "reactor-effect-client/h3";
-import * as Orchestration from "reactor-effect-client/orchestration";
-import * as Simulation from "reactor-effect-client/simulation";
-import * as Testing from "reactor-effect-client/testing";
-import * as Wire from "reactor-effect-client/wire";
+import { Peer, ReactorError, Session } from "reactor-effect-client";
+import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
+import * as BrowserPeerModule from "reactor-effect-browser/BrowserPeer";
 
-declare const continuousOptions: Orchestration.ContinuousOptions;
-const continuous: Effect.Effect<
-  Orchestration.ContinuousHandleShape,
-  Root.ReactorError | Root.AcquisitionFailure,
-  Crypto.Crypto | Scope.Scope
-> = Orchestration.makeContinuous(continuousOptions);
-declare const continuousHandle: Orchestration.ContinuousHandleShape;
-const continuousClose: Effect.Effect<Orchestration.CleanupSummary> = continuousHandle.close;
-const continuousEngine: Orchestration.EngineShape = continuousHandle.engine;
-const continuousSequences: Orchestration.HandleShape["sequences"] = continuousHandle.sequences;
-const continuousCodec = Schema.toCodecJson(Orchestration.CleanupSummary);
-void [continuous, continuousClose, continuousEngine, continuousSequences, continuousCodec];
-
-declare const factory: Root.Factory;
-const browserHost: Layer.Layer<Root.PeerFactory, Root.ReactorError> = Browser.layer;
-declare const session: Root.Session;
-const sameSession: Effect.Success<ReturnType<typeof factory.create>> = session;
-const provider: Effect.Effect<
-  H3.Provider,
-  Root.ReactorError | Root.CommandFailure,
-  Crypto.Crypto | Scope.Scope
-> = H3.make(session);
-const track = Effect.flatMap(Browser.media(session), (media) => media.track("video"));
-const browserTrack: Effect.Effect<MediaStreamTrack, Root.ReactorError, Scope.Scope> = track;
-void [Root.make, H3, Orchestration, Simulation, sameSession, provider, browserTrack, browserHost];
-const fixtureBytes: Uint8Array = Testing.pngBytes(2, 2);
-const fixtureUri: string = Testing.dataUri(fixtureBytes);
-void [Wire.ControlClientMessage, fixtureUri];
+const host: Layer.Layer<Peer.PeerFactory, ReactorError.ReactorError> = BrowserPeer.layer;
+declare const session: Session.Session;
+const tracks: Effect.Effect<BrowserMedia.Tracks, ReactorError.ReactorError> =
+  BrowserMedia.tracks(session);
+declare const media: BrowserMedia.Tracks;
+const video: Effect.Effect<MediaStreamTrack, ReactorError.ReactorError, Scope.Scope> =
+  media.track("main_video");
+declare const element: HTMLVideoElement;
+declare const track: MediaStreamTrack;
+const played: Effect.Effect<void, ReactorError.ReactorError, Scope.Scope> = BrowserMedia.play(
+  track,
+  element,
+);
+const sameModule: typeof BrowserPeer.layer = BrowserPeerModule.layer;
+void [host, tracks, video, played, sameModule];

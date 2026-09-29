@@ -1,93 +1,90 @@
-//! Transport events, which the host takes with `reactor_effect_peer_take_event`.
+//! Transport events, queued by libwebrtc callbacks and taken by the host.
 
-use super::TrackKind;
-use crate::abi::Channel;
-use crate::error::{BridgeError, FailureClass};
-use crate::protocol;
+use super::{Channel, TrackKind};
+use crate::error::FailureClass;
+use crate::sync::QueueItem;
 use reactor_webrtc::{IceCandidate, PeerConnectionState};
-use serde::Serialize;
 
-/// A transport event for the host.
-///
-/// On the wire an event is a packet: `[u32 little-endian header length][UTF-8
-/// JSON header][payload]`. The header is this enum, tagged by `type`; only a
-/// [`Event::Message`] has a payload.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub(crate) enum Event<'a> {
+/// A transport event for the host. Events own their data: a callback copies
+/// what libwebrtc lends it, and the host converts an event to a JavaScript
+/// value only when it takes it, on its own thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Event {
     /// The aggregate connection state changed.
     State { state: &'static str },
     /// A local ICE candidate, or with none, the end of gathering.
-    Ice {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        candidate: Option<LocalCandidate<'a>>,
-    },
+    Ice { candidate: Option<Candidate> },
     /// A bridge data channel opened or closed.
     Channel { channel: Channel, open: bool },
     /// A binary message arrived on a bridge data channel.
-    Message {
-        channel: Channel,
-        /// The message, which travels as the packet payload.
-        #[serde(skip)]
-        bytes: &'a [u8],
-    },
+    Message { channel: Channel, bytes: Vec<u8> },
     /// A remote track arrived for a declared receive mapping.
-    Track { name: &'a str, mid: &'a str },
+    Track { name: String, mid: String },
     /// That track's decoded media now reaches its queue.
     Decoded {
         kind: TrackKind,
-        name: &'a str,
-        mid: &'a str,
+        name: String,
+        mid: String,
     },
-    /// The connection failed; `status` is the failure class.
-    Error { status: i32, message: &'a str },
+    /// The connection failed.
+    Error {
+        class: FailureClass,
+        message: String,
+    },
 }
 
-impl<'a> Event<'a> {
+impl Event {
     /// A failure of the connection itself, rather than of a host call.
-    pub(crate) fn error(class: FailureClass, message: &'a str) -> Self {
+    pub(crate) fn error(class: FailureClass, message: impl Into<String>) -> Self {
         Self::Error {
-            status: class.status().code(),
-            message,
+            class,
+            message: message.into(),
         }
     }
+}
 
-    /// Frame this event as a packet.
-    pub(crate) fn to_packet(&self) -> Result<Vec<u8>, BridgeError> {
-        let header = protocol::encode(self)?;
-        let header_len = u32::try_from(header.len()).map_err(|error| {
-            BridgeError::overflow(format!("event header length does not fit a u32: {error}"))
-        })?;
-        let payload = match self {
-            Self::Message { bytes, .. } => bytes,
-            Self::State { .. }
-            | Self::Ice { .. }
-            | Self::Channel { .. }
-            | Self::Track { .. }
-            | Self::Decoded { .. }
-            | Self::Error { .. } => &[][..],
-        };
-        let mut packet = Vec::with_capacity(4 + header.len() + payload.len());
-        packet.extend_from_slice(&header_len.to_le_bytes());
-        packet.extend_from_slice(&header);
-        packet.extend_from_slice(payload);
-        Ok(packet)
+/// The bytes an event holds beyond a fixed allowance for its fields, so a
+/// queue of events is bounded by what they carry.
+const EVENT_OVERHEAD_BYTES: usize = 64;
+
+impl QueueItem for Event {
+    fn byte_len(&self) -> usize {
+        EVENT_OVERHEAD_BYTES
+            + match self {
+                Self::State { .. } | Self::Channel { .. } => 0,
+                Self::Ice { candidate } => candidate.as_ref().map_or(0, Candidate::byte_len),
+                Self::Message { bytes, .. } => bytes.len(),
+                Self::Track { name, mid } | Self::Decoded { name, mid, .. } => {
+                    name.len() + mid.len()
+                }
+                Self::Error { message, .. } => message.len(),
+            }
     }
 }
 
 /// A local ICE candidate, as the host forwards it to signaling.
-#[derive(Debug, Serialize)]
-pub(crate) struct LocalCandidate<'a> {
-    candidate: &'a str,
-    sdp_mid: Option<&'a str>,
-    sdp_mline_index: Option<u16>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`candidate` is WebRTC's name for the candidate line"
+)]
+pub(crate) struct Candidate {
+    pub(crate) candidate: String,
+    pub(crate) sdp_mid: Option<String>,
+    pub(crate) sdp_mline_index: Option<u16>,
 }
 
-impl<'a> From<&'a IceCandidate> for LocalCandidate<'a> {
-    fn from(candidate: &'a IceCandidate) -> Self {
+impl Candidate {
+    fn byte_len(&self) -> usize {
+        self.candidate.len() + self.sdp_mid.as_ref().map_or(0, String::len)
+    }
+}
+
+impl From<&IceCandidate> for Candidate {
+    fn from(candidate: &IceCandidate) -> Self {
         Self {
-            candidate: &candidate.candidate,
-            sdp_mid: candidate.sdp_mid.as_deref(),
+            candidate: candidate.candidate.clone(),
+            sdp_mid: candidate.sdp_mid.clone(),
             sdp_mline_index: candidate.sdp_mline_index,
         }
     }
@@ -108,108 +105,16 @@ pub(crate) fn connection_state(state: PeerConnectionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::parse_packet;
-    use serde_json::{Value, json};
-
-    fn header(event: &Event<'_>) -> Value {
-        let packet = event.to_packet().unwrap();
-        let (header, payload) = parse_packet(&packet);
-        assert!(payload.is_empty(), "only a message carries a payload");
-        header
-    }
 
     #[test]
-    fn a_packet_is_its_length_prefixed_header_then_the_message_bytes() {
-        let payload = [0, 1, 2, 255];
-        let event = Event::Message {
+    fn an_event_counts_what_it_carries() {
+        let message = Event::Message {
             channel: Channel::Data,
-            bytes: &payload,
+            bytes: vec![0; 1000],
         };
-        let packet = event.to_packet().unwrap();
-        let header = br#"{"type":"message","channel":"data"}"#;
-        assert_eq!(
-            packet[..4],
-            u32::try_from(header.len()).unwrap().to_le_bytes()
-        );
-        assert_eq!(packet[4..4 + header.len()], *header);
-        assert_eq!(packet[4 + header.len()..], payload);
-    }
-
-    // `parseEvent` in packages/native/src/_internal/peer.ts reads these.
-    #[test]
-    fn each_event_has_the_header_the_host_parses() {
-        let candidate = IceCandidate {
-            candidate: "candidate:1 1 udp 1 127.0.0.1 9 typ host".into(),
-            sdp_mid: Some("0".into()),
-            sdp_mline_index: Some(0),
-        };
-        let cases = [
-            (
-                Event::State {
-                    state: connection_state(PeerConnectionState::Connected),
-                },
-                json!({ "type": "state", "state": "connected" }),
-            ),
-            (Event::Ice { candidate: None }, json!({ "type": "ice" })),
-            (
-                Event::Ice {
-                    candidate: Some(LocalCandidate::from(&candidate)),
-                },
-                json!({
-                    "type": "ice",
-                    "candidate": {
-                        "candidate": "candidate:1 1 udp 1 127.0.0.1 9 typ host",
-                        "sdp_mid": "0",
-                        "sdp_mline_index": 0,
-                    },
-                }),
-            ),
-            (
-                Event::Channel {
-                    channel: Channel::Control,
-                    open: true,
-                },
-                json!({ "type": "channel", "channel": "control", "open": true }),
-            ),
-            (
-                Event::Track {
-                    name: "main",
-                    mid: "2",
-                },
-                json!({ "type": "track", "name": "main", "mid": "2" }),
-            ),
-            (
-                Event::Decoded {
-                    kind: TrackKind::Audio,
-                    name: "main",
-                    mid: "2",
-                },
-                json!({ "type": "decoded", "kind": "audio", "name": "main", "mid": "2" }),
-            ),
-            (
-                Event::error(FailureClass::Protocol, "undeclared track"),
-                json!({ "type": "error", "status": -4, "message": "undeclared track" }),
-            ),
-        ];
-        for (event, expected) in cases {
-            assert_eq!(header(&event), expected);
-        }
-    }
-
-    #[test]
-    fn a_candidate_without_a_mid_or_index_sends_nulls() {
-        let candidate = IceCandidate {
-            candidate: "candidate:2".into(),
-            sdp_mid: None,
-            sdp_mline_index: None,
-        };
-        let event = Event::Ice {
-            candidate: Some(LocalCandidate::from(&candidate)),
-        };
-        assert_eq!(
-            header(&event)["candidate"],
-            json!({ "candidate": "candidate:2", "sdp_mid": null, "sdp_mline_index": null })
-        );
+        assert_eq!(message.byte_len(), EVENT_OVERHEAD_BYTES + 1000);
+        let state = Event::State { state: "new" };
+        assert_eq!(state.byte_len(), EVENT_OVERHEAD_BYTES);
     }
 
     #[test]

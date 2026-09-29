@@ -1,0 +1,583 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "68039bcf",
+  "check": "unconnected",
+  "mode": "paid",
+  "startedAt": "2026-09-29T14:00:44.352Z",
+  "finishedAt": "2026-09-29T14:01:45.940Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "c9f3f9607d4c145013b93d8d0445811b2d6cfdbf",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.7.1",
+      "reactor-effect-native": "0.7.1",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "4fdccf92059868e48b6f5cb8e5174b1663476dfaf4d0e3d95da5914aab90a847",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 3.75,
+    "totalUsd": 3.75,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 3.375,
+    "estimatedUsd": 0.9
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 60,
+      "expiresAt": 1790690659
+    },
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 60,
+      "expiresAt": 1790690659
+    }
+  ],
+  "sessions": [
+    {
+      "id": "9ccd880c-5c99-4493-9ea6-19c0c98326de",
+      "allocatedMs": 672,
+      "capEndsAt": "2026-09-29T14:01:45.034Z",
+      "close": {
+        "requestedMs": 60939,
+        "reportedMs": 61300,
+        "confirmed": true,
+        "termination": {
+          "attempted": true,
+          "responseReceived": true,
+          "confirmed": true,
+          "evidence": "terminal",
+          "deleteStatus": 200,
+          "state": "CLOSED"
+        }
+      },
+      "trail": [
+        {
+          "atMs": 61496,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 61496
+    },
+    {
+      "id": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748",
+      "allocatedMs": 1012,
+      "capEndsAt": "2026-09-29T14:01:45.374Z",
+      "close": {
+        "requestedMs": 11392,
+        "reportedMs": 11784,
+        "confirmed": true,
+        "termination": {
+          "attempted": true,
+          "responseReceived": true,
+          "confirmed": true,
+          "evidence": "terminal",
+          "deleteStatus": 200,
+          "state": "CLOSED"
+        }
+      },
+      "trail": [
+        {
+          "atMs": 61577,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 61577
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 1,
+      "step": "admitted",
+      "detail": "worst case $3.3750"
+    },
+    {
+      "atMs": 87,
+      "step": "minted"
+    },
+    {
+      "atMs": 269,
+      "step": "minted"
+    },
+    {
+      "atMs": 270,
+      "step": "create sent"
+    },
+    {
+      "atMs": 673,
+      "step": "allocated",
+      "detail": "9ccd880c-5c99-4493-9ea6-19c0c98326de"
+    },
+    {
+      "atMs": 675,
+      "step": "spent token's first create sent"
+    },
+    {
+      "atMs": 859,
+      "step": "read ACTIVE"
+    },
+    {
+      "atMs": 1013,
+      "step": "allocated",
+      "detail": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748"
+    },
+    {
+      "atMs": 1013,
+      "step": "spent token's second create sent"
+    },
+    {
+      "atMs": 1209,
+      "step": "spent token's second create answered",
+      "detail": "Http"
+    },
+    {
+      "atMs": 1391,
+      "step": "held",
+      "detail": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748"
+    },
+    {
+      "atMs": 11784,
+      "step": "closed",
+      "detail": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748 confirmed"
+    },
+    {
+      "atMs": 60759,
+      "step": "read CLOSED"
+    },
+    {
+      "atMs": 61300,
+      "step": "closed",
+      "detail": "9ccd880c-5c99-4493-9ea6-19c0c98326de confirmed"
+    },
+    {
+      "atMs": 61302,
+      "step": "unconnected observed"
+    },
+    {
+      "atMs": 61577,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [
+    "replied"
+  ],
+  "criteria": [
+    {
+      "name": "the watch completed",
+      "passed": true
+    },
+    {
+      "name": "the spent token's second create was answered",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 2.2,
+      "durationMs": 84.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 86.9,
+      "durationMs": 182.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 674.7,
+      "durationMs": 183.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 1209.6,
+      "durationMs": 181,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 2674.7,
+      "durationMs": 199.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 4674.3,
+      "durationMs": 191.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 6674.4,
+      "durationMs": 193.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 8674.5,
+      "durationMs": 100,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 10676.5,
+      "durationMs": 181,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 11392.2,
+      "durationMs": 391.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 12675,
+      "durationMs": 86.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 14674.7,
+      "durationMs": 185.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 16674.1,
+      "durationMs": 202.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 18674.6,
+      "durationMs": 198.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 20674.7,
+      "durationMs": 185.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 22674.6,
+      "durationMs": 196,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 24675.2,
+      "durationMs": 191.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 26675.5,
+      "durationMs": 100.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 28675.4,
+      "durationMs": 208.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 30675.4,
+      "durationMs": 186.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 32676.4,
+      "durationMs": 184.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 34676.4,
+      "durationMs": 187.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 36676.4,
+      "durationMs": 189.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 38676.4,
+      "durationMs": 183.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 40675.4,
+      "durationMs": 85.5,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 42676.2,
+      "durationMs": 286,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 44676.3,
+      "durationMs": 83.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 46676,
+      "durationMs": 191,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 48676.3,
+      "durationMs": 187.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 50676.4,
+      "durationMs": 180.5,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 52675.4,
+      "durationMs": 187.5,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 54675.9,
+      "durationMs": 88.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 56675.4,
+      "durationMs": 186.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 58676,
+      "durationMs": 82.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 60676.1,
+      "durationMs": 82.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 60939.1,
+      "durationMs": 361,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "9ccd880c-5c99-4493-9ea6-19c0c98326de",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 61310.2,
+      "durationMs": 185.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 61496.2,
+      "durationMs": 80.9,
+      "status": "ok",
+      "attributes": {}
+    }
+  ],
+  "unconnected": {
+    "sessionId": "9ccd880c-5c99-4493-9ea6-19c0c98326de",
+    "requestedMs": 270,
+    "requestedAt": "2026-09-29T14:00:44.632Z",
+    "create": {
+      "answer": "allocated",
+      "keys": [
+        "session_id",
+        "model",
+        "server_info",
+        "cluster",
+        "zone",
+        "state"
+      ],
+      "codes": {
+        "state": "CREATED"
+      }
+    },
+    "spentToken": {
+      "requestedMs": 675,
+      "requestedAt": "2026-09-29T14:00:45.037Z",
+      "sessionId": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748",
+      "create": {
+        "answer": "allocated",
+        "keys": [
+          "session_id",
+          "model",
+          "server_info",
+          "cluster",
+          "zone",
+          "state"
+        ],
+        "codes": {
+          "state": "CREATED"
+        }
+      },
+      "second": {
+        "sentMs": 1021,
+        "answeredMs": 1208,
+        "answer": "Http",
+        "outcome": "replied",
+        "status": 403,
+        "keys": [
+          "error"
+        ],
+        "codes": {
+          "error": "(text, 36 chars)"
+        }
+      },
+      "held": [
+        {
+          "sessionId": "6572f3f1-5b21-4c2b-9de0-d37d3c6e0748",
+          "states": [
+            {
+              "state": "ACTIVE",
+              "firstMs": 1391,
+              "lastMs": 1391,
+              "reads": 1
+            }
+          ],
+          "connectableMs": 1391,
+          "heldFromMs": 1391,
+          "endsMs": 11391
+        }
+      ]
+    },
+    "windowEndsMs": 120270,
+    "states": [
+      {
+        "state": "ACTIVE",
+        "firstMs": 859,
+        "lastMs": 58759,
+        "reads": 30
+      },
+      {
+        "state": "CLOSED",
+        "firstMs": 60759,
+        "lastMs": 60759,
+        "reads": 1
+      }
+    ],
+    "connectableMs": 859,
+    "read": {
+      "atMs": 60939,
+      "status": 200,
+      "keys": [
+        "session_id",
+        "cluster",
+        "zone",
+        "state",
+        "server_info",
+        "model",
+        "origin_country",
+        "region"
+      ],
+      "state": "CLOSED",
+      "codes": {
+        "state": "CLOSED"
+      }
+    },
+    "ended": {
+      "by": "reactor",
+      "atMs": 60759,
+      "at": "2026-09-29T14:01:45.121Z"
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}

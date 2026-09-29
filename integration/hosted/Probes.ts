@@ -1,0 +1,312 @@
+/**
+ * Free questions to the coordinator about tokens and the API key, each one
+ * request that allocates nothing: what a token's lifetime and grant come back
+ * as, what `/tokens` replies with, and what a bind or the key does with a
+ * session that does not exist. Raw requests, so an answer the SDK would refuse
+ * is still recorded. Only statuses, error codes, numbers and key names are
+ * kept: never a token, and never provider text.
+ */
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as H3 from "reactor-effect-client/H3";
+import type { Probe } from "./Evidence.js";
+
+/** A session id no account holds. */
+export const unknownSession = "00000000-0000-4000-8000-000000000000";
+/** Every probe token expires this soon; none is ever used. */
+const probeSeconds = 15;
+
+/**
+ * Whether evidence, which is committed, may keep a text: letters, digits, `_`
+ * and `-`, at most 40 of them, so a UUID but no long digest or token; no IPv4
+ * address however its numbers are joined; and no IPv6 or MAC address, so no
+ * doubled `-` or `_` and no six groups of hex digits joined. No URL, dotted
+ * host name or port has that shape. A bare name such as `gpu-7` still does:
+ * only its key tells it for a host.
+ */
+const isCode = (text: string) =>
+  /^[\w-]{1,40}$/.test(text) &&
+  !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text) &&
+  !/[-_]{2}/.test(text) &&
+  !/(?:^|[-_])(?:[0-9a-f]{1,4}[-_]){5,}[0-9a-f]{1,4}(?:$|[-_])/i.test(text);
+
+/** A text as evidence may keep it, a session's state among them: a code, else only its length. */
+export const keptText = (text: string): string =>
+  isCode(text) ? text : `(text, ${text.length} chars)`;
+
+/** A value as evidence may keep it: a code, a number or a boolean; other text only by its length. */
+const kept = (value: unknown): string | undefined => {
+  if (Predicate.isString(value)) return keptText(value);
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
+};
+
+/** A key name as evidence may keep it: one that is no code only by its length. */
+const named = (key: string) => (isCode(key) ? key : `(key, ${key.length} chars)`);
+
+/** A body's key names as evidence may keep them. */
+const keysOf = (body: object) => Object.keys(body).map(named);
+
+/** Words that name an address or a secret in a key, however the key is cased or joined. */
+const withheldWords = new Set([
+  ...["ip", "ipv4", "ipv6", "addr", "address", "host", "hostname", "url", "uri", "endpoint"],
+  ...["port", "domain", "fqdn", "origin", "peer", "mac"],
+  ...["token", "jwt", "secret", "password", "passwd", "pass", "credential", "key", "apikey"],
+  ...["signature", "sig", "auth", "authorization", "cookie", "bearer"],
+]);
+
+/** A key's words: split at anything but a letter or digit, and where its case turns. */
+const wordsOf = (key: string) =>
+  key
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
+    .map((word) => word.toLowerCase());
+
+/**
+ * Whether a value may be read under a key: one that is a code and names no
+ * address or secret, in the singular or the plural.
+ */
+const readable = (key: string) =>
+  isCode(key) &&
+  !wordsOf(key).some(
+    (word) =>
+      withheldWords.has(word) ||
+      withheldWords.has(word.replace(/es$/, "")) ||
+      withheldWords.has(word.replace(/s$/, "")),
+  );
+
+/** Each leaf under `path`: its path and type, never its value. */
+const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
+  if (Array.isArray(value))
+    return value.length === 0 ? [`${path}[]: empty`] : leaves(value[0], `${path}[]`);
+  if (Predicate.isObject(value))
+    return Object.entries(value).flatMap(([key, item]) =>
+      leaves(item, path === "" ? named(key) : `${path}.${named(key)}`),
+    );
+  return [`${path}: ${value === null ? "null" : typeof value}`];
+};
+
+/** A code short and plain enough to be an identifier rather than provider text. */
+const codeOf = (body: unknown): string | undefined => {
+  const error = Predicate.isObject(body) ? body.error : undefined;
+  const code = Predicate.isObject(error) ? error.code : undefined;
+  return Predicate.isString(code) && isCode(code) ? code : undefined;
+};
+
+const numberOrNull = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+/** The grant a `/tokens` reply echoes: counts and caps, never the token. */
+const echoOf = (body: unknown): NonNullable<Probe["echo"]> => {
+  const details = Predicate.isObject(body) ? body.authorization_details : undefined;
+  const entry = Array.isArray(details) ? (details[0] as unknown) : undefined;
+  if (!Predicate.isObject(entry)) return { echoed: false };
+  const constraints = Predicate.isObject(entry.constraints) ? entry.constraints : {};
+  const resources = Predicate.isObject(entry.resources) ? entry.resources : {};
+  const sessions = Predicate.isObject(resources.sessions) ? resources.sessions : {};
+  return {
+    echoed: true,
+    maxSessions: numberOrNull(constraints.max_sessions),
+    maxSessionSeconds: numberOrNull(constraints.max_session_duration_seconds),
+    capStated: "max_session_duration_seconds" in constraints,
+    bound: Array.isArray(sessions.bind) ? sessions.bind.length : 0,
+  };
+};
+
+/** A reply's status, and its JSON body when it had one. */
+interface Reply {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/**
+ * One request's reply: status 0 when none came within 8 s. Every request
+ * carries the API key or a token, so, as the client's coordinator does, it
+ * follows no redirect (a redirect answers status 0) and sends no cookies.
+ */
+const exchange = (request: HttpClientRequest.HttpClientRequest) =>
+  Effect.flatMap(HttpClient.HttpClient, (client) =>
+    client.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        credentials: "omit",
+        redirect: "error",
+      }),
+      Effect.flatMap((response) =>
+        Effect.map(
+          Effect.orElseSucceed(response.json, () => undefined),
+          (body): Reply => ({ status: response.status, body }),
+        ),
+      ),
+      Effect.timeout("8 seconds"),
+      Effect.orElseSucceed((): Reply => ({ status: 0, body: undefined })),
+    ),
+  );
+
+/** Every probe, in order; each failure to reach the coordinator is recorded as status 0. */
+export const run = (input: {
+  readonly apiUrl: string;
+  readonly apiKey: Redacted.Redacted<string>;
+}): Effect.Effect<ReadonlyArray<Probe>, never, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const base = input.apiUrl.replace(/\/$/, "");
+    const token = (
+      name: string,
+      authorization: Record<string, unknown>,
+      expiresAfter: number,
+      options: { readonly shape?: boolean } = {},
+    ) =>
+      Effect.gen(function* () {
+        const sentAt = yield* Clock.currentTimeMillis;
+        const reply = yield* exchange(
+          HttpClientRequest.post(`${base}/tokens`).pipe(
+            HttpClientRequest.setHeader("reactor-api-key", Redacted.value(input.apiKey)),
+            HttpClientRequest.setHeader("reactor-api-version", "1"),
+            HttpClientRequest.bodyJsonUnsafe({
+              authorization_details: [
+                {
+                  type: "session",
+                  resources: { models: { match: [H3.modelName] } },
+                  ...authorization,
+                },
+              ],
+              expires_after: expiresAfter,
+            }),
+          ),
+        );
+        const body = reply.body;
+        const expiresAt = Predicate.isObject(body) ? numberOrNull(body.expires_at) : null;
+        const code = codeOf(body);
+        return {
+          name,
+          status: reply.status,
+          requestedSeconds: expiresAfter,
+          ...(expiresAt === null ? {} : { lifetimeSeconds: Math.round(expiresAt - sentAt / 1000) }),
+          ...(code === undefined ? {} : { code }),
+          ...(reply.status === 200 ? { echo: echoOf(body) } : {}),
+          ...(options.shape === true && reply.status === 200 ? { shape: leaves(body, "") } : {}),
+        } satisfies Probe;
+      });
+    const withKey = (name: string, method: "GET" | "DELETE") =>
+      Effect.gen(function* () {
+        const reply = yield* exchange(
+          HttpClientRequest.make(method)(`${base}/sessions/${unknownSession}`).pipe(
+            HttpClientRequest.bearerToken(input.apiKey),
+            HttpClientRequest.setHeader("reactor-api-version", "1"),
+          ),
+        );
+        const code = codeOf(reply.body);
+        return {
+          name,
+          status: reply.status,
+          ...(code === undefined ? {} : { code }),
+        } satisfies Probe;
+      });
+    const capped = { constraints: { max_sessions: 1, max_session_duration_seconds: 50 } };
+    return [
+      yield* token("a 15 s token", capped, probeSeconds, { shape: true }),
+      // Capped at one second, so the long-lived probe token could run nothing.
+      yield* token(
+        "a 7 h token",
+        { constraints: { max_sessions: 1, max_session_duration_seconds: 1 } },
+        7 * 3600,
+      ),
+      yield* token("an uncapped token", { constraints: { max_sessions: 1 } }, probeSeconds),
+      yield* token(
+        "a token for three sessions",
+        { constraints: { max_sessions: 3, max_session_duration_seconds: 50 } },
+        probeSeconds,
+      ),
+      yield* token(
+        "a token bound to an unknown session",
+        { resources: { models: { match: [H3.modelName] }, sessions: { bind: [unknownSession] } } },
+        probeSeconds,
+      ),
+      yield* withKey("the API key reading an unknown session", "GET"),
+      yield* withKey("the API key ending an unknown session", "DELETE"),
+    ];
+  });
+
+/** Keys whose values may say why a session ended. */
+const telling = /reason|termin|end|moderat|close|error|status|state/i;
+
+/**
+ * The coordinator's read of a session, raw: its status, top-level key names,
+ * its state, and any identifier-like value under a key that may say why it
+ * ended (free text only by its length).
+ */
+export const readSession = (input: {
+  readonly apiUrl: string;
+  readonly sessionId: string;
+  readonly credential: Redacted.Redacted<string>;
+}) =>
+  exchange(
+    HttpClientRequest.get(
+      `${input.apiUrl.replace(/\/$/, "")}/sessions/${encodeURIComponent(input.sessionId)}`,
+    ).pipe(
+      HttpClientRequest.bearerToken(input.credential),
+      HttpClientRequest.setHeader("reactor-api-version", "1"),
+    ),
+  ).pipe(Effect.map(summarize));
+
+/**
+ * A reply's body as evidence may keep it: top-level key names, the state, and
+ * the codes under keys that may say why a session ended, one level down; other
+ * text only by its length, and nothing under a key that names an address or a
+ * secret.
+ */
+export const summarizeBody = (content: unknown) => {
+  const body = Predicate.isObject(content) ? content : {};
+  const codes: Record<string, string> = {};
+  const note = (path: string, value: unknown) => {
+    const code = kept(value);
+    if (code !== undefined) codes[path] = code;
+  };
+  for (const [key, value] of Object.entries(body)) {
+    if (!telling.test(key) || !readable(key)) continue;
+    if (Predicate.isObject(value) && !Array.isArray(value)) {
+      for (const [inner, item] of Object.entries(value))
+        if (readable(inner)) note(`${key}.${inner}`, item);
+    } else note(key, value);
+  }
+  const state = Predicate.isString(body.state) ? kept(body.state) : undefined;
+  return {
+    keys: keysOf(body),
+    ...(state === undefined ? {} : { state }),
+    ...(Object.keys(codes).length === 0 ? {} : { codes }),
+  };
+};
+
+/**
+ * A refusal's body as evidence may keep it: its key names, and each value
+ * that reads as a code, two levels down and in a list's first three entries;
+ * other text only by its length, and nothing under a key that names an
+ * address or a secret, so no sentence, URL, dotted host name or IP address
+ * passes for a code.
+ */
+export const summarizeRefusal = (content: unknown) => {
+  const body = Predicate.isObject(content) ? content : {};
+  const codes: Record<string, string> = {};
+  const visit = (path: string, key: string, value: unknown, depth: number) => {
+    if (!readable(key)) return;
+    if (Array.isArray(value)) {
+      if (depth < 2)
+        for (const [index, item] of value.slice(0, 3).entries())
+          visit(`${path}[${index}]`, key, item, depth + 1);
+    } else if (Predicate.isObject(value)) {
+      if (depth < 2)
+        for (const [inner, item] of Object.entries(value))
+          visit(`${path}.${inner}`, inner, item, depth + 1);
+    } else {
+      const code = kept(value);
+      if (code !== undefined) codes[path] = code;
+    }
+  };
+  for (const [key, value] of Object.entries(body)) visit(key, key, value, 0);
+  return { keys: keysOf(body), ...(Object.keys(codes).length === 0 ? {} : { codes }) };
+};
+
+/** A session reply as evidence may keep it: its status, and its body as `summarizeBody` keeps it. */
+export const summarize = (reply: Reply) => ({ status: reply.status, ...summarizeBody(reply.body) });

@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect-browser",
   "version": "0.7.1",
-  "description": "Browser WebRTC host for reactor-effect-client: built-in peer connections, generation-scoped tracks, media conversion and recording",
+  "description": "Browser WebRTC host for reactor-effect-client: the Peer port on RTCPeerConnection, and local playback of session tracks",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -18,19 +18,20 @@
     "README.md"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+    "./package.json": "./package.json",
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js",
+    "./internal/*": null,
+    "./index": null
   },
   "peerDependencies": {
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*",
-    "reactor-effect-test-kit": "workspace:*",
     "vitest": "catalog:"
   },
   "scripts": {

@@ -1,30 +1,56 @@
-import { readFileSync } from "node:fs";
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 /**
- * Every portable entry of the built workspace packages must load under the
- * current runtime and export something. Run under the pack resolution guard,
- * this also proves that no portable entry reaches Koffi or the native package.
+ * Every public module of the built client and browser packages must load under
+ * the current runtime and export something: the index and each top-level
+ * `dist/<Module>.js` that the `"./*"` export reaches (`internal/` is not
+ * exported). Run under the pack resolution guard, this also proves that no
+ * portable module reaches the native package or its addon.
  */
-/** @type {readonly (readonly [string, readonly string[]])[]} */
-const packages = [
-  ["client", [".", "./h3", "./orchestration", "./simulation", "./testing", "./wire", "./host"]],
-  ["browser", ["."]],
-];
-for (const [directory, entries] of packages) {
-  const manifest = JSON.parse(
-    readFileSync(new URL(`../packages/${directory}/package.json`, import.meta.url), "utf8"),
-  );
-  for (const entry of entries) {
-    const target = manifest.exports[entry]?.import;
-    if (typeof target !== "string")
-      throw new Error(`${manifest.name} entry has no import target: ${entry}`);
-    const module = await import(
-      new URL(`../packages/${directory}/${target}`, import.meta.url).href
+
+// JavaScript can't pass a type argument in a call, so the error's own type is given here.
+/** @type {typeof Schema.TaggedError<PortableImportError>} */
+const TaggedError = Schema.TaggedError;
+
+/** A built module is missing or exports nothing. */
+class PortableImportError extends TaggedError(
+  "reactor-effect/scripts/portable-import/PortableImportError",
+)("PortableImportError", { message: Schema.String }) {}
+
+const program = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const directory of ["client", "browser"]) {
+    const dist = yield* path.fromFileUrl(
+      new URL(`../packages/${directory}/dist/`, import.meta.url),
     );
-    if (Object.keys(module).length === 0)
-      throw new Error(`${manifest.name} entry has no public exports: ${entry}`);
+    const modules = (yield* fs.readDirectory(dist)).filter((name) => name.endsWith(".js"));
+    if (!modules.includes("index.js"))
+      return yield* PortableImportError.make({ message: `${directory} has no built index` });
+    for (const name of modules) {
+      const url = yield* path.toFileUrl(path.join(dist, name));
+      /** @type {unknown} */
+      const module = yield* Effect.promise(() => import(url.href));
+      if (!Predicate.isObject(module) || Object.keys(module).length === 0)
+        return yield* PortableImportError.make({
+          message: `${directory} module has no public exports: ${name}`,
+        });
+    }
   }
-}
-console.log(
-  `portable-runtime-import-ok ${process.versions.bun === undefined ? "node" : "bun"} ${process.version}`,
+  const runtime = "bun" in process.versions ? "bun" : "node";
+  yield* Console.log(`portable-runtime-import-ok ${runtime} ${process.version}`);
+});
+
+program.pipe(
+  // The script's entry point.
+  // @effect-diagnostics-next-line strictEffectProvide:off
+  Effect.provide(NodeServices.layer),
+  NodeRuntime.runMain,
 );

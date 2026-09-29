@@ -1,176 +1,141 @@
-import { test, equal, throws, hex, unhex, assert } from "./harness.js";
-import * as W from "../src/wire.generated.js";
-import {
-  array,
-  record,
-  string,
-  structFromObject,
-  objectFromStruct,
-  json,
-  jsonObject,
-} from "../src/json.js";
-import { Reader, Writer } from "../src/protobuf.js";
-export const oracleOutputs: { readonly name: string; readonly hex: string }[] = [];
-const transcode = (
-  type: string,
-  bytes: Uint8Array,
-): { readonly decoded: unknown; readonly encoded: Uint8Array } => {
-  switch (type) {
-    case "reactor_wire.v1.DataClientMessage": {
-      const decoded = W.DataClientMessage.decode(bytes);
-      return { decoded, encoded: W.DataClientMessage.encode(decoded) };
-    }
-    case "reactor_wire.v1.DataServerMessage": {
-      const decoded = W.DataServerMessage.decode(bytes);
-      return { decoded, encoded: W.DataServerMessage.encode(decoded) };
-    }
-    case "reactor_wire.v1.ControlClientMessage": {
-      const decoded = W.ControlClientMessage.decode(bytes);
-      return { decoded, encoded: W.ControlClientMessage.encode(decoded) };
-    }
-    case "reactor_wire.v1.ControlServerMessage": {
-      const decoded = W.ControlServerMessage.decode(bytes);
-      return { decoded, encoded: W.ControlServerMessage.encode(decoded) };
-    }
-    case "reactor_wire.v1.UploadReference": {
-      const decoded = W.UploadReference.decode(bytes);
-      return { decoded, encoded: W.UploadReference.encode(decoded) };
-    }
-    case "reactor_wire.v1.ModelMessage": {
-      const decoded = W.ModelMessage.decode(bytes);
-      return { decoded, encoded: W.ModelMessage.encode(decoded) };
-    }
-    case "reactor_wire.v1.Command": {
-      const decoded = W.Command.decode(bytes);
-      return { decoded, encoded: W.Command.encode(decoded) };
-    }
-    case "reactor_wire.v1.RequestClip": {
-      const decoded = W.RequestClip.decode(bytes);
-      return { decoded, encoded: W.RequestClip.encode(decoded) };
-    }
-    case "google.protobuf.Struct": {
-      const decoded = W.Google_Struct.decode(bytes);
-      return { decoded, encoded: W.Google_Struct.encode(decoded) };
-    }
-    default:
-      throw new Error(`unhandled independent fixture type ${type}`);
-  }
-};
-export const registerOracle = (input: unknown): void => {
-  for (const value of array(record(input).vectors, "oracle vectors")) {
-    const v = record(value),
-      name = string(v.name, "name"),
-      type = string(v.type, "type"),
-      bytes = unhex(string(v.hex, "hex"));
-    test(`oracle: ${name}`, () => {
-      const result = transcode(type, bytes);
-      equal(result.decoded, v.semantic);
-      oracleOutputs.push({ name, hex: hex(result.encoded) });
-    });
-  }
-};
-for (const [name, bytes] of [
-  ["zero tag", "00"],
-  ["invalid wire", "0e"],
-  ["truncated tag varint", "80"],
-  ["uint64 overflow", "80808080808080808002"],
-  ["length overflow", "0affffffff7f"],
-  ["invalid UTF8", "0a02c0af"],
-  ["known wrong wire type (intentional strictness)", "0801"],
-  ["unexpected end group", "1c"],
-  ["mismatched group", "a306ac06"],
-  ["unterminated group", "a306"],
-] as const)
-  test(`malformed wire: ${name}`, () =>
-    throws(() => W.DataServerMessage.decode(unhex(bytes)), "Protocol"));
-test("wire bounds: message bytes, depth and field count", () => {
-  throws(() => W.DataServerMessage.decode(new Uint8Array(262_145)), "Protocol");
-  let nested: unknown = { value: 1 };
-  for (let i = 0; i < 12; i++) nested = { nested };
-  const encoded = W.Google_Struct.encode(structFromObject(nested));
-  throws(
-    () => W.Google_Struct.decode(encoded, { bytes: 262_144, depth: 4, fields: 65_536 }),
-    "Protocol",
-  );
-  throws(
-    () => W.DataServerMessage.decode(unhex("100210021002"), { bytes: 64, depth: 4, fields: 2 }),
-    "Protocol",
-  );
-  throws(() => W.ModelMessage.encode({ type: "x".repeat(262_145) }), "Protocol");
-});
-test("wire UTF8: reject lone UTF16 surrogate instead of silently replacing it", () =>
-  throws(() => W.ModelMessage.encode({ type: "\ud800" }), "Protocol"));
-test("wire int64: bounds reject wrapping", () => {
-  for (const size of [1n << 63n, -(1n << 63n) - 1n])
-    throws(
-      () => W.UploadReference.encode({ upload_id: "u", name: "n", mime_type: "m", size }),
-      "Protocol",
-    );
-});
-test("wire unsigned varint covers all 64 bits", () => {
-  const w = new Writer();
-  w.varint(0xffffffffffffffffn);
-  equal(new Reader(w.finish()).varint(), 0xffffffffffffffffn);
-});
-test("wire canonical minimal bodyless ack bytes", () =>
-  equal(
-    hex(W.DataServerMessage.encode({ request_id: "data_1", kind: 2 })),
-    "0a06646174615f311002",
-  ));
-test("JSON command validation: top object, finite numbers, cycles, prototypes and accessors", () => {
-  for (const input of [null, 1, "x", [], { x: Number.NaN }, new Date()])
-    throws(() => structFromObject(input), "Protocol");
-  const cycle: Record<string, unknown> = {};
-  cycle.self = cycle;
-  throws(() => json(cycle), "Protocol");
-  throws(
-    () =>
-      json({
-        get secret() {
-          throw new Error("must not execute getter");
-        },
-      }),
-    "Protocol",
-  );
-});
-test("JSON object boundary retains owned frozen output and original validation bounds", () => {
-  const input = { nested: { text: "before", values: [1, null, { enabled: true }] } };
-  const copy = jsonObject(input);
-  const nested = record(copy.nested);
-  const values = array(nested.values, "nested.values");
-  assert(copy !== input && nested !== input.nested && values !== input.nested.values);
-  for (const value of [copy, nested, values, values[2]]) {
-    assert(Object.isFrozen(value), "validated output must stay recursively frozen");
-  }
-  input.nested.text = "after";
-  input.nested.values.push(2);
-  equal(copy, { nested: { text: "before", values: [1, null, { enabled: true }] } });
+import { assert, describe, it } from "@effect/vitest";
+import { Effect, Encoding, Result } from "effect";
+import * as Wire from "../src/internal/wire.js";
 
-  throws(() => jsonObject({ [Symbol("non-JSON key")]: 1 }), "Protocol");
-  throws(() => jsonObject({ values: Array.from({ length: 65_536 }, () => 0) }), "Protocol");
-  throws(() => jsonObject({ text: "x".repeat(4_194_305) }), "Protocol");
-  let deep: unknown = {};
-  for (let i = 0; i < 65; i++) deep = { child: deep };
-  throws(() => jsonObject(deep), "Protocol");
-});
-test("Struct conversion preserves object/null/absence differences and resists prototype pollution", () => {
-  const input: unknown = JSON.parse('{"__proto__":{"polluted":true},"x":null,"array":[{},[]]}');
-  const back = objectFromStruct(structFromObject(input));
-  equal(back, input);
-  assert(Object.prototype.hasOwnProperty.call(back, "__proto__"));
-  const empty = W.ModelMessage.decode(unhex("1200"));
-  assert(empty.data !== undefined);
-  equal(objectFromStruct(empty.data), {});
-  assert(W.ModelMessage.decode(new Uint8Array()).data === undefined);
-});
-test("Struct helper source semantics: unset Value/nonfinite numbers normalize to JSON null only at conversion", () => {
-  equal(
-    objectFromStruct({
-      fields: new Map([
-        ["unset", {}],
-        ["inf", { kind: { case: "number_value", value: Infinity } }],
-      ]),
+const bytes = (hex: string): Uint8Array =>
+  Result.getOrThrowWith(Encoding.decodeHex(hex), () => new globalThis.Error(`invalid hex ${hex}`));
+
+/** The failure's reason, or undefined when the effect succeeded. */
+const refusal = <A>(effect: Effect.Effect<A, { readonly reason: { readonly _tag: string } }>) =>
+  Effect.map(Effect.result(effect), (result) =>
+    Result.isFailure(result) ? result.failure.reason._tag : undefined,
+  );
+
+/** Nested one `google.protobuf.Struct` inside another `levels` times. */
+const nested = (levels: number): Wire.ModelMessage["data"] => {
+  let data = {};
+  for (let level = 0; level < levels; level++) data = { child: data };
+  return data;
+};
+
+describe("the wire codec", () => {
+  // Written by Google's protobuf 6.33.6, the reference implementation.
+  it.effect("reads what the reference implementation wrote", () =>
+    Effect.gen(function* () {
+      const command = yield* Wire.decode(Wire.DataClientMessageSchema)(
+        bytes(
+          "0a19646174615f3138343436373434303733373039353531363135100152ae010a0a7365745f70726f6d707412710a1b0a095f5f70726f746f5f5f120e2a0c0a0a0a0473616665120220010a260a056172726179121d321b0a0220010a0220000a0911000000000000f43f0a0232000a022a000a0a0a046e756c6c120208000a1e0a0670726f6d707412141a126120636174202f20e78cab20f09fa7aa0a001a2d0a05696d61676512240a0475705f391207e59bbe2e706e671a09696d6167652f706e6720ffffffffffffffff7f",
+        ),
+      );
+      assert.strictEqual(command.requestId, "data_18446744073709551615");
+      assert.strictEqual(command.kind, Wire.MessageKind.REQUEST);
+      assert.strictEqual(command.payload.case, "command");
+      if (command.payload.case !== "command") return;
+      const { data, uploads } = command.payload.value;
+      // A `__proto__` key is dropped rather than made the object's prototype.
+      assert.deepStrictEqual(data, {
+        array: [true, false, 1.25, [], {}],
+        prompt: "a cat / 猫 🧪\n\u0000",
+        null: null,
+      });
+      assert.strictEqual(Object.getPrototypeOf(data), Object.prototype);
+      const image = uploads.image;
+      assert.deepStrictEqual(image && [image.uploadId, image.name, image.mimeType, image.size], [
+        "up_9",
+        "图.png",
+        "image/png",
+        (1n << 63n) - 1n,
+      ]);
+
+      const clip = bytes(
+        "0a066374726c5f3110025a4b0a08736573735f6162631204736e617019000000000000f43f2152b81e85eb511f402952b81e85eb511f4030ffffffffffffffff7f3a142f636c6970732f736573735f6162632e6d337538",
+      );
+      const reply = yield* Wire.decode(Wire.ControlServerMessageSchema)(clip);
+      assert.strictEqual(reply.payload.case, "clipReady");
+      if (reply.payload.case !== "clipReady") return;
+      assert.strictEqual(reply.payload.value.playlistUrl, "/clips/sess_abc.m3u8");
+      assert.strictEqual(reply.payload.value.predictedReadyAtMs, (1n << 63n) - 1n);
+      assert.deepStrictEqual(yield* Wire.encode(Wire.ControlServerMessageSchema)(reply), clip);
+      assert.strictEqual(
+        Encoding.encodeHex(
+          yield* Wire.encode(Wire.DataServerMessageSchema)({
+            requestId: "data_1",
+            kind: Wire.MessageKind.RESPONSE,
+          }),
+        ),
+        "0a06646174615f311002",
+      );
     }),
-    { unset: null, inf: null },
+  );
+
+  it.effect.each([
+    ["a truncated varint", "80"],
+    ["field number zero", "00"],
+    ["an undefined wire type", "0e"],
+    ["a length past the end", "0affffffff7f"],
+    ["invalid UTF-8", "0a02c0af"],
+    ["an unterminated group", "a306"],
+    ["a mismatched group", "a306ac06"],
+  ] as const)("refuses %s as Protocol", ([, hex]) =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        yield* refusal(Wire.decode(Wire.DataServerMessageSchema)(bytes(hex))),
+        "Protocol",
+      );
+    }),
+  );
+
+  it.effect("bounds untrusted messages by size and nesting", () =>
+    Effect.gen(function* () {
+      const tooLarge = new Uint8Array(Wire.maxMessageBytes + 1);
+      assert.strictEqual(
+        yield* refusal(Wire.decode(Wire.DataServerMessageSchema)(tooLarge)),
+        "Protocol",
+      );
+      assert.strictEqual(
+        yield* refusal(
+          Wire.encode(Wire.ModelMessageSchema)({ type: "x".repeat(Wire.maxMessageBytes) }),
+        ),
+        "InvalidInput",
+      );
+      // Each JSON level is two nested messages, Struct and Value.
+      const shallow = yield* Wire.encode(Wire.ModelMessageSchema)({ data: nested(40) });
+      const deep = yield* Wire.encode(Wire.ModelMessageSchema)({ data: nested(60) });
+      assert.isUndefined(yield* refusal(Wire.decode(Wire.ModelMessageSchema)(shallow)));
+      assert.strictEqual(yield* refusal(Wire.decode(Wire.ModelMessageSchema)(deep)), "Protocol");
+    }),
+  );
+
+  it.effect("refuses to encode a value the protocol cannot carry", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(
+        yield* refusal(
+          Wire.encode(Wire.UploadReferenceSchema)({
+            uploadId: "u",
+            name: "n",
+            mimeType: "m",
+            size: 1n << 63n,
+          }),
+        ),
+        "InvalidInput",
+      );
+    }),
+  );
+
+  it.effect("holds a received Struct to JSON", () =>
+    Effect.gen(function* () {
+      const message = yield* Wire.decode(Wire.ModelMessageSchema)(
+        yield* Wire.encode(Wire.ModelMessageSchema)({
+          type: "result",
+          data: { finite: 1, unset: null, infinite: Number.POSITIVE_INFINITY },
+        }),
+      );
+      const data = message.data ?? {};
+      assert.strictEqual(yield* refusal(Wire.json(data)), "Protocol");
+      assert.deepStrictEqual(yield* Wire.json({ finite: 1, unset: null }), {
+        finite: 1,
+        unset: null,
+      });
+    }),
   );
 });

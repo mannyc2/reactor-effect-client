@@ -2,18 +2,16 @@
 //! the host's takes.
 
 use super::media::{self, AudioItem, VideoItem};
-use crate::abi::Ready;
 use crate::error::FailureClass;
-use crate::protocol::{DecimalU64, Direction, Event, Mapping, MediaSnapshot, TrackKind};
-use crate::sync::{CallbackGate, Notifier, Push, Queue, lock};
+use crate::protocol::{Direction, Event, Mapping, MediaSnapshot, TrackKind};
+use crate::sync::{CallbackGate, Push, Queue, Readiness, Ready, lock};
 use reactor_webrtc::RemoteTrack;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-// Queue bounds. No single item can exceed its queue's byte bound, so the host
-// sizes its take buffers from them: keep them in step with the MAX_*_BYTES and
-// MAX_AUDIO_SAMPLES constants in packages/native/src/_internal/bridge.ts.
+// Queue bounds. The event queue never evicts, so its bound retires a connection
+// whose host stopped taking events; media queues evict the oldest items.
 const EVENT_QUEUE_ITEMS: usize = 1024;
 const EVENT_QUEUE_BYTES: usize = 16 * 1024 * 1024;
 /// A third of a second at 24 fps.
@@ -22,20 +20,19 @@ const VIDEO_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 /// 2.56 s of 10 ms blocks.
 const AUDIO_QUEUE_BLOCKS: usize = 256;
 const AUDIO_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-// A media item's C header states its lengths as `u32`.
-const _: () = assert!(VIDEO_QUEUE_BYTES <= u32::MAX as usize);
-const _: () = assert!(AUDIO_QUEUE_BYTES <= u32::MAX as usize);
 
 /// What a peer's threads share. libwebrtc callbacks copy into its queues and
 /// signal readiness; the host takes from the queues.
 pub(crate) struct Shared {
     /// Admits libwebrtc callbacks, and host calls, until the peer closes.
     pub(crate) gate: CallbackGate,
-    /// Transport events, each an encoded packet.
-    pub(crate) events: Queue<Vec<u8>>,
+    /// Transport events, in the order they happened.
+    pub(crate) events: Queue<Event>,
     pub(crate) video: Queue<VideoItem>,
     pub(crate) audio: Queue<AudioItem>,
-    pub(crate) notifier: Notifier,
+    pub(crate) readiness: Readiness,
+    /// Calls queued for the owner thread that it has not yet taken.
+    pub(crate) in_flight: AtomicUsize,
     /// Declared receive tracks not yet claimed by a remote track.
     bindings: Mutex<Bindings>,
     /// Remote tracks, kept alive so their sinks keep delivering.
@@ -71,7 +68,8 @@ impl Shared {
             events: Queue::new(EVENT_QUEUE_ITEMS, EVENT_QUEUE_BYTES),
             video: Queue::new(VIDEO_QUEUE_FRAMES, VIDEO_QUEUE_BYTES),
             audio: Queue::new(AUDIO_QUEUE_BLOCKS, AUDIO_QUEUE_BYTES),
-            notifier: Notifier::default(),
+            readiness: Readiness::default(),
+            in_flight: AtomicUsize::new(0),
             bindings: Mutex::default(),
             remote_tracks: Mutex::default(),
             retired: AtomicBool::new(false),
@@ -88,16 +86,9 @@ impl Shared {
 
     /// Queue a transport event for the host. An event that cannot be queued
     /// retires the connection rather than go missing.
-    pub(crate) fn emit(&self, event: &Event<'_>) {
-        let packet = match event.to_packet() {
-            Ok(packet) => packet,
-            Err(error) => {
-                self.retire(error.class, &error.message);
-                return;
-            }
-        };
-        match self.events.try_push(packet) {
-            Push::Accepted => self.notifier.signal(Ready::Events),
+    pub(crate) fn emit(&self, event: Event) {
+        match self.events.try_push(event) {
+            Push::Accepted => self.readiness.signal(Ready::Events),
             Push::Closed => {}
             Push::Overflow => self.retire(
                 FailureClass::Overflow,
@@ -107,8 +98,8 @@ impl Shared {
     }
 
     /// Report a failure of the connection itself as an `error` event.
-    pub(crate) fn emit_error(&self, class: FailureClass, message: &str) {
-        self.emit(&Event::error(class, message));
+    pub(crate) fn emit_error(&self, class: FailureClass, message: impl Into<String>) {
+        self.emit(Event::error(class, message));
     }
 
     /// Retire the connection: fence admission and replace the event backlog
@@ -118,25 +109,19 @@ impl Shared {
             return;
         }
         self.gate.close();
-        if let Ok(diagnostic) = Event::error(class, message).to_packet() {
-            self.events.replace(diagnostic);
-            self.notifier.signal(Ready::Events);
-        } else {
-            // Without its diagnostic, closed queues still tell the host that
-            // the connection is gone.
-            self.close_queues();
-        }
+        self.events.replace(Event::error(class, message));
+        self.readiness.signal(Ready::Events);
     }
 
     pub(crate) fn push_video(&self, frame: VideoItem) {
         if self.video.push_drop_oldest(frame) {
-            self.notifier.signal(Ready::Video);
+            self.readiness.signal(Ready::Video);
         }
     }
 
     pub(crate) fn push_audio(&self, block: AudioItem) {
         if self.audio.push_drop_oldest(block) {
-            self.notifier.signal(Ready::Audio);
+            self.readiness.signal(Ready::Audio);
         }
     }
 
@@ -181,9 +166,15 @@ impl Shared {
             return;
         };
         media::route(&track, binding.index, self);
-        let (name, mid) = (binding.name.as_str(), binding.mid.as_str());
-        self.emit(&Event::Track { name, mid });
-        self.emit(&Event::Decoded { kind, name, mid });
+        self.emit(Event::Track {
+            name: binding.name.clone(),
+            mid: binding.mid.clone(),
+        });
+        self.emit(Event::Decoded {
+            kind,
+            name: binding.name,
+            mid: binding.mid,
+        });
         lock(&self.remote_tracks).push(track);
     }
 
@@ -200,40 +191,37 @@ impl Shared {
         );
         MediaSnapshot {
             closed: !self.gate.is_open(),
+            pending_requests: self.in_flight.load(Ordering::Acquire),
             queued_control: events.queued,
             queued_video: video.queued,
             queued_audio: audio.queued,
             queued_bytes: events.bytes + video.bytes + audio.bytes,
-            dropped_video: DecimalU64(video.dropped),
-            dropped_audio: DecimalU64(audio.dropped),
-            delivered_video: DecimalU64(video.taken),
-            delivered_audio: DecimalU64(audio.taken),
-            pending_requests: 0,
+            dropped_video: video.dropped,
+            dropped_audio: audio.dropped,
+            delivered_video: video.taken,
+            delivered_audio: audio.taken,
         }
     }
 
-    /// Fence admission and discard what is queued: `reactor_effect_peer_close`.
+    /// Fence admission and discard what is queued.
     pub(crate) fn close(&self) {
         self.gate.close();
         self.close_queues();
     }
 
-    /// Refuse later items, discard queued ones and stop the notifier thread.
+    /// Refuse later items, discard queued ones and stop waking the host.
     pub(crate) fn close_queues(&self) {
         self.events.close();
         self.video.close();
         self.audio.close();
-        self.notifier.close();
+        self.readiness.close();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::Status;
     use crate::sync::Taken;
-    use crate::test_support::parse_packet;
-    use serde_json::json;
 
     fn mapping(name: &str, kind: TrackKind, direction: Direction) -> Mapping {
         Mapping {
@@ -248,27 +236,23 @@ mod tests {
     fn event_overflow_retires_the_connection_with_one_diagnostic() {
         let shared = Shared::new();
         for index in 0..EVENT_QUEUE_ITEMS {
-            let name = index.to_string();
-            shared.emit(&Event::Track {
-                name: &name,
-                mid: "0",
+            shared.emit(Event::Track {
+                name: index.to_string(),
+                mid: "0".into(),
             });
         }
         assert!(shared.gate.is_open());
 
-        shared.emit(&Event::Ice { candidate: None });
+        shared.emit(Event::Ice { candidate: None });
         assert!(
             !shared.gate.is_open(),
             "overflow must retire the connection"
         );
         assert_eq!(shared.events.counts().queued, 1, "the backlog collapses");
-        let Taken::Item(packet) = shared.events.take(|_| true) else {
+        let Taken::Item(Event::Error { class, .. }) = shared.events.take(|_| true) else {
             panic!("the overflow diagnostic must be queued");
         };
-        let (header, payload) = parse_packet(&packet);
-        assert!(payload.is_empty());
-        assert_eq!(header["type"], "error");
-        assert_eq!(header["status"], Status::Overflow.code());
+        assert_eq!(class, FailureClass::Overflow);
     }
 
     #[test]
@@ -299,25 +283,16 @@ mod tests {
     #[test]
     fn close_fences_events_and_media_and_the_snapshot_says_so() {
         let shared = Shared::new();
-        shared.emit(&Event::Ice { candidate: None });
+        shared.emit(Event::Ice { candidate: None });
         shared.close();
-        shared.emit(&Event::Ice { candidate: None });
+        shared.emit(Event::Ice { candidate: None });
         assert_eq!(shared.events.take(|_| true), Taken::Closed);
-        let snapshot = serde_json::to_value(shared.snapshot()).unwrap();
+        let snapshot = shared.snapshot();
+        assert!(snapshot.closed);
         assert_eq!(
-            snapshot,
-            json!({
-                "closed": true,
-                "queuedControl": 0,
-                "queuedVideo": 0,
-                "queuedAudio": 0,
-                "queuedBytes": 0,
-                "droppedVideo": "0",
-                "droppedAudio": "0",
-                "deliveredVideo": "0",
-                "deliveredAudio": "0",
-                "pendingRequests": 0,
-            })
+            (snapshot.queued_control, snapshot.queued_bytes),
+            (0, 0),
+            "close discards the backlog"
         );
     }
 }

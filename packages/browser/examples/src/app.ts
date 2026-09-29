@@ -1,46 +1,57 @@
-import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
+import { DateTime, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
-import * as Reactor from "reactor-effect-client";
-import * as H3 from "reactor-effect-client/h3";
-import * as Browser from "reactor-effect-browser";
+import * as Reactor from "reactor-effect-client/Reactor";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as Session from "reactor-effect-client/Session";
+import { isReactorFailure, ReactorError } from "reactor-effect-client/ReactorError";
+import * as H3 from "reactor-effect-client/H3";
+import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import { Api } from "./Api.ts";
 import { WebCrypto } from "./WebCrypto.ts";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
  * One runtime for the page, built once: the SDK's Client over the browser's
  * own WebRTC, with the fetch-based HTTP client and Web Crypto it runs on, both
- * also used by the page itself. Building `Browser.layer` checks for WebRTC, so
+ * also used by the page itself. Building `BrowserPeer.layer` checks for WebRTC, so
  * an unsupported browser fails here, before any session is paid for. The UI
  * below is ordinary DOM code that runs effects through the runtime.
  */
 const runtime = ManagedRuntime.make(
   Reactor.layer().pipe(
-    Layer.provideMerge(Layer.mergeAll(Reactor.FetchHttp.layer, WebCrypto, Browser.layer)),
+    // The page talks to Reactor itself, with the token the example server minted for it.
+    Layer.provide(Coordinator.layer({ apiUrl: Coordinator.defaultApiUrl })),
+    Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
   ),
 );
 
-const element = (id: string): HTMLElement => {
+/** The page's element with this id, checked to be the kind the page uses it as. */
+const element = <E extends HTMLElement>(id: string, kind: new () => E): E => {
   const found = document.getElementById(id);
-  if (found === null) throw new Error(`the page has no #${id}`);
+  if (!(found instanceof kind)) throw new Error(`the page has no ${kind.name} #${id}`);
   return found;
 };
-const video = element("video") as HTMLVideoElement;
-const audio = element("audio") as HTMLAudioElement;
-const log = (line: string) => {
-  element("log").textContent =
-    `${new Date().toLocaleTimeString()}  ${line}\n${element("log").textContent ?? ""}`;
-};
+const video = element("video", HTMLVideoElement);
+const audio = element("audio", HTMLAudioElement);
+/** Puts a line, stamped with the local time, at the top of the page's log. */
+const logLine = Effect.fnUntraced(function* (line: string) {
+  const time = DateTime.formatLocal(yield* DateTime.now, { timeStyle: "medium" });
+  const entries = element("log", HTMLElement);
+  entries.textContent = `${time}  ${line}\n${entries.textContent}`;
+});
+/** The same, from the page's event handlers. */
+const log = (line: string): void => Effect.runSync(logLine(line));
 /** What a failure says about itself: its reason and, for a command, whether it may have applied. */
 const describe = (error: unknown) =>
-  Reactor.isReactorFailure(error)
+  isReactorFailure(error)
     ? `${error._tag}: ${error.reason._tag}${"outcome" in error.context ? ` (${error.context.outcome})` : ""}`
     : String(error);
 
 interface Live {
   readonly scope: Scope.Closeable;
-  readonly session: Reactor.Session;
+  readonly session: Session.Session;
   readonly provider: H3.Provider;
-  readonly media: Browser.MediaGeneration;
+  readonly media: BrowserMedia.Tracks;
 }
 
 /**
@@ -54,7 +65,7 @@ type State =
   | { readonly _tag: "Starting"; stopRequested: boolean }
   | { readonly _tag: "Live"; readonly live: Live };
 let state: State = { _tag: "Idle" };
-const startButton = element("start") as HTMLButtonElement;
+const startButton = element("start", HTMLButtonElement);
 
 /**
  * Asks the server for a token, then allocates and connects a session from
@@ -63,19 +74,29 @@ const startButton = element("start") as HTMLButtonElement;
  * releases all of it and terminates the paid session.
  */
 const start = Effect.gen(function* () {
-  const token = yield* (yield* HttpApiClient.make(Api)).token();
+  const api = yield* HttpApiClient.make(Api);
+  // The session asks for a token bound to it before its first one expires.
+  const token = (session?: string) =>
+    api.token({ payload: session === undefined ? {} : { session } }).pipe(
+      Effect.map((reply) => ({
+        jwt: Redacted.make(reply.jwt),
+        expiresAt: reply.expiresAt,
+        maxSessionSeconds: reply.maxSessionSeconds,
+      })),
+      Effect.mapError(() => ReactorError.fromCode("Http", "the server gave no session token")),
+    );
   const scope = yield* Scope.make();
   return yield* Effect.gen(function* () {
-    const client = yield* Reactor.Client;
-    const session = yield* client.createConnected({
+    const client = yield* Reactor.Reactor;
+    const session = yield* client.create({
       model: H3.modelName,
-      jwt: Redacted.make(token.jwt),
+      tokens: { create: token(), bind: token },
     });
     const provider = yield* H3.make(session);
     // H3 changes no playback policy on its own: ask it to play clips as they are ready.
     yield* provider.setAutoplay(true);
-    const media = yield* Browser.media(session);
-    yield* Browser.play(yield* media.track("main_video"), video);
+    const media = yield* BrowserMedia.tracks(session);
+    yield* BrowserMedia.play(yield* media.track("main_video"), video);
     return { scope, session, provider, media };
   }).pipe(
     Scope.provide(scope),
@@ -88,14 +109,14 @@ const send = Effect.fn("send")(function* (provider: H3.Provider, prompt: string)
   const submission = yield* provider.prepare({ prompt, seconds: 8 });
   const acceptance = yield* submission.submit;
   const clip = acceptance.clip.clip_id.slice(-8);
-  log(`clip ${clip} accepted`);
+  yield* logLine(`clip ${clip} accepted`);
   const operation = yield* provider.operation(submission);
   yield* operation.reached("generated");
-  log(`clip ${clip} generated`);
+  yield* logLine(`clip ${clip} generated`);
   yield* operation.reached("started");
-  log(`clip ${clip} playing`);
+  yield* logLine(`clip ${clip} playing`);
   yield* operation.ended;
-  log(`clip ${clip} ended`);
+  yield* logLine(`clip ${clip} ended`);
 }, Effect.scoped);
 
 startButton.addEventListener("click", () => {
@@ -120,21 +141,21 @@ startButton.addEventListener("click", () => {
 
 // Audio needs its own user gesture: browsers refuse unmuted playback that
 // starts seconds after the click that asked for it.
-element("sound").addEventListener("click", () => {
+element("sound", HTMLButtonElement).addEventListener("click", () => {
   if (state._tag !== "Live") return;
   const { media, scope } = state.live;
   runtime
     .runPromise(
       Effect.gen(function* () {
-        yield* Browser.play(yield* media.track("main_audio"), audio);
+        yield* BrowserMedia.play(yield* media.track("main_audio"), audio);
       }).pipe(Scope.provide(scope)),
     )
     .catch((error: unknown) => log(`no sound: ${describe(error)}`));
 });
 
-element("form").addEventListener("submit", (event) => {
+element("form", HTMLFormElement).addEventListener("submit", (event) => {
   event.preventDefault();
-  const input = element("prompt") as HTMLInputElement;
+  const input = element("prompt", HTMLInputElement);
   if (state._tag !== "Live" || input.value.trim() === "") return;
   runtime
     .runPromise(send(state.live.provider, input.value.trim()))
@@ -166,7 +187,7 @@ const stop = (): Promise<void> => {
       startButton.disabled = false;
     });
 };
-element("stop").addEventListener("click", () => void stop());
+element("stop", HTMLButtonElement).addEventListener("click", () => void stop());
 
 // Leaving the page closes what it can; the token's five-minute cap bounds
 // anything a closing tab cannot finish.

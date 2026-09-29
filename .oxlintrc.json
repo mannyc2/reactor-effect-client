@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript"],
+  "plugins": ["typescript", "import"],
   "options": {
     "typeAware": true
   },
@@ -9,7 +9,6 @@
   },
   "rules": {
     "typescript/no-explicit-any": "error",
-    "typescript/no-this-alias": "off",
     // Type-aware (oxlint-tsgolint): typescript-eslint's recommended type-checked set.
     "typescript/await-thenable": "error",
     "typescript/no-array-delete": "error",
@@ -62,6 +61,10 @@
     "typescript/no-unnecessary-qualifier": "error",
     "typescript/prefer-readonly": "error",
     "typescript/require-array-sort-compare": "error",
+    "typescript/strict-boolean-expressions": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/no-unnecessary-condition": "error",
+    "typescript/no-non-null-assertion": "error",
     // A `default` clause marks a switch over a union as deliberately partial.
     "typescript/switch-exhaustiveness-check": [
       "error",
@@ -69,45 +72,65 @@
         "considerDefaultExhaustiveForUnions": true
       }
     ],
-    // Spreading a Schema class instance is how a changed copy is built.
-    "typescript/no-misused-spread": "off"
+    // A runtime import cycle makes initialization order depend on who imports first.
+    "import/no-cycle": "error"
   },
   "overrides": [
     {
-      // JavaScript has no declared types, so every value it reads is `any`.
-      "files": ["**/*.mjs", "**/*.js"],
+      // The client and browser packages run in browsers; only the native package may use Node.
+      "files": ["packages/client/src/**", "packages/browser/src/**"],
       "rules": {
-        "typescript/no-unsafe-argument": "off",
-        "typescript/no-unsafe-assignment": "off",
-        "typescript/no-unsafe-call": "off",
-        "typescript/no-unsafe-member-access": "off",
-        "typescript/no-unsafe-return": "off"
+        "import/no-nodejs-modules": "error"
       }
     },
     {
-      // Async test doubles stand in for promise-returning APIs without awaiting.
-      "files": ["**/test/**", "integration/**", "scripts/pack/**"],
+      // release-tools builds a changed copy of a Schema class instance by spreading it into
+      // the class's `make`, which checks the result again; the prototype is not wanted.
+      "files": ["release-tools/**"],
       "rules": {
-        "typescript/require-await": "off"
+        "typescript/no-misused-spread": "off"
       }
     },
     {
-      // These consumers resolve their imports only inside the pack smoke's installs.
-      "files": ["scripts/pack/*-consumer.mts"],
+      // These files still break a rule below; a path goes once its file is fixed.
+      "files": [
+        "packages/browser/src/BrowserMedia.ts",
+        "packages/browser/src/BrowserPeer.ts",
+        "packages/browser/test/BrowserMedia.test.ts",
+        "packages/client/src/internal/playout/runtime.ts"
+      ],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    },
+    {
+      "files": ["packages/client/src/internal/playout/runtime.ts"],
+      "rules": {
+        "typescript/no-unnecessary-condition": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/client/src/internal/playout/policy.ts",
+        "packages/client/test/PlayoutPolicy.test.ts",
+        "packages/client/test/Playout.test.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off"
+      }
+    },
+    {
+      // The pack smoke's consumer fixtures resolve their imports and Node's types only inside
+      // its isolated installs, where it type-checks them against the installed packages.
+      "files": ["scripts/pack/**"],
       "rules": {
         "typescript/no-unsafe-argument": "off",
         "typescript/no-unsafe-assignment": "off",
         "typescript/no-unsafe-call": "off",
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-return": "off",
-        "typescript/no-redundant-type-constituents": "off"
-      }
-    },
-    {
-      // Vitest types its asymmetric matchers, such as expect.objectContaining, as `any`.
-      "files": ["packages/native/test/**"],
-      "rules": {
-        "typescript/no-unsafe-assignment": "off"
+        "typescript/no-redundant-type-constituents": "off",
+        "typescript/strict-boolean-expressions": "off"
       }
     }
   ],
@@ -115,7 +138,6 @@
     "**/dist/**",
     "**/node_modules/**",
     ".check/**",
-    "packages/native/lib/**",
     "packages/native/rust/**",
     "release-tools/node_modules/**",
     ".release/**"

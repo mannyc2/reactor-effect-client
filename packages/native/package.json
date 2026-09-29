@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect-native",
   "version": "0.7.1",
-  "description": "Native WebRTC host for reactor-effect-client over the reactor-effect-native Rust bridge: decoded media generations and explicit file upload",
+  "description": "Native WebRTC host for reactor-effect-client: the Peer port on a libwebrtc Node-API addon, in process or isolated per connection",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -12,49 +12,46 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "lib",
-    "rust/Cargo.toml",
-    "rust/Cargo.lock",
-    "rust/build.rs",
-    "rust/clippy.toml",
-    "rust/.cargo/config.toml",
-    "rust/include",
-    "rust/src",
-    "rust-toolchain.toml",
-    "scripts/build.sh",
-    "scripts/install-linux-toolchain.sh",
-    "scripts/stage.mjs",
-    "scripts/stage.sh",
-    "Dockerfile",
     "notices",
     "LICENSE",
     "NOTICE",
     "README.md"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+    "./package.json": "./package.json",
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js",
+    "./internal/*": null,
+    "./index": null
   },
   "engines": {
     "node": ">=22"
   },
+  "napi": {
+    "binaryName": "reactor-effect-native",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-apple-darwin"
+    ]
+  },
   "peerDependencies": {
     "@effect/platform-node": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*"
   },
   "optionalDependencies": {
-    "koffi": "catalog:"
+    "reactor-effect-native-darwin-arm64": "workspace:*",
+    "reactor-effect-native-linux-x64-gnu": "workspace:*"
   },
   "devDependencies": {
     "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "effect": "catalog:",
     "reactor-effect-client": "workspace:*",
-    "reactor-effect-test-kit": "workspace:*",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "@napi-rs/cli": "3.10.5"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",

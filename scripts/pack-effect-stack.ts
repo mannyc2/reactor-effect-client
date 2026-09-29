@@ -1,84 +1,216 @@
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+/**
+ * Selects the Effect stack pack qualifies from the frozen bun.lock, and checks that the workspace
+ * owners and every installed consumer resolve exactly that stack. It runs on Bun, which reads
+ * bun.lock with Bun.JSONC and parses versions with Bun.semver.
+ */
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
+export class EffectStackError extends Schema.TaggedError<EffectStackError>(
+  "reactor-effect/scripts/pack-effect-stack/EffectStackError",
+)("EffectStackError", {
+  message: Schema.String,
+  cause: Schema.optionalKey(Schema.Defect()),
+}) {}
+
+const failure = (message: string) => EffectStackError.make({ message });
+
+const stackKeys = ["effect", "nodePlatform", "nodeShared"] as const;
+type StackKey = (typeof stackKeys)[number];
 const packages = {
   effect: "effect",
   nodePlatform: "@effect/platform-node",
   nodeShared: "@effect/platform-node-shared",
-} as const;
-type StackKey = keyof typeof packages;
-type PackageName = (typeof packages)[StackKey];
-type Versions = Readonly<Record<StackKey, string>>;
-interface Requirements {
-  readonly effect: string;
-  readonly nodePlatform: string;
-  readonly nodeSharedOverride: string;
-}
-export interface StackSelection {
-  readonly lockfileVersion: 2;
-  readonly lockfileSha256: string;
-  readonly requirements: Requirements;
-  readonly selected: Versions;
-}
-interface WorkspaceResolution {
-  readonly owner: string;
-  readonly requested: PackageName;
-  readonly name: PackageName;
-  readonly version: string;
-  readonly lockCoordinate: string;
-}
-interface Instance {
-  readonly path: string;
-  readonly name: PackageName;
-  readonly version: string;
-}
-export interface ConsumerResolution {
-  readonly name: "portable-node" | "browser" | "native";
-  readonly installer: "bun" | "npm";
-  readonly instances: readonly Instance[];
-}
-export interface QualificationStack extends StackSelection {
-  readonly format: "reactor-effect-qualification-stack/v1";
-  readonly selection: "frozen-workspace";
-  readonly workspaceResolution: readonly WorkspaceResolution[];
-  readonly consumers: readonly ConsumerResolution[];
-}
+} as const satisfies Record<StackKey, string>;
+const StackPackage = Schema.Literals([packages.effect, packages.nodePlatform, packages.nodeShared]);
+type StackPackage = typeof StackPackage.Type;
+const keyFor = (name: string): StackKey | undefined =>
+  stackKeys.find((key) => packages[key] === name);
 
-const fail = (message: string): never => {
-  throw new Error(`pack Effect qualification: ${message}`);
-};
-const record = (value: unknown, context: string): Record<string, unknown> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return fail(`${context}: expected an object`);
-  return value as Record<string, unknown>;
-};
-const string = (value: unknown, context: string): string => {
-  if (typeof value !== "string" || value.length === 0) return fail(`${context}: expected a string`);
-  return value;
-};
-const array = (value: unknown, context: string): readonly unknown[] => {
-  if (!Array.isArray(value)) return fail(`${context}: expected an array`);
-  return value;
-};
-const keyFor = (name: string): StackKey | undefined => {
-  for (const key of Object.keys(packages) as StackKey[]) if (packages[key] === name) return key;
-  return undefined;
-};
-const exactVersion = (value: unknown, context: string): string => {
-  const version = string(value, `${context} exact version`);
+const Versions = Schema.Struct({
+  effect: Schema.String,
+  nodePlatform: Schema.String,
+  nodeShared: Schema.String,
+});
+
+/** The exact stack a frozen bun.lock selects, and the requirements that pin it. */
+const StackSelection = Schema.Struct({
+  lockfileVersion: Schema.Literal(2),
+  lockfileSha256: Schema.String,
+  requirements: Schema.Struct({
+    effect: Schema.String,
+    nodePlatform: Schema.String,
+    nodeSharedOverride: Schema.String,
+  }),
+  selected: Versions,
+});
+type StackSelection = typeof StackSelection.Type;
+
+const WorkspaceResolution = Schema.Struct({
+  owner: Schema.String,
+  requested: StackPackage,
+  name: StackPackage,
+  version: Schema.String,
+  lockCoordinate: Schema.String,
+});
+type WorkspaceResolution = typeof WorkspaceResolution.Type;
+
+const Instance = Schema.Struct({ path: Schema.String, name: StackPackage, version: Schema.String });
+type Instance = typeof Instance.Type;
+
+/** The stack instances one consumer's installer placed, as npm ls reports them. */
+const ConsumerResolution = Schema.Struct({
+  name: Schema.Literals(["portable-node", "browser", "native"]),
+  installer: Schema.Literals(["bun", "npm"]),
+  instances: Schema.Array(Instance),
+});
+export type ConsumerResolution = typeof ConsumerResolution.Type;
+
+/** What package-identity.json records of the stack once every consumer has passed. */
+export const QualificationStack = Schema.Struct({
+  format: Schema.Literal("reactor-effect-qualification-stack/v1"),
+  selection: Schema.Literal("frozen-workspace"),
+  ...StackSelection.fields,
+  workspaceResolution: Schema.Array(WorkspaceResolution),
+  consumers: Schema.Array(ConsumerResolution),
+});
+type QualificationStack = typeof QualificationStack.Type;
+
+/** What selection reads of the root manifest: the Effect versions its catalog and overrides pin. */
+const StackManifest = Schema.Struct({
+  workspaces: Schema.Struct({
+    catalog: Schema.Struct({
+      effect: Schema.NonEmptyString,
+      "@effect/platform-node": Schema.NonEmptyString,
+      "@effect/platform-node-shared": Schema.NonEmptyString,
+    }),
+  }),
+  overrides: Schema.Struct({ "@effect/platform-node-shared": Schema.NonEmptyString }),
+});
+
+/** A bun.lock package entry: a tuple led by its coordinate, `<name>@<version>`. */
+const LockEntry = Schema.TupleWithRest(Schema.Tuple([Schema.String]), [Schema.Unknown]);
+type LockEntry = typeof LockEntry.Type;
+
+const Lockfile = Schema.Struct({
+  lockfileVersion: Schema.Literal(2).annotate({
+    message: "unsupported lockfileVersion; expected 2",
+  }),
+  catalog: Schema.Record(Schema.String, Schema.String),
+  overrides: Schema.Record(Schema.String, Schema.String),
+  packages: Schema.Record(Schema.String, LockEntry),
+});
+
+/** A package bun.lock resolved from a registry: coordinate, registry, metadata and integrity. */
+const ResolvedPackage = Schema.Tuple([
+  Schema.NonEmptyString,
+  Schema.String,
+  Schema.Record(Schema.String, Schema.Unknown),
+  Schema.String,
+]);
+
+const Dependencies = Schema.Record(Schema.String, Schema.NonEmptyString);
+
+/** A workspace owner's manifest, where it declares the stack packages it resolves. */
+const OwnerManifest = Schema.fromJsonString(
+  Schema.Struct({
+    dependencies: Schema.optionalKey(Dependencies),
+    devDependencies: Schema.optionalKey(Dependencies),
+    peerDependencies: Schema.optionalKey(Dependencies),
+  }),
+);
+
+/** An installed stack package's manifest. */
+const InstalledManifest = Schema.fromJsonString(
+  Schema.Struct({ name: Schema.String, version: Schema.optionalKey(Schema.String) }),
+);
+
+/**
+ * A consumer's manifest: the private module pack writes, and the dependencies its install added
+ * after it. The fields keep that order, and anything else the installer wrote follows them.
+ */
+export const ConsumerManifest = Schema.StructWithRest(
+  Schema.Struct({
+    private: Schema.Literal(true),
+    type: Schema.Literal("module"),
+    dependencies: Schema.Record(Schema.String, Schema.String),
+  }),
+  [Schema.Record(Schema.String, Schema.Json)],
+);
+type ConsumerManifest = typeof ConsumerManifest.Type;
+
+/** A node of `npm ls --json` output. */
+interface DependencyNode {
+  readonly version?: string;
+  readonly problems?: ReadonlyArray<unknown>;
+  readonly invalid?: unknown;
+  readonly dependencies?: { readonly [name: string]: DependencyNode };
+}
+const DependencyNode: Schema.Codec<DependencyNode> = Schema.Struct({
+  version: Schema.optionalKey(Schema.String),
+  problems: Schema.Unknown.pipe(Schema.Array, Schema.optionalKey),
+  invalid: Schema.optionalKey(Schema.Unknown),
+  dependencies: Schema.optionalKey(
+    Schema.Record(
+      Schema.String,
+      Schema.suspend((): Schema.Codec<DependencyNode> => DependencyNode),
+    ),
+  ),
+});
+const DependencyTree = Schema.fromJsonString(DependencyNode);
+
+/** Every node of a dependency tree, each before its own dependencies, with its path and name. */
+const nodesOf = (
+  node: DependencyNode,
+  path: string,
+  name?: string,
+): ReadonlyArray<readonly [path: string, name: string | undefined, node: DependencyNode]> => [
+  [path, name, node],
+  ...Object.entries(node.dependencies ?? {}).flatMap(([dependency, child]) =>
+    nodesOf(child, `${path}/dependencies/${dependency}`, dependency),
+  ),
+];
+
+/** The lowercase hex SHA-256 of `bytes`, as pack records archives and their files. */
+export const sha256 = Effect.fnUntraced(function* (bytes: Uint8Array) {
+  const crypto = yield* Crypto.Crypto;
+  return Encoding.encodeHex(yield* crypto.digest("SHA-256", bytes));
+});
+
+const exactVersionPattern =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/;
+
+const exactVersion = Effect.fnUntraced(function* (version: string | undefined, context: string) {
+  if (version === undefined || version.length === 0)
+    return yield* failure(`${context} exact version: expected a string`);
   // Bun's semver parser also accepts ranges and partial versions. Lock coordinates
   // and installed manifests must first be concrete, canonical SemVer strings.
-  if (
-    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/.test(
-      version,
-    )
-  )
-    return fail(`${context}: expected an exact version, got ${version}`);
+  if (!exactVersionPattern.test(version))
+    return yield* failure(`${context}: expected an exact version, got ${version}`);
   Bun.semver.order(version, version);
   return version;
-};
+});
+
+const checkedVersion = Effect.fnUntraced(function* (
+  name: StackPackage,
+  value: string | undefined,
+  stack: StackSelection,
+  context: string,
+) {
+  const version = yield* exactVersion(value, `${context} ${name}`);
+  const key = keyFor(name);
+  if (key === undefined) return yield* failure(`unsupported package ${name}`);
+  if (version !== stack.selected[key])
+    return yield* failure(
+      `${context} ${name}@${version}, expected ${stack.selected[key]}; run bun install --frozen-lockfile`,
+    );
+  return version;
+});
 
 interface VerifiedArchive {
   readonly name: string;
@@ -86,210 +218,250 @@ interface VerifiedArchive {
   readonly specifier: string;
 }
 
-export const verifyInstalledArchive = (
+export const verifyInstalledArchive = Effect.fnUntraced(function* (
   directory: string,
   archive: VerifiedArchive & { readonly fileSha256: Readonly<Record<string, string>> },
-): VerifiedArchive => {
-  for (const [path, expected] of Object.entries(archive.fileSha256)) {
-    const installed = join(directory, "node_modules", archive.name, path);
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const [file, expected] of Object.entries(archive.fileSha256)) {
+    const installed = path.join(directory, "node_modules", archive.name, file);
     if (
-      !existsSync(installed) ||
-      createHash("sha256").update(readFileSync(installed)).digest("hex") !== expected
+      !(yield* fs.exists(installed)) ||
+      (yield* sha256(yield* fs.readFile(installed))) !== expected
     )
-      fail(`installed ${archive.name} differs from the exact archive: ${path}`);
+      return yield* failure(`installed ${archive.name} differs from the exact archive: ${file}`);
   }
-  return { name: archive.name, version: archive.version, specifier: archive.specifier };
-};
+  const verified: VerifiedArchive = {
+    name: archive.name,
+    version: archive.version,
+    specifier: archive.specifier,
+  };
+  return verified;
+});
 
 /** Call only after byte-checking the installed archives. Bun does not write npm's
  * local-tarball provenance metadata. Exact verified requirements let npm validate
  * the dependency graph without mutating an installed package or hiding errors. */
-export const verifiedArchiveRequirements = (
-  value: unknown,
-  archives: readonly VerifiedArchive[],
-): Record<string, unknown> => {
-  const manifest = record(value, "consumer manifest");
-  const dependencies = { ...record(manifest.dependencies, "consumer dependencies") };
+export const verifiedArchiveRequirements = Effect.fnUntraced(function* (
+  manifest: ConsumerManifest,
+  archives: ReadonlyArray<VerifiedArchive>,
+) {
+  const dependencies = { ...manifest.dependencies };
   for (const archive of archives) {
     if (
       dependencies[archive.name] !== archive.specifier &&
       dependencies[archive.name] !== `file:${archive.specifier}`
     )
-      fail(`consumer ${archive.name}: dependency is not the installed archive`);
-    dependencies[archive.name] = exactVersion(archive.version, `verified archive ${archive.name}`);
+      return yield* failure(`consumer ${archive.name}: dependency is not the installed archive`);
+    dependencies[archive.name] = yield* exactVersion(
+      archive.version,
+      `verified archive ${archive.name}`,
+    );
   }
-  return { ...manifest, dependencies };
+  const normalized: ConsumerManifest = { ...manifest, dependencies };
+  return normalized;
+});
+
+/** A key is `[<parent package>/]<package>`; the package is its last segment, or its last two
+ * when the second-to-last is a scope, so `x/@acme/effect` is not Effect. */
+const packageAt = (location: string): string => {
+  const parts = location.split("/");
+  const scope = parts.at(-2);
+  return scope?.startsWith("@") === true ? `${scope}/${parts.at(-1)}` : (parts.at(-1) ?? "");
 };
 
-/** Selection comes only from frozen bytes; requirements remain public compatibility ranges. */
-export const selectStack = (manifest: unknown, lockBytes: string | Uint8Array): StackSelection => {
-  const root = record(manifest, "root manifest");
-  const catalog = record(record(root.workspaces, "root workspaces").catalog, "root catalog");
-  const overrides = record(root.overrides, "root overrides");
-  const requirements: Requirements = {
-    effect: string(catalog.effect, "catalog effect"),
-    nodePlatform: string(catalog[packages.nodePlatform], "catalog platform-node"),
-    nodeSharedOverride: string(overrides[packages.nodeShared], "shared-platform override"),
+/**
+ * Selection comes only from frozen bytes, and the requirements must name exactly that selection:
+ * the archives' peers come from them, and a range would let a fresh install take a later RC that
+ * nothing here qualified.
+ */
+export const selectStack = Effect.fnUntraced(function* (
+  manifest: unknown,
+  lockBytes: string | Uint8Array,
+) {
+  const root = yield* Schema.decodeUnknownEffect(StackManifest)(manifest).pipe(
+    Effect.mapError((error) => failure(`root manifest: ${error.message}`)),
+  );
+  const catalog = root.workspaces.catalog;
+  const requirements = {
+    effect: catalog.effect,
+    nodePlatform: catalog[packages.nodePlatform],
+    nodeSharedOverride: root.overrides[packages.nodeShared],
   };
   if (requirements.nodeSharedOverride !== requirements.effect)
-    fail("the shared-platform override must match the Effect catalog requirement");
-  let parsed: unknown;
-  try {
-    const lockText =
-      typeof lockBytes === "string"
-        ? lockBytes
-        : new TextDecoder("utf-8", { fatal: true }).decode(lockBytes);
-    parsed = Bun.JSONC.parse(lockText);
-  } catch (cause) {
-    throw new Error("pack Effect qualification: unsupported bun.lock JSONC", { cause });
-  }
-  const lock = record(parsed, "bun.lock");
-  if (lock.lockfileVersion !== 2) fail("unsupported bun.lock lockfileVersion; expected 2");
-  const lockedCatalog = record(lock.catalog, "lock catalog");
-  const lockedOverrides = record(lock.overrides, "lock overrides");
-  for (const name of [packages.effect, packages.nodePlatform])
-    if (lockedCatalog[name] !== catalog[name])
-      fail(`lock catalog ${name} differs from manifest; run bun install --frozen-lockfile`);
-  if (lockedOverrides[packages.nodeShared] !== requirements.nodeSharedOverride)
-    fail("lock shared-platform override differs from manifest; run bun install --frozen-lockfile");
-  const tuples = record(lock.packages, "lock packages");
-  const tupleVersion = (value: unknown, name: string, context: string): string => {
-    const tuple = array(value, `${context} tuple`);
-    if (tuple.length !== 4 || typeof tuple[1] !== "string" || typeof tuple[3] !== "string")
-      return fail(`${context}: unsupported resolved package tuple`);
-    record(tuple[2], `${context} tuple metadata`);
-    const coordinate = string(tuple[0], `${context} coordinate`);
+    return yield* failure("the shared-platform override must match the Effect catalog requirement");
+  // The override resolves the shared platform in the workspace; the catalog entry is the native
+  // package's peer on it, which must name the same version.
+  if (catalog[packages.nodeShared] !== requirements.nodeSharedOverride)
+    return yield* failure(
+      `the shared-platform catalog entry ${catalog[packages.nodeShared]} must match its override ${requirements.nodeSharedOverride}`,
+    );
+  const parsed = yield* Effect.try({
+    try: () =>
+      Bun.JSONC.parse(
+        typeof lockBytes === "string"
+          ? lockBytes
+          : new TextDecoder("utf-8", { fatal: true }).decode(lockBytes),
+      ),
+    catch: (cause) => EffectStackError.make({ message: "unsupported bun.lock JSONC", cause }),
+  });
+  const lock = yield* Schema.decodeUnknownEffect(Lockfile)(parsed).pipe(
+    Effect.mapError((error) => failure(`bun.lock: ${error.message}`)),
+  );
+  for (const name of [packages.effect, packages.nodePlatform, packages.nodeShared])
+    if (lock.catalog[name] !== catalog[name])
+      return yield* failure(
+        `lock catalog ${name} differs from manifest; run bun install --frozen-lockfile`,
+      );
+  if (lock.overrides[packages.nodeShared] !== requirements.nodeSharedOverride)
+    return yield* failure(
+      "lock shared-platform override differs from manifest; run bun install --frozen-lockfile",
+    );
+  const tupleVersion = Effect.fnUntraced(function* (
+    entry: LockEntry,
+    name: StackPackage,
+    context: string,
+  ) {
+    const [coordinate] = yield* Schema.decodeUnknownEffect(ResolvedPackage)(entry).pipe(
+      Effect.mapError(() => failure(`${context}: unsupported resolved package tuple`)),
+    );
     if (!coordinate.startsWith(`${name}@`))
-      return fail(`${context}: wrong package coordinate ${coordinate}`);
-    return exactVersion(coordinate.slice(name.length + 1), context);
-  };
-  const fromTuple = (key: StackKey): string => {
+      return yield* failure(`${context}: wrong package coordinate ${coordinate}`);
+    return yield* exactVersion(coordinate.slice(name.length + 1), context);
+  });
+  const fromTuple = Effect.fnUntraced(function* (key: StackKey) {
     const name = packages[key];
-    if (tuples[name] === undefined) return fail(`missing lock tuple for ${name}`);
-    return tupleVersion(tuples[name], name, name);
+    const entry = lock.packages[name];
+    if (entry === undefined) return yield* failure(`missing lock tuple for ${name}`);
+    return yield* tupleVersion(entry, name, name);
+  });
+  const selected = {
+    effect: yield* fromTuple("effect"),
+    nodePlatform: yield* fromTuple("nodePlatform"),
+    nodeShared: yield* fromTuple("nodeShared"),
   };
-  const selected: Versions = {
-    effect: fromTuple("effect"),
-    nodePlatform: fromTuple("nodePlatform"),
-    nodeShared: fromTuple("nodeShared"),
-  };
-  for (const key of Object.keys(packages) as StackKey[]) {
+  for (const key of stackKeys) {
+    if (selected[key] !== selected.effect)
+      return yield* failure("Effect/node/shared selections must be aligned");
     const requirement = key === "nodeShared" ? requirements.nodeSharedOverride : requirements[key];
-    if (!Bun.semver.satisfies(selected[key], requirement))
-      fail(`${packages[key]}@${selected[key]} does not satisfy ${requirement}`);
-    if (selected[key] !== selected.effect) fail("Effect/node/shared selections must be aligned");
+    if (requirement !== selected[key])
+      return yield* failure(
+        `${packages[key]} requirement ${requirement} must be exactly the locked ${selected[key]}`,
+      );
   }
   // Bun may add qualified keys for a second instance. Inspect its coordinate as
   // well as its key so a nested conflicting version cannot hide behind an alias.
-  // A key is `[<parent package>/]<package>`; the package is its last segment, or
-  // its last two when the second-to-last is a scope, so `x/@acme/effect` is not Effect.
-  const packageAt = (location: string): string => {
-    const parts = location.split("/");
-    const scope = parts.at(-2);
-    return scope?.startsWith("@") === true ? `${scope}/${parts.at(-1)}` : (parts.at(-1) ?? "");
-  };
-  for (const [location, value] of Object.entries(tuples)) {
-    const tuple: readonly unknown[] = Array.isArray(value) ? value : [];
-    for (const key of Object.keys(packages) as StackKey[]) {
+  for (const [location, entry] of Object.entries(lock.packages))
+    for (const key of stackKeys) {
       const name = packages[key];
-      if (
-        packageAt(location) === name ||
-        (typeof tuple[0] === "string" && tuple[0].startsWith(`${name}@`))
-      ) {
-        if (tupleVersion(value, name, location) !== selected[key])
-          fail(`conflicting lock coordinate for ${name} at ${location}`);
-      }
+      if (packageAt(location) !== name && !entry[0].startsWith(`${name}@`)) continue;
+      if ((yield* tupleVersion(entry, name, location)) !== selected[key])
+        return yield* failure(`conflicting lock coordinate for ${name} at ${location}`);
     }
-  }
-  return {
+  const selection: StackSelection = {
     lockfileVersion: 2,
-    lockfileSha256: createHash("sha256").update(lockBytes).digest("hex"),
+    lockfileSha256: yield* sha256(
+      typeof lockBytes === "string" ? new TextEncoder().encode(lockBytes) : lockBytes,
+    ),
     requirements,
     selected,
   };
-};
-
-const checkedVersion = (
-  name: PackageName,
-  value: unknown,
-  stack: StackSelection,
-  context: string,
-): string => {
-  const version = exactVersion(value, `${context} ${name}`);
-  const key = keyFor(name) ?? fail(`unsupported package ${name}`);
-  if (version !== stack.selected[key])
-    fail(
-      `${context} ${name}@${version}, expected ${stack.selected[key]}; run bun install --frozen-lockfile`,
-    );
-  return version;
-};
-
-/** This small filesystem seam is shared by production and disposable resolver fixtures. */
-export const resolveStackPackage = (
-  ownerManifest: string,
-  name: PackageName,
-  stack: StackSelection,
-) => {
-  let path: string;
-  let value: unknown;
-  try {
-    path = realpathSync(createRequire(ownerManifest).resolve(`${name}/package.json`));
-    value = JSON.parse(readFileSync(path, "utf8"));
-  } catch (cause) {
-    throw new Error(
-      `pack Effect qualification: ${ownerManifest} cannot qualify ${name}; run bun install --frozen-lockfile`,
-      { cause },
-    );
-  }
-  const metadata = record(value, `${ownerManifest} ${name}`);
-  if (metadata.name !== name) fail(`${ownerManifest}: resolved ${name} with wrong package name`);
-  return { path, version: checkedVersion(name, metadata.version, stack, ownerManifest) };
-};
-
-const workspaceEdges = ["client", "browser", "native"].flatMap((directory) => {
-  const owner = `packages/${directory}`;
-  const nodeOwner = `${owner} -> ${packages.nodePlatform}`;
-  const sharedOwner = `${nodeOwner} -> ${packages.nodeShared}`;
-  return [
-    { owner, requested: packages.effect },
-    ...(directory === "browser"
-      ? []
-      : [
-          { owner, requested: packages.nodePlatform },
-          { owner: nodeOwner, requested: packages.effect },
-          { owner: nodeOwner, requested: packages.nodeShared },
-          { owner: sharedOwner, requested: packages.effect },
-        ]),
-  ];
+  return selection;
 });
 
-export const resolveWorkspaceStack = (
+/** A packed archive peers on Effect, and on every stack package, at exactly the selection. */
+export const checkArchivePeers = Effect.fnUntraced(function* (
+  name: string,
+  peers: Readonly<Record<string, string>> | undefined,
+  stack: StackSelection,
+) {
+  if (peers?.[packages.effect] === undefined)
+    return yield* failure(`${name} must declare its ${packages.effect} peer`);
+  for (const [peer, requirement] of Object.entries(peers)) {
+    const key = keyFor(peer);
+    if (key !== undefined && requirement !== stack.selected[key])
+      return yield* failure(
+        `${name} must pin its ${peer} peer to exactly ${stack.selected[key]}, not ${requirement}`,
+      );
+  }
+});
+
+/** This small filesystem seam is shared by production and disposable resolver fixtures. */
+export const resolveStackPackage = Effect.fnUntraced(function* (
+  ownerManifest: string,
+  name: StackPackage,
+  stack: StackSelection,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const unresolved = (cause: unknown) =>
+    EffectStackError.make({
+      message: `${ownerManifest} cannot qualify ${name}; run bun install --frozen-lockfile`,
+      cause,
+    });
+  const resolved = yield* Effect.try({
+    try: () => createRequire(ownerManifest).resolve(`${name}/package.json`),
+    catch: unresolved,
+  });
+  const path = yield* fs.realPath(resolved).pipe(Effect.mapError(unresolved));
+  const text = yield* fs.readFileString(path).pipe(Effect.mapError(unresolved));
+  const metadata = yield* Schema.decodeEffect(InstalledManifest)(text).pipe(
+    Effect.mapError((error) => failure(`${ownerManifest} ${name}: ${error.message}`)),
+  );
+  if (metadata.name !== name)
+    return yield* failure(`${ownerManifest}: resolved ${name} with wrong package name`);
+  return { path, version: yield* checkedVersion(name, metadata.version, stack, ownerManifest) };
+});
+
+const workspaceEdges = ["client", "browser", "native"].flatMap(
+  (directory): ReadonlyArray<{ readonly owner: string; readonly requested: StackPackage }> => {
+    const owner = `packages/${directory}`;
+    const nodeOwner = `${owner} -> ${packages.nodePlatform}`;
+    const sharedOwner = `${nodeOwner} -> ${packages.nodeShared}`;
+    return [
+      { owner, requested: packages.effect },
+      ...(directory === "browser"
+        ? []
+        : [
+            { owner, requested: packages.nodePlatform },
+            { owner: nodeOwner, requested: packages.effect },
+            { owner: nodeOwner, requested: packages.nodeShared },
+            { owner: sharedOwner, requested: packages.effect },
+          ]),
+    ];
+  },
+);
+
+export const resolveWorkspaceStack = Effect.fnUntraced(function* (
   root: string,
   stack: StackSelection,
-): readonly WorkspaceResolution[] => {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const owners = new Map<string, string>();
-  const resolutions: WorkspaceResolution[] = [];
+  const resolutions: Array<WorkspaceResolution> = [];
   for (const { owner, requested } of workspaceEdges) {
-    const path = owners.get(owner) ?? join(root, owner, "package.json");
+    const ownerPath = owners.get(owner) ?? path.join(root, owner, "package.json");
     if (!owners.has(owner)) {
-      const metadata = record(JSON.parse(readFileSync(path, "utf8")), owner);
-      const declared = [
+      const metadata = yield* Schema.decodeEffect(OwnerManifest)(
+        yield* fs.readFileString(ownerPath),
+      ).pipe(Effect.mapError((error) => failure(`${owner}: ${error.message}`)));
+      const requirement = [
         metadata.dependencies,
         metadata.devDependencies,
         metadata.peerDependencies,
-      ].some((group) => {
-        if (group === undefined) return false;
-        const value = record(group, `${owner} dependencies`)[requested];
-        if (value === undefined) return false;
-        const requirement = string(value, `${owner} ${requested} requirement`);
-        const key = keyFor(requested) ?? fail(`unsupported package ${requested}`);
-        if (requirement !== "catalog:" && !Bun.semver.satisfies(stack.selected[key], requirement))
-          fail(`${owner} declared ${requested} requirement differs from frozen selection`);
-        return true;
-      });
-      if (!declared) fail(`${owner} must declare ${requested}`);
+      ]
+        .map((group) => group?.[requested])
+        .find((value) => value !== undefined);
+      if (requirement === undefined) return yield* failure(`${owner} must declare ${requested}`);
+      const key = keyFor(requested);
+      if (key === undefined) return yield* failure(`unsupported package ${requested}`);
+      if (requirement !== "catalog:" && requirement !== stack.selected[key])
+        return yield* failure(
+          `${owner} declared ${requested} requirement differs from frozen selection`,
+        );
     }
-    const resolved = resolveStackPackage(path, requested, stack);
+    const resolved = yield* resolveStackPackage(ownerPath, requested, stack);
     owners.set(`${owner} -> ${requested}`, resolved.path);
     resolutions.push({
       owner,
@@ -300,116 +472,98 @@ export const resolveWorkspaceStack = (
     });
   }
   return resolutions;
-};
+});
 
 /** npm ls remains a read-only diagnostic, including for Bun-installed consumers. */
-export const inspectConsumerTree = (
+export const inspectConsumerTree = Effect.fnUntraced(function* (
   name: ConsumerResolution["name"],
   installer: ConsumerResolution["installer"],
-  value: unknown,
+  output: string,
   stack: StackSelection,
-): ConsumerResolution => {
-  const instances: Instance[] = [];
-  const visit = (value: unknown, path: string): void => {
-    const node = record(value, `${name} ${path}`);
-    if (node.problems !== undefined && array(node.problems, `${name} ${path} problems`).length > 0)
-      fail(`${name} ${path}: dependency problems`);
-    if (node.invalid !== undefined && node.invalid !== false)
-      fail(`${name} ${path}: invalid dependency`);
-    if (node.dependencies === undefined) return;
-    for (const [dependencyName, value] of Object.entries(
-      record(node.dependencies, `${name} ${path} dependencies`),
-    )) {
-      const child = `${path}/dependencies/${dependencyName}`;
-      const dependency = record(value, `${name} ${child}`);
-      const key = keyFor(dependencyName);
-      if (key !== undefined) {
-        const packageName = packages[key];
-        instances.push({
-          path: child,
-          name: packageName,
-          version: checkedVersion(packageName, dependency.version, stack, `${name} ${child}`),
-        });
-      }
-      visit(dependency, child);
+) {
+  const tree = yield* Schema.decodeEffect(DependencyTree)(output).pipe(
+    Effect.mapError((error) => failure(`${name}: ${error.message}`)),
+  );
+  const instances: Array<Instance> = [];
+  for (const [path, dependency, node] of nodesOf(tree, ".")) {
+    const key = dependency === undefined ? undefined : keyFor(dependency);
+    if (key !== undefined) {
+      const packageName = packages[key];
+      instances.push({
+        path,
+        name: packageName,
+        version: yield* checkedVersion(packageName, node.version, stack, `${name} ${path}`),
+      });
     }
-  };
-  visit(value, ".");
+    if (node.problems !== undefined && node.problems.length > 0)
+      return yield* failure(`${name} ${path}: dependency problems`);
+    if (node.invalid !== undefined && node.invalid !== false)
+      return yield* failure(`${name} ${path}: invalid dependency`);
+  }
   for (const required of name === "native" ? Object.values(packages) : [packages.effect])
     if (!instances.some((instance) => instance.name === required))
-      fail(`${name}: missing required ${required}`);
-  return { name, installer, instances };
-};
+      return yield* failure(`${name}: missing required ${required}`);
+  const resolution: ConsumerResolution = { name, installer, instances };
+  return resolution;
+});
 
 /** Only completed consumer gates may enter the retained success identity. */
-export const completeQualification = (
+export const completeQualification = Effect.fnUntraced(function* (
   stack: StackSelection,
-  workspaceValue: unknown,
-  consumersValue: unknown,
+  workspace: ReadonlyArray<WorkspaceResolution>,
+  consumers: ReadonlyArray<ConsumerResolution>,
   profile: "portable" | "full",
-): QualificationStack => {
-  const workspaceResolution = array(workspaceValue, "workspace resolutions").map(
-    (value, index): WorkspaceResolution => {
-      const edge = record(value, "workspace resolution");
-      const expected = workspaceEdges[index];
-      if (
-        expected === undefined ||
-        edge.owner !== expected.owner ||
-        edge.requested !== expected.requested ||
-        edge.name !== expected.requested
-      )
-        return fail("workspace resolution differs from the required owner edges");
-      const version = checkedVersion(expected.requested, edge.version, stack, expected.owner);
-      if (edge.lockCoordinate !== `${expected.requested}@${version}`)
-        fail("workspace lock coordinate differs");
-      return {
-        ...expected,
-        name: expected.requested,
-        version,
-        lockCoordinate: `${expected.requested}@${version}`,
-      };
-    },
-  );
+) {
+  const workspaceResolution: Array<WorkspaceResolution> = [];
+  for (const [index, edge] of workspace.entries()) {
+    const expected = workspaceEdges[index];
+    if (
+      expected === undefined ||
+      edge.owner !== expected.owner ||
+      edge.requested !== expected.requested ||
+      edge.name !== expected.requested
+    )
+      return yield* failure("workspace resolution differs from the required owner edges");
+    const version = yield* checkedVersion(expected.requested, edge.version, stack, expected.owner);
+    const lockCoordinate = `${expected.requested}@${version}`;
+    if (edge.lockCoordinate !== lockCoordinate)
+      return yield* failure("workspace lock coordinate differs");
+    workspaceResolution.push({ ...expected, name: expected.requested, version, lockCoordinate });
+  }
   if (workspaceResolution.length !== workspaceEdges.length)
-    fail("incomplete workspace resolutions");
+    return yield* failure("incomplete workspace resolutions");
   const expectedConsumers =
     profile === "full" ? ["portable-node", "browser", "native"] : ["portable-node", "browser"];
-  const consumers = array(consumersValue, "completed consumers").map(
-    (value, index): ConsumerResolution => {
-      const consumer = record(value, "completed consumer");
-      const name = consumer.name;
-      if (
-        (name !== "portable-node" && name !== "browser" && name !== "native") ||
-        name !== expectedConsumers[index]
-      )
-        return fail("unexpected completed consumers");
-      const installer = consumer.installer;
-      if (installer !== "bun" && installer !== "npm") return fail(`${name}: invalid installer`);
-      const instances = array(consumer.instances, `${name} instances`).map((value): Instance => {
-        const instance = record(value, `${name} instance`);
-        const key = keyFor(string(instance.name, `${name} instance name`));
-        if (key === undefined) return fail(`${name}: unexpected stack instance`);
-        const packageName = packages[key];
-        return {
-          path: string(instance.path, `${name} instance path`),
-          name: packageName,
-          version: checkedVersion(packageName, instance.version, stack, name),
-        };
+  const completed: Array<ConsumerResolution> = [];
+  for (const [index, consumer] of consumers.entries()) {
+    if (consumer.name !== expectedConsumers[index])
+      return yield* failure("unexpected completed consumers");
+    const instances: Array<Instance> = [];
+    for (const instance of consumer.instances) {
+      const key = keyFor(instance.name);
+      if (key === undefined) return yield* failure(`${consumer.name}: unexpected stack instance`);
+      const packageName = packages[key];
+      instances.push({
+        path: instance.path,
+        name: packageName,
+        version: yield* checkedVersion(packageName, instance.version, stack, consumer.name),
       });
-      for (const required of name === "native" ? Object.values(packages) : [packages.effect])
-        if (!instances.some((instance) => instance.name === required))
-          fail(`${name}: missing required ${required}`);
-      return { name, installer, instances };
-    },
-  );
-  if (consumers.length !== expectedConsumers.length) fail("missing completed consumers");
-  if (new Set(consumers.map((consumer) => consumer.installer)).size !== 1)
-    fail("mixed consumer installers");
-  return {
+    }
+    for (const required of consumer.name === "native" ? Object.values(packages) : [packages.effect])
+      if (!instances.some((instance) => instance.name === required))
+        return yield* failure(`${consumer.name}: missing required ${required}`);
+    completed.push({ name: consumer.name, installer: consumer.installer, instances });
+  }
+  if (completed.length !== expectedConsumers.length)
+    return yield* failure("missing completed consumers");
+  if (new Set(completed.map((consumer) => consumer.installer)).size !== 1)
+    return yield* failure("mixed consumer installers");
+  const qualification: QualificationStack = {
     format: "reactor-effect-qualification-stack/v1",
     selection: "frozen-workspace",
     ...stack,
     workspaceResolution,
-    consumers,
+    consumers: completed,
   };
-};
+  return qualification;
+});

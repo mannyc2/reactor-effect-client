@@ -7,22 +7,20 @@ cd "$root"
 if [ "$(uname -s)" = Linux ]; then
   cc=${CC:-clang-21}
   cxx=${CXX:-clang++-21}
-  command -v "$cc" >/dev/null 2>&1 || {
-    echo "native-linux-toolchain-missing: C compiler '$cc' not found; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
-    exit 2
-  }
-  command -v "$cxx" >/dev/null 2>&1 || {
-    echo "native-linux-toolchain-missing: C++ compiler '$cxx' not found; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
-    exit 2
-  }
-  "$cc" --version >/dev/null 2>&1 || { echo "native-linux-toolchain-invalid: CC '$cc' cannot execute" >&2; exit 2; }
-  "$cxx" --version >/dev/null 2>&1 || { echo "native-linux-toolchain-invalid: CXX '$cxx' cannot execute" >&2; exit 2; }
+  for compiler in "$cc" "$cxx"; do
+    "$compiler" --version >/dev/null 2>&1 || {
+      echo "native-linux-toolchain-missing: '$compiler' cannot run; set CC/CXX explicitly or opt in to scripts/install-linux-toolchain.sh in a supported Docker/CI environment" >&2
+      exit 2
+    }
+  done
   export CC="$cc" CXX="$cxx"
 fi
 
 # Apply the native deployment target even when invoked from the SDK root.
 # Lint levels live in rust/Cargo.toml's [lints] table; warnings fail here.
 cargo fmt --manifest-path rust/Cargo.toml -- --check
+# build.rs reads the locked graph offline, which needs every platform's crates.
+cargo fetch --locked --manifest-path rust/Cargo.toml
 cargo test --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- --nocapture
 cargo clippy --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --no-deps --document-private-items
@@ -31,9 +29,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --config rust/.cargo/config.toml --locked -
 cargo build --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --release --example far_peer
 REACTOR_NATIVE_FAR_PEER="${CARGO_TARGET_DIR:-$root/rust/target}/release/examples/far_peer"
 export REACTOR_NATIVE_FAR_PEER
-# The preceding native:build owns staging. Tests load only the staged artifact
-# and reject a missing or mismatched identity instead of rebuilding another copy.
-# Under Bun, Koffi runs on Bun's own Node-API implementation, whose behaviour
-# under load has differed from Node's, so the same suite runs on both runtimes.
+# The preceding native:build owns staging; the tests load the staged addon.
+# Bun has its own Node-API implementation, so the suite runs on both runtimes.
 "${NODE_BINARY:-node}" node_modules/vitest/vitest.mjs run
 "${BUN_BINARY:-bun}" --bun node_modules/vitest/vitest.mjs run

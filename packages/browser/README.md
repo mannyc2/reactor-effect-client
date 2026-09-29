@@ -1,6 +1,6 @@
 # reactor-effect-browser
 
-Browser WebRTC host for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client). It selects the built-in `RTCPeerConnection` and browser media tracks as the transport for the canonical `Session`, and exposes generation-scoped tracks, track-to-frame/audio conversion, and recording helpers.
+Browser WebRTC host for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client). `BrowserPeer` binds the session's `Peer` port to the built-in `RTCPeerConnection`, and `BrowserMedia` reads a connected session's tracks as the browser's own `MediaStreamTrack`s and plays them.
 
 This is not an official Reactor SDK.
 
@@ -10,38 +10,43 @@ This is not an official Reactor SDK.
 npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
 ```
 
-`reactor-effect-client` and Effect `4.0.0-rc.117` are peer dependencies (`^4.0.0-rc.117`); later rc releases are accepted without a forced SDK bump. The package needs a secure context with WebRTC and Web Crypto. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
+`reactor-effect-client` and Effect `4.0.0-rc.117` are peer dependencies, both exact: a later Effect rc needs a new SDK release. The package needs a browser with WebRTC. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
 
 ## Usage
 
-`Browser.layer` supplies the `PeerFactory` for `Reactor.layer()`. Constructing a factory makes no allocation. Effect HTTP and crypto services remain explicit.
+`BrowserPeer.layer` supplies the `PeerFactory` for `Reactor.layer()`. Building it checks for `RTCPeerConnection` and `MediaStream`, and fails with `UnsupportedHost` without them, before any session is allocated. The HTTP client stays explicit. The page never holds the API key: its `Coordinator.Tokens` ask the application's server for a token that creates the session and then, before each expires, for one bound to it.
 
 ```ts
 import { Effect, Layer } from "effect";
-import * as Reactor from "reactor-effect-client";
-import * as Browser from "reactor-effect-browser";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as H3 from "reactor-effect-client/H3";
+import * as Reactor from "reactor-effect-client/Reactor";
+import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 
-const clientLayer = Reactor.layer({ apiUrl: "https://api.reactor.inc" }).pipe(
-  Layer.provide(Layer.mergeAll(Reactor.FetchHttp.layer, Browser.layer)),
+const reactorLayer = Reactor.layer().pipe(
+  Layer.provide(
+    Layer.mergeAll(Coordinator.layer({ apiUrl: "https://api.reactor.inc" }), BrowserPeer.layer),
+  ),
+  Layer.provide(FetchHttpClient.layer),
 );
 
-const useTrack = Effect.scoped(
+// The tokens come from the application's server, which holds the API key.
+const watch = (element: HTMLVideoElement, tokens: Coordinator.Tokens) =>
   Effect.gen(function* () {
-    const client = yield* Reactor.Client;
-    const session = yield* client.createConnected({ model: "your-model" });
-    const media = yield* Browser.media(session);
-    return yield* media.track("main_video");
-  }),
-);
+    const reactor = yield* Reactor.Reactor;
+    const session = yield* reactor.create({ model: H3.modelName, tokens });
+    const tracks = yield* BrowserMedia.tracks(session);
+    yield* BrowserMedia.play(yield* tracks.track("main_video"), element);
+    return yield* Effect.never;
+  }).pipe(Effect.scoped);
 ```
 
-The application also provides Effect's `Crypto` service, backed by Web Crypto.
+`BrowserMedia.tracks(session)` returns the session's current generation. `tracks.track(name)` acquires a clone of a received track that stops when its scope closes; `publish`, `unpublish`, `setTrackActive` and `setMaxBitrate` act on that generation, and a reconnect makes a new one that the application obtains again. The session reconnects a dropped connection on its own, so an application holding tracks follows `session.changes` to the next ready generation and obtains them again.
 
-`Browser.media(session)` obtains the negotiated generation; `media.track(name)` acquires a scoped `MediaStreamTrack`, and `media.publish(name, track)` publishes through that generation. Media values stay bound to the generation that negotiated them. A reconnect creates a new generation; existing readers end or fail with their source, and applications obtain the new generation explicitly.
+`BrowserMedia.play(track, element, { playTimeout })` plays a clone of `track` in `element` until the scope closes, which stops the clone and detaches it. It refuses a track that is not live and an element that already has a source, and fails when starting takes longer than `playTimeout`, 10 seconds by default. Starting playback does not establish that anyone saw it.
 
-The entry point also exports `videoFrames`, `audioSamples`, `webAudioSamples`, `audioContext`, `play`, `nextPresentation` and the `Recording` namespace, whose `downloadClip(coordinator, clip, options)` transfers a prepared recording within a caller wall deadline through the portable `Coordinator.Client` from `Coordinator.make()`; it is the same operation as `coordinator.downloadClip(clip, options)`.
-
-If the host lacks `RTCPeerConnection` or `MediaStream`, building `Browser.layer` fails with `UnsupportedHost`, before any coordinator request can be made.
+The peer opens the control channel before the data channel. It fails the connection with `Overflow` when a message exceeds the bound SCTP negotiated (at most 256 KiB), and refuses a `send`, before submitting it, while more than 1 MiB waits in the channel's buffer. Closing the peer closes both channels and the connection and stops every track it received or leased.
 
 ## Example
 
@@ -49,7 +54,7 @@ If the host lacks `RTCPeerConnection` or `MediaStream`, building `Browser.layer`
 
 ## Development
 
-This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Its tests are simulated-host policy tests: they do not establish browser WebRTC or codec support. Real Chrome interoperability with the native host is exercised by the workspace's `integration` project.
+This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Its tests run the peer and playback against DOM fakes on Node and Bun: they check ordering, bounds and ownership, not browser WebRTC or codec support. Real Chrome interoperability with the native host is exercised by the workspace's `integration` project.
 
 ## License
 

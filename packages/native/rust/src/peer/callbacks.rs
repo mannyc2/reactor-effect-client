@@ -3,9 +3,8 @@
 //! calls or waits on the host.
 
 use super::Shared;
-use crate::abi::{Channel, MAX_MESSAGE_BYTES};
 use crate::error::{BridgeError, Classify, FailureClass};
-use crate::protocol::{Event, LocalCandidate, connection_state};
+use crate::protocol::{Candidate, Channel, Event, MAX_MESSAGE_BYTES, connection_state};
 use reactor_webrtc::{
     DataChannel, DataChannelState, IceGatheringState, PeerConnection, PeerConnectionObserver,
 };
@@ -19,7 +18,7 @@ pub(crate) fn observer(shared: &Arc<Shared>) -> PeerConnectionObserver {
             let shared = Arc::clone(shared);
             move |state| {
                 shared.admit(|| {
-                    shared.emit(&Event::State {
+                    shared.emit(Event::State {
                         state: connection_state(state),
                     });
                 });
@@ -30,7 +29,7 @@ pub(crate) fn observer(shared: &Arc<Shared>) -> PeerConnectionObserver {
             move |state| {
                 shared.admit(|| {
                     if state == IceGatheringState::Complete {
-                        shared.emit(&Event::Ice { candidate: None });
+                        shared.emit(Event::Ice { candidate: None });
                     }
                 });
             }
@@ -39,8 +38,8 @@ pub(crate) fn observer(shared: &Arc<Shared>) -> PeerConnectionObserver {
             let shared = Arc::clone(shared);
             move |candidate| {
                 shared.admit(|| {
-                    shared.emit(&Event::Ice {
-                        candidate: Some(LocalCandidate::from(&candidate)),
+                    shared.emit(Event::Ice {
+                        candidate: Some(Candidate::from(&candidate)),
                     });
                 });
             }
@@ -74,7 +73,7 @@ pub(crate) fn open_channel(
                     DataChannelState::Closed => false,
                     DataChannelState::Connecting | DataChannelState::Closing => return,
                 };
-                shared.emit(&Event::Channel { channel, open });
+                shared.emit(Event::Channel { channel, open });
             });
         }
     });
@@ -88,32 +87,31 @@ fn receive(shared: &Shared, channel: Channel, bytes: &[u8], binary: bool) {
     if !binary {
         shared.emit_error(
             FailureClass::Protocol,
-            &format!("{label} data channel delivered a nonbinary message"),
+            format!("{label} data channel delivered a nonbinary message"),
         );
     } else if bytes.len() > MAX_MESSAGE_BYTES {
         shared.emit_error(
             FailureClass::Overflow,
-            &format!("{label} data channel message exceeds local bound"),
+            format!("{label} data channel message exceeds local bound"),
         );
     } else {
-        shared.emit(&Event::Message { channel, bytes });
+        shared.emit(Event::Message {
+            channel,
+            bytes: bytes.to_vec(),
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::Status;
     use crate::sync::Taken;
-    use crate::test_support::parse_packet;
-    use serde_json::{Value, json};
 
-    fn next_event(shared: &Shared) -> (Value, Vec<u8>) {
-        let Taken::Item(packet) = shared.events.take(|_| true) else {
+    fn next_event(shared: &Shared) -> Event {
+        let Taken::Item(event) = shared.events.take(|_| true) else {
             panic!("an event must be queued");
         };
-        let (header, payload) = parse_packet(&packet);
-        (header, payload.to_vec())
+        event
     }
 
     #[test]
@@ -121,9 +119,13 @@ mod tests {
         let shared = Shared::new();
         let message = vec![7; MAX_MESSAGE_BYTES];
         receive(&shared, Channel::Control, &message, true);
-        let (header, payload) = next_event(&shared);
-        assert_eq!(header, json!({ "type": "message", "channel": "control" }));
-        assert_eq!(payload, message);
+        assert_eq!(
+            next_event(&shared),
+            Event::Message {
+                channel: Channel::Control,
+                bytes: message,
+            }
+        );
     }
 
     #[test]
@@ -136,10 +138,16 @@ mod tests {
             &vec![0; MAX_MESSAGE_BYTES + 1],
             true,
         );
-        let (text, _) = next_event(&shared);
-        assert_eq!(text["type"], "error");
-        assert_eq!(text["status"], Status::Protocol.code());
-        let (oversized, _) = next_event(&shared);
-        assert_eq!(oversized["status"], Status::Overflow.code());
+        let Event::Error { class: text, .. } = next_event(&shared) else {
+            panic!("a text message is an error");
+        };
+        assert_eq!(text, FailureClass::Protocol);
+        let Event::Error {
+            class: oversized, ..
+        } = next_event(&shared)
+        else {
+            panic!("an oversized message is an error");
+        };
+        assert_eq!(oversized, FailureClass::Overflow);
     }
 }
