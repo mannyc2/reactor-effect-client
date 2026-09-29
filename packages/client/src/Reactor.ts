@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Random from "effect/Random";
+import * as Schedule from "effect/Schedule";
 import type * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { Coordinator, notTerminated } from "./Coordinator.js";
@@ -25,15 +26,54 @@ export interface Options {
   /** How long an upload may take in all; 60 seconds by default. */
   readonly uploadTimeout?: Duration.Input | undefined;
   /**
-   * How long connecting may take in all, the wait for a GPU included; 3 minutes by default.
-   * Waiting for a GPU is not billed.
+   * How long connecting may take, the wait for a GPU included; 3 minutes by default. Waiting for
+   * a GPU is not billed. The deadline cuts the allocation and the negotiation, not the host's work
+   * on either side of them: making the connection's peer, which every shipped host does at once,
+   * and shutting it down after a failed attempt, which the native peer bounds by its
+   * `shutdownTimeout` (10 seconds by default) and the browser's does at once.
    */
   readonly connectTimeout?: Duration.Input | undefined;
   /**
-   * How long a reconnect may take; 30 seconds by default, the time Reactor keeps a
-   * session that has lost its last connection before it ends it.
+   * How long a reconnect may take, a session's own counted from the drop that began it, through the
+   * drops of connections that did not stay up 10 seconds; 30 seconds by default, the time Reactor
+   * keeps a session that has lost its last connection before it ends it. A connection a session's
+   * own reconnect made ready as the time ran out is left up, and the session stops trying if it
+   * drops before it has been ready 10 seconds. The deadline cuts the negotiation, not the host's
+   * work on either side of it: making the connection's peer, which every shipped host does at once,
+   * and shutting down the peer it replaces, or its own after a failed attempt, which the native
+   * peer bounds by its `shutdownTimeout` (10 seconds by default) and the browser's does at once.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
+  /**
+   * How a session reconnects a connection it drops, on its own and whoever reads it, owned or
+   * attached: one attempt at once, then another after each failure on this schedule, which gets the
+   * failure as its input. A connection that drops within 10 seconds of being ready is such a
+   * failure too, so a connection that keeps dropping is tried on the schedule, not at once, and
+   * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds, the
+   * schedule stops, the session is closing or ended (by Reactor or its moderation), Reactor refuses
+   * this client's protocol (`VersionMismatch`), or `reconnectTimeout` has passed. A refusal that
+   * may lift is tried again, a 401 or 403 included, though only a session's `Tokens` give it a
+   * fresh token, and only within a minute of its current one's expiry (a quarter of the token's
+   * life, if that is shorter); until then, and always with `fixedTokens` or no `Tokens` at all,
+   * each attempt sends what was refused.
+   * Each failed attempt is a `Diagnostic` event, and a reconnect that runs out of time stops with a
+   * `Timeout` `lastError` whose `Redacted` `context.detail` is the last attempt's failure, or why
+   * the connection ready as the time ran out dropped. Each attempt is a new connection generation
+   * of the same session: it allocates nothing and never replays a command. By default the second
+   * attempt comes 250 ms after the first fails and each wait doubles, to at most 4 seconds,
+   * jittered by up to a fifth either way; after a refusal's `Retry-After` it is at least that long,
+   * and jittered only upward, by up to a fifth, so sessions refused together spread out. A schedule
+   * with no delay of its own tries again at once, for all of `reconnectTimeout`, each time with a
+   * new peer (a process of its own on the isolated native host), so space its attempts as the
+   * default does. The session reconnects in its acquisition's context, with the tracer,
+   * `ErrorReporter`s and clock `create` or `attach` ran with, and each attempt's
+   * `Session.reconnect` span begins a trace of its own, linked to the acquisition's. Reconnecting
+   * keeps a session alive, and billed, through its drops: an owned session its application never
+   * closed, or one a viewer holds after its owner has gone, runs on for as long as the process
+   * holding it does, to its cap if it has one. `false` leaves a dropped connection dropped until
+   * `session.reconnect`, so that Reactor ends a session 30 seconds after its last connection drops.
+   */
+  readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
   readonly readyTimeout?: Duration.Input | undefined;
   /** Between heartbeats; 10 seconds by default, `"Infinity"` for none. */
@@ -68,7 +108,11 @@ export interface CreateOptions<E = never, R = never> extends AcquisitionOptions 
   /**
    * Runs once the session is allocated and before it connects, so a
    * supervisor can record the owner first. Its failure closes the session and
-   * is returned as it is.
+   * fails the acquisition with an `AcquisitionFailure` carrying the close's
+   * report, as any failure after allocation does: one of the client's failures
+   * keeps its reason and context, and any other error becomes an `Aborted`
+   * failure with that error as its `context.detail`. A defect stays a defect,
+   * raised once the session is closed.
    */
   readonly onAllocated?: ((session: Session) => Effect.Effect<void, E, R>) | undefined;
 }
@@ -91,7 +135,7 @@ export class Reactor extends Context.Service<
   {
     readonly create: <E = never, R = never>(
       options: CreateOptions<E, R>,
-    ) => Effect.Effect<Session, AcquisitionFailure | E, Scope.Scope | R>;
+    ) => Effect.Effect<Session, AcquisitionFailure, Scope.Scope | R>;
     readonly attach: (
       options: AttachOptions,
     ) => Effect.Effect<Session, AcquisitionFailure, Scope.Scope>;
@@ -127,6 +171,27 @@ const bounded = (
   return Effect.succeed(duration);
 };
 
+/**
+ * A session's own reconnect by default: 250 ms after the first failed attempt, doubling to at
+ * most 4 s, jittered by up to a fifth either way, as `Schedule.jittered` does, so clients that
+ * dropped together do not try again together. After a refusal's `Retry-After` the wait is at
+ * least that long, jittered only upward, so clients refused together spread out too and none
+ * tries sooner than it was asked.
+ */
+const reconnectSchedule: Schedule.Schedule<unknown, ReactorError> = Schedule.min([
+  Schedule.exponential("250 millis"),
+  Schedule.spaced("4 seconds"),
+]).pipe(
+  Schedule.modifyDelay(({ input, duration }) =>
+    Effect.map(Random.next, (draw) => {
+      const asked = ReactorError.is(input) ? input.retryAfter : undefined;
+      return asked === undefined
+        ? Duration.millis(Duration.toMillis(duration) * (0.8 + 0.4 * draw))
+        : Duration.millis(Duration.toMillis(Duration.max(duration, asked)) * (1 + 0.2 * draw));
+    }),
+  ),
+);
+
 const count = (value: number | undefined, fallback: number, maximum: number, name: string) =>
   Number.isSafeInteger(value ?? fallback) &&
   (value ?? fallback) >= 1 &&
@@ -143,6 +208,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     uploadTimeout: yield* bounded(options.uploadTimeout, "60 seconds", "upload timeout"),
     connectTimeout: yield* bounded(options.connectTimeout, "3 minutes", "connect timeout"),
     reconnectTimeout: yield* bounded(options.reconnectTimeout, "30 seconds", "reconnect timeout"),
+    reconnect: options.reconnect === false ? undefined : (options.reconnect ?? reconnectSchedule),
     readyTimeout: yield* bounded(options.readyTimeout, "30 seconds", "ready timeout"),
     heartbeat: yield* bounded(options.heartbeatInterval, "10 seconds", "heartbeat interval", true),
     maxPending: yield* count(options.maxPending, 128, 4096, "maxPending"),
@@ -159,7 +225,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     tokens: (Pick<Tokens, "bind"> & Partial<Pick<Tokens, "create">>) | undefined,
     resumeTracks: boolean | undefined,
     onAllocated: ((session: Session) => Effect.Effect<void, E, R>) | undefined,
-  ): Effect.Effect<Session, AcquisitionFailure | E, Scope.Scope | R> =>
+  ): Effect.Effect<Session, AcquisitionFailure, Scope.Scope | R> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const rejected = (error: ReactorError) =>
@@ -188,7 +254,18 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             yield* Effect.annotateCurrentSpan("reactor.session.id", id);
             const session = handle.session(id);
             if (onAllocated !== undefined) {
-              const recorded = yield* Effect.exit(onAllocated(session));
+              const recorded = yield* onAllocated(session).pipe(
+                Effect.mapError((error) =>
+                  isReactorFailure(error)
+                    ? error
+                    : ReactorError.fromCode("Aborted", "onAllocated failed", {
+                        operation: "onAllocated",
+                        sessionId: id,
+                        detail: error,
+                      }),
+                ),
+                Effect.exit,
+              );
               if (Exit.isFailure(recorded)) return Exit.failCause(recorded.cause);
             }
             yield* handle.connect;
@@ -203,14 +280,15 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.onInterrupt(() => Scope.close(scope, Exit.void)),
         );
         if (Exit.isSuccess(acquired)) return acquired.value;
-        // A failure from onAllocated releases the lease too. One of the client's
-        // own failures carries the cleanup evidence; an application's own error
-        // is returned as it was raised.
+        // A failure from onAllocated releases the lease too, and carries the
+        // release's report as any failure after allocation does: the session may
+        // outlive a release that could not end it. A defect is raised once the
+        // lease is released.
         const report = yield* release;
-        const application = Cause.findError(acquired.cause);
-        return yield* application._tag === "Success" && isReactorFailure(application.success)
-          ? Effect.fail(AcquisitionFailure.from(application.success, report))
-          : Effect.failCause(acquired.cause);
+        const failure = Cause.findError(acquired.cause);
+        return yield* failure._tag === "Success"
+          ? Effect.fail(AcquisitionFailure.from(failure.success, report))
+          : Effect.failCause(failure.failure);
       }),
     ).pipe(
       Effect.withSpan(

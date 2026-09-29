@@ -48,7 +48,7 @@ export {
 export type { CanvasAspect, ModelProfile } from "./internal/h3/profile.js";
 export { Clip, Queue, State } from "./internal/h3/messages.js";
 export type { DecodedMessage, Message, MessageType, Payload } from "./internal/h3/messages.js";
-export type { Contract } from "./internal/h3/commands.js";
+export type { CommandName, Contract } from "./internal/h3/commands.js";
 export type {
   ClipFact,
   ClipOperation,
@@ -56,6 +56,7 @@ export type {
   OperationFacts,
 } from "./internal/h3/operations.js";
 export type { Acceptance, ClipObservation, Facts, ProviderSnapshot } from "./internal/h3/state.js";
+export type { State as SubmissionState, Submission } from "./internal/h3/submission.js";
 export { Reference } from "./internal/h3/references.js";
 export type { ValidatedAudioReference, ValidatedReference } from "./internal/h3/references.js";
 
@@ -123,7 +124,12 @@ export interface Options {
   readonly uploadTimeout?: Duration.Input | undefined;
   /** Reading the deployment schema, then the first state and queue; 60 seconds each by default. */
   readonly setupTimeout?: Duration.Input | undefined;
-  /** How long an uncertain enqueue waits for evidence that settles it; 5 seconds by default. */
+  /**
+   * Bounds both waits of an enqueue its reply has not settled; 5 seconds by
+   * default. Evidence of the clip that came before the reply decides once it
+   * has waited this long without the reply, and an enqueue whose reply is lost
+   * waits this long for evidence.
+   */
   readonly reconcileWindow?: Duration.Input | undefined;
 }
 

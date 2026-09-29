@@ -46,8 +46,42 @@ export const Fault = Schema.Union([
     ...nth,
     status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
   }),
+  /**
+   * `POST /sessions` on a token whose sessions are used allocates a session
+   * all the same, where it is otherwise refused 403 `session_limit`. What
+   * hosted Reactor answers a spent token is unobserved.
+   */
+  Schema.TaggedStruct("IgnoreSessionLimit", nth),
+  /**
+   * `POST /sessions` on a token whose sessions are used answers with the
+   * session the token created last, where it is otherwise refused 403
+   * `session_limit`. What hosted Reactor answers a spent token is unobserved.
+   */
+  Schema.TaggedStruct("RepeatSession", nth),
+  /**
+   * `POST /sessions` allocates, and answers 200 with a descriptor that names
+   * no session, so the client cannot tell what it made. Whether hosted
+   * Reactor ever answers so is unobserved.
+   */
+  Schema.TaggedStruct("UnnamedAllocation", nth),
+  /**
+   * `POST /sessions` is never answered and allocates nothing, so only the
+   * client's own deadline ends the request, not knowing what it made.
+   */
+  Schema.TaggedStruct("StallAllocation", nth),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
+  /**
+   * A reconnect is refused with 503, or with `status`, saying to try again `retryAfter` later
+   * when it is set: the offer that replaces a connection's SDP (`PUT sdp_params`) takes no
+   * effect.
+   */
+  Schema.TaggedStruct("RefuseReconnect", {
+    ...nth,
+    status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
+    /** Sent as `Retry-After`, in whole seconds. */
+    retryAfter: Schema.optionalKey(Schema.Duration),
+  }),
   /** The model never answers the command; with `applied` it takes effect and only the reply is lost. */
   Schema.TaggedStruct("DropReply", {
     ...nth,
@@ -67,10 +101,22 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("Disconnect", { ...nth, after: Schema.Duration }),
   /** Sessions end this long after they become ready, when that is sooner than their grant. */
   Schema.TaggedStruct("Expire", { after: Schema.Duration }),
+  /**
+   * No session ends at its grant's cap: each runs until it is terminated, or
+   * until 30 s after its last connection drops. Whether hosted Reactor ends a
+   * session nothing ever connected to at its cap is unobserved.
+   */
+  Schema.TaggedStruct("IgnoreCap", {}),
   /** DELETE is accepted and the session reads STOPPING this long before it closes. */
   Schema.TaggedStruct("SlowDelete", { for: Schema.Duration }),
   /** DELETE is accepted and the session runs on until its grant ends. */
   Schema.TaggedStruct("IgnoreDelete", {}),
+  /**
+   * `GET /sessions/{id}` answers 404 for a session that still runs, as a
+   * coordinator that lost track of it for a moment would. Whether hosted
+   * Reactor ever does is unobserved.
+   */
+  Schema.TaggedStruct("MissingSession", nth),
   /** While a clip plays, video is absent, black or one repeated frame. */
   Schema.TaggedStruct("Video", { video: Schema.Literals(["absent", "black", "frozen"]) }),
   /** The session offers audio and sends none. */

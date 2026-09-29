@@ -2,14 +2,17 @@
  * The playout's shell around its pure policy. One fiber owns the policy state:
  * it takes an input (a caller's edit, a session's evidence, a command's result)
  * or wakes at the policy's next deadline, runs `step`, and carries out what the
- * step asks. Provider commands go through one worker, one at a time; session
- * opens and closes run in their own fibers and report back through the inbox.
+ * step asks. Each session's provider commands go through a worker of its own,
+ * one at a time and in order, so a slow command holds up only its own
+ * session's; session opens and closes run in their own fibers. Each reports
+ * back through the inbox.
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -27,8 +30,9 @@ import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
 import { Request } from "../h3/request.js";
 import { take } from "../queue.js";
-import { CommandFailure, ReactorError } from "../../ReactorError.js";
+import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
+import { mayStillBill } from "../../Session.js";
 import type { CloseReport } from "../../Session.js";
 import {
   InvalidFiller,
@@ -44,12 +48,13 @@ import * as Policy from "./policy.js";
 import * as Tag from "./tag.js";
 
 type Handle = {
-  readonly started: Deferred.Deferred<Playout.AsRunStatus>;
-  readonly outcome: Deferred.Deferred<Playout.AsRunStatus>;
+  readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
+  readonly outcome: Deferred.Deferred<Playout.Settled>;
 };
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
+type Command = Extract<Policy.Action, { _tag: "Command" }>;
 
 /** Close reports kept beyond the unconfirmed ones. */
 const retainedReports = 8;
@@ -58,6 +63,30 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
   input === undefined ? fallback : Duration.toMillis(Duration.fromInputUnsafe(input));
 
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
+
+/**
+ * The wait until a wake `ms` away, in whole nanoseconds rounded up: the clock counts whole
+ * nanoseconds, and a wake between two of them comes at the later one.
+ */
+const untilWake = (ms: number): Duration.Duration =>
+  Duration.nanos(BigInt(Math.max(0, Math.ceil(ms * 1_000_000))));
+
+/**
+ * Reports the defects of `cause`, whose failure decides what it was for. A defect beside a
+ * failure, such as a finalizer's that died as the effect failed, is still one; the failure, which
+ * the plan handles, is not reported.
+ */
+const reportDefects = (cause: Cause.Cause<unknown>): Effect.Effect<void> => {
+  const dies = cause.reasons.filter(Cause.isDieReason);
+  return dies.length > 0 ? ErrorReporter.report(Cause.fromReasons(dies)) : Effect.void;
+};
+
+/**
+ * Closes `scope` with `exit`. A finalizer that dies is reported, and what follows the close goes
+ * on: a failed open still says it failed.
+ */
+const closeScope = (scope: Scope.Scope, exit: Exit.Exit<unknown, unknown>): Effect.Effect<void> =>
+  Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
 
 /**
  * Where a request for the clip `tag` names falls outside H3's documented
@@ -137,6 +166,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
                 ? undefined
                 : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
             },
+            protect: options.filler.protect ?? "air",
           },
     maxBuildsInFlight: options.maxBuildsInFlight ?? 1,
     maxHistory: options.maxHistory ?? 4096,
@@ -151,7 +181,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<R>();
   const inbox = yield* Queue.unbounded<Policy.Input>();
-  const work = yield* Queue.unbounded<Extract<Policy.Action, { _tag: "Command" }>>();
   const events = yield* PubSub.unbounded<Playout.Event>();
   const state = yield* Ref.make(Policy.initial);
   const ids = yield* Ref.make(0);
@@ -164,14 +193,30 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   );
   const drains = yield* Ref.make(new Map<number, Deferred.Deferred<void>>());
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
+  // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
-    new Map<string, { readonly source: Playout.Source; readonly scope: Scope.Closeable }>(),
+    new Map<
+      string,
+      {
+        readonly source: Playout.Source;
+        readonly scope: Scope.Closeable;
+        readonly lane: Queue.Queue<Command>;
+      }
+    >(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
+  // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
-  // Why the latest open failed while no open has succeeded since, and why the latest session was lost.
-  const lastOpenError = yield* Ref.make<ReactorFailure | undefined>(undefined);
-  const lastLostError = yield* Ref.make<ReactorError | undefined>(undefined);
+  /** Completes once the playout has stopped, however it stopped. */
+  const stopped = Deferred.await(failure).pipe(Effect.exit);
+  // Why the latest open failed while no open has succeeded since, and why the latest session was
+  // lost: the error, or the defect when there was no error.
+  const lastOpenError = yield* Ref.make<
+    Result.Result<ReactorFailure, Cause.Cause<never>> | undefined
+  >(undefined);
+  const lastLostError = yield* Ref.make<
+    Result.Result<ReactorError, Cause.Cause<never>> | undefined
+  >(undefined);
   const cleanup = yield* Ref.make<Playout.Cleanup>({ sessions: 0, retained: [] });
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
@@ -183,8 +228,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const existing = (yield* Ref.get(handles)).get(key);
       if (existing !== undefined) return existing;
       const created: Handle = {
-        started: yield* Deferred.make<Playout.AsRunStatus>(),
-        outcome: yield* Deferred.make<Playout.AsRunStatus>(),
+        started: yield* Deferred.make<Effect.Success<Playout.ItemHandle["started"]>>(),
+        outcome: yield* Deferred.make<Playout.Settled>(),
       };
       yield* Ref.update(handles, (all) => new Map(all).set(key, created));
       return created;
@@ -215,26 +260,30 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     closed: Effect.Effect<A, E2>,
   ): Effect.Effect<A, E | E2> => {
     const settled: Effect.Effect<A, E> = Deferred.await(deferred);
-    const stopped: Effect.Effect<A, E | E2> = Effect.andThen(
-      Deferred.await(failure),
+    const done: Effect.Effect<A, E | E2> = Effect.andThen(
+      stopped,
       Effect.flatMap(Deferred.isDone(deferred), (done): Effect.Effect<A, E | E2> =>
         done ? settled : closed,
       ),
     );
-    return Effect.raceFirst(settled, stopped);
+    return Effect.raceFirst(settled, done);
   };
 
   const record = (report: CloseReport): Effect.Effect<void> =>
     Ref.update(cleanup, (value) => {
-      const unconfirmed = (entry: CloseReport) =>
-        entry.allocation !== "none" && entry.ownership === "owned" && !entry.remote.confirmed;
       const all = [...value.retained, report];
-      const confirmed = all.filter((entry) => !unconfirmed(entry)).slice(-retainedReports);
+      const settled = all.filter((entry) => !mayStillBill(entry)).slice(-retainedReports);
       return {
         sessions: value.sessions + 1,
-        retained: all.filter((entry) => unconfirmed(entry) || confirmed.includes(entry)),
+        retained: all.filter((entry) => mayStillBill(entry) || settled.includes(entry)),
       };
     });
+
+  /** Closes `source` and records its report. A close that dies leaves none: it is reported. */
+  const closeRecorded = (source: Playout.Source): Effect.Effect<void> =>
+    Effect.flatMap(Effect.exit(source.close), (closed) =>
+      Exit.isSuccess(closed) ? record(closed.value) : reportDefects(closed.cause),
+    );
 
   const closeSource = (sessionId: string): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -245,8 +294,57 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         next.delete(sessionId);
         return next;
       });
-      yield* record(yield* entry.source.close);
-      yield* Scope.close(entry.scope, Exit.void);
+      yield* closeRecorded(entry.source);
+      yield* closeScope(entry.scope, Exit.void);
+    });
+
+  /** What a command for a session already gone gets: it was never sent. */
+  const gone = (command: Policy.Command): Policy.CommandResult => ({
+    _tag: "Failed",
+    cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
+      operation: command._tag,
+      outcome: "not-submitted",
+    }),
+  });
+
+  const run = (action: Command): Effect.Effect<Policy.CommandResult> =>
+    Effect.gen(function* () {
+      const entry = (yield* Ref.get(sources)).get(action.sessionId);
+      if (entry === undefined) return gone(action.command);
+      const source = entry.source;
+      const command = action.command;
+      // A method that throws when called, rather than returning an effect, dies here as its
+      // effect would have: its lane carries on.
+      const result = Effect.suspend((): Effect.Effect<string | void, CommandFailure> => {
+        switch (command._tag) {
+          case "Enqueue":
+            return source.enqueue(command.request, command.tag, command.continueFrom);
+          case "Remove":
+            return source.remove(command.clipId);
+          case "Move":
+            return source.move(command.clipId, command.position);
+          case "Autoplay":
+            return source.setAutoplay(command.enabled);
+          case "Stop":
+            return source.stop(command.clipId);
+          case "Play":
+            return source.play(command.clipId);
+        }
+      });
+      const exit = yield* Effect.exit(result);
+      if (Exit.isSuccess(exit))
+        return {
+          _tag: "Done",
+          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
+        } as const;
+      const error = Exit.findErrorOption(exit);
+      if (Option.isSome(error)) {
+        yield* reportDefects(exit.cause);
+        return { _tag: "Failed", cause: error.value } as const;
+      }
+      // Whether the command went out can't be told: the plan treats it as unknown.
+      yield* ErrorReporter.report(exit.cause);
+      return { _tag: "Died" } as const;
     });
 
   const open = Effect.gen(function* () {
@@ -262,19 +360,54 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       Effect.exit,
     );
     if (Exit.isFailure(opened)) {
-      yield* Scope.close(child, opened);
-      const error = Exit.findErrorOption(opened).pipe(Option.getOrUndefined);
-      yield* Ref.set(lastOpenError, error);
+      yield* closeScope(child, opened);
+      const found = Cause.findError(opened.cause);
+      yield* Ref.set(lastOpenError, found);
+      if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
+      else yield* reportDefects(opened.cause);
+      const error = Result.getOrUndefined(found);
+      // A failed acquisition still reports what it allocated, and that may still bill. Any other
+      // failure, a timeout or a defect among them, may have allocated unseen.
+      const allocated = !AcquisitionFailure.is(error) || error.cleanup.allocation !== "none";
+      if (AcquisitionFailure.is(error) && allocated) yield* record(error.cleanup);
+      const retryAfter = error?.retryAfter;
       return yield* offer({
         _tag: "OpenFailed",
-        reason: error?.message ?? "opening a session failed",
+        reason: error?.message ?? "opening a session died",
         fatal: false,
+        allocated,
+        ...(retryAfter === undefined ? {} : { retryAfterMs: Duration.toMillis(retryAfter) }),
       });
     }
     const source = opened.value;
+    if ((yield* Ref.get(sources)).has(source.sessionId)) {
+      // The plan knows a session by its id: a second live source under one would be taken for
+      // the first. It is closed unused, and the playout fails, since opening again gives the same.
+      yield* closeRecorded(source);
+      yield* closeScope(child, Exit.void);
+      const duplicate = ReactorError.fromCode(
+        "InvalidState",
+        "an opened source's session id is already in use",
+      );
+      yield* Ref.set(lastOpenError, Result.succeed(duplicate));
+      return yield* offer({
+        _tag: "OpenFailed",
+        reason: duplicate.message,
+        fatal: true,
+        allocated: true,
+      });
+    }
     yield* Ref.set(lastOpenError, undefined);
+    // The session's commands, one at a time and in order. Its worker lives in the session's
+    // scope, so the lane ends with the session.
+    const lane = yield* Queue.unbounded<Command>();
+    yield* Effect.forever(
+      Effect.flatMap(take(lane), (action) =>
+        Effect.flatMap(run(action), (result) => offer({ _tag: "Result", id: action.id, result })),
+      ),
+    ).pipe(Effect.forkIn(child));
     yield* Ref.update(sources, (all) =>
-      new Map(all).set(source.sessionId, { source, scope: child }),
+      new Map(all).set(source.sessionId, { source, scope: child, lane }),
     );
     const lifetimeMs = Duration.toMillis(source.lifetime);
     yield* offer({
@@ -285,92 +418,62 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     yield* source.events.pipe(
       Stream.runForEach((event) => offer({ _tag: "Source", sessionId: source.sessionId, event })),
       Effect.exit,
-      Effect.flatMap((exit) => {
-        const error = Exit.isSuccess(exit)
-          ? undefined
-          : Exit.findErrorOption(exit).pipe(Option.getOrUndefined);
-        return Ref.set(lastLostError, error).pipe(
-          Effect.andThen(
-            offer({
-              _tag: "Lost",
-              sessionId: source.sessionId,
-              reason: Exit.isSuccess(exit)
+      Effect.flatMap((exit) =>
+        Effect.gen(function* () {
+          const found = Exit.isSuccess(exit) ? undefined : Cause.findError(exit.cause);
+          yield* Ref.set(lastLostError, found);
+          if (Exit.isFailure(exit) && found !== undefined) {
+            if (Result.isFailure(found)) yield* ErrorReporter.report(exit.cause);
+            else yield* reportDefects(exit.cause);
+          }
+          const error = found === undefined ? undefined : Result.getOrUndefined(found);
+          yield* offer({
+            _tag: "Lost",
+            sessionId: source.sessionId,
+            reason:
+              found === undefined
                 ? "the session ended"
-                : (error?.message ?? "the session failed"),
-            }),
-          ),
-        );
-      }),
+                : (error?.message ?? "the session's events died"),
+          });
+        }),
+      ),
       Effect.forkIn(child),
     );
   });
 
-  const run = (
-    action: Extract<Policy.Action, { _tag: "Command" }>,
-  ): Effect.Effect<Policy.CommandResult> =>
-    Effect.gen(function* () {
-      const entry = (yield* Ref.get(sources)).get(action.sessionId);
-      if (entry === undefined)
-        return {
-          _tag: "Failed",
-          cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
-            operation: action.command._tag,
-            outcome: "not-submitted",
-          }),
-        } as const;
-      const source = entry.source;
-      const command = action.command;
-      const result = ((): Effect.Effect<string | void, CommandFailure> => {
-        switch (command._tag) {
-          case "Enqueue":
-            return source.enqueue(command.request, command.tag, command.continueFrom);
-          case "Remove":
-            return source.remove(command.clipId);
-          case "Move":
-            return source.move(command.clipId, command.position);
-          case "Autoplay":
-            return source.setAutoplay(command.enabled);
-          case "Stop":
-            return source.stop(command.clipId);
-          case "Play":
-            return source.play(command.clipId);
-        }
-      })();
-      const exit = yield* Effect.exit(result);
-      if (Exit.isSuccess(exit))
-        return {
-          _tag: "Done",
-          clipId: Predicate.isString(exit.value) ? exit.value : undefined,
-        } as const;
-      const error = Exit.findErrorOption(exit);
-      return Option.isSome(error)
-        ? ({ _tag: "Failed", cause: error.value } as const)
-        : ({ _tag: "Died" } as const);
-    });
-
-  /** Why the plan failed the playout: the error behind a failed open or a loss, when there was one. */
-  const failureOf = (
+  /**
+   * Why the plan failed the playout: the error behind a failed open or a loss,
+   * or the defect when there was no error.
+   */
+  const failureOf = Effect.fnUntraced(function* (
     action: Extract<Policy.Action, { _tag: "Fail" }>,
-  ): Effect.Effect<ReactorFailure | InvalidFiller> => {
-    const otherwise = (error: ReactorFailure | undefined) =>
-      error ?? ReactorError.fromCode("InvalidState", action.reason);
+  ): Effect.fn.Return<Result.Result<ReactorFailure | InvalidFiller, Cause.Cause<never>>> {
     switch (action.cause) {
       case "filler":
-        return Effect.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
+        return Result.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
       case "moderation":
-        return Effect.succeed(ReactorError.fromCode("Moderated", action.reason));
+        return Result.succeed(ReactorError.fromCode("Moderated", action.reason));
       case "open":
-        return Effect.map(Ref.get(lastOpenError), otherwise);
+        return (
+          (yield* Ref.get(lastOpenError)) ??
+          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+        );
       case "lost":
-        return Effect.map(Ref.get(lastLostError), otherwise);
+        return (
+          (yield* Ref.get(lastLostError)) ??
+          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+        );
     }
-  };
+  });
 
   const act = (action: Policy.Action): Effect.Effect<void> =>
     Effect.gen(function* () {
       switch (action._tag) {
-        case "Command":
-          return yield* Queue.offer(work, action);
+        case "Command": {
+          const entry = (yield* Ref.get(sources)).get(action.sessionId);
+          if (entry !== undefined) return yield* Queue.offer(entry.lane, action);
+          return yield* offer({ _tag: "Result", id: action.id, result: gone(action.command) });
+        }
         case "Open":
           return yield* Effect.forkIn(open, scope);
         case "Close":
@@ -387,8 +490,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             const { key, status } = action.event.event;
             const value = yield* handle(key);
             const decided = Policy.decides(status);
-            if (decided.started) yield* Deferred.succeed(value.started, status);
-            if (decided.outcome) yield* Deferred.succeed(value.outcome, status);
+            if (decided.started !== undefined)
+              yield* Deferred.succeed(value.started, decided.started);
+            if (decided.outcome !== undefined)
+              yield* Deferred.succeed(value.outcome, decided.outcome);
           }
           return;
         }
@@ -427,7 +532,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             return next;
           });
         case "Fail": {
-          yield* Deferred.succeed(failure, yield* failureOf(action));
+          const why = yield* failureOf(action);
+          yield* Result.isSuccess(why)
+            ? Deferred.succeed(failure, why.success)
+            : Deferred.failCause(failure, why.failure);
           // A playout that failed for good closes its sessions at once: an owned one would bill off air.
           yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, {
             discard: true,
@@ -445,13 +553,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       return result.wake;
     });
 
-  // The worker: provider commands one at a time, each result back through the inbox.
-  yield* Effect.forever(
-    Effect.flatMap(take(work), (action) =>
-      Effect.flatMap(run(action), (result) => offer({ _tag: "Result", id: action.id, result })),
-    ),
-  ).pipe(Effect.forkIn(scope));
-
   // When the scope closes: the loop stops first, then every waiting item settles and each session closes.
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -462,20 +563,18 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   );
   /**
    * The loop died of a defect, such as a throwing `filler.clip`: the playout
-   * fails, settles what it can, and closes every session, so nothing waits on a
-   * loop that is gone and no owned session bills on.
+   * dies with it, settles what it can, and closes every session, so nothing
+   * waits on a loop that is gone and no owned session bills on. The defect is
+   * reported, and its text never becomes a message of the library's.
    */
   const crashed = (cause: Cause.Cause<never>) =>
     Effect.gen(function* () {
-      yield* Deferred.succeed(
-        failure,
-        ReactorError.fromCode("InvalidState", `the playout's plan failed: ${Cause.pretty(cause)}`),
-      );
+      yield* ErrorReporter.report(cause);
+      yield* Deferred.failCause(failure, cause);
       yield* apply({ _tag: "Close" }).pipe(Effect.catchCause(() => Effect.void));
-      const unsettled: Playout.AsRunStatus = { _tag: "Unknown", terminal: true };
       for (const value of (yield* Ref.get(handles)).values()) {
-        yield* Deferred.succeed(value.started, unsettled);
-        yield* Deferred.succeed(value.outcome, unsettled);
+        yield* Deferred.succeed(value.started, Policy.indeterminate);
+        yield* Deferred.succeed(value.outcome, Policy.indeterminate);
       }
       yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, { discard: true });
     });
@@ -486,7 +585,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const input =
         wake === undefined
           ? Option.some(yield* take(inbox))
-          : yield* take(inbox).pipe(Effect.timeoutOption(Math.max(0, wake - mono)));
+          : yield* take(inbox).pipe(Effect.timeoutOption(untilWake(wake - mono)));
+      // Nothing falls due before the wake: a wait that ends short of it, on a clock coarser than
+      // the wake, waits on.
+      if (Option.isNone(input) && wake !== undefined && (yield* monotonic) < wake) continue;
       wake = yield* apply(Option.getOrElse(input, (): Policy.Input => ({ _tag: "Tick" })));
     }
   }).pipe(
@@ -821,9 +923,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     ),
     video: SubscriptionRef.changes(onAir).pipe(
       Stream.switchMap((source) => source?.video ?? Stream.never),
+      Stream.interruptWhen(stopped),
     ),
     audio: SubscriptionRef.changes(onAir).pipe(
       Stream.switchMap((source) => source?.audio ?? Stream.never),
+      Stream.interruptWhen(stopped),
     ),
     failure: Deferred.await(failure),
     cleanup: Ref.get(cleanup),

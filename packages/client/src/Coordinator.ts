@@ -288,7 +288,10 @@ export interface TokenGrant {
   readonly jwt: Redacted.Redacted<string>;
   /** When the token expires, in seconds since the epoch, as Reactor set it. */
   readonly expiresAt: number;
-  /** The cap on each session the token creates, in seconds, as asked; undefined for none. */
+  /**
+   * The cap on each session the token creates, in seconds: as asked, or the
+   * narrower cap Reactor's echo states; undefined for none.
+   */
   readonly maxSessionSeconds: number | undefined;
   /** Reactor's echo of the grant, when its reply carries one; a grant wider than asked is refused. */
   readonly granted?: Granted | undefined;
@@ -475,12 +478,15 @@ export interface Signaling {
 export interface Options {
   readonly apiUrl?: string | undefined;
   /**
-   * The API key `mintToken` uses when its options name none. A server that
-   * holds it also terminates with it when no `credential` is set, since the
-   * key may end any session of its account.
+   * The API key `mintToken` uses when its options name none. Without a
+   * `credential` it also authorizes `inspect`, `terminate` and `downloadClip`,
+   * since the key may act on any session of its account.
    */
   readonly apiKey?: Redacted.Redacted<string> | undefined;
-  /** The session token that authorizes `inspect`, `terminate` and `downloadClip`. */
+  /**
+   * The session token that authorizes `inspect`, `terminate` and
+   * `downloadClip`, in place of the API key.
+   */
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
 }
 
@@ -508,7 +514,12 @@ export class Coordinator extends Context.Service<
       clip: ClipReady,
       options?: DownloadOptions,
     ) => Effect.Effect<DownloadedClip, ReactorError>;
-    /** The calls one session makes, each with the token `credential` then gives. */
+    /**
+     * The calls one session makes, each with the token `credential` then gives.
+     * It is the session's own seam, not an application's: its `create`
+     * allocates a session that nothing owns, closes or reports on, so allocate
+     * with `Reactor.create`.
+     */
     readonly signaling: (credential: Credential) => Signaling;
   }
 >()("reactor-effect-client/Coordinator") {}
@@ -917,11 +928,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.flatMap((reply) =>
             Schema.decodeUnknownEffect(Allocated)(reply).pipe(
               Effect.map((allocated) => ({ sessionId: allocated.session_id, reply })),
+              // A session may have been made all the same: the reply's body goes with the
+              // failure, redacted as provider text is, for whoever must find that session.
               Effect.mapError((cause) =>
                 ReactorError.fromCode("Protocol", "create reply names no session", {
                   operation: "create session",
                   outcome: "unknown",
-                  detail: cause,
+                  detail: { body: reply, cause },
                 }),
               ),
             ),
@@ -1062,14 +1075,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     };
   };
 
-  const configured = options.credential ?? Effect.undefined;
+  // A server holding the key reads, ends and downloads any session of its account with the
+  // key as the bearer. It goes only to the API's own origin, as every credential does.
+  const configured =
+    options.credential ??
+    (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey));
   const app = (spec: Call) => call(configured, spec);
   const appSignaling = signaling(configured);
-  // A server holding the key ends any session of its account with the key as the bearer.
-  const terminator = signaling(
-    options.credential ??
-      (options.apiKey === undefined ? Effect.undefined : Effect.succeed(options.apiKey)),
-  );
 
   const mintToken = Effect.fn("Coordinator.mintToken")(function* (input: TokenOptions) {
     const invalid = (message: string) =>
@@ -1173,10 +1185,14 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             (granted.maxSessionSeconds ?? 0) > seconds)))
     )
       return yield* protocol("the token grants more than was asked");
+    // A narrower grant caps each session at what it grants.
+    const narrower =
+      Predicate.isNumber(granted?.maxSessionSeconds) &&
+      (seconds === undefined || granted.maxSessionSeconds < seconds);
     return {
       jwt: Redacted.make(token.jwt),
       expiresAt: token.expires_at,
-      maxSessionSeconds: seconds,
+      maxSessionSeconds: narrower ? granted.maxSessionSeconds : seconds,
       ...(granted === undefined ? {} : { granted }),
     } satisfies TokenGrant;
   });
@@ -1225,7 +1241,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         serverVersion: value.server_info?.server_version ?? null,
       } satisfies Inspection;
     }),
-    terminate: terminator.terminate,
+    terminate: appSignaling.terminate,
     downloadClip: appSignaling.downloadClip,
   });
 });
@@ -1238,7 +1254,8 @@ export const layer = (
 
 /**
  * A Coordinator configured from the environment: `REACTOR_API_URL` (optional)
- * and `REACTOR_API_KEY` (optional, for `mintToken`).
+ * and `REACTOR_API_KEY` (optional, for `mintToken`, `inspect`, `terminate`
+ * and `downloadClip`).
  */
 export const layerConfig: Layer.Layer<
   Coordinator,

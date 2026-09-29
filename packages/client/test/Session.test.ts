@@ -2,17 +2,24 @@
 import { assert, layer } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  Cause,
+  Clock,
   Context,
   Deferred,
   Duration,
   Effect,
+  ErrorReporter,
+  Exit,
   Fiber,
   FileSystem,
   Inspectable,
   Layer,
   Option,
   Path,
+  Random,
   Redacted,
+  Ref,
+  Schedule,
   Stream,
   Tracer,
 } from "effect";
@@ -20,9 +27,9 @@ import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
 import * as Wire from "../src/internal/wire.js";
 import { PeerFactory } from "../src/Peer.js";
-import type { CommandFailure } from "../src/ReactorError.js";
-import type { CommandReply, Session } from "../src/Session.js";
-import { connect, environment } from "./fixtures/Simulated.js";
+import { type CommandFailure, ReactorError } from "../src/ReactorError.js";
+import type { CommandReply, Session, Snapshot } from "../src/Session.js";
+import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
 const timing = ReactorTest.Timing.fixed({ buildSpeed: 2.4, channel: "10 millis" });
 
@@ -138,14 +145,1815 @@ layer(environment({ timing }))("tracing", (it) => {
   );
 });
 
-layer(environment({ timing }))("reconnection", (it) => {
-  it.effect("a dropped connection reconnects on a new generation, and commands work again", () =>
+/** The next connection to open drops a second after its channels do; its session goes on. */
+const drop: ReactorTest.Fault = { _tag: "Disconnect", nth: 1, after: Duration.seconds(1) };
+
+/** What the simulated Reactor says of the session `id`. */
+const remoteState = (id: string) =>
+  Effect.map(
+    ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.sessions)),
+    (all) => all.find((info) => info.id === id)?.state,
+  );
+
+/** The statuses `session` reports from now on, each with its generation. */
+const statuses = (session: Session) =>
+  Effect.map(session.observe(), (observed) =>
+    observed.events.pipe(
+      Stream.filter((event) => event._tag === "Status"),
+      Stream.map((event) => [event.status, event.generation] as const),
+    ),
+  );
+
+// Reactor's docs: a session whose last connection drops reads INACTIVE, still billed, and ends 30 s
+// later unless a connection returns.
+// A connection the session reconnects on its own, hours after its acquisition as it may be.
+layer(environment({ timing }))("tracing a session's own reconnect", (it) => {
+  it.effect("gives each attempt a trace of its own, linked to the acquisition's", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
       const test = yield* ReactorTest.ReactorTest;
-      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
+      yield* test.inject(drop);
+      const spans: Array<Tracer.Span> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const session = yield* connect.pipe(Effect.withTracer(tracer));
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation === 2n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const created = spans.find((span) => span.name === "Reactor.create");
+      const reconnect = spans.find((span) => span.name === "Session.reconnect");
+      assert.deepStrictEqual(
+        [
+          Option.isNone(reconnect?.parent ?? Option.none()),
+          reconnect?.links.map((link) => link.span === created),
+        ],
+        [true, [true]],
+      );
+    }),
+  );
+});
+
+layer(environment({ timing }))("a dropped connection", (it) => {
+  it.effect("is reconnected by the session itself, within Reactor's 30 s, allocating nothing", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
       const session = yield* connect;
-      // The fault drops the connection a second after its channels open.
+      // Longer than Reactor keeps a session whose last connection dropped.
+      yield* Effect.sleep("40 seconds");
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [snapshot.status, snapshot.generation, yield* remoteState(session.id)],
+        ["ready", 2n, "ACTIVE"],
+      );
+      assert.strictEqual((yield* test.sessions).length, 1);
+      const reply = yield* session.command("get_state", {});
+      assert.strictEqual(reply.generation, 2n);
+    }),
+  );
+});
+
+layer(environment({ timing }))("a session's own reconnect", (it) => {
+  it.effect("shows in its status: the drop, then a new generation connecting to ready", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const seen = yield* (yield* statuses(session)).pipe(
+        Stream.takeUntil(([status, generation]) => status === "ready" && generation === 2n),
+        Stream.runCollect,
+        Effect.timeoutOption("30 seconds"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.isFalse((yield* session.snapshot).reconnecting);
+    }),
+  );
+});
+
+layer(environment({ timing }))("a session's own reconnect, read on `changes`", (it) => {
+  it.effect("shows each change as it was, to a reader that takes its time", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const seen = yield* session.changes.pipe(
+        // A reader that takes 100 ms over each snapshot, so the session runs ahead of it.
+        Stream.mapEffect((snapshot) =>
+          Effect.as(
+            Effect.sleep("100 millis"),
+            `${snapshot.status} ${snapshot.generation} ${snapshot.reconnecting}`,
+          ),
+        ),
+        Stream.changes,
+        Stream.takeUntil((step) => step === "ready 2 false"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 minute"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          "ready 1 false",
+          "disconnected 1 true",
+          "connecting 2 true",
+          "waiting 2 true",
+          "ready 2 false",
+        ]),
+      );
+    }),
+  );
+});
+
+layer(environment({ timing }))("an attached session's dropped connection", (it) => {
+  it.effect("is reconnected by that session too, which never owned it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      const owner = yield* connect;
+      // The viewer's connection is the next to open.
+      yield* test.inject(drop);
+      const reactor = yield* Reactor.Reactor;
+      const viewer = yield* reactor.attach({ sessionId: owner.id, tokens: yield* tokens });
+      yield* viewer.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const [kept, back] = [yield* owner.snapshot, yield* viewer.snapshot];
+      assert.deepStrictEqual(
+        [viewer.ownership, [kept.status, kept.generation], [back.status, back.generation]],
+        ["attached", ["ready", 1n], ["ready", 2n]],
+      );
+    }),
+  );
+});
+
+// A token that is never refreshed expires at 90 s; the connection drops at two minutes, so every
+// attempt to reconnect is refused.
+layer(environment({ timing }))("a reconnect that fails for good", (it) => {
+  it.effect("gives up once Reactor's 30 s have passed, and says why", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      const coordinator = yield* Coordinator.Coordinator;
+      const grant = yield* coordinator.tokens({
+        apiKey: test.apiKey,
+        modelName: H3.modelName,
+        maxSessionDuration: "10 minutes",
+        expiresAfter: "90 seconds",
+      }).create;
+      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.minutes(2) });
+      const reactor = yield* Reactor.Reactor;
+      const session = yield* reactor.create({
+        model: H3.modelName,
+        tokens: Coordinator.fixedTokens(grant),
+      });
+      const reads = Effect.map(
+        test.log,
+        (log) =>
+          log.filter(
+            (entry) => entry.kind === "request" && entry.name.endsWith(`/sessions/${session.id}`),
+          ).length,
+      );
+      const first = (accept: (snapshot: Snapshot) => boolean) =>
+        session.changes.pipe(Stream.filter(accept), Stream.runHead, Effect.map(Option.getOrThrow));
+      const dropped = yield* first((snapshot) => snapshot.status === "disconnected");
+      const [droppedAt, before] = [yield* Clock.currentTimeMillis, yield* reads];
+      const stopped = yield* first(
+        (snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting,
+      );
+      // The token has expired: each attempt is refused, and the deadline says so.
+      const detail = stopped.lastError?.context.detail;
+      const last = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [
+          dropped.reconnecting,
+          stopped.lastError?.reason._tag,
+          ReactorError.is(last) && last.reason._tag === "Http" ? last.reason.status : last,
+        ],
+        [true, "Timeout", 401],
+      );
+      assert.approximately((yield* Clock.currentTimeMillis) - droppedAt, 30_000, 500);
+      const attempts = (yield* reads) - before;
+      assert.isAbove(attempts, 1);
+      // A minute on, nothing has tried again.
+      yield* Effect.sleep("1 minute");
+      assert.strictEqual((yield* reads) - before, attempts);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but making any after the first fails with `error`, as a host can. */
+const failingPeers = (error: ReactorError) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.flatMap(
+          Ref.getAndUpdate(made, (count) => count + 1),
+          (count) => (count === 0 ? peers.make : Effect.fail(error)),
+        ),
+      });
+    }),
+  );
+
+// The session's connection drops, and its host cannot make a peer for any reconnect.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host cannot make a peer", (it) => {
+  it.effect("says why each attempt failed, and why it stopped", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const diagnostics = yield* (yield* session.observe()).events.pipe(
+        Stream.filter((event) => event._tag === "Diagnostic"),
+        Stream.map((event) => event.error.reason._tag),
+        Stream.takeUntil((what) => what === "Timeout"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 minute"),
+        Effect.map(Option.getOrElse(() => [])),
+      );
+      // The drop, the host's failure on each attempt, and the deadline.
+      assert.deepStrictEqual([...new Set(diagnostics)], ["Disconnected", "Native", "Timeout"]);
+      assert.isAbove(diagnostics.filter((what) => what === "Native").length, 1);
+      const stopped = yield* session.snapshot;
+      const detail = stopped.lastError?.context.detail;
+      const last = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [
+          stopped.reconnecting,
+          stopped.lastError?.reason._tag,
+          ReactorError.is(last) && last.reason._tag,
+        ],
+        [false, "Timeout", "Native"],
+      );
+    }),
+  );
+});
+
+// As above: the session's own reconnect runs out of time while the application's joins it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect asked for while the session's own runs out of time", (it) => {
+  it.effect("fails as that reconnect stops, with its Timeout and the last attempt's failure", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+      );
+      const droppedAt = yield* Clock.currentTimeMillis;
+      const failed = yield* Effect.flip(session.reconnect);
+      const detail = failed.context.detail;
+      const last = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [failed.reason._tag, ReactorError.is(last) && last.reason._tag],
+        ["Timeout", "Native"],
+      );
+      assert.approximately((yield* Clock.currentTimeMillis) - droppedAt, 30_000, 500);
+    }),
+  );
+});
+
+// As above, on a schedule that tries twice more at once, then gives up.
+layer(
+  Reactor.layer({ reconnect: Schedule.recurs(2) }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host cannot make a peer, on a schedule that gives up", (it) => {
+  it.effect("says why once for each attempt, and stops with the last", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const diagnostics = yield* (yield* session.observe()).events.pipe(
+        Stream.filter((event) => event._tag === "Diagnostic"),
+        Stream.map((event) => event.error.reason._tag),
+        Stream.interruptWhen(Effect.sleep("10 seconds")),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(diagnostics, ["Disconnected", "Native", "Native", "Native"]);
+      const stopped = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [stopped.status, stopped.reconnecting, stopped.lastError?.reason._tag],
+        ["disconnected", false, "Native"],
+      );
+    }),
+  );
+});
+
+// Paid run cut c1796473: after a `terminate` verdict the session closed.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, moderation: "1 second" }),
+    faults: [{ _tag: "Moderate", prompt: "flagged" }],
+  }),
+)("a session moderation ended", (it) => {
+  it.effect("is never reconnected, and says why from the drop on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const reported = yield* statuses(session);
+      const dropped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+        Effect.forkScoped,
+      );
+      yield* session.command("enqueue", { prompt: "flagged", seconds: 5 });
+      // Past Reactor's 30 s, in which a reconnect would have come.
+      const seen = yield* reported.pipe(
+        Stream.interruptWhen(Effect.sleep("40 seconds")),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(seen, [["disconnected", 1n]]);
+      // The drop is lasting as the session reports it, not only once a reconnect is refused.
+      const drop = Option.getOrUndefined(yield* Fiber.join(dropped));
+      assert.deepStrictEqual(
+        [drop?.reconnecting, drop?.lastError?.reason._tag],
+        [false, "Moderated"],
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          snapshot.status,
+          snapshot.reconnecting,
+          snapshot.lastError?.reason._tag,
+          yield* remoteState(session.id),
+        ],
+        ["disconnected", false, "Moderated", "CLOSED"],
+      );
+    }),
+  );
+});
+
+// Each connection's answer takes 5 s, so the session's own reconnect is still negotiating when the
+// application asks for one.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      channel: "10 millis",
+      negotiation: "5 seconds",
+    }),
+  }),
+)("a reconnect asked for while the session reconnects on its own", (it) => {
+  /** The session, its connection dropped and its own reconnect's attempt negotiating. */
+  const negotiating = Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+    const test = yield* ReactorTest.ReactorTest;
+    yield* test.inject(drop);
+    const session = yield* connect;
+    yield* session.changes.pipe(
+      Stream.filter((snapshot) => snapshot.status === "waiting" && snapshot.generation === 2n),
+      Stream.runHead,
+      Effect.timeoutOption("30 seconds"),
+    );
+    return session;
+  });
+
+  it.effect("joins that reconnect, and succeeds once its connection is ready", () =>
+    Effect.gen(function* () {
+      const session = yield* negotiating;
+      yield* session.reconnect;
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual([back.status, back.generation], ["ready", 2n]);
+    }),
+  );
+
+  it.effect("fails as closed, not submitted, when the session closes first", () =>
+    Effect.gen(function* () {
+      const session = yield* negotiating;
+      const joined = yield* Effect.forkChild(Effect.flip(session.reconnect));
+      yield* Effect.sleep("1 second");
+      yield* session.close;
+      const failed = yield* Fiber.join(joined);
+      assert.deepStrictEqual(
+        [failed.reason._tag, failed.context.outcome],
+        ["Closed", "not-submitted"],
+      );
+    }),
+  );
+});
+
+// The application asks for a reconnect as soon as it reads the drop, as code that reconnected
+// drops itself did.
+layer(environment({ timing }))("a reconnect asked for as soon as the drop shows", (it) => {
+  it.effect("joins the session's own, and succeeds once that one is ready", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+      );
+      yield* session.reconnect;
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [back.status, back.generation, back.reconnecting],
+        ["ready", 2n, false],
+      );
+    }),
+  );
+});
+
+// The session reconnects its dropped connection on its own, and a second later, while that
+// connection settles, the application reconnects the session. The application's connection drops
+// 2 s after it opens: had the session's own reconnect gone on watching, it would take that drop for
+// its own.
+layer(environment({ timing }))(
+  "a reconnect asked for while the session's reconnected connection settles",
+  (it) => {
+    it.effect("begins a generation, and the session's own reconnect stands down", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject(drop);
+        const session = yield* connect;
+        yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation === 2n),
+          Stream.runHead,
+        );
+        yield* Effect.sleep("1 second");
+        const diagnostics = yield* (yield* session.observe()).events.pipe(
+          Stream.filter((event) => event._tag === "Diagnostic"),
+          Stream.map((event) => [event.error.reason._tag, event.generation] as const),
+          Stream.interruptWhen(Effect.sleep("40 seconds")),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(2) });
+        yield* session.reconnect;
+        const asked = yield* session.snapshot;
+        // That connection's drop is a drop like any other: the session reconnects it on its own.
+        const back = yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 3n),
+          Stream.runHead,
+          Effect.timeoutOption("30 seconds"),
+          Effect.map(Option.flatten),
+        );
+        assert.deepStrictEqual(
+          [
+            [asked.status, asked.generation],
+            Option.getOrUndefined(back)?.generation,
+            yield* Fiber.join(diagnostics),
+          ],
+          [["ready", 3n], 4n, [["Disconnected", 3n]]],
+        );
+        const settled = yield* session.snapshot;
+        assert.deepStrictEqual(
+          [settled.status, settled.reconnecting, settled.lastError],
+          ["ready", false, undefined],
+        );
+      }),
+    );
+
+    it.effect("that Reactor refuses leaves a drop the session reconnects afresh, at once", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject(drop);
+        const session = yield* connect;
+        yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation === 2n),
+          Stream.runHead,
+        );
+        yield* Effect.sleep("1 second");
+        // Reactor refuses the application's reconnect with 503.
+        yield* test.inject({ _tag: "RefuseReconnect", nth: 1 });
+        const refused = yield* Effect.flip(session.reconnect);
+        const refusedAt = yield* Clock.currentTimeMillis;
+        const next = yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.generation === 4n),
+          Stream.runHead,
+          Effect.timeoutOption("30 seconds"),
+          Effect.map(Option.flatten),
+        );
+        // A reconnect of its own from that drop, not the settled one's backoff and deadline.
+        assert.deepStrictEqual(
+          [
+            refused.reason._tag,
+            Option.getOrUndefined(next)?.status,
+            (yield* Clock.currentTimeMillis) - refusedAt,
+          ],
+          ["Http", "connecting", 0],
+        );
+        const back = yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready"),
+          Stream.runHead,
+          Effect.timeoutOption("30 seconds"),
+          Effect.map(Option.flatten),
+        );
+        assert.strictEqual(Option.getOrUndefined(back)?.generation, 4n);
+      }),
+    );
+  },
+);
+
+// Each connection's answer takes 5 s, so the session's reconnect is still negotiating when it closes.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      channel: "10 millis",
+      negotiation: "5 seconds",
+    }),
+  }),
+)("a session closed while it reconnects", (it) => {
+  it.effect("stops reconnecting, and closes as any session does", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const report = yield* session.close;
+      const seen = (yield* test.log).length;
+      // Past Reactor's 30 s, in which the reconnect could have tried again.
+      yield* Effect.sleep("40 seconds");
+      assert.deepStrictEqual(
+        [report.localClosed, report.localErrors, report.remote.confirmed],
+        [true, [], true],
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual([snapshot.status, snapshot.generation], ["closed", 2n]);
+      const later = (yield* test.log)
+        .slice(seen)
+        .filter((entry) => entry.sessionId === session.id && entry.kind === "request");
+      assert.deepStrictEqual(later, []);
+    }),
+  );
+});
+
+// Another fiber closes the session just as its connect reaches ready, past the connect's last check:
+// a tracer's hook on the connect's `ready` event closes it at that instant.
+layer(environment({ timing }))("a session closed as its connect reaches ready", (it) => {
+  it.effect("fails the acquisition as closed, rather than return a closed session", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const run = Effect.runForkWith(yield* Effect.context<never>());
+      let allocated: Session | undefined;
+      class ClosingSpan extends Tracer.NativeSpan {
+        override event(name: string, startTime: bigint, attributes?: Record<string, unknown>) {
+          super.event(name, startTime, attributes);
+          if (name === "reactor.connect.ready" && allocated !== undefined) run(allocated.close);
+        }
+      }
+      const reactor = yield* Reactor.Reactor;
+      const created = yield* reactor
+        .create({
+          model: H3.modelName,
+          tokens: yield* tokens,
+          onAllocated: (session) =>
+            Effect.sync(() => {
+              allocated = session;
+            }),
+        })
+        .pipe(
+          Effect.withTracer(Tracer.make({ span: (options) => new ClosingSpan(options) })),
+          Effect.exit,
+        );
+      assert.deepStrictEqual(reasonsOf(created), ["Closed"]);
+      assert.strictEqual(
+        allocated === undefined ? undefined : (yield* allocated.snapshot).status,
+        "closed",
+      );
+    }),
+  );
+});
+
+/** ReactorTest's peers, but each after the first takes `slow` to make, as a host that spawns one might. */
+const slowPeers = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Ref.getAndUpdate(made, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            count === 0 ? peers.make : Effect.andThen(Effect.sleep(slow), peers.make),
+          ),
+        ),
+      });
+    }),
+  );
+
+// The reconnect's new peer takes 40 s to make, past the 30 s the reconnect has.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowPeers("40 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose new peer outlasts its deadline", (it) => {
+  it.effect("fails the generation it began, and leaves the session disconnected, saying why", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          snapshot.status,
+          snapshot.generation,
+          snapshot.reconnecting,
+          snapshot.lastError?.reason._tag,
+        ],
+        ["disconnected", 2n, false, "Timeout"],
+      );
+    }),
+  );
+});
+
+/** ReactorTest's peers, but resuming or pausing a track takes `slow`, as a host's call can. */
+const slowDirection = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.map(peers.make, (peer) => ({
+          ...peer,
+          direction: (name: string, active: boolean) =>
+            Effect.andThen(Effect.sleep(slow), peer.direction(name, active)),
+        })),
+      });
+    }),
+  );
+
+// Resuming each track takes 3 s, so the reconnected connection's pass the reconnect's 2 s.
+layer(
+  Reactor.layer({ reconnectTimeout: "2 seconds" }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowDirection("3 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose deadline passes as its connection's tracks resume", (it) => {
+  it.effect("never reports the connection ready: the deadline cuts only work before ready", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      // The first connection drops once its two tracks have resumed.
+      yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(10) });
+      const session = yield* connect;
+      const reported = yield* statuses(session);
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const seen = yield* reported.pipe(
+        Stream.interruptWhen(Effect.sleep("1 second")),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(
+        [
+          seen.some(([status, generation]) => status === "ready" && generation === 2n),
+          (yield* session.snapshot).lastError?.reason._tag,
+        ],
+        [false, "Timeout"],
+      );
+    }),
+  );
+});
+
+/**
+ * ReactorTest's peers, but resuming or pausing a track takes 50 ms, and one interrupted takes 5 ms
+ * more to end, as a call to another process that sends its cancel first does.
+ */
+const slowToCancel = Layer.effect(
+  PeerFactory,
+  Effect.gen(function* () {
+    const peers = yield* PeerFactory;
+    return PeerFactory.of({
+      check: peers.check,
+      make: Effect.map(peers.make, (peer) => ({
+        ...peer,
+        direction: (name: string, active: boolean) =>
+          Effect.sleep("50 millis").pipe(
+            Effect.onInterrupt(() => Effect.sleep("5 millis")),
+            Effect.andThen(peer.direction(name, active)),
+          ),
+      })),
+    });
+  }),
+);
+
+/** A connection that drops 10 ms after its channels open, as its tracks resume. */
+const dropAsTracksResume = (nth: number): ReactorTest.Fault => ({
+  _tag: "Disconnect",
+  nth,
+  after: Duration.millis(10),
+});
+
+// A connection drops while its tracks resume, and the host takes a moment to end the call it
+// interrupts: by then the drop has left the session disconnected.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowToCancel),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a connection that drops as its tracks resume, on a host slow to end the call", (it) => {
+  it.effect("fails the session's own attempt, which it tries again, and is back", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject(dropAsTracksResume(2));
+      const { bugs, reporters } = keepingBugs();
+      const session = yield* connect.pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 2n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.deepStrictEqual([Option.getOrUndefined(back)?.generation, bugs], [3n, []]);
+    }),
+  );
+
+  it.effect("fails a reconnect asked for with the drop, never readying the next generation", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(dropAsTracksResume(2));
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      // The session's own reconnect has begun the next generation: it, not the reconnect asked
+      // for, makes that one ready.
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready"),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const ready = yield* session.ready;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), Option.getOrUndefined(back)?.generation, ready.generation],
+        [["Disconnected"], 3n, 3n],
+      );
+    }),
+  );
+});
+
+// A reconnect's connection drops while its tracks resume, on a host that ends an interrupted call
+// at once, as every shipped host does.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowDirection("50 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection drops as its tracks resume", (it) => {
+  it.effect("fails with the drop, rather than report ready a connection already down", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(dropAsTracksResume(2));
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), snapshot.status, snapshot.generation],
+        [["Disconnected"], "disconnected", 2n],
+      );
+    }),
+  );
+});
+
+/**
+ * ReactorTest's peers, but shutting down peer `which`, counted from 0, dies with each of
+ * `defects`, as a host's shutdown can.
+ */
+const dyingShutdown = (defects: ReadonlyArray<unknown>, which = 0) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          const peer = yield* peers.make;
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) === which)
+            for (const defect of defects) yield* Effect.addFinalizer(() => Effect.die(defect));
+          return peer;
+        }),
+      });
+    }),
+  );
+
+/** Each status `session` reports from now on, and each diagnostic's reason, with its generation. */
+const notices = (session: Session) =>
+  Effect.map(session.observe(), (observed) =>
+    observed.events.pipe(
+      Stream.filter((event) => event._tag === "Status" || event._tag === "Diagnostic"),
+      Stream.map((event) =>
+        event._tag === "Status"
+          ? ([event.status, event.generation] as const)
+          : ([event.error.reason._tag, event.generation] as const),
+      ),
+    ),
+  );
+
+/** Reporters that keep each bug reported to them, and the bugs they kept. */
+const keepingBugs = () => {
+  const bugs: Array<unknown> = [];
+  const reporter = ErrorReporter.make(({ cause }) => {
+    bugs.push(Cause.squash(cause));
+  });
+  return { bugs, reporters: new Set([reporter]) };
+};
+
+/** Each reason `exit` failed for: a failure's own reason, or `Die` or `Interrupt`. */
+const reasonsOf = (exit: Exit.Exit<unknown, { readonly reason: { readonly _tag: string } }>) =>
+  Exit.isSuccess(exit)
+    ? []
+    : exit.cause.reasons.map((reason) =>
+        Cause.isFailReason(reason) ? reason.error.reason._tag : reason._tag,
+      );
+
+/**
+ * A session whose connection drops, until it is ready again or 30 s have passed: where it ended,
+ * what it reported meanwhile, and what was reported of it as a bug.
+ */
+const afterDrop = Effect.gen(function* () {
+  yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+  const test = yield* ReactorTest.ReactorTest;
+  yield* test.inject(drop);
+  const { bugs, reporters } = keepingBugs();
+  const session = yield* connect.pipe(
+    Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+  );
+  const seen = yield* (yield* notices(session)).pipe(
+    Stream.takeUntil(([what, generation]) => what === "ready" && generation === 2n),
+    Stream.runCollect,
+    Effect.timeoutOption("30 seconds"),
+  );
+  const snapshot = yield* session.snapshot;
+  return { status: [snapshot.status, snapshot.generation], seen, bugs };
+});
+
+/** What the native peer's close dies with once its owner join outlives `shutdownTimeout`. */
+const joinOutlived = ReactorError.fromCode(
+  "Shutdown",
+  "native owner join exceeded its deadline; handle retained",
+);
+
+// The dropped connection's peer fails to shut down as the reconnect retires it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([joinOutlived])),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose retired peer fails to shut down", (it) => {
+  it.effect("says so on the retired generation, and goes on to ready", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["Shutdown", 1n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, []);
+    }),
+  );
+});
+
+const shutdownBug = new Error("a host's shutdown bug");
+
+// The dropped connection's peer dies of a bug as the reconnect retires it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([shutdownBug])),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose retired peer dies of a bug as it shuts down", (it) => {
+  it.effect("reports the defect, and goes on to ready", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but fencing the first one dies with `defect` once it is fenced. */
+const dyingFence = (defect: unknown) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          const peer = yield* peers.make;
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) > 0) return peer;
+          return { ...peer, close: Effect.andThen(peer.close, Effect.die(defect)) };
+        }),
+      });
+    }),
+  );
+
+// The dropped connection's peer fails as its session fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(ReactorError.fromCode("Shutdown", "peer could not be fenced"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a dropped connection whose peer fails as it is fenced", (it) => {
+  it.effect("still leaves the session disconnected, says so after the drop, and reconnects", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["Shutdown", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, []);
+    }),
+  );
+});
+
+const fenceBug = new Error("a host's fence bug");
+
+// The dropped connection's peer dies of a bug as its session fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(fenceBug)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a dropped connection whose peer dies of a bug as it is fenced", (it) => {
+  it.effect("still leaves the session disconnected, reports the defect, and reconnects", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, [fenceBug]);
+    }),
+  );
+});
+
+// The session's peer dies of a bug as the session's close fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(fenceBug)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a session whose peer dies of a bug as its close fences it", (it) => {
+  it.effect("still closes and ends the remote session, and keeps the defect in its report", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const closed = yield* Effect.exit(session.close).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(closed), []);
+      const report = Exit.isSuccess(closed) ? closed.value : undefined;
+      assert.deepStrictEqual(
+        [
+          report?.remote.confirmed,
+          yield* remoteState(session.id),
+          (yield* session.snapshot).status,
+        ],
+        [true, "CLOSED", "closed"],
+      );
+      assert.deepStrictEqual(
+        [report?.localClosed, report?.localErrors.map(({ reason, message }) => [reason, message])],
+        [false, [["Shutdown", "connection teardown did not complete cleanly"]]],
+      );
+      assert.deepStrictEqual(bugs, []);
+    }),
+  );
+});
+
+// A reconnect is refused, and its own peer's host fails to shut down, with a bug besides.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([joinOutlived, shutdownBug], 1)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a refused reconnect whose peer dies as it shuts down", (it) => {
+  it.effect("fails with the refusal alone, and reports the host after it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1 });
+      const session = yield* connect;
+      const observed = yield* notices(session);
+      const { bugs, reporters } = keepingBugs();
+      const refused = yield* Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(refused), ["Http"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+      const seen = yield* observed.pipe(
+        Stream.takeUntil(([what]) => what === "Shutdown"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 second"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["disconnected", 2n],
+          ["Http", 2n],
+          ["Shutdown", 2n],
+        ]),
+      );
+    }),
+  );
+});
+
+// A session's first connection is refused, and its peer dies of a bug as it shuts down.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([shutdownBug])),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a refused connection whose peer dies of a bug as it shuts down", (it) => {
+  it.effect("fails the acquisition with the refusal, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseConnect", nth: 1 });
+      const { bugs, reporters } = keepingBugs();
+      const refused = yield* Effect.exit(connect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(refused), ["Http"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+    }),
+  );
+});
+
+/**
+ * ReactorTest's peers, but making peer `which`, counted from 0, fails with `error` once it has
+ * registered a shutdown that dies with `defect`.
+ */
+const halfMade = (which: number, error: ReactorError, defect: unknown) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) !== which)
+            return yield* peers.make;
+          yield* Effect.addFinalizer(() => Effect.die(defect));
+          return yield* error;
+        }),
+      });
+    }),
+  );
+
+// A reconnect's host fails to make its peer, and dies of a bug as what it made shuts down.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(
+      halfMade(1, ReactorError.fromCode("Native", "peer allocation failed"), shutdownBug),
+    ),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host fails to make its peer, and dies of a bug as it shuts it down", (it) => {
+  it.effect("fails with the host's failure alone, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const failed = yield* Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(failed), ["Native"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual([snapshot.status, snapshot.generation], ["ready", 1n]);
+    }),
+  );
+});
+
+// Two reconnects begin half a second apart, each with a peer that takes a second to make, and
+// each connection's answer takes 5 s: the later one finds the session taken over by the earlier,
+// still under way, and its unused peer dies of a bug as it shuts down.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([shutdownBug], 2)),
+    Layer.provideMerge(slowPeers("1 second")),
+    Layer.provideMerge(
+      ReactorTest.layer({
+        timing: ReactorTest.Timing.fixed({
+          buildSpeed: 2.4,
+          channel: "10 millis",
+          negotiation: "5 seconds",
+        }),
+      }),
+    ),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect overtaken by another, whose unused peer dies of a bug as it shuts down", (it) => {
+  it.effect("fails as overtaken, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const reconnect = Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      const first = yield* Effect.forkChild(reconnect);
+      yield* Effect.sleep("500 millis");
+      const second = yield* reconnect;
+      assert.deepStrictEqual(
+        [reasonsOf(yield* Fiber.join(first)), reasonsOf(second)],
+        [[], ["InvalidState"]],
+      );
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+    }),
+  );
+});
+
+// The application reconnects a ready connection with a peer that takes 2 s to make, and the
+// connection drops a second in: the session's own reconnect, its peer as slow, has begun by the
+// time the application's could take the session over.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowPeers("2 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection drops as it makes its peer", (it) => {
+  it.effect("joins the session's own, and succeeds once that one is ready", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const askedAt = yield* Clock.currentTimeMillis;
+      yield* session.reconnect;
+      const back = yield* session.snapshot;
+      // Not at the ready connection it began from, nor on a generation of its own 2 s in: on the
+      // session's own, whose peer came a second later.
+      assert.deepStrictEqual([back.status, back.generation], ["ready", 2n]);
+      assert.isAtLeast((yield* Clock.currentTimeMillis) - askedAt, 2_900);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but making the second takes `slow`: the one a reconnect asked for makes. */
+const slowSecondPeer = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Ref.getAndUpdate(made, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            count === 1 ? Effect.andThen(Effect.sleep(slow), peers.make) : peers.make,
+          ),
+        ),
+      });
+    }),
+  );
+
+// The application reconnects a ready connection with a peer that takes 2 s to make, and the
+// connection drops a second in: the session's own reconnect, its peer made at once, is back before
+// the application's could take the session over.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("2 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection the session reconnects as it makes its peer", (it) => {
+  it.effect("succeeds on the session's connection, and begins none of its own", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), back.status, back.generation],
+        [[], "ready", 2n],
+      );
+    }),
+  );
+});
+
+// As above, but Reactor answers the session's own reconnect 404, so the session is down for good
+// by the time the application's reconnect could take it over.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("2 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection the session fails to reconnect as it makes its peer", (it) => {
+  it.effect("fails as the session's reconnect stopped, and begins none of its own", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const failed = yield* Effect.flip(session.reconnect);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          failed.reason._tag,
+          failed.reason._tag === "Http" ? failed.reason.status : undefined,
+          back.status,
+          back.generation,
+        ],
+        ["Http", 404, "disconnected", 2n],
+      );
+    }),
+  );
+});
+
+// The session's connection drops for good. The application reconnects with a peer that takes half
+// a second to make, and 100 ms later reconnects again with one made at once, which is back first.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("500 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect from a lasting drop, overtaken by another that succeeds", (it) => {
+  it.effect("succeeds on that one's connection, not failing for the drop it began from", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+      );
+      const overtaken = yield* Effect.forkChild(Effect.exit(session.reconnect));
+      yield* Effect.sleep("100 millis");
+      yield* session.reconnect;
+      const reconnected = yield* Fiber.join(overtaken);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), back.status, back.generation],
+        [[], "ready", 2n],
+      );
+    }),
+  );
+});
+
+// The application reconnects with a peer that takes half a second to make, and closes the session
+// 100 ms in.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowPeers("500 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect the session's close overtakes as it makes its peer", (it) => {
+  it.effect("fails as closed, not submitted, as one asked for after the close does", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const reconnecting = yield* Effect.forkChild(Effect.flip(session.reconnect));
+      yield* Effect.sleep("100 millis");
+      yield* session.close;
+      const overtaken = yield* Fiber.join(reconnecting);
+      const later = yield* Effect.flip(session.reconnect);
+      assert.deepStrictEqual(
+        [overtaken, later].map((failure) => [failure.reason._tag, failure.context.outcome]),
+        [
+          ["Closed", "not-submitted"],
+          ["Closed", "not-submitted"],
+        ],
+      );
+    }),
+  );
+});
+
+/** A Random that always draws `value`: 0 is the bottom of its range, and 0.5 its middle. */
+const drawing = (value: number): Random.Random => ({
+  nextIntUnsafe: () => 0,
+  nextDoubleUnsafe: () => value,
+});
+
+/**
+ * How long after each refused reconnect of the session `id` the next attempt sent its first
+ * request, on the TestClock: after every reconnect's offer but the last, which was accepted.
+ */
+const waitsAfterRefusals = (id: string) =>
+  Effect.map(ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.log)), (log) => {
+    const requests = log.filter((entry) => entry.sessionId === id && entry.kind === "request");
+    const waits = requests.flatMap((entry, index) => {
+      const next = requests[index + 1];
+      const reoffer = entry.name.startsWith("PUT ") && entry.name.endsWith("/sdp_params");
+      return reoffer && next !== undefined ? [next.at - entry.at] : [];
+    });
+    return waits.slice(0, -1);
+  });
+
+// Reactor refuses the session's first six reconnects; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+  }),
+)("a session's own reconnect, refused", (it) => {
+  /** Each wait after a refusal before the next attempt, when every jitter draws `draw`. */
+  const waits = (draw: number) =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3, 4, 5, 6], (nth) =>
+        test.inject({ _tag: "RefuseReconnect", nth }),
+      );
+      const session = yield* connect;
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      // Six generations refused, and the seventh ready.
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 8n);
+      // The next attempt's first request takes 20 ms.
+      return (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
+    }).pipe(Effect.provideService(Random.Random, drawing(draw)));
+
+  it.effect(
+    "tries again 250 ms after the first refusal, then twice as long each time, to 4 s",
+    () =>
+      Effect.map(waits(0.5), (all) => {
+        assert.deepStrictEqual(all, [250, 500, 1_000, 2_000, 4_000, 4_000]);
+      }),
+  );
+
+  it.effect("jitters each wait: at the bottom of its range, a fifth shorter", () =>
+    Effect.map(waits(0), (all) => {
+      assert.deepStrictEqual(all, [200, 400, 800, 1_600, 3_200, 3_200]);
+    }),
+  );
+});
+
+// Reactor refuses the session's first three reconnects.
+layer(environment({ timing }))("a session's own reconnect, refused three times", (it) => {
+  it.effect("recovers on the fourth attempt, each on a new generation of the same session", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3], (nth) => test.inject({ _tag: "RefuseReconnect", nth }));
+      const session = yield* connect;
+      const seen = yield* (yield* statuses(session)).pipe(
+        Stream.takeUntil(([status]) => status === "ready"),
+        Stream.runCollect,
+        Effect.timeoutOption("30 seconds"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["disconnected", 2n],
+          ["connecting", 3n],
+          ["waiting", 3n],
+          ["disconnected", 3n],
+          ["connecting", 4n],
+          ["waiting", 4n],
+          ["disconnected", 4n],
+          ["connecting", 5n],
+          ["waiting", 5n],
+          ["ready", 5n],
+        ]),
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [snapshot.reconnecting, yield* remoteState(session.id), (yield* test.sessions).length],
+        [false, "ACTIVE", 1],
+      );
+    }),
+  );
+});
+
+// Reactor answers the session's reconnect as if it knew no such session.
+layer(environment({ timing }))("a session's own reconnect answered 404", (it) => {
+  it.effect("stops at once, saying why", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const last = Option.getOrUndefined(stopped)?.lastError;
+      assert.deepStrictEqual(
+        [last?.reason._tag, last?.reason._tag === "Http" ? last.reason.status : undefined],
+        ["Http", 404],
+      );
+      // One attempt, on the generation after the dropped one.
+      assert.strictEqual((yield* session.snapshot).generation, 2n);
+    }),
+  );
+});
+
+// Reactor answers the session's reconnect 426: this client's protocol is too old.
+layer(environment({ timing }))("a session's own reconnect answered 426", (it) => {
+  it.effect("stops at once: no later attempt could succeed", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 426 });
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.deepStrictEqual(
+        [
+          Option.getOrUndefined(stopped)?.lastError?.reason._tag,
+          (yield* session.snapshot).generation,
+        ],
+        ["VersionMismatch", 2n],
+      );
+    }),
+  );
+});
+
+// Reactor refuses the session's first reconnect, asking for 5 s; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+  }),
+)("a session's own reconnect refused with a Retry-After", (it) => {
+  /** The wait after the refusal before the next attempt, when every jitter draws `draw`. */
+  const waits = (draw: number) =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, retryAfter: Duration.seconds(5) });
+      const session = yield* connect;
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 3n);
+      // The next attempt's first request takes 20 ms.
+      return (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
+    }).pipe(Effect.provideService(Random.Random, drawing(draw)));
+
+  it.effect("tries again no sooner than it was asked to", () =>
+    Effect.map(waits(0), (all) => {
+      assert.deepStrictEqual(all, [5_000]);
+    }),
+  );
+
+  it.effect("jitters that wait only upward, so sessions refused together spread out", () =>
+    Effect.map(waits(0.5), (all) => {
+      assert.deepStrictEqual(all, [5_500]);
+    }),
+  );
+
+  it.effect("joins a reconnect asked for as it waits, which succeeds with its next attempt", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, retryAfter: Duration.seconds(5) });
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter(
+          (snapshot) => snapshot.status === "disconnected" && snapshot.generation === 2n,
+        ),
+        Stream.runHead,
+      );
+      const refusedAt = yield* Clock.currentTimeMillis;
+      yield* Effect.sleep("1 second");
+      yield* session.reconnect;
+      const back = yield* session.snapshot;
+      // Back on the session's own attempt after the 5 s asked for, not on one begun at once.
+      assert.deepStrictEqual([back.status, back.generation], ["ready", 3n]);
+      assert.isAtLeast((yield* Clock.currentTimeMillis) - refusedAt, 5_000);
+    }),
+  );
+});
+
+// A reconnect the application asks for is answered 404: Reactor no longer has the session.
+layer(environment({ timing }))("a session's reconnect answered 404", (it) => {
+  it.effect("leaves it disconnected for good at once: its own reconnect does not try", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const refused = yield* Effect.flip(session.reconnect);
+      const dropped = yield* session.snapshot;
+      // Past the 30 s a reconnect of its own would have had.
+      yield* Effect.sleep("40 seconds");
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          refused.reason._tag,
+          dropped.reconnecting,
+          snapshot.status,
+          snapshot.generation,
+          snapshot.lastError?.reason._tag,
+        ],
+        ["Http", false, "disconnected", 2n, "Http"],
+      );
+    }),
+  );
+});
+
+// Every connection drops 100 ms after its channels open, as one to a host that crashes on the
+// stream would; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [{ _tag: "Disconnect", after: Duration.millis(100) }],
+  }),
+)("a session whose connection drops each time soon after it is ready", (it) => {
+  it.effect("reconnects on its schedule across the drops, and stops 30 s after the first", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+        Effect.map(Option.flatten),
+      );
+      const stoppedAt = yield* Clock.currentTimeMillis;
+      const log = (yield* test.log).filter((entry) => entry.sessionId === session.id);
+      const drops = log.filter((entry) => entry.name === "disconnected").map((entry) => entry.at);
+      const requests = log.filter((entry) => entry.kind === "request");
+      // After each drop, how long until the next attempt's first request, which takes 20 ms.
+      const waits = drops.flatMap((at) => {
+        const next = requests.find((request) => request.at > at);
+        return next === undefined ? [] : [next.at - at - 20];
+      });
+      assert.deepStrictEqual(
+        [Option.getOrUndefined(stopped)?.lastError?.reason._tag, waits],
+        ["Timeout", [0, 250, 500, 1_000, 2_000, 4_000, 4_000, 4_000, 4_000, 4_000, 4_000]],
+      );
+      assert.approximately(stoppedAt - (drops[0] ?? 0), 30_000, 100);
+      // Reactor keeps a session 30 s after its last connection drops.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+  );
+});
+
+// Every connection drops 6 s after its channels open, so one is up when the reconnect's time runs
+// out; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [{ _tag: "Disconnect", after: Duration.seconds(6) }],
+  }),
+)("a session whose connection drops each time 6 s after it is ready", (it) => {
+  it.effect("stops where the connection up as its reconnect's time ran out drops", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+        Effect.map(Option.flatten),
+      );
+      const stoppedAt = yield* Clock.currentTimeMillis;
+      const drops = (yield* test.log)
+        .filter((entry) => entry.sessionId === session.id && entry.name === "disconnected")
+        .map((entry) => entry.at);
+      const [first, last] = [drops[0] ?? 0, drops.at(-1) ?? 0];
+      assert.strictEqual(Option.getOrUndefined(stopped)?.lastError?.reason._tag, "Timeout");
+      // Its time ran out 30 s after the first drop, while the connection that dropped last was up.
+      assert.isAbove(last - first, 30_000);
+      assert.approximately(stoppedAt, last, 50);
+      // Reactor keeps a session 30 s after its last connection drops.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+  );
+});
+
+// Reactor refuses the session's first three reconnects, tried a second apart, so the fourth
+// connection is ready about 3 s after the drop, 2 s before the reconnect's 5 s run out.
+layer(
+  Reactor.layer({ reconnectTimeout: "5 seconds", reconnect: Schedule.spaced("1 second") }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection is ready as its time runs out", (it) => {
+  /** A session dropped and refused three times, its fourth connection to drop `after` it opens. */
+  const readyLate = (after: Duration.Duration) =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3], (nth) => test.inject({ _tag: "RefuseReconnect", nth }));
+      yield* test.inject({ _tag: "Disconnect", nth: 2, after });
+      return yield* connect;
+    });
+
+  it.effect("counts it back once it has been ready 10 s, so its drop begins a new reconnect", () =>
+    Effect.gen(function* () {
+      const session = yield* readyLate(Duration.millis(10_200));
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 5n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 6n);
+    }),
+  );
+
+  it.effect("stops where it drops sooner, out of time, saying why it dropped", () =>
+    Effect.gen(function* () {
+      const session = yield* readyLate(Duration.seconds(8));
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const error = Option.getOrUndefined(stopped)?.lastError;
+      const detail = error?.context.detail;
+      const why = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [
+          Option.getOrUndefined(stopped)?.generation,
+          error?.reason._tag,
+          ReactorError.is(why) ? why.reason._tag : why,
+        ],
+        [5n, "Timeout", "Disconnected"],
+      );
+    }),
+  );
+});
+
+layer(environment({ timing, reconnect: false }))("a dropped connection, reconnect off", (it) => {
+  it.effect("stays down, and Reactor ends the session 30 s later", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      // Past Reactor's 30 s, in which a connection could have come back.
+      yield* Effect.sleep("40 seconds");
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [snapshot.status, snapshot.generation, yield* remoteState(session.id)],
+        ["disconnected", 1n, "CLOSED"],
+      );
+    }),
+  );
+
+  it.effect("reconnects when asked, on a new generation, and commands work again", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
       yield* session.changes.pipe(
         Stream.filter((snapshot) => snapshot.status === "disconnected"),
         Stream.runHead,

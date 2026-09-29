@@ -6,10 +6,10 @@
  * reported as as-run evidence, kept apart from what was asked for.
  *
  * A pure policy makes every decision. The service applies them one command at
- * a time, wakes on a submission, a session's evidence or the policy's next
- * deadline, and never polls. Sessions are supplied by an `open` effect, such
- * as `H3Source.open`, so the same plan runs on paid H3, a local renderer
- * (`LocalSource`) or the simulated Reactor in `ReactorTest`.
+ * a time on each session, wakes on a submission, a session's evidence or the
+ * policy's next deadline, and never polls. Sessions are supplied by an `open`
+ * effect, such as `H3Source.open`, so the same plan runs on paid H3, a local
+ * renderer (`LocalSource`) or the simulated Reactor in `ReactorTest`.
  */
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
@@ -218,12 +218,23 @@ export interface AsRunEvent {
   readonly status: AsRunStatus;
 }
 
+/**
+ * What became of an item for good: nothing changes it afterwards. `Unknown`
+ * is settled only once it is terminal.
+ */
+export type Settled =
+  | Extract<AsRunStatus, { readonly _tag: "Ended" | "Dropped" | "Failed" | "Unobserved" }>
+  | { readonly _tag: "Unknown"; readonly terminal: true };
+
+/** How an item settled without a start the playout saw. */
+export type NotStarted = Exclude<Settled, { readonly _tag: "Ended" }>;
+
 export interface ItemHandle {
   readonly key: ItemKey;
-  /** The item's start, or the status that rules one out. */
-  readonly started: Effect.Effect<AsRunStatus>;
-  /** The item's end, or the status that rules one out. */
-  readonly outcome: Effect.Effect<AsRunStatus>;
+  /** The item's start, or how it settled without one. */
+  readonly started: Effect.Effect<Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted>;
+  /** How the item settled. */
+  readonly outcome: Effect.Effect<Settled>;
 }
 
 export interface GroupHandle {
@@ -254,14 +265,19 @@ export interface CueEvent {
 
 /** A session's part in the playout. */
 export type SessionEvent =
-  | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetimeSeconds: number }
+  | {
+      readonly _tag: "Opened";
+      readonly sessionId: string;
+      /** What remains of its granted length; absent for a session no cap ends. */
+      readonly lifetimeSeconds?: number | undefined;
+    }
   | { readonly _tag: "SetupFailed"; readonly reason: string; readonly consecutive: number }
   /** The replacement took the air at a boundary. */
   | {
       readonly _tag: "Switched";
       readonly from: string;
       readonly to: string;
-      /** The retiring session never started a clip, or its last one ended and the grace elapsed. */
+      /** The retiring session never started a clip, or its last one left the air and the grace elapsed. */
       readonly decision: "no-observed-start" | "grace-elapsed";
     }
   /** A session was lost or expired before a planned switch; its unaired clips are rebuilt. */
@@ -271,7 +287,7 @@ export type SessionEvent =
       readonly reason: string;
       readonly carried: number;
     }
-  /** The session's connection dropped, and its source is reconnecting it. */
+  /** The session's connection dropped, and is being reconnected. */
   | { readonly _tag: "Reconnecting"; readonly sessionId: string }
   /** The session is connected again, this long after the drop was seen. */
   | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly afterMillis: number }
@@ -293,8 +309,8 @@ export type Event =
   | { readonly _tag: "Cue"; readonly event: CueEvent }
   | { readonly _tag: "Session"; readonly event: SessionEvent }
   /**
-   * A filler clip started or ended, at epoch milliseconds; `seconds` is its
-   * length as the provider built it, when known.
+   * A filler clip started or ended, at epoch milliseconds; one that fails on
+   * air ends then. `seconds` is its length as the provider built it, when known.
    */
   | {
       readonly _tag: "Filler";
@@ -320,7 +336,11 @@ export type Event =
 
 export interface State {
   readonly accepting: boolean;
-  /** Seconds of air secured: the playing clip's rest and the Ready clips after it. */
+  /**
+   * Seconds of air secured: the playing clip's rest and the Ready clips that
+   * will air after it, on the session on air and then on its replacement. A
+   * held clip, or one anchored later, counts once it may air.
+   */
   readonly runwaySeconds: number;
   /**
    * The clip on air: whose it is, when its start was seen in epoch
@@ -340,9 +360,10 @@ export interface State {
   }>;
   readonly starved: number;
   /**
-   * Learned from this playout's own builds: build seconds per requested second
-   * (median and p95, once three were measured), apart for clips built
-   * continuing from another, which take longer; and actual over requested length.
+   * Learned from this playout's own clips: build seconds per requested second
+   * over every build, filler's included (median and p95, once three were
+   * measured), apart for clips built continuing from another, which take
+   * longer; and an item's actual over requested length.
    */
   readonly estimates: {
     readonly build: { readonly median: number; readonly p95: number } | undefined;
@@ -409,7 +430,10 @@ export type SourceEvent =
       readonly action: string;
       readonly categories: ReadonlyArray<string>;
     }
-  /** The connection dropped and the source is reconnecting; a failed reconnect fails `events`. */
+  /**
+   * The connection dropped and is being reconnected; a reconnect that fails, or outlasts the
+   * source's wait, fails `events`.
+   */
   | { readonly _tag: "Reconnecting" }
   /** The connection is back, this long after the drop was seen. */
   | { readonly _tag: "Reconnected"; readonly afterMillis: number }
@@ -422,12 +446,38 @@ export type SourceEvent =
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
- * media. `events` starts with a `State` and fails when the session is lost for
- * good; the source recovers a dropped connection itself, and reports it.
+ * media. What the playout relies on:
+ *
+ * - `sessionId` is unique among the sources open at once; the playout refuses
+ *   a second under the same id.
+ * - A clip id names one clip of its session. Another session's clip may have
+ *   the same id.
+ * - `events` starts with a `State`. `Started`, `Ended` and `Failed` come before
+ *   the `State` that reflects them, and once `enqueue` has returned no `State`
+ *   leaves the clip out until its `Ended` or `Failed`.
+ * - `events` fails only when the session is lost for good; the source
+ *   recovers a dropped connection itself, and reports it.
+ * - Each command ends, done or failed, in bounded time. The playout sends a
+ *   session its commands one at a time, so one that never ends holds up the
+ *   rest of that session's, though no other session's.
+ * - A method that throws when called is reported as a defect, as one whose
+ *   effect dies is, and whether its command applied is taken as unknown. An
+ *   `enqueue` is never sent again, and unless a read of the session's queues
+ *   shows its clip within `unknownTimeout`, a replacement takes over. A
+ *   `remove` is asked again once the session's queues change, and a `move` a
+ *   second later. After such a `setAutoplay` the session's autoplay is
+ *   unknown, and the value the playout wants goes again: a second later if it
+ *   is the one that died, and at once if not. Until its autoplay is as wanted,
+ *   a session is sent nothing else but, as it retires, the removal of its
+ *   filler once its replacement has an item Ready. A `stop` or `play` ends its
+ *   cut, and the cutter airs at the next boundary.
  */
 export interface Source {
   readonly sessionId: string;
-  /** The session's remaining granted length when it opened; `Infinity` for none. */
+  /**
+   * What remains of the session's granted length when the source is returned,
+   * counted by the playout from then; `Infinity` for none.
+   */
   readonly lifetime: Duration.Duration;
   readonly events: Stream.Stream<SourceEvent, ReactorError>;
   readonly enqueue: (
@@ -454,14 +504,18 @@ export interface Source {
 }
 
 export interface FillContext {
-  /** Counts admitted filler clips, from zero; a refused one is asked for again. */
+  /**
+   * Numbers filler clips from zero as each is first asked for. One the provider refused is asked
+   * for again as it was, under its own index, on whichever session's lane is free.
+   */
   readonly index: number;
   readonly runwaySeconds: number;
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
    * equal clips that tile the uncovered gap, none asking for less than its
-   * share; otherwise the shortest, which keeps boundaries, and so reactions,
-   * frequent.
+   * share; ahead of an item whose build it covers (`filler.protect`), as long
+   * as that takes; otherwise the shortest, which keeps boundaries, and so
+   * reactions, frequent.
    */
   readonly seconds: number;
 }
@@ -476,21 +530,44 @@ export interface Options<R = never> {
         /** Air secured ahead: refill below `floor`, up to `target`. */
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
         /**
-         * Called once per admitted clip; keep it pure. A request outside H3's
-         * documented limits fails the playout with `InvalidFiller`.
+         * Called once per clip, as it is first asked for; keep it pure. A request
+         * outside H3's documented limits fails the playout with `InvalidFiller`.
          */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
+        /**
+         * What goes first when an item's build would outlast the air secured.
+         * With `"air"`, the default, once three builds were measured, an item
+         * whose p95 build, at the continued rate if it continues a clip,
+         * exceeds `State.runwaySeconds` waits for one filler clip that builds
+         * sooner than it does: long enough, within `lengths`, to cover the rest
+         * and a second more, and airing no longer than the item builds unless
+         * `lengths.min` is longer. The floor, which filler refills without
+         * holding any item, covers the next such item's build and a second
+         * more. An item with a time to meet goes as soon as it may: one with an
+         * `At` start or a `startBy`, and, since its time is now, one with an
+         * `Asap` start, a released `Manual` one, or one on a lane that cuts.
+         * `"order"` builds each item as soon as it may: it airs sooner, but the
+         * air may go dark while it builds.
+         */
+        readonly protect?: "air" | "order" | undefined;
       }
     | undefined;
-  /** Builds in flight at once on the session that takes new work; one by default. */
+  /**
+   * Builds in flight at once on the session that takes new work; one by
+   * default. A moderation verdict that names no item fails the latest enqueue
+   * on its session: with more than one in flight that may be an innocent
+   * item, while the flagged one is carried to the next session.
+   */
   readonly maxBuildsInFlight?: number | undefined;
   /** Settled keys kept for idempotency, oldest dropped first; 4,096 by default. */
   readonly maxHistory?: number | undefined;
   /**
    * An enqueue whose outcome stays unknown this long marks its session
-   * indeterminate, so a replacement takes over; 60 seconds by default.
+   * indeterminate, so a replacement takes over; 60 seconds by default. Until
+   * then it holds no build slot: what follows builds behind it, and it is
+   * never sent again.
    */
   readonly unknownTimeout?: Duration.Input | undefined;
   /**
@@ -500,25 +577,46 @@ export interface Options<R = never> {
   readonly maxModerations?: number | undefined;
   readonly renewal?:
     | {
-        /** Opens the replacement this long before a session's lifetime ends; 30 seconds by default. */
+        /**
+         * Opens the replacement this long before a session's lifetime ends, and
+         * no earlier: what cannot air before the cap waits for it. 30 seconds by default.
+         */
         readonly lead?: Duration.Input | undefined;
         /**
          * How long opening a session may take, the wait for a GPU included;
          * 3 minutes by default. Waiting for a GPU is not billed.
          */
         readonly openTimeout?: Duration.Input | undefined;
-        /** How long after the retiring session's last clip ends the switch waits; 250 ms by default. */
+        /**
+         * How long after the retiring session's last clip ends, or fails on air,
+         * the switch waits; 250 ms by default.
+         */
         readonly grace?: Duration.Input | undefined;
         /**
-         * Consecutive failed setups that end the playout: opens that failed, and
-         * sessions lost before any clip sent to them started. 3 by default.
+         * Consecutive failed setups that end the playout: opens that failed,
+         * and sessions lost before any clip sent to them started. A run ends
+         * when a session airs its first clip; more clips on the session already
+         * on air don't end it. 3 by default. Each open is retried a second
+         * longer after each failure, but at most this many seconds later, and
+         * never sooner than a refusal's `Retry-After`. An open that failed with
+         * an `AcquisitionFailure` whose `cleanup.allocation` is `"none"`, such
+         * as a refusal with a 4xx status, billed nothing: refused while a
+         * session holds the air, it counts neither then nor later, so it is
+         * asked again however often it fails. Running out while a session holds
+         * the air doesn't end the playout: opening pauses until that session's
+         * cap ends it or it is lost, and then one more open is tried, once the
+         * last failure's wait is over.
          */
         readonly maxSetupFailures?: number | undefined;
       }
     | undefined;
 }
 
-/** Close reports of the sessions this playout retired: every unconfirmed one and the latest others. */
+/**
+ * Close reports of the sessions this playout retired, failed opens that
+ * allocated included: every one that may still bill (`Session.mayStillBill`)
+ * and the latest others.
+ */
 export interface Cleanup {
   readonly sessions: number;
   readonly retained: ReadonlyArray<CloseReport>;
@@ -551,7 +649,9 @@ export class Playout extends Context.Service<
      * A group key withdraws its unstarted parts, and answers `withdrawn` if any
      * part was, else `already-started` if any started; a part key withdraws that
      * part and those after it, and answers for that part. Once the playout has
-     * stopped, it answers from what became of the item or the parts.
+     * stopped, it answers from what became of the item or the parts. It answers
+     * `not-found` for a key it doesn't hold, and for an item that settled
+     * without starting, such as one that failed: its handle says how.
      */
     readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
     /** Admits nothing more and completes once the chosen work has aired or settled. */
@@ -562,12 +662,19 @@ export class Playout extends Context.Service<
     /** Every event from subscription on, in order. */
     readonly events: Stream.Stream<Event>;
     readonly asRun: Stream.Stream<AsRunEvent>;
-    /** The on-air session's picture, continuing across renewals. */
+    /**
+     * The on-air session's picture, continuing across renewals, and ending
+     * when the playout stops. It fails with the on-air source's media failure;
+     * reading it again starts from the session then on air.
+     */
     readonly video: Stream.Stream<VideoFrame, ReactorError>;
+    /** The on-air session's sound, as `video` is its picture. */
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
     /**
      * Why the playout stopped: a session could not be opened or kept, a filler
-     * request was outside H3's limits (`InvalidFiller`), or its scope closed.
+     * request was outside H3's limits (`InvalidFiller`), or its scope closed
+     * (`Closed`). A defect that stopped it, such as a throwing `filler.clip`,
+     * stays a defect: this dies with it.
      */
     readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
     readonly cleanup: Effect.Effect<Cleanup>;

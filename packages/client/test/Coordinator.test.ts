@@ -10,6 +10,7 @@ import {
   FileSystem,
   Inspectable,
   Layer,
+  Predicate,
   Redacted,
   Result,
   Schema,
@@ -185,11 +186,17 @@ layer(
   );
 });
 
+// The session does not reconnect itself, so it stays without a connection.
 layer(
-  recorder([
-    { _tag: "Disconnect", nth: 1, after: Duration.seconds(1) },
-    { _tag: "LateRecording", nth: 1, by: Duration.seconds(20) },
-  ]),
+  environment({
+    timing,
+    recorder: true,
+    faults: [
+      { _tag: "Disconnect", nth: 1, after: Duration.seconds(1) },
+      { _tag: "LateRecording", nth: 1, by: Duration.seconds(20) },
+    ],
+    reconnect: false,
+  }),
 )("a recording of a session without a connection", (it) => {
   // An INACTIVE session has only lost its connection, so its recording is still awaited.
   it.effect("is awaited past its predicted ready time", () =>
@@ -307,6 +314,18 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
   }),
 );
 
+// A server that holds only the key can ask whether a session it recorded still runs, and not end it.
+alone("a Coordinator with only the key inspects a session with the key", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    const { id } = yield* created;
+    const server = yield* Coordinator.make({ apiKey: test.apiKey });
+    yield* server.inspect(id);
+    assert.deepStrictEqual((yield* requests).at(-1), [`/sessions/${id}`, "key"]);
+  }),
+);
+
 alone("termination stays unconfirmed when the DELETE was refused", () =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());
@@ -321,10 +340,12 @@ alone("termination stays unconfirmed when the DELETE was refused", () =>
   }),
 );
 
+// The session does not reconnect itself, so it stays without a connection.
 layer(
   environment({
     timing,
     faults: [{ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) }, { _tag: "IgnoreDelete" }],
+    reconnect: false,
   }),
 )("termination of a session without a connection", (it) => {
   // Paid run tokens 83d17eb7: INACTIVE is a session without a connection, still running.
@@ -447,6 +468,63 @@ alone("a refusal carries its status and delay, and keeps the body out of its mes
       "too many sessions",
     );
   }),
+);
+
+// A create answered 2xx without naming a session may still have made one: what the reply said is
+// kept, redacted as provider text is, for whoever must find that session.
+alone(
+  "a create reply that names no session keeps its body redacted, and out of its message",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const error = yield* Effect.flip(created);
+      assert.deepStrictEqual([error.reason._tag, error.context.outcome], ["Protocol", "unknown"]);
+      assert.notInclude(error.message, "PENDING");
+      const json = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(error);
+      assert.notInclude(json, "PENDING");
+      const detail =
+        error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
+      assert.deepStrictEqual(Predicate.hasProperty(detail, "body") ? detail.body : undefined, {
+        state: "PENDING",
+      });
+    }),
+  [{ _tag: "UnnamedAllocation" }],
+);
+
+// A create nobody answered may have allocated, for all its caller can tell: its deadline ends it
+// with the outcome unknown, so nothing retries it as a create that was never sent.
+alone(
+  "a create never answered ends at its deadline with its outcome unknown",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const sentAt = yield* Clock.currentTimeMillis;
+      const error = yield* Effect.flip(created);
+      assert.deepStrictEqual([error.reason._tag, error.context.outcome], ["Timeout", "unknown"]);
+      assert.strictEqual((yield* Clock.currentTimeMillis) - sentAt, 15_000);
+      assert.lengthOf(yield* test.sessions, 0);
+    }),
+  [{ _tag: "StallAllocation" }],
+);
+
+// A read answered 404 once need not mean the session ended: the next read may find it running.
+alone(
+  "a session the coordinator loses for one read is found again by the next",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const { id } = yield* created;
+      const server = yield* Coordinator.make({ apiKey: test.apiKey });
+      const lost = yield* Effect.flip(server.inspect(id));
+      assert.deepStrictEqual(
+        [lost.reason._tag, lost.reason._tag === "Http" ? lost.reason.status : undefined],
+        ["Http", 404],
+      );
+      assert.notStrictEqual((yield* server.inspect(id)).state, "CLOSED");
+    }),
+  [{ _tag: "MissingSession", nth: 1 }],
 );
 
 // The billing page shows rates per minute; the live pricing endpoint states H3's per second.

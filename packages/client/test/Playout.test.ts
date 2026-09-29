@@ -1,20 +1,31 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
 import { assert, layer } from "@effect/vitest";
 import {
+  Cause,
   Clock,
   Deferred,
   Duration,
   Effect,
+  ErrorReporter,
   Exit,
+  Fiber,
   Option,
   Redacted,
   Ref,
+  Result,
   Scope,
   Stream,
 } from "effect";
 import * as Coordinator from "../src/Coordinator.js";
 import * as H3 from "../src/H3.js";
-import { H3Source, LocalSource, Playout, ReactorError, ReactorTest } from "../src/index.js";
+import {
+  H3Source,
+  LocalSource,
+  Playout,
+  Reactor,
+  ReactorError,
+  ReactorTest,
+} from "../src/index.js";
 import type { Options } from "../src/Playout.js";
 import { commands, environment } from "./fixtures/Simulated.js";
 
@@ -599,6 +610,51 @@ layer(hosted)("time", (it) => {
       assert.strictEqual(cues.length, 1);
     }),
   );
+
+  // A projected time is seldom a whole nanosecond, as the virtual clock counts: the playout waits
+  // until the clock reaches it, rather than just short of it and on until the clock steps again.
+  it.effect("drops a firm item as its projection reaches its startBy, not at a later step", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const median = (yield* playout.state).estimates.build?.median ?? 0;
+      assert.isAbove(median, 0);
+      // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
+      // its own build on, a time for each length.
+      const lengths = [8, 9, 10, 11, 12, 13];
+      const firm = yield* Effect.forEach(lengths, (seconds) =>
+        playout.submit({
+          key: key(`firm ${String(seconds)}`),
+          lane: "line",
+          request: clip(`firm ${String(seconds)}`, seconds),
+          window: { notBefore: "5 seconds", startBy: "8 seconds", firm: true },
+        }),
+      );
+      for (const handle of firm)
+        assert.deepStrictEqual(yield* handle.outcome, { _tag: "Dropped", reason: "late" });
+      const all = yield* events;
+      const at = (name: string, status: string) =>
+        all.flatMap((event) =>
+          event._tag === "AsRun" && event.event.key === name && event.event.status._tag === status
+            ? [event.event.at]
+            : [],
+        )[0] ?? Number.NaN;
+      const late = lengths.map((seconds) => {
+        const name = `firm ${String(seconds)}`;
+        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - seconds * median * 1_000);
+      });
+      // The virtual clock's wall and monotonic readings part by less than a microsecond here.
+      assert.deepStrictEqual(
+        late.map((ms) => Math.abs(ms) < 0.01),
+        lengths.map(() => true),
+        `dropped late by ${late.map((ms) => ms.toFixed(6)).join(", ")} ms`,
+      );
+    }),
+  );
 });
 
 layer(hosted)("uncertainty", (it) => {
@@ -618,6 +674,159 @@ layer(hosted)("uncertainty", (it) => {
       assert.strictEqual(enqueues.length, 2);
       const status = yield* lost.outcome.pipe(Effect.timeoutOption("30 seconds"));
       if (status._tag === "Some") assert.notStrictEqual(status.value._tag, "Accepted");
+    }),
+  );
+
+  it.effect("a lost enqueue reply holds up neither the items behind it nor their session", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 3 });
+      const { playout, events } = yield* start();
+      const names = Array.from({ length: 8 }, (_, index) => `n${index}`);
+      const handles = yield* Effect.forEach(names, (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      // n2's enqueue is the lost one: the rest air behind it on the same session.
+      const rest = [...handles.slice(0, 2), ...handles.slice(3)];
+      for (const handle of rest) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun" && event.event.status._tag !== "Accepted")
+          times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+      // The wait is the provider's own: its reply timeout, then its reconcile window.
+      const gap = times.get("n3:Started")! - times.get("n1:Ended")!;
+      assert.isBelow(gap, 20_000, `n3 aired ${gap} ms after n1`);
+      const opened = (yield* events).filter(
+        (event) => event._tag === "Session" && event.event._tag === "Opened",
+      );
+      assert.strictEqual(opened.length, 1);
+    }),
+  );
+
+  // Hosted H3 lists a new clip before it replies, so when the reply is lost that listing
+  // decides the enqueue, and the next one goes out without waiting out the reply.
+  it.effect("an enqueue that landed but lost its reply airs in turn, with no gap after it", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 3, applied: true });
+      const { playout, events } = yield* start();
+      const names = Array.from({ length: 6 }, (_, index) => `n${index}`);
+      const handles = yield* Effect.forEach(names, (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of handles) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun")
+          times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+      const gaps = names
+        .slice(1)
+        .map(
+          (name, index) =>
+            (times.get(`${name}:Started`) ?? Infinity) -
+            (times.get(`${names[index]}:Ended`) ?? -Infinity),
+        );
+      assert.isBelow(Math.max(...gaps), 1_000, `gaps between clips: ${gaps.join(", ")} ms`);
+    }),
+  );
+});
+
+// Its fault stays armed for the rest of a block, so it has one of its own.
+layer(hosted)("command lanes", (it) => {
+  it.effect("an enqueue whose command was lost holds up no other session's commands", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      // The first enqueue's command is lost: it holds its session's commands for the provider's
+      // reply timeout and then its reconcile window, about 20 s.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+      const { playout, events, statuses } = yield* start({
+        lifetime: "60 seconds",
+        renewal: { lead: "55 seconds" },
+      });
+      yield* playout.submit({ key: key("lost"), lane: "line", request: clip("lost") });
+      // The replacement opens at the lead, about 5 s in, and new work goes to it.
+      yield* eventually(
+        events,
+        (all) =>
+          all.filter((event) => event._tag === "Session" && event.event._tag === "Opened")
+            .length === 2,
+      );
+      yield* playout.submit({ key: key("next"), lane: "line", request: clip("next") });
+      yield* eventually(statuses("next"), (all) => all.includes("Ready"));
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun" && event.event.key === "next")
+          times.set(event.event.status._tag, event.event.at);
+      const waited = times.get("Ready")! - times.get("Accepted")!;
+      assert.isBelow(waited, 5_000, `next was Ready ${waited} ms after it was submitted`);
+    }),
+  );
+
+  // A filler enqueue whose command is lost holds its own session's filler for about 20 s, and no
+  // other session's.
+  it.effect(
+    "a filler enqueue whose command was lost holds up no other session's filler",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const { events } = yield* start({
+          lifetime: "60 seconds",
+          renewal: { lead: "40 seconds" },
+          filler: {
+            runway: { floor: "20 seconds", target: "30 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        yield* Effect.sleep("19 seconds");
+        // s1's next enqueue, a filler clip's, is lost, as the replacement opens at the lead.
+        yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+        yield* Effect.sleep("30 seconds");
+        const log = yield* test.log;
+        const [first, second] = (yield* events).flatMap((event) =>
+          event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+        );
+        // The layer's log holds the tests before this one too.
+        assert.isTrue(
+          log.some(
+            (entry) =>
+              entry.sessionId === first && entry.kind === "command" && entry.dropped !== undefined,
+          ),
+        );
+        const created = log.find((entry) => entry.sessionId === second)?.at ?? NaN;
+        const filled = log.find(
+          (entry) =>
+            entry.sessionId === second && entry.kind === "command" && entry.name === "enqueue",
+        )?.at;
+        assert.isBelow((filled ?? Infinity) - created, 5_000, `s2 opened at ${created} ms`);
+      }),
+    { timeout: 60_000 },
+  );
+});
+
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "40 millis", channel: "20 millis" }),
+    sessionsPerMinute: 1,
+  }),
+)("refusals", (it) => {
+  it.effect("asks for a session again only after the wait a refusal names", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reactor = yield* Reactor.Reactor;
+      const grant = yield* tokens("10 minutes");
+      // Three sessions back to back use the account's burst: the next is refused for a minute.
+      for (let index = 0; index < 3; index++)
+        yield* reactor.create({ model: H3.modelName, tokens: grant });
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: grant }),
+        lanes: [{ name: "line" }],
+      });
+      const handle = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const outcome = yield* Effect.raceFirst(
+        handle.outcome,
+        Effect.flatMap(playout.failure, (failure) => Effect.die(failure)),
+      );
+      assert.strictEqual(outcome._tag, "Ended");
     }),
   );
 });
@@ -650,6 +859,77 @@ layer(hosted)("renewal", (it) => {
         assert.deepStrictEqual(sessions.slice(0, 3), ["Opened", "Opened", "Switched"]);
         // The retired session closes after the switch, confirmed by its own read.
         yield* eventually(playout.cleanup, (cleanup) => cleanup.sessions >= 1);
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "opens the replacement at the lead however long the backlog, so it bills no idle wait",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const { playout, events } = yield* start({
+          lifetime: "90 seconds",
+          renewal: { lead: "30 seconds" },
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        const handles = yield* Effect.forEach(
+          Array.from({ length: 30 }, (_, index) => `n${index}`),
+          (name) => playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of handles) yield* handle.outcome;
+        const opened = (yield* events).flatMap((event) =>
+          event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+        );
+        const created = (sessionId: string | undefined) =>
+          Effect.map(test.log, (log) => log.find((entry) => entry.sessionId === sessionId)?.at);
+        const first = yield* created(opened[0]);
+        const second = yield* created(opened[1]);
+        // What will not fit before the cap waits for the replacement; it doesn't open it early.
+        assert.isAtLeast(second! - first!, 60_000);
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "replacements refused with a server error leave the session on air airing until its cap, then open once more",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first allocation succeeds; the three renewal attempts are refused with 503, after
+        // which nobody can tell whether a session was allocated, so each may bill.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 503 });
+        const { playout, events } = yield* start({
+          lifetime: "120 seconds",
+          renewal: { lead: "60 seconds" },
+        });
+        yield* Effect.sleep("70 seconds");
+        const late = yield* playout.submit({
+          key: key("late"),
+          lane: "line",
+          request: clip("late"),
+        });
+        assert.strictEqual((yield* late.outcome)._tag, "Ended");
+        assert.isTrue(
+          Option.isNone(yield* playout.failure.pipe(Effect.timeoutOption("90 seconds"))),
+        );
+        const sessions = (yield* events).flatMap((event) =>
+          event._tag === "Session" ? [event.event] : [],
+        );
+        assert.deepStrictEqual(
+          sessions.flatMap((event) =>
+            event._tag === "Opened"
+              ? ["Opened"]
+              : event._tag === "SetupFailed"
+                ? [`SetupFailed ${event.consecutive}`]
+                : [],
+          ),
+          ["Opened", "SetupFailed 1", "SetupFailed 2", "SetupFailed 3", "Opened"],
+        );
       }),
     { timeout: 60_000 },
   );
@@ -714,6 +994,84 @@ layer(hosted)("renewal", (it) => {
   );
 });
 
+// A refusal with a 4xx status allocated nothing, so it bills nothing. Its faults stay armed for
+// the rest of a block, so it has one of its own.
+layer(hosted)("renewal refused with nothing allocated", (it) => {
+  it.effect(
+    "keeps asking for the replacement while the session on air holds it, and no air is lost",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first allocation succeeds, the next three are refused over quota, and the fifth
+        // succeeds.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 429 });
+        const { playout, events } = yield* start({
+          lifetime: "120 seconds",
+          renewal: { lead: "60 seconds" },
+        });
+        yield* Effect.sleep("70 seconds");
+        const names = Array.from({ length: 12 }, (_, index) => `n${index}`);
+        const handles = yield* Effect.forEach(names, (name) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of handles) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+        const times = new Map<string, number>();
+        for (const event of yield* events)
+          if (event._tag === "AsRun")
+            times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+        const gaps = names
+          .slice(1)
+          .map(
+            (name, index) =>
+              (times.get(`${name}:Started`) ?? Infinity) -
+              (times.get(`${names[index]}:Ended`) ?? -Infinity),
+          );
+        assert.isBelow(Math.max(...gaps), 1_000, `gaps between clips: ${gaps.join(", ")} ms`);
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.effect(
+    "counts none refused while the session on air held it once that session is gone",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // Filler airs. Two renewal opens are refused over quota while the first session holds
+        // the air, a third just after its cap, and the fourth succeeds.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 429 });
+        const { playout, events } = yield* start({
+          lifetime: "60 seconds",
+          renewal: { lead: "3 seconds" },
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        const failure = yield* playout.failure.pipe(Effect.timeoutOption("90 seconds"));
+        assert.deepStrictEqual(
+          Option.map(failure, (error) => error.message),
+          Option.none(),
+        );
+        const sessions = (yield* events).flatMap((event) =>
+          event._tag === "Session" ? [event.event] : [],
+        );
+        assert.deepStrictEqual(
+          sessions.flatMap((event) =>
+            event._tag === "Opened"
+              ? ["Opened"]
+              : event._tag === "SetupFailed"
+                ? [`SetupFailed ${event.consecutive}`]
+                : [],
+          ),
+          ["Opened", "SetupFailed 1", "SetupFailed 2", "SetupFailed 3", "Opened"],
+        );
+      }),
+    { timeout: 60_000 },
+  );
+});
+
 layer(hosted)("drain", (it) => {
   it.effect("finishes what was accepted, then admits nothing", () =>
     Effect.gen(function* () {
@@ -751,6 +1109,26 @@ layer(hosted)("filler", (it) => {
     { timeout: 60_000 },
   );
 
+  // Filler is all a quiet channel builds, and the floor covers a p95 build only once one is known.
+  it.effect(
+    "learns its build rate from filler alone",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "4 seconds", target: "8 seconds" },
+            clip: ({ index }) => clip(`idle ${index}`),
+          },
+        });
+        const { estimates } = yield* eventually(
+          playout.state,
+          (state) => state.estimates.build !== undefined,
+        );
+        assert.isAbove(estimates.build?.median ?? 0, 0);
+      }),
+    { timeout: 60_000 },
+  );
+
   // The hosted `show` rehearsal: with 5 s clips measured at H3's 5.167 s, a 6 s gap was tiled
   // with a 5.806 s request, H3 aligned it to 5.875 s, and the 125 ms left cost a whole clip.
   it.effect(
@@ -782,6 +1160,57 @@ layer(hosted)("filler", (it) => {
   );
 });
 
+// Filler airs alone for 40 s, then a 15 s item continuing the clip before it arrives with about
+// 10 s of air secured. A continued build ran at 0.92 times real time on hosted H3, so it takes
+// about 16 s; building it at once left 6.4 s of dead air.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      continuedBuildSpeed: 0.92,
+      seam: "70 millis",
+      http: "40 millis",
+      channel: "20 millis",
+    }),
+  }),
+)("air before queue order", (it) => {
+  for (const protect of ["air", "order"] as const)
+    it.effect(
+      `a long continued item submitted on a thin runway, with filler protecting the ${protect}`,
+      () =>
+        Effect.gen(function* () {
+          const { playout, events } = yield* start({
+            filler: {
+              runway: { floor: "5 seconds", target: "10 seconds" },
+              clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+              protect,
+            },
+          });
+          yield* Effect.sleep("40 seconds");
+          const secured = (yield* playout.state).runwaySeconds;
+          const long = yield* playout.submit({
+            key: key("long"),
+            lane: "line",
+            request: clip("long", 15),
+            continuity: "previous",
+          });
+          const started = yield* long.started;
+          assert.strictEqual((yield* long.outcome)._tag, "Ended");
+          const starved = (yield* events).flatMap((event) =>
+            event._tag === "Starved" ? [event.at] : [],
+          );
+          const dark = starved.map((at) => (started._tag === "Started" ? started.at : at) - at);
+          // Filler covering its build goes first; building it at once leaves the air dark.
+          assert.strictEqual(
+            starved.length,
+            protect === "air" ? 0 : 1,
+            `${secured.toFixed(1)} s secured at submission, dark for ${dark.join(", ")} ms`,
+          );
+        }),
+      { timeout: 60_000 },
+    );
+});
+
 layer(hosted)("local renderer", (it) => {
   it.effect("runs the same plan on a local renderer", () =>
     Effect.gen(function* () {
@@ -789,9 +1218,10 @@ layer(hosted)("local renderer", (it) => {
       const presented = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
         open: LocalSource.open({
-          present: (local) =>
+          build: (local) => Effect.succeed({ value: local.request.prompt }),
+          present: (local, prompt) =>
             Effect.andThen(
-              Ref.update(presented, (all) => [...all, local.request.prompt]),
+              Ref.update(presented, (all) => [...all, prompt]),
               Effect.sleep(Duration.seconds(local.seconds)),
             ),
         }),
@@ -805,28 +1235,24 @@ layer(hosted)("local renderer", (it) => {
     }),
   );
 
-  it.effect("reports what a local renderer failed, discarded or cut, and moves on", () =>
+  it.effect("reports what a local renderer failed, released or cut, and moves on", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const discarded = yield* Ref.make<ReadonlyArray<string>>([]);
+      const released = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
         open: LocalSource.open({
           build: (local) =>
-            local.request.prompt === "unbuildable"
-              ? Effect.fail(
-                  ReactorError.ReactorError.fromCode("InvalidState", "the renderer refused"),
-                )
-              : Effect.sleep("500 millis"),
+            Effect.gen(function* () {
+              const prompt = local.request.prompt;
+              yield* Effect.addFinalizer(() => Ref.update(released, (all) => [...all, prompt]));
+              if (prompt === "unbuildable") return yield* Effect.fail("the renderer refused");
+              yield* Effect.sleep("500 millis");
+              return { value: prompt };
+            }),
           present: (local) =>
             local.request.prompt === "broken"
-              ? Effect.andThen(
-                  Effect.sleep("1 second"),
-                  Effect.fail(
-                    ReactorError.ReactorError.fromCode("InvalidState", "the speaker failed"),
-                  ),
-                )
+              ? Effect.andThen(Effect.sleep("1 second"), Effect.fail("the speaker failed"))
               : Effect.sleep(Duration.seconds(local.seconds)),
-          discard: (local) => Ref.update(discarded, (all) => [...all, local.request.prompt]),
         }),
         lanes: [{ name: "urgent", cut: true }, { name: "speech" }],
       });
@@ -837,14 +1263,20 @@ layer(hosted)("local renderer", (it) => {
       const long = yield* submit("long", "speech", 15);
       const spare = yield* submit("spare");
       assert.strictEqual((yield* unbuildable.outcome)._tag, "Failed");
-      const cut = yield* broken.outcome;
-      assert.deepStrictEqual(cut._tag === "Ended" ? cut.termination : cut._tag, "stopped");
+      // A presentation that fails fails its clip, with the renderer's words kept out of the message.
+      const failed = yield* broken.outcome;
+      const reason = failed._tag === "Failed" ? failed.reason : undefined;
+      assert.strictEqual(reason?._tag, "Clip");
+      if (reason?._tag === "Clip") {
+        assert.include(Redacted.value(reason.provider), "the speaker failed");
+        assert.notInclude(reason.message, "the speaker failed");
+      }
       yield* long.started;
       // The spare is Ready behind the long clip; withdrawing it hands it back to the renderer.
       yield* Effect.sleep("2 seconds");
       yield* playout.withdraw(key("spare"));
       assert.strictEqual((yield* spare.outcome)._tag, "Dropped");
-      assert.deepStrictEqual(yield* Ref.get(discarded), ["spare"]);
+      assert.deepStrictEqual(yield* Ref.get(released), ["unbuildable", "broken", "spare"]);
       const urgent = yield* submit("urgent", "urgent");
       yield* urgent.started;
       const stopped = yield* long.outcome;
@@ -852,6 +1284,227 @@ layer(hosted)("local renderer", (it) => {
         stopped._tag === "Ended" ? stopped.termination : stopped._tag,
         "stopped",
       );
+    }),
+  );
+
+  it.effect("renews a local renderer's sessions, and every item airs to its end", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({ buildRatio: 0.4, lifetime: "40 seconds" }),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "15 seconds" },
+      });
+      const switches = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) => {
+          const session = event._tag === "Session" ? event.event : undefined;
+          return session?._tag === "Switched"
+            ? Ref.update(switches, (all) => [...all, [session.from, session.to] as const])
+            : Effect.void;
+        }),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const items = yield* Effect.forEach(
+        Array.from({ length: 16 }, (_, index) => `line ${String(index)}`),
+        (prompt) => playout.submit({ key: key(prompt), lane: "speech", request: clip(prompt) }),
+      );
+      const outcomes = yield* Effect.forEach(items, (item) =>
+        Effect.map(item.outcome, (status) => status._tag),
+      );
+      assert.deepStrictEqual(
+        outcomes,
+        items.map(() => "Ended"),
+      );
+      const switched = yield* Ref.get(switches);
+      assert.isAbove(switched.length, 0, "no session was renewed");
+      for (const [from, to] of switched) assert.notStrictEqual(from, to);
+    }),
+  );
+
+  it.effect(
+    "hands over the grace after a clip fails on air, not at the retiring session's cap",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const playout = yield* Playout.make({
+          open: LocalSource.open({
+            build: (local) => Effect.succeed({ value: local.request.prompt }),
+            present: (local, prompt) =>
+              prompt === "failing"
+                ? Effect.andThen(Effect.sleep("13 seconds"), Effect.fail("the speaker failed"))
+                : Effect.sleep(Duration.seconds(local.seconds)),
+            lifetime: "20 seconds",
+          }),
+          lanes: [{ name: "speech" }],
+          renewal: { lead: "10 seconds" },
+        });
+        // The first clip is the session's only one: the next doesn't fit before its cap, and waits
+        // for the replacement opened 10 seconds in.
+        const failing = yield* playout.submit({
+          key: key("failing"),
+          lane: "speech",
+          request: clip("failing", 15),
+        });
+        const next = yield* playout.submit({
+          key: key("next"),
+          lane: "speech",
+          request: clip("next", 15),
+        });
+        assert.strictEqual((yield* failing.outcome)._tag, "Failed");
+        const failedAt = yield* Clock.currentTimeMillis;
+        yield* next.started;
+        const gap = (yield* Clock.currentTimeMillis) - failedAt;
+        assert.isBelow(gap, 1000, `the next item started ${String(gap)} ms after the failure`);
+      }),
+  );
+
+  it.effect("reports a filler that fails on air as ended", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) => Effect.succeed({ value: local.request.prompt }),
+          present: (local, prompt) =>
+            prompt === "idle 0"
+              ? Effect.andThen(Effect.sleep("1 second"), Effect.fail("the speaker failed"))
+              : Effect.sleep(Duration.seconds(local.seconds)),
+        }),
+        lanes: [{ name: "speech" }],
+        filler: {
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        },
+      });
+      const phases = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "Filler"
+            ? Ref.update(phases, (all) => [...all, `${event.phase} ${String(event.index)}`])
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* Effect.sleep("12 seconds");
+      assert.deepStrictEqual((yield* Ref.get(phases)).slice(0, 4), [
+        "Started 0",
+        "Ended 0",
+        "Started 1",
+        "Ended 1",
+      ]);
+    }),
+  );
+
+  // A source method that throws when called, rather than returning an effect, is reported, and its
+  // lane's worker goes on to the session's next command.
+  it.effect("reports a source method that throws when called, and its lane carries on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<unknown> = [];
+      const reporter = ErrorReporter.make(({ cause }) => {
+        reported.push(Cause.findDefect(cause).pipe(Result.getOrUndefined));
+      });
+      const bug = new Error("a source bug");
+      let enqueues = 0;
+      const playout = yield* Playout.make({
+        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
+          ...source,
+          enqueue: (request, tag, continueFrom) => {
+            if (++enqueues === 2) throw bug;
+            return source.enqueue(request, tag, continueFrom);
+          },
+        })),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "speech", request: clip(name) }),
+      );
+      // b's enqueue may have gone out, as far as the plan can tell; c goes out after it.
+      const outcome = yield* items[2]!.outcome.pipe(Effect.timeoutOption("2 minutes"));
+      assert.deepStrictEqual(
+        Option.map(outcome, (value) => value._tag),
+        Option.some("Ended"),
+      );
+      assert.deepStrictEqual(reported, [bug]);
+    }),
+  );
+
+  // b's enqueue fails, and a finalizer dies as it does, so its cause holds both. The failure alone
+  // decides b; the defect is reported once, and the failure, which the plan handles, is not.
+  it.effect("reports a defect beside a source method's failure, which alone decides it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const refusal = ReactorError.CommandFailure.from(
+        ReactorError.ReactorError.fromCode("InvalidInput", "the renderer refused it"),
+        { operation: "enqueue", outcome: "not-submitted" },
+      );
+      const playout = yield* Playout.make({
+        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
+          ...source,
+          enqueue: (request, tag, continueFrom) =>
+            request.prompt === "b"
+              ? Effect.fail(refusal).pipe(Effect.ensuring(Effect.die(new Error("a source bug"))))
+              : source.enqueue(request, tag, continueFrom),
+        })),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "speech", request: clip(name) }),
+      );
+      const outcome = yield* items[1]!.outcome;
+      const reason = outcome._tag === "Failed" ? outcome.reason : undefined;
+      assert.deepStrictEqual(
+        reason?._tag === "Command" ? [reason._tag, reason.cause.message] : reason,
+        ["Command", "the renderer refused it"],
+      );
+      assert.strictEqual((yield* items[2]!.outcome)._tag, "Ended");
+      assert.deepStrictEqual(reported, ["a source bug"]);
+    }),
+  );
+
+  // The first open fails, and the second session's events 2 s in, each as a finalizer dies. The
+  // failures alone decide: the open is asked again, and the second session is lost and replaced.
+  it.effect("reports a defect beside an open's failure, or its source's events'", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const failing = (what: string) =>
+        Effect.fail(ReactorError.ReactorError.fromCode("Timeout", `the ${what} failed`)).pipe(
+          Effect.ensuring(Effect.die(new Error(`an ${what} bug`))),
+        );
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.suspend(() => {
+          const nth = ++opens;
+          if (nth === 1) return failing("open");
+          return Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) =>
+            nth === 2
+              ? {
+                  ...source,
+                  events: Stream.merge(
+                    source.events,
+                    Stream.fromEffectDrain(
+                      Effect.andThen(Effect.sleep("2 seconds"), failing("events")),
+                    ),
+                  ),
+                }
+              : source,
+          );
+        }),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      yield* Effect.sleep("5 seconds");
+      const item = yield* playout.submit({ key: key("a"), lane: "speech", request: clip("a") });
+      assert.strictEqual((yield* item.outcome)._tag, "Ended");
+      assert.strictEqual(opens, 3);
+      assert.deepStrictEqual(reported, ["an open bug", "an events bug"]);
     }),
   );
 });
@@ -1085,6 +1738,146 @@ layer(hosted)("failure reasons", (it) => {
   );
 });
 
+layer(hosted)("sources", (it) => {
+  it.effect("refuses a source whose session id a live source already holds", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const grant = yield* tokens("60 seconds");
+      // A source that names every session alike, as a custom one might by mistake.
+      const playout = yield* Playout.make({
+        open: Effect.map(H3Source.open({ tokens: grant }), (source) => ({
+          ...source,
+          sessionId: "shared",
+        })),
+        lanes: [{ name: "line" }],
+        renewal: { lead: "30 seconds" },
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
+      assert.isTrue(Option.isSome(failure));
+      if (Option.isSome(failure)) assert.include(failure.value.message, "session id");
+    }),
+  );
+
+  // The first open fails a second in, leaving in its scope a finalizer that dies as the scope
+  // closes. The open is a failed setup as any is, so it is asked again; the defect is reported.
+  it.effect("fails an open whose scope's finalizer dies, and asks again", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.suspend(() =>
+          ++opens === 1
+            ? Effect.addFinalizer(() => Effect.die(new Error("a release bug"))).pipe(
+                Effect.andThen(Effect.sleep("1 second")),
+                Effect.andThen(
+                  Effect.fail(ReactorError.ReactorError.fromCode("Timeout", "the open failed")),
+                ),
+              )
+            : LocalSource.open({ buildRatio: 0.2 }),
+        ),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const sessions = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag !== "Session"
+            ? Effect.void
+            : Ref.update(sessions, (all) => [
+                ...all,
+                event.event._tag === "SetupFailed"
+                  ? `SetupFailed ${event.event.consecutive}`
+                  : event.event._tag,
+              ]),
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const item = yield* playout.submit({ key: key("a"), lane: "speech", request: clip("a") });
+      const outcome = yield* item.outcome.pipe(Effect.timeoutOption("1 minute"));
+      assert.deepStrictEqual(yield* Ref.get(sessions), ["SetupFailed 1", "Opened"]);
+      assert.deepStrictEqual(
+        Option.map(outcome, (value) => value._tag),
+        Option.some("Ended"),
+      );
+      assert.deepStrictEqual(reported, ["a release bug"]);
+    }),
+  );
+
+  // The renewal opens a second session under the first's id, and closing it unused dies. The
+  // playout still fails as that refusal does, and the defect is reported.
+  it.effect("refuses a source whose session id is held, though its close dies", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.map(
+          LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" }),
+          (source) => ({
+            ...source,
+            sessionId: "shared",
+            close:
+              ++opens === 2
+                ? Effect.andThen(source.close, Effect.die(new Error("a close bug")))
+                : source.close,
+          }),
+        ),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "10 seconds" },
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("1 minute"));
+      assert.deepStrictEqual(
+        Option.map(failure, (error) => error.message),
+        Option.some("an opened source's session id is already in use"),
+      );
+      assert.deepStrictEqual(reported, ["a close bug"]);
+    }),
+  );
+
+  // The replacement opens 10 s in and takes the air, and closing the retired session dies. The
+  // defect is reported, and the retired session's scope, which holds what its open made, closes.
+  it.effect("closes a retired session's scope though its close dies", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const released: Array<number> = [];
+      let opens = 0;
+      yield* Playout.make({
+        open: Effect.suspend(() => {
+          const nth = ++opens;
+          return Effect.addFinalizer(() => Effect.sync(() => released.push(nth))).pipe(
+            Effect.andThen(LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" })),
+            Effect.map((source) =>
+              nth === 1
+                ? {
+                    ...source,
+                    close: Effect.andThen(source.close, Effect.die(new Error("a close bug"))),
+                  }
+                : source,
+            ),
+          );
+        }),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "10 seconds" },
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      yield* Effect.sleep("18 seconds");
+      assert.strictEqual(opens, 2);
+      assert.deepStrictEqual(released, [1]);
+      assert.deepStrictEqual(reported, ["a close bug"]);
+    }),
+  );
+});
+
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
 // SDK "observes the session leaving the ready state"; a verdict may or may not come first.
 layer(hosted)("moderation with a verdict", (it) => {
@@ -1259,29 +2052,45 @@ layer(hosted)("closing and failing", (it) => {
     }),
   );
 
-  it.effect("a defect in the plan fails the playout and closes its sessions, never hanging", () =>
-    Effect.gen(function* () {
-      const test = yield* ReactorTest.ReactorTest;
-      const { playout } = yield* start({
-        filler: {
-          runway: { floor: "5 seconds", target: "10 seconds" },
-          clip: ({ index }) => {
-            if (index > 0) throw new Error("the filler generator broke");
-            return clip("filler 0");
+  it.effect(
+    "a defect in the plan kills the playout with it, reported, and closes its sessions",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const reported: Array<unknown> = [];
+        const reporter = ErrorReporter.make(({ cause }) => {
+          reported.push(Cause.findDefect(cause).pipe(Result.getOrUndefined));
+        });
+        const broke = new Error("the filler generator broke on a prompt for user alice");
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index }) => {
+              if (index > 0) throw broke;
+              return clip("filler 0");
+            },
           },
-        },
-      });
-      const failure = yield* playout.failure.pipe(Effect.timeoutOption("2 minutes"));
-      assert.isTrue(Option.isSome(failure));
-      const refused = yield* playout
-        .submit({ key: key("after"), lane: "line", request: clip("after") })
-        .pipe(Effect.flip, Effect.timeoutOption("10 seconds"));
-      assert.deepStrictEqual(
-        Option.map(refused, (error) => error._tag),
-        Option.some("PlayoutClosed"),
-      );
-      yield* eventually(test.sessions, (all) => all.every((value) => value.state === "CLOSED"));
-    }),
+        }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+        const exit = yield* Effect.exit(playout.failure).pipe(Effect.timeoutOption("2 minutes"));
+        // A bug stays a defect: its text never becomes a library message.
+        assert.deepStrictEqual(
+          Option.map(exit, (value) =>
+            Exit.isFailure(value)
+              ? Cause.findDefect(value.cause).pipe(Result.getOrUndefined)
+              : value,
+          ),
+          Option.some<unknown>(broke),
+        );
+        assert.deepStrictEqual(reported, [broke]);
+        const refused = yield* playout
+          .submit({ key: key("after"), lane: "line", request: clip("after") })
+          .pipe(Effect.flip, Effect.timeoutOption("10 seconds"));
+        assert.deepStrictEqual(
+          Option.map(refused, (error) => error._tag),
+          Option.some("PlayoutClosed"),
+        );
+        yield* eventually(test.sessions, (all) => all.every((value) => value.state === "CLOSED"));
+      }),
   );
 
   it.effect("a withdrawal after the playout closed answers what became of the item", () =>
@@ -1351,6 +2160,61 @@ layer(hosted)("closing and failing", (it) => {
 });
 
 // Its faults stay armed for the rest of a block, so it has one of its own.
+layer(hosted)("cleanup evidence", (it) => {
+  it.effect(
+    "keeps the report of an open that failed after allocating, while it may still bill",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // The first setup command's reply is lost, so the first open fails after allocating;
+        // DELETE is ignored, so its termination stays unconfirmed.
+        yield* test.inject({ _tag: "DropReply", command: "set_flush_on_clip_end", nth: 1 });
+        yield* test.inject({ _tag: "IgnoreDelete" });
+        const { playout, events } = yield* start();
+        yield* eventually(events, (all) =>
+          all.some((event) => event._tag === "Session" && event.event._tag === "Opened"),
+        );
+        const [failedOpen] = yield* test.sessions;
+        const cleanup = yield* playout.cleanup;
+        assert.deepStrictEqual(
+          cleanup.retained.map((report) => [report.sessionId, report.remote.confirmed]),
+          [[failedOpen?.id, false]],
+        );
+      }),
+  );
+
+  it.effect("keeps the report of an open whose allocation is unknown", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const unknown = {
+        ...Reactor.noAcquisition,
+        localClosed: true,
+        allocation: "unknown" as const,
+      };
+      const playout = yield* Playout.make({
+        open: Effect.fail(
+          ReactorError.AcquisitionFailure.from(
+            ReactorError.ReactorError.fromCode("Timeout", "create session timed out", {
+              operation: "create session",
+              outcome: "unknown",
+            }),
+            unknown,
+          ),
+        ),
+        lanes: [{ name: "line" }],
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* playout.failure;
+      // Nobody learned its id, so nothing confirms it ended: it may bill until its cap.
+      const cleanup = yield* playout.cleanup;
+      assert.strictEqual(
+        cleanup.retained.filter((report) => report.allocation === "unknown").length,
+        3,
+      );
+    }),
+  );
+});
+
 layer(hosted)("failing after a recovered open", (it) => {
   it.effect("reports why it failed, not an open failure it had recovered from", () =>
     Effect.gen(function* () {
@@ -1370,6 +2234,29 @@ layer(hosted)("failing after a recovered open", (it) => {
   );
 });
 layer(hosted)("media", (it) => {
+  it.effect("the picture and the sound end when the playout stops", () =>
+    Effect.gen(function* () {
+      // The clock moves on after the playout's own scope, and its flow, have closed.
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index }) => clip(`filler ${String(index)}`),
+        },
+      }).pipe(Scope.provide(scope));
+      const video = yield* playout.video.pipe(Stream.runDrain, Effect.forkScoped);
+      const audio = yield* playout.audio.pipe(Stream.runDrain, Effect.forkScoped);
+      yield* Effect.sleep("20 seconds");
+      yield* Scope.close(scope, Exit.void);
+      const ended = yield* Effect.all([Fiber.await(video), Fiber.await(audio)]).pipe(
+        Effect.timeoutOption("10 seconds"),
+      );
+      assert.isTrue(Option.isSome(ended), "a reader was still waiting after the playout closed");
+      if (Option.isSome(ended)) for (const exit of ended.value) assert.isTrue(Exit.isSuccess(exit));
+    }),
+  );
+
   it.effect("video goes on after a reader falls behind its bound", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));

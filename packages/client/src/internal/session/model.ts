@@ -9,13 +9,14 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Queue from "effect/Queue";
 import type * as Ref from "effect/Ref";
+import type * as Schedule from "effect/Schedule";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as SubscriptionRef from "effect/SubscriptionRef";
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { Descriptor, IceCandidate, Mapping, Signaling } from "../../Coordinator.js";
 import type { MediaTrack, Peer, PeerEvent } from "../../Peer.js";
-import { ReactorError } from "../../ReactorError.js";
+import { type ContextInput, ReactorError } from "../../ReactorError.js";
 import type {
   CloseReport,
   CommandReply,
@@ -34,8 +35,13 @@ export interface Settings {
   readonly replyTimeout: Duration.Duration;
   readonly uploadTimeout: Duration.Duration;
   readonly connectTimeout: Duration.Duration;
-  /** A reconnect's own deadline: Reactor ends a session 30 s after it loses its last connection. */
+  /**
+   * A reconnect's deadline, the session's own counted from the drop that began it: Reactor ends a
+   * session 30 s after it loses its last connection.
+   */
   readonly reconnectTimeout: Duration.Duration;
+  /** When the session tries a dropped connection again; none leaves it dropped. */
+  readonly reconnect: Schedule.Schedule<unknown, ReactorError> | undefined;
   readonly readyTimeout: Duration.Duration;
   /** Infinite disables the heartbeat. */
   readonly heartbeat: Duration.Duration;
@@ -122,6 +128,10 @@ export interface State {
   readonly status: Status;
   /** Content moderation is ending the session: nothing reconnects it. */
   readonly moderated: boolean;
+  /** A dropped connection is reconnected on its own: the session has a policy and was acquired. */
+  readonly reconnects: boolean;
+  /** The session is reconnecting on its own, from the drop until a connection is ready or it stops. */
+  readonly reconnecting: boolean;
   readonly generation: bigint;
   readonly remote: RemoteSession | undefined;
   readonly connection: Connection | undefined;
@@ -132,10 +142,14 @@ export interface State {
   readonly sampler: Stats.SamplerState;
 }
 
+/**
+ * The moves a session's status may make, but for the move to `ready`: only the negotiation makes
+ * that, in one step with its checks, so `transition` refuses it as illegal.
+ */
 export const transitions: Record<Status, ReadonlyArray<Status>> = {
   idle: ["connecting", "closing"],
   connecting: ["waiting", "disconnected", "closing"],
-  waiting: ["ready", "disconnected", "closing"],
+  waiting: ["disconnected", "closing"],
   ready: ["connecting", "disconnected", "closing"],
   disconnected: ["connecting", "closing"],
   closing: ["closed"],
@@ -143,6 +157,27 @@ export const transitions: Record<Status, ReadonlyArray<Status>> = {
 };
 
 export const isClosing = (status: Status): boolean => status === "closing" || status === "closed";
+
+/**
+ * Whether no later attempt can reconnect the session after `error`: it ended, is gone, or speaks a
+ * protocol this client does not.
+ */
+export const ends = (error: ReactorError): boolean => {
+  switch (error.reason._tag) {
+    case "TerminalSession":
+    case "Moderated":
+    case "VersionMismatch":
+      return true;
+    case "Http":
+      return error.reason.status === 404;
+    default:
+      return false;
+  }
+};
+
+/** Why nothing connects again a session that content moderation ended. */
+export const moderationEnded = (context: ContextInput) =>
+  ReactorError.fromCode("Moderated", "content moderation ended the session", context);
 
 /** A control message this client sends. */
 export type ControlPayload = Exclude<
@@ -163,8 +198,11 @@ export interface Core {
   readonly control: Correlator.Correlator<ControlMessage>;
   /** Publishes an event on `generation`, the current one when omitted. */
   readonly publish: (payload: EventPayload, generation?: bigint) => Effect.Effect<void>;
-  /** Moves the session to `status` if it is not there yet; an illegal move is a defect. */
-  readonly transition: (status: Status) => Effect.Effect<void>;
+  /**
+   * Moves the session to `status` if it is not there yet, and says whether it is there: once the
+   * close has begun it refuses any other move. Any other illegal move is a defect.
+   */
+  readonly transition: (status: Status) => Effect.Effect<boolean>;
 }
 
 /** The fallback of a `timeoutOrElse`: `operation`'s deadline passed. */

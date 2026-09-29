@@ -5,6 +5,7 @@
  */
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
+  Clock,
   type Duration,
   Effect,
   Exit,
@@ -52,8 +53,16 @@ scenario("a lost reply is proven by the queue that lists the clip, and nothing i
     const test = yield* ReactorTest.ReactorTest;
     const provider = yield* H3.make(yield* connect);
     yield* test.inject({ _tag: "DropReply", command: "enqueue", applied: true });
+    const sent = yield* Clock.currentTimeMillis;
     const acceptance = yield* provider.enqueue({ prompt: "only the broadcast", seconds: 5 });
+    // The queue listed the clip within a round trip. Without the reply it decides once it has
+    // waited the 5 s reconcile window, not at the 15 s reply deadline.
+    const waited = (yield* Clock.currentTimeMillis) - sent;
+    assert.isAtLeast(waited, 5_000);
+    assert.isBelow(waited, 6_000);
     assert.strictEqual(acceptance.evidence.kind, "metadata");
+    // Past the command's own reply deadline, which it still waits out.
+    yield* Effect.sleep("15 seconds");
     assert.deepStrictEqual(
       (yield* commands("enqueue")).map((entry) => entry.dropped),
       ["reply"],

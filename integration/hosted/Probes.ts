@@ -10,6 +10,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as H3 from "reactor-effect-client/H3";
@@ -20,13 +21,70 @@ export const unknownSession = "00000000-0000-4000-8000-000000000000";
 /** Every probe token expires this soon; none is ever used. */
 const probeSeconds = 15;
 
+/**
+ * Whether evidence, which is committed, may keep a text: letters, digits, `_`
+ * and `-`, at most 40 of them, so a UUID but no long digest or token; no IPv4
+ * address however its numbers are joined; and no IPv6 or MAC address, so no
+ * doubled `-` or `_` and no six groups of hex digits joined. No URL, dotted
+ * host name or port has that shape. A bare name such as `gpu-7` still does:
+ * only its key tells it for a host.
+ */
+const isCode = (text: string) =>
+  /^[\w-]{1,40}$/.test(text) &&
+  !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text) &&
+  !/[-_]{2}/.test(text) &&
+  !/(?:^|[-_])(?:[0-9a-f]{1,4}[-_]){5,}[0-9a-f]{1,4}(?:$|[-_])/i.test(text);
+
+/** A text as evidence may keep it, a session's state among them: a code, else only its length. */
+export const keptText = (text: string): string =>
+  isCode(text) ? text : `(text, ${text.length} chars)`;
+
+/** A value as evidence may keep it: a code, a number or a boolean; other text only by its length. */
+const kept = (value: unknown): string | undefined => {
+  if (Predicate.isString(value)) return keptText(value);
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
+};
+
+/** A key name as evidence may keep it: one that is no code only by its length. */
+const named = (key: string) => (isCode(key) ? key : `(key, ${key.length} chars)`);
+
+/** A body's key names as evidence may keep them. */
+const keysOf = (body: object) => Object.keys(body).map(named);
+
+/** Words that name an address or a secret in a key, however the key is cased or joined. */
+const withheldWords = new Set([
+  ...["ip", "ipv4", "ipv6", "addr", "address", "host", "hostname", "url", "uri", "endpoint"],
+  ...["port", "domain", "fqdn", "origin", "peer", "mac"],
+  ...["token", "jwt", "secret", "password", "passwd", "pass", "credential", "key", "apikey"],
+  ...["signature", "sig", "auth", "authorization", "cookie", "bearer"],
+]);
+
+/** A key's words: split at anything but a letter or digit, and where its case turns. */
+const wordsOf = (key: string) =>
+  key
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
+    .map((word) => word.toLowerCase());
+
+/**
+ * Whether a value may be read under a key: one that is a code and names no
+ * address or secret, in the singular or the plural.
+ */
+const readable = (key: string) =>
+  isCode(key) &&
+  !wordsOf(key).some(
+    (word) =>
+      withheldWords.has(word) ||
+      withheldWords.has(word.replace(/es$/, "")) ||
+      withheldWords.has(word.replace(/s$/, "")),
+  );
+
 /** Each leaf under `path`: its path and type, never its value. */
 const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
   if (Array.isArray(value))
     return value.length === 0 ? [`${path}[]: empty`] : leaves(value[0], `${path}[]`);
   if (Predicate.isObject(value))
     return Object.entries(value).flatMap(([key, item]) =>
-      leaves(item, path === "" ? key : `${path}.${key}`),
+      leaves(item, path === "" ? named(key) : `${path}.${named(key)}`),
     );
   return [`${path}: ${value === null ? "null" : typeof value}`];
 };
@@ -35,7 +93,7 @@ const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
 const codeOf = (body: unknown): string | undefined => {
   const error = Predicate.isObject(body) ? body.error : undefined;
   const code = Predicate.isObject(error) ? error.code : undefined;
-  return Predicate.isString(code) && /^[\w.-]{1,64}$/.test(code) ? code : undefined;
+  return Predicate.isString(code) && isCode(code) ? code : undefined;
 };
 
 const numberOrNull = (value: unknown): number | null =>
@@ -64,10 +122,18 @@ interface Reply {
   readonly body: unknown;
 }
 
-/** One request's reply: status 0 when none came within 8 s. */
+/**
+ * One request's reply: status 0 when none came within 8 s. Every request
+ * carries the API key or a token, so, as the client's coordinator does, it
+ * follows no redirect (a redirect answers status 0) and sends no cookies.
+ */
 const exchange = (request: HttpClientRequest.HttpClientRequest) =>
   Effect.flatMap(HttpClient.HttpClient, (client) =>
     client.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        credentials: "omit",
+        redirect: "error",
+      }),
       Effect.flatMap((response) =>
         Effect.map(
           Effect.orElseSucceed(response.json, () => undefined),
@@ -186,28 +252,61 @@ export const readSession = (input: {
   ).pipe(Effect.map(summarize));
 
 /**
- * A session reply as evidence may keep it: the status, top-level key names, the
- * state, and identifier-like values under keys that may say why it ended.
+ * A reply's body as evidence may keep it: top-level key names, the state, and
+ * the codes under keys that may say why a session ended, one level down; other
+ * text only by its length, and nothing under a key that names an address or a
+ * secret.
  */
-export const summarize = (reply: Reply) => {
-  const body = Predicate.isObject(reply.body) ? reply.body : {};
+export const summarizeBody = (content: unknown) => {
+  const body = Predicate.isObject(content) ? content : {};
   const codes: Record<string, string> = {};
-  const note = (key: string, value: unknown) => {
-    if (Predicate.isString(value))
-      codes[key] = /^[\w.:/-]{1,64}$/.test(value) ? value : `(text, ${value.length} chars)`;
-    else if (typeof value === "number" || typeof value === "boolean") codes[key] = String(value);
+  const note = (path: string, value: unknown) => {
+    const code = kept(value);
+    if (code !== undefined) codes[path] = code;
   };
   for (const [key, value] of Object.entries(body)) {
-    if (!telling.test(key)) continue;
-    if (Predicate.isObject(value) && !Array.isArray(value))
-      for (const [inner, item] of Object.entries(value)) note(`${key}.${inner}`, item);
-    else note(key, value);
+    if (!telling.test(key) || !readable(key)) continue;
+    if (Predicate.isObject(value) && !Array.isArray(value)) {
+      for (const [inner, item] of Object.entries(value))
+        if (readable(inner)) note(`${key}.${inner}`, item);
+    } else note(key, value);
   }
-  const state = Predicate.isString(body.state) ? body.state : undefined;
+  const state = Predicate.isString(body.state) ? kept(body.state) : undefined;
   return {
-    status: reply.status,
-    keys: Object.keys(body),
+    keys: keysOf(body),
     ...(state === undefined ? {} : { state }),
     ...(Object.keys(codes).length === 0 ? {} : { codes }),
   };
 };
+
+/**
+ * A refusal's body as evidence may keep it: its key names, and each value
+ * that reads as a code, two levels down and in a list's first three entries;
+ * other text only by its length, and nothing under a key that names an
+ * address or a secret, so no sentence, URL, dotted host name or IP address
+ * passes for a code.
+ */
+export const summarizeRefusal = (content: unknown) => {
+  const body = Predicate.isObject(content) ? content : {};
+  const codes: Record<string, string> = {};
+  const visit = (path: string, key: string, value: unknown, depth: number) => {
+    if (!readable(key)) return;
+    if (Array.isArray(value)) {
+      if (depth < 2)
+        for (const [index, item] of value.slice(0, 3).entries())
+          visit(`${path}[${index}]`, key, item, depth + 1);
+    } else if (Predicate.isObject(value)) {
+      if (depth < 2)
+        for (const [inner, item] of Object.entries(value))
+          visit(`${path}.${inner}`, inner, item, depth + 1);
+    } else {
+      const code = kept(value);
+      if (code !== undefined) codes[path] = code;
+    }
+  };
+  for (const [key, value] of Object.entries(body)) visit(key, key, value, 0);
+  return { keys: keysOf(body), ...(Object.keys(codes).length === 0 ? {} : { codes }) };
+};
+
+/** A session reply as evidence may keep it: its status, and its body as `summarizeBody` keeps it. */
+export const summarize = (reply: Reply) => ({ status: reply.status, ...summarizeBody(reply.body) });

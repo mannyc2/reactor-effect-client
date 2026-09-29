@@ -7,6 +7,8 @@ import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
@@ -66,7 +68,8 @@ interface Pending extends Identity {
   /**
    * Metadata evidence that came while the reply was awaited: hosted H3
    * broadcasts the queue that lists a new clip before it replies. The reply
-   * decides whether it counts.
+   * decides whether it counts, unless it stays away for the reconcile window:
+   * then the evidence decides.
    */
   readonly held: Acceptance | undefined;
 }
@@ -668,17 +671,34 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 
   const nextId = Ref.modify(counter, (n) => [`${namespace}:${n + 1n}`, n + 1n] as const);
 
+  /** Evidence held for `id` that has waited the reconcile window without its reply. */
+  const outwaited = (id: string) =>
+    SubscriptionRef.changes(state).pipe(
+      Stream.filter((internal) => internal.pending.get(id)?.held !== undefined),
+      Stream.runHead,
+      Effect.andThen(Effect.sleep(limits.reconcile)),
+    );
+
   /** The enqueue itself, run once in the submission's own execution fiber. */
   const execute = Effect.fnUntraced(
     function* (id: string, args: CommandArgs<"enqueue">, entry: Pending) {
-      const sent = yield* Effect.result(
-        session.command("enqueue", args, { replyTimeout: limits.command }),
-      );
-      let original: CommandFailure;
-      if (Result.isFailure(sent)) {
-        if (sent.failure.context.outcome !== "unknown") return yield* sent.failure;
-        original = sent.failure;
-      } else {
+      // The command waits for its reply in a fiber of its own, so held evidence can decide
+      // first. The request stays attributable after that, and nothing sends it again. That
+      // fiber starts at once, so the enqueue is handed to the transport before this execution
+      // goes on, as when the execution sent it itself: a command sent behind it stays behind.
+      const sending = yield* session
+        .command("enqueue", args, { replyTimeout: limits.command })
+        .pipe(Effect.forkIn(executions, { startImmediately: true }));
+      /**
+       * The reply's reading: a refusal fails the enqueue, and anything else is
+       * what it fails with when no evidence proves its clip.
+       */
+      const replied: Effect.Effect<CommandFailure, CommandFailure> = Effect.gen(function* () {
+        const sent = yield* sending.pipe(Fiber.join, Effect.result);
+        if (Result.isFailure(sent)) {
+          if (sent.failure.context.outcome !== "unknown") return yield* sent.failure;
+          return sent.failure;
+        }
         const source = sent.success;
         const observed = yield* Effect.result(awaitReply(source));
         if (
@@ -687,23 +707,36 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           observed.success.data.command === "enqueue"
         )
           return yield* rejected("enqueue", source, observed.success.data.reason);
-        original = uncertain(
+        return uncertain(
           "enqueue",
           source,
           "H3 enqueue has no proven clip acceptance",
           Result.isFailure(observed) ? observed.failure : undefined,
         );
-      }
-      // The reply was observed or is lost: evidence held meanwhile decides now.
+      });
+      const answered = yield* Effect.raceFirst(
+        Effect.asSome(replied),
+        Effect.as(outwaited(id), Option.none<CommandFailure>()),
+      );
+      // The reply was observed, is lost, or stayed away past the window: evidence held
+      // meanwhile decides now.
       yield* step((internal) => {
         const current = internal.pending.get(id);
         return current === undefined
           ? [internal, []]
           : decideHeld(withPending(internal, id, { ...current, awaiting: false }), id);
       });
+      // What the enqueue fails with if nothing settles it: the reply's reading, which is
+      // still to come when held evidence decided first.
+      const unproven: Effect.Effect<never, CommandFailure> = Option.isSome(answered)
+        ? Effect.fail(answered.value)
+        : Effect.flatMap(replied, (failure) => Effect.fail(failure));
       const acceptance = yield* Deferred.await(entry.deferred).pipe(
-        Effect.timeoutOrElse({ duration: limits.reconcile, orElse: () => Effect.fail(original) }),
-        Effect.mapError(() => original),
+        Effect.timeoutOption(limits.reconcile),
+        Effect.orElseSucceed(() => Option.none<Acceptance>()),
+        Effect.flatMap((decided) =>
+          Option.isSome(decided) ? Effect.succeed(decided.value) : unproven,
+        ),
         Effect.withSpan("H3.reconcile", {}, { captureStackTrace: false }),
       );
       // An enqueue settles once the snapshots its reply implies are observed.

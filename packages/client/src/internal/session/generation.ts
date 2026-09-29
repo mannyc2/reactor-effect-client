@@ -1,18 +1,21 @@
 /**
  * The live connection generation: the checks that fence work to it, and its
  * one failure, which fails its requests, closes its peer and, while it is
- * live, leaves the session disconnected.
+ * live, leaves the session disconnected, reconnecting if it does so on its own.
  */
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
+import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { IceFailed, ReactorError, TransportFailed } from "../../ReactorError.js";
 import type { Connection, Core, Link, State } from "./model.js";
-import { isClosing, timedOut } from "./model.js";
+import { ends, isClosing, moderationEnded, timedOut } from "./model.js";
 
 /**
  * Why a connection failed, from its statistics: a candidate pair that
@@ -46,6 +49,10 @@ const connectionFailure = (stats: ReadonlyArray<unknown>, generation: bigint): R
   });
 };
 
+/** Why work fenced to `c` stops once another generation, or the close, has taken `c`'s place. */
+export const retired = (c: Connection) =>
+  ReactorError.fromCode("Aborted", "retired connection generation", { generation: c.generation });
+
 export const make = (core: Core) => {
   const { state, data, control, publish } = core;
 
@@ -54,10 +61,7 @@ export const make = (core: Core) => {
     const link = yield* Ref.get(c.link);
     if (link.failure !== undefined) return yield* link.failure;
     const session = yield* SubscriptionRef.get(state);
-    if (session.connection !== c || isClosing(session.status))
-      return yield* ReactorError.fromCode("Aborted", "retired connection generation", {
-        generation: c.generation,
-      });
+    if (session.connection !== c || isClosing(session.status)) return yield* retired(c);
   });
 
   /** The ready generation and what it negotiated. */
@@ -91,21 +95,50 @@ export const make = (core: Core) => {
       ),
     );
 
-  const fail = Effect.fnUntraced(function* (c: Connection, error: ReactorError) {
+  /**
+   * Reports what a host died of where nothing can fail for it, as it fences or shuts down a peer
+   * or stops a track: the host's own failure, which such an effect dies with, is a Diagnostic on
+   * `generation`, the session's current one when omitted, and any other defect is reported as a
+   * bug.
+   */
+  const reportHost = Effect.fnUntraced(function* (
+    cause: Cause.Cause<unknown>,
+    generation?: bigint,
+  ) {
+    const dies = cause.reasons.filter(Cause.isDieReason);
+    for (const { defect } of dies)
+      if (ReactorError.is(defect))
+        yield* publish({ _tag: "Diagnostic", error: defect }, generation);
+    const bugs = dies.filter(({ defect }) => !ReactorError.is(defect));
+    if (bugs.length > 0) yield* ErrorReporter.report(Cause.fromReasons(bugs));
+  });
+
+  /**
+   * Fails `c` once, for `error`: its requests fail, its peer is fenced and its tracks stop, and
+   * while it is live the session is left disconnected. It takes every step whatever the host dies
+   * of as it fences the peer or stops a track, and gives that back unreported, for a caller that
+   * keeps it itself; nothing interrupts it halfway.
+   */
+  const failUnreported = Effect.fnUntraced(function* (
+    c: Connection,
+    error: ReactorError,
+  ): Effect.fn.Return<Exit.Exit<void>> {
     const first = yield* Ref.modify(c.link, (link) =>
       link.failure === undefined
         ? ([link, { ...link, failure: error }] as const)
         : ([undefined, link] as const),
     );
-    if (first === undefined) return;
+    if (first === undefined) return Exit.void;
     yield* Deferred.fail(c.failed, error);
     yield* Deferred.fail(c.ready, error);
     yield* data.failGeneration(c.generation, error);
     yield* control.failGeneration(c.generation, error);
-    yield* c.peer.close;
-    yield* Effect.sync(() => {
-      for (const track of first.sending.values()) track.stop();
-    });
+    const host = Exit.asVoidAll([
+      yield* Effect.exit(c.peer.close),
+      ...(yield* Effect.forEach(first.sending.values(), (track) =>
+        Effect.exit(Effect.sync(() => track.stop())),
+      )),
+    ]);
     yield* Ref.update(c.link, (link): Link => ({
       ...link,
       sending: new Map(),
@@ -114,21 +147,42 @@ export const make = (core: Core) => {
       claimed: new Set(),
       paused: new Set(),
     }));
-    const disconnected = yield* SubscriptionRef.modify(state, (session) => {
-      if (session.connection !== c || isClosing(session.status)) return [false, session] as const;
+    // The session's error once the drop leaves it disconnected: a drop no attempt could reconnect
+    // is lasting from the drop on, and says why.
+    const dropped = yield* SubscriptionRef.modify(state, (session) => {
+      if (session.connection !== c || isClosing(session.status))
+        return [undefined, session] as const;
+      const why = session.moderated ? moderationEnded({ generation: c.generation }) : error;
       const next: State = {
         ...session,
         received: new Set<string>(),
-        lastError: error,
+        lastError: why,
         status: "disconnected",
+        // With the drop itself, so no reader mistakes a drop the session reconnects for a lasting
+        // one, or the reverse.
+        reconnecting: session.reconnects && !ends(why),
       };
-      return [true, next] as const;
+      return [why, next] as const;
     });
-    if (disconnected) {
+    if (dropped !== undefined) {
       yield* publish({ _tag: "Status", status: "disconnected" }, c.generation);
       yield* publish({ _tag: "Diagnostic", error }, c.generation);
+      if (dropped !== error) yield* publish({ _tag: "Diagnostic", error: dropped }, c.generation);
     }
-  });
+    return host;
+  }, Effect.uninterruptible);
+
+  /**
+   * Fails `c` once, for `error`, as `failUnreported` does, then reports what its host died of
+   * meanwhile, so it never keeps the session from the drop.
+   */
+  const fail = (c: Connection, error: ReactorError) =>
+    failUnreported(c, error).pipe(
+      Effect.flatMap((host) =>
+        Exit.isFailure(host) ? reportHost(host.cause, c.generation) : Effect.void,
+      ),
+      Effect.uninterruptible,
+    );
 
   /** A task of `c`'s whose failure fails `c`; a defect is a bug and stays one. */
   const background = (c: Connection, body: Effect.Effect<void, ReactorError>) =>
@@ -188,7 +242,18 @@ export const make = (core: Core) => {
       ),
     );
 
-  return { current, currentReady, guard, fail, background, readyGate, fenced, failedConnection };
+  return {
+    current,
+    currentReady,
+    guard,
+    reportHost,
+    failUnreported,
+    fail,
+    background,
+    readyGate,
+    fenced,
+    failedConnection,
+  };
 };
 
 export type Generation = ReturnType<typeof make>;

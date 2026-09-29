@@ -32,7 +32,8 @@ export const layer = Layer.unwrap(
       apiKey: Effect.Effect<Redacted.Redacted<string>, never, R>,
     ): Playout.Options<R | Reactor.Reactor | Coordinator.Coordinator | Crypto.Crypto> => ({
       // A live channel opens at most CHANNEL_MAX_SESSIONS sessions; past that
-      // the playout fails, closes its last session and the channel goes off air.
+      // the playout airs its last session until its cap ends, then fails, and
+      // the channel goes off air.
       open: Ref.getAndUpdate(opened, (count) => count + 1).pipe(
         Effect.flatMap((count) =>
           settings.mode === "live" && count >= maxSessions

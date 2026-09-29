@@ -797,6 +797,122 @@ export const ShowRecord = Schema.Struct({
 });
 export type ShowRecord = typeof ShowRecord.Type;
 
+/**
+ * A create's answer: `allocated`; `the same session` when the reply named the
+ * session its token had made; or the reason the create failed with, the SDK's
+ * outcome and the HTTP status. Of the reply's body, its key names and codes:
+ * free text only by its length. A reply that named no session is kept so too.
+ */
+const Answer = {
+  answer: Schema.String,
+  /** Whether a failed create may have allocated, as the SDK classes its failure. */
+  outcome: Schema.optionalKey(Outcome),
+  status: Schema.optionalKey(Schema.Int),
+  keys: Schema.Array(Schema.String),
+  codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+};
+
+/**
+ * Each state a session's reads found, in order, with the first and last read
+ * that found it. A read answered 404 is `gone`; one that failed otherwise is
+ * its HTTP status or its reason's tag.
+ */
+const StateReads = Schema.Array(
+  Schema.Struct({ state: Schema.String, firstMs: Ms, lastMs: Ms, reads: Schema.Int }),
+);
+
+/**
+ * `unconnected`: a session allocated and never connected, on a token used for
+ * nothing else, read with the API key until it ended or its window closed;
+ * and, on a second token, a session and then a second create, which finds
+ * that token spent. The instants let a person set the dashboard's charge for
+ * each session beside the times the evidence records.
+ */
+export const UnconnectedRecord = Schema.Struct({
+  /** The session the create allocated; absent when the create failed. */
+  sessionId: Schema.optionalKey(Schema.String),
+  /** When the create was sent; the session's `allocatedMs` is when its reply named it. */
+  requestedMs: Ms,
+  requestedAt: Schema.String,
+  /** What the create answered, once it did. */
+  create: Schema.optionalKey(Schema.Struct(Answer)),
+  /**
+   * The second token: the create that spends it, sent as soon as the watched
+   * session was allocated, and a second create on it, sent as soon as that
+   * one allocated, as a retry of a create whose outcome is unknown would be.
+   */
+  spentToken: Schema.optionalKey(
+    Schema.Struct({
+      /** When its first create was sent. */
+      requestedMs: Ms,
+      requestedAt: Schema.String,
+      /** The session that create allocated, which the key ended once the second was answered. */
+      sessionId: Schema.optionalKey(Schema.String),
+      /** What its first create answered, once it did. */
+      create: Schema.optionalKey(Schema.Struct(Answer)),
+      second: Schema.optionalKey(
+        Schema.Struct({
+          sentMs: Ms,
+          answeredMs: Ms,
+          ...Answer,
+          /**
+           * The session its reply named: one it allocated, which the key then ended, or the
+           * token's first again.
+           */
+          sessionId: Schema.optionalKey(Schema.String),
+        }),
+      ),
+      /**
+       * Each session the token made, once the second create was answered: the
+       * key's reads every 0.5 s until one found it connectable, for at most
+       * 5 s, and the hold before the key ended it.
+       */
+      held: Schema.Struct({
+        sessionId: Schema.String,
+        states: StateReads,
+        connectableMs: Schema.optionalKey(Ms),
+        /**
+         * When its hold began: its connectable read, or the end of the wait
+         * without one. Absent when a read found it ended.
+         */
+        heldFromMs: Schema.optionalKey(Ms),
+        /** When the key was to end it: 10 s later, or sooner if its hold in the plan ran out. */
+        endsMs: Schema.optionalKey(Ms),
+      }).pipe(Schema.Array, Schema.optionalKey),
+    }),
+  ),
+  /**
+   * When the reads were to stop at the latest: 15 s after the request, for
+   * allocation, `ACTIVE` and ready to come in, then the cap, the 30 s Reactor
+   * gives a session after its last connection drops, and 15 s to spare. So it
+   * ends past the cap and the 30 s after it, counted from each of the three.
+   */
+  windowEndsMs: Schema.optionalKey(Ms),
+  /** Each state the watch's reads found. */
+  states: StateReads,
+  /** The first read that found its capabilities and a transport, which the SDK connects on. */
+  connectableMs: Schema.optionalKey(Ms),
+  /** The coordinator's read once the reads stopped: status, key names, state and codes. */
+  read: Schema.optionalKey(SessionRead),
+  /**
+   * Its end, once confirmed: by Reactor at the first read that found it `CLOSED`,
+   * or the first of two in a row that found it gone, the read at the end
+   * included; or by the key, when a termination
+   * was confirmed, after any unconfirmed tries the timeline shows. The
+   * session's `close.requestedMs` is the key's first DELETE.
+   */
+  ended: Schema.optionalKey(
+    Schema.Struct({ by: Schema.Literals(["reactor", "key"]), atMs: Ms, at: Schema.String }),
+  ),
+  /**
+   * Why this run cannot say whether Reactor ends a session nothing connects
+   * to, when it cannot: the watch found the session ended and the read at the
+   * end found it running, or the read at the end alone answered 404.
+   */
+  unanswered: Schema.optionalKey(Schema.String),
+});
+export type UnconnectedRecord = typeof UnconnectedRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -997,6 +1113,7 @@ export const Evidence = Schema.Struct({
   tour: Schema.optionalKey(TourRecord),
   adoption: Schema.optionalKey(AdoptionRecord),
   show: Schema.optionalKey(ShowRecord),
+  unconnected: Schema.optionalKey(UnconnectedRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1020,6 +1137,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   tour: ["contract", "server", "media", "network", "tour"],
   adoption: ["adoption"],
   show: ["playout", "show"],
+  unconnected: ["unconnected"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
@@ -1046,7 +1164,7 @@ export const judged = (input: {
   const absent = missing(evidence);
   const reasons = [
     ...(evidence.outcomes.includes("unknown")
-      ? ["an outcome is unknown; the check stopped and is not repeated"]
+      ? ["an outcome is unknown, so the run fails and is not repeated"]
       : []),
     ...(evidence.sessions.some((session) => session.close?.confirmed === false)
       ? ["remote termination is unconfirmed; a session may still be billing"]
@@ -1063,15 +1181,72 @@ export const judged = (input: {
   return { ...evidence, missing: absent, reasons, verdict: reasons.length === 0 ? "pass" : "fail" };
 };
 
-/** What a person must confirm in the Reactor dashboard: sessions whose end the run could not confirm. */
-export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> =>
-  evidence.sessions.flatMap((session) =>
+/**
+ * `unconnected`'s creates whose outcome is unknown, each of which may have
+ * allocated a session the run never learned of, with any codes its reply
+ * held. Each create and the record of its answer run as one step an interrupt
+ * waits for, so only a run that stopped unfinished, as a crash leaves it,
+ * holds a create sent with no answer recorded: that one may have allocated
+ * too. The second create goes out only once the spent token's first named its
+ * session, and its milestone is saved before it is sent.
+ */
+const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
+  const probe = evidence.unconnected;
+  if (evidence.check !== "unconnected" || probe === undefined) return [];
+  const spent = probe.spentToken;
+  const secondSent =
+    spent?.sessionId !== undefined &&
+    evidence.milestones.some((milestone) => milestone.step === "spent token's second create sent");
+  const creates = [
+    { create: "The create", from: probe.requestedAt, answer: probe.create },
+    ...(spent === undefined
+      ? []
+      : [
+          {
+            create: "The spent token's first create",
+            from: spent.requestedAt,
+            answer: spent.create,
+          },
+        ]),
+    ...(spent === undefined || !secondSent
+      ? []
+      : [
+          {
+            create: "The spent token's second create",
+            from: spent.requestedAt,
+            answer: spent.second,
+          },
+        ]),
+  ];
+  return creates.flatMap(({ create, from, answer }) => {
+    const unrecorded = evidence.finishedAt === undefined && answer === undefined;
+    if (!unrecorded && answer?.outcome !== "unknown") return [];
+    const codes = Object.entries(answer?.codes ?? {}).map(([key, code]) => `${key} ${code}`);
+    return [
+      `${create} ${unrecorded ? "went unanswered, as the run stopped before recording its answer" : "has an unknown outcome"}, so it may have allocated a session the run never learned of, shortly after ${from}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
+    ];
+  });
+};
+
+/**
+ * What a person must confirm in the Reactor dashboard: sessions whose end the
+ * run could not confirm. Nothing connected to `unconnected`'s sessions, and
+ * whether a cap ends such a session is what that check asks, so its
+ * instructions promise no end, and name any create that may have allocated
+ * one unseen.
+ */
+export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> => [
+  ...evidence.sessions.flatMap((session) =>
     session.close?.confirmed === true
       ? []
       : [
-          `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
+          evidence.check === "unconnected"
+            ? `Session ${session.id} was not confirmed ended, and nothing connected to it, so its cap at ${session.capEndsAt} may not end it. End it in the Reactor dashboard, and note what it cost.`
+            : `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
         ],
-  );
+  ),
+  ...unknownCreates(evidence),
+];
 
 /** Evidence as a file holds it: indented, so a ledger reads well in review. */
 export const EvidenceJson = Schema.fromJsonString(Evidence, { space: 2 });

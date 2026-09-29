@@ -34,6 +34,7 @@ import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
+import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
@@ -119,6 +120,16 @@ const commandsSince = (evidence: Evidence.Evidence, sinceMs: number) => {
 /** The HTTP status a refusal carries, when a reply came. */
 const statusOf = (error: ReactorError) =>
   error.reason._tag === "Http" ? error.reason.status : undefined;
+
+/**
+ * A session read that failed, as a trail records it. Only 404 means gone; any
+ * other refusal names its status, or its reason when no reply came.
+ */
+const failedRead = (error: ReactorError) => {
+  const status = statusOf(error);
+  if (status === 404) return "gone";
+  return status === undefined ? `error:${error.reason._tag}` : `http:${status}`;
+};
 
 /** What H3 last reported of its state and queue. */
 const factsOf = (snapshot: H3.ProviderSnapshot) =>
@@ -279,22 +290,32 @@ const allocated = Effect.fnUntraced(function* (sessionId: string, grant: Coordin
   return deadline;
 });
 
-/** Records how a session's close went. */
+/** Records how a session's close went: reported now, or at `reportedMs` when it came earlier. */
 const closedWith = Effect.fnUntraced(function* (
   sessionId: string,
   requestedMs: number,
   close:
     | { readonly report: Session.CloseReport }
     | { readonly termination: Coordinator.Termination },
+  reportedAt?: number,
 ) {
   const run = yield* Run;
-  const reportedMs = yield* run.now;
+  const reportedMs = reportedAt ?? (yield* run.now);
   const confirmed = "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
+  // The state a read confirmed is the provider's text: kept as the evidence keeps any.
+  const keep = (termination: Coordinator.Termination): Coordinator.Termination =>
+    termination.state === null
+      ? termination
+      : { ...termination, state: Probes.keptText(termination.state) };
+  const kept =
+    "report" in close
+      ? { report: { ...close.report, remote: keep(close.report.remote) } }
+      : { termination: keep(close.termination) };
   yield* run.update((evidence) => ({
     ...evidence,
     sessions: evidence.sessions.map((session) =>
       session.id === sessionId
-        ? { ...session, close: { requestedMs, reportedMs, confirmed, ...close } }
+        ? { ...session, close: { requestedMs, reportedMs, confirmed, ...kept } }
         : session,
     ),
   }));
@@ -342,18 +363,29 @@ const owned = Effect.fnUntraced(function* (
   return { owner, sessionId, deadline };
 });
 
-/** Whatever failed, ends each session the check still holds with a coordinator from `ender`. */
-const endHeld = Effect.fnUntraced(
+/**
+ * Whatever failed, ends each session the check still holds with a coordinator
+ * from `ender`. Every DELETE goes out at once, so no session bills while
+ * another's tries run, and before any end is recorded, so a save that fails
+ * skips no session. Each end is recorded as reported when it was confirmed.
+ */
+export const endHeld = Effect.fnUntraced(
   function* <E, R>(ender: Effect.Effect<Coordinator.Coordinator["Service"], E, R>) {
     const run = yield* Run;
-    for (const session of (yield* run.evidence).sessions) {
-      if (session.close !== undefined) continue;
-      const coordinator = yield* ender;
-      const requestedMs = yield* run.now;
-      yield* closedWith(session.id, requestedMs, {
-        termination: yield* coordinator.terminate(session.id),
-      });
-    }
+    const open = (yield* run.evidence).sessions.filter((session) => session.close === undefined);
+    if (open.length === 0) return;
+    const coordinator = yield* ender;
+    const ends = yield* Effect.forEach(
+      open,
+      Effect.fnUntraced(function* (session) {
+        const requestedMs = yield* run.now;
+        const termination = yield* coordinator.terminate(session.id);
+        return { sessionId: session.id, requestedMs, reportedMs: yield* run.now, termination };
+      }),
+      { concurrency: "unbounded" },
+    );
+    for (const { sessionId, requestedMs, reportedMs, termination } of ends)
+      yield* Effect.ignore(closedWith(sessionId, requestedMs, { termination }, reportedMs));
   },
   (effect) => Effect.ignore(effect),
 );
@@ -376,14 +408,9 @@ const settle = Effect.fnUntraced(
       let terminalMs: number | undefined;
       while (terminalMs === undefined && (yield* Clock.currentTimeMillis) < deadline) {
         const state = yield* inspector.inspect(sessionId).pipe(
-          Effect.map((inspection) => inspection.state),
-          // Only 404 means gone; any other refusal names its status, so the trail shows it.
-          Effect.catch((error) => {
-            const status = statusOf(error);
-            if (status === 404) return Effect.succeed("gone");
-            return Effect.succeed(
-              status === undefined ? `error:${error.reason._tag}` : `http:${status}`,
-            );
+          Effect.match({
+            onFailure: failedRead,
+            onSuccess: (inspection) => Probes.keptText(inspection.state),
           }),
         );
         const atMs = yield* run.now;
@@ -425,7 +452,7 @@ const settle = Effect.fnUntraced(
     const unconfirmed = evidence.sessions.filter((session) => session.close?.confirmed !== true);
     yield* judge(
       "confirmed termination",
-      [evidence.sessions.length > 0, "no session was allocated"],
+      [evidence.sessions.length > 0, "no session was recorded"],
       [
         unconfirmed.length === 0,
         `the end of ${unconfirmed.map((session) => session.id).join(", ")} was not confirmed`,
@@ -1576,9 +1603,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
                 Effect.ignore,
                 Effect.forkScoped,
               );
-            }).pipe(
-              Effect.mapError((error) => ReactorError.fromCode("InvalidState", error.message)),
-            ),
+            }),
         });
         const wrapped: Playout.Source = {
           ...source,
@@ -2222,6 +2247,7 @@ const pieces = {
   contractTally,
   endHeld,
   factsOf,
+  failedRead,
   holding,
   identifier,
   judge,
@@ -2260,6 +2286,7 @@ const all = {
   tour: tour(pieces),
   adoption: adoption(pieces),
   show: show(pieces),
+  unconnected: unconnected(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

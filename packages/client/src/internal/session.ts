@@ -41,7 +41,7 @@ import * as Generation from "./session/generation.js";
 import * as Ice from "./session/ice.js";
 import * as Inbound from "./session/inbound.js";
 import type { Core, Intent, RemoteSession, Settings, State } from "./session/model.js";
-import { isKnown, transitions } from "./session/model.js";
+import { isClosing, isKnown, transitions } from "./session/model.js";
 import * as Requests from "./session/requests.js";
 import * as Tracks from "./session/tracks.js";
 import * as Upload from "./session/upload.js";
@@ -91,6 +91,8 @@ export const make = Effect.fnUntraced(function* (input: {
   const state = yield* SubscriptionRef.make<State>({
     status: "idle",
     moderated: false,
+    reconnects: false,
+    reconnecting: false,
     generation: 0n,
     remote: undefined,
     connection: undefined,
@@ -124,13 +126,25 @@ export const make = Effect.fnUntraced(function* (input: {
   const transition = Effect.fnUntraced(function* (status: Status) {
     const from = yield* SubscriptionRef.modify(state, (current) =>
       current.status !== status && transitions[current.status].includes(status)
-        ? ([current.status, { ...current, status }] as const)
+        ? ([
+            current.status,
+            {
+              ...current,
+              status,
+              // The close ends the session's own reconnect.
+              reconnecting: current.reconnecting && status !== "closing",
+            },
+          ] as const)
         : ([current.status, current] as const),
     );
-    if (from === status) return;
-    if (!transitions[from].includes(status))
+    if (from === status) return true;
+    if (!transitions[from].includes(status)) {
+      // Once the session closes only its close moves it on: an attempt that raced it is told so.
+      if (isClosing(from)) return false;
       return yield* Effect.die(`illegal session transition ${from} -> ${status}`);
+    }
     yield* publish({ _tag: "Status", status });
+    return true;
   });
   const token = yield* Token.make({
     tokens: input.tokens,
@@ -181,22 +195,29 @@ export const make = Effect.fnUntraced(function* (input: {
     yield* Deferred.fail(closing, ReactorError.fromCode("Closed", "session closing"));
     const connection = (yield* SubscriptionRef.get(state)).connection;
     const { submitted, errors } = yield* tracks.releasePublications(connection);
-    if (connection !== undefined)
-      yield* generation.fail(connection, ReactorError.fromCode("Aborted", "session closed"));
-    const local = yield* Effect.exit(Scope.close(root, Exit.void));
-    if (Exit.isFailure(local)) {
-      // The host's own failure is the evidence; its message says what did
-      // not finish. Anything else is reported as an opaque shutdown.
-      // A host finalizer that cannot carry a typed error dies with it.
-      const failure = Cause.squash(local.cause);
+    // The host's own failure is the evidence; its message says what did not
+    // finish. Anything else is reported as an opaque shutdown. A host effect
+    // that cannot carry a typed error dies with it.
+    const keep = (cleanup: Exit.Exit<void>, what: string) => {
+      if (Exit.isSuccess(cleanup)) return;
+      const failure = Cause.squash(cleanup.cause);
       errors.push(
         ReactorError.is(failure)
           ? failure
-          : ReactorError.fromCode("Shutdown", "local cleanup did not complete cleanly", {
-              detail: local.cause,
+          : ReactorError.fromCode("Shutdown", `${what} did not complete cleanly`, {
+              detail: cleanup.cause,
             }),
       );
-    }
+    };
+    if (connection !== undefined)
+      keep(
+        yield* generation.failUnreported(
+          connection,
+          ReactorError.fromCode("Aborted", "session closed"),
+        ),
+        "connection teardown",
+      );
+    keep(yield* Effect.exit(Scope.close(root, Exit.void)), "local cleanup");
     // Ownership is read after local work has joined: an interrupted
     // allocation may have changed its evidence meanwhile.
     const remote = (yield* SubscriptionRef.get(state)).remote;
@@ -230,12 +251,13 @@ export const make = Effect.fnUntraced(function* (input: {
     ),
   );
 
-  const snapshot: Effect.Effect<Snapshot> = Effect.gen(function* () {
-    const session = yield* SubscriptionRef.get(state);
+  /** `session` as its readers see it, with what its connection and queues hold now. */
+  const snapshotOf = Effect.fnUntraced(function* (session: State): Effect.fn.Return<Snapshot> {
     const link =
       session.connection === undefined ? undefined : yield* Ref.get(session.connection.link);
     const details = {
       generation: session.generation,
+      reconnecting: session.reconnecting,
       pending: { data: yield* data.size, control: yield* control.size },
       pausedLocally: [...(link?.paused ?? [])],
       claimedTracks: [...(link?.claimed ?? [])],
@@ -254,6 +276,7 @@ export const make = Effect.fnUntraced(function* (input: {
       ...(session.remote === undefined ? {} : { remote: remoteOf(session.remote) }),
     };
   });
+  const snapshot: Effect.Effect<Snapshot> = Effect.flatMap(SubscriptionRef.get(state), snapshotOf);
 
   const observe = Effect.fnUntraced(function* (
     options: ObserveOptions = {},
@@ -290,7 +313,8 @@ export const make = Effect.fnUntraced(function* (input: {
     id,
     ownership: intent._tag === "Create" || intent.adopt ? "owned" : "attached",
     snapshot,
-    changes: SubscriptionRef.changes(state).pipe(Stream.mapEffect(() => snapshot)),
+    // Each change as it was, so a reader that falls behind still sees every status.
+    changes: SubscriptionRef.changes(state).pipe(Stream.mapEffect(snapshotOf)),
     ready: Effect.map(generation.currentReady, ({ c, negotiated }) => ({
       status: "ready",
       generation: c.generation,
@@ -313,7 +337,7 @@ export const make = Effect.fnUntraced(function* (input: {
   return {
     session,
     allocate: connect.allocate,
-    connect: connect.connect,
+    connect: Effect.andThen(connect.connect, connect.arm),
     close,
   } satisfies Handle;
 });

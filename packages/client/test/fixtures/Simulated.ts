@@ -4,9 +4,15 @@ import { Effect, FileSystem, Layer, Path } from "effect";
 import * as H3 from "../../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../../src/index.js";
 
-/** Each block gets its own simulated Reactor, so no session or bill carries over. */
-export const environment = (options: Parameters<typeof ReactorTest.layer>[0]) =>
-  Reactor.layer().pipe(
+/**
+ * Each block gets its own simulated Reactor, so no session or bill carries over; `reconnect` is
+ * the client's policy for its sessions.
+ */
+export const environment = ({
+  reconnect,
+  ...options
+}: Parameters<typeof ReactorTest.layer>[0] & Pick<Reactor.Options, "reconnect">) =>
+  Reactor.layer({ reconnect }).pipe(
     Layer.provideMerge(Coordinator.layer()),
     Layer.provideMerge(ReactorTest.layer(options)),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),

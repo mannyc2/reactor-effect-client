@@ -80,6 +80,16 @@ export const CloseReport = Schema.Struct({
 });
 export type CloseReport = typeof CloseReport.Type;
 
+/**
+ * Whether the session a report closed may still bill: this process owned it
+ * and no read confirmed it ended, or it asked for an allocation whose outcome,
+ * and so whose id, never arrived. Nothing can confirm the second ended; the
+ * session's cap bounds it.
+ */
+export const mayStillBill = (report: CloseReport): boolean =>
+  report.allocation === "unknown" ||
+  (report.allocation === "known" && report.ownership === "owned" && !report.remote.confirmed);
+
 export interface ReadyDescriptor extends Descriptor {
   readonly capabilities: Capabilities;
   readonly selected_transport: typeof Transport.Type;
@@ -98,6 +108,16 @@ export interface ReadyState {
 
 interface SnapshotDetails {
   readonly generation: bigint;
+  /**
+   * The session is reconnecting a dropped connection on its own: from the drop until a
+   * connection is ready or it stops trying, as `Reactor.Options.reconnect` says. `disconnected`
+   * without it is lasting: only `session.reconnect` connects the session again. A drop no attempt
+   * could reconnect, once content moderation or Reactor has ended the session or Reactor refuses
+   * this client's protocol (`VersionMismatch`), is lasting from the drop on, and `lastError` says
+   * why. A connection that drops before it has been ready 10 seconds, once the reconnect's time
+   * has run out, reads `reconnecting` for one change before the reconnect stops.
+   */
+  readonly reconnecting: boolean;
   readonly pending: { readonly data: number; readonly control: number };
   readonly pausedLocally: ReadonlyArray<string>;
   readonly claimedTracks: ReadonlyArray<string>;
@@ -230,7 +250,13 @@ export interface Session {
   readonly id: string;
   readonly ownership: "owned" | "attached";
   readonly snapshot: Effect.Effect<Snapshot>;
-  /** The snapshot at every lifecycle change, starting with the current one. */
+  /**
+   * The snapshot at every lifecycle change, starting with the current one; a reader that falls
+   * behind still sees each status in turn. A snapshot's status, generation, `reconnecting`,
+   * `lastError`, `receivedTracks` and `close` are as its change left them; the rest (pending
+   * counts, observers and overflows, and the connection's paused, claimed and unresolved tracks)
+   * is read as the reader takes it.
+   */
   readonly changes: Stream.Stream<Snapshot>;
   /** The negotiated connection, when the session is ready. */
   readonly ready: Effect.Effect<ReadyState, ReactorError>;
@@ -254,12 +280,27 @@ export interface Session {
   ) => Effect.Effect<Uploaded, ReactorError>;
   readonly requestRecordingClip: (seconds: number) => Effect.Effect<ClipReady, ReactorError>;
   readonly recording: Effect.Effect<ClipReady, ReactorError>;
+  /** A sample of the connection's statistics; its `rates` run from the session's previous sample. */
   readonly stats: Effect.Effect<Statistics, ReactorError>;
   /** The current generation's decoded media, from a host that decodes it. */
   readonly decoded: Effect.Effect<DecodedMedia, ReactorError>;
   /** The current generation's platform tracks, from a host that has them. */
   readonly tracks: Effect.Effect<TrackMedia, ReactorError>;
-  /** A new connection generation; it never replays a command. */
+  /**
+   * A new connection generation now, from a ready connection or a lasting drop; it never replays a
+   * command. While the session reconnects a dropped connection on its own (`reconnecting`), as it
+   * does unless `Reactor.Options` turns `reconnect` off, this joins that reconnect rather than
+   * begin another: it succeeds once a connection is ready again, and fails as the reconnect stops,
+   * with the session's `lastError`, or with `Closed` if the session closes first. One whose
+   * connection is replaced while it makes its peer, as the session reconnects a drop or another
+   * reconnect asked for takes over, begins nothing either: it succeeds once a later connection is
+   * ready, and fails with the session's `lastError` once a later one is down for good, as the
+   * session's own reconnect stops or as another reconnect asked for fails meanwhile, whose failure
+   * it then takes. It fails with `InvalidState` while another reconnect asked for is under way. It
+   * fails with `Closed`, not submitted, if the session's close has begun before it takes the
+   * session over, or once its connection is open and becoming ready; one the close overtakes
+   * earlier in its negotiation fails with its connection's `Aborted`.
+   */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */
   readonly close: Effect.Effect<CloseReport>;

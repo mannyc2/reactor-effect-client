@@ -1,6 +1,6 @@
 /** The simulated Reactor behind the real client, the H3 provider and a playout. */
 import { assert, layer } from "@effect/vitest";
-import { Clock, Duration, Effect, Fiber, Option, Ref, Stream } from "effect";
+import { Clock, Duration, Effect, Fiber, Option, Redacted, Ref, Schema, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import { Coordinator, H3Source, Playout, Reactor, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
@@ -132,6 +132,45 @@ layer(
       assert.deepStrictEqual(
         [failed.cleanup.allocation, failed.context.outcome, failed.isRetryable],
         ["unknown", "unknown", false],
+      );
+    }),
+  );
+});
+
+/** An owner record the application could not write. */
+class Unrecorded extends Schema.TaggedError<Unrecorded>()("Unrecorded", {}) {}
+
+// Reactor ignores the DELETE here, so the release cannot prove the session ended: the caller
+// learns it only from the report.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }),
+    faults: [{ _tag: "IgnoreDelete" }],
+  }),
+)("an onAllocated that fails", (it) => {
+  it.effect("fails acquisition with the release's report, and its error as the detail", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const reactor = yield* Reactor.Reactor;
+      const unrecorded = Unrecorded.make({});
+      const failure = yield* Effect.flip(
+        reactor.create({
+          model: H3.modelName,
+          tokens: yield* tokens,
+          onAllocated: () => Effect.fail(unrecorded),
+        }),
+      );
+      assert.strictEqual(failure._tag, "AcquisitionFailure");
+      assert.strictEqual(failure.reason._tag, "Aborted");
+      const { detail } = failure.context;
+      assert.strictEqual(detail === undefined ? undefined : Redacted.value(detail), unrecorded);
+      assert.deepStrictEqual(
+        [
+          failure.cleanup.allocation,
+          failure.cleanup.remote.confirmed,
+          failure.cleanup.remote.state,
+        ],
+        ["known", false, "ACTIVE"],
       );
     }),
   );
@@ -359,8 +398,9 @@ layer(
   );
 });
 
-// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends.
-layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends. These
+// sessions do not reconnect themselves, so only the test brings a connection back.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }), reconnect: false }))(
   "the reconnect window",
   (it) => {
     it.effect("ends a session 30 s after its connection drops with none back", () =>

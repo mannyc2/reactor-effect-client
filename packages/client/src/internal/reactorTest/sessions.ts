@@ -352,8 +352,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       if (previous.phase !== "PENDING") return;
       yield* log({ sessionId: session.id, kind: "session", name: "active" });
       const expire = yield* faults.standing((fault) => fault._tag === "Expire");
+      const uncapped = yield* faults.standing((fault) => fault._tag === "IgnoreCap");
       const cap =
-        session.maxSessionSeconds === undefined ? Infinity : session.maxSessionSeconds * 1000;
+        session.maxSessionSeconds === undefined || uncapped !== undefined
+          ? Infinity
+          : session.maxSessionSeconds * 1000;
       const early = expire?._tag === "Expire" ? Duration.toMillis(expire.after) : Infinity;
       const lifetime = Math.min(cap, early);
       if (Number.isFinite(lifetime)) yield* later(lifetime, end(session, "expired"));
@@ -505,7 +508,22 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
         if (!webrtc) return yield* refuse(400, "unsupported_transport", "WebRTC 1.0 only");
-        if (grant.created >= grant.maxSessions - grant.bound.size)
+        if ((yield* faults.trip((fault) => fault._tag === "StallAllocation")) !== undefined)
+          return yield* Effect.never;
+        const spent = grant.created >= grant.maxSessions - grant.bound.size;
+        if (
+          spent &&
+          (yield* faults.trip((fault) => fault._tag === "RepeatSession")) !== undefined
+        ) {
+          const last = [...(yield* Ref.get(sessions)).values()].findLast(
+            (session) => session.creator === grant.jwt,
+          );
+          if (last !== undefined) return descriptor(last.id, (yield* Ref.get(last.state)).phase);
+        }
+        if (
+          spent &&
+          (yield* faults.trip((fault) => fault._tag === "IgnoreSessionLimit")) === undefined
+        )
           return yield* refuse(403, "session_limit", "the token's sessions are used");
         const refusal = yield* faults.trip((fault) => fault._tag === "RefuseAllocation");
         if (refusal?._tag === "RefuseAllocation")
@@ -569,12 +587,18 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
         yield* log({ sessionId: id, kind: "session", name: "created" });
         yield* later(yield* timing.delay("allocation"), activate(session));
-        return descriptor(id, "PENDING");
+        if ((yield* faults.trip((fault) => fault._tag === "UnnamedAllocation")) === undefined)
+          return descriptor(id, "PENDING");
+        const { session_id: _, ...unnamed } = descriptor(id, "PENDING");
+        return unnamed;
       }),
     read: (jwt: string | undefined, id: string) =>
-      Effect.flatMap(owned(jwt, id, undefined, "key"), (session) =>
-        Effect.map(Ref.get(session.state), (state) => descriptor(id, state.phase)),
-      ),
+      Effect.gen(function* () {
+        const session = yield* owned(jwt, id, undefined, "key");
+        if ((yield* faults.trip((fault) => fault._tag === "MissingSession")) !== undefined)
+          return yield* refuse(404, "not_found", "no such session");
+        return descriptor(id, (yield* Ref.get(session.state)).phase);
+      }),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
       Effect.gen(function* () {
         yield* owned(jwt, id, "active");
@@ -621,9 +645,21 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         );
         return { connection_id: cid };
       }),
-    offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
+    offer: (jwt: string | undefined, id: string, cid: number, sdp: string, replace: boolean) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
+        const refusal = replace
+          ? yield* faults.trip((fault) => fault._tag === "RefuseReconnect")
+          : undefined;
+        if (refusal?._tag === "RefuseReconnect")
+          return yield* Refusal.make({
+            status: refusal.status ?? 503,
+            code: "reconnect_refused",
+            reason: "reconnect refused",
+            ...(refusal.retryAfter === undefined
+              ? {}
+              : { retryAfter: Math.ceil(Duration.toSeconds(refusal.retryAfter)) }),
+          });
         const previous = (yield* connection(session, cid)).link;
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);

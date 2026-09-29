@@ -39,15 +39,16 @@ export class Run extends Context.Service<
     readonly judge: (name: string, failure: string | undefined) => Effect.Effect<void>;
     /** A value the evidence must never contain. */
     readonly secret: (value: Redacted.Redacted<string>) => Effect.Effect<void>;
-    /** Records the library's `reactor.*` spans. */
+    /** Records the library's spans the evidence keeps. */
     readonly tracer: Tracer.Tracer;
   }
 >()("reactor-effect-integration/hosted/Run") {}
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-/** The client's spans the evidence keeps: its operations, a command's execution and the playout's. */
-const clientSpans = /^(?:reactor\.|Reactor\.|Session\.|Coordinator\.|H3\.(?:enqueue|reconcile)$)/;
+/** The client's spans the evidence keeps: its operations, a command's execution and a source's. */
+const clientSpans =
+  /^(?:Reactor\.|Session\.|Coordinator\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$)/;
 
 export const make = Effect.fnUntraced(function* (initial: Evidence, file: string) {
   const origin = yield* Clock.currentTimeMillis;
