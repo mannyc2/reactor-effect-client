@@ -279,6 +279,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       };
     });
 
+  /** Closes `source` and records its report. A close that dies leaves none: it is reported. */
+  const closeRecorded = (source: Playout.Source): Effect.Effect<void> =>
+    Effect.flatMap(Effect.exit(source.close), (closed) =>
+      Exit.isSuccess(closed) ? record(closed.value) : reportDefects(closed.cause),
+    );
+
   const closeSource = (sessionId: string): Effect.Effect<void> =>
     Effect.gen(function* () {
       const entry = (yield* Ref.get(sources)).get(sessionId);
@@ -377,8 +383,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     if ((yield* Ref.get(sources)).has(source.sessionId)) {
       // The plan knows a session by its id: a second live source under one would be taken for
       // the first. It is closed unused, and the playout fails, since opening again gives the same.
-      yield* record(yield* source.close);
-      yield* Scope.close(child, Exit.void);
+      yield* closeRecorded(source);
+      yield* closeScope(child, Exit.void);
       const duplicate = ReactorError.fromCode(
         "InvalidState",
         "an opened source's session id is already in use",

@@ -1806,6 +1806,40 @@ layer(hosted)("sources", (it) => {
       assert.deepStrictEqual(reported, ["a release bug"]);
     }),
   );
+
+  // The renewal opens a second session under the first's id, and closing it unused dies. The
+  // playout still fails as that refusal does, and the defect is reported.
+  it.effect("refuses a source whose session id is held, though its close dies", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.map(
+          LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" }),
+          (source) => ({
+            ...source,
+            sessionId: "shared",
+            close:
+              ++opens === 2
+                ? Effect.andThen(source.close, Effect.die(new Error("a close bug")))
+                : source.close,
+          }),
+        ),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "10 seconds" },
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const failure = yield* playout.failure.pipe(Effect.timeoutOption("1 minute"));
+      assert.deepStrictEqual(
+        Option.map(failure, (error) => error.message),
+        Option.some("an opened source's session id is already in use"),
+      );
+      assert.deepStrictEqual(reported, ["a close bug"]);
+    }),
+  );
 });
 
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the
