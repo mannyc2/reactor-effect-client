@@ -236,6 +236,8 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         let readAt = yield* Clock.currentTimeMillis;
         let last: { readonly state: string; readonly known: boolean } | undefined;
         let runningMs: number | undefined;
+        // The first of the reads in a row that found the session gone.
+        let goneMs: number | undefined;
         let endedMs: number | undefined;
         for (;;) {
           yield* pieces.sleepUntil(readAt - run.origin, windowEndsAt);
@@ -247,7 +249,10 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
           if (state !== last?.state) yield* run.mark(`read ${state}`);
           last = { state, known: Result.isSuccess(read) || state === "gone" };
-          if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) runningMs = atMs;
+          if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) {
+            runningMs = atMs;
+            goneMs = undefined;
+          }
           // The SDK connects once the session publishes its capabilities and a transport.
           if (
             Result.isSuccess(read) &&
@@ -255,9 +260,18 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             read.success.selectedTransport !== null
           )
             yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
-          if (state === "gone" || Coordinator.isTerminal(state)) {
-            endedMs = atMs;
+          if (Coordinator.isTerminal(state)) {
+            endedMs = goneMs ?? atMs;
             break;
+          }
+          // One read answered 404 may be the coordinator's slip: a second in a row, or the read
+          // at the end, tells.
+          if (state === "gone") {
+            if (goneMs !== undefined) {
+              endedMs = goneMs;
+              break;
+            }
+            goneMs = atMs;
           }
           if (readAt >= windowEndsAt) break;
           readAt = Math.min(readAt + readEveryMs, windowEndsAt);
@@ -271,10 +285,14 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         });
         const readMs = yield* run.now;
         yield* record((probe) => ({ ...probe, read: { atMs: readMs, ...read } }));
-        // Found ended now, it ended after the watch's last read and before the key tried to.
+        // Found ended now, it ended after the watch's last read that found it running, and
+        // before the key tried to. Found running, no end the watch found holds.
         const readEnded =
           read.status === 404 || (read.state !== undefined && Coordinator.isTerminal(read.state));
-        if (endedMs === undefined && readEnded) endedMs = readMs;
+        const readRunning = read.status === 200 && !readEnded;
+        if (endedMs === undefined && readEnded) endedMs = goneMs ?? readMs;
+        const contradicted = endedMs !== undefined && readRunning;
+        if (contradicted) endedMs = undefined;
         // The key ends the session whether or not Reactor did, so its end is confirmed as
         // every check confirms one. Ending a session Reactor has closed ends nothing more.
         const endRequestedMs = yield* run.now;
@@ -292,11 +310,12 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             ended: { by: "key", atMs: terminatedMs, at: instant(terminatedMs) },
           }));
         // An end the spent token's create could have made is not taken for Reactor's own.
-        if (endedMs !== undefined && (runningMs ?? -Infinity) < answeredMs + settlesMs)
-          yield* record((probe) => ({
-            ...probe,
-            unanswered: `The spent token's second create may have ended the session: Reactor ended it before any read found it still running ${settlesMs / 1000} s after that create was answered.`,
-          }));
+        const unanswered = contradicted
+          ? "The watch found the session ended and the read at the end found it running, so this run cannot say when Reactor ends it."
+          : endedMs !== undefined && (runningMs ?? -Infinity) < answeredMs + settlesMs
+            ? `The spent token's second create may have ended the session: Reactor ended it before any read found it still running ${settlesMs / 1000} s after that create was answered.`
+            : undefined;
+        if (unanswered !== undefined) yield* record((probe) => ({ ...probe, unanswered }));
         const spent = (yield* run.evidence).unconnected?.spentToken;
         yield* pieces.judge(
           "the probe completed",

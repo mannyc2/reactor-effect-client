@@ -866,9 +866,10 @@ export const UnconnectedRecord = Schema.Struct({
   ),
   /**
    * Why this run cannot say whether Reactor ends a session nothing connects
-   * to, when it cannot: Reactor ended the session before any read found it
-   * still running 10 s after the spent token's create was answered, so that
-   * create may have ended it.
+   * to, when it cannot. The spent token's create may have ended it: Reactor
+   * ended it before any read found it still running 10 s after that create
+   * was answered. Or the reads contradict each other: the watch found it
+   * ended and the read at the end found it running.
    */
   unanswered: Schema.optionalKey(Schema.String),
 });

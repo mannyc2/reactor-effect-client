@@ -464,6 +464,36 @@ rehearse("unconnected leaves Q1 unanswered when its session ends right after the
   },
 });
 
+// A coordinator may lose a session for one read: only a second read in a row answered 404, or a
+// read at the end that agrees, ends the watch.
+rehearse("unconnected takes a single read answered 404 for no end", {
+  check: "unconnected",
+  faults: [{ _tag: "MissingSession", nth: 5 }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.include(probe?.states.map((entry) => entry.state) ?? [], "gone");
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.isAtLeast((probe?.ended?.atMs ?? 0) - (evidence.sessions[0]?.allocatedMs ?? 0), 60_000);
+    assert.isUndefined(probe?.unanswered);
+  },
+});
+
+rehearse("unconnected credits no end the read at the end contradicts", {
+  check: "unconnected",
+  faults: [
+    { _tag: "MissingSession", nth: 5 },
+    { _tag: "MissingSession", nth: 6 },
+  ],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.read?.state, "ACTIVE");
+    assert.strictEqual(probe?.ended?.by, "key");
+    assert.include(probe?.unanswered ?? "", "the read at the end found it running");
+  },
+});
+
 // A create answered 2xx without naming a session may have made one all the same: the codes of
 // its body are kept, for whoever must find that session.
 rehearse("unconnected keeps the codes of a spent token's reply that names no session", {
