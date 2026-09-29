@@ -491,6 +491,23 @@ alone(
   [{ _tag: "UnnamedAllocation" }],
 );
 
+// A create nobody answered may have allocated, for all its caller can tell: its deadline ends it
+// with the outcome unknown, so nothing retries it as a create that was never sent.
+alone(
+  "a create never answered ends at its deadline with its outcome unknown",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const sentAt = yield* Clock.currentTimeMillis;
+      const error = yield* Effect.flip(created);
+      assert.deepStrictEqual([error.reason._tag, error.context.outcome], ["Timeout", "unknown"]);
+      assert.strictEqual((yield* Clock.currentTimeMillis) - sentAt, 15_000);
+      assert.lengthOf(yield* test.sessions, 0);
+    }),
+  [{ _tag: "StallAllocation" }],
+);
+
 // A read answered 404 once need not mean the session ended: the next read may find it running.
 alone(
   "a session the coordinator loses for one read is found again by the next",

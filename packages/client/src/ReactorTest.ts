@@ -64,6 +64,11 @@ export const Fault = Schema.Union([
    * Reactor ever answers so is unobserved.
    */
   Schema.TaggedStruct("UnnamedAllocation", nth),
+  /**
+   * `POST /sessions` is never answered and allocates nothing, so only the
+   * client's own deadline ends the request, not knowing what it made.
+   */
+  Schema.TaggedStruct("StallAllocation", nth),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /**
