@@ -1758,6 +1758,54 @@ layer(hosted)("sources", (it) => {
       if (Option.isSome(failure)) assert.include(failure.value.message, "session id");
     }),
   );
+
+  // The first open fails a second in, leaving in its scope a finalizer that dies as the scope
+  // closes. The open is a failed setup as any is, so it is asked again; the defect is reported.
+  it.effect("fails an open whose scope's finalizer dies, and asks again", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      let opens = 0;
+      const playout = yield* Playout.make({
+        open: Effect.suspend(() =>
+          ++opens === 1
+            ? Effect.addFinalizer(() => Effect.die(new Error("a release bug"))).pipe(
+                Effect.andThen(Effect.sleep("1 second")),
+                Effect.andThen(
+                  Effect.fail(ReactorError.ReactorError.fromCode("Timeout", "the open failed")),
+                ),
+              )
+            : LocalSource.open({ buildRatio: 0.2 }),
+        ),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const sessions = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag !== "Session"
+            ? Effect.void
+            : Ref.update(sessions, (all) => [
+                ...all,
+                event.event._tag === "SetupFailed"
+                  ? `SetupFailed ${event.event.consecutive}`
+                  : event.event._tag,
+              ]),
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const item = yield* playout.submit({ key: key("a"), lane: "speech", request: clip("a") });
+      const outcome = yield* item.outcome.pipe(Effect.timeoutOption("1 minute"));
+      assert.deepStrictEqual(yield* Ref.get(sessions), ["SetupFailed 1", "Opened"]);
+      assert.deepStrictEqual(
+        Option.map(outcome, (value) => value._tag),
+        Option.some("Ended"),
+      );
+      assert.deepStrictEqual(reported, ["a release bug"]);
+    }),
+  );
 });
 
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the

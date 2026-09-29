@@ -82,6 +82,13 @@ const reportDefects = (cause: Cause.Cause<unknown>): Effect.Effect<void> => {
 };
 
 /**
+ * Closes `scope` with `exit`. A finalizer that dies is reported, and what follows the close goes
+ * on: a failed open still says it failed.
+ */
+const closeScope = (scope: Scope.Scope, exit: Exit.Exit<unknown, unknown>): Effect.Effect<void> =>
+  Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
+
+/**
  * Where a request for the clip `tag` names falls outside H3's documented
  * limits, field by field, or undefined within them: its metadata counted as
  * sent, wrapped with the tag and H3's own identity. Each issue names its field
@@ -347,7 +354,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       Effect.exit,
     );
     if (Exit.isFailure(opened)) {
-      yield* Scope.close(child, opened);
+      yield* closeScope(child, opened);
       const found = Cause.findError(opened.cause);
       yield* Ref.set(lastOpenError, found);
       if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
