@@ -112,8 +112,9 @@ interface SnapshotDetails {
    * The session is reconnecting a dropped connection on its own: from the drop until a
    * connection is ready or it stops trying, as `Reactor.Options.reconnect` says. `disconnected`
    * without it is lasting: only `session.reconnect` connects the session again. A drop no attempt
-   * could reconnect, once content moderation or Reactor has ended the session, is lasting from the
-   * drop on, and `lastError` says why.
+   * could reconnect, once content moderation or Reactor has ended the session or Reactor refuses
+   * this client's protocol (`VersionMismatch`), is lasting from the drop on, and `lastError` says
+   * why.
    */
   readonly reconnecting: boolean;
   readonly pending: { readonly data: number; readonly control: number };
