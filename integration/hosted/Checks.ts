@@ -353,18 +353,28 @@ const owned = Effect.fnUntraced(function* (
   return { owner, sessionId, deadline };
 });
 
-/** Whatever failed, ends each session the check still holds with a coordinator from `ender`. */
-const endHeld = Effect.fnUntraced(
+/**
+ * Whatever failed, ends each session the check still holds with a coordinator
+ * from `ender`. Every DELETE goes out before any end is recorded, so a save
+ * that fails skips no session.
+ */
+export const endHeld = Effect.fnUntraced(
   function* <E, R>(ender: Effect.Effect<Coordinator.Coordinator["Service"], E, R>) {
     const run = yield* Run;
-    for (const session of (yield* run.evidence).sessions) {
-      if (session.close !== undefined) continue;
-      const coordinator = yield* ender;
-      const requestedMs = yield* run.now;
-      yield* closedWith(session.id, requestedMs, {
-        termination: yield* coordinator.terminate(session.id),
-      });
-    }
+    const open = (yield* run.evidence).sessions.filter((session) => session.close === undefined);
+    if (open.length === 0) return;
+    const coordinator = yield* ender;
+    const ends = yield* Effect.forEach(open, (session) =>
+      Effect.flatMap(run.now, (requestedMs) =>
+        Effect.map(coordinator.terminate(session.id), (termination) => ({
+          sessionId: session.id,
+          requestedMs,
+          termination,
+        })),
+      ),
+    );
+    for (const { sessionId, requestedMs, termination } of ends)
+      yield* Effect.ignore(closedWith(sessionId, requestedMs, { termination }));
   },
   (effect) => Effect.ignore(effect),
 );
