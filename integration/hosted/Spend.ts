@@ -68,8 +68,9 @@ export const plans: { readonly [C in Check]: Plan } = {
   adoption: { sessions: 1, seconds: 75 },
   show: { sessions: 3, seconds: 75, renews: true },
   // One session, watched past its cap and then ended with the key, 155 s at most from its
-  // request; and one more if its spent token allocates again, ended with the key within 40 s.
-  unconnected: { sessions: 2, seconds: 60, holds: [155, 40] },
+  // request. On a token of its own, one more, ended with the key within 55 s of its request, and
+  // a third if that token's second create allocates again, ended within 40 s.
+  unconnected: { sessions: 3, seconds: 60, holds: [155, 55, 40] },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */

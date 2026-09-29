@@ -813,10 +813,11 @@ const Answer = {
 };
 
 /**
- * `unconnected`: a session allocated and never connected, read with the API
- * key until it ended or its window closed, and what a second create on its
- * spent single-session token answered. The instants let a person set the
- * dashboard's charge beside the window.
+ * `unconnected`: a session allocated and never connected, on a token used for
+ * nothing else, read with the API key until it ended or its window closed;
+ * and, on a second token, a session and then a second create, which finds
+ * that token spent. The instants let a person set the dashboard's charge for
+ * each session beside the times the evidence records.
  */
 export const UnconnectedRecord = Schema.Struct({
   /** The session the create allocated; absent when the create failed. */
@@ -824,16 +825,34 @@ export const UnconnectedRecord = Schema.Struct({
   /** When the create was sent; the session's `allocatedMs` is when its reply named it. */
   requestedMs: Ms,
   requestedAt: Schema.String,
-  /** The create's failure, when it failed. */
+  /** What the create answered, once it did. */
   create: Schema.optionalKey(Schema.Struct(Answer)),
-  /** A second create on the spent token, sent as soon as the first was answered. */
+  /**
+   * The second token: the create that spends it, sent as soon as the watched
+   * session was allocated, and a second create on it, sent as soon as that
+   * one allocated, as a retry of a create whose outcome is unknown would be.
+   */
   spentToken: Schema.optionalKey(
     Schema.Struct({
-      sentMs: Ms,
-      answeredMs: Ms,
-      ...Answer,
-      /** The session its reply named: one it allocated, which the key then ended, or the first. */
+      /** When its first create was sent. */
+      requestedMs: Ms,
+      requestedAt: Schema.String,
+      /** The session that create allocated, which the key ended once the second was answered. */
       sessionId: Schema.optionalKey(Schema.String),
+      /** What its first create answered, once it did. */
+      create: Schema.optionalKey(Schema.Struct(Answer)),
+      second: Schema.optionalKey(
+        Schema.Struct({
+          sentMs: Ms,
+          answeredMs: Ms,
+          ...Answer,
+          /**
+           * The session its reply named: one it allocated, which the key then ended, or the
+           * token's first again.
+           */
+          sessionId: Schema.optionalKey(Schema.String),
+        }),
+      ),
     }),
   ),
   /**
@@ -866,11 +885,8 @@ export const UnconnectedRecord = Schema.Struct({
   ),
   /**
    * Why this run cannot say whether Reactor ends a session nothing connects
-   * to, when it cannot. The spent token's create may have ended it: Reactor
-   * ended it before any read found it still running 10 s after that create,
-   * or about the 30 s Reactor gives a session once its last connection
-   * drops after it. Or the reads contradict each other: the watch found it
-   * ended and the read at the end found it running.
+   * to, when it cannot: the watch found the session ended and the read at the
+   * end found it running.
    */
   unanswered: Schema.optionalKey(Schema.String),
 });
@@ -1145,33 +1161,50 @@ export const judged = (input: {
 };
 
 /**
- * `unconnected`'s create whose outcome is unknown, which may have allocated a
- * session the run never learned of, with any codes its reply held. Its only
- * commands whose outcome is recorded are its two creates, and once the
- * check's record names a session the first is known to have allocated: the
- * unknown one is then the second, whether or not an interrupt kept its answer
- * from being recorded. A run that stopped unfinished, as a crash leaves it,
- * with a create sent and no answer recorded, may have allocated one too.
+ * `unconnected`'s creates whose outcome is unknown, each of which may have
+ * allocated a session the run never learned of, with any codes its reply
+ * held. Each create and the record of its answer run as one step an interrupt
+ * waits for, so only a run that stopped unfinished, as a crash leaves it,
+ * holds a create sent with no answer recorded: that one may have allocated
+ * too. The second create goes out only once the spent token's first named its
+ * session, and its milestone is saved before it is sent.
  */
 const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
-  if (evidence.check !== "unconnected") return [];
   const probe = evidence.unconnected;
-  const first = probe?.sessionId === undefined;
-  const unrecorded =
-    evidence.finishedAt === undefined &&
-    probe !== undefined &&
-    (first
-      ? probe.create === undefined
-      : probe.spentToken === undefined &&
-        evidence.milestones.some((milestone) => milestone.step === "spent token sent"));
-  if (!evidence.outcomes.includes("unknown") && !unrecorded) return [];
-  const [create, answer] = first
-    ? ["The create", probe?.create]
-    : ["The spent token's second create", probe.spentToken];
-  const codes = Object.entries(answer?.codes ?? {}).map(([key, code]) => `${key} ${code}`);
-  return [
-    `${create} ${unrecorded ? "went unanswered, as the run stopped before recording its answer" : "has an unknown outcome"}, so it may have allocated a session the run never learned of, shortly after ${probe?.requestedAt ?? evidence.startedAt}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
+  if (evidence.check !== "unconnected" || probe === undefined) return [];
+  const spent = probe.spentToken;
+  const secondSent =
+    spent?.sessionId !== undefined &&
+    evidence.milestones.some((milestone) => milestone.step === "spent token's second create sent");
+  const creates = [
+    { create: "The create", from: probe.requestedAt, answer: probe.create },
+    ...(spent === undefined
+      ? []
+      : [
+          {
+            create: "The spent token's first create",
+            from: spent.requestedAt,
+            answer: spent.create,
+          },
+        ]),
+    ...(spent === undefined || !secondSent
+      ? []
+      : [
+          {
+            create: "The spent token's second create",
+            from: spent.requestedAt,
+            answer: spent.second,
+          },
+        ]),
   ];
+  return creates.flatMap(({ create, from, answer }) => {
+    const unrecorded = evidence.finishedAt === undefined && answer === undefined;
+    if (!unrecorded && answer?.outcome !== "unknown") return [];
+    const codes = Object.entries(answer?.codes ?? {}).map(([key, code]) => `${key} ${code}`);
+    return [
+      `${create} ${unrecorded ? "went unanswered, as the run stopped before recording its answer" : "has an unknown outcome"}, so it may have allocated a session the run never learned of, shortly after ${from}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
+    ];
+  });
 };
 
 /**

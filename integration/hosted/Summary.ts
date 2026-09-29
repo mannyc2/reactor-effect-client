@@ -269,7 +269,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   return lines;
 };
 
-/** `unconnected`'s session, its window, its states and the spent token's answer, a line each. */
+/** `unconnected`'s session, its window, its states and the spent token's answers, a line each. */
 const unconnectedLines = (
   evidence: Evidence,
   probe: NonNullable<Evidence["unconnected"]>,
@@ -278,12 +278,18 @@ const unconnectedLines = (
     Object.entries(value ?? {})
       .map(([key, code]) => `${key} ${code}`)
       .join(", ") || "none";
+  const failure = (answer: {
+    readonly answer: string;
+    readonly status?: number;
+    readonly outcome?: string;
+  }) =>
+    `${answer.answer}${answer.status === undefined ? "" : ` ${answer.status}`}, outcome ${answer.outcome ?? "unknown"}`;
   const create = probe.create;
   if (probe.sessionId === undefined)
     return [
       create === undefined
         ? `**Unconnected:** requested ${probe.requestedAt}; no answer to its create was recorded`
-        : `**Unconnected:** no session named; its create failed with ${create.answer}${create.status === undefined ? "" : ` ${create.status}`}, outcome ${create.outcome ?? "unknown"}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
+        : `**Unconnected:** no session named; its create failed with ${failure(create)}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
     ];
   const allocatedMs = evidence.sessions.find(
     (session) => session.id === probe.sessionId,
@@ -293,6 +299,27 @@ const unconnectedLines = (
   const ended = probe.ended;
   const spent = probe.spentToken;
   const read = probe.read;
+  // The spent token's first create, then its second, with what the second's reply held.
+  const spentLine = (token: NonNullable<typeof spent>) => {
+    const first = token.create;
+    const opening =
+      token.sessionId !== undefined
+        ? `its first create allocated ${token.sessionId}`
+        : first === undefined
+          ? "no answer to its first create was recorded"
+          : `its first create failed with ${failure(first)}; keys ${first.keys.join(", ") || "none"}; codes ${codes(first.codes)}`;
+    const second = token.second;
+    if (second === undefined)
+      return `**Spent token:** ${opening}${token.sessionId === undefined ? "" : "; no answer to a second create was recorded"}`;
+    const took = seconds(second.answeredMs - second.sentMs);
+    const answered =
+      second.answer === "allocated"
+        ? `allocated ${second.sessionId ?? "a session"} in ${took}`
+        : second.answer === "the same session"
+          ? `answered with ${token.sessionId ?? "?"}, the session it made, in ${took}`
+          : `failed in ${took} with ${failure(second)}`;
+    return `**Spent token:** ${opening}; a second create ${answered}; keys ${second.keys.join(", ") || "none"}; codes ${codes(second.codes)}`;
+  };
   const windowEndsMs = probe.windowEndsMs;
   // How far the window ran past the cap and the 30 s after it, counted from `from`.
   const capMs = (evidence.grants[0]?.maxSessionSeconds ?? 0) * 1000;
@@ -312,11 +339,7 @@ const unconnectedLines = (
           `**Window:** reads until ${seconds(windowEndsMs - probe.requestedMs)} after the request, past the cap and 30 s by ${past(allocatedMs, "allocation")}, ${past(probe.states.find((entry) => entry.state === "ACTIVE")?.firstMs, "ACTIVE")} and ${past(probe.connectableMs, "ready")}`,
         ]),
     `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`).join(" > ") || "none"}`,
-    ...(spent === undefined
-      ? []
-      : [
-          `**Spent token:** a second create ${spent.answer === "allocated" ? `allocated ${spent.sessionId ?? "a session"} in ${seconds(spent.answeredMs - spent.sentMs)}` : spent.answer === "the same session" ? `answered with ${probe.sessionId}, the session it made, in ${seconds(spent.answeredMs - spent.sentMs)}` : `failed in ${seconds(spent.answeredMs - spent.sentMs)} with ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`}; keys ${spent.keys.join(", ") || "none"}; codes ${codes(spent.codes)}`,
-        ]),
+    ...(spent === undefined ? [] : [spentLine(spent)]),
     ...(read === undefined
       ? []
       : [

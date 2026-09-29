@@ -275,7 +275,7 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
     passes(evidence);
     const probe = evidence.unconnected;
     const spent = probe?.spentToken;
-    const session = evidence.sessions[0];
+    const [session, spending] = evidence.sessions;
     assert.deepStrictEqual(
       probe?.states.slice(-2).map((entry) => entry.state),
       ["ACTIVE", "CLOSED"],
@@ -288,20 +288,27 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
     assert.isAtLeast(endedAfter, 60_000);
     assert.isAtMost(endedAfter, 62_500);
     assert.isDefined(probe?.connectableMs);
+    // A token each: the second allocates one session, which spends it, and nothing more.
+    assert.lengthOf(evidence.grants, 2);
+    assert.lengthOf(evidence.sessions, 2);
+    assert.deepStrictEqual([spent?.create?.answer, spent?.sessionId], ["allocated", spending?.id]);
+    const second = spent?.second;
     assert.deepStrictEqual(
-      [spent?.answer, spent?.outcome, spent?.status, spent?.codes?.["error.code"]],
+      [second?.answer, second?.outcome, second?.status, second?.codes?.["error.code"]],
       ["Http", "replied", 403, "session_limit"],
     );
+    // The key ends the spent token's session as soon as its second create is answered.
+    assert.isTrue(spending?.close?.termination?.confirmed);
+    assert.isBelow(spending.close.requestedMs - (second?.answeredMs ?? 0), 1_000);
     // The time the summary gives is the refusal's.
     assert.match(
       summarize([evidence]),
-      /\*\*Spent token:\*\* a second create failed in \d+\.\d\d s with Http 403, outcome replied;/,
+      /\*\*Spent token:\*\* its first create allocated \S+; a second create failed in \d+\.\d\d s with Http 403, outcome replied;/,
     );
     assert.match(
       summarize([evidence]),
       /> CLOSED from [\d.]+ s after allocation to [\d.]+ s after allocation \(1 read\)$/m,
     );
-    assert.lengthOf(evidence.sessions, 1);
     assert.isTrue(session?.close?.termination?.confirmed);
   },
 });
@@ -339,52 +346,73 @@ rehearse("unconnected ends with the key a session its cap did not end", {
   },
 });
 
-rehearse("unconnected ends at once a second session its spent token allocated", {
+rehearse("unconnected ends together the spent token's session and one its second create made", {
   check: "unconnected",
   faults: [{ _tag: "IgnoreSessionLimit" }],
   judge: (evidence) => {
     passes(evidence);
-    const spent = evidence.unconnected?.spentToken;
-    const second = evidence.sessions[1];
-    assert.lengthOf(evidence.sessions, 2);
-    assert.deepStrictEqual([spent?.answer, spent?.sessionId], ["allocated", second?.id]);
-    assert.isTrue(second?.close?.termination?.confirmed);
-    assert.isBelow(second.close.requestedMs - (spent?.answeredMs ?? 0), 1_000);
+    const probe = evidence.unconnected;
+    const spent = probe?.spentToken;
+    const [session, spending, extra] = evidence.sessions;
+    assert.lengthOf(evidence.sessions, 3);
+    assert.deepStrictEqual(
+      [spent?.second?.answer, spent?.second?.sessionId],
+      ["allocated", extra?.id],
+    );
+    // Both DELETEs go out at once as the second create is answered, so neither waits on the
+    // other's tries, and each session ends within its hold.
+    assert.isTrue(spending?.close?.termination?.confirmed);
+    assert.isTrue(extra?.close?.termination?.confirmed);
+    assert.strictEqual(spending.close.requestedMs, extra.close.requestedMs);
+    assert.isBelow(extra.close.requestedMs - (spent?.second?.answeredMs ?? 0), 1_000);
+    const [, spendingHold = 0, extraHold = 0] = holdsFor("unconnected");
+    assert.isAtMost(spending.close.reportedMs - (spent?.requestedMs ?? 0), spendingHold * 1000);
+    assert.isAtMost(extra.close.reportedMs - (spent?.second?.sentMs ?? 0), extraHold * 1000);
+    // The watched session is none of the spent token's: its cap still ends it.
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.isAtLeast((probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0), 60_000);
     // The time the summary gives is the allocation's; the termination line says how it ended.
-    assert.include(summarize([evidence]), `a second create allocated ${second.id} in `);
+    assert.include(summarize([evidence]), `a second create allocated ${extra.id} in `);
   },
 });
 
-// Nothing ended the session, so its cap cannot be counted on to: the cleanup says to end it.
+// Nothing ended the sessions, so their cap cannot be counted on to: the cleanup says to end each.
 rehearse("unconnected fails, and says to end the session, when the key cannot end it", {
   check: "unconnected",
   faults: [{ _tag: "IgnoreCap" }, { _tag: "IgnoreDelete" }],
   judge: (evidence) => {
     failed("confirmed termination")(evidence);
-    const [instruction] = cleanupInstructions(evidence);
-    assert.include(instruction ?? "", evidence.sessions[0]?.id ?? "no session");
-    assert.include(instruction ?? "", "may not end it");
+    const instructions = cleanupInstructions(evidence);
+    assert.deepStrictEqual(
+      instructions.map(
+        (line) => evidence.sessions.find((session) => line.includes(session.id))?.id,
+      ),
+      evidence.sessions.map((session) => session.id),
+    );
+    assert.include(instructions[0] ?? "", "may not end it");
   },
 });
 
-// A spent token that answers with the session it made allocated nothing more: the key must not
-// end that session, and the watch goes on.
-rehearse("unconnected watches on when its spent token answers with the session it made", {
+// A spent token that answers with the session it made allocated nothing more: the key ends that
+// session alone, and the watch goes on.
+rehearse("unconnected ends only the spent token's session when its second create names it", {
   check: "unconnected",
   faults: [{ _tag: "RepeatSession" }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;
-    assert.lengthOf(evidence.sessions, 1);
+    const spent = probe?.spentToken;
+    assert.lengthOf(evidence.sessions, 2);
     assert.deepStrictEqual(
-      [probe?.spentToken?.answer, probe?.spentToken?.sessionId],
-      ["the same session", probe?.sessionId],
+      [spent?.second?.answer, spent?.second?.sessionId],
+      ["the same session", spent?.sessionId],
     );
+    assert.isTrue(evidence.sessions[1]?.close?.termination?.confirmed);
     assert.strictEqual(probe?.ended?.by, "reactor");
     assert.isAtLeast((probe?.ended?.atMs ?? 0) - (evidence.sessions[0]?.allocatedMs ?? 0), 60_000);
     assert.include(
       summarize([evidence]),
-      `a second create answered with ${probe?.sessionId ?? "?"}, the session it made, in `,
+      `a second create answered with ${spent?.sessionId ?? "?"}, the session it made, in `,
     );
   },
 });
@@ -400,7 +428,9 @@ rehearse("unconnected ends its session with the key again until the end is confi
     assert.isTrue(session?.close?.termination?.confirmed);
     // Each try the key could not confirm is in the timeline; the close keeps the first DELETE's time.
     const unconfirmed = evidence.milestones.filter(
-      (milestone) => milestone.step === "end unconfirmed",
+      (milestone) =>
+        milestone.step === "end unconfirmed" &&
+        (milestone.detail ?? "").startsWith(`${session.id}:`),
     );
     assert.lengthOf(unconfirmed, 2);
     assert.include(unconfirmed[0]?.detail ?? "", `${session.id}: DELETE 200, then STOPPING`);
@@ -408,13 +438,15 @@ rehearse("unconnected ends its session with the key again until the end is confi
   },
 });
 
-// A create whose outcome is unknown may have allocated a session the run never learned of.
+// A create whose outcome is unknown may have allocated a session the run never learned of. The
+// watched session's create stops the check, before the spent token is used.
 rehearse("unconnected says where to look when its create's outcome is unknown", {
   check: "unconnected",
   faults: [{ _tag: "RefuseAllocation", nth: 1, status: 503 }],
   judge: (evidence) => {
     assert.strictEqual(evidence.verdict, "fail");
     assert.lengthOf(evidence.sessions, 0);
+    assert.isUndefined(evidence.unconnected?.spentToken);
     const [instruction] = cleanupInstructions(evidence);
     assert.include(instruction ?? "", "may have allocated a session");
     assert.include(instruction ?? "", evidence.unconnected?.requestedAt ?? "no request");
@@ -426,43 +458,102 @@ rehearse("unconnected says where to look when its create's outcome is unknown", 
   },
 });
 
-rehearse(
-  "unconnected watches on, and says where to look, when the spent token's create is unknown",
-  {
-    check: "unconnected",
-    faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "RefuseAllocation", nth: 2, status: 503 }],
-    judge: (evidence) => {
-      failed("the probe completed")(evidence);
-      const probe = evidence.unconnected;
-      assert.strictEqual(probe?.ended?.by, "reactor");
-      assert.isTrue(evidence.sessions[0]?.close?.termination?.confirmed);
-      assert.include(
-        evidence.criteria.find((criterion) => criterion.name === "the probe completed")?.detail ??
-          "",
-        "has no known answer: Http 503, outcome unknown",
-      );
-      const [instruction] = cleanupInstructions(evidence);
-      assert.include(instruction ?? "", "may have allocated a session");
-      assert.include(instruction ?? "", probe?.requestedAt ?? "no request");
-      // A Ctrl-C while that create hangs leaves its answer unrecorded; the line must stay.
-      assert.isDefined(probe);
-      const { spentToken: _spent, ...unrecorded } = probe;
-      const [interrupted] = cleanupInstructions({ ...evidence, unconnected: unrecorded });
-      assert.include(interrupted ?? "", "may have allocated a session");
-    },
+// A refused create allocated nothing and spent nothing, so no second create goes out; the watch
+// runs on as if the spent token had never been used.
+rehearse("unconnected watches on when the spent token's first create is refused", {
+  check: "unconnected",
+  faults: [{ _tag: "RefuseAllocation", nth: 2 }],
+  judge: (evidence) => {
+    failed("the spent token's second create was answered")(evidence);
+    const probe = evidence.unconnected;
+    const spent = probe?.spentToken;
+    assert.deepStrictEqual(
+      [spent?.create?.answer, spent?.create?.status, spent?.create?.outcome, spent?.sessionId],
+      ["Http", 403, "replied", undefined],
+    );
+    assert.isUndefined(spent?.second);
+    assert.include(
+      evidence.criteria.find(
+        (criterion) => criterion.name === "the spent token's second create was answered",
+      )?.detail ?? "",
+      "its first create failed with Http 403, outcome replied",
+    );
+    assert.isTrue(
+      evidence.criteria.find((criterion) => criterion.name === "the watch completed")?.passed,
+    );
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.isAtLeast((probe?.ended?.atMs ?? 0) - (evidence.sessions[0]?.allocatedMs ?? 0), 60_000);
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.termination?.confirmed);
+    assert.deepStrictEqual(cleanupInstructions(evidence), []);
   },
-);
+});
+
+rehearse("unconnected watches on, and says where to look, when the second create is unknown", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "RefuseAllocation", nth: 3, status: 503 }],
+  judge: (evidence) => {
+    failed("the spent token's second create was answered")(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.lengthOf(evidence.sessions, 2);
+    assert.isTrue(
+      evidence.sessions.every((session) => session.close?.termination?.confirmed === true),
+    );
+    assert.include(
+      evidence.criteria.find(
+        (criterion) => criterion.name === "the spent token's second create was answered",
+      )?.detail ?? "",
+      "has no known answer: Http 503, outcome unknown",
+    );
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", "The spent token's second create has an unknown outcome");
+    assert.include(instruction ?? "", probe?.spentToken?.requestedAt ?? "no request");
+  },
+});
+
+// A second create may hang until its 15 s deadline. The watch runs beside it, so its reads keep
+// their schedule meanwhile, and the key ends the spent token's session once the create gives up.
+rehearse("unconnected keeps its watch on schedule while the second create hangs", {
+  check: "unconnected",
+  faults: [{ _tag: "StallAllocation", nth: 3 }],
+  judge: (evidence) => {
+    failed("the spent token's second create was answered")(evidence);
+    const probe = evidence.unconnected;
+    const second = probe?.spentToken?.second;
+    const [session, spending] = evidence.sessions;
+    assert.deepStrictEqual([second?.answer, second?.outcome], ["Timeout", "unknown"]);
+    assert.isAtLeast((second?.answeredMs ?? 0) - (second?.sentMs ?? 0), 15_000);
+    // Read at allocation and 2 s later, the session was found ACTIVE while the create still hung.
+    const active = probe?.states.find((entry) => entry.state === "ACTIVE")?.firstMs;
+    assert.isAtMost((active ?? Infinity) - (session?.allocatedMs ?? 0), 2_500);
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    const endedAfter = (probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0);
+    assert.isAtLeast(endedAfter, 60_000);
+    assert.isAtMost(endedAfter, 62_500);
+    assert.isTrue(
+      evidence.criteria.find((criterion) => criterion.name === "the watch completed")?.passed,
+    );
+    assert.lengthOf(evidence.sessions, 2);
+    assert.isTrue(spending?.close?.termination?.confirmed);
+    assert.isAtLeast(spending.close.requestedMs, second?.answeredMs ?? Infinity);
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", "The spent token's second create has an unknown outcome");
+  },
+});
 
 // A run that stops hard, as a crash stops it, leaves the evidence as last saved: a create sent
-// and no answer recorded says where to look too.
+// and no answer recorded says where to look too, whichever of the three it was.
 rehearse("unconnected says where to look when the run stops with a create unanswered", {
   check: "unconnected",
   judge: (evidence) => {
     passes(evidence);
     const { finishedAt: _finished, verdict: _verdict, ...unfinished } = evidence;
     const probe = evidence.unconnected;
+    const spent = probe?.spentToken;
     assert.isDefined(probe);
-    const { sessionId: _session, spentToken: _spent, ...sent } = probe;
+    assert.isDefined(spent);
+    const { sessionId: _session, create: _create, spentToken: _spent, ...sent } = probe;
     const [first] = cleanupInstructions({
       ...unfinished,
       sessions: [],
@@ -471,45 +562,36 @@ rehearse("unconnected says where to look when the run stops with a create unansw
     });
     assert.include(first ?? "", "The create went unanswered, as the run stopped");
     assert.include(first ?? "", probe.requestedAt);
-    const { spentToken: _answer, ...allocated } = probe;
+    const { sessionId: _spending, create: _answer, second: _second, ...spending } = spent;
     const [second] = cleanupInstructions({
       ...unfinished,
-      milestones: evidence.milestones.filter(
-        (milestone) => milestone.step !== "spent token answered",
-      ),
-      unconnected: allocated,
+      unconnected: { ...probe, spentToken: spending },
     });
-    assert.include(second ?? "", "The spent token's second create went unanswered");
+    assert.include(second ?? "", "The spent token's first create went unanswered");
+    assert.include(second ?? "", spent.requestedAt);
+    const { second: _retry, ...retrying } = spent;
+    const [third] = cleanupInstructions({
+      ...unfinished,
+      unconnected: { ...probe, spentToken: retrying },
+    });
+    assert.include(third ?? "", "The spent token's second create went unanswered");
   },
 });
 
-// A spent token's create could end the session the token made. An end found before any read
-// showed the session running 10 s after that create's answer is not taken for Reactor's own.
-rehearse("unconnected leaves Q1 unanswered when its session ends right after the second create", {
-  check: "unconnected",
-  faults: [{ _tag: "Expire", after: Duration.seconds(1) }],
-  judge: (evidence) => {
-    passes(evidence);
-    const probe = evidence.unconnected;
-    assert.strictEqual(probe?.ended?.by, "reactor");
-    assert.include(
-      probe?.unanswered ?? "",
-      "The spent token's second create may have ended the session: Reactor ended it before",
-    );
-    assert.match(summarize([evidence]), /^- \*\*Q1:\*\* unanswered by this run\. The spent /m);
-  },
-});
-
-// Reactor gives a session 30 s once its last connection drops, so an end about 30 s after the
-// second create may be that create's doing too.
-rehearse("unconnected leaves Q1 unanswered when its session ends 30 s after the second create", {
+// Nothing but the key's reads touches the watched session, so an end Reactor makes about 30 s in,
+// the time it gives a session once its last connection drops, answers Q1 as any other end does.
+rehearse("unconnected answers Q1 when Reactor ends its session 30 s after it went ACTIVE", {
   check: "unconnected",
   faults: [{ _tag: "Expire", after: Duration.seconds(30) }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;
     assert.strictEqual(probe?.ended?.by, "reactor");
-    assert.include(probe?.unanswered ?? "", "about 30 s after that create was answered");
+    assert.isUndefined(probe?.unanswered);
+    const endedAfter = (probe?.ended?.atMs ?? 0) - (evidence.sessions[0]?.allocatedMs ?? 0);
+    assert.isAtLeast(endedAfter, 30_000);
+    assert.isAtMost(endedAfter, 33_000);
+    assert.notInclude(summarize([evidence]), "**Q1:**");
   },
 });
 
@@ -517,7 +599,7 @@ rehearse("unconnected leaves Q1 unanswered when its session ends 30 s after the 
 // read at the end that agrees, ends the watch.
 rehearse("unconnected takes a single read answered 404 for no end", {
   check: "unconnected",
-  faults: [{ _tag: "MissingSession", nth: 5 }],
+  faults: [{ _tag: "MissingSession", nth: 10 }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;
@@ -531,8 +613,8 @@ rehearse("unconnected takes a single read answered 404 for no end", {
 rehearse("unconnected credits no end the read at the end contradicts", {
   check: "unconnected",
   faults: [
-    { _tag: "MissingSession", nth: 5 },
-    { _tag: "MissingSession", nth: 6 },
+    { _tag: "MissingSession", nth: 10 },
+    { _tag: "MissingSession", nth: 11 },
   ],
   judge: (evidence) => {
     passes(evidence);
@@ -540,19 +622,20 @@ rehearse("unconnected credits no end the read at the end contradicts", {
     assert.strictEqual(probe?.read?.state, "ACTIVE");
     assert.strictEqual(probe?.ended?.by, "key");
     assert.include(probe?.unanswered ?? "", "the read at the end found it running");
+    assert.match(summarize([evidence]), /^- \*\*Q1:\*\* unanswered by this run\. The watch /m);
   },
 });
 
 // A create answered 2xx without naming a session may have made one all the same: the codes of
 // its body are kept, for whoever must find that session.
-rehearse("unconnected keeps the codes of a spent token's reply that names no session", {
+rehearse("unconnected keeps the codes of a second create's reply that names no session", {
   check: "unconnected",
-  faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "UnnamedAllocation", nth: 2 }],
+  faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "UnnamedAllocation", nth: 3 }],
   judge: (evidence) => {
-    failed("the probe completed")(evidence);
-    const spent = evidence.unconnected?.spentToken;
+    failed("the spent token's second create was answered")(evidence);
+    const second = evidence.unconnected?.spentToken?.second;
     assert.deepStrictEqual(
-      [spent?.answer, spent?.outcome, spent?.keys, spent?.codes],
+      [second?.answer, second?.outcome, second?.keys, second?.codes],
       ["Protocol", "unknown", ["state"], { state: "PENDING" }],
     );
     const [instruction] = cleanupInstructions(evidence);
@@ -569,6 +652,7 @@ rehearse("unconnected keeps the codes of a create reply that names no session", 
     assert.lengthOf(evidence.sessions, 0);
     const probe = evidence.unconnected;
     assert.isUndefined(probe?.sessionId);
+    assert.isUndefined(probe?.spentToken);
     assert.deepStrictEqual(
       [probe?.create?.answer, probe?.create?.outcome, probe?.create?.codes],
       ["Protocol", "unknown", { state: "PENDING" }],
@@ -585,11 +669,11 @@ rehearse("unconnected keeps the codes of a create reply that names no session", 
 });
 
 // Reactor may end the session after the watch's last read and before the key's: the read at the
-// end tells which. Counted from ACTIVE, 119.6 s lands between those two reads; 119.5 to 119.7 s
+// end tells which. Counted from ACTIVE, 119.8 s lands between those two reads; 119.7 to 119.9 s
 // do.
 rehearse("unconnected credits Reactor with an end only its read at the end found", {
   check: "unconnected",
-  faults: [{ _tag: "IgnoreCap" }, { _tag: "Expire", after: Duration.millis(119_600) }],
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "Expire", after: Duration.millis(119_800) }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;
