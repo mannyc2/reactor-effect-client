@@ -1317,6 +1317,25 @@ const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>
   actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : []));
 
 describe("PlayoutPolicy, edits", () => {
+  /**
+   * `a` starts while its replacement `r` builds, and `r`'s clip is being removed: a replacement
+   * whose item started first is dropped.
+   */
+  const replacedAfterStart = () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("a"));
+    built(policy, ["a"]);
+    policy.edit([{ _tag: "Replace", key: key("a"), spec: spec("r") }]);
+    policy.reply({ _tag: "Done", clipId: "c-r" });
+    const first = clip("c-a", item("a"));
+    policy.event({ _tag: "Started", clip: first });
+    const building = clip("c-r", item("r"));
+    policy.observe({ playing: first, building: [building] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
+    return { policy, removing: { first, clip: building } };
+  };
   /** Builds `names` one after another on s1, each Ready once built; returns their clip ids. */
   const built = (policy: ReturnType<typeof drive>, names: ReadonlyArray<string>) => {
     const current = policy.state().sessions[0]?.source;
@@ -1522,6 +1541,24 @@ describe("PlayoutPolicy, edits", () => {
     policy.reply({ _tag: "Done" });
     assert.deepStrictEqual(statuses(policy.actions, "b").at(-1), "Dropped");
     assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+  });
+
+  // Found by the property across renewals: a replacement whose item started first is dropped,
+  // but its removal, refused while it built, went again only once the session's queues changed,
+  // and its build finishing was no change to them. It aired after its item.
+  it("asks again for a refused removal once the clip it removes has finished building", () => {
+    const { policy, removing } = replacedAfterStart();
+    policy.reply(failed("replied"));
+    policy.observe({ playing: removing.first, ready: [removing.clip] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
+  });
+
+  // One whose outcome is unknown was held back the same way, with nothing left to change.
+  it("asks again at once for a removal whose outcome is unknown", () => {
+    const { policy, removing } = replacedAfterStart();
+    policy.observe({ playing: removing.first, ready: [removing.clip] });
+    policy.reply(failed("unknown"));
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
   });
 
   // A group key's withdrawal answers for the parts the group had when it was made. A part's
@@ -2625,6 +2662,30 @@ const counterexamples: ReadonlyArray<Script> = [
   ["urgent", "withdraw", "lost", "batch"],
   // A replacement whose item started first is dropped as withdrawn, as 0.7.0 dropped it.
   ["submit", "open", "done", "done", "ready", "replace", "start"],
+  // A replacement whose item started first went on air too: its removal, answered as unknown
+  // while it built, was asked again only once the queues changed, and its build finishing was no
+  // change to them.
+  [
+    "fail",
+    "ready",
+    "ready",
+    "group",
+    "open",
+    "replace",
+    "unknown",
+    "submit",
+    "ready",
+    "batch",
+    "withdraw",
+    "refused",
+    "done",
+    "replace",
+    "start",
+    "start",
+    "end",
+    "unknown",
+    "start",
+  ],
   // A withdrawal of a key before any item had it answers not-found: the item submitted under it
   // afterwards, which airs, is another.
   ["withdraw", "withdraw", "open", "ready", "end", "submit", "done", "done", "ready", "start"],

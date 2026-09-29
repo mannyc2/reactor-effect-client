@@ -1718,8 +1718,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             item.clipId === command.clipId &&
             item.phase !== "Settled",
         );
+        // A removal whose outcome is unknown goes again at once: if it applied, the next is
+        // refused, and the clip is gone. One refused goes again once the queues change.
+        const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
         if (owner === undefined) {
           if (result._tag === "Done") return forgetFiller(sessionId, command.clipId);
+          if (unknown) return;
           const refused = session(sessionId);
           if (refused === undefined) return;
           const now_ = signature(refused);
@@ -1732,7 +1736,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         }
         if (result._tag === "Done")
           settle(owner.spec.key, { _tag: "Dropped", reason: owner.withdraw ?? "withdrawn" });
-        else set(owner.spec.key, { blockedRemove: signature(session(sessionId)) });
+        else if (!unknown) set(owner.spec.key, { blockedRemove: signature(session(sessionId)) });
         return;
       }
       case "Move":
@@ -2175,13 +2179,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       )
     );
   }
+  /** A session's queues as they stand: a clip finishing its build changes them too. */
   function signature(value: Session | undefined): string {
     const source = value?.source;
     return source === undefined
       ? ""
-      : [...source.building, ...source.ready].map((clip) => clip.clipId).join(",") +
-          ":" +
-          (source.playing?.clipId ?? "");
+      : [source.building, source.ready, source.playing === undefined ? [] : [source.playing]]
+          .map((clips) => clips.map((clip) => clip.clipId).join(","))
+          .join(":");
   }
   function cueAt(item: Item, cue: Spec["cues"][number]): number {
     return cue.from === "start"
