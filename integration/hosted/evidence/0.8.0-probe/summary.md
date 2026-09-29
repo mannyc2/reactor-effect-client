@@ -22,5 +22,14 @@
 
 | Session                              | Made by                        | Requested | Allocated | First ACTIVE read | Ready  | Held               | Ended by | Ended         | Allocated to ended | Ready to ended | Dashboard duration | Dashboard charge |
 | ------------------------------------ | ------------------------------ | --------- | --------- | ----------------- | ------ | ------------------ | -------- | ------------- | ------------------ | -------------- | ------------------ | ---------------- |
-| 9ccd880c-5c99-4493-9ea6-19c0c98326de | the watched token's create     | 0.00 s    | 0.40 s    | 0.59 s            | 0.59 s | –                  | Reactor  | 58.49–60.49 s | 58.09–60.09 s      | 57.90–59.90 s  |                    |                  |
-| 6572f3f1-5b21-4c2b-9de0-d37d3c6e0748 | the spent token's first create | 0.41 s    | 0.74 s    | 1.12 s            | 1.12 s | 10.00 s past ready | the key  | 11.12–11.51 s | 10.38–10.77 s      | 10.00–10.39 s  |                    |                  |
+| 9ccd880c-5c99-4493-9ea6-19c0c98326de | the watched token's create     | 0.00 s    | 0.40 s    | 0.59 s            | 0.59 s | –                  | Reactor  | 58.49–60.49 s | 58.09–60.09 s      | 57.90–59.90 s  | 1m 0s              | not shown        |
+| 6572f3f1-5b21-4c2b-9de0-d37d3c6e0748 | the spent token's first create | 0.41 s    | 0.74 s    | 1.12 s            | 1.12 s | 10.00 s past ready | the key  | 11.12–11.51 s | 10.38–10.77 s      | 10.00–10.39 s  | 10 s               | not shown        |
+
+## The dashboard
+
+Read on September 29, 2026, at about 14:15 UTC. The Usage page lists the two sessions, both `CLOSED` on cluster `5a004973-…`, with a duration each and no charge:
+
+- the watched session, 1m 0s, against 58.09–60.09 s from allocation and 57.90–59.90 s from ready;
+- the spent token's session, 10 s, against 10.38–10.77 s from allocation and 10.00–10.39 s from ready.
+
+So Reactor meters by the second, not by the started minute: a 10 s session reads 10 s. Whether billing runs from creation or from `ready` stays open, since ready came 0.19 s and 0.38 s after allocation, under the page's one-second resolution. The balance read $9.32, against $10.41 after the 0.8.0-api round, whose charges had not then posted; the $1.09 between them fits neither the published per-second rate ($2.25 for the five sessions of this probe and the 0.8.0-rc `show`) nor a started minute each, so what Reactor charged is still open.
