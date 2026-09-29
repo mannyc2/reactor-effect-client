@@ -972,9 +972,10 @@ layer(hosted)("local renderer", (it) => {
       const presented = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
         open: LocalSource.open({
-          present: (local) =>
+          build: (local) => Effect.succeed({ value: local.request.prompt }),
+          present: (local, prompt) =>
             Effect.andThen(
-              Ref.update(presented, (all) => [...all, local.request.prompt]),
+              Ref.update(presented, (all) => [...all, prompt]),
               Effect.sleep(Duration.seconds(local.seconds)),
             ),
         }),
@@ -988,28 +989,24 @@ layer(hosted)("local renderer", (it) => {
     }),
   );
 
-  it.effect("reports what a local renderer failed, discarded or cut, and moves on", () =>
+  it.effect("reports what a local renderer failed, released or cut, and moves on", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const discarded = yield* Ref.make<ReadonlyArray<string>>([]);
+      const released = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
         open: LocalSource.open({
           build: (local) =>
-            local.request.prompt === "unbuildable"
-              ? Effect.fail(
-                  ReactorError.ReactorError.fromCode("InvalidState", "the renderer refused"),
-                )
-              : Effect.sleep("500 millis"),
+            Effect.gen(function* () {
+              const prompt = local.request.prompt;
+              yield* Effect.addFinalizer(() => Ref.update(released, (all) => [...all, prompt]));
+              if (prompt === "unbuildable") return yield* Effect.fail("the renderer refused");
+              yield* Effect.sleep("500 millis");
+              return { value: prompt };
+            }),
           present: (local) =>
             local.request.prompt === "broken"
-              ? Effect.andThen(
-                  Effect.sleep("1 second"),
-                  Effect.fail(
-                    ReactorError.ReactorError.fromCode("InvalidState", "the speaker failed"),
-                  ),
-                )
+              ? Effect.andThen(Effect.sleep("1 second"), Effect.fail("the speaker failed"))
               : Effect.sleep(Duration.seconds(local.seconds)),
-          discard: (local) => Ref.update(discarded, (all) => [...all, local.request.prompt]),
         }),
         lanes: [{ name: "urgent", cut: true }, { name: "speech" }],
       });
@@ -1020,14 +1017,20 @@ layer(hosted)("local renderer", (it) => {
       const long = yield* submit("long", "speech", 15);
       const spare = yield* submit("spare");
       assert.strictEqual((yield* unbuildable.outcome)._tag, "Failed");
-      const cut = yield* broken.outcome;
-      assert.deepStrictEqual(cut._tag === "Ended" ? cut.termination : cut._tag, "stopped");
+      // A presentation that fails fails its clip, with the renderer's words kept out of the message.
+      const failed = yield* broken.outcome;
+      const reason = failed._tag === "Failed" ? failed.reason : undefined;
+      assert.strictEqual(reason?._tag, "Clip");
+      if (reason?._tag === "Clip") {
+        assert.include(Redacted.value(reason.provider), "the speaker failed");
+        assert.notInclude(reason.message, "the speaker failed");
+      }
       yield* long.started;
       // The spare is Ready behind the long clip; withdrawing it hands it back to the renderer.
       yield* Effect.sleep("2 seconds");
       yield* playout.withdraw(key("spare"));
       assert.strictEqual((yield* spare.outcome)._tag, "Dropped");
-      assert.deepStrictEqual(yield* Ref.get(discarded), ["spare"]);
+      assert.deepStrictEqual(yield* Ref.get(released), ["unbuildable", "broken", "spare"]);
       const urgent = yield* submit("urgent", "urgent");
       yield* urgent.started;
       const stopped = yield* long.outcome;
@@ -1035,6 +1038,41 @@ layer(hosted)("local renderer", (it) => {
         stopped._tag === "Ended" ? stopped.termination : stopped._tag,
         "stopped",
       );
+    }),
+  );
+
+  it.effect("renews a local renderer's sessions, and every item airs to its end", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({ buildRatio: 0.4, lifetime: "40 seconds" }),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "15 seconds" },
+      });
+      const switches = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) => {
+          const session = event._tag === "Session" ? event.event : undefined;
+          return session?._tag === "Switched"
+            ? Ref.update(switches, (all) => [...all, [session.from, session.to] as const])
+            : Effect.void;
+        }),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const items = yield* Effect.forEach(
+        Array.from({ length: 16 }, (_, index) => `line ${String(index)}`),
+        (prompt) => playout.submit({ key: key(prompt), lane: "speech", request: clip(prompt) }),
+      );
+      const outcomes = yield* Effect.forEach(items, (item) =>
+        Effect.map(item.outcome, (status) => status._tag),
+      );
+      assert.deepStrictEqual(
+        outcomes,
+        items.map(() => "Ended"),
+      );
+      const switched = yield* Ref.get(switches);
+      assert.isAbove(switched.length, 0, "no session was renewed");
+      for (const [from, to] of switched) assert.notStrictEqual(from, to);
     }),
   );
 });
