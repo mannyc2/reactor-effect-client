@@ -42,7 +42,7 @@ const watch = (element: HTMLVideoElement, tokens: Coordinator.Tokens) =>
   }).pipe(Effect.scoped);
 ```
 
-`BrowserMedia.tracks(session)` returns the session's current generation. `tracks.track(name)` acquires a clone of a received track that stops when its scope closes; `publish`, `unpublish`, `setTrackActive` and `setMaxBitrate` act on that generation, and a reconnect makes a new one that the application obtains again.
+`BrowserMedia.tracks(session)` returns the session's current generation. `tracks.track(name)` acquires a clone of a received track that stops when its scope closes; `publish`, `unpublish`, `setTrackActive` and `setMaxBitrate` act on that generation, and a reconnect makes a new one that the application obtains again. The session reconnects a dropped connection on its own, so an application holding tracks follows `session.changes` to the next ready generation and obtains them again.
 
 `BrowserMedia.play(track, element, { playTimeout })` plays a clone of `track` in `element` until the scope closes, which stops the clone and detaches it. It refuses a track that is not live and an element that already has a source, and fails when starting takes longer than `playTimeout`, 10 seconds by default. Starting playback does not establish that anyone saw it.
 

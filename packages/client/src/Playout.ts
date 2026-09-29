@@ -287,7 +287,7 @@ export type SessionEvent =
       readonly reason: string;
       readonly carried: number;
     }
-  /** The session's connection dropped, and its source is reconnecting it. */
+  /** The session's connection dropped, and is being reconnected. */
   | { readonly _tag: "Reconnecting"; readonly sessionId: string }
   /** The session is connected again, this long after the drop was seen. */
   | { readonly _tag: "Reconnected"; readonly sessionId: string; readonly afterMillis: number }
@@ -430,7 +430,10 @@ export type SourceEvent =
       readonly action: string;
       readonly categories: ReadonlyArray<string>;
     }
-  /** The connection dropped and the source is reconnecting; a failed reconnect fails `events`. */
+  /**
+   * The connection dropped and is being reconnected; a reconnect that fails, or outlasts the
+   * source's wait, fails `events`.
+   */
   | { readonly _tag: "Reconnecting" }
   /** The connection is back, this long after the drop was seen. */
   | { readonly _tag: "Reconnected"; readonly afterMillis: number }
