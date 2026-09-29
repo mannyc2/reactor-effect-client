@@ -591,9 +591,12 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return unnamed;
       }),
     read: (jwt: string | undefined, id: string) =>
-      Effect.flatMap(owned(jwt, id, undefined, "key"), (session) =>
-        Effect.map(Ref.get(session.state), (state) => descriptor(id, state.phase)),
-      ),
+      Effect.gen(function* () {
+        const session = yield* owned(jwt, id, undefined, "key");
+        if ((yield* faults.trip((fault) => fault._tag === "MissingSession")) !== undefined)
+          return yield* refuse(404, "not_found", "no such session");
+        return descriptor(id, (yield* Ref.get(session.state)).phase);
+      }),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
       Effect.gen(function* () {
         yield* owned(jwt, id, "active");

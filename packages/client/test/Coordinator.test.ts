@@ -491,6 +491,25 @@ alone(
   [{ _tag: "UnnamedAllocation" }],
 );
 
+// A read answered 404 once need not mean the session ended: the next read may find it running.
+alone(
+  "a session the coordinator loses for one read is found again by the next",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const { id } = yield* created;
+      const server = yield* Coordinator.make({ apiKey: test.apiKey });
+      const lost = yield* Effect.flip(server.inspect(id));
+      assert.deepStrictEqual(
+        [lost.reason._tag, lost.reason._tag === "Http" ? lost.reason.status : undefined],
+        ["Http", 404],
+      );
+      assert.notStrictEqual((yield* server.inspect(id)).state, "CLOSED");
+    }),
+  [{ _tag: "MissingSession", nth: 1 }],
+);
+
 // The billing page shows rates per minute; the live pricing endpoint states H3's per second.
 it.effect("reads a model's rate in the unit its pricing states it", () =>
   Effect.gen(function* () {

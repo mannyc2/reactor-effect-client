@@ -106,6 +106,12 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("SlowDelete", { for: Schema.Duration }),
   /** DELETE is accepted and the session runs on until its grant ends. */
   Schema.TaggedStruct("IgnoreDelete", {}),
+  /**
+   * `GET /sessions/{id}` answers 404 for a session that still runs, as a
+   * coordinator that lost track of it for a moment would. Whether hosted
+   * Reactor ever does is unobserved.
+   */
+  Schema.TaggedStruct("MissingSession", nth),
   /** While a clip plays, video is absent, black or one repeated frame. */
   Schema.TaggedStruct("Video", { video: Schema.Literals(["absent", "black", "frozen"]) }),
   /** The session offers audio and sends none. */
