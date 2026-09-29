@@ -57,6 +57,27 @@ const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: st
     }),
   );
 
+/**
+ * Creates a session on the token's signaling, and records it unless it is one
+ * already held, as one step an interrupt waits for: one landing between the
+ * reply and the record would leave a session nothing ends. The create's own
+ * 15 s limit still holds, as a race runs its sides interruptibly.
+ */
+const allocate = Effect.fnUntraced(function* (
+  pieces: Pieces,
+  signaling: Coordinator.Signaling,
+  grant: Coordinator.TokenGrant,
+  grants: Map<string, Coordinator.TokenGrant>,
+) {
+  const allocation = yield* recorded(signaling.create({ name: H3.modelName }));
+  const allocatedAt = yield* Clock.currentTimeMillis;
+  if (!grants.has(allocation.sessionId)) {
+    grants.set(allocation.sessionId, grant);
+    yield* pieces.holding(allocation.sessionId, allocatedAt, allocatedAt + pieces.capMs(grant));
+  }
+  return { ...allocation, allocatedAt };
+}, Effect.uninterruptible);
+
 type States = UnconnectedRecord["states"];
 type SpentToken = NonNullable<UnconnectedRecord["spentToken"]>;
 
@@ -107,15 +128,11 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
       Effect.gen(function* () {
         // The session's own seam, on purpose: its create allocates a session that nothing
         // owns, connects to or closes, and such a session is what this check asks about.
-        // The session is recorded as soon as the reply names it, so the key ends it however
-        // the check ends.
+        // The session is recorded as the reply names it, so the key ends it however the
+        // check ends.
         const signaling = coordinator.signaling(Effect.succeed(grant.jwt));
         const requestedMs = yield* run.now;
-        const allocation = yield* recorded(signaling.create({ name: H3.modelName }));
-        const sessionId = allocation.sessionId;
-        const allocatedAt = yield* Clock.currentTimeMillis;
-        grants.set(sessionId, grant);
-        yield* pieces.holding(sessionId, allocatedAt, allocatedAt + pieces.capMs(grant));
+        const { sessionId, allocatedAt } = yield* allocate(pieces, signaling, grant, grants);
         yield* run.mark("allocated", sessionId);
         const initial: UnconnectedRecord = {
           sessionId,
@@ -137,9 +154,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
 
         // A second create on the same token, sent while the first session is live.
         const sentMs = yield* run.now;
-        const second = yield* signaling
-          .create({ name: H3.modelName })
-          .pipe(recorded, Effect.result);
+        const second = yield* allocate(pieces, signaling, grant, grants).pipe(Effect.result);
         const answeredMs = yield* run.now;
         if (Result.isSuccess(second) && second.success.sessionId === sessionId)
           // The session the token made, named again: nothing more was allocated, so the key
@@ -152,11 +167,10 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             sessionId,
           });
         else if (Result.isSuccess(second)) {
-          // A session nothing asked for: recorded first, so the key ends it however the check
-          // ends, then ended with the key at once.
+          // A session nothing asked for, recorded as the reply named it: ended with the key at
+          // once.
           const extra = second.success.sessionId;
-          grants.set(extra, grant);
-          yield* pieces.allocated(extra, grant);
+          yield* run.mark("allocated", extra);
           yield* recordSpent({
             sentMs,
             answeredMs,
