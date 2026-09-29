@@ -856,6 +856,13 @@ export const UnconnectedRecord = Schema.Struct({
   ended: Schema.optionalKey(
     Schema.Struct({ by: Schema.Literals(["reactor", "key"]), atMs: Ms, at: Schema.String }),
   ),
+  /**
+   * Why this run cannot say whether Reactor ends a session nothing connects
+   * to, when it cannot: Reactor ended the session before any read found it
+   * still running 10 s after the spent token's create was answered, so that
+   * create may have ended it.
+   */
+  unanswered: Schema.optionalKey(Schema.String),
 });
 export type UnconnectedRecord = typeof UnconnectedRecord.Type;
 

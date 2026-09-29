@@ -296,6 +296,9 @@ const unconnectedLines = (
   };
   return [
     `**Unconnected:** ${probe.sessionId} requested ${probe.requestedAt}; ${probe.connectableMs === undefined ? "never read connectable" : `connectable ${since(probe.connectableMs)}`}; ${ended === undefined ? "its end unconfirmed" : `ended by ${ended.by === "reactor" ? "Reactor" : "the API key"} ${since(ended.atMs)}, ${ended.at}`}`,
+    ...(probe.unanswered === undefined
+      ? []
+      : [`**Q1:** unanswered by this run. ${probe.unanswered}`]),
     ...(windowEndsMs === undefined
       ? []
       : [

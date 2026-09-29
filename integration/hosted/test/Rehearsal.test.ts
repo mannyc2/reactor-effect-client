@@ -281,6 +281,7 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
       ["ACTIVE", "CLOSED"],
     );
     assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.isUndefined(probe?.unanswered);
     // The cap ends it 60 s after it went ACTIVE, half a second at most after the reply, and a
     // read every 2 s finds that end.
     const endedAfter = (probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0);
@@ -445,6 +446,23 @@ rehearse(
     },
   },
 );
+
+// A spent token's create could end the session the token made. An end found before any read
+// showed the session running 10 s after that create's answer is not taken for Reactor's own.
+rehearse("unconnected leaves Q1 unanswered when its session ends right after the second create", {
+  check: "unconnected",
+  faults: [{ _tag: "Expire", after: Duration.seconds(1) }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.include(
+      probe?.unanswered ?? "",
+      "The spent token's second create may have ended the session: Reactor ended it before",
+    );
+    assert.match(summarize([evidence]), /^- \*\*Q1:\*\* unanswered by this run\. The spent /m);
+  },
+});
 
 // Reactor may end the session after the watch's last read and before the key's: the read at the
 // end tells which. Counted from ACTIVE, 119.6 s lands between those two reads; 119.5 to 119.7 s
