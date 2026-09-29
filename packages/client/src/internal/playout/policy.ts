@@ -490,6 +490,23 @@ const playingRestOf = (value: Session | undefined, mono: number): number => {
     : Math.max(0, playing.seconds * 1000 - (mono - since));
 };
 
+/**
+ * Whether a Ready clip airs when its turn comes: it isn't held, waiting on its
+ * batch or an anchor still ahead, or withdrawn. A clip that is no item's airs.
+ */
+const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): boolean => {
+  const item = clip.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
+  if (item === undefined) return true;
+  const at =
+    item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
+  return (
+    item.mode !== "held" &&
+    item.batch === undefined &&
+    (at === undefined || at <= now.mono) &&
+    item.withdraw === undefined
+  );
+};
+
 type Rank = readonly [number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
@@ -733,17 +750,7 @@ export const step: {
 
   const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
   const playingRestMs = (value: Session | undefined): number => playingRestOf(value, now.mono);
-  const airs = (clip: SourceClip): boolean => {
-    const item = itemOf(clip);
-    if (item === undefined) return true;
-    const at = atMono(item);
-    return (
-      item.mode !== "held" &&
-      item.batch === undefined &&
-      (at === undefined || at <= now.mono) &&
-      item.withdraw === undefined
-    );
-  };
+  const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
   /** Seconds of air secured on the session that takes new work. */
   const runway = (): number => {
     const target = preferred() ?? session(state.air);
@@ -2455,12 +2462,15 @@ export const view: {
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const air = state.sessions.find((value) => value.id === state.air);
   const playing = air?.playing;
-  const target = preferredOf(state.sessions) ?? air;
-  const rest = target?.id === state.air ? playingRestOf(air, now.mono) / 1000 : 0;
+  // What airs from the session on air, then from its replacement once that takes over.
+  const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
+  const secured = (value: Session | undefined): number =>
+    (value?.source?.ready ?? [])
+      .filter((clip) => airsOf(state.items, clip, now))
+      .reduce((total, clip) => total + clip.seconds, 0);
   return {
     accepting: state.accepting,
-    runwaySeconds:
-      rest + (target?.source?.ready ?? []).reduce((total, clip) => total + clip.seconds, 0),
+    runwaySeconds: playingRestOf(air, now.mono) / 1000 + secured(air) + secured(replacement),
     playing:
       playing === undefined
         ? null

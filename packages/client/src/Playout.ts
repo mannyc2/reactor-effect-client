@@ -320,7 +320,11 @@ export type Event =
 
 export interface State {
   readonly accepting: boolean;
-  /** Seconds of air secured: the playing clip's rest and the Ready clips after it. */
+  /**
+   * Seconds of air secured: the playing clip's rest and the Ready clips that
+   * will air after it, on the session on air and then on its replacement. A
+   * held clip, or one anchored later, counts once it may air.
+   */
   readonly runwaySeconds: number;
   /**
    * The clip on air: whose it is, when its start was seen in epoch

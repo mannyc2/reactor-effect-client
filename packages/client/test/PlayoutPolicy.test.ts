@@ -386,6 +386,28 @@ describe("PlayoutPolicy", () => {
     });
   });
 
+  it("reports as runway the air secured: not a held clip, and still once a replacement opens", () => {
+    const policy = drive({ config: { ...config, leadMs: 30_000 } });
+    policy.tick(0);
+    policy.open("s1", 90_000);
+    for (const name of ["a", "b"]) {
+      policy.submit(spec(name));
+      policy.reply({ _tag: "Done", clipId: `c-${name}` });
+    }
+    policy.submit({ ...spec("held"), start: { _tag: "Manual" } });
+    policy.observe({
+      ready: [clip("c-a", item("a")), clip("c-b", item("b")), clip("c-held", item("held"))],
+    });
+    const runway = () =>
+      Policy.view(config, policy.state(), { mono: policy.now(), wall: policy.now() }).runwaySeconds;
+    // The held clip airs only once released.
+    assert.strictEqual(runway(), 10);
+    assert.isTrue(policy.tick(60_010).actions.some((action) => action._tag === "Open"));
+    policy.open("s2", 90_000);
+    // The replacement takes new work, but what the session on air holds still airs first.
+    assert.strictEqual(runway(), 10);
+  });
+
   it("keeps what plays from a start or an end over a report older than it", () => {
     const filler = (index: number) => clip(`f${String(index)}`, { _tag: "Filler", index });
     const on = (event: SourceEvent): Policy.Input => ({ _tag: "Source", sessionId: "s1", event });
