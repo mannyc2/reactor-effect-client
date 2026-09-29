@@ -78,7 +78,7 @@ export interface Sink {
  * The application's hooks, which render each clip; or none, for a stand-in
  * whose clips build for `buildRatio` of their length and play for their length.
  */
-export type Options<A = void, E = never, R = never> =
+export type Options<A = void, E = never, R = never, E2 = never, R2 = never> =
   | {
       /** Renders a clip before it is Ready, in a scope the clip owns. */
       readonly build: (clip: LocalClip) => Effect.Effect<Rendered<A>, E, R | Scope.Scope>;
@@ -89,7 +89,7 @@ export type Options<A = void, E = never, R = never> =
        * for its length.
        */
       readonly present?:
-        | ((clip: LocalClip, value: A, sink: Sink) => Effect.Effect<void, E, R | Scope.Scope>)
+        | ((clip: LocalClip, value: A, sink: Sink) => Effect.Effect<void, E2, R2 | Scope.Scope>)
         | undefined;
       /**
        * The session's granted length from when it opens, as a capped paid
@@ -107,9 +107,9 @@ export type Options<A = void, E = never, R = never> =
       readonly lifetime?: Duration.Input | undefined;
     };
 
-type Hooks<A, E, R> = Extract<Options<A, E, R>, { readonly build: unknown }>;
-type Build<A, E, R> = Hooks<A, E, R>["build"];
-type Present<A, E, R> = NonNullable<Hooks<A, E, R>["present"]>;
+type Hooks<A, E, R, E2, R2> = Extract<Options<A, E, R, E2, R2>, { readonly build: unknown }>;
+type Build<A, E, R> = Hooks<A, E, R, never, never>["build"];
+type Present<A, E, R> = NonNullable<Hooks<A, never, never, E, R>["present"]>;
 
 /** A built clip: the value `present` gets, and the scope it was built in, open until it leaves. */
 interface Built<A> extends LocalClip {
@@ -181,11 +181,11 @@ const played = (clip: LocalClip): Effect.Effect<void> =>
 const release = (scope: Scope.Closeable, exit: Exit.Exit<unknown, unknown>) =>
   Effect.uninterruptible(Scope.close(scope, exit));
 
-const make = Effect.fnUntraced(function* <A, E, R>(
+const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
   build: Build<A, E, R>,
-  present: Present<A, E, R>,
+  present: Present<A, E2, R2>,
   lifetimeInput: Duration.Input | undefined,
-): Effect.fn.Return<Source, ReactorError, R | Scope.Scope> {
+): Effect.fn.Return<Source, ReactorError, R | R2 | Scope.Scope> {
   const lifetime =
     lifetimeInput === undefined
       ? Duration.infinity
@@ -277,7 +277,7 @@ const make = Effect.fnUntraced(function* <A, E, R>(
    */
   const guard = <X, Y, Z>(effect: Effect.Effect<X, Y, Z>) => Effect.catchCause(effect, lose);
   /** Runs `loop` until it is interrupted; a failure in it, a hook's defect included, loses the session. */
-  const keep = <X>(loop: Effect.Effect<void, X, R>) =>
+  const keep = <X>(loop: Effect.Effect<void, X, R | R2>) =>
     loop.pipe(Effect.forever, guard, Effect.forkIn(owned));
   const without =
     (clipId: string) =>
@@ -508,15 +508,15 @@ const make = Effect.fnUntraced(function* <A, E, R>(
  * `lifetime` that is not a positive, finite duration, or a `buildRatio` that
  * is negative or not finite.
  */
-export const open = <A = void, E = never, R = never>(
-  options?: Options<A, E, R>,
-): Effect.Effect<Source, ReactorError, R | Scope.Scope> => {
+export const open = <A = void, E = never, R = never, E2 = never, R2 = never>(
+  options?: Options<A, E, R, E2, R2>,
+): Effect.Effect<Source, ReactorError, R | R2 | Scope.Scope> => {
   if (options?.build !== undefined)
     return make(options.build, options.present ?? played, options.lifetime);
   const ratio = options?.buildRatio ?? 0;
   if (!(Number.isFinite(ratio) && ratio >= 0))
     return Effect.fail(invalid("LocalSource buildRatio must be a finite number, not negative"));
-  return make<void, E, R>(
+  return make(
     (clip) => Effect.as(Effect.sleep(Duration.seconds(clip.seconds * ratio)), { value: undefined }),
     played,
     options?.lifetime,

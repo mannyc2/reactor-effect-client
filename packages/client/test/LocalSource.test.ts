@@ -2,17 +2,21 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   Cause,
+  Context,
   Deferred,
   Duration,
   Effect,
   Exit,
   Fiber,
   Option,
+  Redacted,
   Result,
   Scheduler,
+  Schema,
   Scope,
   Stream,
   SubscriptionRef,
+  type Types,
 } from "effect";
 import { LocalSource, Playout, type ReactorError, ReactorTest } from "../src/index.js";
 
@@ -69,6 +73,22 @@ const breaches = (events: ReadonlyArray<Playout.SourceEvent>): ReadonlyArray<str
   }
   return found;
 };
+
+/** A renderer's voice, which its builds need. */
+class Voice extends Context.Service<
+  Voice,
+  { readonly speak: (line: string) => Effect.Effect<string, Unvoiced> }
+>()("reactor-effect-client/test/LocalSource.test/Voice") {}
+/** A line the voice has no voice for. */
+class Unvoiced extends Schema.TaggedError<Unvoiced>()("Unvoiced", {}) {}
+
+/** Where a renderer's presentations show a line. */
+class Stage extends Context.Service<
+  Stage,
+  { readonly show: (line: string) => Effect.Effect<void, Unstaged> }
+>()("reactor-effect-client/test/LocalSource.test/Stage") {}
+/** A line the stage cannot show. */
+class Unstaged extends Schema.TaggedError<Unstaged>()("Unstaged", {}) {}
 
 describe("LocalSource", () => {
   it.effect("gives each session it opens an id of its own", () =>
@@ -274,6 +294,72 @@ describe("LocalSource", () => {
         yield* until(events, "the unmeasured clip's failure", (all) =>
           all.some((event) => event._tag === "Failed" && event.clip.clipId === unmeasured),
         );
+      }),
+  );
+
+  it.effect(
+    "infers each hook's own error and services, and fails a clip with its hook's error",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const opened = LocalSource.open({
+          build: (clip) =>
+            Effect.map(
+              Voice.use((voice) => voice.speak(clip.request.prompt)),
+              (line) => ({ value: line }),
+            ),
+          present: (_clip, line) => Stage.use((stage) => stage.show(line)),
+        });
+        // Without type arguments, the source needs what either hook needs.
+        const needs: Types.Equals<
+          Effect.Services<typeof opened>,
+          Voice | Stage | Scope.Scope
+        > = true;
+        assert.isTrue(needs);
+        const shown = yield* SubscriptionRef.make<ReadonlyArray<string>>([]);
+        const source = yield* opened.pipe(
+          Effect.provideService(
+            Voice,
+            Voice.of({
+              speak: (line) =>
+                line === "mute" ? Unvoiced.make({}) : Effect.succeed(`voiced ${line}`),
+            }),
+          ),
+          Effect.provideService(
+            Stage,
+            Stage.of({
+              show: (line) =>
+                line === "voiced offstage"
+                  ? Unstaged.make({})
+                  : SubscriptionRef.update(shown, (all) => [...all, line]),
+            }),
+          ),
+        );
+        const events = yield* record(source);
+        yield* source.setAutoplay(true);
+        const [mute, offstage, line] = yield* Effect.forEach(
+          ["mute", "offstage", "line"],
+          (prompt) => source.enqueue(request(prompt, 1), tag(prompt)),
+        );
+        yield* until(events, "the last line's end", ended(line ?? ""));
+        const failed = (yield* SubscriptionRef.get(events)).filter(
+          (event) => event._tag === "Failed",
+        );
+        // Each clip failed with the error of its own hook, which its provider text names.
+        assert.deepStrictEqual(
+          failed.map((event) => [
+            event.clip.clipId,
+            event.message,
+            ["Unvoiced", "Unstaged"].filter((name) =>
+              Redacted.value(event.provider).includes(name),
+            ),
+          ]),
+          [
+            [mute, "the local build failed", ["Unvoiced"]],
+            [offstage, "the local presentation failed", ["Unstaged"]],
+          ],
+        );
+        assert.deepStrictEqual(yield* SubscriptionRef.get(shown), ["voiced line"]);
       }),
   );
 
