@@ -115,6 +115,10 @@ const joined =
  */
 const settle = Duration.seconds(10);
 
+/** A reconnect out of time; `failure` is why its last attempt, or its last connection, failed. */
+const outOfTime = (failure: ReactorError | undefined) =>
+  ReactorError.fromCode("Timeout", "reconnect: deadline", { detail: failure });
+
 export const make = ({
   core,
   generation,
@@ -541,17 +545,20 @@ export const make = ({
   });
 
   /**
-   * The connection the reconnect made ready on `generation` stays up for `settle`, or this fails
-   * with why it went down sooner. Once the session is on another generation, one a reconnect
-   * asked for began, this reconnect is over, however late this sees it: it ends, and leaves that
-   * generation alone.
+   * The connection the reconnect made ready on `generation` at `since`, on the monotonic clock,
+   * stays up until it has been ready for `settle`, or this fails with why it went down sooner.
+   * Once the session is on another generation, one a reconnect asked for began, this reconnect is
+   * over, however late this sees it: it ends, and leaves that generation alone.
    */
-  const holds = (generation: bigint) =>
+  const holds = (generation: bigint, since: bigint) =>
     Effect.gen(function* () {
+      const up = Duration.nanos((yield* Clock.monotonicTimeNanos) - since);
+      const left = Duration.subtract(settle, up);
+      if (!Duration.isPositive(left)) return;
       const down = yield* SubscriptionRef.changes(state).pipe(
         Stream.filter((session) => session.status !== "ready" || session.generation !== generation),
         Stream.runHead,
-        Effect.timeoutOption(settle),
+        Effect.timeoutOption(left),
         Effect.map(Option.flatten),
       );
       if (Option.isNone(down) || down.value.generation !== generation) return;
@@ -565,10 +572,11 @@ export const make = ({
    * which sees each failure, until a connection has stayed ready for `settle`. A connection that
    * drops sooner fails its attempt, so one that keeps dropping is tried on the schedule, within
    * `reconnectTimeout` of the drop that began the reconnect. It stops once the schedule stops, no
-   * attempt can succeed or that time has passed; a connection ready then still has `settle` to
-   * stay up, and the reconnect stops where it drops if it does not. Each attempt says why it
-   * failed as it fails, and a reconnect out of time stops with a `Timeout` whose detail is the
-   * last attempt's failure. A reconnect asked for while a connection this made ready settles ends
+   * attempt can succeed or that time has passed; a connection ready then still has the rest of its
+   * `settle`, counted from when it became ready, to stay up, and the reconnect stops where it drops
+   * if it does not. Each attempt says why it failed as it fails, and a reconnect out of time stops
+   * with a `Timeout` whose detail is the last attempt's failure, or why the connection ready as the
+   * time ran out dropped. A reconnect asked for while a connection this made ready settles ends
    * this one, which leaves the generation the application began alone, whether ready, failed or
    * dropped. A defect ends that reconnect, is reported, and the next drop is reconnected again.
    */
@@ -595,8 +603,19 @@ export const make = ({
       );
       // Why the last attempt failed, which it published as it did; the deadline's detail.
       const last = yield* Ref.make<ReactorError | undefined>(undefined);
+      // The latest connection this reconnect made ready, and when, on the monotonic clock.
+      const readied = yield* Ref.make<{ readonly generation: bigint; readonly at: bigint }>({
+        generation: 0n,
+        at: 0n,
+      });
+      const settles = Effect.gen(function* () {
+        const generation = yield* Ref.get(began);
+        const at = yield* Clock.monotonicTimeNanos;
+        yield* Ref.set(readied, { generation, at });
+        return yield* holds(generation, at);
+      });
       const reconnected = yield* attempt("own", acquisition, began).pipe(
-        Effect.andThen(Effect.flatMap(Ref.get(began), holds)),
+        Effect.andThen(settles),
         Effect.tapError((error) => Ref.set(last, error)),
         Effect.retry({
           schedule,
@@ -604,12 +623,7 @@ export const make = ({
         }),
         Effect.timeoutOrElse({
           duration: settings.reconnectTimeout,
-          orElse: () =>
-            Effect.flatMap(Ref.get(last), (failure) =>
-              Effect.fail(
-                ReactorError.fromCode("Timeout", "reconnect: deadline", { detail: failure }),
-              ),
-            ),
+          orElse: () => Effect.flatMap(Ref.get(last), (failure) => Effect.fail(outOfTime(failure))),
         }),
         Effect.exit,
       );
@@ -619,11 +633,17 @@ export const make = ({
       const now = yield* SubscriptionRef.get(state);
       // Another's generation: a reconnect asked for as this one's connection settled ended it.
       if (now.generation !== mine) return;
-      // A connection ready as the time ran out still has `settle` to stay up.
-      if (now.status === "ready" && Exit.isSuccess(yield* Effect.exit(holds(mine)))) return;
-      const error = failureOr(() => ReactorError.fromCode("Aborted", "reconnecting stopped"))(
-        reconnected.cause,
-      );
+      const stopped = failureOr(() => ReactorError.fromCode("Aborted", "reconnecting stopped"));
+      if (now.status === "ready") {
+        // A connection ready as the time ran out has the rest of its `settle`, counted from when
+        // it became ready, to stay up; from now, if the deadline came before this noted when.
+        const ready = yield* Ref.get(readied);
+        const since = ready.generation === mine ? ready.at : yield* Clock.monotonicTimeNanos;
+        const held = yield* Effect.exit(holds(mine, since));
+        if (Exit.isSuccess(held)) return;
+        return yield* stop(held.cause.pipe(stopped, outOfTime), false, mine);
+      }
+      const error = stopped(reconnected.cause);
       // An attempt's own failure was published as it failed.
       yield* stop(error, error === (yield* Ref.get(last)), mine);
     }).pipe(Effect.forever);

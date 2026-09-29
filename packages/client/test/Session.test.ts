@@ -1714,6 +1714,63 @@ layer(
   );
 });
 
+// Reactor refuses the session's first three reconnects, tried a second apart, so the fourth
+// connection is ready about 3 s after the drop, 2 s before the reconnect's 5 s run out.
+layer(
+  Reactor.layer({ reconnectTimeout: "5 seconds", reconnect: Schedule.spaced("1 second") }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection is ready as its time runs out", (it) => {
+  /** A session dropped and refused three times, its fourth connection to drop `after` it opens. */
+  const readyLate = (after: Duration.Duration) =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* Effect.forEach([1, 2, 3], (nth) => test.inject({ _tag: "RefuseReconnect", nth }));
+      yield* test.inject({ _tag: "Disconnect", nth: 2, after });
+      return yield* connect;
+    });
+
+  it.effect("counts it back once it has been ready 10 s, so its drop begins a new reconnect", () =>
+    Effect.gen(function* () {
+      const session = yield* readyLate(Duration.millis(10_200));
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 5n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 6n);
+    }),
+  );
+
+  it.effect("stops where it drops sooner, out of time, saying why it dropped", () =>
+    Effect.gen(function* () {
+      const session = yield* readyLate(Duration.seconds(8));
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      const error = Option.getOrUndefined(stopped)?.lastError;
+      const detail = error?.context.detail;
+      const why = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [
+          Option.getOrUndefined(stopped)?.generation,
+          error?.reason._tag,
+          ReactorError.is(why) ? why.reason._tag : why,
+        ],
+        [5n, "Timeout", "Disconnected"],
+      );
+    }),
+  );
+});
+
 layer(environment({ timing, reconnect: false }))("a dropped connection, reconnect off", (it) => {
   it.effect("stays down, and Reactor ends the session 30 s later", () =>
     Effect.gen(function* () {

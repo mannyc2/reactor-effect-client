@@ -34,15 +34,14 @@ export interface Options {
    */
   readonly connectTimeout?: Duration.Input | undefined;
   /**
-   * How long a reconnect may take, a session's own counted from the drop that began it, through
-   * the drops of connections that did not stay up 10 seconds; 30 seconds by default, the time
-   * Reactor keeps a session that has lost its last connection before it ends it. A connection a
-   * session's own reconnect made ready as the time ran out is left up, and the session stops
-   * trying if it drops in the 10 seconds after. The deadline cuts the negotiation, not the host's
-   * work on either side of it: making the connection's peer, which every shipped host does at
-   * once, and shutting down the peer it replaces, or its own after a failed attempt, which the
-   * native peer bounds by its `shutdownTimeout` (10 seconds by default) and the browser's does at
-   * once.
+   * How long a reconnect may take, a session's own counted from the drop that began it, through the
+   * drops of connections that did not stay up 10 seconds; 30 seconds by default, the time Reactor
+   * keeps a session that has lost its last connection before it ends it. A connection a session's
+   * own reconnect made ready as the time ran out is left up, and the session stops trying if it
+   * drops before it has been ready 10 seconds. The deadline cuts the negotiation, not the host's
+   * work on either side of it: making the connection's peer, which every shipped host does at once,
+   * and shutting down the peer it replaces, or its own after a failed attempt, which the native
+   * peer bounds by its `shutdownTimeout` (10 seconds by default) and the browser's does at once.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
   /**
@@ -55,20 +54,20 @@ export interface Options {
    * this client's protocol (`VersionMismatch`), or `reconnectTimeout` has passed. A refusal that
    * may lift is tried again, a 401 or 403 included, since the next attempt may carry a fresh token.
    * Each failed attempt is a `Diagnostic` event, and a reconnect that runs out of time stops with a
-   * `Timeout` `lastError` whose `Redacted` `context.detail` is the last attempt's failure. Each
-   * attempt is a new connection generation of the same session: it allocates nothing and never
-   * replays a command. By default the second attempt comes 250 ms after the first fails and each
-   * wait doubles, to at most 4 seconds, jittered by up to a fifth either way, and never sooner than
-   * a refusal's `Retry-After`. A schedule with no delay of its own tries again at once, for all of
-   * `reconnectTimeout`, each time with a new peer (a process of its own on the isolated native
-   * host), so space its attempts as the default does. The session reconnects in its acquisition's
-   * context, with the tracer, `ErrorReporter`s and clock `create` or `attach` ran with, and each
-   * attempt's `Session.reconnect` span begins a trace of its own, linked to the acquisition's.
-   * Reconnecting keeps a session alive, and billed, through its drops: an owned session its
-   * application never closed, or one a viewer holds after its owner has gone, runs on for as long
-   * as the process holding it does, to its cap if it has one. `false` leaves a dropped connection
-   * dropped until `session.reconnect`, so that Reactor ends a session 30 seconds after its last
-   * connection drops.
+   * `Timeout` `lastError` whose `Redacted` `context.detail` is the last attempt's failure, or why
+   * the connection ready as the time ran out dropped. Each attempt is a new connection generation
+   * of the same session: it allocates nothing and never replays a command. By default the second
+   * attempt comes 250 ms after the first fails and each wait doubles, to at most 4 seconds,
+   * jittered by up to a fifth either way, and never sooner than a refusal's `Retry-After`. A
+   * schedule with no delay of its own tries again at once, for all of `reconnectTimeout`, each time
+   * with a new peer (a process of its own on the isolated native host), so space its attempts as
+   * the default does. The session reconnects in its acquisition's context, with the tracer,
+   * `ErrorReporter`s and clock `create` or `attach` ran with, and each attempt's
+   * `Session.reconnect` span begins a trace of its own, linked to the acquisition's. Reconnecting
+   * keeps a session alive, and billed, through its drops: an owned session its application never
+   * closed, or one a viewer holds after its owner has gone, runs on for as long as the process
+   * holding it does, to its cap if it has one. `false` leaves a dropped connection dropped until
+   * `session.reconnect`, so that Reactor ends a session 30 seconds after its last connection drops.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
