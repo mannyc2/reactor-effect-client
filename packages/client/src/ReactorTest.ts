@@ -58,6 +58,12 @@ export const Fault = Schema.Union([
    * `session_limit`. What hosted Reactor answers a spent token is unobserved.
    */
   Schema.TaggedStruct("RepeatSession", nth),
+  /**
+   * `POST /sessions` allocates, and answers 200 with a descriptor that names
+   * no session, so the client cannot tell what it made. Whether hosted
+   * Reactor ever answers so is unobserved.
+   */
+  Schema.TaggedStruct("UnnamedAllocation", nth),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /**

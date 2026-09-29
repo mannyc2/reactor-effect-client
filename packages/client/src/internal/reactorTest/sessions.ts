@@ -585,7 +585,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
         yield* log({ sessionId: id, kind: "session", name: "created" });
         yield* later(yield* timing.delay("allocation"), activate(session));
-        return descriptor(id, "PENDING");
+        if ((yield* faults.trip((fault) => fault._tag === "UnnamedAllocation")) === undefined)
+          return descriptor(id, "PENDING");
+        const { session_id: _, ...unnamed } = descriptor(id, "PENDING");
+        return unnamed;
       }),
     read: (jwt: string | undefined, id: string) =>
       Effect.flatMap(owned(jwt, id, undefined, "key"), (session) =>
