@@ -4,7 +4,8 @@
  * ICE, offer, answer, ready) within its deadline. A failed attempt fails and
  * closes its generation; a reconnect replaces the previous one and never
  * replays a command. Once acquired, a session with a reconnect policy
- * reconnects each connection it drops on its own.
+ * reconnects each connection it drops on its own, and a reconnect asked for
+ * meanwhile joins that one.
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -14,6 +15,8 @@ import * as Effect from "effect/Effect";
 import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -71,18 +74,39 @@ type Attempt = "connect" | "reconnect" | "own";
 /** The sessions each attempt may begin a generation in. */
 const beginsFrom: Record<Attempt, (session: State) => boolean> = {
   connect: (session) => session.status === "idle",
-  reconnect: (session) => session.status === "ready" || session.status === "disconnected",
+  // While the session reconnects on its own, a reconnect asked for joins that one.
+  reconnect: (session) =>
+    (session.status === "ready" || session.status === "disconnected") && !session.reconnecting,
   own: (session) => session.status === "disconnected" && session.reconnecting,
 };
 
-/** Why `attempt` cannot begin from `session`: the session's own attempt is under way, say. */
+/** Why `attempt` cannot begin from `session`. */
 const refusal = (attempt: Attempt, session: State) =>
-  ReactorError.fromCode(
-    "InvalidState",
-    session.reconnecting
-      ? `${attempt} while the session reconnects on its own`
-      : `${attempt} while ${session.status}`,
-  );
+  ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
+
+/**
+ * Where a reconnect asked for stands at `session` once it has joined the session's own, which it
+ * found reconnecting in `from`: done once a connection after that drop is ready, failed once that
+ * reconnect stops or the session closes, and undecided until then. A state from before `from` is
+ * older than its drop, and decides nothing.
+ */
+const joined =
+  (from: State) =>
+  (session: State): Exit.Exit<void, ReactorError> | undefined => {
+    if (isClosing(session.status))
+      return Exit.fail(
+        ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" }),
+      );
+    const readyFrom = from.status === "disconnected" ? from.generation + 1n : from.generation;
+    if (session.status === "ready") return session.generation >= readyFrom ? Exit.void : undefined;
+    const stopped =
+      session.status === "disconnected" &&
+      !session.reconnecting &&
+      session.generation >= from.generation;
+    return stopped
+      ? Exit.fail(session.lastError ?? ReactorError.fromCode("Aborted", "reconnecting stopped"))
+      : undefined;
+  };
 
 /**
  * How long the session's own reconnect waits on a connection it made ready before it counts the
@@ -221,17 +245,32 @@ export const make = ({
     );
 
   /**
+   * A reconnect asked for while the session reconnects on its own, which it found doing so in
+   * `from`: it waits that reconnect out on `states`, every state since before it looked.
+   */
+  const join = (from: State, states: PubSub.Subscription<State>) =>
+    Stream.fromSubscription(states).pipe(
+      Stream.map(joined(from)),
+      Stream.filter(Predicate.isNotUndefined),
+      Stream.runHead,
+      Effect.flatMap(Option.getOrThrow),
+    );
+
+  /**
    * A new generation, with its event fiber; the previous one is retired. It takes the session
    * over in one step with its checks, so no two attempts share a generation and none begins once
    * the session closes. The session's own reconnect begins nothing once another attempt, a ready
-   * connection or the close has taken over. An attempt acquires it uninterruptibly, so every
-   * generation it claims is one the attempt fails and closes if it goes no further, a defect as
-   * it takes over included.
+   * connection or the close has taken over. A reconnect asked for while the session reconnects on
+   * its own begins nothing either: it joins that reconnect, watched from before it looks. An
+   * attempt acquires it uninterruptibly, so every generation it claims is one the attempt fails
+   * and closes if it goes no further, a defect as it takes over included.
    */
   const begin = Effect.fnUntraced(function* (attempt: Attempt) {
+    const states = attempt === "reconnect" ? yield* PubSub.subscribe(state.pubsub) : undefined;
     const session = yield* SubscriptionRef.get(state);
     const reconnect = attempt !== "connect";
     if (!beginsFrom[attempt](session)) {
+      if (states !== undefined && session.reconnecting) return { joins: join(session, states) };
       if (attempt === "own") return undefined;
       return yield* refusal(attempt, session);
     }
@@ -256,23 +295,28 @@ export const make = ({
       link: yield* Ref.make<Link>(newLink),
     };
     const previous = session.connection;
-    const claimed = yield* SubscriptionRef.modify(state, (held) => {
-      if (held.connection !== previous || !beginsFrom[attempt](held)) return [false, held] as const;
-      const next: State = {
-        ...held,
-        status: "connecting",
-        generation: c.generation,
-        connection: c,
-        lastError: undefined,
-        received: new Set(),
-        sampler: Stats.initialSampler,
-      };
-      return [true, next] as const;
-    });
-    if (!claimed) {
+    // The session as it was, if this could not take it over.
+    const unclaimed = yield* SubscriptionRef.modify(
+      state,
+      (held): readonly [State | undefined, State] => {
+        if (held.connection !== previous || !beginsFrom[attempt](held)) return [held, held];
+        const next: State = {
+          ...held,
+          status: "connecting",
+          generation: c.generation,
+          connection: c,
+          lastError: undefined,
+          received: new Set(),
+          sampler: Stats.initialSampler,
+        };
+        return [undefined, next];
+      },
+    );
+    if (unclaimed !== undefined) {
       yield* shutDown(scope, Exit.void);
+      if (states !== undefined && unclaimed.reconnecting) return { joins: join(unclaimed, states) };
       if (attempt === "own") return undefined;
-      return yield* refusal(attempt, yield* SubscriptionRef.get(state));
+      return yield* refusal(attempt, unclaimed);
     }
     // The previous generation is retired whatever happens, and a defect meanwhile fails and
     // closes this one.
@@ -417,7 +461,8 @@ export const make = ({
    * interrupt that comes while it begins lands in the negotiation, and still fails and closes it.
    * The session's own attempt that fails before it has a generation says why, as a failed
    * generation does: no caller hears of it otherwise. Its span begins a trace of its own, linked
-   * to the session's `acquisition`, which may have ended hours before.
+   * to the session's `acquisition`, which may have ended hours before. A reconnect asked for
+   * while the session reconnects on its own waits that reconnect out, and ends as it does.
    */
   const attempt = (kind: Attempt, acquisition?: Tracer.AnySpan) =>
     Effect.acquireUseRelease(
@@ -427,6 +472,7 @@ export const make = ({
       (c) =>
         Effect.gen(function* () {
           if (c === undefined) return;
+          if ("joins" in c) return yield* c.joins;
           const reconnect = kind !== "connect";
           yield* Effect.annotateCurrentSpan("reactor.connection.generation", c.generation);
           yield* negotiate(c, reconnect).pipe(
@@ -437,10 +483,11 @@ export const make = ({
           );
         }),
       (c, exit) =>
-        c === undefined || Exit.isSuccess(exit)
+        c === undefined || "joins" in c || Exit.isSuccess(exit)
           ? Effect.void
           : Effect.andThen(allocationUnknown, abandon(c, exit.cause)),
     ).pipe(
+      Effect.scoped,
       Effect.withSpan(
         kind === "connect" ? "Session.connect" : "Session.reconnect",
         kind === "own"
