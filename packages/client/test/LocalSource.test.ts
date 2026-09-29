@@ -14,7 +14,7 @@ import {
   Stream,
   SubscriptionRef,
 } from "effect";
-import { LocalSource, Playout, ReactorTest } from "../src/index.js";
+import { LocalSource, Playout, type ReactorError, ReactorTest } from "../src/index.js";
 
 const request = (prompt: string, seconds = 5) => ({ prompt, seconds });
 const tag = (key: string): Playout.ClipTag => ({ _tag: "Item", key: Playout.ItemKey.make(key) });
@@ -110,23 +110,42 @@ describe("LocalSource", () => {
       }),
   );
 
-  it.effect("makes its events die with what a hook threw, for every reader", () =>
+  it.effect("makes its events die with a hook's or a release's defect, for every reader", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const thrown = new Error("the renderer's own bug");
-      /** How `events` ends for a reader from before a hook throws, and for one from after. */
-      const ends = <E>(open: Effect.Effect<Playout.Source, E, Scope.Scope>) =>
+      /** How `events` ends for a reader from before clip "a" goes wrong, and for one from after. */
+      const ends = <E>(
+        open: Effect.Effect<Playout.Source, E, Scope.Scope>,
+        after?: (
+          source: Playout.Source,
+          clipId: string,
+        ) => Effect.Effect<void, ReactorError.CommandFailure>,
+      ) =>
         Effect.gen(function* () {
           const source = yield* open;
           const drain = source.events.pipe(Stream.runDrain, Effect.exit);
           const before = yield* drain.pipe(Effect.forkScoped({ startImmediately: true }));
           yield* source.setAutoplay(true);
-          yield* source.enqueue(request("a"), tag("a"));
+          const clipId = yield* source.enqueue(request("a"), tag("a"));
+          if (after !== undefined) yield* after(source, clipId);
           const early = yield* Fiber.join(before).pipe(Effect.timeoutOption("1 minute"));
           const late = yield* drain.pipe(Effect.timeoutOption("1 minute"));
           return [early, late];
         });
-      const endings = [
+      /** The defect `events` died with. */
+      const defect = (
+        ending: Option.Option<Exit.Exit<void, ReactorError.ReactorError>>,
+      ): unknown => {
+        if (Option.isNone(ending)) return assert.fail("the events never ended");
+        if (Exit.isSuccess(ending.value)) return assert.fail("the events ended without a failure");
+        const found = Cause.findDefect(ending.value.cause);
+        return Result.isSuccess(found)
+          ? found.success
+          : assert.fail(`the events ended with ${Cause.pretty(ending.value.cause)}`);
+      };
+      const presenting = yield* Deferred.make<void>();
+      const hooks = [
         ...(yield* ends(
           LocalSource.open({
             build: () => {
@@ -142,18 +161,34 @@ describe("LocalSource", () => {
             },
           }),
         )),
+        // A presentation that dies as it is stopped.
+        ...(yield* ends(
+          LocalSource.open({
+            build: () => Effect.succeed({ value: undefined }),
+            present: () =>
+              Deferred.succeed(presenting, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() => Effect.die(thrown)),
+              ),
+          }),
+          (source, clipId) => Effect.andThen(Deferred.await(presenting), source.stop(clipId)),
+        )),
       ];
-      for (const ending of endings) {
-        assert.isTrue(Option.isSome(ending), "the events never ended");
-        if (Option.isNone(ending)) continue;
-        assert.isTrue(Exit.isFailure(ending.value), "the events ended without a failure");
-        if (Exit.isSuccess(ending.value)) continue;
-        const defect = Cause.findDefect(ending.value.cause);
-        assert.isTrue(
-          Result.isSuccess(defect) && defect.success === thrown,
-          `the events ended with ${Cause.pretty(ending.value.cause)}`,
-        );
-      }
+      for (const ending of hooks) assert.strictEqual(defect(ending), thrown);
+      // A release that fails without a defect, joining a fiber that something else interrupted,
+      // loses the session too, rather than end playback unseen.
+      const releases = yield* ends(
+        LocalSource.open({
+          build: () =>
+            Effect.gen(function* () {
+              const helper = yield* Effect.forkDetach(Effect.never);
+              yield* Fiber.interrupt(helper);
+              yield* Effect.addFinalizer(() => Fiber.join(helper));
+              return { value: undefined };
+            }),
+        }),
+      );
+      for (const ending of releases) defect(ending);
     }),
   );
 
@@ -207,32 +242,42 @@ describe("LocalSource", () => {
     }),
   );
 
-  it.effect("hands present the value its build made and the length it built", () =>
-    Effect.gen(function* () {
-      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const presented = yield* Deferred.make<{
-        readonly seconds: number;
-        readonly value: string;
-      }>();
-      const source = yield* LocalSource.open({
-        build: (clip) =>
-          Effect.succeed({ value: `voiced ${clip.request.prompt}`, seconds: clip.seconds + 2.25 }),
-        present: (clip, value) =>
-          Effect.andThen(
-            Deferred.succeed(presented, { seconds: clip.seconds, value }),
-            Effect.sleep(Duration.seconds(clip.seconds)),
-          ),
-      });
-      yield* source.setAutoplay(true);
-      yield* source.enqueue(request("a", 5), tag("a"));
-      assert.deepStrictEqual(yield* Deferred.await(presented), {
-        seconds: 7.25,
-        value: "voiced a",
-      });
-    }),
+  it.effect(
+    "hands present the value its build made and the length it built, and fails a length that cannot play",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const presented = yield* Deferred.make<{
+          readonly seconds: number;
+          readonly value: string;
+        }>();
+        const source = yield* LocalSource.open({
+          build: (clip) =>
+            Effect.succeed({
+              value: `voiced ${clip.request.prompt}`,
+              seconds: clip.request.prompt === "unmeasured" ? Number.NaN : clip.seconds + 2.25,
+            }),
+          present: (clip, value) =>
+            Effect.andThen(
+              Deferred.succeed(presented, { seconds: clip.seconds, value }),
+              Effect.sleep(Duration.seconds(clip.seconds)),
+            ),
+        });
+        const events = yield* record(source);
+        yield* source.setAutoplay(true);
+        const unmeasured = yield* source.enqueue(request("unmeasured", 5), tag("unmeasured"));
+        yield* source.enqueue(request("a", 5), tag("a"));
+        assert.deepStrictEqual(yield* Deferred.await(presented), {
+          seconds: 7.25,
+          value: "voiced a",
+        });
+        yield* until(events, "the unmeasured clip's failure", (all) =>
+          all.some((event) => event._tag === "Failed" && event.clip.clipId === unmeasured),
+        );
+      }),
   );
 
-  it.effect("closes the scope a clip was built in once the clip leaves the source", () =>
+  it.effect("closes the scope a clip was built and played in once the clip leaves the source", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const released = yield* SubscriptionRef.make<ReadonlyArray<string>>([]);
@@ -250,6 +295,9 @@ describe("LocalSource", () => {
           }),
         present: (clip, value) =>
           Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              SubscriptionRef.update(released, (all) => [...all, `${value} played`]),
+            );
             const open = !(yield* SubscriptionRef.get(released)).includes(value);
             yield* Deferred.succeed(openWhilePlaying, open);
             yield* Effect.sleep(Duration.seconds(clip.seconds));
@@ -269,8 +317,82 @@ describe("LocalSource", () => {
       yield* source.play(a ?? "");
       yield* until(released, "the played clip's release", (all) => all.includes("a"));
       assert.isTrue(yield* Deferred.await(openWhilePlaying), "its scope closed before it played");
+      assert.deepStrictEqual(yield* SubscriptionRef.get(released), ["bad", "r", "a played", "a"]);
       yield* Scope.close(scope, Exit.void);
-      assert.deepStrictEqual(yield* SubscriptionRef.get(released), ["bad", "r", "a", "s"]);
+      assert.deepStrictEqual(yield* SubscriptionRef.get(released), [
+        "bad",
+        "r",
+        "a played",
+        "a",
+        "s",
+      ]);
     }),
+  );
+
+  it.effect(
+    "closes in order in any scope: playback stops, each clip is released in full, and a stop in flight returns",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const log = yield* SubscriptionRef.make<ReadonlyArray<string>>([]);
+        const note = (entry: string) => SubscriptionRef.update(log, (all) => [...all, entry]);
+
+        // Closed while a stop waits on a presentation that takes a second to stop, in a scope
+        // that runs its finalizers all at once, as a ManagedRuntime's does.
+        const playing = yield* Deferred.make<void>();
+        const parallel = yield* Scope.make("parallel");
+        const stopping = yield* LocalSource.open({
+          build: (clip) =>
+            Effect.as(
+              Effect.addFinalizer(() => note(`released ${clip.request.prompt}`)),
+              {
+                value: clip.request.prompt,
+              },
+            ),
+          present: (_clip, prompt) =>
+            Deferred.succeed(playing, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Effect.andThen(Effect.sleep("1 second"), note(`stopped ${prompt}`)),
+              ),
+            ),
+        }).pipe(Scope.provide(parallel));
+        yield* stopping.setAutoplay(true);
+        const a = yield* stopping.enqueue(request("a"), tag("a"));
+        yield* Deferred.await(playing);
+        const stop = yield* stopping.stop(a).pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Scope.close(parallel, Exit.void);
+        const stopped = yield* Fiber.await(stop).pipe(Effect.timeoutOption("1 minute"));
+        assert.isTrue(Option.isSome(stopped), "the stop never returned");
+        assert.deepStrictEqual(yield* SubscriptionRef.get(log), ["stopped a", "released a"]);
+
+        // Closed while a clip that ended is being released, which takes a second.
+        const scope = yield* Scope.make();
+        const releasing = yield* LocalSource.open({
+          build: (clip) =>
+            Effect.gen(function* () {
+              const prompt = clip.request.prompt;
+              yield* Effect.addFinalizer(() => note(`released ${prompt}`));
+              yield* Effect.addFinalizer(() =>
+                note(`flushing ${prompt}`).pipe(
+                  Effect.andThen(Effect.sleep("1 second")),
+                  Effect.andThen(note(`flushed ${prompt}`)),
+                ),
+              );
+              return { value: prompt };
+            }),
+        }).pipe(Scope.provide(scope));
+        yield* releasing.setAutoplay(true);
+        yield* releasing.enqueue(request("b", 1), tag("b"));
+        yield* until(log, "b's release", (all) => all.includes("flushing b"));
+        yield* Scope.close(scope, Exit.void);
+        assert.deepStrictEqual(yield* SubscriptionRef.get(log), [
+          "stopped a",
+          "released a",
+          "flushing b",
+          "flushed b",
+          "released b",
+        ]);
+      }),
   );
 });

@@ -11,16 +11,16 @@
  * So once `enqueue` returns, every `State` lists the clip until its `Ended` or
  * `Failed`, or until it is removed, and none lists it after.
  *
- * A clip's `build` runs in a scope the clip owns. The scope closes once the
- * clip leaves the source: it ended, failed, was stopped or removed, or the
- * source closed. Its finalizers release what the build made, which stays
- * usable until then.
+ * A clip's `build` and `present` run in a scope the clip owns. The scope
+ * closes once the clip leaves the source: it ended, failed, was stopped or
+ * removed, or the source closed. Its finalizers release what the hooks made,
+ * which stays usable until then, and they run in full once they start.
  *
  * A hook that fails with the application's own error fails that clip alone:
  * `Failed` with the library's `message`, and the error itself, pretty-printed,
- * in `provider`. A hook that dies or throws is a bug the source cannot recover
- * from: the source stops, `events` dies with that defect for every reader, and
- * the playout replaces the session.
+ * in `provider`. A hook that dies or throws, or a finalizer that fails, is a
+ * bug the source cannot recover from: the source stops, `events` dies with
+ * that defect for every reader, and the playout replaces the session.
  */
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -28,6 +28,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
@@ -59,7 +60,11 @@ export interface LocalClip {
 export interface Rendered<A> {
   /** Handed to `present` when the clip plays. */
   readonly value: A;
-  /** The built length in seconds, when it differs from the requested one. */
+  /**
+   * The built length in seconds, when it differs from the requested one. It
+   * must be positive and finite, or the clip fails, since a playout times its
+   * plan by the lengths its clips report.
+   */
   readonly seconds?: number | undefined;
 }
 
@@ -78,12 +83,13 @@ export type Options<A = void, E = never, R = never> =
       /** Renders a clip before it is Ready, in a scope the clip owns. */
       readonly build: (clip: LocalClip) => Effect.Effect<Rendered<A>, E, R | Scope.Scope>;
       /**
-       * Plays a clip, given the value its build made; `clip.seconds` is its
-       * built length. The clip ends when this completes, or when it is
-       * stopped, which interrupts it. Without it a clip plays for its length.
+       * Plays a clip, given the value its build made, in the same scope;
+       * `clip.seconds` is its built length. The clip ends when this completes,
+       * or when it is stopped, which interrupts it. Without it a clip plays
+       * for its length.
        */
       readonly present?:
-        | ((clip: LocalClip, value: A, sink: Sink) => Effect.Effect<void, E, R>)
+        | ((clip: LocalClip, value: A, sink: Sink) => Effect.Effect<void, E, R | Scope.Scope>)
         | undefined;
       /**
        * The session's granted length from when it opens, as a capped paid
@@ -93,6 +99,8 @@ export type Options<A = void, E = never, R = never> =
     }
   | {
       readonly build?: undefined;
+      /** A presentation plays what a build made, so it comes only with `build`. */
+      readonly present?: undefined;
       /** Build time per second of clip; zero by default. */
       readonly buildRatio?: number | undefined;
       /** The session's granted length from when it opens; unending by default. */
@@ -166,6 +174,12 @@ const words = (cause: Cause.Cause<unknown>) => cause.pipe(Cause.pretty, Redacted
 /** A clip without a presentation plays for its length. */
 const played = (clip: LocalClip): Effect.Effect<void> =>
   Effect.sleep(Duration.seconds(clip.seconds));
+/**
+ * Closes a clip's scope, uninterruptibly: a scope counts as closed before its
+ * finalizers run, so an interruption would skip the rest of them for good.
+ */
+const release = (scope: Scope.Closeable, exit: Exit.Exit<unknown, unknown>) =>
+  Effect.uninterruptible(Scope.close(scope, exit));
 
 const make = Effect.fnUntraced(function* <A, E, R>(
   build: Build<A, E, R>,
@@ -179,9 +193,12 @@ const make = Effect.fnUntraced(function* <A, E, R>(
   if (Duration.isZero(lifetime)) return yield* invalid("LocalSource lifetime must be positive");
   const hex = (yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(16);
   const sessionId = `local-${hex.padStart(14, "0")}`;
-  // Clip scopes live in their own scope, made before the fibers that use them, so a closing
-  // source stops its presentation before it releases the clips.
-  const clips = yield* Scope.fork(yield* Effect.scope);
+  // What the source owns lives in a sequential scope of its own, which the caller's scope closes
+  // as one, whatever its own order: its finalizers run in the reverse of the order they are made
+  // in below, so the source stops, then its fibers end with their presentations, and only then
+  // are the clips released.
+  const owned = yield* Scope.fork(yield* Effect.scope, "sequential");
+  const clips = yield* Scope.fork(owned);
   const lock = yield* Semaphore.make(1);
   const state = yield* SubscriptionRef.make<Local<A>>({
     enqueued: 0,
@@ -194,7 +211,7 @@ const make = Effect.fnUntraced(function* <A, E, R>(
     lost: undefined,
   });
   const hub = yield* PubSub.unbounded<Take.Take<SourceEvent, ReactorError>>();
-  /** Done once the session is lost, which stops the build slot and playback. */
+  /** Done once the source stops, lost or closed: the build slot and playback end, and so does a `stop`. */
   const stopped = yield* Deferred.make<void>();
   const video = yield* PubSub.sliding<VideoFrame>(256);
   const audio = yield* PubSub.sliding<AudioFrame>(512);
@@ -224,10 +241,12 @@ const make = Effect.fnUntraced(function* <A, E, R>(
       ),
     );
   /**
-   * Loses the session for good to a defect: `events` dies with it after
-   * everything published before, and the source stops. Of the cause, only the
-   * defects go out: `events` can fail with the library's errors but not the
-   * application's, and an interruption inside a hook is not one of `events`.
+   * Loses the session for good: `events` dies after everything published
+   * before, and the source stops. Of the cause, only the defects go out:
+   * `events` can fail with the library's errors but not the application's, and
+   * an interruption inside a hook is not one of `events`. A cause without a
+   * defect, such as a finalizer's own interruption, goes out as the defect
+   * Effect squashes it to.
    */
   const lose = (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
     lock.withPermit(
@@ -235,7 +254,9 @@ const make = Effect.fnUntraced(function* <A, E, R>(
         Effect.gen(function* () {
           const local = yield* SubscriptionRef.get(state);
           if (local.lost !== undefined) return;
-          const lost = Cause.fromReasons<never>(cause.reasons.filter(Cause.isDieReason));
+          const dies = cause.reasons.filter(Cause.isDieReason);
+          const lost =
+            dies.length > 0 ? Cause.fromReasons<never>(dies) : cause.pipe(Cause.squash, Cause.die);
           yield* PubSub.publish(hub, Exit.failCause(lost));
           yield* SubscriptionRef.set(state, { ...local, lost });
           yield* Deferred.succeed(stopped, undefined);
@@ -250,22 +271,21 @@ const make = Effect.fnUntraced(function* <A, E, R>(
       Stream.runHead,
       Effect.map(Option.getOrThrow),
     );
-  /** `effect`, where anything but an interruption loses the session. */
-  const guard = <X, Y, Z>(effect: Effect.Effect<X, Y, Z>) =>
-    Effect.catchCauseIf(effect, (cause) => !Cause.hasInterruptsOnly(cause), lose);
   /**
-   * Runs `loop` until the source closes or its session is lost; a defect in
-   * it, a hook's included, loses the session.
+   * `effect`, where any failure loses the session. Its fiber's own
+   * interruption is not one: Effect runs no handler for it.
    */
+  const guard = <X, Y, Z>(effect: Effect.Effect<X, Y, Z>) => Effect.catchCause(effect, lose);
+  /** Runs `loop` until it is interrupted; a failure in it, a hook's defect included, loses the session. */
   const keep = <X>(loop: Effect.Effect<void, X, R>) =>
-    loop.pipe(Effect.forever, guard, Effect.raceFirst(Deferred.await(stopped)), Effect.forkScoped);
+    loop.pipe(Effect.forever, guard, Effect.forkIn(owned));
   const without =
     (clipId: string) =>
     <C extends LocalClip>(values: ReadonlyArray<C>): ReadonlyArray<C> =>
       values.filter((value) => value.clipId !== clipId);
 
   // One build slot: the head of the building queue builds, then waits Ready unless it was removed.
-  yield* keep(
+  const building = yield* keep(
     Effect.gen(function* () {
       const next = yield* first((local) => local.building[0]);
       const scope = yield* Scope.fork(clips);
@@ -280,41 +300,37 @@ const make = Effect.fnUntraced(function* <A, E, R>(
         building: without(next.clipId)(local.building),
         popped: new Set([...local.popped].filter((id) => id !== next.clipId)),
       });
-      if (Exit.isFailure(built)) {
-        // A removed clip leaves without a failure, as it would have without its build.
-        yield* modify((local) => [
-          undefined,
-          leaves(local),
-          local.popped.has(next.clipId)
-            ? []
-            : [
-                {
-                  _tag: "Failed",
-                  clip: sourceClip(next),
-                  message: "the local build failed",
-                  provider: words(built.cause),
-                },
-              ],
-        ]);
-        return yield* Scope.close(scope, built);
-      }
-      const ready: Built<A> = {
-        ...next,
-        seconds: built.value.seconds ?? next.seconds,
-        value: built.value.value,
-        scope,
-      };
+      /** Fails the clip; a removed one leaves without a failure, as it would have without its build. */
+      const fails = (message: string, provider: Redacted.Redacted<string>) =>
+        Effect.andThen(
+          modify((local) => [
+            undefined,
+            leaves(local),
+            local.popped.has(next.clipId)
+              ? []
+              : [{ _tag: "Failed", clip: sourceClip(next), message, provider }],
+          ]),
+          release(scope, built),
+        );
+      if (Exit.isFailure(built)) return yield* fails("the local build failed", words(built.cause));
+      const seconds = built.value.seconds ?? next.seconds;
+      if (!(Number.isFinite(seconds) && seconds > 0))
+        return yield* fails(
+          "the local build gave a length that is not a positive, finite number of seconds",
+          Redacted.make(String(seconds)),
+        );
+      const ready: Built<A> = { ...next, seconds, value: built.value.value, scope };
       const popped = yield* modify((local) =>
         local.popped.has(next.clipId)
           ? [true, leaves(local)]
           : [false, { ...leaves(local), ready: [...local.ready, ready] }],
       );
-      if (popped) yield* Scope.close(scope, Exit.void);
+      if (popped) yield* release(scope, Exit.void);
     }),
   );
 
   // Playback: a clip plays once nothing else does, as `nextToPlay` picks it.
-  yield* keep(
+  const playback = yield* keep(
     Effect.gen(function* () {
       yield* first(nextToPlay);
       const stop = yield* Deferred.make<void>();
@@ -333,18 +349,24 @@ const make = Effect.fnUntraced(function* <A, E, R>(
         ];
       });
       if (clip === undefined) return;
-      const presented = yield* Effect.raceFirst(
-        Effect.exit(Effect.suspend(() => present(clipOf(clip), clip.value, sink))),
-        Effect.as(Deferred.await(stop), undefined),
+      const presentation = yield* Effect.suspend(() =>
+        present(clipOf(clip), clip.value, sink),
+      ).pipe(Scope.provide(clip.scope), Effect.forkChild());
+      const stopping = yield* Effect.raceFirst(
+        Effect.as(Fiber.await(presentation), false),
+        Effect.as(Deferred.await(stop), true),
       );
-      if (presented !== undefined && Exit.isFailure(presented) && Cause.hasDies(presented.cause))
+      // A stopped presentation is interrupted and waited for, so a defect as it stops still counts.
+      if (stopping) yield* Fiber.interrupt(presentation);
+      const presented = yield* Fiber.await(presentation);
+      if (Exit.isFailure(presented) && Cause.hasDies(presented.cause))
         return yield* Effect.failCause(presented.cause);
       const ended: SourceEvent =
-        presented === undefined || Exit.isSuccess(presented)
+        stopping || Exit.isSuccess(presented)
           ? {
               _tag: "Ended",
               clip: sourceClip(clip),
-              termination: presented === undefined ? "stopped" : "finished",
+              termination: stopping ? "stopped" : "finished",
             }
           : {
               _tag: "Failed",
@@ -353,9 +375,19 @@ const make = Effect.fnUntraced(function* <A, E, R>(
               provider: words(presented.cause),
             };
       yield* modify((local) => [undefined, { ...local, playing: undefined }, [ended]]);
-      yield* Scope.close(clip.scope, presented ?? Exit.void);
+      yield* release(clip.scope, presented);
     }),
   );
+  // Once the source stops, the build slot and playback end, and a presentation stops with its
+  // playback. The fibers are interrupted rather than raced against the signal: in Effect
+  // 4.0.0-rc.117, a race whose own fiber is interrupted while that fiber is running can leave the
+  // losing side running, unwaited.
+  yield* Deferred.await(stopped).pipe(
+    Effect.andThen(Fiber.interruptAll([building, playback])),
+    Effect.forkIn(owned),
+  );
+  // Made last, so it runs first as the source closes: a `stop` waiting on playback returns.
+  yield* Scope.addFinalizer(owned, Deferred.succeed(stopped, undefined));
 
   const source: Source = {
     sessionId,
@@ -418,8 +450,8 @@ const make = Effect.fnUntraced(function* <A, E, R>(
           case "Refused":
             return yield* refused("pop", removal.message);
           case "Released":
-            // A finalizer that dies is the renderer's bug, and loses the session as a hook's would.
-            return yield* guard(Scope.close(removal.clip.scope, Exit.void));
+            // A finalizer that fails is the renderer's bug, and loses the session as a hook's would.
+            return yield* guard(release(removal.clip.scope, Exit.void));
           case "Popped":
             return;
         }
@@ -446,9 +478,10 @@ const make = Effect.fnUntraced(function* <A, E, R>(
         if (playing?.clip.clipId !== clipId) return;
         yield* Deferred.succeed(playing.stop, undefined);
         // It has ended once playback takes it off, after its `Ended` went out, or once the
-        // session is lost, when playback has stopped for good.
-        yield* first((local) =>
-          local.playing?.clip.clipId === clipId && local.lost === undefined ? undefined : true,
+        // source stopped, lost or closed, when nothing plays any more.
+        yield* Effect.raceFirst(
+          first((local) => (local.playing?.clip.clipId === clipId ? undefined : true)),
+          Deferred.await(stopped),
         );
       }),
     play: (clipId) =>
@@ -470,9 +503,10 @@ const make = Effect.fnUntraced(function* <A, E, R>(
 
 /**
  * A local source in the caller's scope, whose hooks run with the services the
- * caller has; closing the scope stops its fibers, then closes every clip's
- * scope. It fails with `InvalidInput` for a `lifetime` that is not a positive,
- * finite duration, or a `buildRatio` that is negative or not finite.
+ * caller has. Closing the scope stops the source, waits for its presentation
+ * to stop, then releases every clip. It fails with `InvalidInput` for a
+ * `lifetime` that is not a positive, finite duration, or a `buildRatio` that
+ * is negative or not finite.
  */
 export const open = <A = void, E = never, R = never>(
   options?: Options<A, E, R>,
