@@ -1532,15 +1532,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * After a failed setup that counts, once `maxSetupFailures` do: with no
    * session holding the air, the playout fails. While `air` holds it, opening
    * pauses until it no longer does, when one more open is tried once the last
-   * failure's wait is over. One that doesn't count is asked again after its delay.
+   * failure's wait is over.
    */
-  const pauseOrFail = (
-    reason: string,
-    cause: "open" | "lost",
-    counted: boolean,
-    air: Session | undefined,
-  ): void => {
-    if (!counted || state.countedFailures < config.maxSetupFailures) return;
+  const pauseOrFail = (reason: string, cause: "open" | "lost", air: Session | undefined): void => {
+    if (state.countedFailures < config.maxSetupFailures) return;
     if (holding(air)) state = { ...state, openingPaused: true };
     else actions.push({ _tag: "Fail", reason, cause });
   };
@@ -1604,7 +1599,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           consecutive,
         },
       });
-      pauseOrFail(reason, "lost", true, state.air === sessionId ? undefined : session(state.air));
+      pauseOrFail(reason, "lost", state.air === sessionId ? undefined : session(state.air));
     }
     state = {
       ...state,
@@ -1873,7 +1868,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
       if (input.fatal) actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
-      else pauseOrFail(input.reason, "open", counted, session(state.air));
+      // One that doesn't count is asked again after its delay, even once those that do ran out.
+      else if (counted) pauseOrFail(input.reason, "open", session(state.air));
       break;
     }
     case "Source": {
