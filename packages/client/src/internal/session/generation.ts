@@ -95,15 +95,19 @@ export const make = (core: Core) => {
     );
 
   /**
-   * Reports what `c`'s host died of where nothing can fail for it, as it fences or shuts down the
-   * peer or stops a track: the host's own failure, which such an effect dies with, is a
-   * Diagnostic on `c`'s generation, and any other defect is reported as a bug.
+   * Reports what a host died of where nothing can fail for it, as it fences or shuts down a peer
+   * or stops a track: the host's own failure, which such an effect dies with, is a Diagnostic on
+   * `generation`, the session's current one when omitted, and any other defect is reported as a
+   * bug.
    */
-  const reportHost = Effect.fnUntraced(function* (c: Connection, cause: Cause.Cause<unknown>) {
+  const reportHost = Effect.fnUntraced(function* (
+    cause: Cause.Cause<unknown>,
+    generation?: bigint,
+  ) {
     const dies = cause.reasons.filter(Cause.isDieReason);
     for (const { defect } of dies)
       if (ReactorError.is(defect))
-        yield* publish({ _tag: "Diagnostic", error: defect }, c.generation);
+        yield* publish({ _tag: "Diagnostic", error: defect }, generation);
     const bugs = dies.filter(({ defect }) => !ReactorError.is(defect));
     if (bugs.length > 0) yield* ErrorReporter.report(Cause.fromReasons(bugs));
   });
@@ -155,7 +159,7 @@ export const make = (core: Core) => {
       yield* publish({ _tag: "Status", status: "disconnected" }, c.generation);
       yield* publish({ _tag: "Diagnostic", error }, c.generation);
     }
-    if (Exit.isFailure(host)) yield* reportHost(c, host.cause);
+    if (Exit.isFailure(host)) yield* reportHost(host.cause, c.generation);
   }, Effect.uninterruptible);
 
   /** A task of `c`'s whose failure fails `c`; a defect is a bug and stays one. */

@@ -186,16 +186,25 @@ export const make = ({
     }),
   );
 
-  /** Fails `c` for `cause`, the attempt's own failure if it has one, and closes it. */
+  /**
+   * Closes a peer's `scope` with `exit`. What its host dies of as it shuts the peer down is no
+   * attempt's to fail: it is reported on `generation`, the session's current one when omitted.
+   */
+  const shutDown = (
+    scope: Scope.Closeable,
+    exit: Exit.Exit<unknown, unknown>,
+    generation?: bigint,
+  ) => Scope.close(scope, exit).pipe(Effect.catchCause((cause) => reportHost(cause, generation)));
+
+  /**
+   * Fails `c` for `cause`, the attempt's own failure if it has one, and closes it: the attempt
+   * fails with that alone, and its host's shutdown is reported on `c`'s generation.
+   */
   const abandon = (c: Connection, cause: Cause.Cause<ReactorError>) =>
     fail(
       c,
       failureOr(() => ReactorError.fromCode("Aborted", "connection attempt stopped"))(cause),
-    ).pipe(Effect.ensuring(Scope.close(c.scope, Exit.void)));
-
-  /** Closes `c`'s scope, reporting what its host died of as it shut down. */
-  const shutDown = (c: Connection) =>
-    Scope.close(c.scope, Exit.void).pipe(Effect.catchCause((cause) => reportHost(c, cause)));
+    ).pipe(Effect.ensuring(shutDown(c.scope, Exit.void, c.generation)));
 
   /**
    * Retires `previous` for the generation that replaced it. Its host's shutdown is not the new
@@ -203,7 +212,7 @@ export const make = ({
    */
   const retire = (previous: Connection) =>
     fail(previous, ReactorError.fromCode("Disconnected", "connection retired for reconnect")).pipe(
-      Effect.ensuring(shutDown(previous)),
+      Effect.ensuring(shutDown(previous.scope, Exit.void, previous.generation)),
     );
 
   /**
@@ -232,7 +241,7 @@ export const make = ({
       });
     const scope = yield* Scope.fork(root);
     const peer = yield* Scope.provide(peers.make, scope).pipe(
-      Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
+      Effect.onError((cause) => shutDown(scope, Exit.failCause(cause))),
     );
     const c: Connection = {
       generation: session.generation + 1n,
@@ -259,7 +268,7 @@ export const make = ({
       return [true, next] as const;
     });
     if (!claimed) {
-      yield* Scope.close(scope, Exit.void);
+      yield* shutDown(scope, Exit.void);
       if (attempt === "own") return undefined;
       const held = yield* SubscriptionRef.get(state);
       return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${held.status}`);
@@ -390,9 +399,9 @@ export const make = ({
   });
 
   /**
-   * A connection attempt: a failed one leaves its generation failed and closed. The generation is
-   * acquired and released around its negotiation, so an interrupt that comes while it begins
-   * lands in the negotiation, and still fails and closes it.
+   * A connection attempt: a failed one fails with its own failure, and leaves its generation
+   * failed and closed. The generation is acquired and released around its negotiation, so an
+   * interrupt that comes while it begins lands in the negotiation, and still fails and closes it.
    */
   const attempt = (kind: Attempt) =>
     Effect.acquireUseRelease(

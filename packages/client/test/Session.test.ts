@@ -9,6 +9,7 @@ import {
   Duration,
   Effect,
   ErrorReporter,
+  Exit,
   Fiber,
   FileSystem,
   Inspectable,
@@ -441,8 +442,11 @@ layer(
   );
 });
 
-/** ReactorTest's peers, but closing the first one dies with `defect`, as a host's close can. */
-const dyingShutdown = (defect: unknown) =>
+/**
+ * ReactorTest's peers, but shutting down peer `which`, counted from 0, dies with each of
+ * `defects`, as a host's shutdown can.
+ */
+const dyingShutdown = (defects: ReadonlyArray<unknown>, which = 0) =>
   Layer.effect(
     PeerFactory,
     Effect.gen(function* () {
@@ -452,8 +456,8 @@ const dyingShutdown = (defect: unknown) =>
         check: peers.check,
         make: Effect.gen(function* () {
           const peer = yield* peers.make;
-          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) === 0)
-            yield* Effect.addFinalizer(() => Effect.die(defect));
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) === which)
+            for (const defect of defects) yield* Effect.addFinalizer(() => Effect.die(defect));
           return peer;
         }),
       });
@@ -473,6 +477,23 @@ const notices = (session: Session) =>
     ),
   );
 
+/** Reporters that keep each bug reported to them, and the bugs they kept. */
+const keepingBugs = () => {
+  const bugs: Array<unknown> = [];
+  const reporter = ErrorReporter.make(({ cause }) => {
+    bugs.push(Cause.squash(cause));
+  });
+  return { bugs, reporters: new Set([reporter]) };
+};
+
+/** Each reason `exit` failed for: a failure's own reason, or `Die` or `Interrupt`. */
+const reasonsOf = (exit: Exit.Exit<unknown, { readonly reason: { readonly _tag: string } }>) =>
+  Exit.isSuccess(exit)
+    ? []
+    : exit.cause.reasons.map((reason) =>
+        Cause.isFailReason(reason) ? reason.error.reason._tag : reason._tag,
+      );
+
 /**
  * A session whose connection drops, until it is ready again or 30 s have passed: where it ended,
  * what it reported meanwhile, and what was reported of it as a bug.
@@ -481,12 +502,9 @@ const afterDrop = Effect.gen(function* () {
   yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
   const test = yield* ReactorTest.ReactorTest;
   yield* test.inject(drop);
-  const bugs: Array<unknown> = [];
-  const reporter = ErrorReporter.make(({ cause }) => {
-    bugs.push(Cause.squash(cause));
-  });
+  const { bugs, reporters } = keepingBugs();
   const session = yield* connect.pipe(
-    Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])),
+    Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
   );
   const seen = yield* (yield* notices(session)).pipe(
     Stream.takeUntil(([what, generation]) => what === "ready" && generation === 2n),
@@ -507,7 +525,7 @@ const joinOutlived = ReactorError.fromCode(
 layer(
   Reactor.layer().pipe(
     Layer.provideMerge(Coordinator.layer()),
-    Layer.provideMerge(dyingShutdown(joinOutlived)),
+    Layer.provideMerge(dyingShutdown([joinOutlived])),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   ),
@@ -538,7 +556,7 @@ const shutdownBug = new Error("a host's shutdown bug");
 layer(
   Reactor.layer().pipe(
     Layer.provideMerge(Coordinator.layer()),
-    Layer.provideMerge(dyingShutdown(shutdownBug)),
+    Layer.provideMerge(dyingShutdown([shutdownBug])),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   ),
@@ -635,6 +653,151 @@ layer(
         ]),
       );
       assert.deepStrictEqual(bugs, [fenceBug]);
+    }),
+  );
+});
+
+// A reconnect is refused, and its own peer's host fails to shut down, with a bug besides.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([joinOutlived, shutdownBug], 1)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a refused reconnect whose peer dies as it shuts down", (it) => {
+  it.effect("fails with the refusal alone, and reports the host after it", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1 });
+      const session = yield* connect;
+      const observed = yield* notices(session);
+      const { bugs, reporters } = keepingBugs();
+      const refused = yield* Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(refused), ["Http"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+      const seen = yield* observed.pipe(
+        Stream.takeUntil(([what]) => what === "Shutdown"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 second"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["disconnected", 2n],
+          ["Http", 2n],
+          ["Shutdown", 2n],
+        ]),
+      );
+    }),
+  );
+});
+
+// A session's first connection is refused, and its peer dies of a bug as it shuts down.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([shutdownBug])),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a refused connection whose peer dies of a bug as it shuts down", (it) => {
+  it.effect("fails the acquisition with the refusal, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseConnect", nth: 1 });
+      const { bugs, reporters } = keepingBugs();
+      const refused = yield* Effect.exit(connect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(refused), ["Http"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+    }),
+  );
+});
+
+/**
+ * ReactorTest's peers, but making peer `which`, counted from 0, fails with `error` once it has
+ * registered a shutdown that dies with `defect`.
+ */
+const halfMade = (which: number, error: ReactorError, defect: unknown) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) !== which)
+            return yield* peers.make;
+          yield* Effect.addFinalizer(() => Effect.die(defect));
+          return yield* error;
+        }),
+      });
+    }),
+  );
+
+// A reconnect's host fails to make its peer, and dies of a bug as what it made shuts down.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(
+      halfMade(1, ReactorError.fromCode("Native", "peer allocation failed"), shutdownBug),
+    ),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host fails to make its peer, and dies of a bug as it shuts it down", (it) => {
+  it.effect("fails with the host's failure alone, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const failed = yield* Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      assert.deepStrictEqual(reasonsOf(failed), ["Native"]);
+      assert.deepStrictEqual(bugs, [shutdownBug]);
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual([snapshot.status, snapshot.generation], ["ready", 1n]);
+    }),
+  );
+});
+
+// Two reconnects begin half a second apart, each with a peer that takes a second to make: the
+// later one finds the session taken over, and its unused peer dies of a bug as it shuts down.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown([shutdownBug], 2)),
+    Layer.provideMerge(slowPeers("1 second")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect overtaken by another, whose unused peer dies of a bug as it shuts down", (it) => {
+  it.effect("fails as overtaken, and reports the defect", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const session = yield* connect;
+      const { bugs, reporters } = keepingBugs();
+      const reconnect = Effect.exit(session.reconnect).pipe(
+        Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
+      );
+      const first = yield* Effect.forkChild(reconnect);
+      yield* Effect.sleep("500 millis");
+      const second = yield* reconnect;
+      assert.deepStrictEqual(
+        [reasonsOf(yield* Fiber.join(first)), reasonsOf(second)],
+        [[], ["InvalidState"]],
+      );
+      assert.deepStrictEqual(bugs, [shutdownBug]);
     }),
   );
 });
