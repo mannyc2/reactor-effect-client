@@ -69,8 +69,8 @@ export interface Options {
   /**
    * How long the source waits, from a drop, for its session to reconnect and H3 to be read again
    * before it counts itself lost; 20 seconds by default. The session reconnects itself: a session
-   * that does not (`Reactor.Options.reconnect` is `false`), or has stopped trying, loses the
-   * source at once.
+   * that does not (`Reactor.Options.reconnect` is `false`, or content moderation ended it), or has
+   * stopped trying, loses the source at once, with no `Reconnecting`.
    */
   readonly recovery?: Duration.Input | undefined;
 }
@@ -329,23 +329,35 @@ const fromSession = Effect.fnUntraced(function* (
       Stream.runHead,
       Effect.flatMap(Option.getOrThrow),
     );
-  /** A reader's report of the recovery from `from` on; `past` keeps where it ended. */
+  /**
+   * A reader's report of the recovery from `from` on; `past` keeps where it ended. A recovery the
+   * session cannot make is the source's loss alone: no `Reconnecting` comes before it.
+   */
   const reconnect = (
     from: bigint,
     past: Ref.Ref<bigint>,
   ): Stream.Stream<SourceEvent, ReactorError> =>
-    Stream.concat(
-      Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
-      Stream.fromIterableEffect(
-        Effect.gen(function* () {
-          const recovered = yield* recoveredFrom(from);
-          yield* Ref.set(past, recovered.to);
-          return [
-            { _tag: "Reconnected", afterMillis: recovered.afterMillis },
-            { _tag: "State", state: stateOf(yield* provider.snapshot) },
-          ] satisfies ReadonlyArray<SourceEvent>;
-        }),
-      ),
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const outcome = Stream.fromIterableEffect(
+          Effect.gen(function* () {
+            const recovered = yield* recoveredFrom(from);
+            yield* Ref.set(past, recovered.to);
+            return [
+              { _tag: "Reconnected", afterMillis: recovered.afterMillis },
+              { _tag: "State", state: stateOf(yield* provider.snapshot) },
+            ] satisfies ReadonlyArray<SourceEvent>;
+          }),
+        );
+        // A reader can see the drop after the source has recovered from it.
+        const held = yield* SubscriptionRef.get(recoveries);
+        const lasting =
+          !held.recovered.some((each) => each.to >= from) &&
+          unrecoverable(yield* session.snapshot) !== undefined;
+        return lasting
+          ? outcome
+          : Stream.concat(Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }), outcome);
+      }),
     );
   /** A reader's report of a drop of `generation`, unless a recovery it reported came back past it. */
   const dropped = (generation: bigint, past: Ref.Ref<bigint>) =>

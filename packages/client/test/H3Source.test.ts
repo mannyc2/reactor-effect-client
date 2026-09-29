@@ -184,8 +184,10 @@ const readUntilEnd = (source: Source, wait: Duration.Input) =>
       Effect.exit,
       Effect.timeoutOption(wait),
     );
+    const endedAt = yield* Clock.currentTimeMillis;
     const dropped = read.find(([tag]) => tag === "Reconnecting")?.[1];
     return {
+      endedAt,
       recovery: read
         .map(([tag]) => tag)
         .filter((tag) => tag === "Reconnecting" || tag === "Reconnected"),
@@ -201,14 +203,20 @@ layer(
     reconnect: false,
   }),
 )("a dropped connection its session does not reconnect", (it) => {
-  it.effect("loses the source where its readers see the drop, at once", () =>
+  it.effect("loses the source where its readers see the drop, at once, reconnecting nothing", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
-      const { source } = yield* opened;
+      const { source, session } = yield* opened;
+      const drop = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+        Effect.andThen(Clock.currentTimeMillis),
+        Effect.forkScoped,
+      );
       const read = yield* readUntilEnd(source, "1 minute");
       assert.deepStrictEqual(
-        [read.recovery, read.failure, read.afterDrop],
-        [["Reconnecting"], "Disconnected", 0],
+        [read.recovery, read.failure, read.endedAt - (yield* Fiber.join(drop))],
+        [[], "Disconnected", 0],
       );
     }),
   );
