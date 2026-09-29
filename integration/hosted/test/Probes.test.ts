@@ -1,5 +1,46 @@
-import { assert, describe, it } from "@effect/vitest";
+// NodeHttpServer serves on a server made by Node's own http module.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { createServer } from "node:http";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { assert, describe, it, layer } from "@effect/vitest";
+import { Effect, Redacted, Ref } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpServer from "effect/unstable/http/HttpServer";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as Probes from "../Probes.js";
+
+/** A local server answering every request with `reply` until the scope closes, and its origin. */
+const serve = Effect.fnUntraced(function* (
+  reply: Effect.Effect<HttpServerResponse.HttpServerResponse>,
+) {
+  const server = yield* NodeHttpServer.make(createServer, { port: 0, host: "127.0.0.1" });
+  yield* server.serve(reply);
+  return HttpServer.formatAddress(server.address);
+});
+
+layer(FetchHttpClient.layer)("a session read with the API key", (it) => {
+  // The client's coordinator refuses every redirect, so a credential goes only where it was sent.
+  it.effect("follows no redirect, so the key reaches nowhere else", () =>
+    Effect.gen(function* () {
+      const reached = yield* Ref.make(0);
+      const elsewhere = yield* serve(
+        Effect.as(
+          Ref.update(reached, (count) => count + 1),
+          HttpServerResponse.jsonUnsafe({ state: "ACTIVE" }),
+        ),
+      );
+      const coordinator = yield* serve(
+        Effect.succeed(HttpServerResponse.redirect(`${elsewhere}/sessions/s`)),
+      );
+      const read = yield* Probes.readSession({
+        apiUrl: coordinator,
+        sessionId: "s",
+        credential: Redacted.make("reactor-test-key"),
+      });
+      assert.deepStrictEqual([read.status, yield* Ref.get(reached)], [0, 0]);
+    }),
+  );
+});
 
 describe("a refusal's body", () => {
   // What hosted Reactor answers a spent token is unobserved, so its code may sit under any key.

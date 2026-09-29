@@ -10,6 +10,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as H3 from "reactor-effect-client/H3";
@@ -64,10 +65,18 @@ interface Reply {
   readonly body: unknown;
 }
 
-/** One request's reply: status 0 when none came within 8 s. */
+/**
+ * One request's reply: status 0 when none came within 8 s. Every request
+ * carries the API key or a token, so, as the client's coordinator does, it
+ * follows no redirect (a redirect answers status 0) and sends no cookies.
+ */
 const exchange = (request: HttpClientRequest.HttpClientRequest) =>
   Effect.flatMap(HttpClient.HttpClient, (client) =>
     client.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        credentials: "omit",
+        redirect: "error",
+      }),
       Effect.flatMap((response) =>
         Effect.map(
           Effect.orElseSucceed(response.json, () => undefined),
