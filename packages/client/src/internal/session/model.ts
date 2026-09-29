@@ -154,11 +154,15 @@ export const transitions: Record<Status, ReadonlyArray<Status>> = {
 
 export const isClosing = (status: Status): boolean => status === "closing" || status === "closed";
 
-/** Whether no later attempt can reconnect the session after `error`: it ended, or is gone. */
+/**
+ * Whether no later attempt can reconnect the session after `error`: it ended, is gone, or speaks a
+ * protocol this client does not.
+ */
 export const ends = (error: ReactorError): boolean => {
   switch (error.reason._tag) {
     case "TerminalSession":
     case "Moderated":
+    case "VersionMismatch":
       return true;
     case "Http":
       return error.reason.status === 404;

@@ -1114,6 +1114,59 @@ layer(environment({ timing }))("a session's own reconnect answered 404", (it) =>
   );
 });
 
+// Reactor answers the session's reconnect 426: this client's protocol is too old.
+layer(environment({ timing }))("a session's own reconnect answered 426", (it) => {
+  it.effect("stops at once: no later attempt could succeed", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 426 });
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.deepStrictEqual(
+        [
+          Option.getOrUndefined(stopped)?.lastError?.reason._tag,
+          (yield* session.snapshot).generation,
+        ],
+        ["VersionMismatch", 2n],
+      );
+    }),
+  );
+});
+
+// Reactor refuses the session's first reconnect, asking for 5 s; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+  }),
+)("a session's own reconnect refused with a Retry-After", (it) => {
+  it.effect("tries again no sooner than it was asked to", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, retryAfter: Duration.seconds(5) });
+      const session = yield* connect;
+      const back = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation > 1n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+        Effect.map(Option.flatten),
+      );
+      assert.strictEqual(Option.getOrUndefined(back)?.generation, 3n);
+      // The next attempt's first request takes 20 ms.
+      const waits = (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
+      assert.deepStrictEqual(waits, [5_000]);
+    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+  );
+});
+
 // A reconnect the application asks for is answered 404: Reactor no longer has the session.
 layer(environment({ timing }))("a session's reconnect answered 404", (it) => {
   it.effect("leaves it disconnected for good at once: its own reconnect does not try", () =>

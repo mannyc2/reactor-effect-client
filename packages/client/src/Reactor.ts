@@ -51,13 +51,15 @@ export interface Options {
    * failure as its input. A connection that drops within 10 seconds of being ready is such a
    * failure too, so a connection that keeps dropping is tried on the schedule, not at once, and
    * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds, the
-   * schedule stops, the session is closing or ended (by Reactor or its moderation), or
-   * `reconnectTimeout` has passed. Each failed attempt is a `Diagnostic` event, and a reconnect
-   * that runs out of time stops with a `Timeout` `lastError` whose `detail` is the last attempt's
-   * failure. Each attempt is a new connection generation of the same session: it allocates nothing
-   * and never replays a command. By default the second attempt comes 250 ms after the first fails
-   * and each wait doubles, to at most 4 seconds, jittered by up to a fifth either way. `false`
-   * leaves a dropped connection dropped until `session.reconnect`.
+   * schedule stops, the session is closing or ended (by Reactor or its moderation), Reactor refuses
+   * this client's protocol (`VersionMismatch`), or `reconnectTimeout` has passed. A refusal that
+   * may lift is tried again, a 401 or 403 included, since the next attempt may carry a fresh token.
+   * Each failed attempt is a `Diagnostic` event, and a reconnect that runs out of time stops with a
+   * `Timeout` `lastError` whose `detail` is the last attempt's failure. Each attempt is a new
+   * connection generation of the same session: it allocates nothing and never replays a command. By
+   * default the second attempt comes 250 ms after the first fails and each wait doubles, to at most
+   * 4 seconds, jittered by up to a fifth either way, and never sooner than a refusal's
+   * `Retry-After`. `false` leaves a dropped connection dropped until `session.reconnect`.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
@@ -159,12 +161,19 @@ const bounded = (
 
 /**
  * A session's own reconnect by default: 250 ms after the first failed attempt, doubling to at
- * most 4 s, jittered so clients that dropped together do not try again together.
+ * most 4 s, jittered so clients that dropped together do not try again together, and never
+ * sooner than a refusal's `Retry-After`.
  */
 const reconnectSchedule: Schedule.Schedule<unknown, ReactorError> = Schedule.min([
   Schedule.exponential("250 millis"),
   Schedule.spaced("4 seconds"),
-]).pipe(Schedule.jittered);
+]).pipe(
+  Schedule.jittered,
+  Schedule.modifyDelay(({ input, duration }) => {
+    const asked = ReactorError.is(input) ? input.retryAfter : undefined;
+    return Effect.succeed(asked === undefined ? duration : Duration.max(duration, asked));
+  }),
+);
 
 const count = (value: number | undefined, fallback: number, maximum: number, name: string) =>
   Number.isSafeInteger(value ?? fallback) &&
