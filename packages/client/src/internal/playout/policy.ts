@@ -378,7 +378,8 @@ export interface State {
   readonly setupFailures: number;
   /**
    * Of those, the ones `maxSetupFailures` counts: all but refusals that
-   * allocated nothing, and so billed nothing, made while a session held the air.
+   * allocated nothing, and so billed nothing, refused while a session held the
+   * air.
    */
   readonly countedFailures: number;
   /** Sessions content moderation ended. */
@@ -1867,8 +1868,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
     case "OpenFailed": {
       const consecutive = state.setupFailures + 1;
-      // A refusal that allocated nothing billed nothing: while a session holds the air it counts
-      // toward no limit, then or once that session is gone, though the next open waits longer.
+      // A refusal that allocated nothing billed nothing: refused while a session holds the air, it
+      // counts toward no limit, then or later, though the next open waits longer.
       const counted = input.allocated || !holding(session(state.air));
       state = {
         ...state,

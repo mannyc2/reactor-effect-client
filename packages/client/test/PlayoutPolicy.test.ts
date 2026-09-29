@@ -1824,7 +1824,7 @@ describe("PlayoutPolicy, time", () => {
 
   // Two renewal opens are refused with nothing allocated while s1 holds the air, the second
   // asking to wait past s1's cap. They count toward no limit, then or once s1 is gone.
-  it("counts no refusal that allocated nothing made while a session held the air, then or after", () => {
+  it("counts no refusal that allocated nothing refused while a session held the air, then or after", () => {
     const policy = drive({ config: { ...config, leadMs: 30_000 } });
     const refuse = (retryAfterMs?: number) =>
       policy.send({
