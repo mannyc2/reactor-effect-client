@@ -47,16 +47,17 @@ export interface Options {
   readonly reconnectTimeout?: Duration.Input | undefined;
   /**
    * How a session reconnects a connection it drops, on its own and whoever reads it, owned or
-   * attached: one attempt at once, then another after each failure on this schedule, which gets
-   * the failure as its input. A connection that drops within 10 seconds of being ready is such a
+   * attached: one attempt at once, then another after each failure on this schedule, which gets the
+   * failure as its input. A connection that drops within 10 seconds of being ready is such a
    * failure too, so a connection that keeps dropping is tried on the schedule, not at once, and
-   * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds,
-   * the schedule stops, the session is closing or ended (by Reactor or its moderation), or
-   * `reconnectTimeout` has passed. Each attempt is a new connection generation of the same
-   * session: it allocates nothing and never replays a command. By default the second attempt
-   * comes 250 ms after the first fails and each wait doubles, to at most 4 seconds, jittered by
-   * up to a fifth either way. `false` leaves a dropped connection dropped until
-   * `session.reconnect`.
+   * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds, the
+   * schedule stops, the session is closing or ended (by Reactor or its moderation), or
+   * `reconnectTimeout` has passed. Each failed attempt is a `Diagnostic` event, and a reconnect
+   * that runs out of time stops with a `Timeout` `lastError` whose `detail` is the last attempt's
+   * failure. Each attempt is a new connection generation of the same session: it allocates nothing
+   * and never replays a command. By default the second attempt comes 250 ms after the first fails
+   * and each wait doubles, to at most 4 seconds, jittered by up to a fifth either way. `false`
+   * leaves a dropped connection dropped until `session.reconnect`.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */

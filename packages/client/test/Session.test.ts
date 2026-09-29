@@ -19,6 +19,7 @@ import {
   Random,
   Redacted,
   Ref,
+  Schedule,
   Stream,
   Tracer,
 } from "effect";
@@ -304,9 +305,16 @@ layer(environment({ timing }))("a reconnect that fails for good", (it) => {
       const stopped = yield* first(
         (snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting,
       );
+      // The token has expired: each attempt is refused, and the deadline says so.
+      const detail = stopped.lastError?.context.detail;
+      const last = detail === undefined ? undefined : Redacted.value(detail);
       assert.deepStrictEqual(
-        [dropped.reconnecting, stopped.lastError?.reason._tag],
-        [true, "Timeout"],
+        [
+          dropped.reconnecting,
+          stopped.lastError?.reason._tag,
+          ReactorError.is(last) && last.reason._tag === "Http" ? last.reason.status : last,
+        ],
+        [true, "Timeout", 401],
       );
       assert.approximately((yield* Clock.currentTimeMillis) - droppedAt, 30_000, 500);
       const attempts = (yield* reads) - before;
@@ -314,6 +322,95 @@ layer(environment({ timing }))("a reconnect that fails for good", (it) => {
       // A minute on, nothing has tried again.
       yield* Effect.sleep("1 minute");
       assert.strictEqual((yield* reads) - before, attempts);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but making any after the first fails with `error`, as a host can. */
+const failingPeers = (error: ReactorError) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.flatMap(
+          Ref.getAndUpdate(made, (count) => count + 1),
+          (count) => (count === 0 ? peers.make : Effect.fail(error)),
+        ),
+      });
+    }),
+  );
+
+// The session's connection drops, and its host cannot make a peer for any reconnect.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host cannot make a peer", (it) => {
+  it.effect("says why each attempt failed, and why it stopped", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const diagnostics = yield* (yield* session.observe()).events.pipe(
+        Stream.filter((event) => event._tag === "Diagnostic"),
+        Stream.map((event) => event.error.reason._tag),
+        Stream.takeUntil((what) => what === "Timeout"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 minute"),
+        Effect.map(Option.getOrElse(() => [])),
+      );
+      // The drop, the host's failure on each attempt, and the deadline.
+      assert.deepStrictEqual([...new Set(diagnostics)], ["Disconnected", "Native", "Timeout"]);
+      assert.isAbove(diagnostics.filter((what) => what === "Native").length, 1);
+      const stopped = yield* session.snapshot;
+      const detail = stopped.lastError?.context.detail;
+      const last = detail === undefined ? undefined : Redacted.value(detail);
+      assert.deepStrictEqual(
+        [
+          stopped.reconnecting,
+          stopped.lastError?.reason._tag,
+          ReactorError.is(last) && last.reason._tag,
+        ],
+        [false, "Timeout", "Native"],
+      );
+    }),
+  );
+});
+
+// As above, on a schedule that tries twice more at once, then gives up.
+layer(
+  Reactor.layer({ reconnect: Schedule.recurs(2) }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose host cannot make a peer, on a schedule that gives up", (it) => {
+  it.effect("says why once for each attempt, and stops with the last", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const diagnostics = yield* (yield* session.observe()).events.pipe(
+        Stream.filter((event) => event._tag === "Diagnostic"),
+        Stream.map((event) => event.error.reason._tag),
+        Stream.interruptWhen(Effect.sleep("10 seconds")),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(diagnostics, ["Disconnected", "Native", "Native", "Native"]);
+      const stopped = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [stopped.status, stopped.reconnecting, stopped.lastError?.reason._tag],
+        ["disconnected", false, "Native"],
+      );
     }),
   );
 });
