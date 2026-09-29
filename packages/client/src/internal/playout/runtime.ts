@@ -290,7 +290,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       if (entry === undefined) return gone(action.command);
       const source = entry.source;
       const command = action.command;
-      const result = ((): Effect.Effect<string | void, CommandFailure> => {
+      // A method that throws when called, rather than returning an effect, dies here as its
+      // effect would have: its lane carries on.
+      const result = Effect.suspend((): Effect.Effect<string | void, CommandFailure> => {
         switch (command._tag) {
           case "Enqueue":
             return source.enqueue(command.request, command.tag, command.continueFrom);
@@ -305,7 +307,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           case "Play":
             return source.play(command.clipId);
         }
-      })();
+      });
       const exit = yield* Effect.exit(result);
       if (Exit.isSuccess(exit))
         return {

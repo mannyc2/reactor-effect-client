@@ -460,6 +460,8 @@ export type SourceEvent =
  * - Each command ends, done or failed, in bounded time. The playout sends a
  *   session its commands one at a time, so one that never ends holds up the
  *   rest of that session's, though no other session's.
+ * - A method that throws when called is reported as a defect, and its command
+ *   taken as one whose outcome is unknown, as when its effect dies.
  */
 export interface Source {
   readonly sessionId: string;

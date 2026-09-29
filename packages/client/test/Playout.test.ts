@@ -1354,6 +1354,40 @@ layer(hosted)("local renderer", (it) => {
       ]);
     }),
   );
+
+  // The review's F10: a source method that threw when called, rather than returning an effect,
+  // ended its lane's worker. Its session took no command again, and nothing reported it.
+  it.effect("reports a source method that throws when called, and its lane carries on", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<unknown> = [];
+      const reporter = ErrorReporter.make(({ cause }) => {
+        reported.push(Cause.findDefect(cause).pipe(Result.getOrUndefined));
+      });
+      const bug = new Error("a source bug");
+      let enqueues = 0;
+      const playout = yield* Playout.make({
+        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
+          ...source,
+          enqueue: (request, tag, continueFrom) => {
+            if (++enqueues === 2) throw bug;
+            return source.enqueue(request, tag, continueFrom);
+          },
+        })),
+        lanes: [{ name: "speech" }],
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "speech", request: clip(name) }),
+      );
+      // b's enqueue may have gone out, as far as the plan can tell; c goes out after it.
+      const outcome = yield* items[2]!.outcome.pipe(Effect.timeoutOption("2 minutes"));
+      assert.deepStrictEqual(
+        Option.map(outcome, (value) => value._tag),
+        Option.some("Ended"),
+      );
+      assert.deepStrictEqual(reported, [bug]);
+    }),
+  );
 });
 
 // The invariants hold across seeded random timing: builds from a quarter of real time to ten
