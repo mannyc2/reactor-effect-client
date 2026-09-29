@@ -621,9 +621,14 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         );
         return { connection_id: cid };
       }),
-    offer: (jwt: string | undefined, id: string, cid: number, sdp: string) =>
+    offer: (jwt: string | undefined, id: string, cid: number, sdp: string, replace: boolean) =>
       Effect.gen(function* () {
         const session = yield* owned(jwt, id, "connectable");
+        const refusal = replace
+          ? yield* faults.trip((fault) => fault._tag === "RefuseReconnect")
+          : undefined;
+        if (refusal?._tag === "RefuseReconnect")
+          return yield* refuse(refusal.status ?? 503, "reconnect_refused", "reconnect refused");
         const previous = (yield* connection(session, cid)).link;
         const peerId = /^a=ice-ufrag:([\w-]+)\r?$/m.exec(sdp)?.[1] ?? "";
         const link = (yield* Ref.get(peers)).get(peerId);

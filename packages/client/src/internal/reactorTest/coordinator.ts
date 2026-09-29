@@ -180,7 +180,9 @@ const route = (
       case "POST connections sdp_params":
       case "PUT connections sdp_params": {
         const body = yield* decode(Offer, request);
-        return yield* Effect.as(sessions.offer(jwt, id, cid, body.sdp_offer), { status: 204 });
+        return yield* Effect.as(sessions.offer(jwt, id, cid, body.sdp_offer, method === "PUT"), {
+          status: 204,
+        });
       }
       default:
         return yield* refuse(404, "not_found", "no such route");
