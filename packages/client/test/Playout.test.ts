@@ -860,8 +860,7 @@ layer(hosted)("renewal", (it) => {
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
         // The first allocation succeeds; the three renewal attempts are refused with 503, after
-        // which nobody can tell whether a session was allocated, so each may bill. No clip starts
-        // meanwhile, which would end the run of failures.
+        // which nobody can tell whether a session was allocated, so each may bill.
         for (const nth of [2, 3, 4])
           yield* test.inject({ _tag: "RefuseAllocation", nth, status: 503 });
         const { playout, events } = yield* start({
@@ -964,7 +963,7 @@ layer(hosted)("renewal refused with nothing allocated", (it) => {
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
         // The first allocation succeeds, the next three are refused over quota, and the fifth
-        // succeeds. No clip starts meanwhile, which would end the run of failures.
+        // succeeds.
         for (const nth of [2, 3, 4])
           yield* test.inject({ _tag: "RefuseAllocation", nth, status: 429 });
         const { playout, events } = yield* start({

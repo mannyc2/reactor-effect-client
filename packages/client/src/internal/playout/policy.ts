@@ -1209,6 +1209,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       });
       return;
     }
+    // A session's first clip on air ends a run of sessions that failed to set up or to play
+    // anything. A later clip on a session that already aired says nothing of those.
+    if (session(sessionId)?.startedAny === false)
+      state = { ...state, setupFailures: 0, allocatedFailures: 0 };
     updateSession(sessionId, {
       startedAny: true,
       playing: { ...clip, at: now.mono, wall: now.wall },
@@ -1224,8 +1228,6 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
   const started = (sessionId: string, clip: PlayingClip): void => {
     nowPlaying(sessionId, clip);
-    // A clip on air ends a run of sessions that failed to set up or to play anything.
-    state = { ...state, setupFailures: 0, allocatedFailures: 0 };
     if (clip.tag?._tag !== "Item") return;
     const item = items.get(clip.tag.key);
     if (item === undefined || item.startedAt !== undefined || item.phase === "Settled") return;

@@ -575,9 +575,10 @@ export interface Options<R = never> {
         readonly grace?: Duration.Input | undefined;
         /**
          * Consecutive failed setups that end the playout: opens that failed, and
-         * sessions lost before any clip sent to them started. 3 by default. Each
-         * open is retried a second longer after each failure, and never sooner
-         * than a refusal's `Retry-After`. While a session holds the air, running
+         * sessions lost before any clip sent to them started. A run ends when a
+         * session airs its first clip; more clips on the session already on air
+         * don't end it. 3 by default. Each open is retried a second longer after
+         * each failure, and never sooner than a refusal's `Retry-After`. While a session holds the air, running
          * out doesn't end it, and only setups that allocated a session, or may
          * have, count: opening pauses until that session's cap ends it or it is
          * lost, and then one more open is tried. An open that failed with an

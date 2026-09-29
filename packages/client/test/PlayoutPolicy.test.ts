@@ -1353,6 +1353,55 @@ describe("PlayoutPolicy, time", () => {
     assert.isTrue(unheld.actions.some((action) => action._tag === "Fail"));
   });
 
+  // The review's case: s1 airs a 5 s clip after another while each renewal open fails 2 s after
+  // it is asked, having allocated a session or maybe so. A clip on the session that already held
+  // the air says nothing of those opens: only a session's first clip ends their run.
+  it("pauses renewal after three opens that may bill, though the session on air airs clips", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    policy.tick(0);
+    policy.open("s1", 120_000);
+    const opens = () => policy.actions.filter((action) => action._tag === "Open").length;
+    const failed: Array<number> = [];
+    let asked = opens();
+    let failing: number | undefined;
+    for (let at = 60_000; at < 119_000; at += 100) {
+      if (at % 5_000 === 0)
+        policy.event({ _tag: "Started", clip: clip(`x${String(at)}`) }, "s1", at);
+      policy.tick(at);
+      if (opens() > asked) {
+        asked = opens();
+        failing = at + 2_000;
+      }
+      if (failing !== undefined && at >= failing) {
+        failing = undefined;
+        failed.push(at);
+        policy.send({ _tag: "OpenFailed", reason: "503", fatal: false, allocated: true }, at);
+      }
+    }
+    // Each retry waits a second longer; the third failure pauses opening until s1's cap.
+    assert.deepStrictEqual(failed, [62_100, 65_100, 69_100]);
+    assert.strictEqual(policy.state().openRetryAt, Infinity);
+  });
+
+  it("ends a run of failed setups at a session's first clip, seen in a read or at its start", () => {
+    for (const how of ["read", "start"] as const) {
+      const policy = drive({ config: { ...config, leadMs: 60_000 } });
+      policy.tick(0);
+      policy.open("s1", 120_000);
+      policy.tick(60_010);
+      policy.send({ _tag: "OpenFailed", reason: "503", fatal: false, allocated: true });
+      policy.tick(policy.now() + 1_000);
+      policy.send({ _tag: "OpenFailed", reason: "503", fatal: false, allocated: true });
+      policy.tick(policy.now() + 2_000);
+      policy.open("s2", 120_000);
+      assert.strictEqual(policy.state().setupFailures, 2, how);
+      const first = clip("y");
+      if (how === "read") policy.observe({ playing: first }, "s2");
+      else policy.event({ _tag: "Started", clip: first }, "s2");
+      assert.strictEqual(policy.state().setupFailures, 0, how);
+    }
+  });
+
   it("times an end cue from the provider's length, not the requested one", () => {
     const policy = drive();
     policy.tick(0);
