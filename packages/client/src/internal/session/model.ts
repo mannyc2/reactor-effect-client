@@ -16,7 +16,7 @@ import type * as SubscriptionRef from "effect/SubscriptionRef";
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { Descriptor, IceCandidate, Mapping, Signaling } from "../../Coordinator.js";
 import type { MediaTrack, Peer, PeerEvent } from "../../Peer.js";
-import { ReactorError } from "../../ReactorError.js";
+import { type ContextInput, ReactorError } from "../../ReactorError.js";
 import type {
   CloseReport,
   CommandReply,
@@ -153,6 +153,23 @@ export const transitions: Record<Status, ReadonlyArray<Status>> = {
 };
 
 export const isClosing = (status: Status): boolean => status === "closing" || status === "closed";
+
+/** Whether no later attempt can reconnect the session after `error`: it ended, or is gone. */
+export const ends = (error: ReactorError): boolean => {
+  switch (error.reason._tag) {
+    case "TerminalSession":
+    case "Moderated":
+      return true;
+    case "Http":
+      return error.reason.status === 404;
+    default:
+      return false;
+  }
+};
+
+/** Why nothing connects again a session that content moderation ended. */
+export const moderationEnded = (context: ContextInput) =>
+  ReactorError.fromCode("Moderated", "content moderation ended the session", context);
 
 /** A control message this client sends. */
 export type ControlPayload = Exclude<

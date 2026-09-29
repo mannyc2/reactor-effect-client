@@ -15,7 +15,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { IceFailed, ReactorError, TransportFailed } from "../../ReactorError.js";
 import type { Connection, Core, Link, State } from "./model.js";
-import { isClosing, timedOut } from "./model.js";
+import { ends, isClosing, moderationEnded, timedOut } from "./model.js";
 
 /**
  * Why a connection failed, from its statistics: a candidate pair that
@@ -146,21 +146,27 @@ export const make = (core: Core) => {
       claimed: new Set(),
       paused: new Set(),
     }));
-    const disconnected = yield* SubscriptionRef.modify(state, (session) => {
-      if (session.connection !== c || isClosing(session.status)) return [false, session] as const;
+    // The session's error once the drop leaves it disconnected: a drop no attempt could reconnect
+    // is lasting from the drop on, and says why.
+    const dropped = yield* SubscriptionRef.modify(state, (session) => {
+      if (session.connection !== c || isClosing(session.status))
+        return [undefined, session] as const;
+      const why = session.moderated ? moderationEnded({ generation: c.generation }) : error;
       const next: State = {
         ...session,
         received: new Set<string>(),
-        lastError: error,
+        lastError: why,
         status: "disconnected",
-        // With the drop itself, so no reader takes a drop the session reconnects for a lasting one.
-        reconnecting: session.reconnects,
+        // With the drop itself, so no reader mistakes a drop the session reconnects for a lasting
+        // one, or the reverse.
+        reconnecting: session.reconnects && !ends(why),
       };
-      return [true, next] as const;
+      return [why, next] as const;
     });
-    if (disconnected) {
+    if (dropped !== undefined) {
       yield* publish({ _tag: "Status", status: "disconnected" }, c.generation);
       yield* publish({ _tag: "Diagnostic", error }, c.generation);
+      if (dropped !== error) yield* publish({ _tag: "Diagnostic", error: dropped }, c.generation);
     }
     return host;
   }, Effect.uninterruptible);

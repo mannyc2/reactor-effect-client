@@ -30,7 +30,15 @@ import type { Generation } from "./generation.js";
 import type { Ice } from "./ice.js";
 import type { Inbound } from "./inbound.js";
 import type { Connection, Core, Known, Link, RemoteSession, State } from "./model.js";
-import { failureOr, isClosing, isKnown, newLink, timedOut } from "./model.js";
+import {
+  ends,
+  failureOr,
+  isClosing,
+  isKnown,
+  moderationEnded,
+  newLink,
+  timedOut,
+} from "./model.js";
 import type { Requests } from "./requests.js";
 import type { Tracks } from "./tracks.js";
 
@@ -71,19 +79,6 @@ const beginsFrom: Record<Attempt, (session: State) => boolean> = {
  * connection as back: one that drops sooner fails that reconnect's attempt.
  */
 const settle = Duration.seconds(10);
-
-/** Whether no later attempt can reconnect the session after `error`: it ended, or is gone. */
-const ends = (error: ReactorError): boolean => {
-  switch (error.reason._tag) {
-    case "TerminalSession":
-    case "Moderated":
-      return true;
-    case "Http":
-      return error.reason.status === 404;
-    default:
-      return false;
-  }
-};
 
 export const make = ({
   core,
@@ -235,10 +230,7 @@ export const make = ({
         "InvalidState",
         "cannot reconnect without a known session",
       );
-    if (reconnect && session.moderated)
-      return yield* ReactorError.fromCode("Moderated", "content moderation ended the session", {
-        outcome: "not-submitted",
-      });
+    if (reconnect && session.moderated) return yield* moderationEnded({ outcome: "not-submitted" });
     const scope = yield* Scope.fork(root);
     const peer = yield* Scope.provide(peers.make, scope).pipe(
       Effect.onError((cause) => shutDown(scope, Exit.failCause(cause))),

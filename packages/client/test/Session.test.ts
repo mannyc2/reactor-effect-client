@@ -325,11 +325,16 @@ layer(
     faults: [{ _tag: "Moderate", prompt: "flagged" }],
   }),
 )("a session moderation ended", (it) => {
-  it.effect("is never reconnected, and says why", () =>
+  it.effect("is never reconnected, and says why from the drop on", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const session = yield* connect;
       const reported = yield* statuses(session);
+      const dropped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+        Effect.forkScoped,
+      );
       yield* session.command("enqueue", { prompt: "flagged", seconds: 5 });
       // Past Reactor's 30 s, in which a reconnect would have come.
       const seen = yield* reported.pipe(
@@ -337,6 +342,12 @@ layer(
         Stream.runCollect,
       );
       assert.deepStrictEqual(seen, [["disconnected", 1n]]);
+      // The drop is lasting as the session reports it, not only once a reconnect is refused.
+      const drop = Option.getOrUndefined(yield* Fiber.join(dropped));
+      assert.deepStrictEqual(
+        [drop?.reconnecting, drop?.lastError?.reason._tag],
+        [false, "Moderated"],
+      );
       const snapshot = yield* session.snapshot;
       assert.deepStrictEqual(
         [
@@ -677,7 +688,11 @@ layer(
       assert.deepStrictEqual(reasonsOf(closed), []);
       const report = Exit.isSuccess(closed) ? closed.value : undefined;
       assert.deepStrictEqual(
-        [report?.remote.confirmed, yield* remoteState(session.id), (yield* session.snapshot).status],
+        [
+          report?.remote.confirmed,
+          yield* remoteState(session.id),
+          (yield* session.snapshot).status,
+        ],
         [true, "CLOSED", "closed"],
       );
       assert.deepStrictEqual(
@@ -961,6 +976,33 @@ layer(environment({ timing }))("a session's own reconnect answered 404", (it) =>
       );
       // One attempt, on the generation after the dropped one.
       assert.strictEqual((yield* session.snapshot).generation, 2n);
+    }),
+  );
+});
+
+// A reconnect the application asks for is answered 404: Reactor no longer has the session.
+layer(environment({ timing }))("a session's reconnect answered 404", (it) => {
+  it.effect("leaves it disconnected for good at once: its own reconnect does not try", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const refused = yield* Effect.flip(session.reconnect);
+      const dropped = yield* session.snapshot;
+      // Past the 30 s a reconnect of its own would have had.
+      yield* Effect.sleep("40 seconds");
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          refused.reason._tag,
+          dropped.reconnecting,
+          snapshot.status,
+          snapshot.generation,
+          snapshot.lastError?.reason._tag,
+        ],
+        ["Http", false, "disconnected", 2n, "Http"],
+      );
     }),
   );
 });
