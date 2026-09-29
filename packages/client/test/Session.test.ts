@@ -666,7 +666,7 @@ layer(
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   ),
 )("a session whose peer dies of a bug as its close fences it", (it) => {
-  it.effect("still closes and ends the remote session, and reports the defect", () =>
+  it.effect("still closes and ends the remote session, and keeps the defect in its report", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const session = yield* connect;
@@ -675,15 +675,16 @@ layer(
         Effect.provideService(ErrorReporter.CurrentErrorReporters, reporters),
       );
       assert.deepStrictEqual(reasonsOf(closed), []);
+      const report = Exit.isSuccess(closed) ? closed.value : undefined;
       assert.deepStrictEqual(
-        [
-          Exit.isSuccess(closed) && closed.value.remote.confirmed,
-          yield* remoteState(session.id),
-          (yield* session.snapshot).status,
-        ],
+        [report?.remote.confirmed, yield* remoteState(session.id), (yield* session.snapshot).status],
         [true, "CLOSED", "closed"],
       );
-      assert.deepStrictEqual(bugs, [fenceBug]);
+      assert.deepStrictEqual(
+        [report?.localClosed, report?.localErrors.map(({ reason, message }) => [reason, message])],
+        [false, [["Shutdown", "connection teardown did not complete cleanly"]]],
+      );
+      assert.deepStrictEqual(bugs, []);
     }),
   );
 });

@@ -114,17 +114,20 @@ export const make = (core: Core) => {
 
   /**
    * Fails `c` once, for `error`: its requests fail, its peer is fenced and its tracks stop, and
-   * while it is live the session is left disconnected. A host that dies as its peer is fenced or
-   * a track stops is reported after that, so it never keeps the session from the drop, and
-   * nothing interrupts the failure halfway.
+   * while it is live the session is left disconnected. It takes every step whatever the host dies
+   * of as it fences the peer or stops a track, and gives that back unreported, for a caller that
+   * keeps it itself; nothing interrupts it halfway.
    */
-  const fail = Effect.fnUntraced(function* (c: Connection, error: ReactorError) {
+  const failUnreported = Effect.fnUntraced(function* (
+    c: Connection,
+    error: ReactorError,
+  ): Effect.fn.Return<Exit.Exit<void>> {
     const first = yield* Ref.modify(c.link, (link) =>
       link.failure === undefined
         ? ([link, { ...link, failure: error }] as const)
         : ([undefined, link] as const),
     );
-    if (first === undefined) return;
+    if (first === undefined) return Exit.void;
     yield* Deferred.fail(c.failed, error);
     yield* Deferred.fail(c.ready, error);
     yield* data.failGeneration(c.generation, error);
@@ -159,8 +162,20 @@ export const make = (core: Core) => {
       yield* publish({ _tag: "Status", status: "disconnected" }, c.generation);
       yield* publish({ _tag: "Diagnostic", error }, c.generation);
     }
-    if (Exit.isFailure(host)) yield* reportHost(host.cause, c.generation);
+    return host;
   }, Effect.uninterruptible);
+
+  /**
+   * Fails `c` once, for `error`, as `failUnreported` does, then reports what its host died of
+   * meanwhile, so it never keeps the session from the drop.
+   */
+  const fail = (c: Connection, error: ReactorError) =>
+    failUnreported(c, error).pipe(
+      Effect.flatMap((host) =>
+        Exit.isFailure(host) ? reportHost(host.cause, c.generation) : Effect.void,
+      ),
+      Effect.uninterruptible,
+    );
 
   /** A task of `c`'s whose failure fails `c`; a defect is a bug and stays one. */
   const background = (c: Connection, body: Effect.Effect<void, ReactorError>) =>
@@ -225,6 +240,7 @@ export const make = (core: Core) => {
     currentReady,
     guard,
     reportHost,
+    failUnreported,
     fail,
     background,
     readyGate,

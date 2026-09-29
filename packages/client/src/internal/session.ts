@@ -194,22 +194,29 @@ export const make = Effect.fnUntraced(function* (input: {
     yield* Deferred.fail(closing, ReactorError.fromCode("Closed", "session closing"));
     const connection = (yield* SubscriptionRef.get(state)).connection;
     const { submitted, errors } = yield* tracks.releasePublications(connection);
-    if (connection !== undefined)
-      yield* generation.fail(connection, ReactorError.fromCode("Aborted", "session closed"));
-    const local = yield* Effect.exit(Scope.close(root, Exit.void));
-    if (Exit.isFailure(local)) {
-      // The host's own failure is the evidence; its message says what did
-      // not finish. Anything else is reported as an opaque shutdown.
-      // A host finalizer that cannot carry a typed error dies with it.
-      const failure = Cause.squash(local.cause);
+    // The host's own failure is the evidence; its message says what did not
+    // finish. Anything else is reported as an opaque shutdown. A host effect
+    // that cannot carry a typed error dies with it.
+    const keep = (cleanup: Exit.Exit<void>, what: string) => {
+      if (Exit.isSuccess(cleanup)) return;
+      const failure = Cause.squash(cleanup.cause);
       errors.push(
         ReactorError.is(failure)
           ? failure
-          : ReactorError.fromCode("Shutdown", "local cleanup did not complete cleanly", {
-              detail: local.cause,
+          : ReactorError.fromCode("Shutdown", `${what} did not complete cleanly`, {
+              detail: cleanup.cause,
             }),
       );
-    }
+    };
+    if (connection !== undefined)
+      keep(
+        yield* generation.failUnreported(
+          connection,
+          ReactorError.fromCode("Aborted", "session closed"),
+        ),
+        "connection teardown",
+      );
+    keep(yield* Effect.exit(Scope.close(root, Exit.void)), "local cleanup");
     // Ownership is read after local work has joined: an interrupted
     // allocation may have changed its evidence meanwhile.
     const remote = (yield* SubscriptionRef.get(state)).remote;
