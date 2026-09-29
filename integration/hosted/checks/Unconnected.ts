@@ -229,7 +229,9 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             spent?.answer === "allocated" ||
               spent?.answer === "the same session" ||
               spent?.outcome === "replied",
-            `the second create on the spent token got no reply: ${spent?.answer ?? "it was never sent"}`,
+            spent === undefined
+              ? "the spent token's second create went unrecorded"
+              : `the spent token's second create has no known answer: ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`,
           ],
           [last.known, `the last read of the session failed with ${last.state}`],
         );

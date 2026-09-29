@@ -379,6 +379,41 @@ rehearse("unconnected ends its session with the key again until the end is confi
   },
 });
 
+// A create whose outcome is unknown may have allocated a session the run never learned of.
+rehearse("unconnected says where to look when its create's outcome is unknown", {
+  check: "unconnected",
+  faults: [{ _tag: "RefuseAllocation", nth: 1, status: 503 }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.lengthOf(evidence.sessions, 0);
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", "may have allocated a session");
+    assert.include(instruction ?? "", evidence.startedAt);
+  },
+});
+
+rehearse(
+  "unconnected watches on, and says where to look, when the spent token's create is unknown",
+  {
+    check: "unconnected",
+    faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "RefuseAllocation", nth: 2, status: 503 }],
+    judge: (evidence) => {
+      failed("the probe completed")(evidence);
+      const probe = evidence.unconnected;
+      assert.strictEqual(probe?.ended?.by, "reactor");
+      assert.isTrue(evidence.sessions[0]?.close?.termination?.confirmed);
+      assert.include(
+        evidence.criteria.find((criterion) => criterion.name === "the probe completed")?.detail ??
+          "",
+        "has no known answer: Http 503, outcome unknown",
+      );
+      const [instruction] = cleanupInstructions(evidence);
+      assert.include(instruction ?? "", "may have allocated a session");
+      assert.include(instruction ?? "", probe?.requestedAt ?? "no request");
+    },
+  },
+);
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

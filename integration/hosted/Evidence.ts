@@ -1119,13 +1119,31 @@ export const judged = (input: {
 };
 
 /**
+ * `unconnected`'s creates whose outcome is unknown, each of which may have
+ * allocated a session the run never learned of. Its only commands whose
+ * outcome is recorded are its two creates, and the first is known to have
+ * allocated once the check's record exists.
+ */
+const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
+  if (evidence.check !== "unconnected" || !evidence.outcomes.includes("unknown")) return [];
+  const probe = evidence.unconnected;
+  const unseen = (create: string, after: string) =>
+    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${after}. Look for one in the Reactor dashboard, end it, and note what it cost.`;
+  if (probe === undefined) return [unseen("The create", evidence.startedAt)];
+  return probe.spentToken?.outcome === "unknown"
+    ? [unseen("The spent token's second create", probe.requestedAt)]
+    : [];
+};
+
+/**
  * What a person must confirm in the Reactor dashboard: sessions whose end the
  * run could not confirm. Nothing connected to `unconnected`'s sessions, and
  * whether a cap ends such a session is what that check asks, so its
- * instruction promises no end.
+ * instructions promise no end, and name any create that may have allocated
+ * one unseen.
  */
-export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> =>
-  evidence.sessions.flatMap((session) =>
+export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> => [
+  ...evidence.sessions.flatMap((session) =>
     session.close?.confirmed === true
       ? []
       : [
@@ -1133,7 +1151,9 @@ export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> =
             ? `Session ${session.id} was not confirmed ended, and nothing connected to it, so its cap at ${session.capEndsAt} may not end it. End it in the Reactor dashboard, and note what it cost.`
             : `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
         ],
-  );
+  ),
+  ...unknownCreates(evidence),
+];
 
 /** Evidence as a file holds it: indented, so a ledger reads well in review. */
 export const EvidenceJson = Schema.fromJsonString(Evidence, { space: 2 });
