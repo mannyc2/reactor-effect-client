@@ -288,7 +288,10 @@ export interface TokenGrant {
   readonly jwt: Redacted.Redacted<string>;
   /** When the token expires, in seconds since the epoch, as Reactor set it. */
   readonly expiresAt: number;
-  /** The cap on each session the token creates, in seconds, as asked; undefined for none. */
+  /**
+   * The cap on each session the token creates, in seconds: as asked, or the
+   * narrower cap Reactor's echo states; undefined for none.
+   */
   readonly maxSessionSeconds: number | undefined;
   /** Reactor's echo of the grant, when its reply carries one; a grant wider than asked is refused. */
   readonly granted?: Granted | undefined;
@@ -1175,10 +1178,14 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             (granted.maxSessionSeconds ?? 0) > seconds)))
     )
       return yield* protocol("the token grants more than was asked");
+    // A narrower grant caps each session at what it grants.
+    const narrower =
+      Predicate.isNumber(granted?.maxSessionSeconds) &&
+      (seconds === undefined || granted.maxSessionSeconds < seconds);
     return {
       jwt: Redacted.make(token.jwt),
       expiresAt: token.expires_at,
-      maxSessionSeconds: seconds,
+      maxSessionSeconds: narrower ? granted.maxSessionSeconds : seconds,
       ...(granted === undefined ? {} : { granted }),
     } satisfies TokenGrant;
   });
