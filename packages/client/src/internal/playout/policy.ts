@@ -310,6 +310,8 @@ interface Session {
   readonly lastEnqueue: ClipTag | undefined;
   /** Filler clips whose removal was refused, asked again only once its queues have changed. */
   readonly refusedFiller: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
+  /** Its last refused move, by its queues then and the clip: sent again only once they change. */
+  readonly blockedMove: string | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
   readonly busy: { readonly id: number; readonly command: Command } | undefined;
 }
@@ -380,7 +382,6 @@ export interface State {
     readonly continued: ReadonlyArray<number>;
     readonly length: ReadonlyArray<number>;
   };
-  readonly blockedMove: string | undefined;
   /**
    * The clip last cut. It is never cut again, whatever its cut's result: H3's
    * stop names no clip, and a stopped clip goes on looking like it plays until
@@ -440,7 +441,6 @@ export const initial: State = {
   accepting: true,
   closed: false,
   samples: { build: [], continued: [], length: [] },
-  blockedMove: undefined,
   cut: undefined,
   cutting: undefined,
   starving: false,
@@ -1648,7 +1648,7 @@ export const step: {
       }
       case "Move":
         if (result._tag === "Failed")
-          state = { ...state, blockedMove: signature(session(sessionId)) + command.clipId };
+          updateSession(sessionId, { blockedMove: signature(session(sessionId)) + command.clipId });
         return;
       case "Autoplay":
         if (result._tag === "Done") updateSession(sessionId, { autoplay: command.enabled });
@@ -1724,6 +1724,7 @@ export const step: {
             playing: undefined,
             lastEnqueue: undefined,
             refusedFiller: { signature: "", clipIds: [] },
+            blockedMove: undefined,
             busy: undefined,
           },
         ],
@@ -2193,7 +2194,7 @@ export const step: {
     if (
       value.source?.available === true &&
       misplaced?.tag !== undefined &&
-      state.blockedMove !== signature(value) + misplaced.clipId
+      value.blockedMove !== signature(value) + misplaced.clipId
     )
       return queueCommand(value.id, { _tag: "Move", clipId: misplaced.clipId, position: moved });
     // A cut lane's Ready item at the front cuts a lower lane's clip, or filler, that has a while to run.

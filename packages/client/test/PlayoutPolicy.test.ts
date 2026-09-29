@@ -922,6 +922,33 @@ describe("PlayoutPolicy, lanes", () => {
     policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
     assert.deepStrictEqual(fillers(), ["s1 0", "s2 1"]);
   });
+
+  // With one refused move remembered for the whole plan, a second session's refusal made the
+  // first's move look new, and the two sessions' moves were sent again in turn.
+  it("sends a refused move again only once its own session's queues have changed", () => {
+    const policy = drive();
+    const filler = (clipId: string, index: number) => clip(clipId, { _tag: "Filler", index });
+    const moves = () =>
+      commands(policy.actions).flatMap((action) =>
+        action.command._tag === "Move" ? [`${action.sessionId} ${action.command.clipId}`] : [],
+      );
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    const playing = clip("x", undefined, 50);
+    policy.event({ _tag: "Started", clip: playing });
+    policy.observe({ playing, ready: [filler("b", 1), filler("a", 0)] });
+    policy.reply(failed("replied"), undefined, "s1");
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.open("s2", 60_000);
+    policy.observe({ ready: [filler("d", 3), filler("c", 2)] }, "s2");
+    policy.reply(failed("replied"), undefined, "s2");
+    policy.tick();
+    policy.tick();
+    assert.deepStrictEqual(moves(), ["s1 a", "s2 c"]);
+    // s1's queues change, so its move is asked again, and s2's is not.
+    policy.observe({ playing, ready: [filler("b", 1), filler("a", 0), filler("e", 4)] });
+    assert.deepStrictEqual(moves(), ["s1 a", "s2 c", "s1 a"]);
+  });
 });
 
 /** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
