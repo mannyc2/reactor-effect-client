@@ -179,12 +179,40 @@ export const make = ({
     }),
   );
 
+  /** Fails `c` for `cause`, the attempt's own failure if it has one, and closes it. */
+  const abandon = (c: Connection, cause: Cause.Cause<ReactorError>) =>
+    fail(
+      c,
+      failureOr(() => ReactorError.fromCode("Aborted", "connection attempt stopped"))(cause),
+    ).pipe(Effect.ensuring(Scope.close(c.scope, Exit.void)));
+
+  /**
+   * Retires `previous` for the generation that replaced it. Its host's shutdown is not the new
+   * attempt's to fail: the host's own failure, which a finalizer that cannot fail dies with, is a
+   * Diagnostic on the retired generation, and any other defect is reported as a bug.
+   */
+  const retire = (previous: Connection) =>
+    fail(previous, ReactorError.fromCode("Disconnected", "connection retired for reconnect")).pipe(
+      Effect.ensuring(Scope.close(previous.scope, Exit.void)),
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          const dies = cause.reasons.filter(Cause.isDieReason);
+          for (const { defect } of dies)
+            if (ReactorError.is(defect))
+              yield* publish({ _tag: "Diagnostic", error: defect }, previous.generation);
+          const bugs = dies.filter(({ defect }) => !ReactorError.is(defect));
+          if (bugs.length > 0) yield* ErrorReporter.report(Cause.fromReasons(bugs));
+        }),
+      ),
+    );
+
   /**
    * A new generation, with its event fiber; the previous one is retired. It takes the session
    * over in one step with its checks, so no two attempts share a generation and none begins once
    * the session closes. The session's own reconnect begins nothing once another attempt, a ready
    * connection or the close has taken over. An attempt acquires it uninterruptibly, so every
-   * generation it claims is one the attempt fails and closes if it goes no further.
+   * generation it claims is one the attempt fails and closes if it goes no further, a defect as
+   * it takes over included.
    */
   const begin = Effect.fnUntraced(function* (attempt: Attempt) {
     const session = yield* SubscriptionRef.get(state);
@@ -236,26 +264,26 @@ export const make = ({
       const held = yield* SubscriptionRef.get(state);
       return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${held.status}`);
     }
-    yield* publish({ _tag: "Status", status: "connecting" });
-    yield* Scope.addFinalizer(
-      scope,
-      fail(
-        c,
-        ReactorError.fromCode("Aborted", "connection scope closed", { generation: c.generation }),
-      ),
-    );
-    yield* take(c.events).pipe(
-      Effect.flatMap((event) => inbound.apply(c, event)),
-      Effect.forever,
-      Effect.forkIn(scope),
-    );
-    if (previous !== undefined) {
-      yield* fail(
-        previous,
-        ReactorError.fromCode("Disconnected", "connection retired for reconnect"),
+    // The previous generation is retired whatever happens, and a defect meanwhile fails and
+    // closes this one.
+    yield* Effect.gen(function* () {
+      yield* publish({ _tag: "Status", status: "connecting" });
+      yield* Scope.addFinalizer(
+        scope,
+        fail(
+          c,
+          ReactorError.fromCode("Aborted", "connection scope closed", { generation: c.generation }),
+        ),
       );
-      yield* Scope.close(previous.scope, Exit.void);
-    }
+      yield* take(c.events).pipe(
+        Effect.flatMap((event) => inbound.apply(c, event)),
+        Effect.forever,
+        Effect.forkIn(scope),
+      );
+    }).pipe(
+      Effect.ensuring(previous === undefined ? Effect.void : retire(previous)),
+      Effect.onError((cause) => abandon(c, cause)),
+    );
     return c;
   });
 
@@ -384,16 +412,7 @@ export const make = ({
       (c, exit) =>
         c === undefined || Exit.isSuccess(exit)
           ? Effect.void
-          : Effect.gen(function* () {
-              yield* allocationUnknown;
-              yield* fail(
-                c,
-                failureOr(() => ReactorError.fromCode("Aborted", "connection attempt interrupted"))(
-                  exit.cause,
-                ),
-              );
-              yield* Scope.close(c.scope, Exit.void);
-            }),
+          : Effect.andThen(allocationUnknown, abandon(c, exit.cause)),
     ).pipe(
       Effect.withSpan(
         kind === "connect" ? "Session.connect" : "Session.reconnect",

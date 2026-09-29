@@ -2,11 +2,13 @@
 import { assert, layer } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
+  Cause,
   Clock,
   Context,
   Deferred,
   Duration,
   Effect,
+  ErrorReporter,
   Fiber,
   FileSystem,
   Inspectable,
@@ -23,7 +25,7 @@ import * as H3 from "../src/H3.js";
 import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
 import * as Wire from "../src/internal/wire.js";
 import { PeerFactory } from "../src/Peer.js";
-import type { CommandFailure } from "../src/ReactorError.js";
+import { type CommandFailure, ReactorError } from "../src/ReactorError.js";
 import type { CommandReply, Session, Snapshot } from "../src/Session.js";
 import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
@@ -435,6 +437,127 @@ layer(
         ],
         ["disconnected", 2n, false, "Timeout"],
       );
+    }),
+  );
+});
+
+/** ReactorTest's peers, but closing the first one dies with `defect`, as a host's close can. */
+const dyingShutdown = (defect: unknown) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          const peer = yield* peers.make;
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) === 0)
+            yield* Effect.addFinalizer(() => Effect.die(defect));
+          return peer;
+        }),
+      });
+    }),
+  );
+
+/** Each status `session` reports from now on, and each diagnostic's reason, with its generation. */
+const notices = (session: Session) =>
+  Effect.map(session.observe(), (observed) =>
+    observed.events.pipe(
+      Stream.filter((event) => event._tag === "Status" || event._tag === "Diagnostic"),
+      Stream.map((event) =>
+        event._tag === "Status"
+          ? ([event.status, event.generation] as const)
+          : ([event.error.reason._tag, event.generation] as const),
+      ),
+    ),
+  );
+
+/**
+ * A session whose connection drops, until it is ready again or 30 s have passed: where it ended,
+ * what it reported meanwhile, and what was reported of it as a bug.
+ */
+const afterDrop = Effect.gen(function* () {
+  yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+  const test = yield* ReactorTest.ReactorTest;
+  yield* test.inject(drop);
+  const bugs: Array<unknown> = [];
+  const reporter = ErrorReporter.make(({ cause }) => {
+    bugs.push(Cause.squash(cause));
+  });
+  const session = yield* connect.pipe(
+    Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])),
+  );
+  const seen = yield* (yield* notices(session)).pipe(
+    Stream.takeUntil(([what, generation]) => what === "ready" && generation === 2n),
+    Stream.runCollect,
+    Effect.timeoutOption("30 seconds"),
+  );
+  const snapshot = yield* session.snapshot;
+  return { status: [snapshot.status, snapshot.generation], seen, bugs };
+});
+
+/** What the native peer's close dies with once its owner join outlives `shutdownTimeout`. */
+const joinOutlived = ReactorError.fromCode(
+  "Shutdown",
+  "native owner join exceeded its deadline; handle retained",
+);
+
+// The dropped connection's peer fails to shut down as the reconnect retires it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown(joinOutlived)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose retired peer fails to shut down", (it) => {
+  it.effect("says so on the retired generation, and goes on to ready", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["Shutdown", 1n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, []);
+    }),
+  );
+});
+
+const shutdownBug = new Error("a host's shutdown bug");
+
+// The dropped connection's peer dies of a bug as the reconnect retires it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingShutdown(shutdownBug)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose retired peer dies of a bug as it shuts down", (it) => {
+  it.effect("reports the defect, and goes on to ready", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, [shutdownBug]);
     }),
   );
 });
