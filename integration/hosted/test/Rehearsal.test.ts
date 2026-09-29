@@ -295,6 +295,36 @@ rehearse("unconnected follows a session nothing connected to until its cap ends 
   },
 });
 
+rehearse("unconnected ends with the key a session its cap did not end", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreCap" }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    const session = evidence.sessions[0];
+    assert.deepStrictEqual(probe?.states.at(-1)?.state, "ACTIVE");
+    assert.strictEqual(probe?.ended?.by, "key");
+    // Its last read came once its cap and 30 s more had passed, and the key's end right after.
+    assert.isAtLeast((probe?.states.at(-1)?.lastMs ?? 0) - (session?.allocatedMs ?? 0), 90_000);
+    assert.isAtLeast((session?.close?.requestedMs ?? 0) - (session?.allocatedMs ?? 0), 90_000);
+    assert.isTrue(session?.close?.termination?.confirmed);
+  },
+});
+
+rehearse("unconnected ends at once a second session its spent token allocated", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreSessionLimit" }],
+  judge: (evidence) => {
+    passes(evidence);
+    const spent = evidence.unconnected?.spentToken;
+    const second = evidence.sessions[1];
+    assert.lengthOf(evidence.sessions, 2);
+    assert.deepStrictEqual([spent?.answer, spent?.sessionId], ["allocated", second?.id]);
+    assert.isTrue(second?.close?.termination?.confirmed);
+    assert.isBelow(second.close.requestedMs - (spent?.answeredMs ?? 0), 1_000);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {
