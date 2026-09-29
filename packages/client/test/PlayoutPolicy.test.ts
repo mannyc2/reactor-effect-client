@@ -974,6 +974,36 @@ describe("PlayoutPolicy, lanes", () => {
     policy.observe({ playing, ready: [filler("b", 1), filler("a", 0), filler("e", 4)] });
     assert.deepStrictEqual(moves(), ["s1 a", "s2 c", "s1 a"]);
   });
+
+  // A provider may refuse autoplay every time, and a source method may throw every time: each is
+  // asked again a second later, not at every reply. Until its autoplay is as its role wants it,
+  // nothing else goes to the session, whose clips would otherwise air, or not, as they must not.
+  it("sends a failed autoplay, or a move that died, again a second later", () => {
+    for (const result of [{ _tag: "Died" } as const, failed("replied")]) {
+      const policy = drive();
+      policy.tick(0);
+      policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 });
+      policy.submit(spec("a"));
+      policy.observe({});
+      assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+      assert.strictEqual(policy.reply(result, 10).wake, 1_010);
+      assert.isUndefined(policy.busy());
+      policy.tick(1_010);
+      assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: true });
+      policy.reply({ _tag: "Done" });
+      assert.deepStrictEqual(enqueued(policy.actions), ["a"]);
+    }
+    const policy = drive();
+    const filler = (clipId: string, index: number) => clip(clipId, { _tag: "Filler", index });
+    policy.tick(0);
+    policy.open();
+    policy.observe({ playing: clip("x", undefined, 50), ready: [filler("b", 1), filler("a", 0)] });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Move", clipId: "a", position: 0 });
+    assert.strictEqual(policy.reply({ _tag: "Died" }, 10).wake, 1_010);
+    assert.isUndefined(policy.busy());
+    policy.tick(1_010);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Move", clipId: "a", position: 0 });
+  });
 });
 
 /** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */

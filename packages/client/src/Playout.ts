@@ -460,8 +460,14 @@ export type SourceEvent =
  * - Each command ends, done or failed, in bounded time. The playout sends a
  *   session its commands one at a time, so one that never ends holds up the
  *   rest of that session's, though no other session's.
- * - A method that throws when called is reported as a defect, and its command
- *   taken as one whose outcome is unknown, as when its effect dies.
+ * - A method that throws when called is reported as a defect, as one whose
+ *   effect dies is, and whether its command applied is taken as unknown. An
+ *   `enqueue` is never sent again, and unless a read of the session's queues
+ *   shows its clip within `unknownTimeout`, a replacement takes over. A
+ *   `remove` is asked again once the session's queues change, and a `move` or
+ *   `setAutoplay` a second later; nothing else goes to a session before its
+ *   autoplay. A `stop` or `play` ends its cut, and the cutter airs at the next
+ *   boundary.
  */
 export interface Source {
   readonly sessionId: string;

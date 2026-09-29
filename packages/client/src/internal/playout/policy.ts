@@ -296,6 +296,12 @@ interface Session {
   readonly changes: number;
   readonly autoplay: boolean | undefined;
   readonly wantAutoplay: boolean;
+  /**
+   * No autoplay change goes out before it: one that failed, refused or
+   * uncertain, is asked again a second later. Nothing but asking shows whether
+   * it applied, and a provider that refused autoplay on would air nothing.
+   */
+  readonly autoplayRetryAt: number;
   readonly retiring: boolean;
   readonly lastEndedAt: number | undefined;
   readonly startedAny: boolean;
@@ -317,6 +323,8 @@ interface Session {
   readonly refusedFiller: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
   /** Its last refused move, by its queues then and the clip: sent again only once they change. */
   readonly blockedMove: string | undefined;
+  /** No move goes out before it: one whose command died is asked again a second later. */
+  readonly moveRetryAt: number;
   /** The command in flight on its lane, which carries its commands one at a time. */
   readonly busy: { readonly id: number; readonly command: Command } | undefined;
   /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
@@ -1745,10 +1753,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       case "Move":
         if (result._tag === "Failed")
           updateSession(sessionId, { blockedMove: signature(session(sessionId)) + command.clipId });
+        // One that died may have applied: a read of the queues will show if it did.
+        else if (result._tag === "Died")
+          updateSession(sessionId, { moveRetryAt: now.mono + retryDelayMs });
         return;
       case "Autoplay":
-        if (result._tag === "Done") updateSession(sessionId, { autoplay: command.enabled });
-        else if (!command.enabled) cutFailed(sessionId);
+        if (result._tag === "Done") return updateSession(sessionId, { autoplay: command.enabled });
+        updateSession(sessionId, { autoplayRetryAt: now.mono + retryDelayMs });
+        if (!command.enabled) cutFailed(sessionId);
         return;
       // Its clip was marked cut when the cut began; no result makes it cuttable again.
       // One whose fiber died may not have been sent, so it fails the cut like a refusal.
@@ -1812,6 +1824,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             changes: 0,
             autoplay: undefined,
             wantAutoplay: first,
+            autoplayRetryAt: 0,
             retiring: false,
             lastEndedAt: undefined,
             startedAny: false,
@@ -1821,6 +1834,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             lastEnqueue: undefined,
             refusedFiller: { signature: "", clipIds: [] },
             blockedMove: undefined,
+            moveRetryAt: 0,
             busy: undefined,
             fillerSent: undefined,
             fillers: new Map(),
@@ -2233,8 +2247,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
     const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id;
-    if (value.source?.available === true && value.autoplay !== autoplay)
-      return queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
+    if (value.source?.available === true && value.autoplay !== autoplay) {
+      // Nothing else goes before it, even while a failed one waits to be asked again.
+      if (now.mono >= value.autoplayRetryAt)
+        queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
+      return;
+    }
     // The cut's next step, with autoplay off: stop the clip it cuts, and once that has ended,
     // play the cutter. The plan looks again between them, so a cutter withdrawn meanwhile goes
     // instead, and until its play nothing else is sent that could hold it up.
@@ -2288,7 +2306,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (
       value.source?.available === true &&
       misplaced?.tag !== undefined &&
-      value.blockedMove !== signature(value) + misplaced.clipId
+      value.blockedMove !== signature(value) + misplaced.clipId &&
+      now.mono >= value.moveRetryAt
     )
       return queueCommand(value.id, { _tag: "Move", clipId: misplaced.clipId, position: moved });
     // A cut lane's Ready item at the front cuts a lower lane's clip, or filler, that has a while to run.
@@ -2760,6 +2779,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
       if (value.lastEndedAt !== undefined) later(value.lastEndedAt + config.graceMs);
+      later(value.autoplayRetryAt);
+      later(value.moveRetryAt);
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
         if (item?.phase === "Ready" && item.mode === "held")
