@@ -137,13 +137,14 @@ export const make = Effect.fnUntraced(function* (input: {
           ] as const)
         : ([current.status, current] as const),
     );
-    if (from === status) return;
+    if (from === status) return true;
     if (!transitions[from].includes(status)) {
-      // Once the session closes only its close moves it on; an attempt that raced it stops next.
-      if (isClosing(from)) return;
+      // Once the session closes only its close moves it on: an attempt that raced it is told so.
+      if (isClosing(from)) return false;
       return yield* Effect.die(`illegal session transition ${from} -> ${status}`);
     }
     yield* publish({ _tag: "Status", status });
+    return true;
   });
   const token = yield* Token.make({
     tokens: input.tokens,

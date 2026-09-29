@@ -190,8 +190,11 @@ export interface Core {
   readonly control: Correlator.Correlator<ControlMessage>;
   /** Publishes an event on `generation`, the current one when omitted. */
   readonly publish: (payload: EventPayload, generation?: bigint) => Effect.Effect<void>;
-  /** Moves the session to `status` if it is not there yet; an illegal move is a defect. */
-  readonly transition: (status: Status) => Effect.Effect<void>;
+  /**
+   * Moves the session to `status` if it is not there yet, and says whether it is there: once the
+   * close has begun it refuses any other move. Any other illegal move is a defect.
+   */
+  readonly transition: (status: Status) => Effect.Effect<boolean>;
 }
 
 /** The fallback of a `timeoutOrElse`: `operation`'s deadline passed. */

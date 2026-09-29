@@ -401,6 +401,43 @@ layer(
   );
 });
 
+// Another fiber closes the session just as its connect reaches ready, past the connect's last check:
+// a tracer's hook on the connect's `ready` event closes it at that instant.
+layer(environment({ timing }))("a session closed as its connect reaches ready", (it) => {
+  it.effect("fails the acquisition as closed, rather than return a closed session", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const run = Effect.runForkWith(yield* Effect.context<never>());
+      let allocated: Session | undefined;
+      class ClosingSpan extends Tracer.NativeSpan {
+        override event(name: string, startTime: bigint, attributes?: Record<string, unknown>) {
+          super.event(name, startTime, attributes);
+          if (name === "reactor.connect.ready" && allocated !== undefined) run(allocated.close);
+        }
+      }
+      const reactor = yield* Reactor.Reactor;
+      const created = yield* reactor
+        .create({
+          model: H3.modelName,
+          tokens: yield* tokens,
+          onAllocated: (session) =>
+            Effect.sync(() => {
+              allocated = session;
+            }),
+        })
+        .pipe(
+          Effect.withTracer(Tracer.make({ span: (options) => new ClosingSpan(options) })),
+          Effect.exit,
+        );
+      assert.deepStrictEqual(reasonsOf(created), ["Closed"]);
+      assert.strictEqual(
+        allocated === undefined ? undefined : (yield* allocated.snapshot).status,
+        "closed",
+      );
+    }),
+  );
+});
+
 /** ReactorTest's peers, but each after the first takes `slow` to make, as a host that spawns one might. */
 const slowPeers = (slow: Duration.Input) =>
   Layer.effect(

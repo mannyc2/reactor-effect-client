@@ -288,11 +288,21 @@ export const make = ({
     return c;
   });
 
+  /** Moves the session on for a negotiation, which fails once the session's close has begun. */
+  const reach = (status: "waiting" | "ready") =>
+    Effect.flatMap(transition(status), (moved) =>
+      moved
+        ? Effect.void
+        : Effect.fail(
+            ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" }),
+          ),
+    );
+
   /** Negotiates `c` through to ready, and keeps it alive. */
   const negotiate = Effect.fnUntraced(function* (c: Connection, reconnect: boolean) {
     if (!reconnect) yield* guard(c, allocate);
     yield* current(c);
-    yield* transition("waiting");
+    yield* reach("waiting");
     const known = (yield* SubscriptionRef.get(state)).remote;
     if (!isKnown(known)) return yield* ReactorError.fromCode("InvalidState", "no known session id");
     yield* Effect.annotateCurrentSpan("reactor.session.id", known.id);
@@ -367,7 +377,7 @@ export const make = ({
         connectionId: negotiatedId,
       },
     }));
-    yield* transition("ready");
+    yield* reach("ready");
     // Hosted Reactor holds a connection's media until that connection
     // resumes its receive-only tracks, attached or not.
     for (const track of capabilities.tracks)
