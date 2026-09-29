@@ -539,14 +539,14 @@ export interface Options<R = never> {
          * whose p95 build, at the continued rate if it continues a clip,
          * exceeds `State.runwaySeconds` waits for one filler clip that builds
          * sooner than it does: long enough, within `lengths`, to cover the rest
-         * and a second more, and airing no longer than the item builds. The
-         * floor, which filler refills without holding any item, covers the next
-         * such item's build and a second more. An item with a time to meet goes
-         * as soon as it may: one with an `At` start or a `startBy`, and, since
-         * its time is now, one with an `Asap` start or on a lane that cuts. A
-         * released `Manual` item is not one of them. `"order"` builds each item
-         * as soon as it may: it airs sooner, but the air may go dark while it
-         * builds.
+         * and a second more, and airing no longer than the item builds unless
+         * `lengths.min` is longer. The floor, which filler refills without
+         * holding any item, covers the next such item's build and a second
+         * more. An item with a time to meet goes as soon as it may: one with an
+         * `At` start or a `startBy`, and, since its time is now, one with an
+         * `Asap` start, a released `Manual` one, or one on a lane that cuts.
+         * `"order"` builds each item as soon as it may: it airs sooner, but the
+         * air may go dark while it builds.
          */
         readonly protect?: "air" | "order" | undefined;
       }

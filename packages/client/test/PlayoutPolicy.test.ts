@@ -1175,6 +1175,17 @@ describe("PlayoutPolicy, air before queue order", () => {
     }
   });
 
+  // Released, a Manual item airs as an Asap one does, at the next boundary.
+  it("sends a released Manual item ahead of the cover its build would need, as an Asap one", () => {
+    const { policy } = airing(protecting("air"), 5.5);
+    policy.submit({ ...spec("held", 1, 15), start: { _tag: "Manual" } });
+    // Held, it is built ahead only while the runway keeps the floor that covers its build.
+    assert.strictEqual(sent(policy.busy()), "filler of 5.00 s");
+    policy.send({ _tag: "Release", id: 1, key: key("held") });
+    policy.reply({ _tag: "Done", clipId: "f0" });
+    assert.strictEqual(sent(policy.busy()), "held");
+  });
+
   // The cover an item had went with its lost session, and on the next no air is secured: it is
   // covered again there.
   it("covers a carried item again on the session it is carried to", () => {

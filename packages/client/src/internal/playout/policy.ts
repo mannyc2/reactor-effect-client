@@ -2453,10 +2453,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * would outlast the air secured. The clip is long enough, within the filler's
    * lengths, that the air it adds less what its own build drains covers the
    * rest and a margin, but airs no longer than the item builds, which a longer
-   * clip would only delay. An item waits for one such clip at most, and for
-   * none that cannot be sent now, would add no air or build no sooner than the
-   * item, or would not air before the session's cap. A shortfall within the
-   * margin alone is left to the floor, which refills without holding the item.
+   * clip would only delay, unless the shortest the filler takes is longer. An
+   * item waits for one such clip at most, and for none that cannot be sent
+   * now, would add no air or build no sooner than the item, or would not air
+   * before the session's cap. A shortfall within the margin alone is left to
+   * the floor, which refills without holding the item.
    */
   function coverFirst(target: Session, item: Item, continued: boolean, room: number): boolean {
     const filler = config.filler;
@@ -2488,14 +2489,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * Whether filler protects the air ahead of `item`'s build. What has a time to
    * meet goes as soon as it may: filler ahead would only make it later, and a
    * firm one late enough to be dropped. An `At` start or a `startBy` names that
-   * time; an `Asap` start, or a lane that cuts, makes it now.
+   * time; an `Asap` start, a released `Manual` item, which airs as one, or a
+   * lane that cuts makes it now.
    */
   function protects(item: Item): boolean {
     return (
       config.filler?.protect === "air" &&
       item.startBy === undefined &&
       item.spec.start._tag !== "At" &&
-      item.spec.start._tag !== "Asap" &&
+      item.mode !== "asap" &&
       config.lanes[item.spec.lane]?.cut !== true
     );
   }
