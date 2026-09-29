@@ -243,8 +243,8 @@ export const make = Effect.fnUntraced(function* (input: {
     ),
   );
 
-  const snapshot: Effect.Effect<Snapshot> = Effect.gen(function* () {
-    const session = yield* SubscriptionRef.get(state);
+  /** `session` as its readers see it, with what its connection and queues hold now. */
+  const snapshotOf = Effect.fnUntraced(function* (session: State): Effect.fn.Return<Snapshot> {
     const link =
       session.connection === undefined ? undefined : yield* Ref.get(session.connection.link);
     const details = {
@@ -268,6 +268,7 @@ export const make = Effect.fnUntraced(function* (input: {
       ...(session.remote === undefined ? {} : { remote: remoteOf(session.remote) }),
     };
   });
+  const snapshot: Effect.Effect<Snapshot> = Effect.flatMap(SubscriptionRef.get(state), snapshotOf);
 
   const observe = Effect.fnUntraced(function* (
     options: ObserveOptions = {},
@@ -304,7 +305,8 @@ export const make = Effect.fnUntraced(function* (input: {
     id,
     ownership: intent._tag === "Create" || intent.adopt ? "owned" : "attached",
     snapshot,
-    changes: SubscriptionRef.changes(state).pipe(Stream.mapEffect(() => snapshot)),
+    // Each change as it was, so a reader that falls behind still sees every status.
+    changes: SubscriptionRef.changes(state).pipe(Stream.mapEffect(snapshotOf)),
     ready: Effect.map(generation.currentReady, ({ c, negotiated }) => ({
       status: "ready",
       generation: c.generation,

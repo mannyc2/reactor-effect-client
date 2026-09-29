@@ -207,6 +207,40 @@ layer(environment({ timing }))("a session's own reconnect", (it) => {
   );
 });
 
+layer(environment({ timing }))("a session's own reconnect, read on `changes`", (it) => {
+  it.effect("shows each change as it was, to a reader that takes its time", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const seen = yield* session.changes.pipe(
+        // A reader that takes 100 ms over each snapshot, so the session runs ahead of it.
+        Stream.mapEffect((snapshot) =>
+          Effect.as(
+            Effect.sleep("100 millis"),
+            `${snapshot.status} ${snapshot.generation} ${snapshot.reconnecting}`,
+          ),
+        ),
+        Stream.changes,
+        Stream.takeUntil((step) => step === "ready 2 false"),
+        Stream.runCollect,
+        Effect.timeoutOption("1 minute"),
+      );
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          "ready 1 false",
+          "disconnected 1 true",
+          "connecting 2 true",
+          "waiting 2 true",
+          "ready 2 false",
+        ]),
+      );
+    }),
+  );
+});
+
 layer(environment({ timing }))("an attached session's dropped connection", (it) => {
   it.effect("is reconnected by that session too, which never owned it", () =>
     Effect.gen(function* () {

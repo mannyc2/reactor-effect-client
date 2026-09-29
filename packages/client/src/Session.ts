@@ -246,7 +246,10 @@ export interface Session {
   readonly id: string;
   readonly ownership: "owned" | "attached";
   readonly snapshot: Effect.Effect<Snapshot>;
-  /** The snapshot at every lifecycle change, starting with the current one. */
+  /**
+   * The snapshot at every lifecycle change, starting with the current one; a reader that falls
+   * behind still sees each status in turn.
+   */
   readonly changes: Stream.Stream<Snapshot>;
   /** The negotiated connection, when the session is ready. */
   readonly ready: Effect.Effect<ReadyState, ReactorError>;
