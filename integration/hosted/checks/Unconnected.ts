@@ -8,8 +8,9 @@
  * sent again.
  *
  * The check mints two tokens, each for one session capped at 60 s. The first
- * allocates the session the check watches, without connecting, and is used
- * for nothing else, so nothing the check does to the second can end it. The
+ * allocates the session the check watches, without connecting, and nothing
+ * else is sent on it until the key has ended that session, so nothing the
+ * check does on the second can end it. The
  * API key reads the watched session every 2 s until a read finds it ended, or
  * until its window closes, past every end Reactor plausibly gives it: the cap
  * counted from allocation, from `ACTIVE` or from ready, and the 30 s after
@@ -304,14 +305,22 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           });
           const readMs = yield* run.now;
           yield* record((probe) => ({ ...probe, read: { atMs: readMs, ...read } }));
-          // Found ended now, it ended after the watch's last read that found it running, and
-          // before the key tried to. Found running, no end the watch found holds.
-          const readEnded =
-            read.status === 404 || (read.state !== undefined && Coordinator.isTerminal(read.state));
-          const readRunning = read.status === 200 && !readEnded;
-          if (endedMs === undefined && readEnded) endedMs = goneMs ?? readMs;
+          // Found CLOSED now, it ended after the watch's last read that found it running, and
+          // before the key tried to. Found gone, it ended only if the watch's last read found it
+          // gone too: one 404 may be the coordinator's slip here as in the watch. Found running,
+          // no end the watch found holds.
+          const readClosed = read.state !== undefined && Coordinator.isTerminal(read.state);
+          const readGone = read.status === 404;
+          const readRunning = read.status === 200 && !readClosed;
+          if (endedMs === undefined && (readClosed || (readGone && goneMs !== undefined)))
+            endedMs = goneMs ?? readMs;
           const contradicted = endedMs !== undefined && readRunning;
           if (contradicted) endedMs = undefined;
+          const unanswered = contradicted
+            ? "The watch found the session ended and the read at the end found it running, so this run cannot say when Reactor ends it."
+            : endedMs === undefined && readGone
+              ? "The watch's last read found the session running and the read at the end alone answered 404, which may be the coordinator's slip, so this run cannot say whether Reactor ended it."
+              : undefined;
           // The key ends the session whether or not Reactor did, so its end is confirmed as
           // every check confirms one. Ending a session Reactor has closed ends nothing more.
           const endRequestedMs = yield* run.now;
@@ -328,12 +337,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
               ...probe,
               ended: { by: "key", atMs: terminatedMs, at: instant(terminatedMs) },
             }));
-          if (contradicted)
-            yield* record((probe) => ({
-              ...probe,
-              unanswered:
-                "The watch found the session ended and the read at the end found it running, so this run cannot say when Reactor ends it.",
-            }));
+          if (unanswered !== undefined) yield* record((probe) => ({ ...probe, unanswered }));
           return { last, read };
         });
 
@@ -414,6 +418,11 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             second === undefined
               ? "the spent token's second create went unrecorded"
               : `the spent token's second create has no known answer: ${failedWith(second)}`,
+          ],
+          // A quota refuses a create before it asks anything of the token.
+          [
+            second?.status !== 429,
+            "the spent token's second create was refused 429, by a limit of the account's, which says nothing of a spent token",
           ],
         );
         yield* run.mark("unconnected observed");

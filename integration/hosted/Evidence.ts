@@ -875,8 +875,9 @@ export const UnconnectedRecord = Schema.Struct({
   /** The coordinator's read once the reads stopped: status, key names, state and codes. */
   read: Schema.optionalKey(SessionRead),
   /**
-   * Its end, once confirmed: by Reactor at the first read that found it `CLOSED`
-   * or gone, the read at the end included; or by the key, when a termination
+   * Its end, once confirmed: by Reactor at the first read that found it `CLOSED`,
+   * or the first of two in a row that found it gone, the read at the end
+   * included; or by the key, when a termination
    * was confirmed, after any unconfirmed tries the timeline shows. The
    * session's `close.requestedMs` is the key's first DELETE.
    */
@@ -886,7 +887,7 @@ export const UnconnectedRecord = Schema.Struct({
   /**
    * Why this run cannot say whether Reactor ends a session nothing connects
    * to, when it cannot: the watch found the session ended and the read at the
-   * end found it running.
+   * end found it running, or the read at the end alone answered 404.
    */
   unanswered: Schema.optionalKey(Schema.String),
 });

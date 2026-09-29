@@ -354,7 +354,8 @@ const unconnectedLines = (
  * times, from the watched session's request, beside the duration and charge
  * the maintainer reads there. Each end lies between two times: for Reactor's,
  * the last read that found the session running and the first that found it
- * ended; for the key's, its DELETE and the read that confirmed it.
+ * ended; for the key's, its DELETE and the read that confirmed it; and before
+ * a DELETE that found no session, its allocation and that DELETE.
  */
 const billing = (
   evidence: Evidence,
@@ -396,13 +397,15 @@ const billing = (
       return { by: "Reactor", fromMs: runningMs, toMs: ended.atMs };
     }
     const close = session.close;
-    return close?.confirmed === true
-      ? { by: "the key", fromMs: close.requestedMs, toMs: close.reportedMs }
-      : undefined;
+    if (close?.confirmed !== true) return undefined;
+    // A DELETE that found no session came after the session had ended, whatever ended it.
+    return close.termination?.deleteStatus === 404
+      ? { by: "before the key's DELETE", fromMs: session.allocatedMs, toMs: close.requestedMs }
+      : { by: "the key", fromMs: close.requestedMs, toMs: close.reportedMs };
   };
   return [
     "",
-    `**Billing, for the dashboard:** seconds from the watched session's request, ${probe.requestedAt}. Each end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it. Fill in the last two columns from the Reactor dashboard.`,
+    `**Billing, for the dashboard:** seconds from the watched session's request, ${probe.requestedAt}. Each end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it; and before a DELETE that found no session, its allocation and that DELETE. Fill in the last two columns from the Reactor dashboard.`,
     "",
     "| Session | Made by | Requested | Allocated | First ACTIVE read | Ended by | Ended | Allocated to ended | Dashboard duration | Dashboard charge |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",

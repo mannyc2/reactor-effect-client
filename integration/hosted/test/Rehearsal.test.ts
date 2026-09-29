@@ -397,6 +397,25 @@ rehearse("unconnected ends together the spent token's session and one its second
         [extra.id, "its second create", true, "the key", "", ""],
       ],
     );
+    // A DELETE that found no session came after the session had ended, whatever ended it.
+    const gone = {
+      ...evidence,
+      sessions: evidence.sessions.map((held) =>
+        held.id === spending.id && held.close?.termination !== undefined
+          ? {
+              ...held,
+              close: {
+                ...held.close,
+                termination: { ...held.close.termination, deleteStatus: 404 },
+              },
+            }
+          : held,
+      ),
+    };
+    assert.include(
+      summarize([gone]),
+      `| ${spending.id} | the spent token's first create | ${rows[1]?.slice(2, 5).join(" | ") ?? "?"} | before the key's DELETE |`,
+    );
     // Reactor's end lies between the last read that found the session running and the first
     // that found it ended, 2 s apart; the times count from the watched session's request.
     assert.match(
@@ -653,6 +672,38 @@ rehearse("unconnected credits no end the read at the end contradicts", {
     assert.strictEqual(probe?.ended?.by, "key");
     assert.include(probe?.unanswered ?? "", "the read at the end found it running");
     assert.match(summarize([evidence]), /^- \*\*Q1:\*\* unanswered by this run\. The watch /m);
+  },
+});
+
+// One read answered 404 may be the coordinator's slip at the end as in the watch: alone, it
+// credits Reactor with no end, and the key's end is the one recorded.
+rehearse("unconnected credits no end to a lone 404 on the read at the end", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "MissingSession", nth: 63 }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.states.at(-1)?.state, "ACTIVE");
+    assert.strictEqual(probe?.read?.status, 404);
+    assert.strictEqual(probe?.ended?.by, "key");
+    assert.include(probe?.unanswered ?? "", "the read at the end alone answered 404");
+  },
+});
+
+// A rate limit refuses a create before it asks anything of the token, so a 429 says nothing of a
+// spent one.
+rehearse("unconnected takes a second create refused 429 for no answer", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "RefuseAllocation", nth: 3, status: 429 }],
+  judge: (evidence) => {
+    failed("the spent token's second create was answered")(evidence);
+    assert.include(
+      evidence.criteria.find(
+        (criterion) => criterion.name === "the spent token's second create was answered",
+      )?.detail ?? "",
+      "refused 429",
+    );
+    assert.strictEqual(evidence.unconnected?.ended?.by, "reactor");
   },
 });
 
