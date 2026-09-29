@@ -1491,6 +1491,36 @@ layer(
   );
 });
 
+// The application reconnects with a peer that takes half a second to make, and closes the session
+// 100 ms in.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowPeers("500 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect the session's close overtakes as it makes its peer", (it) => {
+  it.effect("fails as closed, not submitted, as one asked for after the close does", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const reconnecting = yield* Effect.forkChild(Effect.flip(session.reconnect));
+      yield* Effect.sleep("100 millis");
+      yield* session.close;
+      const overtaken = yield* Fiber.join(reconnecting);
+      const later = yield* Effect.flip(session.reconnect);
+      assert.deepStrictEqual(
+        [overtaken, later].map((failure) => [failure.reason._tag, failure.context.outcome]),
+        [
+          ["Closed", "not-submitted"],
+          ["Closed", "not-submitted"],
+        ],
+      );
+    }),
+  );
+});
+
 /** A Random that always draws `value`: 0 is the bottom of its range, and 0.5 its middle. */
 const drawing = (value: number): Random.Random => ({
   nextIntUnsafe: () => 0,

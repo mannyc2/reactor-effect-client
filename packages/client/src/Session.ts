@@ -294,7 +294,8 @@ export interface Session {
    * connection is replaced while it makes its peer, as the session reconnects a drop or another
    * reconnect asked for takes over, begins nothing either: it succeeds once a later connection is
    * ready, and fails as a later reconnect stops. It fails with `InvalidState` while another
-   * reconnect asked for is under way.
+   * reconnect asked for is under way, and with `Closed`, not submitted, once the session's close
+   * has begun, however far it had got.
    */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */

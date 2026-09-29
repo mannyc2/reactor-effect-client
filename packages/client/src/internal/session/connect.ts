@@ -84,9 +84,11 @@ const beginsFrom: Record<Attempt, (session: State) => boolean> = {
   own: (session) => session.status === "disconnected" && session.reconnecting,
 };
 
-/** Why `attempt` cannot begin from `session`. */
+/** Why `attempt` cannot begin from `session`: closed once the session's close has begun. */
 const refusal = (attempt: Attempt, session: State) =>
-  ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
+  isClosing(session.status)
+    ? closed()
+    : ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
 
 /**
  * What decides a reconnect asked for that begins no generation of its own: the first connection
