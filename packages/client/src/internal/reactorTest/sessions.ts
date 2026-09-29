@@ -352,8 +352,11 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       if (previous.phase !== "PENDING") return;
       yield* log({ sessionId: session.id, kind: "session", name: "active" });
       const expire = yield* faults.standing((fault) => fault._tag === "Expire");
+      const uncapped = yield* faults.standing((fault) => fault._tag === "IgnoreCap");
       const cap =
-        session.maxSessionSeconds === undefined ? Infinity : session.maxSessionSeconds * 1000;
+        session.maxSessionSeconds === undefined || uncapped !== undefined
+          ? Infinity
+          : session.maxSessionSeconds * 1000;
       const early = expire?._tag === "Expire" ? Duration.toMillis(expire.after) : Infinity;
       const lifetime = Math.min(cap, early);
       if (Number.isFinite(lifetime)) yield* later(lifetime, end(session, "expired"));

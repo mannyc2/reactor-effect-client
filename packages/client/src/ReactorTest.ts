@@ -75,6 +75,12 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("Disconnect", { ...nth, after: Schema.Duration }),
   /** Sessions end this long after they become ready, when that is sooner than their grant. */
   Schema.TaggedStruct("Expire", { after: Schema.Duration }),
+  /**
+   * No session ends at its grant's cap: each runs until it is terminated, or
+   * until 30 s after its last connection drops. Whether hosted Reactor ends a
+   * session nothing ever connected to at its cap is unobserved.
+   */
+  Schema.TaggedStruct("IgnoreCap", {}),
   /** DELETE is accepted and the session reads STOPPING this long before it closes. */
   Schema.TaggedStruct("SlowDelete", { for: Schema.Duration }),
   /** DELETE is accepted and the session runs on until its grant ends. */
