@@ -4,9 +4,11 @@
  * Every package is packed with `bun pm pack`, which rewrites `workspace:` and
  * `catalog:` protocols to exact versions. Each archive is validated on its own
  * (public exports, declaration/import closure, declared dependencies, native
- * identity), then installed into isolated consumers: a portable Node consumer
- * without optional dependencies, a browser consumer bundled without Node
- * globals, and a native consumer that verifies the installed addon's identity.
+ * identity), then installed into isolated consumers: a fresh Node consumer in
+ * which npm takes Effect from the client's published peer, as an application's
+ * own install does, a portable Node consumer without optional dependencies, a
+ * browser consumer bundled without Node globals, and a native consumer that
+ * verifies the installed addon's identity.
  * Each staged platform addon is packed as its own package. `--portable` packs
  * and checks only the client and browser packages, for hosts without a staged
  * addon; CI and release run the full gate.
@@ -980,6 +982,62 @@ const program = Effect.gen(function* () {
 
   const browserArchive = archives.get("browser");
   if (browserArchive === undefined) return yield* failure("browser archive was not produced");
+
+  // What an application's own `npm install reactor-effect-client` resolves. The other consumers
+  // install the selected Effect by name; this one names no Effect version and sets no override,
+  // so npm takes Effect from the registry through the archive's peer, whatever PACK_INSTALLER
+  // says, and every module of the client must then import on Node.
+  const fresh = yield* initConsumer("fresh-node");
+  const freshInstall = yield* execute(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-package-lock",
+      "--no-audit",
+      "--no-fund",
+      "--prefer-online",
+      client.tarball,
+    ],
+    fresh,
+  );
+  yield* fs.writeFileString(
+    path.join(packDirectory, "install-fresh-node.log"),
+    `${freshInstall.stdout}${freshInstall.stderr}`,
+  );
+  if (freshInstall.status !== exited)
+    return yield* failure(
+      `npm install failed in ${fresh}\n${freshInstall.stdout}${freshInstall.stderr}`,
+    );
+  yield* verifyInstalledArchive(fresh, {
+    name: client.manifest.name,
+    version: client.manifest.version,
+    specifier: client.tarball,
+    fileSha256: client.fileSha256,
+  });
+  yield* fs.copyFile(fixture("portable-import.mjs"), path.join(fresh, "portable-import.mjs"));
+  const freshOutput = yield* run(
+    node,
+    ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
+    fresh,
+    guarded(fresh, true),
+  );
+  if (!freshOutput.includes("portable-import-ok"))
+    return yield* failure("fresh install import smoke did not complete");
+  // npm ls fails on a peer npm had to override to finish the install.
+  yield* fs.writeFileString(
+    path.join(packDirectory, "fresh-node-dependencies.json"),
+    yield* run("npm", ["ls", "--all", "--json"], fresh),
+  );
+  const freshEffect = yield* resolveStackPackage(
+    path.join(fresh, "node_modules", client.manifest.name, "package.json"),
+    "effect",
+    stack,
+  );
+  yield* Console.log(
+    `fresh-install-ok ${client.manifest.name}@${client.manifest.version} effect@${freshEffect.version}`,
+  );
+  yield* releaseConsumer(fresh);
 
   const portable = yield* initConsumer("portable-node");
   yield* install(
