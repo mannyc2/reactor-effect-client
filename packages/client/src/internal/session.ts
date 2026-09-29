@@ -41,7 +41,7 @@ import * as Generation from "./session/generation.js";
 import * as Ice from "./session/ice.js";
 import * as Inbound from "./session/inbound.js";
 import type { Core, Intent, RemoteSession, Settings, State } from "./session/model.js";
-import { isKnown, transitions } from "./session/model.js";
+import { isClosing, isKnown, transitions } from "./session/model.js";
 import * as Requests from "./session/requests.js";
 import * as Tracks from "./session/tracks.js";
 import * as Upload from "./session/upload.js";
@@ -91,6 +91,8 @@ export const make = Effect.fnUntraced(function* (input: {
   const state = yield* SubscriptionRef.make<State>({
     status: "idle",
     moderated: false,
+    reconnects: false,
+    reconnecting: false,
     generation: 0n,
     remote: undefined,
     connection: undefined,
@@ -124,12 +126,23 @@ export const make = Effect.fnUntraced(function* (input: {
   const transition = Effect.fnUntraced(function* (status: Status) {
     const from = yield* SubscriptionRef.modify(state, (current) =>
       current.status !== status && transitions[current.status].includes(status)
-        ? ([current.status, { ...current, status }] as const)
+        ? ([
+            current.status,
+            {
+              ...current,
+              status,
+              // A ready connection, or the close, ends the session's own reconnect.
+              reconnecting: current.reconnecting && status !== "ready" && status !== "closing",
+            },
+          ] as const)
         : ([current.status, current] as const),
     );
     if (from === status) return;
-    if (!transitions[from].includes(status))
+    if (!transitions[from].includes(status)) {
+      // Once the session closes only its close moves it on; an attempt that raced it stops next.
+      if (isClosing(from)) return;
       return yield* Effect.die(`illegal session transition ${from} -> ${status}`);
+    }
     yield* publish({ _tag: "Status", status });
   });
   const token = yield* Token.make({
@@ -236,6 +249,7 @@ export const make = Effect.fnUntraced(function* (input: {
       session.connection === undefined ? undefined : yield* Ref.get(session.connection.link);
     const details = {
       generation: session.generation,
+      reconnecting: session.reconnecting,
       pending: { data: yield* data.size, control: yield* control.size },
       pausedLocally: [...(link?.paused ?? [])],
       claimedTracks: [...(link?.claimed ?? [])],
@@ -313,7 +327,7 @@ export const make = Effect.fnUntraced(function* (input: {
   return {
     session,
     allocate: connect.allocate,
-    connect: connect.connect,
+    connect: Effect.andThen(connect.connect, connect.arm),
     close,
   } satisfies Handle;
 });

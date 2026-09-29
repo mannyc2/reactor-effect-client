@@ -398,8 +398,9 @@ layer(
   );
 });
 
-// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends.
-layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
+// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends. These
+// sessions do not reconnect themselves, so only the test brings a connection back.
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }), reconnect: false }))(
   "the reconnect window",
   (it) => {
     it.effect("ends a session 30 s after its connection drops with none back", () =>

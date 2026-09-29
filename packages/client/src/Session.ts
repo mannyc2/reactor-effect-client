@@ -108,6 +108,12 @@ export interface ReadyState {
 
 interface SnapshotDetails {
   readonly generation: bigint;
+  /**
+   * The session is reconnecting a dropped connection on its own: from the drop until a
+   * connection is ready or it stops trying, as `Reactor.Options.reconnect` says. `disconnected`
+   * without it is lasting: only `session.reconnect` connects the session again.
+   */
+  readonly reconnecting: boolean;
   readonly pending: { readonly data: number; readonly control: number };
   readonly pausedLocally: ReadonlyArray<string>;
   readonly claimedTracks: ReadonlyArray<string>;
@@ -270,7 +276,11 @@ export interface Session {
   readonly decoded: Effect.Effect<DecodedMedia, ReactorError>;
   /** The current generation's platform tracks, from a host that has them. */
   readonly tracks: Effect.Effect<TrackMedia, ReactorError>;
-  /** A new connection generation; it never replays a command. */
+  /**
+   * A new connection generation now, from a ready or a dropped connection; it never replays a
+   * command. A session reconnects a dropped connection on its own unless `Reactor.Options`
+   * turns `reconnect` off.
+   */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */
   readonly close: Effect.Effect<CloseReport>;

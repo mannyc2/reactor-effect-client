@@ -185,11 +185,17 @@ layer(
   );
 });
 
+// The session does not reconnect itself, so it stays without a connection.
 layer(
-  recorder([
-    { _tag: "Disconnect", nth: 1, after: Duration.seconds(1) },
-    { _tag: "LateRecording", nth: 1, by: Duration.seconds(20) },
-  ]),
+  environment({
+    timing,
+    recorder: true,
+    faults: [
+      { _tag: "Disconnect", nth: 1, after: Duration.seconds(1) },
+      { _tag: "LateRecording", nth: 1, by: Duration.seconds(20) },
+    ],
+    reconnect: false,
+  }),
 )("a recording of a session without a connection", (it) => {
   // An INACTIVE session has only lost its connection, so its recording is still awaited.
   it.effect("is awaited past its predicted ready time", () =>
@@ -333,10 +339,12 @@ alone("termination stays unconfirmed when the DELETE was refused", () =>
   }),
 );
 
+// The session does not reconnect itself, so it stays without a connection.
 layer(
   environment({
     timing,
     faults: [{ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) }, { _tag: "IgnoreDelete" }],
+    reconnect: false,
   }),
 )("termination of a session without a connection", (it) => {
   // Paid run tokens 83d17eb7: INACTIVE is a session without a connection, still running.

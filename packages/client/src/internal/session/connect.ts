@@ -3,17 +3,21 @@
  * negotiate each connection generation (describe, prepare, register, trickle
  * ICE, offer, answer, ready) within its deadline. A failed attempt fails and
  * closes its generation; a reconnect replaces the previous one and never
- * replays a command.
+ * replays a command. Once acquired, a session with a reconnect policy
+ * reconnects each connection it drops on its own.
  */
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { PeerEvent, PeerFactory } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
@@ -49,6 +53,29 @@ const afterCreateFailure = (error: ReactorError): RemoteSession | undefined => {
   const refused =
     error.context.outcome === "replied" && status !== undefined && status >= 400 && status < 500;
   return refused ? undefined : { ownership: "unknown" };
+};
+
+/** A connection attempt: the first connect, a reconnect asked for, or the session's own. */
+type Attempt = "connect" | "reconnect" | "own";
+
+/** The sessions each attempt may begin a generation in. */
+const beginsFrom: Record<Attempt, (session: State) => boolean> = {
+  connect: (session) => session.status === "idle",
+  reconnect: (session) => session.status === "ready" || session.status === "disconnected",
+  own: (session) => session.status === "disconnected" && session.reconnecting,
+};
+
+/** Whether no later attempt can reconnect the session after `error`: it ended, or is gone. */
+const ends = (error: ReactorError): boolean => {
+  switch (error.reason._tag) {
+    case "TerminalSession":
+    case "Moderated":
+      return true;
+    case "Http":
+      return error.reason.status === 404;
+    default:
+      return false;
+  }
 };
 
 export const make = ({
@@ -152,17 +179,19 @@ export const make = ({
     }),
   );
 
-  /** A new generation, with its event fiber; the previous one is retired. */
-  const begin = Effect.fnUntraced(function* (reconnect: boolean) {
+  /**
+   * A new generation, with its event fiber; the previous one is retired. It takes the session
+   * over in one step with its checks, so no two attempts share a generation and none begins once
+   * the session closes. The session's own reconnect begins nothing once another attempt, a ready
+   * connection or the close has taken over.
+   */
+  const begin = Effect.fnUntraced(function* (attempt: Attempt) {
     const session = yield* SubscriptionRef.get(state);
-    const allowed = reconnect
-      ? session.status === "ready" || session.status === "disconnected"
-      : session.status === "idle";
-    if (!allowed)
-      return yield* ReactorError.fromCode(
-        "InvalidState",
-        `${reconnect ? "reconnect" : "connect"} while ${session.status}`,
-      );
+    const reconnect = attempt !== "connect";
+    if (!beginsFrom[attempt](session)) {
+      if (attempt === "own") return undefined;
+      return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
+    }
     if (reconnect && !isKnown(session.remote))
       return yield* ReactorError.fromCode(
         "InvalidState",
@@ -187,15 +216,26 @@ export const make = ({
       link: yield* Ref.make<Link>(newLink),
     };
     const previous = session.connection;
-    yield* SubscriptionRef.update(state, (held): State => ({
-      ...held,
-      generation: c.generation,
-      connection: c,
-      lastError: undefined,
-      received: new Set(),
-      sampler: Stats.initialSampler,
-    }));
-    yield* transition("connecting");
+    const claimed = yield* SubscriptionRef.modify(state, (held) => {
+      if (held.connection !== previous || !beginsFrom[attempt](held)) return [false, held] as const;
+      const next: State = {
+        ...held,
+        status: "connecting",
+        generation: c.generation,
+        connection: c,
+        lastError: undefined,
+        received: new Set(),
+        sampler: Stats.initialSampler,
+      };
+      return [true, next] as const;
+    });
+    if (!claimed) {
+      yield* Scope.close(scope, Exit.void);
+      if (attempt === "own") return undefined;
+      const held = yield* SubscriptionRef.get(state);
+      return yield* ReactorError.fromCode("InvalidState", `${attempt} while ${held.status}`);
+    }
+    yield* publish({ _tag: "Status", status: "connecting" });
     yield* Scope.addFinalizer(
       scope,
       fail(
@@ -321,9 +361,11 @@ export const make = ({
   });
 
   /** A connection attempt: a failed one leaves its generation failed and closed. */
-  const attempt = (reconnect: boolean) =>
+  const attempt = (kind: Attempt) =>
     Effect.gen(function* () {
-      const c = yield* begin(reconnect);
+      const c = yield* begin(kind);
+      if (c === undefined) return;
+      const reconnect = kind !== "connect";
       yield* Effect.annotateCurrentSpan("reactor.connection.generation", c.generation);
       yield* negotiate(c, reconnect).pipe(
         Effect.timeoutOrElse({
@@ -347,11 +389,70 @@ export const make = ({
       );
     }).pipe(
       Effect.withSpan(
-        reconnect ? "Session.reconnect" : "Session.connect",
+        kind === "connect" ? "Session.connect" : "Session.reconnect",
         { kind: "client" },
         { captureStackTrace: false },
       ),
     );
 
-  return { allocate, connect: attempt(false), reconnect: attempt(true) };
+  /**
+   * The session's own reconnect stopped for `error`, unless another attempt or the close took
+   * over: the session stays disconnected, and says why.
+   */
+  const stop = Effect.fnUntraced(function* (error: ReactorError) {
+    const news = yield* SubscriptionRef.modify(state, (session) => {
+      if (!beginsFrom.own(session)) return [false, session] as const;
+      const next: State = { ...session, reconnecting: false, lastError: error };
+      return [session.lastError !== error, next] as const;
+    });
+    // The last attempt's own failure was published with its drop.
+    if (news) yield* publish({ _tag: "Diagnostic", error });
+  });
+
+  /**
+   * Reconnects each connection the session drops: an attempt at once, then again on `schedule`,
+   * which sees each failure, until one is ready, the schedule stops, no attempt can succeed or
+   * `reconnectTimeout` has passed since the drop. A defect ends that reconnect, is reported, and
+   * the next drop is reconnected again.
+   */
+  const reconnectEachDrop = (schedule: Schedule.Schedule<unknown, ReactorError>) =>
+    Effect.gen(function* () {
+      yield* SubscriptionRef.changes(state).pipe(Stream.filter(beginsFrom.own), Stream.runHead);
+      const reconnected = yield* attempt("own").pipe(
+        Effect.retry({
+          schedule,
+          while: (error) =>
+            ends(error)
+              ? Effect.succeed(false)
+              : Effect.map(SubscriptionRef.get(state), beginsFrom.own),
+        }),
+        Effect.timeoutOrElse({
+          duration: settings.reconnectTimeout,
+          orElse: timedOut("reconnect"),
+        }),
+        Effect.exit,
+      );
+      if (Exit.isSuccess(reconnected)) return;
+      if (Cause.hasDies(reconnected.cause)) yield* ErrorReporter.report(reconnected.cause);
+      yield* reconnected.cause.pipe(
+        failureOr(() => ReactorError.fromCode("Aborted", "reconnecting stopped")),
+        stop,
+      );
+    }).pipe(Effect.forever);
+
+  /**
+   * Once the acquisition has connected, the session reconnects each connection it drops on its
+   * own, one dropped meanwhile included, in a fiber its close interrupts.
+   */
+  const arm = Effect.gen(function* () {
+    if (settings.reconnect === undefined) return;
+    yield* SubscriptionRef.update(state, (session): State => ({
+      ...session,
+      reconnects: true,
+      reconnecting: session.status === "disconnected",
+    }));
+    yield* Effect.forkIn(reconnectEachDrop(settings.reconnect), root);
+  });
+
+  return { allocate, connect: attempt("connect"), reconnect: attempt("reconnect"), arm };
 };

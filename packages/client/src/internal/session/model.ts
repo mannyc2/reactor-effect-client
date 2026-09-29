@@ -9,6 +9,7 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Queue from "effect/Queue";
 import type * as Ref from "effect/Ref";
+import type * as Schedule from "effect/Schedule";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as SubscriptionRef from "effect/SubscriptionRef";
@@ -34,8 +35,13 @@ export interface Settings {
   readonly replyTimeout: Duration.Duration;
   readonly uploadTimeout: Duration.Duration;
   readonly connectTimeout: Duration.Duration;
-  /** A reconnect's own deadline: Reactor ends a session 30 s after it loses its last connection. */
+  /**
+   * A reconnect's deadline, the session's own counted from the drop: Reactor ends a session 30 s
+   * after it loses its last connection.
+   */
   readonly reconnectTimeout: Duration.Duration;
+  /** When the session tries a dropped connection again; none leaves it dropped. */
+  readonly reconnect: Schedule.Schedule<unknown, ReactorError> | undefined;
   readonly readyTimeout: Duration.Duration;
   /** Infinite disables the heartbeat. */
   readonly heartbeat: Duration.Duration;
@@ -122,6 +128,10 @@ export interface State {
   readonly status: Status;
   /** Content moderation is ending the session: nothing reconnects it. */
   readonly moderated: boolean;
+  /** A dropped connection is reconnected on its own: the session has a policy and was acquired. */
+  readonly reconnects: boolean;
+  /** The session is reconnecting on its own, from the drop until a connection is ready or it stops. */
+  readonly reconnecting: boolean;
   readonly generation: bigint;
   readonly remote: RemoteSession | undefined;
   readonly connection: Connection | undefined;

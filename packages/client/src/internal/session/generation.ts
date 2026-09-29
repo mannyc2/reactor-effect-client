@@ -1,7 +1,7 @@
 /**
  * The live connection generation: the checks that fence work to it, and its
  * one failure, which fails its requests, closes its peer and, while it is
- * live, leaves the session disconnected.
+ * live, leaves the session disconnected, reconnecting if it does so on its own.
  */
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -121,6 +121,8 @@ export const make = (core: Core) => {
         received: new Set<string>(),
         lastError: error,
         status: "disconnected",
+        // With the drop itself, so no reader takes a drop the session reconnects for a lasting one.
+        reconnecting: session.reconnects,
       };
       return [true, next] as const;
     });

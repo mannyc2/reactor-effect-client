@@ -17,6 +17,7 @@ import {
 } from "effect";
 import { Coordinator, H3Source, Reactor, ReactorTest } from "../src/index.js";
 import { PeerFactory } from "../src/Peer.js";
+import type { Source, SourceEvent } from "../src/Playout.js";
 import { ReactorError } from "../src/ReactorError.js";
 import type { Session } from "../src/Session.js";
 import { environment, tokens } from "./fixtures/Simulated.js";
@@ -129,6 +130,116 @@ layer(dropped)("a dropped connection two readers of the source's events see", (i
       );
       assert.deepStrictEqual(second, first);
       assert.strictEqual((yield* session.snapshot).generation, 2n);
+    }),
+  );
+});
+
+// Each connection's answer takes 5 s, so a reader can come while the session reconnects.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      http: "20 millis",
+      channel: "10 millis",
+      negotiation: "5 seconds",
+    }),
+    faults: [{ _tag: "Disconnect", nth: 1, after: Duration.seconds(5) }],
+  }),
+)("a reader of the source's events that comes while its session reconnects", (it) => {
+  it.effect("is told of the recovery under way, and of its end", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const { source, session } = yield* opened;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "connecting"),
+        Stream.runHead,
+      );
+      const read = yield* source.events.pipe(
+        Stream.filter((event) => event._tag === "Reconnecting" || event._tag === "Reconnected"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.timeoutOption("1 minute"),
+      );
+      assert.deepStrictEqual(
+        Option.map(read, (events) => events.map((event) => event._tag)),
+        Option.some(["Reconnecting", "Reconnected"]),
+      );
+    }),
+  );
+});
+
+/**
+ * A source's events until they end, if they end within `wait`: the recovery it reported, why it
+ * ended, and how long after reporting the drop.
+ */
+const readUntilEnd = (source: Source, wait: Duration.Input) =>
+  Effect.gen(function* () {
+    const read: Array<readonly [SourceEvent["_tag"], number]> = [];
+    const ended = yield* source.events.pipe(
+      Stream.runForEach((event) =>
+        Effect.map(Clock.currentTimeMillis, (at) => {
+          read.push([event._tag, at]);
+        }),
+      ),
+      Effect.exit,
+      Effect.timeoutOption(wait),
+    );
+    const dropped = read.find(([tag]) => tag === "Reconnecting")?.[1];
+    return {
+      recovery: read
+        .map(([tag]) => tag)
+        .filter((tag) => tag === "Reconnecting" || tag === "Reconnected"),
+      failure: Option.getOrUndefined(Option.flatMap(ended, Exit.findErrorOption))?.reason._tag,
+      afterDrop: dropped === undefined ? undefined : (yield* Clock.currentTimeMillis) - dropped,
+    };
+  });
+
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [{ _tag: "Disconnect", nth: 1, after: Duration.seconds(5) }],
+    reconnect: false,
+  }),
+)("a dropped connection its session does not reconnect", (it) => {
+  it.effect("loses the source where its readers see the drop, at once", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const { source } = yield* opened;
+      const read = yield* readUntilEnd(source, "1 minute");
+      assert.deepStrictEqual(
+        [read.recovery, read.failure, read.afterDrop],
+        [["Reconnecting"], "Disconnected", 0],
+      );
+    }),
+  );
+});
+
+// Each connection's answer takes 5 s, so reconnecting takes longer than the source waits for it.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      http: "20 millis",
+      channel: "10 millis",
+      negotiation: "5 seconds",
+    }),
+    faults: [{ _tag: "Disconnect", nth: 1, after: Duration.seconds(5) }],
+  }),
+)("a dropped connection its session reconnects after the source's recovery", (it) => {
+  it.effect("loses the source at `recovery`, while the session reconnects on its own", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const allocated = yield* Deferred.make<Session>();
+      const source = yield* H3Source.open({
+        tokens: yield* tokens,
+        recovery: "2 seconds",
+        onAllocated: ({ session }) => Deferred.succeed(allocated, session),
+      });
+      const session = yield* Deferred.await(allocated);
+      const read = yield* readUntilEnd(source, "1 minute");
+      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Timeout"]);
+      assert.approximately(read.afterDrop ?? 0, 2_000, 50);
+      assert.isTrue(Option.isSome(yield* reconnected(session)));
     }),
   );
 });

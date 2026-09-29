@@ -11,16 +11,18 @@
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import type * as Crypto from "effect/Crypto";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { TokenGrant, Tokens } from "./Coordinator.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
@@ -29,7 +31,7 @@ import * as Tag from "./internal/playout/tag.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
-import type { Session } from "./Session.js";
+import type { Session, Snapshot } from "./Session.js";
 
 /**
  * A durable owner record of an allocated session, without a token: enough to
@@ -64,7 +66,12 @@ export interface Options {
   /** Keep the last frame between clips instead of flushing to black; true by default. */
   readonly holdLastFrame?: boolean | undefined;
   readonly provider?: H3.Options | undefined;
-  /** How long a lost connection may take to reconnect before the session counts as lost; 20 seconds by default. */
+  /**
+   * How long the source waits, from a drop, for its session to reconnect and H3 to be read again
+   * before it counts itself lost; 20 seconds by default. The session reconnects itself: a session
+   * that does not (`Reactor.Options.reconnect` is `false`), or has stopped trying, loses the
+   * source at once.
+   */
   readonly recovery?: Duration.Input | undefined;
 }
 
@@ -184,6 +191,53 @@ const track = <A>(
     }),
   );
 
+/** A drop the source came back from: the generation it came back on, and how long that took. */
+interface Recovered {
+  readonly to: bigint;
+  readonly afterMillis: number;
+}
+
+/** The source's recoveries, in order, and why it stopped recovering once it has. */
+interface Recoveries {
+  readonly recovered: ReadonlyArray<Recovered>;
+  readonly lost: Cause.Cause<ReactorError> | undefined;
+}
+
+/** The session's connection is down and may come back: it dropped, or a new one is on its way. */
+const down = (snapshot: Snapshot): boolean =>
+  snapshot.status === "connecting" ||
+  snapshot.status === "waiting" ||
+  snapshot.status === "disconnected";
+
+/** Why a session whose connection dropped will not be ready again: it closes, or stopped trying. */
+const unrecoverable = (snapshot: Snapshot): ReactorError | undefined => {
+  switch (snapshot.status) {
+    case "closing":
+    case "closed":
+      return ReactorError.fromCode("Closed", "the session closed");
+    case "disconnected":
+      if (snapshot.reconnecting) return undefined;
+      return snapshot.lastError ?? ReactorError.fromCode("Disconnected", "the session dropped");
+    default:
+      return undefined;
+  }
+};
+
+/** The first generation a session whose connection is down may be ready on again. */
+const readyFrom = (snapshot: Snapshot): bigint =>
+  snapshot.status === "connecting" || snapshot.status === "waiting"
+    ? snapshot.generation
+    : snapshot.generation + 1n;
+
+/** What a reader waiting on a recovery from `from` on can know yet: that recovery, or the loss. */
+const outcomeFrom =
+  (from: bigint) =>
+  (held: Recoveries): Exit.Exit<Recovered, ReactorError> | undefined => {
+    const recovered = held.recovered.find((each) => each.to >= from);
+    if (recovered !== undefined) return Exit.succeed(recovered);
+    return held.lost === undefined ? undefined : Exit.failCause(held.lost);
+  };
+
 /** A connected session as a playout source, all but its lifetime. */
 const fromSession = Effect.fnUntraced(function* (
   session: Session,
@@ -201,67 +255,92 @@ const fromSession = Effect.fnUntraced(function* (
     readonly starts: ReadonlyMap<string, number>;
   }>({ total: 0, starts: new Map() });
   const recovery = Duration.fromInputUnsafe(options.recovery ?? "20 seconds");
-  const recover = session.reconnect.pipe(
-    Effect.andThen(provider.refresh),
-    Effect.timeoutOrElse({
-      duration: recovery,
-      orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "reconnecting took too long")),
-    }),
-    Effect.mapError((error) =>
-      CommandFailure.is(error)
-        ? ReactorError.make({ reason: error.reason, context: error.context })
-        : error,
-    ),
-  );
-  // The source recovers each dropped connection once, in its own scope, however many read
-  // its events. Every reader reports that one recovery where it sees the drop, in order, and
-  // fails there once recovering has failed for good.
-  const recoveries = yield* Ref.make<ReadonlyMap<bigint, Deferred.Deferred<number, ReactorError>>>(
-    new Map(),
-  );
-  /** The recovery of `generation`'s drop, shared by every reader: how long it took, or why it failed. */
-  const recoveryOf = (generation: bigint) =>
-    Effect.flatMap(Deferred.make<number, ReactorError>(), (fresh) =>
-      Ref.modify(recoveries, (all) => {
-        const known = all.get(generation);
-        return known === undefined ? [fresh, new Map(all).set(generation, fresh)] : [known, all];
+  // The session reconnects a dropped connection itself, and the source follows it once, however
+  // many read its events: it gives the session `recovery` to be ready again, then reads H3's
+  // facts afresh. Every reader reports that one recovery where it sees the drop, in order, and
+  // fails there once the source has stopped recovering.
+  const recoveries = yield* SubscriptionRef.make<Recoveries>({ recovered: [], lost: undefined });
+  /** The first snapshot of the session `accept` takes, now or once it changes. */
+  const first = (accept: (snapshot: Snapshot) => boolean) =>
+    session.changes.pipe(Stream.filter(accept), Stream.runHead, Effect.map(Option.getOrThrow));
+  /** Waits for a connection ready after the one on `up`, then reads H3 on it; its generation. */
+  const recover = (up: bigint | undefined) =>
+    Effect.gen(function* () {
+      const back = yield* first(
+        (snapshot) =>
+          (snapshot.status === "ready" && snapshot.generation !== up) ||
+          unrecoverable(snapshot) !== undefined,
+      );
+      const why = unrecoverable(back);
+      if (why !== undefined) return yield* why;
+      yield* provider.refresh;
+      return back.generation;
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: recovery,
+        orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "reconnecting took too long")),
       }),
-    );
-  /** Why the source stopped recovering: the failure of its last recovery. */
-  const lost = yield* Deferred.make<never, ReactorError>();
-  yield* session.changes.pipe(
-    Stream.filter((snapshot) => snapshot.status === "disconnected"),
-    Stream.map((snapshot) => snapshot.generation),
-    Stream.changes,
-    Stream.runForEach((generation) =>
-      Effect.flatMap(recoveryOf(generation), (outcome) =>
-        recover.pipe(
-          Effect.timed,
-          Effect.map(([after]) => Duration.toMillis(after)),
-          Effect.onExit((exit) => Deferred.done(outcome, exit)),
-        ),
+      Effect.mapError((error) =>
+        CommandFailure.is(error)
+          ? ReactorError.make({ reason: error.reason, context: error.context })
+          : error,
       ),
-    ),
+      Effect.timed,
+    );
+  // Set up on a ready connection, unless it dropped meanwhile.
+  const start = yield* session.snapshot;
+  yield* Effect.gen(function* () {
+    const up =
+      (yield* SubscriptionRef.get(recoveries)).recovered.at(-1)?.to ??
+      (start.status === "ready" ? start.generation : undefined);
+    // A close is no drop: the source ends with its session.
+    if (up !== undefined) yield* first((snapshot) => down(snapshot) || snapshot.generation !== up);
+    const [took, to] = yield* recover(up);
+    yield* SubscriptionRef.update(recoveries, (held) => ({
+      ...held,
+      recovered: [...held.recovered, { to, afterMillis: Duration.toMillis(took) }],
+    }));
+  }).pipe(
+    Effect.forever,
     Effect.onError((cause) =>
-      Cause.hasInterruptsOnly(cause) ? Effect.void : Deferred.failCause(lost, cause),
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : SubscriptionRef.update(recoveries, (held) => ({ ...held, lost: cause })),
     ),
     Effect.forkScoped,
   );
-  const reconnect = (generation: bigint): Stream.Stream<SourceEvent, ReactorError> =>
+  /** The recovery that ended on `from` or later, once there is one, or why the source was lost. */
+  const recoveredFrom = (from: bigint): Effect.Effect<Recovered, ReactorError> =>
+    SubscriptionRef.changes(recoveries).pipe(
+      Stream.map(outcomeFrom(from)),
+      Stream.filter(Predicate.isNotUndefined),
+      Stream.runHead,
+      Effect.flatMap(Option.getOrThrow),
+    );
+  /** A reader's report of the recovery from `from` on; `past` keeps where it ended. */
+  const reconnect = (
+    from: bigint,
+    past: Ref.Ref<bigint>,
+  ): Stream.Stream<SourceEvent, ReactorError> =>
     Stream.concat(
       Stream.succeed<SourceEvent>({ _tag: "Reconnecting" }),
       Stream.fromIterableEffect(
         Effect.gen(function* () {
-          // A drop after the source was lost is never recovered.
-          const afterMillis = yield* Effect.flatMap(recoveryOf(generation), (outcome) =>
-            Effect.raceFirst(Deferred.await(outcome), Deferred.await(lost)),
-          );
+          const recovered = yield* recoveredFrom(from);
+          yield* Ref.set(past, recovered.to);
           return [
-            { _tag: "Reconnected", afterMillis },
+            { _tag: "Reconnected", afterMillis: recovered.afterMillis },
             { _tag: "State", state: stateOf(yield* provider.snapshot) },
           ] satisfies ReadonlyArray<SourceEvent>;
         }),
       ),
+    );
+  /** A reader's report of a drop of `generation`, unless a recovery it reported came back past it. */
+  const dropped = (generation: bigint, past: Ref.Ref<bigint>) =>
+    past.pipe(
+      Ref.get,
+      Effect.map((seen) => (generation < seen ? Stream.empty : reconnect(generation + 1n, past))),
+      Stream.unwrap,
     );
   const translate = (
     event: H3.ProviderEvent,
@@ -327,17 +406,23 @@ const fromSession = Effect.fnUntraced(function* (
         state: stateOf(observation.initial),
       });
       // A reader that comes after the source was lost learns it at once.
-      if (yield* Deferred.isDone(lost))
-        return Stream.concat(initial, Stream.fromEffectDrain(Deferred.await(lost)));
-      return Stream.concat(
-        initial,
-        observation.events.pipe(
-          Stream.flatMap((event) =>
-            event._tag === "Session" &&
-            event.source._tag === "Status" &&
-            event.source.status === "disconnected"
-              ? reconnect(event.source.generation)
-              : Stream.fromIterableEffect(translate(event)),
+      const lost = (yield* SubscriptionRef.get(recoveries)).lost;
+      if (lost !== undefined) return Stream.concat(initial, Stream.failCause(lost));
+      const past = yield* Ref.make(0n);
+      // A reader that comes while the connection is down reports the recovery under way first.
+      const now = yield* session.snapshot;
+      const underway = down(now) ? reconnect(readyFrom(now), past) : Stream.empty;
+      return initial.pipe(
+        Stream.concat(underway),
+        Stream.concat(
+          observation.events.pipe(
+            Stream.flatMap((event) =>
+              event._tag === "Session" &&
+              event.source._tag === "Status" &&
+              event.source.status === "disconnected"
+                ? dropped(event.source.generation, past)
+                : Stream.fromIterableEffect(translate(event)),
+            ),
           ),
         ),
       );

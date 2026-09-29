@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Random from "effect/Random";
+import * as Schedule from "effect/Schedule";
 import type * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { Coordinator, notTerminated } from "./Coordinator.js";
@@ -30,10 +31,22 @@ export interface Options {
    */
   readonly connectTimeout?: Duration.Input | undefined;
   /**
-   * How long a reconnect may take; 30 seconds by default, the time Reactor keeps a
-   * session that has lost its last connection before it ends it.
+   * How long a reconnect may take, a session's own counted from the drop; 30 seconds by
+   * default, the time Reactor keeps a session that has lost its last connection before it
+   * ends it.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
+  /**
+   * How a session reconnects a connection it drops, on its own and whoever reads it, owned or
+   * attached: one attempt at once, then another after each failure on this schedule, which gets
+   * the failure as its input. It stops once a connection is ready, the schedule stops, the
+   * session is closing or ended (by Reactor or its moderation), or `reconnectTimeout` has passed
+   * since the drop. Each attempt is a new connection generation of the same session: it
+   * allocates nothing and never replays a command. By default the second attempt comes 250 ms
+   * after the first fails and each wait doubles, to at most 4 seconds, jittered by up to a fifth
+   * either way. `false` leaves a dropped connection dropped until `session.reconnect`.
+   */
+  readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */
   readonly readyTimeout?: Duration.Input | undefined;
   /** Between heartbeats; 10 seconds by default, `"Infinity"` for none. */
@@ -131,6 +144,15 @@ const bounded = (
   return Effect.succeed(duration);
 };
 
+/**
+ * A session's own reconnect by default: 250 ms after the first failed attempt, doubling to at
+ * most 4 s, jittered so clients that dropped together do not try again together.
+ */
+const reconnectSchedule: Schedule.Schedule<unknown, ReactorError> = Schedule.min([
+  Schedule.exponential("250 millis"),
+  Schedule.spaced("4 seconds"),
+]).pipe(Schedule.jittered);
+
 const count = (value: number | undefined, fallback: number, maximum: number, name: string) =>
   Number.isSafeInteger(value ?? fallback) &&
   (value ?? fallback) >= 1 &&
@@ -147,6 +169,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     uploadTimeout: yield* bounded(options.uploadTimeout, "60 seconds", "upload timeout"),
     connectTimeout: yield* bounded(options.connectTimeout, "3 minutes", "connect timeout"),
     reconnectTimeout: yield* bounded(options.reconnectTimeout, "30 seconds", "reconnect timeout"),
+    reconnect: options.reconnect === false ? undefined : (options.reconnect ?? reconnectSchedule),
     readyTimeout: yield* bounded(options.readyTimeout, "30 seconds", "ready timeout"),
     heartbeat: yield* bounded(options.heartbeatInterval, "10 seconds", "heartbeat interval", true),
     maxPending: yield* count(options.maxPending, 128, 4096, "maxPending"),
