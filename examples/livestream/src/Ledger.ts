@@ -55,10 +55,10 @@ export class Ledger extends Context.Service<
       });
 
       const closed = Effect.fn("Ledger.closed")(function* (report: Playout.Cleanup) {
-        // A session that may have been allocated and was not confirmed
-        // terminated may still be billing: name it.
+        // A session that may still be billing, one not confirmed terminated or
+        // one whose allocation was never identified, is named.
         const unconfirmed = report.retained
-          .filter((entry) => entry.allocation !== "none" && !entry.remote.confirmed)
+          .filter(Session.mayStillBill)
           .map((entry) => entry.sessionId ?? "unknown");
         if (unconfirmed.length > 0)
           yield* Effect.logWarning("sessions not confirmed terminated", { sessions: unconfirmed });
