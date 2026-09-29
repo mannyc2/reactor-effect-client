@@ -68,7 +68,11 @@ const afterCreateFailure = (error: ReactorError): RemoteSession | undefined => {
   return refused ? undefined : { ownership: "unknown" };
 };
 
-/** How an attempt, or a step of one, fails once the session's close has overtaken it. */
+/**
+ * How an attempt fails where it finds the session's close begun: before it allocates or takes the
+ * session over, as it waits on another, or as it moves the session on. A close that overtakes its
+ * negotiation fails it with `Aborted` instead, as it fails its connection.
+ */
 const closed = () =>
   ReactorError.fromCode("Closed", "session is closed", { outcome: "not-submitted" });
 
@@ -288,7 +292,8 @@ export const make = ({
    * connection or the close has taken over. A reconnect asked for while the session reconnects on
    * its own begins nothing either: it joins that reconnect, watched from before it looks. Nor does
    * one whose connection another attempt replaced while it made its peer, the session's own
-   * reconnect say: it joins whatever came after the connection it looked at. The session's own
+   * reconnect say: it joins whatever came after the connection it looked at, unless that attempt is
+   * another reconnect asked for still under way, which refuses it as at the look. The session's own
    * attempt keeps the generation it claims in `began` as it claims it. An attempt acquires it
    * uninterruptibly, so every generation it claims is one the attempt fails and closes if it goes
    * no further, a defect as it takes over included.
@@ -382,8 +387,8 @@ export const make = ({
 
   /**
    * Moves the session to ready on `c`, in one step with the checks that it may: `c` is the
-   * session's connection, waiting, and has not failed. Otherwise this fails as `current(c)` does,
-   * with `c`'s own failure first, or as closed once the session's close has begun.
+   * session's connection, waiting, and has not failed. Otherwise this fails as closed once the
+   * session's close has begun, and else as `current(c)` does, `c`'s own failure first.
    */
   const reachReady = Effect.fnUntraced(function* (c: Connection) {
     const refused = yield* SubscriptionRef.modify(

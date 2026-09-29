@@ -293,9 +293,12 @@ export interface Session {
    * with the session's `lastError`, or with `Closed` if the session closes first. One whose
    * connection is replaced while it makes its peer, as the session reconnects a drop or another
    * reconnect asked for takes over, begins nothing either: it succeeds once a later connection is
-   * ready, and fails as a later reconnect stops. It fails with `InvalidState` while another
-   * reconnect asked for is under way, and with `Closed`, not submitted, once the session's close
-   * has begun, however far it had got.
+   * ready, and fails with the session's `lastError` once a later one is down for good, as the
+   * session's own reconnect stops or as another reconnect asked for fails meanwhile, whose failure
+   * it then takes. It fails with `InvalidState` while another reconnect asked for is under way. It
+   * fails with `Closed`, not submitted, if the session's close has begun before it takes the
+   * session over, or once its connection is open and becoming ready; one the close overtakes
+   * earlier in its negotiation fails with its connection's `Aborted`.
    */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */
