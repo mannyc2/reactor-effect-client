@@ -33,7 +33,10 @@ export interface Options {
   /**
    * How long a reconnect may take, a session's own counted from the drop; 30 seconds by
    * default, the time Reactor keeps a session that has lost its last connection before it
-   * ends it.
+   * ends it. The deadline cuts the negotiation, not the host's work on either side of it:
+   * making the connection's peer, which every shipped host does at once, and shutting down the
+   * peer it replaces, or its own after a failed attempt, which the native peer bounds by its
+   * `shutdownTimeout` (10 seconds by default) and the browser's does at once.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
   /**
