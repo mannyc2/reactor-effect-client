@@ -26,8 +26,11 @@ export interface Options {
   /** How long an upload may take in all; 60 seconds by default. */
   readonly uploadTimeout?: Duration.Input | undefined;
   /**
-   * How long connecting may take in all, the wait for a GPU included; 3 minutes by default.
-   * Waiting for a GPU is not billed.
+   * How long connecting may take, the wait for a GPU included; 3 minutes by default. Waiting for
+   * a GPU is not billed. The deadline cuts the allocation and the negotiation, not the host's work
+   * on either side of them: making the connection's peer, which every shipped host does at once,
+   * and shutting it down after a failed attempt, which the native peer bounds by its
+   * `shutdownTimeout` (10 seconds by default) and the browser's does at once.
    */
   readonly connectTimeout?: Duration.Input | undefined;
   /**
