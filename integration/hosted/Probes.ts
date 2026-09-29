@@ -32,11 +32,48 @@ const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
   return [`${path}: ${value === null ? "null" : typeof value}`];
 };
 
+/**
+ * Whether evidence, which is committed, may keep a text: letters, digits, `_`
+ * and `-`, at most 64 of them, and no IPv4 address however its numbers are
+ * joined. No URL, dotted host name, IPv6 address or port has that shape.
+ */
+const isCode = (text: string) =>
+  /^[\w-]{1,64}$/.test(text) && !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text);
+
+/** A value as evidence may keep it: a code, a number or a boolean; other text only by its length. */
+const kept = (value: unknown): string | undefined => {
+  if (Predicate.isString(value)) return isCode(value) ? value : `(text, ${value.length} chars)`;
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
+};
+
+/** A body's key names as evidence may keep them: a key that is no code only by its length. */
+const keysOf = (body: object) =>
+  Object.keys(body).map((key) => (isCode(key) ? key : `(key, ${key.length} chars)`));
+
+/** Words that name an address in a key, however the key is cased or joined. */
+const addressWords = new Set([
+  "ip",
+  "addr",
+  "address",
+  "host",
+  "hostname",
+  "url",
+  "uri",
+  "endpoint",
+]);
+
+/** Whether a value may be read under a key: one that is a code and names no address. */
+const readable = (key: string) =>
+  isCode(key) &&
+  !key
+    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
+    .some((word) => addressWords.has(word.toLowerCase()));
+
 /** A code short and plain enough to be an identifier rather than provider text. */
 const codeOf = (body: unknown): string | undefined => {
   const error = Predicate.isObject(body) ? body.error : undefined;
   const code = Predicate.isObject(error) ? error.code : undefined;
-  return Predicate.isString(code) && /^[\w.-]{1,64}$/.test(code) ? code : undefined;
+  return Predicate.isString(code) && isCode(code) ? code : undefined;
 };
 
 const numberOrNull = (value: unknown): number | null =>
@@ -196,58 +233,42 @@ export const readSession = (input: {
 
 /**
  * A reply's body as evidence may keep it: top-level key names, the state, and
- * identifier-like values under keys that may say why a session ended.
+ * the codes under keys that may say why a session ended, one level down; other
+ * text only by its length, and nothing under a key that names an address.
  */
 export const summarizeBody = (content: unknown) => {
   const body = Predicate.isObject(content) ? content : {};
   const codes: Record<string, string> = {};
-  const note = (key: string, value: unknown) => {
-    if (Predicate.isString(value))
-      codes[key] = /^[\w.:/-]{1,64}$/.test(value) ? value : `(text, ${value.length} chars)`;
-    else if (typeof value === "number" || typeof value === "boolean") codes[key] = String(value);
+  const note = (path: string, value: unknown) => {
+    const code = kept(value);
+    if (code !== undefined) codes[path] = code;
   };
   for (const [key, value] of Object.entries(body)) {
-    if (!telling.test(key)) continue;
-    if (Predicate.isObject(value) && !Array.isArray(value))
-      for (const [inner, item] of Object.entries(value)) note(`${key}.${inner}`, item);
-    else note(key, value);
+    if (!telling.test(key) || !readable(key)) continue;
+    if (Predicate.isObject(value) && !Array.isArray(value)) {
+      for (const [inner, item] of Object.entries(value))
+        if (readable(inner)) note(`${key}.${inner}`, item);
+    } else note(key, value);
   }
-  const state = Predicate.isString(body.state) ? body.state : undefined;
+  const state = Predicate.isString(body.state) ? kept(body.state) : undefined;
   return {
-    keys: Object.keys(body),
+    keys: keysOf(body),
     ...(state === undefined ? {} : { state }),
     ...(Object.keys(codes).length === 0 ? {} : { codes }),
   };
 };
 
-/** Words that name an address in a key, however the key is cased or joined. */
-const addressWords = new Set([
-  "ip",
-  "addr",
-  "address",
-  "host",
-  "hostname",
-  "url",
-  "uri",
-  "endpoint",
-]);
-const namesAddress = (key: string) =>
-  key
-    .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
-    .some((word) => addressWords.has(word.toLowerCase()));
-
 /**
  * A refusal's body as evidence may keep it: its key names, and each value
  * that reads as a code, two levels down and in a list's first three entries;
- * other text only by its length. A code here has no spaces, colons or slashes
- * and is no IPv4 address, and nothing under a key that names an address is
- * kept, so no sentence, URL or IP address passes for one.
+ * other text only by its length, and nothing under a key that names an
+ * address, so no sentence, URL, host name or IP address passes for a code.
  */
 export const summarizeRefusal = (content: unknown) => {
   const body = Predicate.isObject(content) ? content : {};
   const codes: Record<string, string> = {};
   const visit = (path: string, key: string, value: unknown, depth: number) => {
-    if (namesAddress(key)) return;
+    if (!readable(key)) return;
     if (Array.isArray(value)) {
       if (depth < 2)
         for (const [index, item] of value.slice(0, 3).entries())
@@ -256,15 +277,13 @@ export const summarizeRefusal = (content: unknown) => {
       if (depth < 2)
         for (const [inner, item] of Object.entries(value))
           visit(`${path}.${inner}`, inner, item, depth + 1);
-    } else if (Predicate.isString(value))
-      codes[path] =
-        /^[\w.-]{1,64}$/.test(value) && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)
-          ? value
-          : `(text, ${value.length} chars)`;
-    else if (typeof value === "number" || typeof value === "boolean") codes[path] = String(value);
+    } else {
+      const code = kept(value);
+      if (code !== undefined) codes[path] = code;
+    }
   };
   for (const [key, value] of Object.entries(body)) visit(key, key, value, 0);
-  return { keys: Object.keys(body), ...(Object.keys(codes).length === 0 ? {} : { codes }) };
+  return { keys: keysOf(body), ...(Object.keys(codes).length === 0 ? {} : { codes }) };
 };
 
 /** A session reply as evidence may keep it: its status, and its body as `summarizeBody` keeps it. */

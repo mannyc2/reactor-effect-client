@@ -18,7 +18,7 @@ const serve = Effect.fnUntraced(function* (
   return HttpServer.formatAddress(server.address);
 });
 
-layer(FetchHttpClient.layer)("a session read with the API key", (it) => {
+layer(FetchHttpClient.layer)("a request with the API key", (it) => {
   // The client's coordinator refuses every redirect, so a credential goes only where it was sent.
   it.effect("follows no redirect, so the key reaches nowhere else", () =>
     Effect.gen(function* () {
@@ -40,26 +40,107 @@ layer(FetchHttpClient.layer)("a session read with the API key", (it) => {
       assert.deepStrictEqual([read.status, yield* Ref.get(reached)], [0, 0]);
     }),
   );
+
+  it.effect("keeps no host name as its reply's code", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* serve(
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { error: { code: "edge.reactor.example" } },
+            { status: 403 },
+          ),
+        ),
+      );
+      const probes = yield* Probes.run({
+        apiUrl: coordinator,
+        apiKey: Redacted.make("reactor-test-key"),
+      });
+      assert.deepStrictEqual(
+        probes.map((probe) => [probe.status, probe.code]),
+        probes.map(() => [403, undefined]),
+      );
+    }),
+  );
+});
+
+describe("a session read's body", () => {
+  // The evidence is committed, so nothing kept from a body may be a URL or an address.
+  it("keeps no URL or address under any key, whatever joins it", () => {
+    assert.deepStrictEqual(
+      Probes.summarizeBody({
+        session_id: "s-1",
+        state: "CLOSED",
+        end_reason: "cap_reached",
+        status_url: "https://reactor.example/sessions/s-1",
+        closed_by: "10.0.0.7:8443",
+        terminated_at: 1_790_000_000,
+        "https://reactor.example/status": "ended",
+        error: {
+          code: "session_limit",
+          origin: "wss://gpu-7.reactor.example",
+          peer: "ip-10-0-0-7",
+          route: "gpu/7",
+          endpoint: "gpu-7",
+          "203.0.113.9": "refused",
+        },
+      }),
+      {
+        keys: [
+          "session_id",
+          "state",
+          "end_reason",
+          "status_url",
+          "closed_by",
+          "terminated_at",
+          "(key, 30 chars)",
+          "error",
+        ],
+        state: "CLOSED",
+        codes: {
+          state: "CLOSED",
+          end_reason: "cap_reached",
+          closed_by: "(text, 13 chars)",
+          terminated_at: "1790000000",
+          "error.code": "session_limit",
+          "error.origin": "(text, 27 chars)",
+          "error.peer": "(text, 11 chars)",
+          "error.route": "(text, 5 chars)",
+        },
+      },
+    );
+  });
+
+  it("keeps its state only when it reads as a code", () => {
+    assert.deepStrictEqual(Probes.summarizeBody({ state: "reactor.example:443" }), {
+      keys: ["state"],
+      state: "(text, 19 chars)",
+      codes: { state: "(text, 19 chars)" },
+    });
+  });
 });
 
 describe("a refusal's body", () => {
   // What hosted Reactor answers a spent token is unobserved, so its code may sit under any key.
-  it("keeps its codes under any key, and no sentence, URL or IP address", () => {
+  it("keeps its codes under any key, and no sentence, URL, host or IP address", () => {
     assert.deepStrictEqual(
       Probes.summarizeRefusal({
         code: "SESSION_LIMIT",
         detail: "The token's sessions are used",
         type: "https://errors.example/session-limit",
         seen: "203.0.113.5",
+        via: "edge.reactor.example",
+        peer: "ip-203-0-113-5",
         error: { code: "session_limit", retryable: false },
       }),
       {
-        keys: ["code", "detail", "type", "seen", "error"],
+        keys: ["code", "detail", "type", "seen", "via", "peer", "error"],
         codes: {
           code: "SESSION_LIMIT",
           detail: "(text, 29 chars)",
           type: "(text, 36 chars)",
           seen: "(text, 11 chars)",
+          via: "(text, 20 chars)",
+          peer: "(text, 14 chars)",
           "error.code": "session_limit",
           "error.retryable": "false",
         },
@@ -73,7 +154,7 @@ describe("a refusal's body", () => {
         errors: [{ code: "session_limit", status: "403" }, "token_used", 3, 4],
         client_ip: "198.51.100.7",
         remoteHost: "gw-7.isp.example",
-        error: { endpoint: "api.example", reason: "spent", details: { code: "limit.sessions" } },
+        error: { endpoint: "api.example", reason: "spent", details: { code: "limit_sessions" } },
       }),
       {
         keys: ["errors", "client_ip", "remoteHost", "error"],
@@ -83,7 +164,7 @@ describe("a refusal's body", () => {
           "errors[1]": "token_used",
           "errors[2]": "3",
           "error.reason": "spent",
-          "error.details.code": "limit.sessions",
+          "error.details.code": "limit_sessions",
         },
       },
     );
