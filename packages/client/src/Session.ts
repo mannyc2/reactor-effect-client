@@ -250,7 +250,10 @@ export interface Session {
   readonly snapshot: Effect.Effect<Snapshot>;
   /**
    * The snapshot at every lifecycle change, starting with the current one; a reader that falls
-   * behind still sees each status in turn.
+   * behind still sees each status in turn. A snapshot's status, generation, `reconnecting`,
+   * `lastError`, `receivedTracks` and `close` are as its change left them; the rest (pending
+   * counts, observers and overflows, and the connection's paused, claimed and unresolved tracks)
+   * is read as the reader takes it.
    */
   readonly changes: Stream.Stream<Snapshot>;
   /** The negotiated connection, when the session is ready. */
