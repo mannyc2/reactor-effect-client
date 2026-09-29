@@ -358,14 +358,18 @@ export interface State {
    */
   readonly openRetryAt: number;
   /**
-   * Setups that may bill ran out while a session held the air: nothing opens
-   * until none does, and then one more open is tried, at `openRetryAt` at the
+   * Failed setups ran out while a session held the air: nothing opens until
+   * none does, and then one more open is tried, at `openRetryAt` at the
    * soonest.
    */
   readonly openingPaused: boolean;
+  /** Failed setups in a row: each makes the next open wait a second longer. */
   readonly setupFailures: number;
-  /** Of those, the setups that allocated a session, or may have, and so may bill. */
-  readonly allocatedFailures: number;
+  /**
+   * Of those, the ones `maxSetupFailures` counts: all but refusals that
+   * allocated nothing, and so billed nothing, made while a session held the air.
+   */
+  readonly countedFailures: number;
   /** Sessions content moderation ended. */
   readonly moderations: number;
   readonly nextCommand: number;
@@ -449,7 +453,7 @@ export const initial: State = {
   openRetryAt: 0,
   openingPaused: false,
   setupFailures: 0,
-  allocatedFailures: 0,
+  countedFailures: 0,
   moderations: 0,
   nextCommand: 1,
   filler: {
@@ -1239,7 +1243,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // A session's first clip on air ends a run of sessions that failed to set up or to play
     // anything. A later clip on a session that already aired says nothing of those.
     if (session(sessionId)?.startedAny === false)
-      state = { ...state, setupFailures: 0, allocatedFailures: 0 };
+      state = { ...state, setupFailures: 0, countedFailures: 0 };
     updateSession(sessionId, {
       startedAny: true,
       playing: { ...clip, at: now.mono, wall: now.wall },
@@ -1516,24 +1520,20 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         );
   };
   /**
-   * After a failed setup, once `maxSetupFailures` have failed in a row: with no
-   * session holding the air, the playout fails. While `air` holds it, only
-   * setups that allocated a session, or may have, count, and they pause
-   * opening until it no longer holds the air, when one more open is tried once
-   * the last failure's wait is over. A refusal that allocated nothing billed
-   * nothing, so it is asked again after its delay however often it comes.
+   * After a failed setup that counts, once `maxSetupFailures` do: with no
+   * session holding the air, the playout fails. While `air` holds it, opening
+   * pauses until it no longer does, when one more open is tried once the last
+   * failure's wait is over. One that doesn't count is asked again after its delay.
    */
   const pauseOrFail = (
     reason: string,
     cause: "open" | "lost",
-    allocated: boolean,
+    counted: boolean,
     air: Session | undefined,
   ): void => {
-    if (!holding(air)) {
-      if (state.setupFailures >= config.maxSetupFailures)
-        actions.push({ _tag: "Fail", reason, cause });
-    } else if (allocated && state.allocatedFailures >= config.maxSetupFailures)
-      state = { ...state, openingPaused: true };
+    if (!counted || state.countedFailures < config.maxSetupFailures) return;
+    if (holding(air)) state = { ...state, openingPaused: true };
+    else actions.push({ _tag: "Fail", reason, cause });
   };
   /**
    * A session that is gone: its unaired clips are rebuilt from the plan, never
@@ -1583,7 +1583,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       state = {
         ...state,
         setupFailures: consecutive,
-        allocatedFailures: state.allocatedFailures + 1,
+        countedFailures: state.countedFailures + 1,
       };
       emit({
         _tag: "Session",
@@ -1843,17 +1843,20 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
     case "OpenFailed": {
       const consecutive = state.setupFailures + 1;
+      // A refusal that allocated nothing billed nothing: while a session holds the air it counts
+      // toward no limit, then or once that session is gone, though the next open waits longer.
+      const counted = input.allocated || !holding(session(state.air));
       state = {
         ...state,
         opening: false,
         setupFailures: consecutive,
-        allocatedFailures: state.allocatedFailures + (input.allocated ? 1 : 0),
+        countedFailures: state.countedFailures + (counted ? 1 : 0),
         // A refusal that says when to ask again is not asked sooner.
         openRetryAt: now.mono + Math.max(retryDelayMs * consecutive, input.retryAfterMs ?? 0),
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
       if (input.fatal) actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
-      else pauseOrFail(input.reason, "open", input.allocated, session(state.air));
+      else pauseOrFail(input.reason, "open", counted, session(state.air));
       break;
     }
     case "Source": {

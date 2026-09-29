@@ -1031,6 +1031,45 @@ layer(hosted)("renewal refused with nothing allocated", (it) => {
       }),
     { timeout: 60_000 },
   );
+
+  it.effect(
+    "counts none refused while the session on air held it once that session is gone",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        // Filler airs. Two renewal opens are refused over quota while the first session holds
+        // the air, a third just after its cap, and the fourth succeeds.
+        for (const nth of [2, 3, 4])
+          yield* test.inject({ _tag: "RefuseAllocation", nth, status: 429 });
+        const { playout, events } = yield* start({
+          lifetime: "60 seconds",
+          renewal: { lead: "3 seconds" },
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        const failure = yield* playout.failure.pipe(Effect.timeoutOption("90 seconds"));
+        assert.deepStrictEqual(
+          Option.map(failure, (error) => error.message),
+          Option.none(),
+        );
+        const sessions = (yield* events).flatMap((event) =>
+          event._tag === "Session" ? [event.event] : [],
+        );
+        assert.deepStrictEqual(
+          sessions.flatMap((event) =>
+            event._tag === "Opened"
+              ? ["Opened"]
+              : event._tag === "SetupFailed"
+                ? [`SetupFailed ${event.consecutive}`]
+                : [],
+          ),
+          ["Opened", "SetupFailed 1", "SetupFailed 2", "SetupFailed 3", "Opened"],
+        );
+      }),
+    { timeout: 60_000 },
+  );
 });
 
 layer(hosted)("drain", (it) => {

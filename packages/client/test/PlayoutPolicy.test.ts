@@ -1664,6 +1664,38 @@ describe("PlayoutPolicy, time", () => {
     assert.isTrue(unheld.actions.some((action) => action._tag === "Fail"));
   });
 
+  // Two renewal opens are refused with nothing allocated while s1 holds the air, the second
+  // asking to wait past s1's cap. They count toward no limit, then or once s1 is gone.
+  it("counts no refusal that allocated nothing made while a session held the air, then or after", () => {
+    const policy = drive({ config: { ...config, leadMs: 30_000 } });
+    const refuse = (retryAfterMs?: number) =>
+      policy.send({
+        _tag: "OpenFailed",
+        reason: "429",
+        fatal: false,
+        allocated: false,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    policy.event({ _tag: "Started", clip: clip("x", undefined, 70) }, "s1", 10);
+    policy.tick(30_001);
+    refuse();
+    policy.tick(policy.now() + 1_000);
+    refuse(40_000);
+    policy.tick(policy.now() + 40_000);
+    // s1's cap has ended it. With nothing holding the air every refusal counts, and the third
+    // fails the playout.
+    assert.deepStrictEqual(policy.state().sessions, []);
+    const failed = [3_000, 4_000, 5_000].map((wait) => {
+      refuse();
+      const failing = policy.actions.some((action) => action._tag === "Fail");
+      policy.tick(policy.now() + wait);
+      return failing;
+    });
+    assert.deepStrictEqual(failed, [false, false, true]);
+  });
+
   // s1 airs a 5 s clip after another while each renewal open fails 2 s after it is asked, having
   // allocated a session or maybe so. A clip on the session that already held the air says nothing
   // of those opens: only a session's first clip ends their run.
