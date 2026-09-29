@@ -693,6 +693,81 @@ layer(environment({ timing }))("a session's own reconnect answered 404", (it) =>
   );
 });
 
+// Every connection drops 100 ms after its channels open, as one to a host that crashes on the
+// stream would; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [{ _tag: "Disconnect", after: Duration.millis(100) }],
+  }),
+)("a session whose connection drops each time soon after it is ready", (it) => {
+  it.effect("reconnects on its schedule across the drops, and stops 30 s after the first", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+        Effect.map(Option.flatten),
+      );
+      const stoppedAt = yield* Clock.currentTimeMillis;
+      const log = (yield* test.log).filter((entry) => entry.sessionId === session.id);
+      const drops = log.filter((entry) => entry.name === "disconnected").map((entry) => entry.at);
+      const requests = log.filter((entry) => entry.kind === "request");
+      // After each drop, how long until the next attempt's first request, which takes 20 ms.
+      const waits = drops.flatMap((at) => {
+        const next = requests.find((request) => request.at > at);
+        return next === undefined ? [] : [next.at - at - 20];
+      });
+      assert.deepStrictEqual(
+        [Option.getOrUndefined(stopped)?.lastError?.reason._tag, waits],
+        ["Timeout", [0, 250, 500, 1_000, 2_000, 4_000, 4_000, 4_000, 4_000, 4_000, 4_000]],
+      );
+      assert.approximately(stoppedAt - (drops[0] ?? 0), 30_000, 100);
+      // Reactor keeps a session 30 s after its last connection drops.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+  );
+});
+
+// Every connection drops 6 s after its channels open, so one is up when the reconnect's time runs
+// out; each request takes 20 ms.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [{ _tag: "Disconnect", after: Duration.seconds(6) }],
+  }),
+)("a session whose connection drops each time 6 s after it is ready", (it) => {
+  it.effect("stops where the connection up as its reconnect's time ran out drops", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const session = yield* connect;
+      const stopped = yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+        Effect.map(Option.flatten),
+      );
+      const stoppedAt = yield* Clock.currentTimeMillis;
+      const drops = (yield* test.log)
+        .filter((entry) => entry.sessionId === session.id && entry.name === "disconnected")
+        .map((entry) => entry.at);
+      const [first, last] = [drops[0] ?? 0, drops.at(-1) ?? 0];
+      assert.strictEqual(Option.getOrUndefined(stopped)?.lastError?.reason._tag, "Timeout");
+      // Its time ran out 30 s after the first drop, while the connection that dropped last was up.
+      assert.isAbove(last - first, 30_000);
+      assert.approximately(stoppedAt, last, 50);
+      // Reactor keeps a session 30 s after its last connection drops.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+  );
+});
+
 layer(environment({ timing, reconnect: false }))("a dropped connection, reconnect off", (it) => {
   it.effect("stays down, and Reactor ends the session 30 s later", () =>
     Effect.gen(function* () {

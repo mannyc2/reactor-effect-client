@@ -36,8 +36,8 @@ export interface Settings {
   readonly uploadTimeout: Duration.Duration;
   readonly connectTimeout: Duration.Duration;
   /**
-   * A reconnect's deadline, the session's own counted from the drop: Reactor ends a session 30 s
-   * after it loses its last connection.
+   * A reconnect's deadline, the session's own counted from the drop that began it: Reactor ends a
+   * session 30 s after it loses its last connection.
    */
   readonly reconnectTimeout: Duration.Duration;
   /** When the session tries a dropped connection again; none leaves it dropped. */

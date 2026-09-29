@@ -31,23 +31,29 @@ export interface Options {
    */
   readonly connectTimeout?: Duration.Input | undefined;
   /**
-   * How long a reconnect may take, a session's own counted from the drop; 30 seconds by
-   * default, the time Reactor keeps a session that has lost its last connection before it
-   * ends it. The deadline cuts the negotiation, not the host's work on either side of it:
-   * making the connection's peer, which every shipped host does at once, and shutting down the
-   * peer it replaces, or its own after a failed attempt, which the native peer bounds by its
-   * `shutdownTimeout` (10 seconds by default) and the browser's does at once.
+   * How long a reconnect may take, a session's own counted from the drop that began it, through
+   * the drops of connections that did not stay up 10 seconds; 30 seconds by default, the time
+   * Reactor keeps a session that has lost its last connection before it ends it. A connection a
+   * session's own reconnect made ready as the time ran out is left up, and the session stops
+   * trying if it drops in the 10 seconds after. The deadline cuts the negotiation, not the host's
+   * work on either side of it: making the connection's peer, which every shipped host does at
+   * once, and shutting down the peer it replaces, or its own after a failed attempt, which the
+   * native peer bounds by its `shutdownTimeout` (10 seconds by default) and the browser's does at
+   * once.
    */
   readonly reconnectTimeout?: Duration.Input | undefined;
   /**
    * How a session reconnects a connection it drops, on its own and whoever reads it, owned or
    * attached: one attempt at once, then another after each failure on this schedule, which gets
-   * the failure as its input. It stops once a connection is ready, the schedule stops, the
-   * session is closing or ended (by Reactor or its moderation), or `reconnectTimeout` has passed
-   * since the drop. Each attempt is a new connection generation of the same session: it
-   * allocates nothing and never replays a command. By default the second attempt comes 250 ms
-   * after the first fails and each wait doubles, to at most 4 seconds, jittered by up to a fifth
-   * either way. `false` leaves a dropped connection dropped until `session.reconnect`.
+   * the failure as its input. A connection that drops within 10 seconds of being ready is such a
+   * failure too, so a connection that keeps dropping is tried on the schedule, not at once, and
+   * within the one `reconnectTimeout`. It stops once a connection has stayed ready 10 seconds,
+   * the schedule stops, the session is closing or ended (by Reactor or its moderation), or
+   * `reconnectTimeout` has passed. Each attempt is a new connection generation of the same
+   * session: it allocates nothing and never replays a command. By default the second attempt
+   * comes 250 ms after the first fails and each wait doubles, to at most 4 seconds, jittered by
+   * up to a fifth either way. `false` leaves a dropped connection dropped until
+   * `session.reconnect`.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */

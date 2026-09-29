@@ -13,6 +13,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -64,6 +65,12 @@ const beginsFrom: Record<Attempt, (session: State) => boolean> = {
   reconnect: (session) => session.status === "ready" || session.status === "disconnected",
   own: (session) => session.status === "disconnected" && session.reconnecting,
 };
+
+/**
+ * How long the session's own reconnect waits on a connection it made ready before it counts the
+ * connection as back: one that drops sooner fails that reconnect's attempt.
+ */
+const settle = Duration.seconds(10);
 
 /** Whether no later attempt can reconnect the session after `error`: it ended, or is gone. */
 const ends = (error: ReactorError): boolean => {
@@ -435,16 +442,35 @@ export const make = ({
     if (news) yield* publish({ _tag: "Diagnostic", error });
   });
 
+  /** The ready connection stays up for `settle`, or this fails with why it went down sooner. */
+  const holds = Effect.gen(function* () {
+    const { generation } = yield* SubscriptionRef.get(state);
+    const down = yield* SubscriptionRef.changes(state).pipe(
+      Stream.filter((session) => session.status !== "ready" || session.generation !== generation),
+      Stream.runHead,
+      Effect.timeoutOption(settle),
+      Effect.map(Option.flatten),
+    );
+    if (Option.isNone(down)) return;
+    const why =
+      down.value.lastError ?? ReactorError.fromCode("Disconnected", "connection went down");
+    return yield* why;
+  });
+
   /**
    * Reconnects each connection the session drops: an attempt at once, then again on `schedule`,
-   * which sees each failure, until one is ready, the schedule stops, no attempt can succeed or
-   * `reconnectTimeout` has passed since the drop. A defect ends that reconnect, is reported, and
-   * the next drop is reconnected again.
+   * which sees each failure, until a connection has stayed ready for `settle`. A connection that
+   * drops sooner fails its attempt, so one that keeps dropping is tried on the schedule, within
+   * `reconnectTimeout` of the drop that began the reconnect. It stops once the schedule stops, no
+   * attempt can succeed or that time has passed; a connection ready then still has `settle` to
+   * stay up, and the reconnect stops where it drops if it does not. A defect ends that reconnect,
+   * is reported, and the next drop is reconnected again.
    */
   const reconnectEachDrop = (schedule: Schedule.Schedule<unknown, ReactorError>) =>
     Effect.gen(function* () {
       yield* SubscriptionRef.changes(state).pipe(Stream.filter(beginsFrom.own), Stream.runHead);
       const reconnected = yield* attempt("own").pipe(
+        Effect.andThen(holds),
         Effect.retry({
           schedule,
           while: (error) =>
@@ -460,6 +486,9 @@ export const make = ({
       );
       if (Exit.isSuccess(reconnected)) return;
       if (Cause.hasDies(reconnected.cause)) yield* ErrorReporter.report(reconnected.cause);
+      // A connection ready as the time ran out still has `settle` to stay up.
+      const up = (yield* SubscriptionRef.get(state)).status === "ready";
+      if (up && Exit.isSuccess(yield* Effect.exit(holds))) return;
       yield* reconnected.cause.pipe(
         failureOr(() => ReactorError.fromCode("Aborted", "reconnecting stopped")),
         stop,
