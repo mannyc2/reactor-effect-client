@@ -502,7 +502,10 @@ export interface Options<R = never> {
   readonly maxModerations?: number | undefined;
   readonly renewal?:
     | {
-        /** Opens the replacement this long before a session's lifetime ends; 30 seconds by default. */
+        /**
+         * Opens the replacement this long before a session's lifetime ends, and
+         * no earlier: what cannot air before the cap waits for it. 30 seconds by default.
+         */
         readonly lead?: Duration.Input | undefined;
         /**
          * How long opening a session may take, the wait for a GPU included;

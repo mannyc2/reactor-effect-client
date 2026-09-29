@@ -1067,7 +1067,7 @@ describe("PlayoutPolicy, edits", () => {
 });
 describe("PlayoutPolicy, time", () => {
   // The critique's 60 s cap: n10 was cut mid-clip at the cap and later items aired out of order.
-  it("builds on a capped session only what can air before its cap, and replaces it early", () => {
+  it("builds on a capped session only what can air before its cap, and replaces it at the lead", () => {
     const policy = drive({ config: { ...config, leadMs: 5_000 } });
     policy.tick(0);
     policy.open("s1", 60_000);
@@ -1080,7 +1080,9 @@ describe("PlayoutPolicy, time", () => {
     policy.observe({ playing: foreign, ready: [clip("c-a", item("a"))] }, "s1", 1_030);
     const next = policy.submit(spec("b"), 1_040);
     assert.deepStrictEqual(enqueued(policy.actions), ["a"]);
-    assert.isTrue(next.actions.some((action) => action._tag === "Open"));
+    // The session holds air nearly to its cap: a replacement opened now would bill idle.
+    assert.isFalse(next.actions.some((action) => action._tag === "Open"));
+    assert.isTrue(policy.tick(56_000).actions.some((action) => action._tag === "Open"));
   });
 
   it("times an end cue from the provider's length, not the requested one", () => {

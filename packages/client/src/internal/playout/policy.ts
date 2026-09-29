@@ -1806,13 +1806,12 @@ export const step: {
     const replacementLive = state.sessions.some(
       (value) => !value.retiring && value.id !== state.air,
     );
-    const next = air === undefined || replacementLive ? undefined : eligible()[0];
+    // Only the lead opens a replacement. What doesn't fit before the cap waits for it: the
+    // session on air then holds air nearly to its cap, and a replacement opened earlier would
+    // bill while it waits to air.
     const due =
       air === undefined ||
-      (!replacementLive &&
-        (air.indeterminate ||
-          now.mono >= expiresAt(air) - config.leadMs ||
-          (next !== undefined && !fits(air, next.spec.seconds))));
+      (!replacementLive && (air.indeterminate || now.mono >= expiresAt(air) - config.leadMs));
     if (due && state.sessions.length < 2) {
       state = { ...state, opening: true };
       actions.push({ _tag: "Open" });

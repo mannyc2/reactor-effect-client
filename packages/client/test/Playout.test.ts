@@ -680,6 +680,37 @@ layer(hosted)("renewal", (it) => {
     { timeout: 60_000 },
   );
 
+  it.effect(
+    "opens the replacement at the lead however long the backlog, so it bills no idle wait",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const { playout, events } = yield* start({
+          lifetime: "90 seconds",
+          renewal: { lead: "30 seconds" },
+          filler: {
+            runway: { floor: "5 seconds", target: "10 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        const handles = yield* Effect.forEach(
+          Array.from({ length: 30 }, (_, index) => `n${index}`),
+          (name) => playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of handles) yield* handle.outcome;
+        const opened = (yield* events).flatMap((event) =>
+          event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+        );
+        const created = (sessionId: string | undefined) =>
+          Effect.map(test.log, (log) => log.find((entry) => entry.sessionId === sessionId)?.at);
+        const first = yield* created(opened[0]);
+        const second = yield* created(opened[1]);
+        // What will not fit before the cap waits for the replacement; it doesn't open it early.
+        assert.isAtLeast(second! - first!, 60_000);
+      }),
+    { timeout: 60_000 },
+  );
+
   // The critique's probe: with a 60 s cap, n10 was cut mid-clip at the cap and failed as lost,
   // and an item submitted later aired ahead of n11 to n13.
   it.effect(
