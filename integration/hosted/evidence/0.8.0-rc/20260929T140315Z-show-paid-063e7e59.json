@@ -1,0 +1,2407 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "063e7e59",
+  "check": "show",
+  "mode": "paid",
+  "startedAt": "2026-09-29T14:03:15.297Z",
+  "finishedAt": "2026-09-29T14:05:02.372Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "c9f3f9607d4c145013b93d8d0445811b2d6cfdbf",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.7.1",
+      "reactor-effect-native": "0.7.1",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "4fdccf92059868e48b6f5cb8e5174b1663476dfaf4d0e3d95da5914aab90a847",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 2.8125,
+    "totalUsd": 2.8125,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 2.8125,
+    "estimatedUsd": 1.4125
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 75,
+      "expiresAt": 1790690730
+    },
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 75,
+      "expiresAt": 1790690775
+    },
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 75,
+      "expiresAt": 1790690805
+    }
+  ],
+  "sessions": [
+    {
+      "id": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+      "allocatedMs": 347,
+      "capEndsAt": "2026-09-29T14:04:30.655Z",
+      "close": {
+        "requestedMs": 51580,
+        "reportedMs": 52064,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 106693,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 106693
+    },
+    {
+      "id": "752519ba-8393-412c-9eaa-ea9df4129e28",
+      "allocatedMs": 45611,
+      "capEndsAt": "2026-09-29T14:05:15.919Z",
+      "close": {
+        "requestedMs": 75318,
+        "reportedMs": 75599,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 106878,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 106878
+    },
+    {
+      "id": "282c9eb0-360d-4256-bad7-6a9ba17765de",
+      "allocatedMs": 75929,
+      "capEndsAt": "2026-09-29T14:05:46.237Z",
+      "close": {
+        "requestedMs": 106510,
+        "reportedMs": 106510,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 107062,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 107062
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 1,
+      "step": "admitted",
+      "detail": "worst case $2.8125"
+    },
+    {
+      "atMs": 4,
+      "step": "opened"
+    },
+    {
+      "atMs": 86,
+      "step": "minted"
+    },
+    {
+      "atMs": 347,
+      "step": "allocated",
+      "detail": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+    },
+    {
+      "atMs": 7019,
+      "step": "connection dropped",
+      "detail": "1"
+    },
+    {
+      "atMs": 9024,
+      "step": "recovered",
+      "detail": "ready"
+    },
+    {
+      "atMs": 9029,
+      "step": "edits submitted"
+    },
+    {
+      "atMs": 15089,
+      "step": "inserted"
+    },
+    {
+      "atMs": 37816,
+      "step": "batch submitted"
+    },
+    {
+      "atMs": 44486,
+      "step": "edits observed"
+    },
+    {
+      "atMs": 45267,
+      "step": "minted"
+    },
+    {
+      "atMs": 45611,
+      "step": "allocated",
+      "detail": "752519ba-8393-412c-9eaa-ea9df4129e28"
+    },
+    {
+      "atMs": 47835,
+      "step": "L1 and X submitted",
+      "detail": "752519ba-8393-412c-9eaa-ea9df4129e28"
+    },
+    {
+      "atMs": 51579,
+      "step": "switched",
+      "detail": "752519ba-8393-412c-9eaa-ea9df4129e28"
+    },
+    {
+      "atMs": 52064,
+      "step": "closed",
+      "detail": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1 confirmed"
+    },
+    {
+      "atMs": 52260,
+      "step": "T submitted"
+    },
+    {
+      "atMs": 68639,
+      "step": "start modes observed"
+    },
+    {
+      "atMs": 74931,
+      "step": "guard on air, c1 Ready"
+    },
+    {
+      "atMs": 75371,
+      "step": "ended with the API key",
+      "detail": "confirmed"
+    },
+    {
+      "atMs": 75573,
+      "step": "minted"
+    },
+    {
+      "atMs": 75599,
+      "step": "closed",
+      "detail": "752519ba-8393-412c-9eaa-ea9df4129e28 confirmed"
+    },
+    {
+      "atMs": 75929,
+      "step": "allocated",
+      "detail": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+    },
+    {
+      "atMs": 78340,
+      "step": "replaced",
+      "detail": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+    },
+    {
+      "atMs": 88144,
+      "step": "cutter submitted"
+    },
+    {
+      "atMs": 88147,
+      "step": "lane conflicts submitted",
+      "detail": "LaneBusy"
+    },
+    {
+      "atMs": 93743,
+      "step": "cut observed"
+    },
+    {
+      "atMs": 100872,
+      "step": "lanes observed"
+    },
+    {
+      "atMs": 106004,
+      "step": "drained"
+    },
+    {
+      "atMs": 106007,
+      "step": "show observed"
+    },
+    {
+      "atMs": 106510,
+      "step": "closed",
+      "detail": "282c9eb0-360d-4256-bad7-6a9ba17765de confirmed"
+    },
+    {
+      "atMs": 107063,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "recovery on the same session",
+      "passed": true
+    },
+    {
+      "name": "the playout reports the reconnect",
+      "passed": true
+    },
+    {
+      "name": "inserts and the batch air in their planned places",
+      "passed": true
+    },
+    {
+      "name": "a batch takes effect before its boundary",
+      "passed": true
+    },
+    {
+      "name": "a batch's withdrawn clip never starts",
+      "passed": true
+    },
+    {
+      "name": "every seam measured",
+      "passed": true
+    },
+    {
+      "name": "an Asap item airs ahead of one waiting",
+      "passed": true
+    },
+    {
+      "name": "an At item airs, never before its time",
+      "passed": true
+    },
+    {
+      "name": "cues fire at their offsets",
+      "passed": true
+    },
+    {
+      "name": "the ended session is replaced",
+      "passed": true
+    },
+    {
+      "name": "a cut lane's clip stops a lower lane's playing clip",
+      "passed": true
+    },
+    {
+      "name": "a replacing lane's new item takes its waiting item's place",
+      "passed": true
+    },
+    {
+      "name": "a skipping lane refuses an item while one waits",
+      "passed": true
+    },
+    {
+      "name": "the drain completes on the last session",
+      "passed": true
+    },
+    {
+      "name": "a clip on air with the lost session fails as lost",
+      "passed": true
+    },
+    {
+      "name": "a clip not yet aired is carried to the next session",
+      "passed": true
+    },
+    {
+      "name": "one planned switch",
+      "passed": true
+    },
+    {
+      "name": "each item airs on the session on air",
+      "passed": true
+    },
+    {
+      "name": "video from every session",
+      "passed": true
+    },
+    {
+      "name": "filler keeps the air covered",
+      "passed": true
+    },
+    {
+      "name": "no gap on air between clips, filler included",
+      "passed": true
+    },
+    {
+      "name": "the state names the clip on air as it started",
+      "passed": true
+    },
+    {
+      "name": "the show's own reader keeps up",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 8.5,
+      "durationMs": 78.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 87.3,
+      "durationMs": 2392,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 87.6,
+      "durationMs": 2218.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 348.4,
+      "durationMs": 1957.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      }
+    },
+    {
+      "name": "Session.control",
+      "startMs": 2309.6,
+      "durationMs": 84,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_203eb99847058139eaab79d9f4989cbf_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2395.7,
+      "durationMs": 27.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2424.1,
+      "durationMs": 26.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2451.4,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2482.7,
+      "durationMs": 28.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_4",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 2515.2,
+      "durationMs": 65.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2515.7,
+      "durationMs": 63.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_5",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 2580.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 4760.8,
+      "durationMs": 36,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4761.1,
+      "durationMs": 34.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_6",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 4796.7,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.reconnect",
+      "startMs": 7020.8,
+      "durationMs": 1840.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "2",
+        "reactor.session.id": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8861,
+      "durationMs": 28,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_7",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 8889.6,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_8",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 9030.2,
+      "durationMs": 29.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:3",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 9030.4,
+      "durationMs": 28.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_9",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 9060,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 11251.3,
+      "durationMs": 29.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:4",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 11251.5,
+      "durationMs": 28.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_10",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 11280.7,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 13381.6,
+      "durationMs": 29.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:5",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13381.9,
+      "durationMs": 28.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_11",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 13411.4,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 15541.4,
+      "durationMs": 29.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:6",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 15541.7,
+      "durationMs": 28.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_12",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 15570.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 20199.3,
+      "durationMs": 27.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_13",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 20227.4,
+      "durationMs": 30,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:7",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 20227.5,
+      "durationMs": 29,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_14",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 20257.3,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 22440.8,
+      "durationMs": 26.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_15",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 22467.9,
+      "durationMs": 30.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:8",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 22468.1,
+      "durationMs": 30.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_16",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 22498.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 37817.8,
+      "durationMs": 31.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:9",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 37818,
+      "durationMs": 30.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_17",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 37849.5,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 39941.3,
+      "durationMs": 54.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "pop",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_18",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 41192.6,
+      "durationMs": 29.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:10",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 41192.9,
+      "durationMs": 28.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_19",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 41222.1,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 45088.6,
+      "durationMs": 179.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 45268.3,
+      "durationMs": 2565.5,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 45268.4,
+      "durationMs": 2389.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 45612.6,
+      "durationMs": 2045.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 46362.8,
+      "durationMs": 30,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "273745c8d25d0cfdd0a37d521fb75c3b:11",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 46363.1,
+      "durationMs": 29.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_20",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 46392.8,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.control",
+      "startMs": 47659.1,
+      "durationMs": 87.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_5457db7c63b31652df0c305ca2c2a378_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 47747.7,
+      "durationMs": 27.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 47776,
+      "durationMs": 27.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 47803.7,
+      "durationMs": 29.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 47836.5,
+      "durationMs": 28.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_4",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 47865.8,
+      "durationMs": 32.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 47866,
+      "durationMs": 31.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_5",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 47897.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 50078.3,
+      "durationMs": 27.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "pop",
+        "reactor.request.id": "data_203eb99847058139eaab79d9f4989cbf_21",
+        "reactor.connection.generation": "2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 50078.8,
+      "durationMs": 30.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 50078.9,
+      "durationMs": 29.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_6",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 50109.4,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.close",
+      "startMs": 51580.5,
+      "durationMs": 483.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 51581.9,
+      "durationMs": 27.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_7",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 51586.7,
+      "durationMs": 477.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 52261.4,
+      "durationMs": 34.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:3",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 52261.6,
+      "durationMs": 34.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_8",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 52296,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 54963,
+      "durationMs": 28.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:4",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 54963.2,
+      "durationMs": 27.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_9",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 54991.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 63673.7,
+      "durationMs": 30.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:5",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 63673.9,
+      "durationMs": 29.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_10",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 63703.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 65797.8,
+      "durationMs": 27.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_11",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 68094.5,
+      "durationMs": 27.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_12",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 68641.7,
+      "durationMs": 30.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:6",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 68641.9,
+      "durationMs": 30,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_13",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 68672.2,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 72756.8,
+      "durationMs": 27.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_14",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 72785.4,
+      "durationMs": 31.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "e1fee2cad4d5b5a3752b323594b9104f:7",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 72785.6,
+      "durationMs": 30.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_15",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 72817,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 74932.5,
+      "durationMs": 28.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_5457db7c63b31652df0c305ca2c2a378_16",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 74933.6,
+      "durationMs": 437.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "752519ba-8393-412c-9eaa-ea9df4129e28",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Session.reconnect",
+      "startMs": 75127.6,
+      "durationMs": 190.5,
+      "status": "error",
+      "attributes": {
+        "reactor.connection.generation": "2",
+        "reactor.session.id": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 75318.6,
+      "durationMs": 280.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 75318.8,
+      "durationMs": 280.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "752519ba-8393-412c-9eaa-ea9df4129e28",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 75319.2,
+      "durationMs": 254.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 75574.2,
+      "durationMs": 2765.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 75574.3,
+      "durationMs": 2594.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 75930.1,
+      "durationMs": 2238.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      }
+    },
+    {
+      "name": "Session.control",
+      "startMs": 78169.7,
+      "durationMs": 85.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_10e213f4bf26d996a4ceeb5fe244da5e_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78255.4,
+      "durationMs": 26.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_1",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78282,
+      "durationMs": 27.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_2",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78310,
+      "durationMs": 29.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_3",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78343,
+      "durationMs": 26.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_4",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 78370.4,
+      "durationMs": 64.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "54b73ed76e91835ea7fc0b77909477fa:1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78370.5,
+      "durationMs": 63.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_5",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 78434.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 80513.7,
+      "durationMs": 36.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "54b73ed76e91835ea7fc0b77909477fa:2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 80513.9,
+      "durationMs": 35.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_6",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 80549.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 88145.2,
+      "durationMs": 29,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "54b73ed76e91835ea7fc0b77909477fa:3",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 88145.4,
+      "durationMs": 28.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_7",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 88174.2,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 90260.4,
+      "durationMs": 27.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_8",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 90288.2,
+      "durationMs": 27.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "stop",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_9",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 90432.9,
+      "durationMs": 59.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "play",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_10",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 90493,
+      "durationMs": 26.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_11",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 90520.4,
+      "durationMs": 28,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "54b73ed76e91835ea7fc0b77909477fa:4",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 90520.5,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_12",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 90548.3,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 92749.2,
+      "durationMs": 29.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "54b73ed76e91835ea7fc0b77909477fa:5",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 92749.3,
+      "durationMs": 28.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_10e213f4bf26d996a4ceeb5fe244da5e_13",
+        "reactor.connection.generation": "1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 92778.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.close",
+      "startMs": 106009.2,
+      "durationMs": 498.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 106017.9,
+      "durationMs": 490.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "282c9eb0-360d-4256-bad7-6a9ba17765de",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 106511.9,
+      "durationMs": 181.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 106693.9,
+      "durationMs": 184.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 106879,
+      "durationMs": 183.6,
+      "status": "ok",
+      "attributes": {}
+    }
+  ],
+  "playout": {
+    "items": [
+      {
+        "key": "p1",
+        "submittedMs": 9026,
+        "readyMs": 11250,
+        "startedMs": 15088,
+        "endedMs": 20324,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "p2",
+        "submittedMs": 9026,
+        "readyMs": 13380,
+        "startedMs": 20364,
+        "endedMs": 25493,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "p3",
+        "submittedMs": 9026,
+        "readyMs": 15540,
+        "startedMs": 35862,
+        "endedMs": 40993,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "w1",
+        "submittedMs": 9029,
+        "readyMs": 24691,
+        "dropped": "withdrawn",
+        "last": "Dropped",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "xc",
+        "submittedMs": 15088,
+        "readyMs": 20198,
+        "startedMs": 25527,
+        "endedMs": 30661,
+        "seconds": 5.167,
+        "airedSeconds": 5.16,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "xn",
+        "submittedMs": 15089,
+        "readyMs": 22440,
+        "startedMs": 30693,
+        "endedMs": 35828,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "y",
+        "submittedMs": 37815,
+        "readyMs": 39940,
+        "startedMs": 41024,
+        "endedMs": 46162,
+        "seconds": 5.167,
+        "airedSeconds": 5.16,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "key": "L1",
+        "submittedMs": 47834,
+        "readyMs": 52221,
+        "startedMs": 56890,
+        "endedMs": 62054,
+        "seconds": 5.167,
+        "airedSeconds": 5.16,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "key": "X",
+        "submittedMs": 47834,
+        "readyMs": 50077,
+        "startedMs": 51759,
+        "endedMs": 56889,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "key": "T",
+        "submittedMs": 52260,
+        "readyMs": 57003,
+        "startedMs": 68638,
+        "endedMs": 73809,
+        "seconds": 5.167,
+        "airedSeconds": 5.16,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "failed": {
+          "reason": "its session was lost",
+          "moderated": false,
+          "lost": true
+        },
+        "key": "guard",
+        "submittedMs": 68640,
+        "readyMs": 72756,
+        "startedMs": 73862,
+        "seconds": 10.125,
+        "last": "Failed",
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "key": "c1",
+        "submittedMs": 68641,
+        "readyMs": 74931,
+        "startedMs": 80513,
+        "endedMs": 85642,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      },
+      {
+        "key": "long",
+        "submittedMs": 78342,
+        "readyMs": 84718,
+        "startedMs": 85643,
+        "endedMs": 90432,
+        "seconds": 10.125,
+        "airedSeconds": 4.75,
+        "termination": "stopped",
+        "last": "Ended",
+        "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      },
+      {
+        "key": "cutter",
+        "submittedMs": 88143,
+        "readyMs": 90259,
+        "startedMs": 90492,
+        "endedMs": 95669,
+        "seconds": 5.167,
+        "airedSeconds": 5.16,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      },
+      {
+        "key": "old",
+        "submittedMs": 88145,
+        "dropped": "replaced",
+        "last": "Dropped"
+      },
+      {
+        "key": "new",
+        "submittedMs": 88145,
+        "readyMs": 92748,
+        "startedMs": 95669,
+        "endedMs": 100836,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      },
+      {
+        "key": "solo",
+        "submittedMs": 88146,
+        "readyMs": 94871,
+        "startedMs": 100871,
+        "endedMs": 106004,
+        "seconds": 5.167,
+        "airedSeconds": 5.17,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de"
+      }
+    ],
+    "startOrder": [
+      "p1",
+      "p2",
+      "xc",
+      "xn",
+      "p3",
+      "y",
+      "X",
+      "L1",
+      "T",
+      "guard",
+      "c1",
+      "long",
+      "cutter",
+      "new",
+      "solo"
+    ],
+    "seams": [
+      {
+        "ending": "p1",
+        "next": "p2",
+        "continued": false,
+        "endedMs": 20324,
+        "startedMs": 20364,
+        "pause": {
+          "lastNewFrameMs": 20161,
+          "firstNewFrameMs": 20329,
+          "durationMs": 168,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 20493,
+          "change": 46.2,
+          "typical": 3.85,
+          "ratio": 11.99
+        },
+        "frames": [
+          "063e7e59-p1-p2-before.png",
+          "063e7e59-p1-p2-after.png"
+        ]
+      },
+      {
+        "ending": "p2",
+        "next": "xc",
+        "continued": true,
+        "endedMs": 25493,
+        "startedMs": 25527,
+        "pause": {
+          "lastNewFrameMs": 25571,
+          "firstNewFrameMs": 25617,
+          "durationMs": 46,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 28482,
+          "change": 10.12,
+          "typical": 4.44,
+          "ratio": 2.28
+        },
+        "frames": [
+          "063e7e59-p2-xc-before.png",
+          "063e7e59-p2-xc-after.png"
+        ]
+      },
+      {
+        "ending": "xc",
+        "next": "xn",
+        "continued": false,
+        "endedMs": 30661,
+        "startedMs": 30693,
+        "pause": {
+          "lastNewFrameMs": 32032,
+          "firstNewFrameMs": 32109,
+          "durationMs": 77,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 30814,
+          "change": 63.76,
+          "typical": 4.08,
+          "ratio": 15.63
+        },
+        "frames": [
+          "063e7e59-xc-xn-before.png",
+          "063e7e59-xc-xn-after.png"
+        ]
+      },
+      {
+        "ending": "xn",
+        "next": "p3",
+        "continued": false,
+        "endedMs": 35828,
+        "startedMs": 35862,
+        "pause": {
+          "lastNewFrameMs": 35902,
+          "firstNewFrameMs": 35950,
+          "durationMs": 48,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 35986,
+          "change": 50.41,
+          "typical": 2.58,
+          "ratio": 19.57
+        },
+        "frames": [
+          "063e7e59-xn-p3-before.png",
+          "063e7e59-xn-p3-after.png"
+        ]
+      },
+      {
+        "ending": "p3",
+        "next": "y",
+        "continued": false,
+        "endedMs": 40993,
+        "startedMs": 41024,
+        "pause": {
+          "lastNewFrameMs": 40029,
+          "firstNewFrameMs": 40085,
+          "durationMs": 56,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 41154,
+          "change": 38.84,
+          "typical": 2.9,
+          "ratio": 13.39
+        },
+        "frames": [
+          "063e7e59-p3-y-before.png",
+          "063e7e59-p3-y-after.png"
+        ]
+      },
+      {
+        "ending": "long",
+        "next": "cutter",
+        "continued": false,
+        "endedMs": 90432,
+        "startedMs": 90492,
+        "pause": {
+          "lastNewFrameMs": 90505,
+          "firstNewFrameMs": 90670,
+          "durationMs": 165,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 90670,
+          "change": 44.68,
+          "typical": 3.94,
+          "ratio": 11.34
+        }
+      }
+    ],
+    "batch": {
+      "submittedMs": 37815,
+      "committedMs": 39940,
+      "boundaryMs": 40993
+    },
+    "stops": 1,
+    "switches": [
+      {
+        "atMs": 51579,
+        "from": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+        "to": "752519ba-8393-412c-9eaa-ea9df4129e28",
+        "decision": "grace-elapsed"
+      }
+    ],
+    "framesByItem": {
+      "p1": 122,
+      "p2": 124,
+      "p3": 123,
+      "xc": 124,
+      "xn": 123,
+      "y": 124,
+      "L1": 117,
+      "X": 122,
+      "T": 123,
+      "c1": 120,
+      "long": 115,
+      "cutter": 122,
+      "new": 123,
+      "solo": 124
+    },
+    "drainedMs": 106004,
+    "estimates": {
+      "buildMedian": 0.432,
+      "buildP95": 0.449,
+      "length": 1.0334
+    },
+    "video": {
+      "frames": 2230,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "1344x768"
+      ],
+      "firstFrameMs": 4827,
+      "fps": 22,
+      "interval": {
+        "p50": 42,
+        "p95": 44,
+        "max": 5471
+      },
+      "lit": 2230,
+      "distinct": 2227,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 9665,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "peakRms": 0.1491,
+      "lost": 0
+    }
+  },
+  "show": {
+    "fills": [
+      {
+        "index": 0,
+        "runwaySeconds": 0,
+        "seconds": 5
+      },
+      {
+        "index": 1,
+        "runwaySeconds": 5.17,
+        "seconds": 5
+      },
+      {
+        "index": 2,
+        "runwaySeconds": 5,
+        "seconds": 5
+      },
+      {
+        "index": 3,
+        "runwaySeconds": 5,
+        "seconds": 5
+      },
+      {
+        "index": 4,
+        "runwaySeconds": 9.83,
+        "seconds": 6
+      },
+      {
+        "index": 5,
+        "runwaySeconds": 5,
+        "seconds": 5
+      }
+    ],
+    "starved": [
+      106005
+    ],
+    "sessions": [
+      {
+        "atMs": 2480,
+        "event": "opened 1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "atMs": 7022,
+        "event": "reconnecting 1e779bb9-cf7d-4548-838e-bcc83b49a2c1"
+      },
+      {
+        "atMs": 8917,
+        "event": "reconnected 1e779bb9-cf7d-4548-838e-bcc83b49a2c1 after 1897 ms"
+      },
+      {
+        "atMs": 47834,
+        "event": "opened 752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "atMs": 51579,
+        "event": "switched 1e779bb9-cf7d-4548-838e-bcc83b49a2c1 to 752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "atMs": 75128,
+        "event": "reconnecting 752519ba-8393-412c-9eaa-ea9df4129e28"
+      },
+      {
+        "atMs": 75318,
+        "event": "replaced 752519ba-8393-412c-9eaa-ea9df4129e28, 1 carried"
+      },
+      {
+        "atMs": 78340,
+        "event": "opened 282c9eb0-360d-4256-bad7-6a9ba17765de"
+      }
+    ],
+    "cues": [
+      {
+        "key": "L1",
+        "name": "in",
+        "atMs": 57891,
+        "lateByMs": 1
+      },
+      {
+        "key": "L1",
+        "name": "out",
+        "atMs": 61057,
+        "lateByMs": 0
+      }
+    ],
+    "recovery": {
+      "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+      "droppedMs": 7018,
+      "dropped": 1,
+      "runwaySeconds": 8.08,
+      "statuses": [
+        {
+          "atMs": 7021,
+          "status": "disconnected"
+        },
+        {
+          "atMs": 7021,
+          "status": "connecting"
+        },
+        {
+          "atMs": 7028,
+          "status": "waiting"
+        },
+        {
+          "atMs": 8861,
+          "status": "ready"
+        }
+      ],
+      "readyMs": 8861,
+      "firstFrameMs": 8963
+    },
+    "loss": {
+      "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28",
+      "by": "key",
+      "requestedMs": 74932,
+      "termination": {
+        "attempted": true,
+        "responseReceived": true,
+        "confirmed": true,
+        "evidence": "terminal",
+        "deleteStatus": 200,
+        "state": "CLOSED"
+      },
+      "replacedMs": 75318,
+      "nextSessionId": "282c9eb0-360d-4256-bad7-6a9ba17765de",
+      "nextOpenedMs": 78340
+    },
+    "at": {
+      "dueMs": 68093,
+      "lateByMs": 545
+    },
+    "filler": [
+      {
+        "index": 0,
+        "phase": "Started",
+        "atMs": 4760,
+        "seconds": 5.167
+      },
+      {
+        "index": 0,
+        "phase": "Ended",
+        "atMs": 9886,
+        "seconds": 5.167
+      },
+      {
+        "index": 1,
+        "phase": "Started",
+        "atMs": 9887,
+        "seconds": 5.167
+      },
+      {
+        "index": 1,
+        "phase": "Ended",
+        "atMs": 15054,
+        "seconds": 5.167
+      },
+      {
+        "index": 2,
+        "phase": "Started",
+        "atMs": 46194,
+        "seconds": 5.167
+      },
+      {
+        "index": 2,
+        "phase": "Ended",
+        "atMs": 51327,
+        "seconds": 5.167
+      },
+      {
+        "index": 4,
+        "phase": "Started",
+        "atMs": 62089,
+        "seconds": 6.583
+      },
+      {
+        "index": 4,
+        "phase": "Ended",
+        "atMs": 68596,
+        "seconds": 6.583
+      }
+    ],
+    "gaps": [
+      {
+        "fromMs": 9886,
+        "toMs": 9887,
+        "ending": "filler 0",
+        "next": "filler 1"
+      },
+      {
+        "fromMs": 15054,
+        "toMs": 15088,
+        "ending": "filler 1",
+        "next": "p1"
+      },
+      {
+        "fromMs": 20324,
+        "toMs": 20364,
+        "ending": "p1",
+        "next": "p2"
+      },
+      {
+        "fromMs": 25493,
+        "toMs": 25527,
+        "ending": "p2",
+        "next": "xc"
+      },
+      {
+        "fromMs": 30661,
+        "toMs": 30693,
+        "ending": "xc",
+        "next": "xn"
+      },
+      {
+        "fromMs": 35828,
+        "toMs": 35862,
+        "ending": "xn",
+        "next": "p3"
+      },
+      {
+        "fromMs": 40993,
+        "toMs": 41024,
+        "ending": "p3",
+        "next": "y"
+      },
+      {
+        "fromMs": 46162,
+        "toMs": 46194,
+        "ending": "y",
+        "next": "filler 2"
+      },
+      {
+        "fromMs": 51327,
+        "toMs": 51759,
+        "ending": "filler 2",
+        "next": "X"
+      },
+      {
+        "fromMs": 56889,
+        "toMs": 56890,
+        "ending": "X",
+        "next": "L1"
+      },
+      {
+        "fromMs": 62054,
+        "toMs": 62089,
+        "ending": "L1",
+        "next": "filler 4"
+      },
+      {
+        "fromMs": 68596,
+        "toMs": 68638,
+        "ending": "filler 4",
+        "next": "T"
+      },
+      {
+        "fromMs": 73809,
+        "toMs": 73862,
+        "ending": "T",
+        "next": "guard"
+      },
+      {
+        "fromMs": 75317,
+        "toMs": 80513,
+        "ending": "guard",
+        "next": "c1"
+      },
+      {
+        "fromMs": 85642,
+        "toMs": 85643,
+        "ending": "c1",
+        "next": "long"
+      },
+      {
+        "fromMs": 90432,
+        "toMs": 90492,
+        "ending": "long",
+        "next": "cutter"
+      },
+      {
+        "fromMs": 100836,
+        "toMs": 100871,
+        "ending": "new",
+        "next": "solo"
+      }
+    ],
+    "reconnects": [
+      {
+        "sessionId": "1e779bb9-cf7d-4548-838e-bcc83b49a2c1",
+        "reconnectingMs": 7022,
+        "reconnectedMs": 8917,
+        "afterMillis": 1897
+      },
+      {
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28",
+        "reconnectingMs": 75128
+      }
+    ],
+    "readerOverflows": [],
+    "failures": [
+      {
+        "key": "guard",
+        "atMs": 75317,
+        "reason": "Lost",
+        "sessionId": "752519ba-8393-412c-9eaa-ea9df4129e28"
+      }
+    ],
+    "playing": {
+      "named": 19,
+      "later": 0,
+      "mismatched": []
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
