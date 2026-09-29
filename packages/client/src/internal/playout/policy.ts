@@ -26,6 +26,7 @@ import type {
   State as PublicState,
   WithdrawOutcome,
 } from "../../Playout.js";
+import { requestSeconds } from "../h3/profile.js";
 import type { ItemKey } from "./errors.js";
 
 export type Late = "nextBoundary" | "drop" | { readonly skipAfterMs: number };
@@ -328,7 +329,15 @@ export interface State {
     | { readonly id: number; readonly sessionId: string; readonly command: Command }
     | undefined;
   readonly nextCommand: number;
-  readonly fillers: ReadonlyMap<string, { readonly index: number; readonly sessionId: string }>;
+  readonly fillers: ReadonlyMap<
+    string,
+    {
+      readonly index: number;
+      readonly sessionId: string;
+      /** When its enqueue went out and the seconds it asked for, until its build is measured. */
+      readonly build?: { readonly dispatchedAt: number; readonly seconds: number } | undefined;
+    }
+  >;
   readonly filler: {
     readonly index: number;
     readonly request: Request | undefined;
@@ -1267,13 +1276,31 @@ export const step: {
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");
     if (source.playing !== undefined) listed.set(source.playing.clipId, "Playing");
     const fillers = new Map(state.fillers);
+    const sample = (kind: "build" | "continued", dispatchedAt: number, seconds: number): void => {
+      const value = (now.mono - dispatchedAt) / 1000 / seconds;
+      state = {
+        ...state,
+        samples: { ...state.samples, [kind]: [...state.samples[kind], value].slice(-maxSamples) },
+      };
+    };
     for (const clip of [
       ...source.building,
       ...source.ready,
       ...(source.playing === undefined ? [] : [source.playing]),
     ]) {
-      if (clip.tag?._tag === "Filler")
-        fillers.set(clip.clipId, { index: clip.tag.index, sessionId });
+      if (clip.tag?._tag === "Filler") {
+        // A filler build is measured as an item's is, so a channel airing only filler learns its
+        // build rate, and the floor covers a build.
+        const build = fillers.get(clip.clipId)?.build;
+        const where = listed.get(clip.clipId);
+        if (build !== undefined && where === "Ready")
+          sample("build", build.dispatchedAt, build.seconds);
+        fillers.set(clip.clipId, {
+          index: clip.tag.index,
+          sessionId,
+          build: where === "Building" ? build : undefined,
+        });
+      }
       if (clip.tag?._tag !== "Item") continue;
       const item = items.get(clip.tag.key);
       if (item === undefined || item.phase === "Settled") continue;
@@ -1290,18 +1317,13 @@ export const step: {
       const waiting =
         item.phase === "Accepted" || item.phase === "Building" || item.phase === "Unknown";
       if (where === "Ready" && waiting) {
-        if (item.dispatchedAt !== undefined && !item.everUnknown) {
-          // A continued build takes longer, so it is measured apart from independent ones.
-          const kind = item.continued === true ? "continued" : "build";
-          const sample = (now.mono - item.dispatchedAt) / 1000 / item.spec.seconds;
-          state = {
-            ...state,
-            samples: {
-              ...state.samples,
-              [kind]: [...state.samples[kind], sample].slice(-maxSamples),
-            },
-          };
-        }
+        // A continued build takes longer, so it is measured apart from independent ones.
+        if (item.dispatchedAt !== undefined && !item.everUnknown)
+          sample(
+            item.continued === true ? "continued" : "build",
+            item.dispatchedAt,
+            item.spec.seconds,
+          );
         set(item.spec.key, {
           phase: "Ready",
           clipId: clip.clipId,
@@ -1442,15 +1464,29 @@ export const step: {
         if (command.tag._tag === "Filler") {
           const filler = state.filler;
           if (result._tag === "Done") {
+            const clipId = result.clipId;
+            // H3 may list the clip before it replies: one already listed built is not measured.
+            const reported = session(busy.sessionId)?.source;
+            const built =
+              reported !== undefined &&
+              (reported.playing?.clipId === clipId ||
+                reported.ready.some((clip) => clip.clipId === clipId));
+            const build =
+              filler.dispatchedAt === undefined || built
+                ? undefined
+                : {
+                    dispatchedAt: filler.dispatchedAt,
+                    seconds: filler.request?.seconds ?? requestSeconds.min,
+                  };
             state = {
               ...state,
               filler: { ...filler, index: filler.index + 1, request: undefined },
               fillers:
-                result.clipId === undefined
+                clipId === undefined
                   ? state.fillers
                   : new Map([
                       ...state.fillers,
-                      [result.clipId, { index: filler.index, sessionId: busy.sessionId }],
+                      [clipId, { index: filler.index, sessionId: busy.sessionId, build }],
                     ]),
             };
           } else if (uncertain(result)) {

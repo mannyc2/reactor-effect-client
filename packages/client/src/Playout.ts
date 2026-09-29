@@ -355,9 +355,10 @@ export interface State {
   }>;
   readonly starved: number;
   /**
-   * Learned from this playout's own builds: build seconds per requested second
-   * (median and p95, once three were measured), apart for clips built
-   * continuing from another, which take longer; and actual over requested length.
+   * Learned from this playout's own clips: build seconds per requested second
+   * over every build, filler's included (median and p95, once three were
+   * measured), apart for clips built continuing from another, which take
+   * longer; and an item's actual over requested length.
    */
   readonly estimates: {
     readonly build: { readonly median: number; readonly p95: number } | undefined;

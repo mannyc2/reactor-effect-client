@@ -884,6 +884,26 @@ layer(hosted)("filler", (it) => {
     { timeout: 60_000 },
   );
 
+  // Filler is all a quiet channel builds, and the floor covers a p95 build only once one is known.
+  it.effect(
+    "learns its build rate from filler alone",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({
+          filler: {
+            runway: { floor: "4 seconds", target: "8 seconds" },
+            clip: ({ index }) => clip(`idle ${index}`),
+          },
+        });
+        const { estimates } = yield* eventually(
+          playout.state,
+          (state) => state.estimates.build !== undefined,
+        );
+        assert.isAbove(estimates.build?.median ?? 0, 0);
+      }),
+    { timeout: 60_000 },
+  );
+
   // The hosted `show` rehearsal: with 5 s clips measured at H3's 5.167 s, a 6 s gap was tiled
   // with a 5.806 s request, H3 aligned it to 5.875 s, and the 125 ms left cost a whole clip.
   it.effect(
