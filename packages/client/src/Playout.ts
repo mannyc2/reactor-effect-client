@@ -437,12 +437,22 @@ export type SourceEvent =
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
- * media. `events` starts with a `State` and fails when the session is lost for
- * good; the source recovers a dropped connection itself, and reports it.
+ * media. What the playout relies on:
+ *
+ * - `sessionId` is unique among the sources open at once; the playout refuses
+ *   a second under the same id.
+ * - `events` starts with a `State`. `Started`, `Ended` and `Failed` come before
+ *   the `State` that reflects them, and once `enqueue` has returned no `State`
+ *   leaves the clip out until its `Ended` or `Failed`.
+ * - `events` fails only when the session is lost for good; the source
+ *   recovers a dropped connection itself, and reports it.
  */
 export interface Source {
   readonly sessionId: string;
-  /** The session's remaining granted length when it opened; `Infinity` for none. */
+  /**
+   * What remains of the session's granted length when the source is returned,
+   * counted by the playout from then; `Infinity` for none.
+   */
   readonly lifetime: Duration.Duration;
   readonly events: Stream.Stream<SourceEvent, ReactorError>;
   readonly enqueue: (
@@ -499,7 +509,12 @@ export interface Options<R = never> {
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
       }
     | undefined;
-  /** Builds in flight at once on the session that takes new work; one by default. */
+  /**
+   * Builds in flight at once on the session that takes new work; one by
+   * default. A moderation verdict that names no item fails the latest enqueue
+   * on its session: with more than one in flight that may be an innocent
+   * item, while the flagged one is carried to the next session.
+   */
   readonly maxBuildsInFlight?: number | undefined;
   /** Settled keys kept for idempotency, oldest dropped first; 4,096 by default. */
   readonly maxHistory?: number | undefined;
