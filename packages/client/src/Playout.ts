@@ -490,7 +490,9 @@ export interface Options<R = never> {
   readonly maxHistory?: number | undefined;
   /**
    * An enqueue whose outcome stays unknown this long marks its session
-   * indeterminate, so a replacement takes over; 60 seconds by default.
+   * indeterminate, so a replacement takes over; 60 seconds by default. Until
+   * then it holds no build slot: what follows builds behind it, and it is
+   * never sent again.
    */
   readonly unknownTimeout?: Duration.Input | undefined;
   /**

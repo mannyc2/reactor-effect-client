@@ -620,6 +620,32 @@ layer(hosted)("uncertainty", (it) => {
       if (status._tag === "Some") assert.notStrictEqual(status.value._tag, "Accepted");
     }),
   );
+
+  it.effect("a lost enqueue reply holds up neither the items behind it nor their session", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 3 });
+      const { playout, events } = yield* start();
+      const names = Array.from({ length: 8 }, (_, index) => `n${index}`);
+      const handles = yield* Effect.forEach(names, (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      // n2's enqueue is the lost one: the rest air behind it on the same session.
+      const rest = [...handles.slice(0, 2), ...handles.slice(3)];
+      for (const handle of rest) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun" && event.event.status._tag !== "Accepted")
+          times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+      // The wait is the provider's own: its reply timeout, then its reconcile window.
+      const gap = times.get("n3:Started")! - times.get("n1:Ended")!;
+      assert.isBelow(gap, 20_000, `n3 aired ${gap} ms after n1`);
+      const opened = (yield* events).filter(
+        (event) => event._tag === "Session" && event.event._tag === "Opened",
+      );
+      assert.strictEqual(opened.length, 1);
+    }),
+  );
 });
 
 layer(hosted)("renewal", (it) => {

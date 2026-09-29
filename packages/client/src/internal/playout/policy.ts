@@ -2122,13 +2122,13 @@ export const step: {
       !(state.accepting || state.drains.some((drain) => drain.finish === "accepted"))
     )
       return;
+    // An enqueue whose reply was lost holds no build slot: H3 builds in order, so if it landed it
+    // builds ahead of what follows, and if it did not, nothing would free the slot but the
+    // unknown timeout. The cap check still counts it, since it may yet take air here.
     const inFlight =
       [...items.values()].filter(
-        (item) =>
-          (item.phase === "Building" || item.phase === "Unknown") && item.sessionId === target.id,
-      ).length +
-      target.source!.building.filter((clip) => clip.tag?._tag === "Filler").length +
-      target.unknownFiller.length;
+        (item) => item.phase === "Building" && item.sessionId === target.id,
+      ).length + target.source!.building.filter((clip) => clip.tag?._tag === "Filler").length;
     if (inFlight >= config.maxBuildsInFlight) return;
     const room = runway();
     const floorSeconds = fillerFloor();

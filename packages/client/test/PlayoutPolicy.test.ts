@@ -837,11 +837,10 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
       policy.submit(spec("lost"), 10);
       policy.reply(unknown, 20);
       policy.submit(spec("next"), 30);
-      assert.deepStrictEqual(enqueued(policy.actions), ["lost"]);
+      // The lost reply holds no build slot: what follows builds behind it on the same session.
+      assert.deepStrictEqual(enqueued(policy.actions), ["lost", "next"]);
       const deadline = policy.tick(20 + config.unknownTimeoutMs);
       assert.isTrue(deadline.actions.some((action) => action._tag === "Open"));
-      policy.open("s2", lifetimeMs);
-      assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["next"]);
     });
 
   // 0.7.0 SchedulerFates: a session lost is closed, so it cannot bill beside its replacement.
