@@ -755,16 +755,13 @@ layer(hosted)("renewal", (it) => {
     () =>
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
-        // The first allocation succeeds; the three renewal attempts are refused.
+        // The first allocation succeeds; the three renewal attempts are refused. No clip starts
+        // meanwhile, which would end the run of failures.
         for (const nth of [2, 3, 4])
           yield* test.inject({ _tag: "RefuseAllocation", nth, status: 503 });
         const { playout, events } = yield* start({
           lifetime: "120 seconds",
           renewal: { lead: "60 seconds" },
-          filler: {
-            runway: { floor: "5 seconds", target: "10 seconds" },
-            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
-          },
         });
         yield* Effect.sleep("70 seconds");
         const late = yield* playout.submit({
@@ -777,11 +774,17 @@ layer(hosted)("renewal", (it) => {
           Option.isNone(yield* playout.failure.pipe(Effect.timeoutOption("90 seconds"))),
         );
         const sessions = (yield* events).flatMap((event) =>
-          event._tag === "Session" ? [event.event._tag] : [],
+          event._tag === "Session" ? [event.event] : [],
         );
         assert.deepStrictEqual(
-          sessions.filter((tag) => tag === "Opened" || tag === "SetupFailed"),
-          ["Opened", "SetupFailed", "SetupFailed", "SetupFailed", "Opened"],
+          sessions.flatMap((event) =>
+            event._tag === "Opened"
+              ? ["Opened"]
+              : event._tag === "SetupFailed"
+                ? [`SetupFailed ${event.consecutive}`]
+                : [],
+          ),
+          ["Opened", "SetupFailed 1", "SetupFailed 2", "SetupFailed 3", "Opened"],
         );
       }),
     { timeout: 60_000 },
