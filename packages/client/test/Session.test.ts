@@ -659,6 +659,59 @@ layer(
   );
 });
 
+/** ReactorTest's peers, but resuming or pausing a track takes `slow`, as a host's call can. */
+const slowDirection = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.map(peers.make, (peer) => ({
+          ...peer,
+          direction: (name: string, active: boolean) =>
+            Effect.andThen(Effect.sleep(slow), peer.direction(name, active)),
+        })),
+      });
+    }),
+  );
+
+// Resuming the reconnected connection's tracks takes 3 s, past the reconnect's 2 s.
+layer(
+  Reactor.layer({ reconnectTimeout: "2 seconds" }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowDirection("3 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose deadline passes as its connection's tracks resume", (it) => {
+  it.effect("never reports the connection ready: the deadline cuts only work before ready", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const reported = yield* statuses(session);
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const seen = yield* reported.pipe(
+        Stream.interruptWhen(Effect.sleep("1 second")),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(
+        [
+          seen.some(([status, generation]) => status === "ready" && generation === 2n),
+          (yield* session.snapshot).lastError?.reason._tag,
+        ],
+        [false, "Timeout"],
+      );
+    }),
+  );
+});
+
 /**
  * ReactorTest's peers, but shutting down peer `which`, counted from 0, dies with each of
  * `defects`, as a host's shutdown can.

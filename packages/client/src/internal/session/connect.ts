@@ -307,7 +307,7 @@ export const make = ({
           ),
     );
 
-  /** Negotiates `c` through to ready, and keeps it alive. */
+  /** Negotiates `c` through to ready, its tracks resumed and its heartbeat running. */
   const negotiate = Effect.fnUntraced(function* (c: Connection, reconnect: boolean) {
     if (!reconnect) yield* guard(c, allocate);
     yield* current(c);
@@ -386,7 +386,6 @@ export const make = ({
         connectionId: negotiatedId,
       },
     }));
-    yield* reach("ready");
     // Hosted Reactor holds a connection's media until that connection
     // resumes its receive-only tracks, attached or not.
     for (const track of capabilities.tracks)
@@ -407,6 +406,9 @@ export const make = ({
           .notification(c, { case: "ping", value: {} })
           .pipe(Effect.repeat(Schedule.spaced(settings.heartbeat)), Effect.asVoid),
       );
+    // Last, so a deadline can cut only work before the connection is ready, never one the
+    // session has said is ready.
+    yield* reach("ready");
   });
 
   /**
