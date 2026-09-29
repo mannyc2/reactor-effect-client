@@ -254,7 +254,8 @@ export const readSession = (input: {
 /**
  * A reply's body as evidence may keep it: top-level key names, the state, and
  * the codes under keys that may say why a session ended, one level down; other
- * text only by its length, and nothing under a key that names an address.
+ * text only by its length, and nothing under a key that names an address or a
+ * secret.
  */
 export const summarizeBody = (content: unknown) => {
   const body = Predicate.isObject(content) ? content : {};
@@ -282,7 +283,8 @@ export const summarizeBody = (content: unknown) => {
  * A refusal's body as evidence may keep it: its key names, and each value
  * that reads as a code, two levels down and in a list's first three entries;
  * other text only by its length, and nothing under a key that names an
- * address, so no sentence, URL, host name or IP address passes for a code.
+ * address or a secret, so no sentence, URL, dotted host name or IP address
+ * passes for a code.
  */
 export const summarizeRefusal = (content: unknown) => {
   const body = Predicate.isObject(content) ? content : {};
