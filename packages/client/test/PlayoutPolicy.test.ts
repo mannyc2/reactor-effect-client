@@ -1775,6 +1775,27 @@ describe("PlayoutPolicy, time", () => {
     assert.strictEqual(opens(), asked + 1);
   });
 
+  // A session lost before any clip sent to it started is a failed setup, as a failed open is.
+  it("waits a second longer for each session lost before any clip sent to it started", () => {
+    const policy = drive({ config: { ...config, leadMs: 60_000 } });
+    const opensIn = (step: Policy.Step) => step.actions.some((action) => action._tag === "Open");
+    policy.tick(0);
+    policy.open("s1", 120_000);
+    policy.event({ _tag: "Started", clip: clip("x", undefined, 70) }, "s1", 10);
+    assert.isTrue(opensIn(policy.tick(60_010)));
+    const waits: Array<number> = [];
+    for (const id of ["r1", "r2"]) {
+      // Each replacement is sent an item, then lost.
+      policy.open(id, 600_000, policy.now() + 100);
+      policy.submit(spec(id));
+      const lost = policy.send({ _tag: "Lost", sessionId: id, reason: "gone" });
+      const lostAt = policy.now();
+      if (!opensIn(lost)) assert.isTrue(opensIn(policy.tick(lost.wake)));
+      waits.push(policy.now() - lostAt);
+    }
+    assert.deepStrictEqual(waits, [1_000, 2_000]);
+  });
+
   it("times an end cue from the provider's length, not the requested one", () => {
     const policy = drive();
     policy.tick(0);

@@ -353,8 +353,8 @@ export interface State {
   readonly air: string | undefined;
   readonly opening: boolean;
   /**
-   * No open goes out before it: after a failure, a second for each in a row,
-   * or the refusal's `Retry-After` if that is longer.
+   * No open goes out before it: after a failed setup, a second for each in a
+   * row, or a refusal's `Retry-After` if that is longer.
    */
   readonly openRetryAt: number;
   /**
@@ -1584,6 +1584,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         ...state,
         setupFailures: consecutive,
         countedFailures: state.countedFailures + 1,
+        // As after a failed open, the next waits a second longer, and still for a Retry-After.
+        openRetryAt: Math.max(state.openRetryAt, now.mono + retryDelayMs * consecutive),
       };
       emit({
         _tag: "Session",
