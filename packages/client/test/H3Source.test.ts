@@ -244,6 +244,54 @@ layer(
   );
 });
 
+// The first connection drops 5 s after its channels open, and the second 5 ms after its own do,
+// while the source reads H3 afresh on it.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [
+      { _tag: "Disconnect", nth: 1, after: Duration.seconds(5) },
+      { _tag: "Disconnect", nth: 2, after: Duration.millis(5) },
+    ],
+  }),
+)("a reconnected connection that drops while the source reads H3 on it", (it) => {
+  it.effect("is not the source's loss: it recovers on the next connection", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const { source, session } = yield* opened;
+      const read = yield* readUntilEnd(source, "30 seconds");
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [read.recovery, read.failure, snapshot.status, snapshot.generation],
+        [["Reconnecting", "Reconnected"], undefined, "ready", 3n],
+      );
+    }),
+  );
+});
+
+// The first connection drops 5 s after its channels open, and the model never answers the read
+// of H3 on the next.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
+    faults: [
+      { _tag: "Disconnect", nth: 1, after: Duration.seconds(5) },
+      { _tag: "DropReply", nth: 2, command: "get_state" },
+    ],
+  }),
+)("a read of H3 that fails on a reconnected connection still up", (it) => {
+  it.effect("loses the source when it fails, without waiting for another connection", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const { source } = yield* opened;
+      const read = yield* readUntilEnd(source, "1 minute");
+      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Timeout"]);
+      // At H3's 15 s reply deadline, after the 80 ms the reconnect took: before `recovery` ends.
+      assert.approximately(read.afterDrop ?? 0, 15_080, 50);
+    }),
+  );
+});
+
 /** The simulated Reactor, its peers' decoded video replaced by `video`, as a host's might be. */
 const hostVideo = (video: Stream.Stream<never, ReactorError>) =>
   Reactor.layer().pipe(

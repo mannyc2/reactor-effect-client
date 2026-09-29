@@ -263,8 +263,11 @@ const fromSession = Effect.fnUntraced(function* (
   /** The first snapshot of the session `accept` takes, now or once it changes. */
   const first = (accept: (snapshot: Snapshot) => boolean) =>
     session.changes.pipe(Stream.filter(accept), Stream.runHead, Effect.map(Option.getOrThrow));
-  /** Waits for a connection ready after the one on `up`, then reads H3 on it; its generation. */
-  const recover = (up: bigint | undefined) =>
+  /**
+   * Waits for a connection ready after the one on `up`, then reads H3 on it; its generation. A
+   * connection that drops under the read is not back yet, so the source waits for the next.
+   */
+  const readBack = (up: bigint | undefined): Effect.Effect<bigint, ReactorError | CommandFailure> =>
     Effect.gen(function* () {
       const back = yield* first(
         (snapshot) =>
@@ -273,9 +276,18 @@ const fromSession = Effect.fnUntraced(function* (
       );
       const why = unrecoverable(back);
       if (why !== undefined) return yield* why;
-      yield* provider.refresh;
-      return back.generation;
-    }).pipe(
+      const read = yield* Effect.result(provider.refresh);
+      if (read._tag === "Success") return back.generation;
+      // A connection retires before a read on it fails for its drop: a read that failed while its
+      // connection is still the ready one failed for another reason.
+      const ready = yield* Effect.option(session.ready);
+      if (Option.isSome(ready) && ready.value.generation === back.generation)
+        return yield* read.failure;
+      return yield* readBack(back.generation);
+    });
+  /** The recovery from a drop of the connection on `up`, within `recovery`; how long it took. */
+  const recover = (up: bigint | undefined) =>
+    readBack(up).pipe(
       Effect.timeoutOrElse({
         duration: recovery,
         orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "reconnecting took too long")),
