@@ -592,8 +592,13 @@ export class Playout extends Context.Service<
     /** Every event from subscription on, in order. */
     readonly events: Stream.Stream<Event>;
     readonly asRun: Stream.Stream<AsRunEvent>;
-    /** The on-air session's picture, continuing across renewals. */
+    /**
+     * The on-air session's picture, continuing across renewals, and ending
+     * when the playout stops. It fails with the on-air source's media failure;
+     * reading it again starts from the session then on air.
+     */
     readonly video: Stream.Stream<VideoFrame, ReactorError>;
+    /** The on-air session's sound, as `video` is its picture. */
     readonly audio: Stream.Stream<AudioFrame, ReactorError>;
     /**
      * Why the playout stopped: a session could not be opened or kept, a filler

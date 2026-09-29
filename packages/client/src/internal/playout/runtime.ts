@@ -172,6 +172,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
   // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
+  /** Completes once the playout has stopped, however it stopped. */
+  const stopped = Deferred.await(failure).pipe(Effect.exit);
   // Why the latest open failed while no open has succeeded since, and why the latest session was
   // lost: the error, or the defect when there was no error.
   const lastOpenError = yield* Ref.make<
@@ -223,13 +225,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     closed: Effect.Effect<A, E2>,
   ): Effect.Effect<A, E | E2> => {
     const settled: Effect.Effect<A, E> = Deferred.await(deferred);
-    const stopped: Effect.Effect<A, E | E2> = Effect.andThen(
-      Deferred.await(failure).pipe(Effect.exit),
+    const done: Effect.Effect<A, E | E2> = Effect.andThen(
+      stopped,
       Effect.flatMap(Deferred.isDone(deferred), (done): Effect.Effect<A, E | E2> =>
         done ? settled : closed,
       ),
     );
-    return Effect.raceFirst(settled, stopped);
+    return Effect.raceFirst(settled, done);
   };
 
   const record = (report: CloseReport): Effect.Effect<void> =>
@@ -858,9 +860,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     ),
     video: SubscriptionRef.changes(onAir).pipe(
       Stream.switchMap((source) => source?.video ?? Stream.never),
+      Stream.interruptWhen(stopped),
     ),
     audio: SubscriptionRef.changes(onAir).pipe(
       Stream.switchMap((source) => source?.audio ?? Stream.never),
+      Stream.interruptWhen(stopped),
     ),
     failure: Deferred.await(failure),
     cleanup: Ref.get(cleanup),

@@ -8,6 +8,7 @@ import {
   Effect,
   ErrorReporter,
   Exit,
+  Fiber,
   Option,
   Redacted,
   Ref,
@@ -1595,6 +1596,29 @@ layer(hosted)("failing after a recovered open", (it) => {
   );
 });
 layer(hosted)("media", (it) => {
+  it.effect("the picture and the sound end when the playout stops", () =>
+    Effect.gen(function* () {
+      // The clock moves on after the playout's own scope, and its flow, have closed.
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const scope = yield* Scope.make();
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "10 seconds" },
+          clip: ({ index }) => clip(`filler ${String(index)}`),
+        },
+      }).pipe(Scope.provide(scope));
+      const video = yield* playout.video.pipe(Stream.runDrain, Effect.forkScoped);
+      const audio = yield* playout.audio.pipe(Stream.runDrain, Effect.forkScoped);
+      yield* Effect.sleep("20 seconds");
+      yield* Scope.close(scope, Exit.void);
+      const ended = yield* Effect.all([Fiber.await(video), Fiber.await(audio)]).pipe(
+        Effect.timeoutOption("10 seconds"),
+      );
+      assert.isTrue(Option.isSome(ended), "a reader was still waiting after the playout closed");
+      if (Option.isSome(ended)) for (const exit of ended.value) assert.isTrue(Exit.isSuccess(exit));
+    }),
+  );
+
   it.effect("video goes on after a reader falls behind its bound", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
