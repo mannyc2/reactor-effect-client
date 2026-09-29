@@ -1491,6 +1491,39 @@ layer(
   );
 });
 
+// The session's connection drops for good. The application reconnects with a peer that takes half
+// a second to make, and 100 ms later reconnects again with one made at once, which is back first.
+layer(
+  Reactor.layer({ reconnect: false }).pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("500 millis")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect from a lasting drop, overtaken by another that succeeds", (it) => {
+  it.effect("succeeds on that one's connection, not failing for the drop it began from", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected"),
+        Stream.runHead,
+      );
+      const overtaken = yield* Effect.forkChild(Effect.exit(session.reconnect));
+      yield* Effect.sleep("100 millis");
+      yield* session.reconnect;
+      const reconnected = yield* Fiber.join(overtaken);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), back.status, back.generation],
+        [[], "ready", 2n],
+      );
+    }),
+  );
+});
+
 // The application reconnects with a peer that takes half a second to make, and closes the session
 // 100 ms in.
 layer(
