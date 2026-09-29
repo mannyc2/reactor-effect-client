@@ -393,6 +393,11 @@ rehearse("unconnected says where to look when its create's outcome is unknown", 
     const [instruction] = cleanupInstructions(evidence);
     assert.include(instruction ?? "", "may have allocated a session");
     assert.include(instruction ?? "", evidence.startedAt);
+    // Nothing else in the summary may say that no session was allocated.
+    const reasons = evidence.reasons.join("; ");
+    assert.include(reasons, "an outcome is unknown, so the run fails and is not repeated");
+    assert.include(reasons, "confirmed termination: no session was recorded");
+    assert.notInclude(reasons, "no session was allocated");
   },
 });
 
@@ -414,6 +419,11 @@ rehearse(
       const [instruction] = cleanupInstructions(evidence);
       assert.include(instruction ?? "", "may have allocated a session");
       assert.include(instruction ?? "", probe?.requestedAt ?? "no request");
+      // A Ctrl-C while that create hangs leaves its answer unrecorded; the line must stay.
+      assert.isDefined(probe);
+      const { spentToken: _spent, ...unrecorded } = probe;
+      const [interrupted] = cleanupInstructions({ ...evidence, unconnected: unrecorded });
+      assert.include(interrupted ?? "", "may have allocated a session");
     },
   },
 );

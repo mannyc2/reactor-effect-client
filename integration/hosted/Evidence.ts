@@ -1101,7 +1101,7 @@ export const judged = (input: {
   const absent = missing(evidence);
   const reasons = [
     ...(evidence.outcomes.includes("unknown")
-      ? ["an outcome is unknown; the check stopped and is not repeated"]
+      ? ["an outcome is unknown, so the run fails and is not repeated"]
       : []),
     ...(evidence.sessions.some((session) => session.close?.confirmed === false)
       ? ["remote termination is unconfirmed; a session may still be billing"]
@@ -1119,20 +1119,22 @@ export const judged = (input: {
 };
 
 /**
- * `unconnected`'s creates whose outcome is unknown, each of which may have
- * allocated a session the run never learned of. Its only commands whose
- * outcome is recorded are its two creates, and the first is known to have
- * allocated once the check's record exists.
+ * `unconnected`'s create whose outcome is unknown, which may have allocated a
+ * session the run never learned of. Its only commands whose outcome is
+ * recorded are its two creates, and once the check's record exists the first
+ * is known to have allocated: the unknown one is then the second, whether or
+ * not an interrupt kept its answer from being recorded.
  */
 const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
   if (evidence.check !== "unconnected" || !evidence.outcomes.includes("unknown")) return [];
   const probe = evidence.unconnected;
-  const unseen = (create: string, after: string) =>
-    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${after}. Look for one in the Reactor dashboard, end it, and note what it cost.`;
-  if (probe === undefined) return [unseen("The create", evidence.startedAt)];
-  return probe.spentToken?.outcome === "unknown"
-    ? [unseen("The spent token's second create", probe.requestedAt)]
-    : [];
+  const [create, after] =
+    probe === undefined
+      ? ["The create", evidence.startedAt]
+      : ["The spent token's second create", probe.requestedAt];
+  return [
+    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${after}. Look for one in the Reactor dashboard, end it, and note what it cost.`,
+  ];
 };
 
 /**

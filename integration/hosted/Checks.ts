@@ -430,7 +430,7 @@ const settle = Effect.fnUntraced(
     const unconfirmed = evidence.sessions.filter((session) => session.close?.confirmed !== true);
     yield* judge(
       "confirmed termination",
-      [evidence.sessions.length > 0, "no session was allocated"],
+      [evidence.sessions.length > 0, "no session was recorded"],
       [
         unconfirmed.length === 0,
         `the end of ${unconfirmed.map((session) => session.id).join(", ")} was not confirmed`,
