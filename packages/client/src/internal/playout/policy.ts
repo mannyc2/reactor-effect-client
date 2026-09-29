@@ -17,7 +17,9 @@ import type {
   ClipTag,
   Event,
   FillContext,
+  NotStarted,
   PlayingClip,
+  Settled,
   SourceClip,
   SourceEvent,
   SourceState,
@@ -2492,21 +2494,29 @@ export const view: {
   };
 });
 
-/** Whether an as-run status settles an item's start, and its outcome. */
+/** The status of an item nothing can settle any more. */
+export const indeterminate = { _tag: "Unknown", terminal: true } as const satisfies Settled;
+
+/** What an as-run status settles: the item's start, its outcome, or both. */
 export const decides = (
   status: AsRunStatus,
-): { readonly started: boolean; readonly outcome: boolean } => {
+): {
+  readonly started?: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted | undefined;
+  readonly outcome?: Settled | undefined;
+} => {
   switch (status._tag) {
     case "Started":
-      return { started: true, outcome: false };
+      return { started: status };
+    // An item's start is always published before its end.
     case "Ended":
+      return { outcome: status };
     case "Dropped":
     case "Failed":
     case "Unobserved":
-      return { started: true, outcome: true };
+      return { started: status, outcome: status };
     case "Unknown":
-      return { started: status.terminal === true, outcome: status.terminal === true };
+      return status.terminal === true ? { started: indeterminate, outcome: indeterminate } : {};
     default:
-      return { started: false, outcome: false };
+      return {};
   }
 };

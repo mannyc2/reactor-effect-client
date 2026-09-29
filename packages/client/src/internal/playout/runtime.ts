@@ -44,8 +44,8 @@ import * as Policy from "./policy.js";
 import * as Tag from "./tag.js";
 
 type Handle = {
-  readonly started: Deferred.Deferred<Playout.AsRunStatus>;
-  readonly outcome: Deferred.Deferred<Playout.AsRunStatus>;
+  readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
+  readonly outcome: Deferred.Deferred<Playout.Settled>;
 };
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
@@ -183,8 +183,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const existing = (yield* Ref.get(handles)).get(key);
       if (existing !== undefined) return existing;
       const created: Handle = {
-        started: yield* Deferred.make<Playout.AsRunStatus>(),
-        outcome: yield* Deferred.make<Playout.AsRunStatus>(),
+        started: yield* Deferred.make<Effect.Success<Playout.ItemHandle["started"]>>(),
+        outcome: yield* Deferred.make<Playout.Settled>(),
       };
       yield* Ref.update(handles, (all) => new Map(all).set(key, created));
       return created;
@@ -389,8 +389,10 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             const { key, status } = action.event.event;
             const value = yield* handle(key);
             const decided = Policy.decides(status);
-            if (decided.started) yield* Deferred.succeed(value.started, status);
-            if (decided.outcome) yield* Deferred.succeed(value.outcome, status);
+            if (decided.started !== undefined)
+              yield* Deferred.succeed(value.started, decided.started);
+            if (decided.outcome !== undefined)
+              yield* Deferred.succeed(value.outcome, decided.outcome);
           }
           return;
         }
@@ -474,10 +476,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         ReactorError.fromCode("InvalidState", `the playout's plan failed: ${Cause.pretty(cause)}`),
       );
       yield* apply({ _tag: "Close" }).pipe(Effect.catchCause(() => Effect.void));
-      const unsettled: Playout.AsRunStatus = { _tag: "Unknown", terminal: true };
       for (const value of (yield* Ref.get(handles)).values()) {
-        yield* Deferred.succeed(value.started, unsettled);
-        yield* Deferred.succeed(value.outcome, unsettled);
+        yield* Deferred.succeed(value.started, Policy.indeterminate);
+        yield* Deferred.succeed(value.outcome, Policy.indeterminate);
       }
       yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, { discard: true });
     });

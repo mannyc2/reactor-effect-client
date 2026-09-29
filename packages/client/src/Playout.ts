@@ -218,12 +218,23 @@ export interface AsRunEvent {
   readonly status: AsRunStatus;
 }
 
+/**
+ * What became of an item for good: nothing changes it afterwards. `Unknown`
+ * is settled only once it is terminal.
+ */
+export type Settled =
+  | Extract<AsRunStatus, { readonly _tag: "Ended" | "Dropped" | "Failed" | "Unobserved" }>
+  | { readonly _tag: "Unknown"; readonly terminal: true };
+
+/** How an item settled without a start the playout saw. */
+export type NotStarted = Exclude<Settled, { readonly _tag: "Ended" }>;
+
 export interface ItemHandle {
   readonly key: ItemKey;
-  /** The item's start, or the status that rules one out. */
-  readonly started: Effect.Effect<AsRunStatus>;
-  /** The item's end, or the status that rules one out. */
-  readonly outcome: Effect.Effect<AsRunStatus>;
+  /** The item's start, or how it settled without one. */
+  readonly started: Effect.Effect<Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted>;
+  /** How the item settled. */
+  readonly outcome: Effect.Effect<Settled>;
 }
 
 export interface GroupHandle {
@@ -564,7 +575,9 @@ export class Playout extends Context.Service<
      * A group key withdraws its unstarted parts, and answers `withdrawn` if any
      * part was, else `already-started` if any started; a part key withdraws that
      * part and those after it, and answers for that part. Once the playout has
-     * stopped, it answers from what became of the item or the parts.
+     * stopped, it answers from what became of the item or the parts. It answers
+     * `not-found` for a key it doesn't hold, and for an item that settled
+     * without starting, such as one that failed: its handle says how.
      */
     readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
     /** Admits nothing more and completes once the chosen work has aired or settled. */
