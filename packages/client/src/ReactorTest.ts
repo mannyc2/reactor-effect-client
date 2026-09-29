@@ -47,9 +47,9 @@ export const Fault = Schema.Union([
     status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
   }),
   /**
-   * `POST /sessions` on a token whose sessions are used allocates one more,
-   * where it is otherwise refused 403 `session_limit`. What hosted Reactor
-   * answers a spent token is unobserved.
+   * `POST /sessions` on a token whose sessions are used allocates a session
+   * all the same, where it is otherwise refused 403 `session_limit`. What
+   * hosted Reactor answers a spent token is unobserved.
    */
   Schema.TaggedStruct("IgnoreSessionLimit", nth),
   /**
