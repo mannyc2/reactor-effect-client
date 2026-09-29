@@ -142,10 +142,14 @@ export interface State {
   readonly sampler: Stats.SamplerState;
 }
 
+/**
+ * The moves a session's status may make, but for the move to `ready`: only the negotiation makes
+ * that, in one step with its checks, so `transition` refuses it as illegal.
+ */
 export const transitions: Record<Status, ReadonlyArray<Status>> = {
   idle: ["connecting", "closing"],
   connecting: ["waiting", "disconnected", "closing"],
-  waiting: ["ready", "disconnected", "closing"],
+  waiting: ["disconnected", "closing"],
   ready: ["connecting", "disconnected", "closing"],
   disconnected: ["connecting", "closing"],
   closing: ["closed"],
