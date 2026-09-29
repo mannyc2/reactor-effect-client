@@ -13,6 +13,7 @@ import {
   Option,
   Path,
   Stream,
+  Tracer,
 } from "effect";
 import { Coordinator, H3Source, Reactor, ReactorTest } from "../src/index.js";
 import { PeerFactory } from "../src/Peer.js";
@@ -51,6 +52,34 @@ layer(
       const lifetime = Duration.toMillis(source.lifetime);
       assert.isBelow(lifetime, 300_000 - 3_000);
       assert.isAtLeast(lifetime, 300_000 - elapsed);
+    }),
+  );
+});
+
+layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("tracing", (it) => {
+  it.effect("names the spans it opens and resumes sessions in after its module", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const names = new Set<string>();
+      const tracer = Tracer.make({
+        span: (options) => {
+          names.add(options.name);
+          return new Tracer.NativeSpan(options);
+        },
+      });
+      const sessionTokens = yield* tokens;
+      const recorded = yield* Deferred.make<H3Source.Allocation>();
+      yield* Effect.gen(function* () {
+        yield* H3Source.open({
+          tokens: sessionTokens,
+          onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+        });
+        yield* H3Source.resume({
+          allocation: yield* Deferred.await(recorded),
+          tokens: sessionTokens,
+        });
+      }).pipe(Effect.withTracer(tracer));
+      assert.includeMembers([...names], ["H3Source.open", "H3Source.resume"]);
     }),
   );
 });

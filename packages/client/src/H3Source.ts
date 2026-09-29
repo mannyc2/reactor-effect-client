@@ -464,9 +464,7 @@ export const open = <E = never, R = never>(
       Effect.catch(failAcquisition(session)),
     );
     return { ...source, lifetime: yield* lifetimeUntil(endsAt) };
-  }).pipe(
-    Effect.withSpan("reactor.playout.open", { kind: "client" }, { captureStackTrace: false }),
-  );
+  }).pipe(Effect.withSpan("H3Source.open", { kind: "client" }, { captureStackTrace: false }));
 
 /**
  * Adopts a session `open` allocated, from its owner record and a token bound
@@ -502,6 +500,4 @@ export const resume = (
       Effect.catch(failAcquisition(session)),
     );
     return { ...source, lifetime: yield* lifetimeUntil(endsAt) };
-  }).pipe(
-    Effect.withSpan("reactor.playout.resume", { kind: "client" }, { captureStackTrace: false }),
-  );
+  }).pipe(Effect.withSpan("H3Source.resume", { kind: "client" }, { captureStackTrace: false }));
