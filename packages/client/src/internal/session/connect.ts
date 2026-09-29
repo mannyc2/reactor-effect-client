@@ -114,7 +114,7 @@ export const make = ({
   readonly resumeTracks: boolean;
 }) => {
   const { intent, settings, signaling, state, publish, transition } = core;
-  const { current, guard, fail, background } = generation;
+  const { current, guard, reportHost, fail, background } = generation;
 
   /** Adds what a known remote session has learned; an unknown one stays as it is. */
   const learn = (patch: Partial<Omit<Known, "ownership" | "id">>) =>
@@ -193,24 +193,17 @@ export const make = ({
       failureOr(() => ReactorError.fromCode("Aborted", "connection attempt stopped"))(cause),
     ).pipe(Effect.ensuring(Scope.close(c.scope, Exit.void)));
 
+  /** Closes `c`'s scope, reporting what its host died of as it shut down. */
+  const shutDown = (c: Connection) =>
+    Scope.close(c.scope, Exit.void).pipe(Effect.catchCause((cause) => reportHost(c, cause)));
+
   /**
    * Retires `previous` for the generation that replaced it. Its host's shutdown is not the new
-   * attempt's to fail: the host's own failure, which a finalizer that cannot fail dies with, is a
-   * Diagnostic on the retired generation, and any other defect is reported as a bug.
+   * attempt's to fail: it is reported on the retired generation.
    */
   const retire = (previous: Connection) =>
     fail(previous, ReactorError.fromCode("Disconnected", "connection retired for reconnect")).pipe(
-      Effect.ensuring(Scope.close(previous.scope, Exit.void)),
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          const dies = cause.reasons.filter(Cause.isDieReason);
-          for (const { defect } of dies)
-            if (ReactorError.is(defect))
-              yield* publish({ _tag: "Diagnostic", error: defect }, previous.generation);
-          const bugs = dies.filter(({ defect }) => !ReactorError.is(defect));
-          if (bugs.length > 0) yield* ErrorReporter.report(Cause.fromReasons(bugs));
-        }),
-      ),
+      Effect.ensuring(shutDown(previous)),
     );
 
   /**

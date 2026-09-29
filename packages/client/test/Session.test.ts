@@ -562,6 +562,83 @@ layer(
   );
 });
 
+/** ReactorTest's peers, but fencing the first one dies with `defect` once it is fenced. */
+const dyingFence = (defect: unknown) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Effect.gen(function* () {
+          const peer = yield* peers.make;
+          if ((yield* Ref.getAndUpdate(made, (count) => count + 1)) > 0) return peer;
+          return { ...peer, close: Effect.andThen(peer.close, Effect.die(defect)) };
+        }),
+      });
+    }),
+  );
+
+// The dropped connection's peer fails as its session fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(ReactorError.fromCode("Shutdown", "peer could not be fenced"))),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a dropped connection whose peer fails as it is fenced", (it) => {
+  it.effect("still leaves the session disconnected, says so after the drop, and reconnects", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["Shutdown", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, []);
+    }),
+  );
+});
+
+const fenceBug = new Error("a host's fence bug");
+
+// The dropped connection's peer dies of a bug as its session fences it.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(dyingFence(fenceBug)),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a dropped connection whose peer dies of a bug as it is fenced", (it) => {
+  it.effect("still leaves the session disconnected, reports the defect, and reconnects", () =>
+    Effect.gen(function* () {
+      const { status, seen, bugs } = yield* afterDrop;
+      assert.deepStrictEqual(status, ["ready", 2n]);
+      assert.deepStrictEqual(
+        seen,
+        Option.some([
+          ["disconnected", 1n],
+          ["Disconnected", 1n],
+          ["connecting", 2n],
+          ["waiting", 2n],
+          ["ready", 2n],
+        ]),
+      );
+      assert.deepStrictEqual(bugs, [fenceBug]);
+    }),
+  );
+});
+
 /** A Random that always draws `value`: 0 is the bottom of its range, and 0.5 its middle. */
 const drawing = (value: number): Random.Random => ({
   nextIntUnsafe: () => 0,
