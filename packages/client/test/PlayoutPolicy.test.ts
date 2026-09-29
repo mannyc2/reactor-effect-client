@@ -1560,6 +1560,35 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
   });
 
+  // A refused removal waits for its session's queues to change, but a held clip about to air
+  // cannot: its removal is asked again then, once, and drops it.
+  it("drops a held item withdrawn while its removal was refused, as it comes to air", () => {
+    for (const again of [{ _tag: "Done" }, failed("replied")] as const) {
+      const policy = drive();
+      policy.tick(0);
+      policy.open();
+      policy.submit({ ...spec("h"), start: { _tag: "Manual" } }, 10);
+      const playing = clip("x", undefined, 10);
+      policy.event({ _tag: "Started", clip: playing }, "s1", 20);
+      const ready = [clip("y", undefined, 1), clip("c-h", item("h"))];
+      policy.observe({ playing, ready }, "s1", 21);
+      policy.edit([{ _tag: "Withdraw", key: key("h") }], false, 30);
+      policy.reply(failed("replied"), 40);
+      // x ends at 10,020 and 1 s of y airs after it: h is 1.5 s from airing at 9,520.
+      policy.tick(9_520);
+      assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-h" });
+      policy.reply(again, 9_530);
+      if (again._tag === "Failed") {
+        // Refused again, it waits for the queues to change, as any refused removal does.
+        assert.isUndefined(policy.busy());
+        policy.observe({ playing, ready: [...ready, clip("z")] }, "s1", 9_540);
+        policy.reply({ _tag: "Done" }, 9_550);
+      }
+      assert.deepStrictEqual(statuses(policy.actions, "h").at(-1), "Dropped");
+      assert.deepStrictEqual(withdrawn(policy.actions), ["withdrawn"]);
+    }
+  });
+
   // A group key's withdrawal answers for the parts the group had when it was made. A part's
   // replacement made afterwards is no part of it, and its drop leaves that answer as it was.
   it("answers a group's withdrawal from its parts then, not from a replacement made after it", () => {

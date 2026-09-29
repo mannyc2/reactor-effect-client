@@ -279,7 +279,8 @@ interface Item {
   readonly unsent?: { readonly sessionId: string; readonly changes: number } | undefined;
   /**
    * A clip of its own taken off because it was Ready too early, and its
-   * session: never adopted again as queued, though if it plays anyway, it aired.
+   * session: never adopted again as queued, nor taken off again for that,
+   * though if it plays anyway, it aired.
    */
   readonly discarded?: { readonly sessionId: string; readonly clipId: string } | undefined;
   /** The provider's length for its clip, once it started. */
@@ -2322,7 +2323,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         return decideCommand(sessionId);
       }
     }
-    // A held item about to be next, or an At item Ready too early, is removed and rebuilt later.
+    // A held item about to be next, or an At item Ready too early, is removed: rebuilt later, or
+    // dropped if withdrawn.
     for (const [index, clip] of actual.entries()) {
       const item = itemOf(clip);
       if (item?.phase !== "Ready") continue;
@@ -2334,10 +2336,20 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           ? aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity)
           : at !== undefined && at > now.mono && aheadMs < at - now.mono;
       if (exposed && value.source?.available === true) {
+        // A withdrawal waiting on its session's queues to change is due now: its removal is asked
+        // again, once, and drops the item. Refused again, it waits for a change after all.
+        if (item.withdraw !== undefined) {
+          if (item.discarded?.sessionId === value.id && item.discarded.clipId === clip.clipId)
+            continue;
+          set(item.spec.key, {
+            blockedRemove: undefined,
+            discarded: { sessionId: value.id, clipId: clip.clipId },
+          });
+          return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
+        }
         // It goes back to the plan, to be built again once the air ahead covers its wait.
         set(item.spec.key, {
           phase: "Accepted",
-          withdraw: undefined,
           dispatchedAt: undefined,
           clipId: undefined,
           sessionId: undefined,
