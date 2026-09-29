@@ -46,6 +46,12 @@ export const Fault = Schema.Union([
     ...nth,
     status: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 }))),
   }),
+  /**
+   * `POST /sessions` on a token whose sessions are used allocates one more,
+   * where it is otherwise refused 403 `session_limit`. What hosted Reactor
+   * answers a spent token is unobserved.
+   */
+  Schema.TaggedStruct("IgnoreSessionLimit", nth),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /**

@@ -508,7 +508,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
         if (!webrtc) return yield* refuse(400, "unsupported_transport", "WebRTC 1.0 only");
-        if (grant.created >= grant.maxSessions - grant.bound.size)
+        if (
+          grant.created >= grant.maxSessions - grant.bound.size &&
+          (yield* faults.trip((fault) => fault._tag === "IgnoreSessionLimit")) === undefined
+        )
           return yield* refuse(403, "session_limit", "the token's sessions are used");
         const refusal = yield* faults.trip((fault) => fault._tag === "RefuseAllocation");
         if (refusal?._tag === "RefuseAllocation")
