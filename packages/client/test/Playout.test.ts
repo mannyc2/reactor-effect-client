@@ -1840,6 +1840,42 @@ layer(hosted)("sources", (it) => {
       assert.deepStrictEqual(reported, ["a close bug"]);
     }),
   );
+
+  // The replacement opens 10 s in and takes the air, and closing the retired session dies. The
+  // defect is reported, and the retired session's scope, which holds what its open made, closes.
+  it.effect("closes a retired session's scope though its close dies", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const reported: Array<string> = [];
+      const reporter = ErrorReporter.make(({ error }) => {
+        reported.push(error.message);
+      });
+      const released: Array<number> = [];
+      let opens = 0;
+      yield* Playout.make({
+        open: Effect.suspend(() => {
+          const nth = ++opens;
+          return Effect.addFinalizer(() => Effect.sync(() => released.push(nth))).pipe(
+            Effect.andThen(LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" })),
+            Effect.map((source) =>
+              nth === 1
+                ? {
+                    ...source,
+                    close: Effect.andThen(source.close, Effect.die(new Error("a close bug"))),
+                  }
+                : source,
+            ),
+          );
+        }),
+        lanes: [{ name: "speech" }],
+        renewal: { lead: "10 seconds" },
+      }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
+      yield* Effect.sleep("18 seconds");
+      assert.strictEqual(opens, 2);
+      assert.deepStrictEqual(released, [1]);
+      assert.deepStrictEqual(reported, ["a close bug"]);
+    }),
+  );
 });
 
 // Reactor's docs: "When submitted content violates the policy the session is terminated", and the

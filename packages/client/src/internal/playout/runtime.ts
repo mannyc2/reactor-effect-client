@@ -294,8 +294,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         next.delete(sessionId);
         return next;
       });
-      yield* record(yield* entry.source.close);
-      yield* Scope.close(entry.scope, Exit.void);
+      yield* closeRecorded(entry.source);
+      yield* closeScope(entry.scope, Exit.void);
     });
 
   /** What a command for a session already gone gets: it was never sent. */
