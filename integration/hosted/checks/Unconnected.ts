@@ -206,6 +206,10 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         });
         const readMs = yield* run.now;
         yield* record((probe) => ({ ...probe, read: { atMs: readMs, ...read } }));
+        // Found ended now, it ended after the watch's last read and before the key tried to.
+        const readEnded =
+          read.status === 404 || (read.state !== undefined && Coordinator.isTerminal(read.state));
+        if (endedMs === undefined && readEnded) endedMs = readMs;
         // The key ends the session whether or not Reactor did, so its end is confirmed as
         // every check confirms one. Ending a session Reactor has closed ends nothing more.
         const endRequestedMs = yield* run.now;
@@ -233,7 +237,10 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
               ? "the spent token's second create went unrecorded"
               : `the spent token's second create has no known answer: ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`,
           ],
-          [last.known, `the last read of the session failed with ${last.state}`],
+          [
+            last.known || read.status === 404 || read.state !== undefined,
+            `the last reads of the session failed, with ${last.state} and then status ${read.status}`,
+          ],
         );
         yield* run.mark("unconnected observed");
       }),

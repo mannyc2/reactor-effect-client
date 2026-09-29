@@ -414,6 +414,20 @@ rehearse(
   },
 );
 
+// Reactor may end the session after the watch's last read and before the key's: the read at the
+// end tells which. Counted from ACTIVE, 89.9 s lands between those two reads; 89.8 to 90.0 s do.
+rehearse("unconnected credits Reactor with an end only its read at the end found", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "Expire", after: Duration.millis(89_900) }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.strictEqual(probe?.states.at(-1)?.state, "ACTIVE");
+    assert.strictEqual(probe?.read?.state, "CLOSED");
+    assert.strictEqual(probe?.ended?.by, "reactor");
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {
