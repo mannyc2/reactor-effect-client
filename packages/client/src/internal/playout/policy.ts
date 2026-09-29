@@ -2409,12 +2409,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /**
    * Protecting the air, sends a filler clip ahead of `item` when its p95 build
-   * and a margin would outlast the air secured. The clip is long enough, within
-   * the filler's lengths, that the air it adds less what its own build drains
-   * covers the rest, but airs no longer than the item builds, which a longer
+   * would outlast the air secured. The clip is long enough, within the filler's
+   * lengths, that the air it adds less what its own build drains covers the
+   * rest and a margin, but airs no longer than the item builds, which a longer
    * clip would only delay. An item waits for one such clip at most, and for
    * none that cannot be sent now, would add no air or build no sooner than the
-   * item, or would not air before the session's cap.
+   * item, or would not air before the session's cap. A shortfall within the
+   * margin alone is left to the floor, which refills without holding the item.
    */
   function coverFirst(target: Session, item: Item, continued: boolean, room: number): boolean {
     const filler = config.filler;
@@ -2423,10 +2424,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const build = buildOf(item, continued);
     const rate = estimates().build?.p95;
     if (build === undefined || rate === undefined) return false;
-    const short = build + lookaheadMarginSeconds - securedOf({ ...state, items }, now);
+    const dark = build - securedOf({ ...state, items }, now);
+    const short = dark + lookaheadMarginSeconds;
     // A requested second airs as long as asked, or as a provider that cuts clips short leaves it.
     const airs = Math.min(1, estimates().length);
-    if (short <= 0 || airs <= rate) return false;
+    if (dark <= 0 || airs <= rate) return false;
     // Sized as if the clip's build starts now and the item's once it ends, as with one build in
     // flight, the default. With more, a build already in flight here goes ahead of both, and
     // neither the air it drains meanwhile nor the air it adds is counted.
@@ -2443,14 +2445,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /**
    * Whether filler protects the air ahead of `item`'s build. What has a time to
-   * meet, an `At` start or a `startBy`, goes as soon as it may: filler ahead
-   * would only make it later, and a firm one late enough to be dropped.
+   * meet goes as soon as it may: filler ahead would only make it later, and a
+   * firm one late enough to be dropped. An `At` start or a `startBy` names that
+   * time; an `Asap` start, or a lane that cuts, makes it now.
    */
   function protects(item: Item): boolean {
     return (
       config.filler?.protect === "air" &&
       item.startBy === undefined &&
-      item.spec.start._tag !== "At"
+      item.spec.start._tag !== "At" &&
+      item.spec.start._tag !== "Asap" &&
+      config.lanes[item.spec.lane]?.cut !== true
     );
   }
   /**

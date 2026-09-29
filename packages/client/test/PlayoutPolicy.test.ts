@@ -1124,6 +1124,28 @@ describe("PlayoutPolicy, air before queue order", () => {
     assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
   });
 
+  // The review's F8, as the integrator decided: a cover goes out for dark air projected, not for
+  // the margin alone. A 15 s item builds in 6 s, and nearly 7 s are secured.
+  it("sends no filler clip ahead of a build the air secured outlasts, by less than the margin", () => {
+    const { policy } = airing(protecting("air"), 7);
+    policy.submit(spec("item", 1, 15));
+    assert.strictEqual(sent(policy.busy()), "item");
+  });
+
+  // An item on a cut lane, or an Asap one, has a time to meet: now. With 5.5 s secured, above the
+  // floor, and a 6 s build, only an item without one waits for a cover.
+  it("sends a cut lane's item and an Asap one ahead of the cover their builds would need", () => {
+    for (const [value, first] of [
+      [spec("cutter", 0, 15), "cutter"],
+      [{ ...spec("asap", 1, 15), start: { _tag: "Asap" } } as const, "asap"],
+      [spec("line", 1, 15), "filler of 5.00 s"],
+    ] as const) {
+      const { policy } = airing(protecting("air"), 5.5);
+      policy.submit(value);
+      assert.strictEqual(sent(policy.busy()), first);
+    }
+  });
+
   // The review's F5: an item carried from a lost session kept the cover it had there, and on the
   // next, with no air secured, it went out with none.
   it("covers a carried item again on the session it is carried to", () => {
