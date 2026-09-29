@@ -29,6 +29,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import {
   ConsumerManifest,
   QualificationStack,
+  checkArchivePeers,
   completeQualification,
   inspectConsumerTree,
   resolveStackPackage,
@@ -351,7 +352,7 @@ const program = Effect.gen(function* () {
   if (typescriptVersion === undefined) return yield* failure("catalog must pin typescript");
   const nodeTypesVersion = catalog["@types/node"];
   if (nodeTypesVersion === undefined) return yield* failure("catalog must pin @types/node");
-  // Release qualification selects frozen bytes; archive peers keep their ranges.
+  // Release qualification selects frozen bytes, and the archives' Effect peers pin that selection.
   const stack = yield* selectStack(workspace, yield* fs.readFile(path.join(root, "bun.lock")));
   const { requirements, selected } = stack;
   const workspaceResolution = yield* resolveWorkspaceStack(root, stack);
@@ -422,10 +423,7 @@ const program = Effect.gen(function* () {
             `${manifest.name}: ${name} uses unpublished dependency protocol ${version}`,
           );
       }
-    if (manifest.peerDependencies?.effect !== requirements.effect)
-      return yield* failure(
-        `${manifest.name} must declare the Effect peer range ${requirements.effect}`,
-      );
+    yield* checkArchivePeers(manifest.name, manifest.peerDependencies, stack);
     // Effect's shape: the index, one subpath per top-level module, internals and the
     // index's own path closed. TypeScript finds each module's declarations beside it.
     if (!isExportMap(manifest.exports))

@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import {
   ConsumerManifest,
+  checkArchivePeers,
   completeQualification,
   inspectConsumerTree,
   resolveStackPackage,
@@ -21,17 +22,18 @@ import {
 
 const baseline = "4.0.0-rc.117";
 const later = "4.0.0-rc.118";
-const requirement = `^${baseline}`;
 const names = ["effect", "@effect/platform-node", "@effect/platform-node-shared"] as const;
-const manifest = {
+/** A root manifest whose catalog and override require the stack as `requirement`. */
+const pinned = (requirement: string) => ({
   workspaces: { catalog: { effect: requirement, "@effect/platform-node": requirement } },
   overrides: { "@effect/platform-node-shared": requirement },
-};
+});
+const manifest = pinned(baseline);
 // JSONC is the on-disk contract, including comments and trailing commas.
-const lock = (version = baseline) => `{
+const lock = (version = baseline, root = manifest) => `{
   "lockfileVersion": 2,
-  "catalog": ${JSON.stringify(manifest.workspaces.catalog)},
-  "overrides": ${JSON.stringify(manifest.overrides)},
+  "catalog": ${JSON.stringify(root.workspaces.catalog)},
+  "overrides": ${JSON.stringify(root.overrides)},
   "packages": {
     // A frozen selection, never a registry query.
     ${names.map((name) => `${JSON.stringify(name)}: ["${name}@${version}", "", {}, "sha512-fixture"],`).join("\n")}
@@ -118,28 +120,37 @@ const execute = Effect.fnUntraced(function* (
 }, Effect.scoped);
 
 layer(NodeServices.layer)("pack Effect stack", (it) => {
-  it.effect(
-    "frozen JSONC selection keeps exact versions separate from compatibility ranges and hashes the bytes",
-    () =>
-      Effect.gen(function* () {
-        const selected = yield* select();
-        assert.deepStrictEqual(selected.selected, {
-          effect: baseline,
-          nodePlatform: baseline,
-          nodeShared: baseline,
-        });
-        assert.deepStrictEqual(selected.requirements, {
-          effect: requirement,
-          nodePlatform: requirement,
-          nodeSharedOverride: requirement,
-        });
-        assert.strictEqual(selected.lockfileSha256, bunSha256(lock()));
-      }),
+  it.effect("frozen JSONC selection keeps the exact requirements and hashes the bytes", () =>
+    Effect.gen(function* () {
+      const selected = yield* select();
+      assert.deepStrictEqual(selected.selected, {
+        effect: baseline,
+        nodePlatform: baseline,
+        nodeShared: baseline,
+      });
+      assert.deepStrictEqual(selected.requirements, {
+        effect: baseline,
+        nodePlatform: baseline,
+        nodeSharedOverride: baseline,
+      });
+      assert.strictEqual(selected.lockfileSha256, bunSha256(lock()));
+    }),
   );
 
-  it.effect("a later aligned frozen RC above the range minimum qualifies", () =>
+  it.effect("refuses a range requirement, even one the frozen selection satisfies", () =>
     Effect.gen(function* () {
-      const stack = yield* select(later);
+      const ranged = pinned(`^${baseline}`);
+      assert.match(
+        yield* rejection(selectStack(ranged, lock(baseline, ranged))),
+        /effect requirement \^4\.0\.0-rc\.117 must be exactly the locked 4\.0\.0-rc\.117/,
+      );
+    }),
+  );
+
+  it.effect("a later aligned frozen RC qualifies only once the requirements name it", () =>
+    Effect.gen(function* () {
+      assert.match(yield* rejection(select(later)), /must be exactly the locked 4\.0\.0-rc\.118/);
+      const stack = yield* selectStack(pinned(later), lock(later, pinned(later)));
       assert.strictEqual(stack.selected.effect, later);
       const root = yield* workspace(later);
       assert.lengthOf(yield* resolveWorkspaceStack(root, stack), 11);
@@ -276,7 +287,7 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
       /coordinate/,
     ],
     ["unsupported tuple", lock().replace('"", {}, "sha512-fixture"', '"", {}'), /tuple/],
-    ["stale catalog", lock().replaceAll(requirement, "^4.0.0-rc.116"), /catalog.*differs/],
+    ["stale catalog", lock(baseline, pinned("4.0.0-rc.116")), /catalog.*differs/],
   ] as const)
     it.effect(`rejects ${label}`, () =>
       Effect.gen(function* () {
@@ -296,7 +307,10 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
         `"packages": { "nested/effect": ["effect@${later}", "", {}, "sha512-fixture"],`,
       );
       assert.match(yield* rejection(selectStack(manifest, extra)), /conflicting.*effect/);
-      assert.match(yield* rejection(selectStack(manifest, lock("3.0.0"))), /satisfy/);
+      assert.match(
+        yield* rejection(selectStack(manifest, lock("3.0.0"))),
+        /must be exactly the locked 3\.0\.0/,
+      );
     }),
   );
 
@@ -418,6 +432,53 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
       const root = yield* workspace();
       yield* put(path.join(root, "packages/browser"), { name: "reactor-effect-browser" });
       assert.match(yield* rejection(resolveWorkspaceStack(root, stack)), /declare.*effect/);
+    }),
+  );
+
+  it.effect("rejects a workspace owner's range, even one the selection satisfies", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const stack = yield* select();
+      const root = yield* workspace();
+      yield* put(path.join(root, "packages/browser"), {
+        name: "reactor-effect-browser",
+        devDependencies: { effect: `^${baseline}` },
+      });
+      assert.match(
+        yield* rejection(resolveWorkspaceStack(root, stack)),
+        /packages\/browser declared effect requirement differs from frozen selection/,
+      );
+    }),
+  );
+
+  it.effect("an archive peers on Effect and every stack package at exactly the selection", () =>
+    Effect.gen(function* () {
+      const stack = yield* select();
+      const native = {
+        effect: baseline,
+        "@effect/platform-node": baseline,
+        "reactor-effect-client": "0.8.0",
+      };
+      yield* checkArchivePeers("reactor-effect-native", native, stack);
+      const refused = (name: string, peers: Readonly<Record<string, string>>) =>
+        Effect.flip(checkArchivePeers(name, peers, stack)).pipe(
+          Effect.map((error) => error.message),
+        );
+      assert.match(
+        yield* refused("reactor-effect-client", { effect: `^${baseline}` }),
+        /reactor-effect-client must pin its effect peer to exactly 4\.0\.0-rc\.117, not \^4\.0\.0-rc\.117/,
+      );
+      assert.match(
+        yield* refused("reactor-effect-native", {
+          ...native,
+          "@effect/platform-node": `^${baseline}`,
+        }),
+        /its @effect\/platform-node peer to exactly 4\.0\.0-rc\.117/,
+      );
+      assert.match(
+        yield* refused("reactor-effect-browser", { "reactor-effect-client": "0.8.0" }),
+        /reactor-effect-browser must declare its effect peer/,
+      );
     }),
   );
 
