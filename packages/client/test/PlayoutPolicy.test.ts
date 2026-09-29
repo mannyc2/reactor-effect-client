@@ -865,6 +865,21 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
       assert.isTrue(deadline.actions.some((action) => action._tag === "Open"));
     });
 
+  // JSON has no Infinity, so a persisted event would read null: a grant leaves an uncapped cap out too.
+  it("reports a session no cap ends without a lifetime", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1", Infinity);
+    const opened = policy.actions.flatMap((action) =>
+      action._tag === "Emit" &&
+      action.event._tag === "Session" &&
+      action.event.event._tag === "Opened"
+        ? [action.event.event]
+        : [],
+    );
+    assert.deepStrictEqual(opened, [{ _tag: "Opened", sessionId: "s1" }]);
+  });
+
   // 0.7.0 SchedulerFates: a session lost is closed, so it cannot bill beside its replacement.
   it("closes a session it lost", () => {
     const policy = drive();

@@ -1672,7 +1672,9 @@ export const step: {
         event: {
           _tag: "Opened",
           sessionId: input.sessionId,
-          lifetimeSeconds: input.lifetimeMs / 1000,
+          ...(Number.isFinite(input.lifetimeMs)
+            ? { lifetimeSeconds: input.lifetimeMs / 1000 }
+            : {}),
         },
       });
       break;

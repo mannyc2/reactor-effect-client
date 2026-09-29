@@ -265,7 +265,12 @@ export interface CueEvent {
 
 /** A session's part in the playout. */
 export type SessionEvent =
-  | { readonly _tag: "Opened"; readonly sessionId: string; readonly lifetimeSeconds: number }
+  | {
+      readonly _tag: "Opened";
+      readonly sessionId: string;
+      /** What remains of its granted length; absent for a session no cap ends. */
+      readonly lifetimeSeconds?: number | undefined;
+    }
   | { readonly _tag: "SetupFailed"; readonly reason: string; readonly consecutive: number }
   /** The replacement took the air at a boundary. */
   | {
