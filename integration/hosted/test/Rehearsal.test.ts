@@ -411,7 +411,7 @@ rehearse("unconnected says where to look when its create's outcome is unknown", 
     assert.lengthOf(evidence.sessions, 0);
     const [instruction] = cleanupInstructions(evidence);
     assert.include(instruction ?? "", "may have allocated a session");
-    assert.include(instruction ?? "", evidence.startedAt);
+    assert.include(instruction ?? "", evidence.unconnected?.requestedAt ?? "no request");
     // Nothing else in the summary may say that no session was allocated.
     const reasons = evidence.reasons.join("; ");
     assert.include(reasons, "an outcome is unknown, so the run fails and is not repeated");
@@ -461,6 +461,47 @@ rehearse("unconnected leaves Q1 unanswered when its session ends right after the
       "The spent token's second create may have ended the session: Reactor ended it before",
     );
     assert.match(summarize([evidence]), /^- \*\*Q1:\*\* unanswered by this run\. The spent /m);
+  },
+});
+
+// A create answered 2xx without naming a session may have made one all the same: the codes of
+// its body are kept, for whoever must find that session.
+rehearse("unconnected keeps the codes of a spent token's reply that names no session", {
+  check: "unconnected",
+  faults: [{ _tag: "IgnoreSessionLimit" }, { _tag: "UnnamedAllocation", nth: 2 }],
+  judge: (evidence) => {
+    failed("the probe completed")(evidence);
+    const spent = evidence.unconnected?.spentToken;
+    assert.deepStrictEqual(
+      [spent?.answer, spent?.outcome, spent?.keys, spent?.codes],
+      ["Protocol", "unknown", ["state"], { state: "PENDING" }],
+    );
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", "The spent token's second create has an unknown outcome");
+    assert.include(instruction ?? "", "Its reply's codes: state PENDING.");
+  },
+});
+
+rehearse("unconnected keeps the codes of a create reply that names no session", {
+  check: "unconnected",
+  faults: [{ _tag: "UnnamedAllocation", nth: 1 }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.lengthOf(evidence.sessions, 0);
+    const probe = evidence.unconnected;
+    assert.isUndefined(probe?.sessionId);
+    assert.deepStrictEqual(
+      [probe?.create?.answer, probe?.create?.outcome, probe?.create?.codes],
+      ["Protocol", "unknown", { state: "PENDING" }],
+    );
+    const [instruction] = cleanupInstructions(evidence);
+    assert.include(instruction ?? "", "The create has an unknown outcome");
+    assert.include(instruction ?? "", probe?.requestedAt ?? "no request");
+    assert.include(instruction ?? "", "Its reply's codes: state PENDING.");
+    assert.include(
+      summarize([evidence]),
+      "**Unconnected:** no session; its create failed with Protocol",
+    );
   },
 });
 

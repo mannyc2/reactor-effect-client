@@ -798,32 +798,40 @@ export const ShowRecord = Schema.Struct({
 export type ShowRecord = typeof ShowRecord.Type;
 
 /**
+ * A create's answer: `allocated`; `the same session` when the reply named the
+ * session its token had made; or the reason the create failed with, the SDK's
+ * outcome and the HTTP status. Of the reply's body, its key names and codes:
+ * free text only by its length. A reply that named no session is kept so too.
+ */
+const Answer = {
+  answer: Schema.String,
+  /** Whether a failed create may have allocated, as the SDK classes its failure. */
+  outcome: Schema.optionalKey(Outcome),
+  status: Schema.optionalKey(Schema.Int),
+  keys: Schema.Array(Schema.String),
+  codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+};
+
+/**
  * `unconnected`: a session allocated and never connected, read with the API
  * key until it ended or its window closed, and what a second create on its
  * spent single-session token answered. The instants let a person set the
  * dashboard's charge beside the window.
  */
 export const UnconnectedRecord = Schema.Struct({
-  sessionId: Schema.String,
+  /** The session the create allocated; absent when the create failed. */
+  sessionId: Schema.optionalKey(Schema.String),
   /** When the create was sent; the session's `allocatedMs` is when its reply named it. */
   requestedMs: Ms,
   requestedAt: Schema.String,
+  /** The create's failure, when it failed. */
+  create: Schema.optionalKey(Schema.Struct(Answer)),
   /** A second create on the spent token, sent as soon as the first was answered. */
   spentToken: Schema.optionalKey(
     Schema.Struct({
       sentMs: Ms,
       answeredMs: Ms,
-      /**
-       * `allocated`; `the same session` when the reply named the session the
-       * token had made; or the reason the create failed with.
-       */
-      answer: Schema.String,
-      /** Whether a failed create may have allocated, as the SDK classes its failure. */
-      outcome: Schema.optionalKey(Outcome),
-      status: Schema.optionalKey(Schema.Int),
-      /** The reply's key names, and its codes: free text only by its length. */
-      keys: Schema.Array(Schema.String),
-      codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+      ...Answer,
       /** The session its reply named: one it allocated, which the key then ended, or the first. */
       sessionId: Schema.optionalKey(Schema.String),
     }),
@@ -1136,20 +1144,22 @@ export const judged = (input: {
 
 /**
  * `unconnected`'s create whose outcome is unknown, which may have allocated a
- * session the run never learned of. Its only commands whose outcome is
- * recorded are its two creates, and once the check's record exists the first
- * is known to have allocated: the unknown one is then the second, whether or
- * not an interrupt kept its answer from being recorded.
+ * session the run never learned of, with any codes its reply held. Its only
+ * commands whose outcome is recorded are its two creates, and once the
+ * check's record names a session the first is known to have allocated: the
+ * unknown one is then the second, whether or not an interrupt kept its answer
+ * from being recorded.
  */
 const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
   if (evidence.check !== "unconnected" || !evidence.outcomes.includes("unknown")) return [];
   const probe = evidence.unconnected;
-  const [create, after] =
-    probe === undefined
-      ? ["The create", evidence.startedAt]
-      : ["The spent token's second create", probe.requestedAt];
+  const [create, answer] =
+    probe?.sessionId === undefined
+      ? ["The create", probe?.create]
+      : ["The spent token's second create", probe.spentToken];
+  const codes = Object.entries(answer?.codes ?? {}).map(([key, code]) => `${key} ${code}`);
   return [
-    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${after}. Look for one in the Reactor dashboard, end it, and note what it cost.`,
+    `${create} has an unknown outcome, so it may have allocated a session the run never learned of, shortly after ${probe?.requestedAt ?? evidence.startedAt}. Look for one in the Reactor dashboard, end it, and note what it cost.${codes.length === 0 ? "" : ` Its reply's codes: ${codes.join(", ")}.`}`,
   ];
 };
 

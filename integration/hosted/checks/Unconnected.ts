@@ -24,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
@@ -130,15 +131,20 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unkno
 
 /**
  * A failed create as the evidence keeps it: its reason, outcome and status,
- * and its body's codes under whatever keys hold them.
+ * and its body's codes under whatever keys hold them. A reply that named no
+ * session carries its body, redacted, in the failure's detail.
  */
 const refusal = (error: ReactorError) => {
   const reason = error.reason;
   const http = reason._tag === "Http" ? reason : undefined;
+  const detail =
+    error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
   const body =
-    http?.body === undefined
-      ? undefined
-      : http.body.pipe(Redacted.value, decodeJson, Option.getOrUndefined);
+    http?.body !== undefined
+      ? http.body.pipe(Redacted.value, decodeJson, Option.getOrUndefined)
+      : Predicate.hasProperty(detail, "body")
+        ? detail.body
+        : undefined;
   return {
     answer: reason._tag,
     ...(error.context.outcome === undefined ? {} : { outcome: error.context.outcome }),
@@ -163,10 +169,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         // check ends.
         const signaling = coordinator.signaling(Effect.succeed(grant.jwt));
         const requestedMs = yield* run.now;
-        const { sessionId } = yield* allocate(pieces, signaling, grant, grants);
-        yield* run.mark("allocated", sessionId);
         const initial: UnconnectedRecord = {
-          sessionId,
           requestedMs,
           requestedAt: instant(requestedMs),
           states: [],
@@ -177,6 +180,16 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             ...evidence,
             unconnected: change(evidence.unconnected ?? initial),
           }));
+        // The record names the session, or keeps the create's failure, before an interrupt
+        // can land.
+        const { sessionId } = yield* allocate(pieces, signaling, grant, grants).pipe(
+          Effect.tapError((error) => record((probe) => ({ ...probe, create: refusal(error) }))),
+          Effect.tap((allocation) =>
+            record((probe) => ({ ...probe, sessionId: allocation.sessionId })),
+          ),
+          Effect.uninterruptible,
+        );
+        yield* run.mark("allocated", sessionId);
         const recordSpent = (spentToken: SpentToken) =>
           record((probe) => ({ ...probe, spentToken })).pipe(
             Effect.andThen(run.mark("spent token answered", spentToken.answer)),

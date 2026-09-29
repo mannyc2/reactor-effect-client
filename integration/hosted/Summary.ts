@@ -269,20 +269,27 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   return lines;
 };
 
-/** `unconnected`'s window, its states and the spent token's answer, a line each. */
+/** `unconnected`'s session, its window, its states and the spent token's answer, a line each. */
 const unconnectedLines = (
   evidence: Evidence,
   probe: NonNullable<Evidence["unconnected"]>,
 ): ReadonlyArray<string> => {
+  const codes = (value: Readonly<Record<string, string>> | undefined) =>
+    Object.entries(value ?? {})
+      .map(([key, code]) => `${key} ${code}`)
+      .join(", ") || "none";
+  const create = probe.create;
+  if (probe.sessionId === undefined)
+    return [
+      create === undefined
+        ? `**Unconnected:** requested ${probe.requestedAt}; no answer to its create was recorded`
+        : `**Unconnected:** no session; its create failed with ${create.answer}${create.status === undefined ? "" : ` ${create.status}`}, outcome ${create.outcome ?? "unknown"}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
+    ];
   const allocatedMs = evidence.sessions.find(
     (session) => session.id === probe.sessionId,
   )?.allocatedMs;
   const since = (atMs: number) =>
     allocatedMs === undefined ? seconds(atMs) : `${seconds(atMs - allocatedMs)} after allocation`;
-  const codes = (value: Readonly<Record<string, string>> | undefined) =>
-    Object.entries(value ?? {})
-      .map(([key, code]) => `${key} ${code}`)
-      .join(", ") || "none";
   const ended = probe.ended;
   const spent = probe.spentToken;
   const read = probe.read;
