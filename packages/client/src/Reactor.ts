@@ -58,10 +58,11 @@ export interface Options {
    * the connection ready as the time ran out dropped. Each attempt is a new connection generation
    * of the same session: it allocates nothing and never replays a command. By default the second
    * attempt comes 250 ms after the first fails and each wait doubles, to at most 4 seconds,
-   * jittered by up to a fifth either way, and never sooner than a refusal's `Retry-After`. A
-   * schedule with no delay of its own tries again at once, for all of `reconnectTimeout`, each time
-   * with a new peer (a process of its own on the isolated native host), so space its attempts as
-   * the default does. The session reconnects in its acquisition's context, with the tracer,
+   * jittered by up to a fifth either way; after a refusal's `Retry-After` it is at least that long,
+   * and jittered only upward, by up to a fifth, so sessions refused together spread out. A schedule
+   * with no delay of its own tries again at once, for all of `reconnectTimeout`, each time with a
+   * new peer (a process of its own on the isolated native host), so space its attempts as the
+   * default does. The session reconnects in its acquisition's context, with the tracer,
    * `ErrorReporter`s and clock `create` or `attach` ran with, and each attempt's
    * `Session.reconnect` span begins a trace of its own, linked to the acquisition's. Reconnecting
    * keeps a session alive, and billed, through its drops: an owned session its application never
@@ -169,18 +170,23 @@ const bounded = (
 
 /**
  * A session's own reconnect by default: 250 ms after the first failed attempt, doubling to at
- * most 4 s, jittered so clients that dropped together do not try again together, and never
- * sooner than a refusal's `Retry-After`.
+ * most 4 s, jittered by up to a fifth either way, as `Schedule.jittered` does, so clients that
+ * dropped together do not try again together. After a refusal's `Retry-After` the wait is at
+ * least that long, jittered only upward, so clients refused together spread out too and none
+ * tries sooner than it was asked.
  */
 const reconnectSchedule: Schedule.Schedule<unknown, ReactorError> = Schedule.min([
   Schedule.exponential("250 millis"),
   Schedule.spaced("4 seconds"),
 ]).pipe(
-  Schedule.jittered,
-  Schedule.modifyDelay(({ input, duration }) => {
-    const asked = ReactorError.is(input) ? input.retryAfter : undefined;
-    return Effect.succeed(asked === undefined ? duration : Duration.max(duration, asked));
-  }),
+  Schedule.modifyDelay(({ input, duration }) =>
+    Effect.map(Random.next, (draw) => {
+      const asked = ReactorError.is(input) ? input.retryAfter : undefined;
+      return asked === undefined
+        ? Duration.millis(Duration.toMillis(duration) * (0.8 + 0.4 * draw))
+        : Duration.millis(Duration.toMillis(Duration.max(duration, asked)) * (1 + 0.2 * draw));
+    }),
+  ),
 );
 
 const count = (value: number | undefined, fallback: number, maximum: number, name: string) =>

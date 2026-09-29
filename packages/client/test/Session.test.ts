@@ -1568,7 +1568,8 @@ layer(
     timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, http: "20 millis", channel: "10 millis" }),
   }),
 )("a session's own reconnect refused with a Retry-After", (it) => {
-  it.effect("tries again no sooner than it was asked to", () =>
+  /** The wait after the refusal before the next attempt, when every jitter draws `draw`. */
+  const waits = (draw: number) =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
       const test = yield* ReactorTest.ReactorTest;
@@ -1583,9 +1584,19 @@ layer(
       );
       assert.strictEqual(Option.getOrUndefined(back)?.generation, 3n);
       // The next attempt's first request takes 20 ms.
-      const waits = (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
-      assert.deepStrictEqual(waits, [5_000]);
-    }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
+      return (yield* waitsAfterRefusals(session.id)).map((wait) => wait - 20);
+    }).pipe(Effect.provideService(Random.Random, drawing(draw)));
+
+  it.effect("tries again no sooner than it was asked to", () =>
+    Effect.map(waits(0), (all) => {
+      assert.deepStrictEqual(all, [5_000]);
+    }),
+  );
+
+  it.effect("jitters that wait only upward, so sessions refused together spread out", () =>
+    Effect.map(waits(0.5), (all) => {
+      assert.deepStrictEqual(all, [5_500]);
+    }),
   );
 
   it.effect("joins a reconnect asked for as it waits, which succeeds with its next attempt", () =>
