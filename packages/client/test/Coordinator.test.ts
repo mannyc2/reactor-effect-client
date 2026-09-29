@@ -10,6 +10,7 @@ import {
   FileSystem,
   Inspectable,
   Layer,
+  Predicate,
   Redacted,
   Result,
   Schema,
@@ -467,6 +468,27 @@ alone("a refusal carries its status and delay, and keeps the body out of its mes
       "too many sessions",
     );
   }),
+);
+
+// A create answered 2xx without naming a session may still have made one: what the reply said is
+// kept, redacted as provider text is, for whoever must find that session.
+alone(
+  "a create reply that names no session keeps its body redacted, and out of its message",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const error = yield* Effect.flip(created);
+      assert.deepStrictEqual([error.reason._tag, error.context.outcome], ["Protocol", "unknown"]);
+      assert.notInclude(error.message, "PENDING");
+      const json = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(error);
+      assert.notInclude(json, "PENDING");
+      const detail =
+        error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
+      assert.deepStrictEqual(Predicate.hasProperty(detail, "body") ? detail.body : undefined, {
+        state: "PENDING",
+      });
+    }),
+  [{ _tag: "UnnamedAllocation" }],
 );
 
 // The billing page shows rates per minute; the live pricing endpoint states H3's per second.

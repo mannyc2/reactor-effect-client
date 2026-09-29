@@ -928,11 +928,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.flatMap((reply) =>
             Schema.decodeUnknownEffect(Allocated)(reply).pipe(
               Effect.map((allocated) => ({ sessionId: allocated.session_id, reply })),
+              // A session may have been made all the same: the reply's body goes with the
+              // failure, redacted as provider text is, for whoever must find that session.
               Effect.mapError((cause) =>
                 ReactorError.fromCode("Protocol", "create reply names no session", {
                   operation: "create session",
                   outcome: "unknown",
-                  detail: cause,
+                  detail: { body: reply, cause },
                 }),
               ),
             ),
