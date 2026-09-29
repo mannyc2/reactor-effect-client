@@ -75,7 +75,13 @@ export interface OpenOptions<E = never, R = never> extends Options {
    * expires, and the playout renews it only when it is lost.
    */
   readonly tokens: Tokens;
-  /** Runs after allocation and before connect, so a supervisor can record the owner first. */
+  /**
+   * Runs after allocation and before connect, so a supervisor can record the
+   * owner first. Its failure closes the session and fails `open` as
+   * `Reactor.create`'s `onAllocated` does: an `AcquisitionFailure` with the
+   * close's report, and an error other than the client's own as the `detail` of
+   * an `Aborted` one.
+   */
   readonly onAllocated?: ((allocated: Allocated) => Effect.Effect<void, E, R>) | undefined;
   readonly create?: Omit<CreateOptions, "model" | "tokens" | "onAllocated"> | undefined;
 }
@@ -423,12 +429,14 @@ const lifetimeUntil = (endsAt: number | undefined): Effect.Effect<Duration.Durat
  * Opens a paid H3 session as a playout source: mint its token, allocate it, run
  * `onAllocated`, connect, and set it up. Its lifetime is what remains, when it
  * returns, of the token's session cap counted from the allocation request, or
- * unending without a cap.
+ * unending without a cap. Any failure after allocation, `onAllocated`'s
+ * included, closes the session and fails with an `AcquisitionFailure` carrying
+ * the close's report.
  * `Playout.make({ open: H3Source.open({ tokens }), ... })`.
  */
 export const open = <E = never, R = never>(
   options: OpenOptions<E, R>,
-): Effect.Effect<Source, AcquisitionFailure | E, R | Reactor | Crypto.Crypto | Scope.Scope> =>
+): Effect.Effect<Source, AcquisitionFailure, R | Reactor | Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
     const reactor = yield* Reactor;
     const grant = yield* options.tokens.create.pipe(

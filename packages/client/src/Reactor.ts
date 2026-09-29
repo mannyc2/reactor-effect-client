@@ -68,7 +68,11 @@ export interface CreateOptions<E = never, R = never> extends AcquisitionOptions 
   /**
    * Runs once the session is allocated and before it connects, so a
    * supervisor can record the owner first. Its failure closes the session and
-   * is returned as it is.
+   * fails the acquisition with an `AcquisitionFailure` carrying the close's
+   * report, as any failure after allocation does: one of the client's failures
+   * keeps its reason and context, and any other error becomes an `Aborted`
+   * failure with that error as its `context.detail`. A defect stays a defect,
+   * raised once the session is closed.
    */
   readonly onAllocated?: ((session: Session) => Effect.Effect<void, E, R>) | undefined;
 }
@@ -91,7 +95,7 @@ export class Reactor extends Context.Service<
   {
     readonly create: <E = never, R = never>(
       options: CreateOptions<E, R>,
-    ) => Effect.Effect<Session, AcquisitionFailure | E, Scope.Scope | R>;
+    ) => Effect.Effect<Session, AcquisitionFailure, Scope.Scope | R>;
     readonly attach: (
       options: AttachOptions,
     ) => Effect.Effect<Session, AcquisitionFailure, Scope.Scope>;
@@ -159,7 +163,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
     tokens: (Pick<Tokens, "bind"> & Partial<Pick<Tokens, "create">>) | undefined,
     resumeTracks: boolean | undefined,
     onAllocated: ((session: Session) => Effect.Effect<void, E, R>) | undefined,
-  ): Effect.Effect<Session, AcquisitionFailure | E, Scope.Scope | R> =>
+  ): Effect.Effect<Session, AcquisitionFailure, Scope.Scope | R> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const rejected = (error: ReactorError) =>
@@ -188,7 +192,18 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             yield* Effect.annotateCurrentSpan("reactor.session.id", id);
             const session = handle.session(id);
             if (onAllocated !== undefined) {
-              const recorded = yield* Effect.exit(onAllocated(session));
+              const recorded = yield* onAllocated(session).pipe(
+                Effect.mapError((error) =>
+                  isReactorFailure(error)
+                    ? error
+                    : ReactorError.fromCode("Aborted", "onAllocated failed", {
+                        operation: "onAllocated",
+                        sessionId: id,
+                        detail: error,
+                      }),
+                ),
+                Effect.exit,
+              );
               if (Exit.isFailure(recorded)) return Exit.failCause(recorded.cause);
             }
             yield* handle.connect;
@@ -203,14 +218,15 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           Effect.onInterrupt(() => Scope.close(scope, Exit.void)),
         );
         if (Exit.isSuccess(acquired)) return acquired.value;
-        // A failure from onAllocated releases the lease too. One of the client's
-        // own failures carries the cleanup evidence; an application's own error
-        // is returned as it was raised.
+        // A failure from onAllocated releases the lease too, and carries the
+        // release's report as any failure after allocation does: the session may
+        // outlive a release that could not end it. A defect is raised once the
+        // lease is released.
         const report = yield* release;
-        const application = Cause.findError(acquired.cause);
-        return yield* application._tag === "Success" && isReactorFailure(application.success)
-          ? Effect.fail(AcquisitionFailure.from(application.success, report))
-          : Effect.failCause(acquired.cause);
+        const failure = Cause.findError(acquired.cause);
+        return yield* failure._tag === "Success"
+          ? Effect.fail(AcquisitionFailure.from(failure.success, report))
+          : Effect.failCause(failure.failure);
       }),
     ).pipe(
       Effect.withSpan(
