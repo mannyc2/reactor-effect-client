@@ -1252,9 +1252,26 @@ export const step: {
         cause: "moderation",
       });
   };
-  const failed = (event: Extract<SourceEvent, { readonly _tag: "Failed" }>): void => {
-    if (event.clip.tag?._tag === "Filler") return forgetFiller(event.clip.clipId);
-    const item = itemOf(event.clip);
+  const failed = (
+    sessionId: string,
+    event: Extract<SourceEvent, { readonly _tag: "Failed" }>,
+  ): void => {
+    const { clip } = event;
+    // A clip that fails on air leaves it as an ended one does, and the switch's grace counts from now.
+    const onAir = session(sessionId)?.playing?.clipId === clip.clipId;
+    if (onAir) updateSession(sessionId, { lastEndedAt: now.mono, playing: undefined });
+    if (clip.tag?._tag === "Filler") {
+      if (onAir)
+        emit({
+          _tag: "Filler",
+          index: clip.tag.index,
+          phase: "Ended",
+          at: now.wall,
+          seconds: clip.seconds,
+        });
+      return forgetFiller(clip.clipId);
+    }
+    const item = itemOf(clip);
     if (item !== undefined)
       settle(item.spec.key, {
         _tag: "Failed",
@@ -1711,7 +1728,7 @@ export const step: {
           ended(input.sessionId, event);
           break;
         case "Failed":
-          failed(event);
+          failed(input.sessionId, event);
           break;
         case "Moderated":
           moderated(input.sessionId, event);

@@ -277,7 +277,7 @@ export type SessionEvent =
       readonly _tag: "Switched";
       readonly from: string;
       readonly to: string;
-      /** The retiring session never started a clip, or its last one ended and the grace elapsed. */
+      /** The retiring session never started a clip, or its last one left the air and the grace elapsed. */
       readonly decision: "no-observed-start" | "grace-elapsed";
     }
   /** A session was lost or expired before a planned switch; its unaired clips are rebuilt. */
@@ -309,8 +309,8 @@ export type Event =
   | { readonly _tag: "Cue"; readonly event: CueEvent }
   | { readonly _tag: "Session"; readonly event: SessionEvent }
   /**
-   * A filler clip started or ended, at epoch milliseconds; `seconds` is its
-   * length as the provider built it, when known.
+   * A filler clip started or ended, at epoch milliseconds; one that fails on
+   * air ends then. `seconds` is its length as the provider built it, when known.
    */
   | {
       readonly _tag: "Filler";
@@ -548,7 +548,10 @@ export interface Options<R = never> {
          * 3 minutes by default. Waiting for a GPU is not billed.
          */
         readonly openTimeout?: Duration.Input | undefined;
-        /** How long after the retiring session's last clip ends the switch waits; 250 ms by default. */
+        /**
+         * How long after the retiring session's last clip ends, or fails on air,
+         * the switch waits; 250 ms by default.
+         */
         readonly grace?: Duration.Input | undefined;
         /**
          * Consecutive failed setups that end the playout: opens that failed, and

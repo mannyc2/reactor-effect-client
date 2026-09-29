@@ -1075,6 +1075,79 @@ layer(hosted)("local renderer", (it) => {
       for (const [from, to] of switched) assert.notStrictEqual(from, to);
     }),
   );
+
+  it.effect(
+    "hands over the grace after a clip fails on air, not at the retiring session's cap",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const playout = yield* Playout.make({
+          open: LocalSource.open({
+            build: (local) => Effect.succeed({ value: local.request.prompt }),
+            present: (local, prompt) =>
+              prompt === "failing"
+                ? Effect.andThen(Effect.sleep("13 seconds"), Effect.fail("the speaker failed"))
+                : Effect.sleep(Duration.seconds(local.seconds)),
+            lifetime: "20 seconds",
+          }),
+          lanes: [{ name: "speech" }],
+          renewal: { lead: "10 seconds" },
+        });
+        // The first clip is the session's only one: the next doesn't fit before its cap, and waits
+        // for the replacement opened 10 seconds in.
+        const failing = yield* playout.submit({
+          key: key("failing"),
+          lane: "speech",
+          request: clip("failing", 15),
+        });
+        const next = yield* playout.submit({
+          key: key("next"),
+          lane: "speech",
+          request: clip("next", 15),
+        });
+        assert.strictEqual((yield* failing.outcome)._tag, "Failed");
+        const failedAt = yield* Clock.currentTimeMillis;
+        yield* next.started;
+        const gap = (yield* Clock.currentTimeMillis) - failedAt;
+        assert.isBelow(gap, 1000, `the next item started ${String(gap)} ms after the failure`);
+      }),
+  );
+
+  it.effect("reports a filler that fails on air as ended", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) => Effect.succeed({ value: local.request.prompt }),
+          present: (local, prompt) =>
+            prompt === "idle 0"
+              ? Effect.andThen(Effect.sleep("1 second"), Effect.fail("the speaker failed"))
+              : Effect.sleep(Duration.seconds(local.seconds)),
+        }),
+        lanes: [{ name: "speech" }],
+        filler: {
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        },
+      });
+      const phases = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "Filler"
+            ? Ref.update(phases, (all) => [...all, `${event.phase} ${String(event.index)}`])
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* Effect.sleep("12 seconds");
+      assert.deepStrictEqual((yield* Ref.get(phases)).slice(0, 4), [
+        "Started 0",
+        "Ended 0",
+        "Started 1",
+        "Ended 1",
+      ]);
+    }),
+  );
 });
 
 // The invariants hold across seeded random timing: builds from a quarter of real time to ten
