@@ -52,6 +52,12 @@ export const Fault = Schema.Union([
    * answers a spent token is unobserved.
    */
   Schema.TaggedStruct("IgnoreSessionLimit", nth),
+  /**
+   * `POST /sessions` on a token whose sessions are used answers with the
+   * session the token created last, where it is otherwise refused 403
+   * `session_limit`. What hosted Reactor answers a spent token is unobserved.
+   */
+  Schema.TaggedStruct("RepeatSession", nth),
   /** Registering a WebRTC connection is refused with 403. */
   Schema.TaggedStruct("RefuseConnect", nth),
   /**
