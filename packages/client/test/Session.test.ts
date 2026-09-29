@@ -647,6 +647,46 @@ layer(environment({ timing }))(
         );
       }),
     );
+
+    it.effect("that Reactor refuses leaves a drop the session reconnects afresh, at once", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject(drop);
+        const session = yield* connect;
+        yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation === 2n),
+          Stream.runHead,
+        );
+        yield* Effect.sleep("1 second");
+        // Reactor refuses the application's reconnect with 503.
+        yield* test.inject({ _tag: "RefuseReconnect", nth: 1 });
+        const refused = yield* Effect.flip(session.reconnect);
+        const refusedAt = yield* Clock.currentTimeMillis;
+        const next = yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.generation === 4n),
+          Stream.runHead,
+          Effect.timeoutOption("30 seconds"),
+          Effect.map(Option.flatten),
+        );
+        // A reconnect of its own from that drop, not the settled one's backoff and deadline.
+        assert.deepStrictEqual(
+          [
+            refused.reason._tag,
+            Option.getOrUndefined(next)?.status,
+            (yield* Clock.currentTimeMillis) - refusedAt,
+          ],
+          ["Http", "connecting", 0],
+        );
+        const back = yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready"),
+          Stream.runHead,
+          Effect.timeoutOption("30 seconds"),
+          Effect.map(Option.flatten),
+        );
+        assert.strictEqual(Option.getOrUndefined(back)?.generation, 4n);
+      }),
+    );
   },
 );
 
