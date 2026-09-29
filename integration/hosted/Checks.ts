@@ -34,6 +34,7 @@ import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
+import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
@@ -119,6 +120,16 @@ const commandsSince = (evidence: Evidence.Evidence, sinceMs: number) => {
 /** The HTTP status a refusal carries, when a reply came. */
 const statusOf = (error: ReactorError) =>
   error.reason._tag === "Http" ? error.reason.status : undefined;
+
+/**
+ * A session read that failed, as a trail records it. Only 404 means gone; any
+ * other refusal names its status, or its reason when no reply came.
+ */
+const failedRead = (error: ReactorError) => {
+  const status = statusOf(error);
+  if (status === 404) return "gone";
+  return status === undefined ? `error:${error.reason._tag}` : `http:${status}`;
+};
 
 /** What H3 last reported of its state and queue. */
 const factsOf = (snapshot: H3.ProviderSnapshot) =>
@@ -375,17 +386,11 @@ const settle = Effect.fnUntraced(
       const trail: Array<{ readonly atMs: number; readonly state: string }> = [];
       let terminalMs: number | undefined;
       while (terminalMs === undefined && (yield* Clock.currentTimeMillis) < deadline) {
-        const state = yield* inspector.inspect(sessionId).pipe(
-          Effect.map((inspection) => inspection.state),
-          // Only 404 means gone; any other refusal names its status, so the trail shows it.
-          Effect.catch((error) => {
-            const status = statusOf(error);
-            if (status === 404) return Effect.succeed("gone");
-            return Effect.succeed(
-              status === undefined ? `error:${error.reason._tag}` : `http:${status}`,
-            );
-          }),
-        );
+        const state = yield* inspector
+          .inspect(sessionId)
+          .pipe(
+            Effect.match({ onFailure: failedRead, onSuccess: (inspection) => inspection.state }),
+          );
         const atMs = yield* run.now;
         if (trail.at(-1)?.state !== state) trail.push({ atMs, state });
         if (state === "gone" || Coordinator.isTerminal(state)) terminalMs = atMs;
@@ -2220,6 +2225,7 @@ const pieces = {
   contractTally,
   endHeld,
   factsOf,
+  failedRead,
   holding,
   identifier,
   judge,
@@ -2258,6 +2264,7 @@ const all = {
   tour: tour(pieces),
   adoption: adoption(pieces),
   show: show(pieces),
+  unconnected: unconnected(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

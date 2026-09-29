@@ -186,11 +186,11 @@ export const readSession = (input: {
   ).pipe(Effect.map(summarize));
 
 /**
- * A session reply as evidence may keep it: the status, top-level key names, the
- * state, and identifier-like values under keys that may say why it ended.
+ * A reply's body as evidence may keep it: top-level key names, the state, and
+ * identifier-like values under keys that may say why a session ended.
  */
-export const summarize = (reply: Reply) => {
-  const body = Predicate.isObject(reply.body) ? reply.body : {};
+export const summarizeBody = (content: unknown) => {
+  const body = Predicate.isObject(content) ? content : {};
   const codes: Record<string, string> = {};
   const note = (key: string, value: unknown) => {
     if (Predicate.isString(value))
@@ -205,9 +205,11 @@ export const summarize = (reply: Reply) => {
   }
   const state = Predicate.isString(body.state) ? body.state : undefined;
   return {
-    status: reply.status,
     keys: Object.keys(body),
     ...(state === undefined ? {} : { state }),
     ...(Object.keys(codes).length === 0 ? {} : { codes }),
   };
 };
+
+/** A session reply as evidence may keep it: its status, and its body as `summarizeBody` keeps it. */
+export const summarize = (reply: Reply) => ({ status: reply.status, ...summarizeBody(reply.body) });

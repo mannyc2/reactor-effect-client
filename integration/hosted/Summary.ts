@@ -264,7 +264,42 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       `**Refusals:** expired token ${adoption.expiredTokenStatus ?? "–"}, unbound token ${adoption.unboundTokenStatus ?? "–"}`,
     );
   }
+  const unconnected = evidence.unconnected;
+  if (unconnected !== undefined) lines.push(...unconnectedLines(evidence, unconnected));
   return lines;
+};
+
+/** `unconnected`'s window, its states and the spent token's answer, a line each. */
+const unconnectedLines = (
+  evidence: Evidence,
+  probe: NonNullable<Evidence["unconnected"]>,
+): ReadonlyArray<string> => {
+  const allocatedMs = evidence.sessions.find(
+    (session) => session.id === probe.sessionId,
+  )?.allocatedMs;
+  const since = (atMs: number) =>
+    allocatedMs === undefined ? seconds(atMs) : `${seconds(atMs - allocatedMs)} after allocation`;
+  const codes = (value: Readonly<Record<string, string>> | undefined) =>
+    Object.entries(value ?? {})
+      .map(([key, code]) => `${key} ${code}`)
+      .join(", ") || "none";
+  const ended = probe.ended;
+  const spent = probe.spentToken;
+  const read = probe.read;
+  return [
+    `**Unconnected:** ${probe.sessionId} requested ${probe.requestedAt}; ${probe.connectableMs === undefined ? "never read connectable" : `connectable ${since(probe.connectableMs)}`}; ${ended === undefined ? "its end unconfirmed" : `ended by ${ended.by === "reactor" ? "Reactor" : "the API key"} ${since(ended.atMs)}, ${ended.at}`}`,
+    `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} reads)`).join(" > ") || "none"}`,
+    ...(spent === undefined
+      ? []
+      : [
+          `**Spent token:** a second create ${spent.answer === "allocated" ? `allocated ${spent.sessionId ?? "a session"}, which the key ended` : `failed with ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`} in ${seconds(spent.answeredMs - spent.sentMs)}; keys ${spent.keys.join(", ") || "none"}; codes ${codes(spent.codes)}`,
+        ]),
+    ...(read === undefined
+      ? []
+      : [
+          `**Read at the end:** ${read.status} ${read.state ?? "no state"}; keys ${read.keys.join(", ") || "none"}; codes ${codes(read.codes)}`,
+        ]),
+  ];
 };
 
 /** One run as a section. */

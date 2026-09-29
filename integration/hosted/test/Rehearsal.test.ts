@@ -265,6 +265,36 @@ rehearse("adoption ends the session of an owner that fails before it streams", {
   },
 });
 
+// ReactorTest ends a session at its cap, counted from ACTIVE, whether or not anything connected,
+// and refuses a spent single-session token 403 session_limit. Whether hosted Reactor does either
+// is what unconnected asks.
+rehearse("unconnected follows a session nothing connected to until its cap ends it", {
+  check: "unconnected",
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    const spent = probe?.spentToken;
+    const session = evidence.sessions[0];
+    assert.deepStrictEqual(
+      probe?.states.slice(-2).map((entry) => entry.state),
+      ["ACTIVE", "CLOSED"],
+    );
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    // The cap ends it 60 s after it went ACTIVE, half a second at most after the reply, and a
+    // read every 2 s finds that end.
+    const endedAfter = (probe?.ended?.atMs ?? 0) - (session?.allocatedMs ?? 0);
+    assert.isAtLeast(endedAfter, 60_000);
+    assert.isAtMost(endedAfter, 62_500);
+    assert.isDefined(probe?.connectableMs);
+    assert.deepStrictEqual(
+      [spent?.answer, spent?.outcome, spent?.status, spent?.codes?.["error.code"]],
+      ["Http", "replied", 403, "session_limit"],
+    );
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(session?.close?.termination?.confirmed);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

@@ -797,6 +797,56 @@ export const ShowRecord = Schema.Struct({
 });
 export type ShowRecord = typeof ShowRecord.Type;
 
+/**
+ * `unconnected`: a session allocated and never connected, read with the API
+ * key until it ended or its cap and 30 s more had passed, and what a second
+ * create on its spent single-session token answered. The instants let a
+ * person set the dashboard's charge beside the window.
+ */
+export const UnconnectedRecord = Schema.Struct({
+  sessionId: Schema.String,
+  /** When the create was sent; the session's `allocatedMs` is when its reply named it. */
+  requestedMs: Ms,
+  requestedAt: Schema.String,
+  /** A second create on the spent token, sent as soon as the first was answered. */
+  spentToken: Schema.optionalKey(
+    Schema.Struct({
+      sentMs: Ms,
+      answeredMs: Ms,
+      /** `allocated`, or the reason the create failed with. */
+      answer: Schema.String,
+      /** Whether a failed create may have allocated, as the SDK classes its failure. */
+      outcome: Schema.optionalKey(Outcome),
+      status: Schema.optionalKey(Schema.Int),
+      /** The reply's key names, and its codes: free text only by its length. */
+      keys: Schema.Array(Schema.String),
+      codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+      /** The session it allocated, which the key then ended. */
+      sessionId: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  /**
+   * Each state the reads found, in order, with the first and last read that
+   * found it. A read answered 404 is `gone`; one that failed otherwise is its
+   * HTTP status or its reason's tag.
+   */
+  states: Schema.Array(
+    Schema.Struct({ state: Schema.String, firstMs: Ms, lastMs: Ms, reads: Schema.Int }),
+  ),
+  /** The first read that found its capabilities and a transport, which the SDK connects on. */
+  connectableMs: Schema.optionalKey(Ms),
+  /** The coordinator's read once the reads stopped: status, key names, state and codes. */
+  read: Schema.optionalKey(SessionRead),
+  /**
+   * Its end, once confirmed: by Reactor at the first read that found it `CLOSED`
+   * or gone, or by the key's termination after the window.
+   */
+  ended: Schema.optionalKey(
+    Schema.Struct({ by: Schema.Literals(["reactor", "key"]), atMs: Ms, at: Schema.String }),
+  ),
+});
+export type UnconnectedRecord = typeof UnconnectedRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -997,6 +1047,7 @@ export const Evidence = Schema.Struct({
   tour: Schema.optionalKey(TourRecord),
   adoption: Schema.optionalKey(AdoptionRecord),
   show: Schema.optionalKey(ShowRecord),
+  unconnected: Schema.optionalKey(UnconnectedRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1020,6 +1071,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   tour: ["contract", "server", "media", "network", "tour"],
   adoption: ["adoption"],
   show: ["playout", "show"],
+  unconnected: ["unconnected"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

@@ -11,7 +11,8 @@ import * as Schema from "effect/Schema";
  * owner's session), `queue` (H3's own move and pop near a boundary), the
  * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
  * token that created it). `tour` then walks the raw API through one longer
- * session.
+ * session. `unconnected` asks Reactor a question instead: what becomes of a
+ * session nothing connects to.
  */
 export const checks = [
   "vertical",
@@ -27,6 +28,7 @@ export const checks = [
   "tour",
   "adoption",
   "show",
+  "unconnected",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -60,6 +62,8 @@ export const plans: { readonly [C in Check]: Plan } = {
   tour: { sessions: 1, seconds: 90 },
   adoption: { sessions: 1, seconds: 75 },
   show: { sessions: 3, seconds: 75, renews: true },
+  // One session, and one more if its spent token allocates again.
+  unconnected: { sessions: 2, seconds: 60 },
 };
 
 /** A check's tokens outlive its sessions' cap by a minute, so cleanup still holds a valid one. */
