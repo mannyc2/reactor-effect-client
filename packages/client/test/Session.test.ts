@@ -166,6 +166,40 @@ const statuses = (session: Session) =>
 
 // Reactor's docs: a session whose last connection drops reads INACTIVE, still billed, and ends 30 s
 // later unless a connection returns.
+// A connection the session reconnects on its own, hours after its acquisition as it may be.
+layer(environment({ timing }))("tracing a session's own reconnect", (it) => {
+  it.effect("gives each attempt a trace of its own, linked to the acquisition's", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const spans: Array<Tracer.Span> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const session = yield* connect.pipe(Effect.withTracer(tracer));
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "ready" && snapshot.generation === 2n),
+        Stream.runHead,
+        Effect.timeoutOption("30 seconds"),
+      );
+      const created = spans.find((span) => span.name === "Reactor.create");
+      const reconnect = spans.find((span) => span.name === "Session.reconnect");
+      assert.deepStrictEqual(
+        [
+          Option.isNone(reconnect?.parent ?? Option.none()),
+          reconnect?.links.map((link) => link.span === created),
+        ],
+        [true, [true]],
+      );
+    }),
+  );
+});
+
 layer(environment({ timing }))("a dropped connection", (it) => {
   it.effect("is reconnected by the session itself, within Reactor's 30 s, allocating nothing", () =>
     Effect.gen(function* () {

@@ -20,6 +20,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as Tracer from "effect/Tracer";
 import type { PeerEvent, PeerFactory } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
 import type { ReadyDescriptor } from "../../Session.js";
@@ -405,9 +406,10 @@ export const make = ({
    * failed and closed. The generation is acquired and released around its negotiation, so an
    * interrupt that comes while it begins lands in the negotiation, and still fails and closes it.
    * The session's own attempt that fails before it has a generation says why, as a failed
-   * generation does: no caller hears of it otherwise.
+   * generation does: no caller hears of it otherwise. Its span begins a trace of its own, linked
+   * to the session's `acquisition`, which may have ended hours before.
    */
-  const attempt = (kind: Attempt) =>
+  const attempt = (kind: Attempt, acquisition?: Tracer.AnySpan) =>
     Effect.acquireUseRelease(
       kind === "own"
         ? begin(kind).pipe(Effect.tapError((error) => publish({ _tag: "Diagnostic", error })))
@@ -431,7 +433,13 @@ export const make = ({
     ).pipe(
       Effect.withSpan(
         kind === "connect" ? "Session.connect" : "Session.reconnect",
-        { kind: "client" },
+        kind === "own"
+          ? {
+              kind: "client",
+              root: true,
+              links: acquisition === undefined ? [] : [{ span: acquisition, attributes: {} }],
+            }
+          : { kind: "client" },
         { captureStackTrace: false },
       ),
     );
@@ -475,7 +483,10 @@ export const make = ({
    * last attempt's failure. A defect ends that reconnect, is reported, and the next drop is
    * reconnected again.
    */
-  const reconnectEachDrop = (schedule: Schedule.Schedule<unknown, ReactorError>) =>
+  const reconnectEachDrop = (
+    schedule: Schedule.Schedule<unknown, ReactorError>,
+    acquisition: Tracer.AnySpan | undefined,
+  ) =>
     Effect.gen(function* () {
       yield* SubscriptionRef.changes(state).pipe(Stream.filter(beginsFrom.own), Stream.runHead);
       // The drop's move wakes this inline, before the drop has published its own events: the
@@ -483,7 +494,7 @@ export const make = ({
       yield* Effect.yieldNow;
       // Why the last attempt failed, which it published as it did; the deadline's detail.
       const last = yield* Ref.make<ReactorError | undefined>(undefined);
-      const reconnected = yield* attempt("own").pipe(
+      const reconnected = yield* attempt("own", acquisition).pipe(
         Effect.andThen(holds),
         Effect.tapError((error) => Ref.set(last, error)),
         Effect.retry({
@@ -527,7 +538,8 @@ export const make = ({
       reconnects: true,
       reconnecting: session.status === "disconnected",
     }));
-    yield* Effect.forkIn(reconnectEachDrop(settings.reconnect), root);
+    const acquisition = Option.getOrUndefined(yield* Effect.option(Effect.currentParentSpan));
+    yield* Effect.forkIn(reconnectEachDrop(settings.reconnect, acquisition), root);
   });
 
   return { allocate, connect: attempt("connect"), reconnect: attempt("reconnect"), arm };
