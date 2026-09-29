@@ -41,6 +41,27 @@ layer(FetchHttpClient.layer)("a request with the API key", (it) => {
     }),
   );
 
+  it.effect("keeps no URL as a key in its reply's shape", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* serve(
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            expires_at: 1,
+            "https://reactor.example/grant": { max_sessions: 1 },
+          }),
+        ),
+      );
+      const [first] = yield* Probes.run({
+        apiUrl: coordinator,
+        apiKey: Redacted.make("reactor-test-key"),
+      });
+      assert.deepStrictEqual(first?.shape, [
+        "expires_at: number",
+        "(key, 29 chars).max_sessions: number",
+      ]);
+    }),
+  );
+
   it.effect("keeps no host name as its reply's code", () =>
     Effect.gen(function* () {
       const coordinator = yield* serve(

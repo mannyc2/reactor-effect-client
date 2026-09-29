@@ -21,17 +21,6 @@ export const unknownSession = "00000000-0000-4000-8000-000000000000";
 /** Every probe token expires this soon; none is ever used. */
 const probeSeconds = 15;
 
-/** Each leaf under `path`: its path and type, never its value. */
-const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
-  if (Array.isArray(value))
-    return value.length === 0 ? [`${path}[]: empty`] : leaves(value[0], `${path}[]`);
-  if (Predicate.isObject(value))
-    return Object.entries(value).flatMap(([key, item]) =>
-      leaves(item, path === "" ? key : `${path}.${key}`),
-    );
-  return [`${path}: ${value === null ? "null" : typeof value}`];
-};
-
 /**
  * Whether evidence, which is committed, may keep a text: letters, digits, `_`
  * and `-`, at most 64 of them, and no IPv4 address however its numbers are
@@ -46,9 +35,11 @@ const kept = (value: unknown): string | undefined => {
   return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined;
 };
 
-/** A body's key names as evidence may keep them: a key that is no code only by its length. */
-const keysOf = (body: object) =>
-  Object.keys(body).map((key) => (isCode(key) ? key : `(key, ${key.length} chars)`));
+/** A key name as evidence may keep it: one that is no code only by its length. */
+const named = (key: string) => (isCode(key) ? key : `(key, ${key.length} chars)`);
+
+/** A body's key names as evidence may keep them. */
+const keysOf = (body: object) => Object.keys(body).map(named);
 
 /** Words that name an address in a key, however the key is cased or joined. */
 const addressWords = new Set([
@@ -68,6 +59,17 @@ const readable = (key: string) =>
   !key
     .split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/)
     .some((word) => addressWords.has(word.toLowerCase()));
+
+/** Each leaf under `path`: its path and type, never its value. */
+const leaves = (value: unknown, path: string): ReadonlyArray<string> => {
+  if (Array.isArray(value))
+    return value.length === 0 ? [`${path}[]: empty`] : leaves(value[0], `${path}[]`);
+  if (Predicate.isObject(value))
+    return Object.entries(value).flatMap(([key, item]) =>
+      leaves(item, path === "" ? named(key) : `${path}.${named(key)}`),
+    );
+  return [`${path}: ${value === null ? "null" : typeof value}`];
+};
 
 /** A code short and plain enough to be an identifier rather than provider text. */
 const codeOf = (body: unknown): string | undefined => {
