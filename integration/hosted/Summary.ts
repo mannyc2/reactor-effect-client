@@ -286,8 +286,21 @@ const unconnectedLines = (
   const ended = probe.ended;
   const spent = probe.spentToken;
   const read = probe.read;
+  const windowEndsMs = probe.windowEndsMs;
+  // How far the window ran past the cap and the 30 s after it, counted from `from`.
+  const capMs = (evidence.grants[0]?.maxSessionSeconds ?? 0) * 1000;
+  const past = (startMs: number | undefined, from: string) => {
+    if (startMs === undefined || windowEndsMs === undefined) return `${from} never read`;
+    const spare = windowEndsMs - startMs - capMs - 30_000;
+    return spare < 0 ? `${seconds(-spare)} short from ${from}` : `${seconds(spare)} from ${from}`;
+  };
   return [
     `**Unconnected:** ${probe.sessionId} requested ${probe.requestedAt}; ${probe.connectableMs === undefined ? "never read connectable" : `connectable ${since(probe.connectableMs)}`}; ${ended === undefined ? "its end unconfirmed" : `ended by ${ended.by === "reactor" ? "Reactor" : "the API key"} ${since(ended.atMs)}, ${ended.at}`}`,
+    ...(windowEndsMs === undefined
+      ? []
+      : [
+          `**Window:** reads until ${seconds(windowEndsMs - probe.requestedMs)} after the request, past the cap and 30 s by ${past(allocatedMs, "allocation")}, ${past(probe.states.find((entry) => entry.state === "ACTIVE")?.firstMs, "ACTIVE")} and ${past(probe.connectableMs, "ready")}`,
+        ]),
     `**Reads:** ${probe.states.map((entry) => `${entry.state} from ${since(entry.firstMs)} to ${since(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`).join(" > ") || "none"}`,
     ...(spent === undefined
       ? []

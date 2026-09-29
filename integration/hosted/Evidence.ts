@@ -799,9 +799,9 @@ export type ShowRecord = typeof ShowRecord.Type;
 
 /**
  * `unconnected`: a session allocated and never connected, read with the API
- * key until it ended or its cap and 30 s more had passed, and what a second
- * create on its spent single-session token answered. The instants let a
- * person set the dashboard's charge beside the window.
+ * key until it ended or its window closed, and what a second create on its
+ * spent single-session token answered. The instants let a person set the
+ * dashboard's charge beside the window.
  */
 export const UnconnectedRecord = Schema.Struct({
   sessionId: Schema.String,
@@ -828,6 +828,13 @@ export const UnconnectedRecord = Schema.Struct({
       sessionId: Schema.optionalKey(Schema.String),
     }),
   ),
+  /**
+   * When the reads were to stop at the latest: 15 s after the request, for
+   * allocation, `ACTIVE` and ready to come in, then the cap, the 30 s Reactor
+   * gives a session after its last connection drops, and 15 s to spare. So it
+   * ends past the cap and the 30 s after it, counted from each of the three.
+   */
+  windowEndsMs: Schema.optionalKey(Ms),
   /**
    * Each state the reads found, in order, with the first and last read that
    * found it. A read answered 404 is `gone`; one that failed otherwise is its

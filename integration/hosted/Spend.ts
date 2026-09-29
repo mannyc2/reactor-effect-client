@@ -42,6 +42,11 @@ export interface Plan {
   readonly sessions: number;
   readonly seconds: number;
   readonly renews?: true;
+  /**
+   * How long each session may run, in seconds, when the check does not count
+   * on its cap to end it: what it may be billed for in place of `seconds`.
+   */
+  readonly holds?: ReadonlyArray<number>;
 }
 
 /** One 50-second session, which every check held before the longer runs. */
@@ -62,23 +67,28 @@ export const plans: { readonly [C in Check]: Plan } = {
   tour: { sessions: 1, seconds: 90 },
   adoption: { sessions: 1, seconds: 75 },
   show: { sessions: 3, seconds: 75, renews: true },
-  // One session, and one more if its spent token allocates again.
-  unconnected: { sessions: 2, seconds: 60 },
+  // One session, watched past its cap and then ended with the key, 155 s at most from its
+  // request; and one more if its spent token allocates again, ended with the key within 40 s.
+  unconnected: { sessions: 2, seconds: 60, holds: [155, 40] },
 };
 
-/** A check's tokens outlive its sessions' cap by a minute, so cleanup still holds a valid one. */
-export const tokenSecondsFor = (check: Check): number => plans[check].seconds + 60;
+/** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
+export const holdsFor = (check: Check): ReadonlyArray<number> =>
+  plans[check].holds ?? Array.from({ length: plans[check].sessions }, () => plans[check].seconds);
+
+/** A check's tokens outlive its sessions by a minute, so cleanup still holds a valid one. */
+export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(check)) + 60;
 /** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
 export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
 
 /**
- * The most a check may spend: every started minute of each of its sessions at
- * the published rate ($0.75 a minute on September 24, 2026), so $0.75 for one
- * 50-second session. Every paid run in a ledger shares the total. The
- * operator's limits may only be lower.
+ * The most a check may spend: every started minute of each of its sessions,
+ * for as long as it may run, at the published rate ($0.75 a minute on
+ * September 24, 2026), so $0.75 for one 50-second session. Every paid run in a
+ * ledger shares the total. The operator's limits may only be lower.
  */
 export const ceilingFor = (check: Check): number =>
-  plans[check].sessions * Math.ceil(plans[check].seconds / 60) * 0.75;
+  holdsFor(check).reduce((total, seconds) => total + Math.ceil(seconds / 60) * 0.75, 0);
 export const maxTotalUsd = 5;
 
 /** A gate refused: nothing past it runs, and nothing was spent. */
@@ -138,8 +148,8 @@ export const authorize = (input: Authorization): Effect.Effect<Authorization, Re
 };
 
 /**
- * The run's worst case at `rate`: every session it can open, billed for its
- * whole capped length. Refused unless it fits the run's budget and what the
+ * The run's worst case at `rate`: every session it can open, billed for as
+ * long as it may run. Refused unless it fits the run's budget and what the
  * ledger's earlier runs, each counted at the worst case it reserved, leave of
  * the total.
  */
@@ -149,11 +159,13 @@ export const admit = (input: {
   readonly reservedUsd: number;
 }): Effect.Effect<number, Refused> => {
   const { rate, authorization, reservedUsd } = input;
-  const { sessions, seconds } = plans[authorization.check];
-  const worst = reservationUsd(billedUsd({ rate, seconds }) * sessions);
+  const holds = holdsFor(authorization.check);
+  const worst = reservationUsd(
+    holds.reduce((total, seconds) => total + billedUsd({ rate, seconds }), 0),
+  );
   if (!(worst <= authorization.budgetUsd + 1e-9))
     return refuse(
-      `${sessions} capped ${seconds} s session(s) bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
+      `${holds.length} session(s) of up to ${[...new Set(holds)].join(" and ")} s bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
     );
   // A nanodollar of float slack, so five $0.75 runs still fit $3.75.
   if (!(reservedUsd + worst <= authorization.totalUsd + 1e-9))

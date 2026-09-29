@@ -64,6 +64,27 @@ describe("the spending gates", () => {
     }),
   );
 
+  // unconnected watches its session past the cap, to 155 s at most, and ends at once a second
+  // one its spent token allocates, within 40 s.
+  it.effect("a session held past its cap reserves the whole hold, per second and per minute", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(Spend.ceilingFor("unconnected"), 3);
+      assert.strictEqual(Spend.tokenSecondsFor("unconnected"), 215);
+      const authorization = { check: "unconnected", budgetUsd: 3, totalUsd: 3 } as const;
+      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 2.4375);
+      assert.strictEqual(yield* Spend.admit({ rate: perMinute, authorization, reservedUsd: 0 }), 3);
+      yield* refused(
+        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 2.43 }, reservedUsd: 0 }),
+      );
+      yield* refused(Spend.authorize({ check: "unconnected", budgetUsd: 3.01, totalUsd: 5 }));
+      // The checks that end their sessions by the cap reserve as before.
+      assert.deepStrictEqual(
+        [Spend.ceilingFor("vertical"), Spend.tokenSecondsFor("vertical")],
+        [0.75, 110],
+      );
+    }),
+  );
+
   it("a reservation rounds up to four decimals, and a started unit of the rate bills whole", () => {
     assert.strictEqual(Spend.reservationUsd(0.7500000000000001), 0.75);
     assert.strictEqual(Spend.reservationUsd(0.75001), 0.7501);

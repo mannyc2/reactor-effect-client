@@ -314,10 +314,21 @@ rehearse("unconnected ends with the key a session its cap did not end", {
     const session = evidence.sessions[0];
     assert.deepStrictEqual(probe?.states.at(-1)?.state, "ACTIVE");
     assert.strictEqual(probe?.ended?.by, "key");
-    // Its last read came once its cap and 30 s more had passed, and the key's end right after.
-    assert.isAtLeast((probe?.states.at(-1)?.lastMs ?? 0) - (session?.allocatedMs ?? 0), 90_000);
-    assert.isAtLeast((session?.close?.requestedMs ?? 0) - (session?.allocatedMs ?? 0), 90_000);
+    // The window ends 120 s after the request: 15 s for allocation, ACTIVE and ready, the cap,
+    // 30 s more and a 15 s margin. It ends past the cap and 30 s from each by 15 s at least.
+    const windowEndsMs = probe?.windowEndsMs ?? 0;
+    assert.strictEqual(windowEndsMs - (probe?.requestedMs ?? 0), 120_000);
+    const active = probe?.states.find((entry) => entry.state === "ACTIVE")?.firstMs;
+    for (const startMs of [session?.allocatedMs, active, probe?.connectableMs])
+      assert.isAtLeast(windowEndsMs - (startMs ?? Infinity) - 90_000, 15_000);
+    // Its last read came at the window's end, and the key's end right after.
+    assert.isAtLeast(probe?.states.at(-1)?.lastMs ?? 0, windowEndsMs);
+    assert.isAtLeast(session?.close?.requestedMs ?? 0, windowEndsMs);
     assert.isTrue(session?.close?.termination?.confirmed);
+    assert.match(
+      summarize([evidence]),
+      /^- \*\*Window:\*\* reads until 120\.00 s after the request, past the cap and 30 s by \d+\.\d\d s from allocation, \d+\.\d\d s from ACTIVE and \d+\.\d\d s from ready$/m,
+    );
   },
 });
 
@@ -436,10 +447,11 @@ rehearse(
 );
 
 // Reactor may end the session after the watch's last read and before the key's: the read at the
-// end tells which. Counted from ACTIVE, 89.9 s lands between those two reads; 89.8 to 90.0 s do.
+// end tells which. Counted from ACTIVE, 119.6 s lands between those two reads; 119.5 to 119.7 s
+// do.
 rehearse("unconnected credits Reactor with an end only its read at the end found", {
   check: "unconnected",
-  faults: [{ _tag: "IgnoreCap" }, { _tag: "Expire", after: Duration.millis(89_900) }],
+  faults: [{ _tag: "IgnoreCap" }, { _tag: "Expire", after: Duration.millis(119_600) }],
   judge: (evidence) => {
     passes(evidence);
     const probe = evidence.unconnected;

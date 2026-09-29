@@ -9,11 +9,13 @@
  * The check mints a token for one session capped at 60 s, allocates the
  * session without connecting, and at once sends a second create on the same
  * token. It then reads the session with the API key every 2 s until a read
- * finds it ended, or until its cap and 30 s more have passed: Reactor ends a
- * connected session 30 s after its last connection drops. The key then ends
- * it either way, as it ends at once any session the spent token allocated,
- * and every end is confirmed. What Reactor billed comes from its dashboard,
- * against the window the evidence records.
+ * finds it ended, or until its window closes, past every end Reactor
+ * plausibly gives it: the cap counted from allocation, from `ACTIVE` or from
+ * ready, and the 30 s after each that Reactor gives a connected session after
+ * its last connection drops. The key then ends it either way, as it ends at
+ * once any session the spent token allocated, and every end is confirmed.
+ * What Reactor billed comes from its dashboard, against the window the
+ * evidence records.
  *
  * Unlike every other check, its work runs past its session's cap: the cap is
  * what it watches.
@@ -33,15 +35,23 @@ import type { Pieces } from "../Checks.js";
 import type { UnconnectedRecord } from "../Evidence.js";
 import * as Probes from "../Probes.js";
 import { recorded, Run } from "../Run.js";
+import { plans } from "../Spend.js";
 import { Target } from "../Target.js";
 
 /** How often the API key reads the session. */
 const readEveryMs = 2_000;
 /**
- * How long past its cap the session is read before the key ends it: Reactor
- * ends a connected session 30 s after its last connection drops.
+ * How long after the request the window allows for allocation, `ACTIVE` and
+ * ready to come in: the create's own limit. Every paid run so far had its
+ * session connected within 3.2 s of allocation.
  */
-const pastCapMs = 30_000;
+const startsWithinMs = 15_000;
+/** The cap the token asks for, which bounds the one it is granted. */
+const capMs = plans.unconnected.seconds * 1000;
+/** How long Reactor gives a connected session after its last connection drops. */
+const graceMs = 30_000;
+/** How far the window runs past the latest end it allows for, for Reactor's own timers. */
+const spareMs = 15_000;
 
 /**
  * Ends a session with the key, and again, twice at most and 2 s apart, while
@@ -89,7 +99,7 @@ const allocate = Effect.fnUntraced(function* (
     grants.set(allocation.sessionId, grant);
     yield* pieces.holding(allocation.sessionId, allocatedAt, allocatedAt + pieces.capMs(grant));
   }
-  return { ...allocation, allocatedAt };
+  return allocation;
 }, Effect.uninterruptible);
 
 type States = UnconnectedRecord["states"];
@@ -146,7 +156,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         // check ends.
         const signaling = coordinator.signaling(Effect.succeed(grant.jwt));
         const requestedMs = yield* run.now;
-        const { sessionId, allocatedAt } = yield* allocate(pieces, signaling, grant, grants);
+        const { sessionId } = yield* allocate(pieces, signaling, grant, grants);
         yield* run.mark("allocated", sessionId);
         const initial: UnconnectedRecord = {
           sessionId,
@@ -198,9 +208,11 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           });
         } else yield* recordSpent({ sentMs, answeredMs, ...refusal(second.failure) });
 
-        // The key reads the session every 2 s until a read finds it ended, or until its cap
-        // and 30 s more have passed, when it reads it once more.
-        const windowEndsAt = allocatedAt + pieces.capMs(grant) + pastCapMs;
+        // The key reads the session every 2 s until a read finds it ended, or until its window
+        // closes, when it reads it once more.
+        const windowEndsMs = requestedMs + startsWithinMs + capMs + graceMs + spareMs;
+        yield* record((probe) => ({ ...probe, windowEndsMs }));
+        const windowEndsAt = run.origin + windowEndsMs;
         let readAt = yield* Clock.currentTimeMillis;
         let last: { readonly state: string; readonly known: boolean } | undefined;
         let endedMs: number | undefined;
