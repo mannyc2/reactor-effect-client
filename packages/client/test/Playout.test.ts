@@ -657,6 +657,33 @@ layer(hosted)("uncertainty", (it) => {
       assert.strictEqual(opened.length, 1);
     }),
   );
+
+  // Hosted H3 lists a new clip before it replies, so when the reply is lost that listing
+  // decides the enqueue, and the next one goes out without waiting out the reply.
+  it.effect("an enqueue that landed but lost its reply airs in turn, with no gap after it", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 3, applied: true });
+      const { playout, events } = yield* start();
+      const names = Array.from({ length: 6 }, (_, index) => `n${index}`);
+      const handles = yield* Effect.forEach(names, (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of handles) assert.strictEqual((yield* handle.outcome)._tag, "Ended");
+      const times = new Map<string, number>();
+      for (const event of yield* events)
+        if (event._tag === "AsRun")
+          times.set(`${event.event.key}:${event.event.status._tag}`, event.event.at);
+      const gaps = names
+        .slice(1)
+        .map(
+          (name, index) =>
+            (times.get(`${name}:Started`) ?? Infinity) -
+            (times.get(`${names[index]}:Ended`) ?? -Infinity),
+        );
+      assert.isBelow(Math.max(...gaps), 1_000, `gaps between clips: ${gaps.join(", ")} ms`);
+    }),
+  );
 });
 
 layer(
