@@ -14,6 +14,7 @@ import {
   Option,
   Path,
   Redacted,
+  Ref,
   Stream,
   Tracer,
 } from "effect";
@@ -381,6 +382,58 @@ layer(
         .slice(seen)
         .filter((entry) => entry.sessionId === session.id && entry.kind === "request");
       assert.deepStrictEqual(later, []);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but each after the first takes `slow` to make, as a host that spawns one might. */
+const slowPeers = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Ref.getAndUpdate(made, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            count === 0 ? peers.make : Effect.andThen(Effect.sleep(slow), peers.make),
+          ),
+        ),
+      });
+    }),
+  );
+
+// The reconnect's new peer takes 40 s to make, past the 30 s the reconnect has.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowPeers("40 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose new peer outlasts its deadline", (it) => {
+  it.effect("fails the generation it began, and leaves the session disconnected, saying why", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      yield* session.changes.pipe(
+        Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+        Stream.runHead,
+        Effect.timeoutOption("2 minutes"),
+      );
+      const snapshot = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          snapshot.status,
+          snapshot.generation,
+          snapshot.reconnecting,
+          snapshot.lastError?.reason._tag,
+        ],
+        ["disconnected", 2n, false, "Timeout"],
+      );
     }),
   );
 });

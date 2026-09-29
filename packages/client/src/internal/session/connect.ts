@@ -183,7 +183,8 @@ export const make = ({
    * A new generation, with its event fiber; the previous one is retired. It takes the session
    * over in one step with its checks, so no two attempts share a generation and none begins once
    * the session closes. The session's own reconnect begins nothing once another attempt, a ready
-   * connection or the close has taken over.
+   * connection or the close has taken over. An attempt acquires it uninterruptibly, so every
+   * generation it claims is one the attempt fails and closes if it goes no further.
    */
   const begin = Effect.fnUntraced(function* (attempt: Attempt) {
     const session = yield* SubscriptionRef.get(state);
@@ -256,7 +257,7 @@ export const make = ({
       yield* Scope.close(previous.scope, Exit.void);
     }
     return c;
-  }, Effect.uninterruptible);
+  });
 
   /** Negotiates `c` through to ready, and keeps it alive. */
   const negotiate = Effect.fnUntraced(function* (c: Connection, reconnect: boolean) {
@@ -360,34 +361,40 @@ export const make = ({
       );
   });
 
-  /** A connection attempt: a failed one leaves its generation failed and closed. */
+  /**
+   * A connection attempt: a failed one leaves its generation failed and closed. The generation is
+   * acquired and released around its negotiation, so an interrupt that comes while it begins
+   * lands in the negotiation, and still fails and closes it.
+   */
   const attempt = (kind: Attempt) =>
-    Effect.gen(function* () {
-      const c = yield* begin(kind);
-      if (c === undefined) return;
-      const reconnect = kind !== "connect";
-      yield* Effect.annotateCurrentSpan("reactor.connection.generation", c.generation);
-      yield* negotiate(c, reconnect).pipe(
-        Effect.timeoutOrElse({
-          duration: reconnect ? settings.reconnectTimeout : settings.connectTimeout,
-          orElse: timedOut(reconnect ? "reconnect" : "connect"),
+    Effect.acquireUseRelease(
+      begin(kind),
+      (c) =>
+        Effect.gen(function* () {
+          if (c === undefined) return;
+          const reconnect = kind !== "connect";
+          yield* Effect.annotateCurrentSpan("reactor.connection.generation", c.generation);
+          yield* negotiate(c, reconnect).pipe(
+            Effect.timeoutOrElse({
+              duration: reconnect ? settings.reconnectTimeout : settings.connectTimeout,
+              orElse: timedOut(reconnect ? "reconnect" : "connect"),
+            }),
+          );
         }),
-        Effect.onExit((exit) =>
-          Exit.isSuccess(exit)
-            ? Effect.void
-            : Effect.gen(function* () {
-                yield* allocationUnknown;
-                yield* fail(
-                  c,
-                  failureOr(() =>
-                    ReactorError.fromCode("Aborted", "connection attempt interrupted"),
-                  )(exit.cause),
-                );
-                yield* Scope.close(c.scope, Exit.void);
-              }),
-        ),
-      );
-    }).pipe(
+      (c, exit) =>
+        c === undefined || Exit.isSuccess(exit)
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* allocationUnknown;
+              yield* fail(
+                c,
+                failureOr(() => ReactorError.fromCode("Aborted", "connection attempt interrupted"))(
+                  exit.cause,
+                ),
+              );
+              yield* Scope.close(c.scope, Exit.void);
+            }),
+    ).pipe(
       Effect.withSpan(
         kind === "connect" ? "Session.connect" : "Session.reconnect",
         { kind: "client" },
