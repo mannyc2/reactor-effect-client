@@ -733,10 +733,10 @@ layer(hosted)("uncertainty", (it) => {
 
 // Its fault stays armed for the rest of a block, so it has one of its own.
 layer(hosted)("command lanes", (it) => {
-  it.effect("an enqueue whose reply was lost holds up no other session's commands", () =>
+  it.effect("an enqueue whose command was lost holds up no other session's commands", () =>
     Effect.gen(function* () {
       const test = yield* ReactorTest.ReactorTest;
-      // The first enqueue's reply is lost: it holds its session's commands for the provider's
+      // The first enqueue's command is lost: it holds its session's commands for the provider's
       // reply timeout and then its reconcile window, about 20 s.
       yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
       const { playout, events, statuses } = yield* start({
@@ -760,6 +760,45 @@ layer(hosted)("command lanes", (it) => {
       const waited = times.get("Ready")! - times.get("Accepted")!;
       assert.isBelow(waited, 5_000, `next was Ready ${waited} ms after it was submitted`);
     }),
+  );
+
+  // The review's F6: s1's filler enqueue, its command lost, held s2's filler for 20 s.
+  it.effect(
+    "a filler enqueue whose command was lost holds up no other session's filler",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const { events } = yield* start({
+          lifetime: "60 seconds",
+          renewal: { lead: "40 seconds" },
+          filler: {
+            runway: { floor: "20 seconds", target: "30 seconds" },
+            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+          },
+        });
+        yield* Effect.sleep("19 seconds");
+        // s1's next enqueue, a filler clip's, is lost, as the replacement opens at the lead.
+        yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+        yield* Effect.sleep("30 seconds");
+        const log = yield* test.log;
+        const [first, second] = (yield* events).flatMap((event) =>
+          event._tag === "Session" && event.event._tag === "Opened" ? [event.event.sessionId] : [],
+        );
+        // The layer's log holds the tests before this one too.
+        assert.isTrue(
+          log.some(
+            (entry) =>
+              entry.sessionId === first && entry.kind === "command" && entry.dropped !== undefined,
+          ),
+        );
+        const created = log.find((entry) => entry.sessionId === second)?.at ?? NaN;
+        const filled = log.find(
+          (entry) =>
+            entry.sessionId === second && entry.kind === "command" && entry.name === "enqueue",
+        )?.at;
+        assert.isBelow((filled ?? Infinity) - created, 5_000, `s2 opened at ${created} ms`);
+      }),
+    { timeout: 60_000 },
   );
 });
 

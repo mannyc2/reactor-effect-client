@@ -900,16 +900,17 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
   });
 });
 describe("PlayoutPolicy, lanes", () => {
-  // The filler's index follows from its enqueue's result, and a replacement's lane is free while
-  // the session on air still carries one.
-  it("sends one filler enqueue at a time, whichever session's lane is free", () => {
+  const fillersOf = (policy: ReturnType<typeof drive>) =>
+    commands(policy.actions).flatMap((action) =>
+      action.command._tag === "Enqueue" && action.command.tag._tag === "Filler"
+        ? [
+            `${action.sessionId} ${String(action.command.tag.index)} ${action.command.request.prompt}`,
+          ]
+        : [],
+    );
+  /** s1 on air with a clip of its own and filler 0 in flight, and its replacement s2 open. */
+  const renewing = () => {
     const policy = drive({ config: filled });
-    const fillers = () =>
-      commands(policy.actions).flatMap((action) =>
-        action.command._tag === "Enqueue" && action.command.tag._tag === "Filler"
-          ? [`${action.sessionId} ${String(action.command.tag.index)}`]
-          : [],
-      );
     policy.tick(0);
     policy.open("s1", 60_000);
     // A clip of its own keeps s1 on air while its replacement opens.
@@ -918,9 +919,33 @@ describe("PlayoutPolicy, lanes", () => {
     policy.observe({ playing });
     assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
     policy.open("s2", 60_000);
-    assert.deepStrictEqual(fillers(), ["s1 0"]);
+    return policy;
+  };
+
+  // The review's F6: s1's filler enqueue, its command lost, held the replacement's filler and its
+  // covers for 20 s. Each clip takes its index as its enqueue goes out, so none needs the other.
+  it("sends filler on the replacement's lane while the session on air carries some", () => {
+    const policy = renewing();
+    assert.deepStrictEqual(fillersOf(policy), ["s1 0 filler 0", "s2 1 filler 1"]);
     policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
-    assert.deepStrictEqual(fillers(), ["s1 0", "s2 1"]);
+    assert.deepStrictEqual(fillersOf(policy), ["s1 0 filler 0", "s2 1 filler 1"]);
+  });
+
+  it("asks for a refused filler clip again as it was, on whichever lane is free", () => {
+    const policy = renewing();
+    policy.reply(failed("replied"), 30_100, "s1");
+    policy.reply({ _tag: "Done", clipId: "f1" }, 30_200, "s2");
+    policy.tick(31_100);
+    assert.deepStrictEqual(fillersOf(policy), ["s1 0 filler 0", "s2 1 filler 1", "s2 0 filler 0"]);
+  });
+
+  it("records a filler clip under the index it was asked for, though moderation moved on", () => {
+    const policy = drive({ config: filled });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    policy.event({ _tag: "Moderated", action: "terminate", categories: ["test"] }, "s1");
+    policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
+    assert.strictEqual(policy.state().fillers.get("f0")?.index, 0);
   });
 
   // With one refused move remembered for the whole plan, a second session's refusal made the

@@ -314,6 +314,8 @@ interface Session {
   readonly blockedMove: string | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
   readonly busy: { readonly id: number; readonly command: Command } | undefined;
+  /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
+  readonly fillerSent: { readonly at: number; readonly seconds: number } | undefined;
 }
 
 interface Batch {
@@ -354,11 +356,16 @@ export interface State {
     }
   >;
   readonly filler: {
+    /** The next filler clip's index: each clip takes its own as its enqueue goes out. */
     readonly index: number;
-    readonly request: Request | undefined;
+    /**
+     * Clips whose enqueue did not apply, or applied only on a session since lost: each is asked
+     * for again as it was, first in index order, on whichever lane is free.
+     */
+    readonly retries: ReadonlyArray<{ readonly index: number; readonly request: Request }>;
+    /** Clips moderation flagged: never asked for again. */
+    readonly flagged: ReadonlyArray<number>;
     readonly retryAt: number;
-    readonly dispatchedAt: number | undefined;
-    readonly seconds: number | undefined;
     readonly refilling: boolean;
   };
   readonly batches: ReadonlyArray<Batch>;
@@ -432,10 +439,9 @@ export const initial: State = {
   fillers: new Map(),
   filler: {
     index: 0,
-    request: undefined,
+    retries: [],
+    flagged: [],
     retryAt: 0,
-    dispatchedAt: undefined,
-    seconds: undefined,
     refilling: false,
   },
   batches: [],
@@ -864,9 +870,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           ? [other.dispatchedAt + buildMs(other.spec.seconds)]
           : [],
       ),
-      ...(state.filler.dispatchedAt === undefined || state.filler.seconds === undefined
+      ...(target?.fillerSent === undefined
         ? []
-        : [state.filler.dispatchedAt + buildMs(state.filler.seconds)]),
+        : [target.fillerSent.at + buildMs(target.fillerSent.seconds)]),
     ];
     const first = [...items.values()]
       .filter(
@@ -1328,10 +1334,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         reason: { _tag: "Moderated", categories: event.categories },
       });
     // A flagged filler request is not asked for again.
-    if (suspect?._tag === "Filler" && suspect.index === state.filler.index)
+    if (suspect?._tag === "Filler")
       state = {
         ...state,
-        filler: { ...state.filler, index: state.filler.index + 1, request: undefined },
+        filler: {
+          ...state.filler,
+          retries: state.filler.retries.filter((retry) => retry.index !== suspect.index),
+          flagged: [...state.filler.flagged, suspect.index],
+        },
       };
     const moderations = state.moderations + 1;
     state = { ...state, moderations };
@@ -1542,6 +1552,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         asRun(item.spec.key, { _tag: "Accepted", carried: { sessionId } });
       }
     }
+    // A filler enqueue in flight there made no clip that can still air: it is asked for again.
+    const lostCommand = lost.busy?.command;
+    if (lostCommand?._tag === "Enqueue" && lostCommand.tag._tag === "Filler")
+      retryFiller(lostCommand.tag.index, lostCommand.request);
     if (!planned && !lost.startedAny && lost.lastEnqueue !== undefined) {
       const consecutive = state.setupFailures + 1;
       state = {
@@ -1591,7 +1605,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     switch (command._tag) {
       case "Enqueue": {
         if (command.tag._tag === "Filler") {
-          const filler = state.filler;
+          const index = command.tag.index;
           if (result._tag === "Done") {
             const clipId = result.clipId;
             // H3 may list the clip before it replies: one already listed built is not measured.
@@ -1600,42 +1614,31 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
               reported !== undefined &&
               (reported.playing?.clipId === clipId ||
                 reported.ready.some((clip) => clip.clipId === clipId));
+            const sent = lane.fillerSent;
             const build =
-              filler.dispatchedAt === undefined || built
+              sent === undefined || built
                 ? undefined
-                : {
-                    dispatchedAt: filler.dispatchedAt,
-                    seconds: filler.request?.seconds ?? requestSeconds.min,
-                  };
-            state = {
-              ...state,
-              filler: { ...filler, index: filler.index + 1, request: undefined },
-              fillers:
-                clipId === undefined
-                  ? state.fillers
-                  : new Map([
-                      ...state.fillers,
-                      [clipId, { index: filler.index, sessionId, build }],
-                    ]),
-            };
-          } else if (uncertain(result)) {
+                : { dispatchedAt: sent.at, seconds: sent.seconds };
+            if (clipId !== undefined)
+              state = {
+                ...state,
+                fillers: new Map([...state.fillers, [clipId, { index, sessionId, build }]]),
+              };
+          } else if (uncertain(result))
             // Its clip may be building on that session: it holds that session's build slot until
-            // a queue read shows it, the deadline passes or the session goes.
-            state = {
-              ...state,
-              filler: { ...filler, index: filler.index + 1, request: undefined },
-            };
+            // a queue read shows it, the deadline passes or the session goes. It is never asked
+            // for again, since it may be there.
             updateSession(sessionId, {
               unknownFiller: [
                 ...(session(sessionId)?.unknownFiller ?? []),
-                { index: filler.index, since: now.mono },
+                { index, since: now.mono },
               ],
             });
-          } else
-            state = {
-              ...state,
-              filler: { ...filler, retryAt: now.mono + retryDelayMs, dispatchedAt: undefined },
-            };
+          else {
+            retryFiller(index, command.request);
+            state = { ...state, filler: { ...state.filler, retryAt: now.mono + retryDelayMs } };
+            updateSession(sessionId, { fillerSent: undefined });
+          }
           return;
         }
         const item = items.get(command.tag.key);
@@ -1789,6 +1792,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             refusedFiller: { signature: "", clipIds: [] },
             blockedMove: undefined,
             busy: undefined,
+            fillerSent: undefined,
           },
         ],
       };
@@ -2424,25 +2428,24 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     );
   }
   /**
-   * Whether a filler clip may be sent: none waits out a refused one, and one
-   * enqueue at a time, on whichever lane. The next clip's index follows from
-   * its result, and a replacement's free lane would otherwise ask for the same
-   * clip again.
+   * Whether a filler clip may be sent: none waits out a refused one. Each clip takes its index
+   * as its enqueue goes out, so each lane may carry one, and none waits for another's.
    */
   function fillerFree(): boolean {
-    return (
-      now.mono >= state.filler.retryAt &&
-      !state.sessions.some(
-        ({ busy }) => busy?.command._tag === "Enqueue" && busy.command.tag._tag === "Filler",
-      )
-    );
+    return now.mono >= state.filler.retryAt;
+  }
+  /** Asks for the filler clip `index` again as it was, unless moderation flagged it. */
+  function retryFiller(index: number, request: Request): void {
+    if (state.filler.flagged.includes(index)) return;
+    const retries = [...state.filler.retries, { index, request }].sort((a, b) => a.index - b.index);
+    state = { ...state, filler: { ...state.filler, retries } };
   }
   /**
    * Seconds the next filler clip asks for: a refused one is asked for again as it was, at its own
    * length, and a new one for `seconds`.
    */
   function fillerLength(seconds: number): number {
-    const request = state.filler.request;
+    const request = state.filler.retries[0]?.request;
     return request === undefined ? seconds : (request.seconds ?? requestSeconds.min);
   }
   /** Sends the next filler clip to `target`, a new one asked for `seconds`. */
@@ -2452,30 +2455,27 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     seconds: number,
     room: number,
   ): void {
-    const request =
-      state.filler.request ??
-      filler.clip({ index: state.filler.index, runwaySeconds: room, seconds });
-    const invalid = filler.invalid(request, state.filler.index);
+    const [retry, ...retries] = state.filler.retries;
+    const index = retry?.index ?? state.filler.index;
+    const request = retry?.request ?? filler.clip({ index, runwaySeconds: room, seconds });
+    const invalid = filler.invalid(request, index);
     if (invalid !== undefined) {
       // Skipping it would leave the air uncovered without a word, and asking again gets the same.
       state = { ...state, filler: { ...state.filler, retryAt: Infinity } };
-      actions.push({ _tag: "Fail", reason: invalid, cause: "filler", index: state.filler.index });
+      actions.push({ _tag: "Fail", reason: invalid, cause: "filler", index });
       return;
     }
     state = {
       ...state,
       filler: {
         ...state.filler,
-        request,
-        dispatchedAt: now.mono,
-        seconds: request.seconds ?? requestSeconds.min,
+        ...(retry === undefined ? { index: index + 1 } : { retries }),
       },
     };
-    queueCommand(target.id, {
-      _tag: "Enqueue",
-      request,
-      tag: { _tag: "Filler", index: state.filler.index },
+    updateSession(target.id, {
+      fillerSent: { at: now.mono, seconds: request.seconds ?? requestSeconds.min },
     });
+    queueCommand(target.id, { _tag: "Enqueue", request, tag: { _tag: "Filler", index } });
   }
   /** Items that may be built now, first in build order. */
   function eligible(floorSeconds: number): ReadonlyArray<Item> {

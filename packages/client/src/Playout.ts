@@ -491,7 +491,10 @@ export interface Source {
 }
 
 export interface FillContext {
-  /** Counts admitted filler clips, from zero; a refused one is asked for again. */
+  /**
+   * Numbers filler clips from zero as each is first asked for. One the provider refused is asked
+   * for again as it was, under its own index, on whichever session's lane is free.
+   */
   readonly index: number;
   readonly runwaySeconds: number;
   /**
@@ -514,8 +517,8 @@ export interface Options<R = never> {
         /** Air secured ahead: refill below `floor`, up to `target`. */
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
         /**
-         * Called once per admitted clip; keep it pure. A request outside H3's
-         * documented limits fails the playout with `InvalidFiller`.
+         * Called once per clip, as it is first asked for; keep it pure. A request
+         * outside H3's documented limits fails the playout with `InvalidFiller`.
          */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */
