@@ -813,7 +813,10 @@ export const UnconnectedRecord = Schema.Struct({
     Schema.Struct({
       sentMs: Ms,
       answeredMs: Ms,
-      /** `allocated`, or the reason the create failed with. */
+      /**
+       * `allocated`; `the same session` when the reply named the session the
+       * token had made; or the reason the create failed with.
+       */
       answer: Schema.String,
       /** Whether a failed create may have allocated, as the SDK classes its failure. */
       outcome: Schema.optionalKey(Outcome),
@@ -821,7 +824,7 @@ export const UnconnectedRecord = Schema.Struct({
       /** The reply's key names, and its codes: free text only by its length. */
       keys: Schema.Array(Schema.String),
       codes: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-      /** The session it allocated, which the key then ended. */
+      /** The session its reply named: one it allocated, which the key then ended, or the first. */
       sessionId: Schema.optionalKey(Schema.String),
     }),
   ),

@@ -123,7 +123,17 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           .create({ name: H3.modelName })
           .pipe(recorded, Effect.result);
         const answeredMs = yield* run.now;
-        if (Result.isSuccess(second)) {
+        if (Result.isSuccess(second) && second.success.sessionId === sessionId)
+          // The session the token made, named again: nothing more was allocated, so the key
+          // ends nothing here, and the watch goes on.
+          yield* recordSpent({
+            sentMs,
+            answeredMs,
+            answer: "the same session",
+            ...bodyOf(second.success.reply),
+            sessionId,
+          });
+        else if (Result.isSuccess(second)) {
           // A session nothing asked for: recorded first, so the key ends it however the check
           // ends, then ended with the key at once.
           const extra = second.success.sessionId;
@@ -201,7 +211,9 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         yield* pieces.judge(
           "the probe completed",
           [
-            spent?.answer === "allocated" || spent?.outcome === "replied",
+            spent?.answer === "allocated" ||
+              spent?.answer === "the same session" ||
+              spent?.outcome === "replied",
             `the second create on the spent token got no reply: ${spent?.answer ?? "it was never sent"}`,
           ],
           [last.known, `the last read of the session failed with ${last.state}`],

@@ -345,6 +345,28 @@ rehearse("unconnected fails, and says to end the session, when the key cannot en
   },
 });
 
+// A spent token that answers with the session it made allocated nothing more: the key must not
+// end that session, and the watch goes on.
+rehearse("unconnected watches on when its spent token answers with the session it made", {
+  check: "unconnected",
+  faults: [{ _tag: "RepeatSession" }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.unconnected;
+    assert.lengthOf(evidence.sessions, 1);
+    assert.deepStrictEqual(
+      [probe?.spentToken?.answer, probe?.spentToken?.sessionId],
+      ["the same session", probe?.sessionId],
+    );
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    assert.isAtLeast((probe?.ended?.atMs ?? 0) - (evidence.sessions[0]?.allocatedMs ?? 0), 60_000);
+    assert.include(
+      summarize([evidence]),
+      `a second create answered with ${probe?.sessionId ?? "?"}, the session it made, in `,
+    );
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

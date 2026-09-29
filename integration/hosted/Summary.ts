@@ -292,7 +292,7 @@ const unconnectedLines = (
     ...(spent === undefined
       ? []
       : [
-          `**Spent token:** a second create ${spent.answer === "allocated" ? `allocated ${spent.sessionId ?? "a session"} in ${seconds(spent.answeredMs - spent.sentMs)}` : `failed in ${seconds(spent.answeredMs - spent.sentMs)} with ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`}; keys ${spent.keys.join(", ") || "none"}; codes ${codes(spent.codes)}`,
+          `**Spent token:** a second create ${spent.answer === "allocated" ? `allocated ${spent.sessionId ?? "a session"} in ${seconds(spent.answeredMs - spent.sentMs)}` : spent.answer === "the same session" ? `answered with ${probe.sessionId}, the session it made, in ${seconds(spent.answeredMs - spent.sentMs)}` : `failed in ${seconds(spent.answeredMs - spent.sentMs)} with ${spent.answer}${spent.status === undefined ? "" : ` ${spent.status}`}, outcome ${spent.outcome ?? "unknown"}`}; keys ${spent.keys.join(", ") || "none"}; codes ${codes(spent.codes)}`,
         ]),
     ...(read === undefined
       ? []
