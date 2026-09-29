@@ -2003,6 +2003,41 @@ describe("PlayoutPolicy, time", () => {
     assert.strictEqual(opens(), asked + 1);
   });
 
+  // Six renewal opens are refused with nothing allocated while s1 holds the air, then the
+  // replacement is lost before the item sent to it started. Each failure lengthens the wait by a
+  // second only up to three, so the next open still goes before s1's cap.
+  it("waits at most a second for each of three failures before it opens again", () => {
+    const policy = drive();
+    const opensIn = (step: Policy.Step) => step.actions.some((action) => action._tag === "Open");
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    const x = clip("x", undefined, 70);
+    policy.event({ _tag: "Started", clip: x }, "s1", 100);
+    policy.observe({ playing: x }, "s1", 100);
+    assert.isTrue(opensIn(policy.tick(30_001)));
+    const waits: Array<number> = [];
+    for (let refusal = 0; refusal < 6; refusal++) {
+      const refused = policy.send(
+        { _tag: "OpenFailed", reason: "429", fatal: false, allocated: false },
+        policy.now() + 100,
+      );
+      const refusedAt = policy.now();
+      assert.isTrue(opensIn(policy.tick(refused.wake)));
+      waits.push(policy.now() - refusedAt);
+    }
+    assert.deepStrictEqual(waits, [1_000, 2_000, 3_000, 3_000, 3_000, 3_000]);
+    policy.open("s2", 600_000, policy.now() + 100);
+    policy.submit(spec("i", 1, 20));
+    assert.strictEqual(policy.busy("s2")?._tag, "Enqueue");
+    policy.reply({ _tag: "Done", clipId: "c-i" }, undefined, "s2");
+    let step = policy.send({ _tag: "Lost", sessionId: "s2", reason: "gone" }, policy.now() + 2_000);
+    const lostAt = policy.now();
+    for (let wakes = 0; !opensIn(step) && step.wake !== undefined && wakes < 10; wakes++)
+      step = policy.tick(step.wake);
+    assert.strictEqual(policy.now() - lostAt, 3_000);
+    assert.isBelow(policy.now(), 60_001);
+  });
+
   it("times an end cue from the provider's length, not the requested one", () => {
     const policy = drive();
     policy.tick(0);

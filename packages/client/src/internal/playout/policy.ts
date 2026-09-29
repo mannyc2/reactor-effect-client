@@ -364,7 +364,8 @@ export interface State {
   readonly opening: boolean;
   /**
    * No open goes out before it: after a failed setup, a second for each in a
-   * row, or a refusal's `Retry-After` if that is longer.
+   * row up to `maxSetupFailures`, or a refusal's `Retry-After` if that is
+   * longer.
    */
   readonly openRetryAt: number;
   /**
@@ -373,7 +374,7 @@ export interface State {
    * soonest.
    */
   readonly openingPaused: boolean;
-  /** Failed setups in a row: each makes the next open wait a second longer. */
+  /** Failed setups in a row: each makes the next open wait a second longer, up to a limit. */
   readonly setupFailures: number;
   /**
    * Of those, the ones `maxSetupFailures` counts: all but refusals that
@@ -486,6 +487,12 @@ export const initial: State = {
 };
 
 const retryDelayMs = 1_000;
+/**
+ * The wait for the next open after `consecutive` failed setups in a row: a second for each, but
+ * no more than for `maxSetupFailures` of them, and at least one.
+ */
+const setupDelayMs = (config: Config, consecutive: number): number =>
+  retryDelayMs * Math.min(consecutive, Math.max(1, config.maxSetupFailures));
 const cutMarginMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
@@ -1590,7 +1597,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         setupFailures: consecutive,
         countedFailures: state.countedFailures + 1,
         // As after a failed open, the next waits a second longer, and still for a Retry-After.
-        openRetryAt: Math.max(state.openRetryAt, now.mono + retryDelayMs * consecutive),
+        openRetryAt: Math.max(state.openRetryAt, now.mono + setupDelayMs(config, consecutive)),
       };
       emit({
         _tag: "Session",
@@ -1869,7 +1876,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         setupFailures: consecutive,
         countedFailures: state.countedFailures + (counted ? 1 : 0),
         // A refusal that says when to ask again is not asked sooner.
-        openRetryAt: now.mono + Math.max(retryDelayMs * consecutive, input.retryAfterMs ?? 0),
+        openRetryAt:
+          now.mono + Math.max(setupDelayMs(config, consecutive), input.retryAfterMs ?? 0),
       };
       emit({ _tag: "Session", event: { _tag: "SetupFailed", reason: input.reason, consecutive } });
       if (input.fatal) actions.push({ _tag: "Fail", reason: input.reason, cause: "open" });
