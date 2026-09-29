@@ -89,21 +89,42 @@ const refusal = (attempt: Attempt, session: State) =>
   ReactorError.fromCode("InvalidState", `${attempt} while ${session.status}`);
 
 /**
- * Where a reconnect asked for stands at `session` once it has joined the session's own, which it
- * found reconnecting in `from`: done once a connection after that drop is ready, failed once that
- * reconnect stops or the session closes, and undecided until then. A state from before `from` is
- * older than its drop, and decides nothing.
+ * What decides a reconnect asked for that begins no generation of its own: the first connection
+ * ready from generation `ready` on, or the first lasting drop from `stop` on.
+ */
+interface Joined {
+  readonly ready: bigint;
+  readonly stop: bigint;
+}
+
+/** Joining the session's own reconnect, found under way in `from`: what follows its drop. */
+const joinsOwn = (from: State): Joined => ({
+  ready: from.status === "disconnected" ? from.generation + 1n : from.generation,
+  stop: from.generation,
+});
+
+/**
+ * Joining whatever replaced the connection a reconnect found in `look` while it made its peer:
+ * the look stands for a drop, and only a later generation decides.
+ */
+const joinsAfter = (look: State): Joined => ({
+  ready: look.generation + 1n,
+  stop: look.generation + 1n,
+});
+
+/**
+ * Where a reconnect asked for stands at `session` once it has joined `from`: done once a
+ * connection it counts is ready, failed at a lasting drop it counts or once the session closes,
+ * and undecided until then. A state of an earlier generation is older than what it joined, and
+ * decides nothing.
  */
 const joined =
-  (from: State) =>
+  (from: Joined) =>
   (session: State): Exit.Exit<void, ReactorError> | undefined => {
     if (isClosing(session.status)) return Exit.fail(closed());
-    const readyFrom = from.status === "disconnected" ? from.generation + 1n : from.generation;
-    if (session.status === "ready") return session.generation >= readyFrom ? Exit.void : undefined;
+    if (session.status === "ready") return session.generation >= from.ready ? Exit.void : undefined;
     const stopped =
-      session.status === "disconnected" &&
-      !session.reconnecting &&
-      session.generation >= from.generation;
+      session.status === "disconnected" && !session.reconnecting && session.generation >= from.stop;
     return stopped
       ? Exit.fail(session.lastError ?? ReactorError.fromCode("Aborted", "reconnecting stopped"))
       : undefined;
@@ -247,10 +268,10 @@ export const make = ({
     );
 
   /**
-   * A reconnect asked for while the session reconnects on its own, which it found doing so in
-   * `from`: it waits that reconnect out on `states`, every state since before it looked.
+   * A reconnect asked for that joined `from` rather than begin a generation: it waits on `states`,
+   * every state since before it looked, until what it joined decides it.
    */
-  const join = (from: State, states: PubSub.Subscription<State>) =>
+  const join = (from: Joined, states: PubSub.Subscription<State>) =>
     Stream.fromSubscription(states).pipe(
       Stream.map(joined(from)),
       Stream.filter(Predicate.isNotUndefined),
@@ -259,21 +280,24 @@ export const make = ({
     );
 
   /**
-   * A new generation, with its event fiber; the previous one is retired. It takes the session
-   * over in one step with its checks, so no two attempts share a generation and none begins once
-   * the session closes. The session's own reconnect begins nothing once another attempt, a ready
+   * A new generation, with its event fiber; the previous one is retired. It takes the session over
+   * in one step with its checks, so no two attempts share a generation and none begins once the
+   * session closes. The session's own reconnect begins nothing once another attempt, a ready
    * connection or the close has taken over. A reconnect asked for while the session reconnects on
-   * its own begins nothing either: it joins that reconnect, watched from before it looks. The
-   * session's own attempt keeps the generation it claims in `began` as it claims it. An attempt
-   * acquires it uninterruptibly, so every generation it claims is one the attempt fails and
-   * closes if it goes no further, a defect as it takes over included.
+   * its own begins nothing either: it joins that reconnect, watched from before it looks. Nor does
+   * one whose connection another attempt replaced while it made its peer, the session's own
+   * reconnect say: it joins whatever came after the connection it looked at. The session's own
+   * attempt keeps the generation it claims in `began` as it claims it. An attempt acquires it
+   * uninterruptibly, so every generation it claims is one the attempt fails and closes if it goes
+   * no further, a defect as it takes over included.
    */
   const begin = Effect.fnUntraced(function* (attempt: Attempt, began?: Ref.Ref<bigint>) {
     const states = attempt === "reconnect" ? yield* PubSub.subscribe(state.pubsub) : undefined;
     const session = yield* SubscriptionRef.get(state);
     const reconnect = attempt !== "connect";
     if (!beginsFrom[attempt](session)) {
-      if (states !== undefined && session.reconnecting) return { joins: join(session, states) };
+      if (states !== undefined && session.reconnecting)
+        return { joins: join(joinsOwn(session), states) };
       if (attempt === "own") return undefined;
       return yield* refusal(attempt, session);
     }
@@ -317,7 +341,11 @@ export const make = ({
     );
     if (unclaimed !== undefined) {
       yield* shutDown(scope, Exit.void);
-      if (states !== undefined && unclaimed.reconnecting) return { joins: join(unclaimed, states) };
+      if (states !== undefined && unclaimed.reconnecting)
+        return { joins: join(joinsOwn(unclaimed), states) };
+      // Only the connection changed: what replaced it is ready or down for good.
+      if (states !== undefined && beginsFrom.reconnect(unclaimed))
+        return { joins: join(joinsAfter(session), states) };
       if (attempt === "own") return undefined;
       return yield* refusal(attempt, unclaimed);
     }

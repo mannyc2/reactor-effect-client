@@ -286,12 +286,15 @@ export interface Session {
   /** The current generation's platform tracks, from a host that has them. */
   readonly tracks: Effect.Effect<TrackMedia, ReactorError>;
   /**
-   * A new connection generation now, from a ready connection or a lasting drop; it never replays
-   * a command. While the session reconnects a dropped connection on its own (`reconnecting`), as
-   * it does unless `Reactor.Options` turns `reconnect` off, this joins that reconnect rather than
-   * begin another: it succeeds once a connection is ready again, and fails as the reconnect
-   * stops, with the session's `lastError`, or with `Closed` if the session closes first. It fails
-   * with `InvalidState` while another reconnect asked for is under way.
+   * A new connection generation now, from a ready connection or a lasting drop; it never replays a
+   * command. While the session reconnects a dropped connection on its own (`reconnecting`), as it
+   * does unless `Reactor.Options` turns `reconnect` off, this joins that reconnect rather than
+   * begin another: it succeeds once a connection is ready again, and fails as the reconnect stops,
+   * with the session's `lastError`, or with `Closed` if the session closes first. One whose
+   * connection is replaced while it makes its peer, as the session reconnects a drop or another
+   * reconnect asked for takes over, begins nothing either: it succeeds once a later connection is
+   * ready, and fails as a later reconnect stops. It fails with `InvalidState` while another
+   * reconnect asked for is under way.
    */
   readonly reconnect: Effect.Effect<void, ReactorError>;
   /** Idempotent. Closing an owned session attempts and then confirms remote termination. */

@@ -1346,14 +1346,23 @@ layer(
   );
 });
 
-// Two reconnects begin half a second apart, each with a peer that takes a second to make: the
-// later one finds the session taken over, and its unused peer dies of a bug as it shuts down.
+// Two reconnects begin half a second apart, each with a peer that takes a second to make, and
+// each connection's answer takes 5 s: the later one finds the session taken over by the earlier,
+// still under way, and its unused peer dies of a bug as it shuts down.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
     Layer.provideMerge(Coordinator.layer()),
     Layer.provideMerge(dyingShutdown([shutdownBug], 2)),
     Layer.provideMerge(slowPeers("1 second")),
-    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(
+      ReactorTest.layer({
+        timing: ReactorTest.Timing.fixed({
+          buildSpeed: 2.4,
+          channel: "10 millis",
+          negotiation: "5 seconds",
+        }),
+      }),
+    ),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   ),
 )("a reconnect overtaken by another, whose unused peer dies of a bug as it shuts down", (it) => {
@@ -1401,6 +1410,83 @@ layer(
       // session's own, whose peer came a second later.
       assert.deepStrictEqual([back.status, back.generation], ["ready", 2n]);
       assert.isAtLeast((yield* Clock.currentTimeMillis) - askedAt, 2_900);
+    }),
+  );
+});
+
+/** ReactorTest's peers, but making the second takes `slow`: the one a reconnect asked for makes. */
+const slowSecondPeer = (slow: Duration.Input) =>
+  Layer.effect(
+    PeerFactory,
+    Effect.gen(function* () {
+      const peers = yield* PeerFactory;
+      const made = yield* Ref.make(0);
+      return PeerFactory.of({
+        check: peers.check,
+        make: Ref.getAndUpdate(made, (count) => count + 1).pipe(
+          Effect.flatMap((count) =>
+            count === 1 ? Effect.andThen(Effect.sleep(slow), peers.make) : peers.make,
+          ),
+        ),
+      });
+    }),
+  );
+
+// The application reconnects a ready connection with a peer that takes 2 s to make, and the
+// connection drops a second in: the session's own reconnect, its peer made at once, is back before
+// the application's could take the session over.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("2 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection the session reconnects as it makes its peer", (it) => {
+  it.effect("succeeds on the session's connection, and begins none of its own", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      const session = yield* connect;
+      const reconnected = yield* Effect.exit(session.reconnect);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [reasonsOf(reconnected), back.status, back.generation],
+        [[], "ready", 2n],
+      );
+    }),
+  );
+});
+
+// As above, but Reactor answers the session's own reconnect 404, so the session is down for good
+// by the time the application's reconnect could take it over.
+layer(
+  Reactor.layer().pipe(
+    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(slowSecondPeer("2 seconds")),
+    Layer.provideMerge(ReactorTest.layer({ timing })),
+    Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
+  ),
+)("a reconnect whose connection the session fails to reconnect as it makes its peer", (it) => {
+  it.effect("fails as the session's reconnect stopped, and begins none of its own", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject(drop);
+      yield* test.inject({ _tag: "RefuseReconnect", nth: 1, status: 404 });
+      const session = yield* connect;
+      const failed = yield* Effect.flip(session.reconnect);
+      const back = yield* session.snapshot;
+      assert.deepStrictEqual(
+        [
+          failed.reason._tag,
+          failed.reason._tag === "Http" ? failed.reason.status : undefined,
+          back.status,
+          back.generation,
+        ],
+        ["Http", 404, "disconnected", 2n],
+      );
     }),
   );
 });
