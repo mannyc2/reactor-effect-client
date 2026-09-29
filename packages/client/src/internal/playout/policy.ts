@@ -274,10 +274,10 @@ interface Item {
    */
   readonly unsent?: { readonly sessionId: string; readonly changes: number } | undefined;
   /**
-   * A clip of its own taken off because it was Ready too early: never adopted
-   * again as queued, though if it plays anyway, it aired.
+   * A clip of its own taken off because it was Ready too early, and its
+   * session: never adopted again as queued, though if it plays anyway, it aired.
    */
-  readonly discarded?: string | undefined;
+  readonly discarded?: { readonly sessionId: string; readonly clipId: string } | undefined;
   /** The provider's length for its clip, once it started. */
   readonly airSeconds?: number | undefined;
 }
@@ -316,6 +316,15 @@ interface Session {
   readonly busy: { readonly id: number; readonly command: Command } | undefined;
   /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
   readonly fillerSent: { readonly at: number; readonly seconds: number } | undefined;
+  /** Its filler clips by id, with the index each was asked for. */
+  readonly fillers: ReadonlyMap<
+    string,
+    {
+      readonly index: number;
+      /** When its enqueue went out and the seconds it asked for, until its build is measured. */
+      readonly build?: { readonly dispatchedAt: number; readonly seconds: number } | undefined;
+    }
+  >;
 }
 
 interface Batch {
@@ -346,15 +355,6 @@ export interface State {
   /** Sessions content moderation ended. */
   readonly moderations: number;
   readonly nextCommand: number;
-  readonly fillers: ReadonlyMap<
-    string,
-    {
-      readonly index: number;
-      readonly sessionId: string;
-      /** When its enqueue went out and the seconds it asked for, until its build is measured. */
-      readonly build?: { readonly dispatchedAt: number; readonly seconds: number } | undefined;
-    }
-  >;
   readonly filler: {
     /** The next filler clip's index: each clip takes its own as its enqueue goes out. */
     readonly index: number;
@@ -390,11 +390,12 @@ export interface State {
     readonly length: ReadonlyArray<number>;
   };
   /**
-   * The clip last cut. It is never cut again, whatever its cut's result: H3's
-   * stop names no clip, and a stopped clip goes on looking like it plays until
-   * its end is reported, so a second cut would stop the clip after it.
+   * The clip last cut, and its session. It is never cut again, whatever its
+   * cut's result: H3's stop names no clip, and a stopped clip goes on looking
+   * like it plays until its end is reported, so a second cut would stop the
+   * clip after it.
    */
-  readonly cut: string | undefined;
+  readonly cut: { readonly sessionId: string; readonly clipId: string } | undefined;
   /**
    * The cut under way, one command at a time: autoplay off on its session, a
    * stop of the clip it cuts, then a play of its cutter. Autoplay stays off
@@ -436,7 +437,6 @@ export const initial: State = {
   allocatedFailures: 0,
   moderations: 0,
   nextCommand: 1,
-  fillers: new Map(),
   filler: {
     index: 0,
     retries: [],
@@ -740,14 +740,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const at = atMono(item);
     if (item.mode === "held" || (at !== undefined && now.mono < at) || item.batch !== undefined)
       return [lanes + 1, 1, item.order, item.generation];
-    // Its build continues the Ready clip it follows, so it airs right behind that clip until
-    // that clip starts. An item accepted again for a rebuild follows nothing yet.
+    // Its build continues the Ready clip it follows on its session, so it airs right behind that
+    // clip until that clip starts. An item accepted again for a rebuild follows nothing yet.
     const followed =
       item.follows === undefined || item.phase === "Accepted"
         ? undefined
-        : state.sessions
-            .flatMap((value) => readyOf(value))
-            .find((clip) => clip.clipId === item.follows);
+        : session(item.sessionId)?.source?.ready.find((clip) => clip.clipId === item.follows);
     if (followed !== undefined) {
       const behind = rankClip(followed);
       return [behind[0], behind[1], behind[2], behind[3] + 0.5];
@@ -1265,9 +1263,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
     for (const wait of item.waiting) answer(wait, "already-started");
   };
-  const forgetFiller = (clipId: string): void => {
-    state = { ...state, fillers: new Map([...state.fillers].filter(([id]) => id !== clipId)) };
-  };
+  const forgetFiller = (sessionId: string, clipId: string): void =>
+    updateSession(sessionId, {
+      fillers: new Map([...(session(sessionId)?.fillers ?? [])].filter(([id]) => id !== clipId)),
+    });
   const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
     const { clip } = event;
     updateSession(sessionId, {
@@ -1282,7 +1281,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         at: now.wall,
         seconds: clip.seconds,
       });
-      return forgetFiller(clip.clipId);
+      return forgetFiller(sessionId, clip.clipId);
     }
     const item = itemOf(clip);
     if (item === undefined || item.phase === "Settled") return;
@@ -1369,7 +1368,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           at: now.wall,
           seconds: clip.seconds,
         });
-      return forgetFiller(clip.clipId);
+      return forgetFiller(sessionId, clip.clipId);
     }
     const item = itemOf(clip);
     if (item !== undefined)
@@ -1392,7 +1391,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     for (const clip of source.building) listed.set(clip.clipId, "Building");
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");
     if (source.playing !== undefined) listed.set(source.playing.clipId, "Playing");
-    const fillers = new Map(state.fillers);
+    const fillers = new Map(session(sessionId)?.fillers);
     const sample = (kind: "build" | "continued", dispatchedAt: number, seconds: number): void => {
       const value = (now.mono - dispatchedAt) / 1000 / seconds;
       state = {
@@ -1414,7 +1413,6 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           sample("build", build.dispatchedAt, build.seconds);
         fillers.set(clip.clipId, {
           index: clip.tag.index,
-          sessionId,
           build: where === "Building" ? build : undefined,
         });
       }
@@ -1422,7 +1420,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       const item = items.get(clip.tag.key);
       if (item === undefined || item.phase === "Settled") continue;
       const where = listed.get(clip.clipId)!;
-      if (where !== "Playing" && item.discarded === clip.clipId) continue;
+      if (
+        where !== "Playing" &&
+        item.discarded?.sessionId === sessionId &&
+        item.discarded.clipId === clip.clipId
+      )
+        continue;
       if (where === "Playing") {
         if (item.startedAt === undefined) {
           if (item.clipId === undefined) set(item.spec.key, { clipId: clip.clipId, sessionId });
@@ -1465,20 +1468,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
     }
     // A filler clip listed here proves where its uncertain enqueue went.
-    const listedFiller = new Set(
-      [...fillers.values()].flatMap((owner) =>
-        owner.sessionId === sessionId ? [owner.index] : [],
-      ),
-    );
+    const listedFiller = new Set([...fillers.values()].map((owner) => owner.index));
     const uncertain = session(sessionId)?.unknownFiller ?? [];
     if (uncertain.some((entry) => listedFiller.has(entry.index)))
       updateSession(sessionId, {
         unknownFiller: uncertain.filter((entry) => !listedFiller.has(entry.index)),
       });
     // A filler the provider no longer lists has aired or failed; either way it stops being ours.
-    for (const [clipId, owner] of fillers)
-      if (owner.sessionId === sessionId && !listed.has(clipId)) fillers.delete(clipId);
-    state = { ...state, fillers };
+    for (const clipId of fillers.keys()) if (!listed.has(clipId)) fillers.delete(clipId);
+    updateSession(sessionId, { fillers });
     // A clip that left every queue without a start we saw may have aired unseen.
     for (const item of items.values())
       if (
@@ -1576,7 +1574,6 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     state = {
       ...state,
       sessions: state.sessions.filter((value) => value.id !== sessionId),
-      fillers: new Map([...state.fillers].filter(([, owner]) => owner.sessionId !== sessionId)),
     };
     if (lost.retiring && carried === 0 && state.air !== sessionId) return;
     emit({ _tag: "Session", event: { _tag: "Replaced", from: sessionId, reason, carried } });
@@ -1620,10 +1617,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
                 ? undefined
                 : { dispatchedAt: sent.at, seconds: sent.seconds };
             if (clipId !== undefined)
-              state = {
-                ...state,
-                fillers: new Map([...state.fillers, [clipId, { index, sessionId, build }]]),
-              };
+              updateSession(sessionId, {
+                fillers: new Map([...lane.fillers, [clipId, { index, build }]]),
+              });
           } else if (uncertain(result))
             // Its clip may be building on that session: it holds that session's build slot until
             // a queue read shows it, the deadline passes or the session goes. It is never asked
@@ -1693,10 +1689,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
       case "Remove": {
         const owner = [...items.values()].find(
-          (item) => item.clipId === command.clipId && item.phase !== "Settled",
+          (item) =>
+            item.sessionId === sessionId &&
+            item.clipId === command.clipId &&
+            item.phase !== "Settled",
         );
         if (owner === undefined) {
-          if (result._tag === "Done") return forgetFiller(command.clipId);
+          if (result._tag === "Done") return forgetFiller(sessionId, command.clipId);
           const refused = session(sessionId);
           if (refused === undefined) return;
           const now_ = signature(refused);
@@ -1793,6 +1792,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             blockedMove: undefined,
             busy: undefined,
             fillerSent: undefined,
+            fillers: new Map(),
           },
         ],
       };
@@ -2265,7 +2265,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       playing !== undefined &&
       state.cutting === undefined &&
       config.lanes[cutItem.spec.lane]?.cut === true &&
-      state.cut !== playing.clipId &&
+      !(state.cut?.sessionId === value.id && state.cut.clipId === playing.clipId) &&
       playingRestMs(value) > cutMarginMs
     ) {
       // Only filler or a clip of a strictly lower lane is cut, never one of the cutter's lane or above.
@@ -2276,7 +2276,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (lower && airs(front)) {
         state = {
           ...state,
-          cut: playing.clipId,
+          cut: { sessionId: value.id, clipId: playing.clipId },
           cutting: {
             sessionId: value.id,
             clipId: playing.clipId,
@@ -2306,7 +2306,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           dispatchedAt: undefined,
           clipId: undefined,
           sessionId: undefined,
-          discarded: clip.clipId,
+          discarded: { sessionId: value.id, clipId: clip.clipId },
         });
         return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
       }

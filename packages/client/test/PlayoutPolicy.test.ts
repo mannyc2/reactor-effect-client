@@ -945,7 +945,7 @@ describe("PlayoutPolicy, lanes", () => {
     policy.open("s1", 60_000);
     policy.event({ _tag: "Moderated", action: "terminate", categories: ["test"] }, "s1");
     policy.reply({ _tag: "Done", clipId: "f0" }, undefined, "s1");
-    assert.strictEqual(policy.state().fillers.get("f0")?.index, 0);
+    assert.strictEqual(policy.state().sessions[0]?.fillers.get("f0")?.index, 0);
   });
 
   // With one refused move remembered for the whole plan, a second session's refusal made the
@@ -1135,6 +1135,142 @@ describe("PlayoutPolicy, air before queue order", () => {
     policy.open("s2", 16_500, 50);
     policy.tick(1_030);
     assert.strictEqual(sent(policy.busy("s2")), undefined);
+  });
+});
+
+// The review's F7: ReactorTest numbers clip ids per session, so two sessions' clips can share one.
+// A clip is looked up by id only on the session it was reported by or a command went to.
+describe("PlayoutPolicy, clip ids", () => {
+  const filler = (clipId: string, index: number) => clip(clipId, { _tag: "Filler", index });
+  /** s1 on air with a clip of its own and filler 0 in flight, and s2 with filler 1 in flight. */
+  const renewing = () => {
+    const policy = drive({ config: filled });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    const x = clip("x", undefined, 50);
+    policy.event({ _tag: "Started", clip: x });
+    policy.observe({ playing: x });
+    policy.tick(30_010);
+    policy.open("s2", 60_000);
+    // Each session names its filler clip c1.
+    policy.reply({ _tag: "Done", clipId: "c1" }, undefined, "s1");
+    policy.reply({ _tag: "Done", clipId: "c1" }, undefined, "s2");
+    return { policy, x };
+  };
+
+  it("settles on a removal's result only the clip on the session it went to", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1");
+    policy.observe({ playing: filler("c0", 0), ready: [filler("c1", 1)] }, "s1");
+    policy.open("s2");
+    policy.submit(spec("x"));
+    policy.reply({ _tag: "Done", clipId: "c1" }, undefined, "s2");
+    policy.observe({ ready: [clip("c1", item("x"))] }, "s2");
+    assert.deepStrictEqual(policy.busy("s1"), { _tag: "Remove", clipId: "c1" });
+    policy.reply({ _tag: "Done" }, undefined, "s1");
+    assert.strictEqual(policy.state().items.get(key("x"))?.phase, "Ready");
+  });
+
+  it("measures each session's filler build, though their clips share an id", () => {
+    const { policy, x } = renewing();
+    policy.observe({ playing: x, ready: [filler("c1", 0)] }, "s1");
+    policy.observe({ ready: [filler("c1", 1)] }, "s2");
+    assert.strictEqual(policy.state().samples.build.length, 2);
+  });
+
+  it("forgets a failed filler clip only on its own session", () => {
+    const { policy } = renewing();
+    policy.event(buildFailed(filler("c1", 0)), "s1");
+    policy.observe({ ready: [filler("c1", 1)] }, "s2");
+    assert.strictEqual(policy.state().samples.build.length, 1);
+  });
+
+  it("adopts an item's clip on its new session, though its clip taken off before had the id", () => {
+    const policy = drive();
+    const timed = {
+      ...spec("timed"),
+      start: { _tag: "At", time: 12_000, late: "nextBoundary" },
+    } as const;
+    policy.tick(0);
+    policy.open("s1");
+    const x = clip("x", undefined, 5);
+    const y = clip("y", undefined, 10);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10);
+    policy.observe({ playing: x, ready: [y] }, "s1", 10);
+    policy.submit(timed, 20);
+    policy.reply({ _tag: "Done", clipId: "c1" }, 30);
+    policy.observe({ playing: x, ready: [y, clip("c1", item("timed"))] }, "s1", 40);
+    // y goes, and timed is Ready too early: it is taken off, to be built again.
+    policy.observe({ playing: x, ready: [clip("c1", item("timed"))] }, "s1", 50);
+    assert.deepStrictEqual(policy.busy("s1"), { _tag: "Remove", clipId: "c1" });
+    policy.reply({ _tag: "Done" }, 60);
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "the connection failed" }, 70);
+    policy.open("s2", 600_000, 80);
+    const z = clip("z", undefined, 20);
+    policy.event({ _tag: "Started", clip: z }, "s2", 90);
+    policy.observe({ playing: z }, "s2", 90);
+    assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["timed"]);
+    policy.reply({ _tag: "Done", clipId: "c1" }, 100, "s2");
+    policy.observe({ playing: z, ready: [clip("c1", item("timed"))] }, "s2", 110);
+    assert.strictEqual(policy.state().items.get(key("timed"))?.phase, "Ready");
+  });
+
+  it("cuts a clip on the session on air, though a clip of its id was cut on another", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1");
+    const first = clip("c1", { _tag: "Filler", index: 0 }, 15);
+    policy.event({ _tag: "Started", clip: first }, "s1", 10);
+    policy.submit(spec("u", 0), 20);
+    policy.reply({ _tag: "Done", clipId: "c2" }, 30);
+    policy.observe({ playing: first, ready: [clip("c2", item("u"))] }, "s1", 40);
+    assert.deepStrictEqual(policy.busy("s1"), { _tag: "Autoplay", enabled: false });
+    // s1 goes before the cut ends: u is built again on s2, which airs filler of its own named c1.
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "the connection failed" }, 50);
+    policy.open("s2", 600_000, 60);
+    const second = clip("c1", { _tag: "Filler", index: 1 }, 15);
+    policy.event({ _tag: "Started", clip: second }, "s2", 70);
+    policy.reply({ _tag: "Done", clipId: "c2" }, 80, "s2");
+    policy.observe({ playing: second, ready: [clip("c2", item("u"))] }, "s2", 90);
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: false });
+  });
+
+  it("keeps a continued clip behind the clip it follows on its own session", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    // s1 airs a clip of its own, with another of its own Ready, named c2.
+    const x = clip("x", undefined, 50);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10);
+    policy.observe({ playing: x, ready: [clip("c2")] }, "s1", 10);
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.open("s2", 60_000, 30_020);
+    // p1 and p2 build on s2 in 2 s each, as measured, and p2's clip is named c2 too.
+    const ready: Array<SourceClip> = [];
+    for (const [name, clipId, at] of [
+      ["p1", "c1", 30_030],
+      ["p2", "c2", 32_030],
+    ] as const) {
+      policy.submit(spec(name), at);
+      policy.reply({ _tag: "Done", clipId }, at + 10, "s2");
+      ready.push(clip(clipId, item(name)));
+      policy.observe({ ready: [...ready], continuable: ["c1", "c2"] }, "s2", at + 2_000);
+    }
+    // xc, projected Ready only after p1 would end, continues from p2 and follows it.
+    const continued = { ...spec("xc"), continuity: true };
+    policy.edit([{ _tag: "Insert", spec: continued, anchor: key("p2"), side: "before" }]);
+    assert.deepStrictEqual(policy.busy("s2"), {
+      _tag: "Enqueue",
+      request: continued.request,
+      tag: item("xc"),
+      continueFrom: "c2",
+    });
+    policy.reply({ _tag: "Done", clipId: "cx" }, 34_050, "s2");
+    ready.push(clip("cx", item("xc")));
+    policy.observe({ ready, continuable: ["c1", "c2", "cx"] }, "s2", 40_040);
+    const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
+    assert.deepStrictEqual(moves, []);
   });
 });
 

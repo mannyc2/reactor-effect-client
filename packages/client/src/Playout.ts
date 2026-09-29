@@ -450,6 +450,8 @@ export type SourceEvent =
  *
  * - `sessionId` is unique among the sources open at once; the playout refuses
  *   a second under the same id.
+ * - A clip id names one clip of its session. Another session's clip may have
+ *   the same id.
  * - `events` starts with a `State`. `Started`, `Ended` and `Failed` come before
  *   the `State` that reflects them, and once `enqueue` has returned no `State`
  *   leaves the clip out until its `Ended` or `Failed`.
