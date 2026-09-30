@@ -312,9 +312,9 @@ jobs:
             platform: darwin-arm64
             runtime: bun
     steps:
-      # Spotlight indexes every file the job checks out, restores and builds;
-      # on the 3-core runner it took about a core while the media load tests
-      # ran. The job searches none of it.
+      # Spotlight indexes every file the job checks out, installs and
+      # downloads; on the 3-core runner it took about a core while the media
+      # load tests ran. The job searches none of it.
       - name: Stop Spotlight indexing
         if: runner.os == 'macOS'
         run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
@@ -379,10 +379,12 @@ jobs:
         if: matrix.runtime == 'node'
         run: bun run test:integration
 
+  # It waits for every other job, so re-running a failed one on main re-runs it
+  # too, and qualification.json names the attempt in which the run passed.
   package:
     name: Pack/install smoke
     runs-on: ubuntu-24.04
-    needs: [check, native]
+    needs: [check, test, native]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
