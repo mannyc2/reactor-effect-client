@@ -24,7 +24,7 @@ import {
   Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
-import { Coordinator, Reactor, ReactorTest } from "../src/index.js";
+import { CoordinatorClient, Reactor, ReactorTest } from "../src/index.js";
 import * as Wire from "../src/internal/wire.js";
 import { PeerFactory } from "../src/Peer.js";
 import { type CommandFailure, ReactorError } from "../src/ReactorError.js";
@@ -133,12 +133,12 @@ layer(environment({ timing }))("tracing", (it) => {
       assert.includeMembers(
         [...names],
         [
-          "Coordinator.mintToken",
+          "CoordinatorClient.mintToken",
           "Reactor.create",
           "Session.connect",
           "Session.command",
           "Session.close",
-          "Coordinator.terminate",
+          "CoordinatorClient.terminate",
         ],
       );
     }),
@@ -312,7 +312,7 @@ layer(environment({ timing }))("a reconnect that fails for good", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      const coordinator = yield* Coordinator.Coordinator;
+      const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const grant = yield* coordinator.tokens({
         apiKey: test.apiKey,
         modelName: H3.modelName,
@@ -323,7 +323,7 @@ layer(environment({ timing }))("a reconnect that fails for good", (it) => {
       const reactor = yield* Reactor.Reactor;
       const session = yield* reactor.create({
         model: H3.modelName,
-        tokens: Coordinator.fixedTokens(grant),
+        tokens: CoordinatorClient.fixedTokens(grant),
       });
       const reads = Effect.map(
         test.log,
@@ -380,7 +380,7 @@ const failingPeers = (error: ReactorError) =>
 // The session's connection drops, and its host cannot make a peer for any reconnect.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -421,7 +421,7 @@ layer(
 // As above: the session's own reconnect runs out of time while the application's joins it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -453,7 +453,7 @@ layer(
 // As above, on a schedule that tries twice more at once, then gives up.
 layer(
   Reactor.layer({ reconnect: Schedule.recurs(2) }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(failingPeers(ReactorError.fromCode("Native", "peer allocation failed"))),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -787,7 +787,7 @@ const slowPeers = (slow: Duration.Input) =>
 // The reconnect's new peer takes 40 s to make, past the 30 s the reconnect has.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowPeers("40 seconds")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -838,7 +838,7 @@ const slowDirection = (slow: Duration.Input) =>
 // Resuming each track takes 3 s, so the reconnected connection's pass the reconnect's 2 s.
 layer(
   Reactor.layer({ reconnectTimeout: "2 seconds" }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowDirection("3 seconds")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -905,7 +905,7 @@ const dropAsTracksResume = (nth: number): ReactorTest.Fault => ({
 // interrupts: by then the drop has left the session disconnected.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowToCancel),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -959,7 +959,7 @@ layer(
 // at once, as every shipped host does.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowDirection("50 millis")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1063,7 +1063,7 @@ const joinOutlived = ReactorError.fromCode(
 // The dropped connection's peer fails to shut down as the reconnect retires it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingShutdown([joinOutlived])),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1094,7 +1094,7 @@ const shutdownBug = new Error("a host's shutdown bug");
 // The dropped connection's peer dies of a bug as the reconnect retires it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingShutdown([shutdownBug])),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1140,7 +1140,7 @@ const dyingFence = (defect: unknown) =>
 // The dropped connection's peer fails as its session fences it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingFence(ReactorError.fromCode("Shutdown", "peer could not be fenced"))),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1171,7 +1171,7 @@ const fenceBug = new Error("a host's fence bug");
 // The dropped connection's peer dies of a bug as its session fences it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingFence(fenceBug)),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1199,7 +1199,7 @@ layer(
 // The session's peer dies of a bug as the session's close fences it.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingFence(fenceBug)),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1235,7 +1235,7 @@ layer(
 // A reconnect is refused, and its own peer's host fails to shut down, with a bug besides.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingShutdown([joinOutlived, shutdownBug], 1)),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1276,7 +1276,7 @@ layer(
 // A session's first connection is refused, and its peer dies of a bug as it shuts down.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingShutdown([shutdownBug])),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1322,7 +1322,7 @@ const halfMade = (which: number, error: ReactorError, defect: unknown) =>
 // A reconnect's host fails to make its peer, and dies of a bug as what it made shuts down.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(
       halfMade(1, ReactorError.fromCode("Native", "peer allocation failed"), shutdownBug),
     ),
@@ -1351,7 +1351,7 @@ layer(
 // still under way, and its unused peer dies of a bug as it shuts down.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingShutdown([shutdownBug], 2)),
     Layer.provideMerge(slowPeers("1 second")),
     Layer.provideMerge(
@@ -1391,7 +1391,7 @@ layer(
 // time the application's could take the session over.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowPeers("2 seconds")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1437,7 +1437,7 @@ const slowSecondPeer = (slow: Duration.Input) =>
 // the application's could take the session over.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowSecondPeer("2 seconds")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1463,7 +1463,7 @@ layer(
 // by the time the application's reconnect could take it over.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowSecondPeer("2 seconds")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1495,7 +1495,7 @@ layer(
 // a second to make, and 100 ms later reconnects again with one made at once, which is back first.
 layer(
   Reactor.layer({ reconnect: false }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowSecondPeer("500 millis")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1528,7 +1528,7 @@ layer(
 // 100 ms in.
 layer(
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(slowPeers("500 millis")),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
@@ -1878,7 +1878,7 @@ layer(
 // connection is ready about 3 s after the drop, 2 s before the reconnect's 5 s run out.
 layer(
   Reactor.layer({ reconnectTimeout: "5 seconds", reconnect: Schedule.spaced("1 second") }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   ),
@@ -1973,7 +1973,7 @@ layer(environment({ timing, reconnect: false }))("a dropped connection, reconnec
 layer(environment({ timing }))("tokens", (it) => {
   const short = Effect.gen(function* () {
     const test = yield* ReactorTest.ReactorTest;
-    const coordinator = yield* Coordinator.Coordinator;
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
     return coordinator.tokens({
       apiKey: test.apiKey,
       modelName: H3.modelName,
@@ -2002,7 +2002,7 @@ layer(environment({ timing }))("tokens", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      const coordinator = yield* Coordinator.Coordinator;
+      const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const tokens = coordinator.tokens({
         apiKey: test.apiKey,
         modelName: H3.modelName,
@@ -2036,7 +2036,7 @@ layer(environment({ timing }))("tokens", (it) => {
       const grant = yield* (yield* short).create;
       const session = yield* reactor.create({
         model: H3.modelName,
-        tokens: Coordinator.fixedTokens(grant),
+        tokens: CoordinatorClient.fixedTokens(grant),
       });
       yield* Effect.sleep("3 minutes");
       const refused = yield* Effect.flip(session.reconnect);
@@ -2231,7 +2231,7 @@ const dyingPings = Layer.effectContext(
 // A bug stays a defect: it is not a Protocol failure that disconnects the session for a reconnect.
 layer(
   Reactor.layer({ heartbeatInterval: "1 second" }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(dyingPings),
     Layer.provideMerge(ReactorTest.layer({ timing })),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),

@@ -1,7 +1,14 @@
 import { Config, Duration, Effect, Layer, Ref } from "effect";
 import type { Crypto, Redacted } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { Coordinator, H3, H3Source, Playout, Reactor, ReactorTest } from "reactor-effect-client";
+import {
+  CoordinatorClient,
+  H3,
+  H3Source,
+  Playout,
+  Reactor,
+  ReactorTest,
+} from "reactor-effect-client";
 import { AcquisitionFailure, ReactorError } from "reactor-effect-client/ReactorError";
 import { NativePeer } from "reactor-effect-native";
 import { Ledger } from "./Ledger.ts";
@@ -30,7 +37,9 @@ export const layer = Layer.unwrap(
     const opened = yield* Ref.make(0);
     const options = <R>(
       apiKey: Effect.Effect<Redacted.Redacted<string>, never, R>,
-    ): Playout.Options<R | Reactor.Reactor | Coordinator.Coordinator | Crypto.Crypto> => ({
+    ): Playout.Options<
+      R | Reactor.Reactor | CoordinatorClient.CoordinatorClient | Crypto.Crypto
+    > => ({
       // A live channel opens at most CHANNEL_MAX_SESSIONS sessions; past that
       // the playout airs its last session until its cap ends, then fails, and
       // the channel goes off air.
@@ -44,7 +53,7 @@ export const layer = Layer.unwrap(
                 ),
               )
             : Effect.gen(function* () {
-                const coordinator = yield* Coordinator.Coordinator;
+                const coordinator = yield* CoordinatorClient.CoordinatorClient;
                 // Each session starts on a token and carries on with tokens bound to it.
                 return yield* H3Source.open({
                   tokens: coordinator.tokens({
@@ -106,7 +115,7 @@ export const layer = Layer.unwrap(
         options,
         recorded,
         Layer.provide(Reactor.layer()),
-        Layer.provideMerge(Coordinator.layer({ apiUrl })),
+        Layer.provideMerge(CoordinatorClient.layer({ apiUrl })),
         // Each connection's native peer runs in a child process of its own, so a
         // crash in libwebrtc ends that connection, not the server (Node only).
         Layer.provide(NativePeer.layerIsolated()),
@@ -120,7 +129,7 @@ export const layer = Layer.unwrap(
       options,
       recorded,
       Layer.provide(Reactor.layer()),
-      Layer.provideMerge(Coordinator.layer()),
+      Layer.provideMerge(CoordinatorClient.layer()),
       Layer.provideMerge(
         ReactorTest.layer({ timing: ReactorTest.Timing.hosted, width: 320, height: 180 }),
       ),

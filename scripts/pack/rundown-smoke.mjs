@@ -1,7 +1,14 @@
 import { pathToFileURL } from "node:url";
 import { Crypto, Effect, Layer, PlatformError } from "effect";
 import { TestClock } from "effect/testing";
-import { Coordinator, H3, H3Source, Playout, Reactor, ReactorTest } from "reactor-effect-client";
+import {
+  CoordinatorClient,
+  H3,
+  H3Source,
+  Playout,
+  Reactor,
+  ReactorTest,
+} from "reactor-effect-client";
 
 /**
  * Runs the compiled client example, the Rundown, on a Playout over the
@@ -29,7 +36,7 @@ const webCrypto = Layer.sync(Crypto.Crypto, () =>
 
 const open = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   return yield* H3Source.open({
     tokens: coordinator.tokens({
       apiKey: test.apiKey,
@@ -43,7 +50,7 @@ const open = Effect.gen(function* () {
 const simulated = Rundown.layer.pipe(
   Layer.provideMerge(Playout.layer({ open, lanes: [{ name: "show" }] })),
   Layer.provideMerge(Reactor.layer()),
-  Layer.provideMerge(Coordinator.layer()),
+  Layer.provideMerge(CoordinatorClient.layer()),
   Layer.provideMerge(
     ReactorTest.layer({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "70 millis" }) }),
   ),

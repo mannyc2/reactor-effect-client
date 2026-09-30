@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { take } from "../queue.js";
-import type { Mapping } from "../../Coordinator.js";
+import type { Mapping } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
 import { trackFeed } from "../../Peer.js";
 import type { DataChannel, Peer, PeerEvent } from "../../Peer.js";

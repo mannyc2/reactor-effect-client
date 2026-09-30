@@ -48,7 +48,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { ItemKey } from "reactor-effect-client/Playout";
@@ -115,7 +115,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
   const { round } = pieces;
   const run = yield* Run;
   const target = yield* Target;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const record = (change: (adoption: AdoptionRecord) => AdoptionRecord) =>
     run.update((evidence) => ({
       ...evidence,
@@ -123,7 +123,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
     }));
   const minted = Effect.fnUntraced(function* (
     kind: AdoptionRecord["mints"][number]["kind"],
-    grant: Coordinator.TokenGrant,
+    grant: CoordinatorClient.TokenGrant,
     sentAt: number,
   ) {
     const atMs = yield* run.now;
@@ -152,15 +152,17 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
   const attachTokens = yield* pieces.binder(tokenSecondsFor("adoption"), (token, sentAt) =>
     minted("attach", token, sentAt),
   );
-  const resumeMints: Array<{ readonly grant: Coordinator.TokenGrant; readonly sentAt: number }> =
-    [];
+  const resumeMints: Array<{
+    readonly grant: CoordinatorClient.TokenGrant;
+    readonly sentAt: number;
+  }> = [];
   const resumeTokens = yield* pieces.binder(boundSeconds, (token, sentAt) =>
     Effect.sync(() => resumeMints.push({ grant: token, sentAt })).pipe(
       Effect.andThen(minted("resume", token, sentAt)),
     ),
   );
   const marker = `hosted-qualification:${run.runId}`;
-  const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  const keyed = CoordinatorClient.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
   yield* pieces.withSessions(
     (grants) =>
       Effect.gen(function* () {
@@ -331,7 +333,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
               yield* pieces.judge("the session still reads live after the attached close", [
                 read.status === 200 &&
                   read.state !== undefined &&
-                  !Coordinator.isTerminal(read.state),
+                  !CoordinatorClient.isTerminal(read.state),
                 `reading it answered ${read.status} ${read.state ?? "without a state"}`,
               ]);
             }),

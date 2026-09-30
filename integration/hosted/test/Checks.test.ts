@@ -3,7 +3,7 @@ import { assert, layer } from "@effect/vitest";
 import { Effect, Redacted, Ref } from "effect";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import { endHeld } from "../Checks.js";
 import type { Evidence } from "../Evidence.js";
 import { format } from "../Evidence.js";
@@ -61,7 +61,7 @@ layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
     Effect.gen(function* () {
       const run = yield* Run.make(holdingTwo("held_record"), "never-written.json");
       yield* endHeld(
-        Coordinator.make({
+        CoordinatorClient.make({
           apiUrl: "https://api.reactor.test",
           apiKey: Redacted.make("reactor-test-key"),
         }).pipe(Effect.provideService(HttpClient.HttpClient, answering("10.0.0.7:8443"))),
@@ -89,7 +89,7 @@ layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
       const run = yield* Run.make(holdingTwo("held_secret"), "never-written.json");
       yield* run.secret(Redacted.make("held_secret"));
       yield* endHeld(
-        Coordinator.make({
+        CoordinatorClient.make({
           apiUrl: "https://api.reactor.test",
           apiKey: Redacted.make("reactor-test-key"),
         }).pipe(Effect.provideService(HttpClient.HttpClient, http)),
@@ -128,7 +128,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
         );
         const run = yield* Run.make(holdingTwo("held_timing"), "never-written.json");
         yield* endHeld(
-          Coordinator.make({
+          CoordinatorClient.make({
             apiUrl: "https://api.reactor.test",
             apiKey: Redacted.make("reactor-test-key"),
           }).pipe(Effect.provideService(HttpClient.HttpClient, http)),

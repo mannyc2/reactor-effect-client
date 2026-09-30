@@ -15,7 +15,7 @@ import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import { checks } from "./Checks.js";
 import type { Evidence } from "./Evidence.js";
@@ -186,9 +186,9 @@ export const execute = (input: {
             run.mode === "paid" && run.network?.pair !== undefined ? [run.network.pair] : [],
           ),
         );
-      const coordinator = yield* Coordinator.Coordinator;
+      const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const rate = yield* coordinator.pricing.pipe(
-        Effect.flatMap((pricing) => Coordinator.modelRate(pricing, H3.modelName)),
+        Effect.flatMap((pricing) => CoordinatorClient.modelRate(pricing, H3.modelName)),
         Effect.mapError((error) => Refused.make({ message: `pricing: ${error.message}` })),
       );
       const worstCaseUsd = yield* admit({ rate, authorization, reservedUsd });

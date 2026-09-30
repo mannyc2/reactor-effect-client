@@ -1,5 +1,5 @@
 /** A ledger's runs as Markdown, for `summary.md` and the release notes. */
-import { isTerminal } from "reactor-effect-client/Coordinator";
+import { isTerminal } from "reactor-effect-client/CoordinatorClient";
 import type { Evidence } from "./Evidence.js";
 import { cleanupInstructions } from "./Evidence.js";
 

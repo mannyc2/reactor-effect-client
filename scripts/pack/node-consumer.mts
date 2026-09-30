@@ -9,7 +9,7 @@ import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type * as HttpClient from "effect/unstable/http/HttpClient";
 import {
-  Coordinator,
+  CoordinatorClient,
   H3,
   H3Source,
   LocalSource,
@@ -24,14 +24,14 @@ import {
 import * as PlayoutModule from "reactor-effect-client/Playout";
 
 const coordinator: Layer.Layer<
-  Coordinator.Coordinator,
+  CoordinatorClient.CoordinatorClient,
   ReactorError.ReactorError,
   HttpClient.HttpClient
-> = Coordinator.layer();
+> = CoordinatorClient.layer();
 const reactor: Layer.Layer<
   Reactor.Reactor,
   ReactorError.ReactorError,
-  Coordinator.Coordinator | Peer.PeerFactory
+  CoordinatorClient.CoordinatorClient | Peer.PeerFactory
 > = Reactor.layer();
 const simulated: Layer.Layer<ReactorTest.ReactorTest | HttpClient.HttpClient | Peer.PeerFactory> =
   ReactorTest.layer({ timing: ReactorTest.Timing.hosted });

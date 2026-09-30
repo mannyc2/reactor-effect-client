@@ -14,8 +14,8 @@ import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as SubscriptionRef from "effect/SubscriptionRef";
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import type { Descriptor, IceCandidate, Mapping, Signaling } from "../../Coordinator.js";
-import type { MediaTrack, Peer, PeerEvent } from "../../Peer.js";
+import type { Descriptor, Signaling } from "../../CoordinatorClient.js";
+import type { IceCandidate, Mapping, MediaTrack, Peer, PeerEvent } from "../../Peer.js";
 import { type ContextInput, ReactorError } from "../../ReactorError.js";
 import type {
   CloseReport,

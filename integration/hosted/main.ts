@@ -32,7 +32,7 @@ import * as Argument from "effect/unstable/cli/Argument";
 import * as Command from "effect/unstable/cli/Command";
 import * as Flag from "effect/unstable/cli/Flag";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
@@ -86,7 +86,9 @@ const report = Effect.fnUntraced(function* (evidence: Evidence) {
     return yield* Failed.make({ message: evidence.reasons.join("; ") });
 });
 
-const apiUrl = Config.String("REACTOR_API_URL").pipe(Config.withDefault(Coordinator.defaultApiUrl));
+const apiUrl = Config.String("REACTOR_API_URL").pipe(
+  Config.withDefault(CoordinatorClient.defaultApiUrl),
+);
 const apiKey = Config.Redacted("REACTOR_API_KEY").pipe(
   Effect.mapError(() => Spend.Refused.make({ message: "REACTOR_API_KEY is required" })),
 );
@@ -194,8 +196,8 @@ const preflight = Command.make(
   Effect.fnUntraced(function* (input) {
     const earlier = yield* Ledger.entries(input.ledger);
     const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);
-    const coordinator = yield* Coordinator.Coordinator;
-    const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
+    const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
     const worst = yield* Spend.admit({
       rate,
       authorization: {
@@ -239,7 +241,7 @@ const preflight = Command.make(
   Command.provide(
     Layer.unwrap(
       Effect.gen(function* () {
-        return Coordinator.layer({ apiUrl: yield* apiUrl, apiKey: yield* apiKey }).pipe(
+        return CoordinatorClient.layer({ apiUrl: yield* apiUrl, apiKey: yield* apiKey }).pipe(
           Layer.provideMerge(FetchHttpClient.layer),
         );
       }),
@@ -296,7 +298,7 @@ const owner = Command.make(
     Layer.unwrap(
       Effect.map(apiUrl, (url) =>
         Reactor.layer().pipe(
-          Layer.provide(Coordinator.layer({ apiUrl: url })),
+          Layer.provide(CoordinatorClient.layer({ apiUrl: url })),
           Layer.provide(input.isolated ? NativePeer.layerIsolated() : NativePeer.layer()),
           Layer.provide(FetchHttpClient.layer),
         ),

@@ -19,7 +19,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { recorder } from "reactor-effect-client/Media";
@@ -173,11 +173,13 @@ const adopting = Effect.fnUntraced(function* (sessionId: string, killedMs: numbe
           }),
         ),
   );
-  const coordinator = yield* Coordinator.make({
+  const coordinator = yield* CoordinatorClient.make({
     apiUrl: target.apiUrl,
     apiKey: target.apiKey,
   }).pipe(Effect.provideService(HttpClient.HttpClient, client));
-  return yield* Reactor.make().pipe(Effect.provideService(Coordinator.Coordinator, coordinator));
+  return yield* Reactor.make().pipe(
+    Effect.provideService(CoordinatorClient.CoordinatorClient, coordinator),
+  );
 });
 
 /** The first value `find` picks from `ref` as it changes, waited for until `deadline`. */
@@ -199,7 +201,7 @@ const waitFor = <A, B>(
 /** The coordinator as a session's token sees it. */
 const withToken = (jwt: Redacted.Redacted<string>) =>
   Effect.flatMap(Target, (target) =>
-    Coordinator.make({ apiUrl: target.apiUrl, credential: Effect.succeed(jwt) }),
+    CoordinatorClient.make({ apiUrl: target.apiUrl, credential: Effect.succeed(jwt) }),
   );
 
 /** Mints one session's token: its grant goes into the evidence, its JWT never does. */
@@ -209,7 +211,7 @@ const mint = Effect.fnUntraced(function* (
 ) {
   const run = yield* Run;
   const target = yield* Target;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
     modelName: H3.modelName,
@@ -233,12 +235,12 @@ const mint = Effect.fnUntraced(function* (
  */
 const binder = Effect.fnUntraced(function* (
   expiresAfterSeconds: number,
-  minted: (grant: Coordinator.TokenGrant, sentAt: number) => Effect.Effect<void> = () =>
+  minted: (grant: CoordinatorClient.TokenGrant, sentAt: number) => Effect.Effect<void> = () =>
     Effect.void,
 ) {
   const run = yield* Run;
   const target = yield* Target;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const bind = Effect.fnUntraced(function* (sessionId: string) {
     const sentAt = yield* Clock.currentTimeMillis;
     const token = yield* coordinator.mintToken({
@@ -251,14 +253,15 @@ const binder = Effect.fnUntraced(function* (
     yield* minted(token, sentAt);
     return token;
   });
-  return { bind } satisfies Pick<Coordinator.Tokens, "bind">;
+  return { bind } satisfies Pick<CoordinatorClient.Tokens, "bind">;
 });
 
 /** The grant each session the check holds runs on, by session id. */
-type Grants = Map<string, Coordinator.TokenGrant>;
+type Grants = Map<string, CoordinatorClient.TokenGrant>;
 
 /** A grant's session cap, which the grant was proven not to exceed, in milliseconds. */
-const capMs = (grant: Coordinator.TokenGrant) => (grant.maxSessionSeconds ?? sessionSeconds) * 1000;
+const capMs = (grant: CoordinatorClient.TokenGrant) =>
+  (grant.maxSessionSeconds ?? sessionSeconds) * 1000;
 
 /** Records a session the check holds from `allocatedAt` until its cap ends it at `capEndsAt`; its work deadline. */
 const holding = Effect.fnUntraced(function* (
@@ -283,7 +286,10 @@ const holding = Effect.fnUntraced(function* (
 });
 
 /** Records a session the check allocated, and when its grant's cap ends it. Returns its work deadline. */
-const allocated = Effect.fnUntraced(function* (sessionId: string, grant: Coordinator.TokenGrant) {
+const allocated = Effect.fnUntraced(function* (
+  sessionId: string,
+  grant: CoordinatorClient.TokenGrant,
+) {
   const now = yield* Clock.currentTimeMillis;
   const deadline = yield* holding(sessionId, now, now + capMs(grant));
   yield* (yield* Run).mark("allocated", sessionId);
@@ -296,14 +302,14 @@ const closedWith = Effect.fnUntraced(function* (
   requestedMs: number,
   close:
     | { readonly report: Session.CloseReport }
-    | { readonly termination: Coordinator.Termination },
+    | { readonly termination: CoordinatorClient.Termination },
   reportedAt?: number,
 ) {
   const run = yield* Run;
   const reportedMs = reportedAt ?? (yield* run.now);
   const confirmed = "report" in close ? close.report.remote.confirmed : close.termination.confirmed;
   // The state a read confirmed is the provider's text: kept as the evidence keeps any.
-  const keep = (termination: Coordinator.Termination): Coordinator.Termination =>
+  const keep = (termination: CoordinatorClient.Termination): CoordinatorClient.Termination =>
     termination.state === null
       ? termination
       : { ...termination, state: Probes.keptText(termination.state) };
@@ -330,13 +336,13 @@ const close = Effect.fnUntraced(function* (session: Pick<Session.Session, "id" |
 });
 
 /** A session created on `grant`, recorded in `grants` and closed with the scope, and its work deadline. */
-const create = Effect.fnUntraced(function* (grant: Coordinator.TokenGrant, grants: Grants) {
+const create = Effect.fnUntraced(function* (grant: CoordinatorClient.TokenGrant, grants: Grants) {
   const reactor = yield* Reactor.Reactor;
   let deadline = 0;
   const session = yield* recorded(
     reactor.create({
       model: H3.modelName,
-      tokens: Coordinator.fixedTokens(grant),
+      tokens: CoordinatorClient.fixedTokens(grant),
       onAllocated: (allocation) =>
         Effect.map(allocated(allocation.id, grant), (at) => {
           deadline = at;
@@ -350,7 +356,7 @@ const create = Effect.fnUntraced(function* (grant: Coordinator.TokenGrant, grant
 
 /** The takeover's owner started on `grant`, its session recorded in `grants`, and the work deadline. */
 const owned = Effect.fnUntraced(function* (
-  grant: Coordinator.TokenGrant,
+  grant: CoordinatorClient.TokenGrant,
   marker: string,
   grants: Grants,
 ) {
@@ -370,7 +376,7 @@ const owned = Effect.fnUntraced(function* (
  * skips no session. Each end is recorded as reported when it was confirmed.
  */
 export const endHeld = Effect.fnUntraced(
-  function* <E, R>(ender: Effect.Effect<Coordinator.Coordinator["Service"], E, R>) {
+  function* <E, R>(ender: Effect.Effect<CoordinatorClient.CoordinatorClient["Service"], E, R>) {
     const run = yield* Run;
     const open = (yield* run.evidence).sessions.filter((session) => session.close === undefined);
     if (open.length === 0) return;
@@ -415,7 +421,7 @@ const settle = Effect.fnUntraced(
         );
         const atMs = yield* run.now;
         if (trail.at(-1)?.state !== state) trail.push({ atMs, state });
-        if (state === "gone" || Coordinator.isTerminal(state)) terminalMs = atMs;
+        if (state === "gone" || CoordinatorClient.isTerminal(state)) terminalMs = atMs;
         else yield* Effect.sleep("500 millis");
       }
       yield* run.update((evidence) => ({
@@ -954,7 +960,7 @@ const afterAdoptMs = 16_000;
 export const tokens = Effect.gen(function* () {
   const run = yield* Run;
   const target = yield* Target;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const record = (change: (tokens: Evidence.TokensRecord) => Evidence.TokensRecord) =>
     run.update((evidence) => ({
       ...evidence,
@@ -962,7 +968,7 @@ export const tokens = Effect.gen(function* () {
     }));
   const minted = Effect.fnUntraced(function* (
     kind: "create" | "bind" | "unbound",
-    grant: Coordinator.TokenGrant,
+    grant: CoordinatorClient.TokenGrant,
     sentAt: number,
   ) {
     const atMs = yield* run.now;
@@ -988,7 +994,8 @@ export const tokens = Effect.gen(function* () {
   const grant = yield* mint("tokens", createSeconds);
   yield* minted("create", grant, createSentAt);
   // The adopter's tokens, each bound to the session and short enough to be refreshed in it.
-  const bound: Array<{ readonly grant: Coordinator.TokenGrant; readonly sentAt: number }> = [];
+  const bound: Array<{ readonly grant: CoordinatorClient.TokenGrant; readonly sentAt: number }> =
+    [];
   const binds = yield* binder(boundSeconds, (token, sentAt) =>
     Effect.sync(() => bound.push({ grant: token, sentAt })).pipe(
       Effect.andThen(minted("bind", token, sentAt)),
@@ -996,7 +1003,7 @@ export const tokens = Effect.gen(function* () {
   );
   const marker = `hosted-qualification:${run.runId}`;
   const video = Media.videoLog();
-  const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  const keyed = CoordinatorClient.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
   yield* withSessions(
     (sessions) =>
       Effect.gen(function* () {
@@ -1502,7 +1509,7 @@ export interface Air {
   /** What each session published: statuses, control messages, verdicts and diagnostics. */
   readonly sessionLog: () => ReadonlyArray<Logged>;
   /** The token each session was created with. */
-  readonly grant: (sessionId: string) => Coordinator.TokenGrant | undefined;
+  readonly grant: (sessionId: string) => CoordinatorClient.TokenGrant | undefined;
   readonly starts: () => ReadonlyArray<string>;
   /** Submits an item under `key`, recording when. */
   readonly track: (key: string) => Effect.Effect<Playout.ItemKey>;
@@ -1585,7 +1592,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
           ),
         );
         const source = yield* H3Source.open({
-          tokens: Coordinator.fixedTokens(grant),
+          tokens: CoordinatorClient.fixedTokens(grant),
           holdLastFrame: true,
           onAllocated: ({ session }) =>
             Effect.gen(function* () {

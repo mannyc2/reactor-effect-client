@@ -2,7 +2,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import * as H3 from "../../src/H3.js";
-import { Coordinator, Reactor, ReactorTest } from "../../src/index.js";
+import { CoordinatorClient, Reactor, ReactorTest } from "../../src/index.js";
 
 /**
  * Each block gets its own simulated Reactor, so no session or bill carries over; `reconnect` is
@@ -13,7 +13,7 @@ export const environment = ({
   ...options
 }: Parameters<typeof ReactorTest.layer>[0] & Pick<Reactor.Options, "reconnect">) =>
   Reactor.layer({ reconnect }).pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(ReactorTest.layer(options)),
     Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, FileSystem.layerNoop({}), Path.layer)),
   );
@@ -21,7 +21,7 @@ export const environment = ({
 /** Tokens from the simulated Reactor's key: sessions capped at five minutes, tokens of ten. */
 export const tokens = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
-  const coordinator = yield* Coordinator.Coordinator;
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
   return coordinator.tokens({
     apiKey: test.apiKey,
     modelName: H3.modelName,

@@ -407,7 +407,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           yield* bound.session.playout.receive(bound.cid, link, channel, bytes);
       }),
 
-    // Coordinator
+    // CoordinatorClient
     pricing: {
       settings: { currency_code: "USD", credits_per_dollar: options.creditsPerDollar },
       models: [

@@ -2,7 +2,7 @@
 import { assert, layer } from "@effect/vitest";
 import { Clock, Duration, Effect, Fiber, Option, Redacted, Ref, Schema, Stream } from "effect";
 import * as H3 from "../src/H3.js";
-import { Coordinator, H3Source, Playout, Reactor, ReactorTest } from "../src/index.js";
+import { CoordinatorClient, H3Source, Playout, Reactor, ReactorTest } from "../src/index.js";
 import type { VideoFrame } from "../src/Media.js";
 import type { Session } from "../src/Session.js";
 import { connect, environment, tokens } from "./fixtures/Simulated.js";
@@ -379,8 +379,8 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
 
     it.effect("publishes its rate in credits a second, as the pricing API does", () =>
       Effect.gen(function* () {
-        const coordinator = yield* Coordinator.Coordinator;
-        const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
+        const coordinator = yield* CoordinatorClient.CoordinatorClient;
+        const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
         assert.deepStrictEqual(rate, {
           creditsPerSecond: 125,
           creditsPerDollar: 10_000,
@@ -575,7 +575,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
         yield* Effect.forkScoped(ReactorTest.flow());
         const test = yield* ReactorTest.ReactorTest;
         const session = yield* connect;
-        const server = yield* Coordinator.make({ credential: Effect.succeed(test.apiKey) });
+        const server = yield* CoordinatorClient.make({ credential: Effect.succeed(test.apiKey) });
         const unknown = yield* Effect.flip(server.inspect("no-such-session"));
         const elsewhere = yield* Effect.flip(
           server.signaling(Effect.succeed(test.apiKey)).iceServers(session.id),
@@ -586,7 +586,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))(
           ),
           [404, 401],
         );
-        const ended = yield* (yield* Coordinator.make({ apiKey: test.apiKey })).terminate(
+        const ended = yield* (yield* CoordinatorClient.make({ apiKey: test.apiKey })).terminate(
           session.id,
         );
         assert.deepStrictEqual(

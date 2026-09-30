@@ -18,7 +18,7 @@ import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import type { VideoFrame } from "reactor-effect-client/Media";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import type { PeerEvent } from "reactor-effect-client/Peer";
@@ -96,14 +96,14 @@ const isolatedPeers = (options: NativePeer.Options) =>
 
 /** The canonical factory over the isolated host, recording each peer it makes. */
 const isolatedClient = (input: {
-  readonly settings: Coordinator.Options & Reactor.Options;
+  readonly settings: CoordinatorClient.Options & Reactor.Options;
   readonly options: NativePeer.Options;
   readonly peers: Array<IsolatedPeer>;
 }) =>
   Effect.gen(function* () {
     const factory = yield* isolatedFactory(input.options);
     const made = yield* isolatedPeers(input.options);
-    const services = yield* Layer.build(Coordinator.layer(input.settings));
+    const services = yield* Layer.build(CoordinatorClient.layer(input.settings));
     return yield* Reactor.make(input.settings).pipe(
       Effect.provide(services),
       Effect.provideService(
@@ -690,7 +690,7 @@ describe.runIf(onNode)("isolated native host over real libwebrtc", () => {
               });
               const client = yield* factory.create({
                 model: "far-peer",
-                tokens: Coordinator.fixedTokens({
+                tokens: CoordinatorClient.fixedTokens({
                   jwt: Redacted.make("far-peer-token"),
                   expiresAt: Number.MAX_SAFE_INTEGER,
                   maxSessionSeconds: undefined,

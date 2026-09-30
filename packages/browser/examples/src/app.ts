@@ -1,7 +1,7 @@
 import { DateTime, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import * as Reactor from "reactor-effect-client/Reactor";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Session from "reactor-effect-client/Session";
 import { isReactorFailure, ReactorError } from "reactor-effect-client/ReactorError";
 import * as H3 from "reactor-effect-client/H3";
@@ -20,7 +20,7 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 const runtime = ManagedRuntime.make(
   Reactor.layer().pipe(
     // The page talks to Reactor itself, with the token the example server minted for it.
-    Layer.provide(Coordinator.layer({ apiUrl: Coordinator.defaultApiUrl })),
+    Layer.provide(CoordinatorClient.layer({ apiUrl: CoordinatorClient.defaultApiUrl })),
     Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
   ),
 );

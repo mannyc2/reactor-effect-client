@@ -18,8 +18,8 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type { Coordinator, Termination, Tokens } from "../Coordinator.js";
-import { notTerminated, terminationAttributes } from "../Coordinator.js";
+import type { CoordinatorClient, Termination, Tokens } from "../CoordinatorClient.js";
+import { notTerminated, terminationAttributes } from "../CoordinatorClient.js";
 import type { PeerFactory } from "../Peer.js";
 import { ReactorError, summarize } from "../ReactorError.js";
 import type {
@@ -78,7 +78,7 @@ const remoteOf = (remote: RemoteSession) =>
 
 export const make = Effect.fnUntraced(function* (input: {
   readonly intent: Intent;
-  readonly coordinator: Coordinator["Service"];
+  readonly coordinator: CoordinatorClient["Service"];
   /** Where the session's tokens come from; none sends no credential. */
   readonly tokens: (Pick<Tokens, "bind"> & Partial<Pick<Tokens, "create">>) | undefined;
   /** Resume receive-only tracks as each connection becomes ready; Reactor sends no media until then. */
