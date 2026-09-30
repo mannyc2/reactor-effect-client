@@ -17,6 +17,68 @@ const simulated = environment({
 // A covering clip can stop while its follower builds. H3's automatic start can beat removal,
 // so the predecessor must still be kept through the actual command/message boundary.
 layer(simulated)("Playout placement", (it) => {
+  it.effect("fences a follower before a reorder whose reply is still pending at the boundary", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const source = yield* Deferred.make<Playout.Source>();
+      const predecessorId = yield* Deferred.make<string>();
+      const fenced = yield* Deferred.make<void>();
+      const restored = yield* Deferred.make<void>();
+      const moved = yield* Deferred.make<void>();
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens }).pipe(
+          Effect.map((opened) => ({
+            ...opened,
+            events: opened.events.pipe(
+              Stream.tap((event) =>
+                event._tag === "Started" &&
+                event.clip.tag?._tag === "Item" &&
+                event.clip.tag.key === "predecessor"
+                  ? Deferred.succeed(predecessorId, event.clip.clipId)
+                  : Effect.void,
+              ),
+            ),
+            setAutoplay: Effect.fnUntraced(function* (enabled: boolean) {
+              yield* opened.setAutoplay(enabled);
+              if (!enabled) yield* Deferred.succeed(fenced, undefined);
+              else if (yield* Deferred.isDone(fenced)) yield* Deferred.succeed(restored, undefined);
+            }),
+            move: Effect.fnUntraced(function* (clipId: string, position: number) {
+              yield* opened.move(clipId, position);
+              yield* Deferred.succeed(moved, undefined);
+              // The real queue changes now, but its successful reply reaches playout later.
+              yield* Effect.sleep("10 seconds");
+            }),
+          })),
+          Effect.tap((opened) => Deferred.succeed(source, opened)),
+        ),
+        lanes: [{ name: "urgent" }, { name: "line" }],
+      });
+      const predecessor = yield* playout.submit({
+        key: key("predecessor"),
+        lane: "line",
+        request: { prompt: "predecessor", seconds: 15 },
+      });
+      yield* predecessor.started;
+      const after = yield* playout.submit({
+        key: key("after"),
+        lane: "line",
+        request: { prompt: "after", seconds: 5 },
+        follows: { _tag: "Item", key: key("predecessor") },
+      });
+      yield* Deferred.await(restored);
+      yield* playout.submit({
+        key: key("urgent"),
+        lane: "urgent",
+        request: { prompt: "urgent", seconds: 5 },
+      });
+      yield* Deferred.await(moved);
+      yield* (yield* Deferred.await(source)).stop(yield* Deferred.await(predecessorId));
+      assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
+      assert.deepStrictEqual(yield* after.started, { _tag: "Dropped", reason: "displaced" });
+    }),
+  );
+
   it.effect("never airs a follower before its predecessor when the covering clip stops early", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
