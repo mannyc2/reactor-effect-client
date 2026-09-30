@@ -115,11 +115,12 @@ export interface PlaceProbe {
   readonly key: ItemKey;
   /** The requested length; 5 seconds when absent. */
   readonly seconds?: number | undefined;
+  /** As it will be submitted: `"previous"` projects a continued build. */
   readonly continuity?: "previous" | undefined;
   /**
    * How long until the caller submits it, from this call on the monotonic
-   * clock: the caller's own work, such as writing it; none when absent. The
-   * playout adds the wait for a build slot and the build.
+   * clock, from zero: the caller's own work, such as writing it; none when
+   * absent. The playout adds the wait for a build slot and the build.
    */
   readonly submitIn?: Duration.Input | undefined;
 }
@@ -128,6 +129,10 @@ export interface PlaceProbe {
  * Where a clip submitted to follow `after` would land. It projects the plan as
  * it is at the call, at the median build rates, and reserves nothing: a clip
  * submitted later may still come between the call and the clip, or after it.
+ * A clip not built yet counts at the length the last clip that asked for as
+ * much aired at, else at the median ratio of aired to requested length, so
+ * behind a length not asked for before, `startsAt` may be off by up to a step
+ * of the provider's grid (0.7 s on H3).
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -140,19 +145,27 @@ export interface Placement {
   /**
    * How to submit it: `insert` after this item, or, for `"next"`, `submit`
    * to the lowest lane with an `Asap` start, which waits for `after` to air.
+   * `"next"` comes only when that lane would take it: one that doesn't cut,
+   * replace what waits there, or skip while busy.
    */
   readonly anchor: ItemKey | "next";
   /** When it would start, in epoch milliseconds. */
   readonly startsAt: number;
   /**
-   * `ready`: every clip through `after`, and `before`, is on air or Ready, so
-   * only its own build is projected. `projected`: a build ahead of it, or a
-   * filler clip not yet sent, is projected too; after such a filler clip it
-   * airs only at the next gap in what ranks above filler. `unmeasured`: fewer
-   * than three builds are measured, so no build time is counted.
+   * `ready`: every clip through `after`, and `before`, is on air or Ready, and
+   * no enqueue ahead has an unknown outcome. `projected`: a clip among them is
+   * still to be built, a filler clip not yet sent included, or an enqueue with
+   * an unknown outcome may hold the build slot; after a filler clip not yet
+   * sent, it airs only at the next gap in what ranks above filler.
+   * `unmeasured`: fewer than three builds are measured, so no build time is
+   * counted.
    */
   readonly basis: "ready" | "projected" | "unmeasured";
-  /** Whether it would be built continuing from `after`. */
+  /**
+   * Whether the playout would ask for it to be built continuing from `after`,
+   * which it never does across a switch of sessions. The provider falls back
+   * to an independent clip without saying so.
+   */
   readonly continues: boolean;
 }
 
@@ -161,12 +174,19 @@ export interface ItemSpec extends ClipSpec {
   readonly window?: Window | undefined;
   readonly start?: Start | undefined;
   /**
-   * The clip it must start right after, on the session on air, or it is
+   * The clip it must start right after on air, across a renewal too, or it is
    * dropped as `displaced`: once that clip goes without airing, once another
-   * clip, filler included, starts after it first, or once the item is
-   * projected unable to be Ready by its end. It waits, not airing, until that
-   * clip has aired, and gets no filler cover; with `continuity`, it builds
-   * independent rather than miss. A cutting lane refuses it.
+   * clip, filler included, starts after it first, once the item is projected
+   * unable to be Ready by that clip's end, or once it is Ready and would air
+   * before that clip. It waits, not airing, until that clip has aired, and is
+   * built only while the air ahead of it outlasts its build, so it is never
+   * Ready with nothing ahead of it. It gets no filler cover; with
+   * `continuity`, it builds independent rather than miss; a replacement keeps
+   * it. A firm window on it is checked against a projection that puts it
+   * behind everything queued, so it is likely refused. It is refused with
+   * `InvalidItem` in a cutting lane, naming the item's own key or a group
+   * key, or naming filler on a playout without filler or by an index that is
+   * not a whole number.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -185,20 +205,28 @@ export interface GroupSpec {
 /**
  * A clip that airs immediately before or after an anchor. Give exactly one of the two.
  * `after` an item already playing airs at the next boundary; `before` one refuses.
- * It takes the anchor's lane, place, group and start, but not an `At` start's
- * `late`: past the anchor's time it airs at the next boundary.
+ * It takes the anchor's lane, place, group and start. After an `At` anchor it
+ * does not take the anchor's `late`: past the anchor's time it airs at the next
+ * boundary.
  */
 export interface InsertSpec extends ClipSpec {
   readonly before?: ItemKey | undefined;
   readonly after?: ItemKey | undefined;
   readonly window?: Window | undefined;
   /**
-   * The clip it must start right after, on the session on air, or it is
+   * The clip it must start right after on air, across a renewal too, or it is
    * dropped as `displaced`: once that clip goes without airing, once another
-   * clip, filler included, starts after it first, or once the item is
-   * projected unable to be Ready by its end. It waits, not airing, until that
-   * clip has aired, and gets no filler cover; with `continuity`, it builds
-   * independent rather than miss. A cutting lane refuses it.
+   * clip, filler included, starts after it first, once the item is projected
+   * unable to be Ready by that clip's end, or once it is Ready and would air
+   * before that clip. It waits, not airing, until that clip has aired, and is
+   * built only while the air ahead of it outlasts its build, so it is never
+   * Ready with nothing ahead of it. It gets no filler cover; with
+   * `continuity`, it builds independent rather than miss; a replacement keeps
+   * it. A firm window on it is checked against a projection that puts it
+   * behind everything queued, so it is likely refused. It is refused with
+   * `InvalidItem` in a cutting lane, naming the item's own key or a group
+   * key, or naming filler on a playout without filler or by an index that is
+   * not a whole number.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -700,9 +728,9 @@ export class Playout extends Context.Service<
     readonly submitGroup: (group: GroupSpec) => Effect.Effect<GroupHandle, SubmitError>;
     readonly insert: (spec: InsertSpec) => Effect.Effect<ItemHandle, SubmitError>;
     /**
-     * Builds `next` for the item's place, lane and group position. Once `next`
-     * is Ready the item goes as `replaced`; if the item starts first, `next`
-     * is dropped as `withdrawn`.
+     * Builds `next` for the item's place, lane, group position and the clip it
+     * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
+     * starts first, `next` is dropped as `withdrawn`.
      */
     readonly replace: (
       key: ItemKey,
@@ -719,9 +747,12 @@ export class Playout extends Context.Service<
     /**
      * Where a clip like `probe` would land: at the first boundary of the
      * projected air order it could make, submitted `submitIn` from now to
-     * follow the clip before that boundary. Null once the playout has stopped,
-     * or with no session on air. A clip that cannot air before the cap of the
-     * session on air is placed on its replacement.
+     * follow the clip before that boundary, without dropping or displacing
+     * anything submitted already. A clip that cannot air before the cap of the
+     * session on air is placed on its replacement. It never answers after a
+     * clip this playout did not enqueue, nor after a cut not yet on air, which
+     * it does not project. Null once the playout has stopped, with no session
+     * on air, or when no boundary is makeable, as before anything has aired.
      */
     readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
     /**

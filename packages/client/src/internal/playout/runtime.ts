@@ -907,8 +907,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         probe.submitIn === undefined
           ? Option.some(0)
           : Option.map(Duration.fromInput(probe.submitIn), Duration.toMillis);
-      if (Option.isNone(submitIn) || !Number.isFinite(submitIn.value))
-        return yield* InvalidItem.make({ key, message: "submitIn must be a finite duration" });
+      if (Option.isNone(submitIn) || !Number.isFinite(submitIn.value) || submitIn.value < 0)
+        return yield* InvalidItem.make({
+          key,
+          message: "submitIn must be a finite duration, from zero",
+        });
       const id = yield* nextId;
       const reply = yield* Deferred.make<Playout.Placement | null>();
       yield* register(placements, id, reply);

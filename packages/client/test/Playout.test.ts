@@ -710,7 +710,17 @@ layer(hosted)("time", (it) => {
   );
 });
 
-layer(hosted)("follows", (it) => {
+/** Hosted timing at the hosted median seam, which a Ready clip on a dark air starts after. */
+const seamed = environment({
+  timing: ReactorTest.Timing.fixed({
+    buildSpeed: 2.4,
+    seam: "40 millis",
+    http: "40 millis",
+    channel: "20 millis",
+  }),
+});
+
+layer(seamed)("follows", (it) => {
   it.effect("drops an item as displaced once it can't be Ready by the end of what it follows", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start();
@@ -733,6 +743,55 @@ layer(hosted)("follows", (it) => {
       assert.deepStrictEqual(yield* starts, ["a", "b", "c", "d"]);
     }),
   );
+
+  // Ready with nothing on air, it would start after one seam, before its removal could land.
+  it.effect("keeps an item that follows a clip unbuilt on a dark air, until that clip airs", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* measured[2]!.outcome;
+      yield* playout.submit({
+        key: key("x"),
+        lane: "line",
+        request: clip("x"),
+        start: { _tag: "Manual" },
+      });
+      const after = yield* playout.submit({
+        key: key("after"),
+        lane: "line",
+        request: clip("after"),
+        start: { _tag: "Asap" },
+        follows: { _tag: "Item", key: key("x") },
+      });
+      yield* Effect.sleep("6 seconds");
+      yield* playout.release(key("x"));
+      yield* after.outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "b", "c", "x", "after"]);
+    }),
+  );
+
+  it.effect("holds an insert after the item it follows while that item's enqueue is unknown", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const test = yield* ReactorTest.ReactorTest;
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* a.started;
+      // The reply to x's enqueue is lost, and x never made.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1, applied: false });
+      yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+      yield* Effect.sleep("500 millis");
+      const after = yield* playout.insert({
+        key: key("after"),
+        request: clip("after"),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
+      assert.deepStrictEqual(yield* starts, ["a"]);
+    }),
+  );
 });
 
 /** A length on H3's grid: 124 frames at 24 fps, then steps of 17 frames. */
@@ -751,12 +810,17 @@ const sameClip = (tag: Playout.ClipTag | null, aired: Aired | undefined): boolea
 
 /**
  * Lines of one to three beats on H3's grid, each `At` its frame and the first skipped once 20 s
- * late, over 15 s of filler; then `place` is asked once and its clip submitted as it says. Nothing
+ * late, over `floor` of filler; then `place` is asked once and its clip submitted as it says. Nothing
  * else is submitted after the call, so the plan knows the whole future: the clip must start right
  * after `after`, be followed by `before`, and start within `toleranceMs` of `startsAt`. Returns
  * what went wrong.
  */
-const forecast = (seed: number, lifetime: Duration.Input, toleranceMs: number) =>
+const forecast = (
+  seed: number,
+  lifetime: Duration.Input,
+  toleranceMs: number,
+  floor: Duration.Input = "15 seconds",
+) =>
   Effect.gen(function* () {
     const draws = yield* Effect.replicateEffect(Random.next, 40).pipe(Random.withSeed(seed));
     const draw = () => draws.pop() ?? 0;
@@ -767,7 +831,7 @@ const forecast = (seed: number, lifetime: Duration.Input, toleranceMs: number) =
     const playout = yield* Playout.make({
       open: H3Source.open({ tokens: yield* tokens(lifetime) }),
       ...Playout.lineup({
-        runway: { floor: "15 seconds", target: "15 seconds" },
+        runway: { floor, target: floor },
         clip: ({ index }) => clip(`idle ${index}`, grid(0)),
         lengths: { min: grid(0), max: grid(0) },
       }),
@@ -850,38 +914,27 @@ const forecast = (seed: number, lifetime: Duration.Input, toleranceMs: number) =
   }).pipe(Effect.scoped);
 
 // The seam is the walk's own, the hosted median, so what is left of the error is event latency.
-layer(
-  environment({
-    timing: ReactorTest.Timing.fixed({
-      buildSpeed: 2.4,
-      seam: "40 millis",
-      http: "40 millis",
-      channel: "20 millis",
-    }),
-  }),
-  { timeout: "10 minutes" },
-)("place", (it) => {
+layer(seamed, { timeout: "10 minutes" })("place", (it) => {
   it.effect("with nothing submitted after it, the clip airs where and when it said", () =>
     Effect.gen(function* () {
       const problems: Array<string> = [];
       for (let seed = 1; seed <= 8; seed++)
         problems.push(...(yield* forecast(seed, "30 minutes", 60)));
+      // With a 5 s floor, the filler clip it follows may not be built yet.
+      for (let seed = 1; seed <= 16; seed++)
+        problems.push(...(yield* forecast(seed, "30 minutes", 60, "5 seconds")));
       assert.deepStrictEqual(problems, []);
     }),
   );
 
   // Every call falls near a renewal. The replacement's opening and its first start are only
-  // projected, so a clip placed across the switch may start up to about 0.1 s off, or be
-  // displaced, but it never airs beside another clip.
-  it.effect("across a renewal, the clip airs where it said, or is displaced", () =>
+  // projected, so a clip placed across the switch may start up to about 0.1 s off.
+  it.effect("across a renewal, the clip airs where it said", () =>
     Effect.gen(function* () {
       const problems: Array<string> = [];
       for (let seed = 1; seed <= 8; seed++)
         problems.push(...(yield* forecast(seed, "75 seconds", 150)));
-      assert.deepStrictEqual(
-        problems.filter((problem) => !problem.endsWith("displaced")),
-        [],
-      );
+      assert.deepStrictEqual(problems, []);
     }),
   );
 });
