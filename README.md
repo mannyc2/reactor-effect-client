@@ -1,108 +1,153 @@
+<div align="center">
+
+<img src="website/src/assets/logo.svg" width="72" alt="" />
+
 # reactor-effect
 
-An independent Effect SDK for Reactor's real-time video models: scoped sessions, the H3 provider, a playout that airs a keyed schedule across renewing sessions, and Reactor simulated in memory for tests. One Bun workspace publishes it as three packages, the native one with an addon package for each supported platform.
+**Build on [Reactor](https://reactor.inc)'s real-time video models with [Effect](https://effect.website).**<br />
+Keep a channel on air across session caps, read decoded frames in Node without a browser,<br />
+and run the whole application offline before it spends a cent.
 
-| Package                                        | Purpose                                                                                                                         | Runs in                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient`, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`, the `Peer` port | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the built-in `RTCPeerConnection`, and `BrowserMedia` for the session's DOM tracks and their playback           | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon: decoded media, in process or in a child process; the addon ships per platform       | Node and Bun           |
+[![npm](https://img.shields.io/npm/v/reactor-effect-client?color=22b8d6&label=npm)](https://www.npmjs.com/package/reactor-effect-client)
+[![CI](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml/badge.svg)](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-reactor--effect-8b5cf6)](https://mannyc2.github.io/reactor-effect-client/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
-One `Session` owns each allocation or attachment: its commands, connection generations and cleanup evidence. A host package binds the session's `Peer` port and nothing more. `H3` reads that same session, and `Playout` gets its sessions from a source, `H3Source` for paid H3 or `LocalSource` for a local renderer, and never allocates around one. `ReactorTest` stands in for Reactor at the network edge, so the same application runs offline on the Effect clock.
+[Documentation](https://mannyc2.github.io/reactor-effect-client/) ·
+[Quickstart](https://mannyc2.github.io/reactor-effect-client/start/quickstart/) ·
+[Examples](#examples) ·
+[Hosted evidence](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/) ·
+[For coding agents](https://mannyc2.github.io/reactor-effect-client/reference/agents/)
 
-This is not an official Reactor SDK. Protocol material and native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and in each package's `notices/` directory. The [release workflow](./.github/workflows/release.yml) publishes every version to npm with provenance, and [CHANGELOG.md](./CHANGELOG.md) lists what each release changes and how to upgrade.
+</div>
 
-## Which package do I install?
+<br />
 
-- Every application installs `reactor-effect-client` and Effect `4.0.0-rc.117`. Its modules are flat: import one by its own subpath, such as `reactor-effect-client/Playout`, or all of them as namespaces from the root (`import { Playout, Reactor } from "reactor-effect-client"`). They are one package because they share exactly one dependency set and are all portable; splitting them would add installs without isolating anything.
-- A transport is a separate package because it changes what gets installed: `reactor-effect-browser` compiles against DOM types only, and `reactor-effect-native` carries Node-only code and depends optionally on one package per platform, `reactor-effect-native-linux-x64-gnu` and `reactor-effect-native-darwin-arm64`, each holding only that platform's addon, so a host downloads only the addon it can run. Portable and browser consumers never download native binaries.
-- The host packages pin `reactor-effect-client` as an exact peer, so an application always has one copy of the session contract. Each implements the client's `Peer` port (`reactor-effect-client/Peer`), which an application needs only to write a host of its own. Tests need no host: `ReactorTest.layer` provides the simulated coordinator and peers.
+<img src="website/public/playout-renewal.svg" alt="Playout keeps H3 on air across a session renewal: session 2 opens before session 1's cap, and the air switches between them at a clip boundary." />
+
+## Try it in a minute, no API key
+
+```sh
+git clone https://github.com/mannyc2/reactor-effect-client && cd reactor-effect-client
+bun install
+node examples/quickstart/src/main.ts
+```
+
+That runs [one program](./examples/quickstart/src/main.ts) that asks H3 for a clip, follows it to
+its end and decodes its frames in your process, on `ReactorTest`, Reactor simulated in memory at
+the timing paid runs measured. Set `REACTOR_API_KEY` and the same program runs on hosted H3: only
+the layer changes.
+
+```ts
+const firstClip = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  const session = yield* reactor.create({
+    model: H3.modelName,
+    tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "2 minutes" }),
+  });
+  const h3 = yield* H3.make(session);
+  yield* h3.setAutoplay(true);
+  const media = yield* session.decoded; // BGRA frames and PCM, in this process
+  yield* media.video("main_video").pipe(
+    Stream.runForEach((frame) => Console.log(`frame ${frame.width}x${frame.height}`)),
+    Effect.forkScoped,
+  );
+
+  const submission = yield* h3.prepare({ prompt: "A paper boat on a rainy street", seconds: 5 });
+  yield* submission.submit;
+  const clip = yield* h3.operation(submission);
+  yield* clip.reached("started");
+  yield* clip.ended;
+}).pipe(Effect.scoped);
+```
+
+## Why reactor-effect
+
+- **Stay on air.** `Playout` is a keyed schedule of clips in priority lanes, with filler that holds
+  a runway, deadlines, cues and edits. It renews sessions before their cap and switches at a clip
+  boundary. On hosted H3, seams measured 46–169 ms with no dark frame, and a planned switch between
+  sessions 420–432 ms.
+- **Frames in Node and Bun, no browser.** `reactor-effect-native` binds libwebrtc through Node-API
+  and hands your process owned BGRA frames and PCM, in process or in a child process per
+  connection. Reactor's own TypeScript livestream starter launches headless Chromium to reach the
+  media; this does not. On hosted H3: 1344×768 at about 24 fps, no frame lost.
+- **Build and test offline.** `ReactorTest` speaks the real wire protocol in memory, with H3's
+  timing measured on paid runs and 23 faults to inject, from a failed build to a lost reply or a
+  moderation verdict. On `TestClock`, hours of programme run in milliseconds. CI never pays.
+- **Know what reached Reactor.** Every failed command says whether it was never sent, answered, or
+  unknown. An enqueue whose reply was lost is never sent again, so a lost reply never plays a clip
+  twice.
+- **Sessions outlive tokens and processes.** Tokens bound to a session refresh before they expire.
+  A dropped connection recovers on the same session: on hosted H3 its picture was back 1.82 s after
+  the drop. A crashed owner's session is adopted by the next process: 3.06 s after the kill.
+- **Billing safety as an API.** Every creating token caps its session, `close` confirms termination
+  with an independent read, and `Session.mayStillBill` names what may still be running. All 27 paid
+  sessions in the hosted evidence ended with termination confirmed.
+
+## Examples
+
+| Example                                  | What it shows                                                                                                                                     | Without a key         |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| [Quickstart](./examples/quickstart)      | One clip from prompt to its end, with its frames decoded, in one file                                                                             | runs on `ReactorTest` |
+| [Terminal viewer](./examples/terminal)   | H3 drawn in your terminal from decoded frames: no browser anywhere                                                                                | runs on `ReactorTest` |
+| [Live channel](./examples/livestream)    | Your own 24/7 AI channel: viewers prompt it, filler covers the gaps, sessions renew with no dark air, many browsers watch, optional RTMP restream | runs on `ReactorTest` |
+| [H3 Studio](./packages/browser/examples) | A page that runs its own session over WebRTC: H3's queue live, references, each clip's lifecycle                                                  | runs in the browser   |
+| [Capture](./packages/native/examples)    | A command line that writes a clip's decoded frames and audio to an MP4                                                                            | paid only             |
+| [Rundown](./packages/client/examples)    | An application service over `Playout`, tested offline on the test clock                                                                           | runs on `ReactorTest` |
+
+## Packages
+
+| Package                                        | What it gives you                                                                                                         | Runs in                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                           | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                     | Node and Bun           |
 
 ```sh
 npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
-npm install --save-exact reactor-effect-browser                                      # browsers
-npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117    # Node
+npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117   # Node and Bun
+npm install --save-exact reactor-effect-browser                                     # browsers
 ```
 
-```ts
-import { Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as Reactor from "reactor-effect-client/Reactor";
-import { NativePeer } from "reactor-effect-native";
+Effect 4 is in release candidates, so every package pins it exactly.
+[Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers the
+details, and the [documentation](https://mannyc2.github.io/reactor-effect-client/) covers sessions,
+H3, the playout, media, errors, testing and cost control.
 
-const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
-  Layer.provide(FetchHttpClient.layer),
-);
-```
+## Measured on hosted Reactor
 
-The package READMEs document sessions and tokens, the H3 provider, the playout, `ReactorTest`, browser media and the native addon. The [examples](./examples/README.md) are four Effect applications, one for each shape an application takes: a server that broadcasts one renewing playout to many browsers, a page that runs its own session over WebRTC, a command line that captures one clip's decoded media to MP4, and an application service tested offline against `ReactorTest`.
+CI runs every check against `ReactorTest`. Hosted Reactor is exercised by paid checks the
+maintainer runs with a budget, and each run keeps its evidence in
+[`integration/hosted/evidence`](./integration/hosted/evidence).
 
-## Workspace layout
+| What                                                 | Measured                                                                 |
+| ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| Video through the native host                        | 1344×768 at 23.7–24.3 fps, no frame lost                                 |
+| Seams between clips on one session                   | 46–169 ms, no dark frame                                                 |
+| A planned switch to a renewed session                | 420–432 ms                                                               |
+| A dropped connection, recovered on the same session  | ready 1.64 s later, picture back at 1.82 s, nothing re-allocated         |
+| A killed owner's session, adopted by another process | ready 3.06 s after the kill, the playing clip named, no command replayed |
+| A session ended by moderation under the playout      | its ready clip aired on a replacement opened 3.17 s later                |
 
-```text
-packages/client      reactor-effect-client   src/, test/ (Vitest on Node and Bun), wire/ (protocol sources), notices/
-packages/browser     reactor-effect-browser  src/, test/ (Vitest on Node and Bun)
-packages/native      reactor-effect-native   src/, test/ (Vitest on Node and Bun), rust/ (addon crate), npm/ (platform packages), scripts/
-examples/livestream  private                 the live channel example: one playout broadcast to many browsers
-packages/*/examples  private                 each package's own example
-integration          private                 real Chrome/native WebRTC qualification, and the paid hosted checks in integration/hosted
-scripts              workspace tooling       verify profiles, test runner, examples check, wire generation, installed-package smoke
-release-tools        release application     release preparation, publication and recovery, on its own lockfile
-```
+The [hosted evidence page](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/)
+lists every run with its date, commit and spend, and what has not run on hosted Reactor yet.
 
-Every workspace declares exactly the dependencies it uses; `bun install` uses the isolated linker, so an undeclared import fails to resolve instead of leaning on a hoisted copy. Versions shared by several workspaces are pinned once in the root [`package.json`](./package.json) catalog, and sibling packages depend on each other with `workspace:*`; `bun pm pack` rewrites both to exact versions in the published manifests.
+## Status
 
-## Development
+reactor-effect is an independent project, not an official Reactor SDK. It supports H3 Reference
+Turbo Realtime today. It is at 0.x, so a minor release can still change the API; the
+[changelog](./CHANGELOG.md) says what changed and how to upgrade. Every version is published to npm
+with provenance by the [release workflow](./.github/workflows/release.yml). Protocol material and
+native WebRTC dependencies are attributed in [NOTICE](./NOTICE).
 
-Bun 1.4.2 (declared by `packageManager`) and Node.js 22 or newer; the examples and the integration runner run their TypeScript sources directly and need Node 22.18 or newer. `bun install` brings the pinned `buf` that generates the wire codec. The examples' video tests use `ffmpeg` when it is on `PATH` and skip without it; CI installs it. Native work additionally needs Rust 1.90 and the toolchain described in the [native README](./packages/native/README.md).
+## Contributing
 
 ```sh
 bun install --frozen-lockfile
-bun run verify --profile portable   # wire check, format, build, lint, typecheck, examples, portable tests
+bun run verify --profile portable
 ```
 
-| Command                               | What it does                                                                                           |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                   |
-| `bun run typecheck`                   | Checks every workspace's sources, tests and tooling against the built declarations                     |
-| `bun run lint`                        | oxlint with the type-aware rules; unused suppressions fail                                             |
-| `bun run test`                        | The client, browser and hosted-rehearsal Vitest suites on Node and on Bun, then the scripts' own tests |
-| `bun run check:examples`              | Each example's offline tests on Node and Bun, and the browser bundles                                  |
-| `bun run test:native`                 | Vitest in `packages/native` against the staged addon, on Node and then on Bun                          |
-| `bun run test:integration`            | A real local browser/native session through the public packages                                        |
-| `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                   |
-| `bun run native:build`                | Builds the addon for the current host and stages it into its package under `packages/native/npm/`      |
-| `bun run generate:wire`               | Regenerates the wire codec with `buf`; `generate:check` fails on any difference                        |
-| `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                          |
-
-`bun run verify` runs the same profiles CI uses (`portable`, `shared`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged addon can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
-
-## Continuous integration
-
-The [CI workflow](./.github/workflows/ci.yml) runs the shared portable verification once, the portable runtime tests on an OS/Node matrix, and native qualification per platform and runtime. Every branch can restore a staged addon qualified for the exact native source identity, build recipe, toolchain and runner image from its accessible cache; restaging rejects an identity that differs from the checked-out sources. On `main`, a cache miss can also reuse artifacts from a successful pull-request CI run whose head is already on `main` and whose source repository, workflow and full native cache key match. It takes only the addon file from them and restages it, so the platform package's manifest, README, identity and notices are main's, and the run's summary names the pull-request run and head commit it reused. If no complete, unexpired pair of addon and far-peer artifacts matches, it builds the addon and runs the Rust checks. Every restored or built addon still runs the native JavaScript suite on Node and Bun, and browser integration on Node. Native addons and test far peers remain downloadable for three days so delayed job reruns can use them.
-
-The package job starts after both native builds, alongside their runtime tests. It installs all five archives into isolated consumers running concurrently, validates them and uploads the tarballs with `package-identity.json`. On `main`, a separate qualification job waits for every verification and package job, re-hashes the retained tarballs and stamps `qualification.json` with the exact commit, tree, run and successful attempt. It uploads those same bytes and both identity files as the flat `npm-package` artifact.
-
-## Releases
-
-Publication is manual and separate from CI. The [release workflow](./.github/workflows/release.yml) never builds the SDK: a `prepare` run adopts the five archives from a successful main CI run, signs Sigstore provenance for each and retains an immutable ts-release candidate; a separate `publish` run promotes that candidate only after an operator enters the exact `publish reactor-effect-client@<version> reactor-effect-browser@<version> reactor-effect-native-linux-x64-gnu@<version> reactor-effect-native-darwin-arm64@<version> reactor-effect-native@<version>` confirmation printed by the preparation. All five packages share one version; `reactor-effect-client` is published first because the host packages pin it as an exact peer, and the platform packages before `reactor-effect-native`, which pins them exactly. npm trusted publishing (OIDC) replaces any token, and an `observe` run re-checks registry visibility without publishing. [release-tools/README.md](./release-tools/README.md) documents the npm prerequisites, the procedure and recovery.
-
-## Support and limitations
-
-The native media path was last measured on September 23, 2026, before the addon moved to napi-rs; the queues, owner thread and bounds it measured are unchanged, and the media load tests pass on the addon on linux-x64. A local libwebrtc far peer sent 1344x768 BGRA at 24 fps with its congestion controller held at 8 Mbps.
-
-- On linux-x64, in a 4 vCPU container and on GitHub's runner, every session outside the stall test received 23–24 frames per second, and the bridge never held more than one frame. Audio arrived at about 100 blocks per second with none dropped, and control round trips stayed under 21 ms at p95. End-to-end latency, which the tests print but do not assert, was 19–95 ms at p95 outside the stalls.
-- On GitHub's darwin-arm64 runner (3 cores, utility QoS), sessions received 21.6–24.3 frames per second, the bridge held at most one frame at p95 and no audio was dropped. End-to-end latency reached 332 ms at p95, and audio arrived at 50–65 blocks per second, because the far peer's pushes ran 20–60 ms late there. Neither delay is the bridge's.
-- With one CPU-bound process per core, Node passed the whole suite. Bun passed throughput, stall and renewal, but its two-session readers fell just outside their bounds: 3 frames dropped where 2 were allowed, or 4 held at p95 where 2 were.
-
-Hosted Reactor is exercised only by the maintainer-run, paid checks in [`integration/hosted`](./integration/hosted/README.md); CI rehearses every one of them on `ReactorTest` and never allocates a paid session. They first ran on September 24, 2026 ([record](./integration/hosted/evidence/0.3.0-rc.0/summary.md)): 1344x768 video at 24 fps over a direct path, a clip accepted by its correlated reply, and an attach 2.7 s after the owner's death that received frames 0.2 s later. Later runs measured H3's queue, seams, renewal handoff and cut ([0.6.0](./integration/hosted/evidence/0.6.0/summary.md), [0.7.0](./integration/hosted/evidence/0.7.0/summary.md)). The current API has run two of them from a checkout ([record](./integration/hosted/evidence/0.8.0-dev/summary.md)): `tokens`, which adopted a session with a bound token after the token that created it expired and carried a clip with reference audio on a refreshed token, and `cut`, whose fenced cut stopped one clip with no dark frame at the seam and whose flagged prompt showed moderation's verdict naming no request. The other checks have not run on it, and its published bytes have not been qualified against hosted Reactor. TURN relays with hosted credentials, physical hardware and native-to-browser media publication have not been exercised; a loopback Coturn relay and Chrome-to-native media have. A provider `Started` event is not proof of presented or encoded output.
-
-## Contributing and security
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workspace workflow, validation expectations and third-party notice rules. See [SECURITY.md](./SECURITY.md) for private vulnerability reporting guidance and the project's security boundaries.
-
-## License
-
-The packages are licensed under Apache-2.0. Third-party and derived-source notices are retained in [NOTICE](./NOTICE) and in each package's `notices/` directory.
+[CONTRIBUTING.md](./CONTRIBUTING.md) is how the repository works and how its code reads;
+[scripts/README.md](./scripts/README.md) lists the verification profiles CI runs;
+[SECURITY.md](./SECURITY.md) is for vulnerability reports. Licensed under [Apache-2.0](./LICENSE).
