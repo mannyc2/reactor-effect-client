@@ -22,7 +22,7 @@ import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import { recorder } from "reactor-effect-client/Media";
 import type { MediaPressure } from "reactor-effect-client/Media";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
@@ -651,7 +651,7 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
               });
               const client = yield* factory.create({
                 model: "far-peer",
-                tokens: Coordinator.fixedTokens({
+                tokens: CoordinatorClient.fixedTokens({
                   jwt: Redacted.make("far-peer-token"),
                   expiresAt: Number.MAX_SAFE_INTEGER,
                   maxSessionSeconds: undefined,
@@ -703,7 +703,7 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
               return yield* Effect.flip(
                 factory.create({
                   model: "far-peer",
-                  tokens: Coordinator.fixedTokens({
+                  tokens: CoordinatorClient.fixedTokens({
                     jwt: Redacted.make("far-peer-token"),
                     expiresAt: Number.MAX_SAFE_INTEGER,
                     maxSessionSeconds: undefined,

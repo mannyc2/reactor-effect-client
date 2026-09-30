@@ -17,12 +17,12 @@ npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```
@@ -51,12 +51,12 @@ The current public native peer accepts at most one incoming video track and one 
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layerIsolated())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layerIsolated())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```
@@ -139,7 +139,7 @@ Native code requires Rust 1.90, Clang 21 on Linux (the platform compiler on macO
 bun run native:build # sh packages/native/scripts/build.sh
 ```
 
-The pinned `reactor-webrtc-sys` build downloads its matching libwebrtc prebuilt and verifies the published SHA-256 before linking. macOS prebuilts target macOS 13.0 or later. The script runs `napi build --platform --release` (`@napi-rs/cli` is pinned exactly) and stages the addon into its platform package under `npm/`. `scripts/stage.mjs` loads the addon and checks the build identity it embeds, its target, release profile and the SHA-256 of every native build input, against the current sources, and checks the linked libwebrtc prebuilt against the notices and SBOM; then it writes the addon, `native-identity.json` with its SHA-256 and build identity, and the license and notices into the platform package, and regenerates `src/internal/binding.ts`. A stale addon is rejected before it can be staged. `node scripts/stage.mjs --source-hash` prints the identity of the current sources; pull-request CI keys its staged-addon cache on it (with the build recipe, toolchain and runner image) and skips the Rust build when none of them changed, while a run on `main` always builds the addon it qualifies.
+The pinned `reactor-webrtc-sys` build downloads its matching libwebrtc prebuilt and verifies the published SHA-256 before linking. macOS prebuilts target macOS 13.0 or later. The script runs `napi build --platform --release` (`@napi-rs/cli` is pinned exactly) and stages the addon into its platform package under `npm/`. `scripts/stage.mjs` loads the addon and checks the build identity it embeds, its target, release profile and the SHA-256 of every native build input, against the current sources, and checks the linked libwebrtc prebuilt against the notices and SBOM; then it writes the addon, `native-identity.json` with its SHA-256 and build identity, and the license and notices into the platform package, and regenerates `src/internal/binding.ts`. A stale addon is rejected before it can be staged. `node scripts/stage.mjs --source-hash` prints the identity of the current sources; CI keys its staged-addon cache on it (with the build recipe, toolchain and runner image) and restores an accessible exact-match addon on pull requests and on `main`. Restaging validates it again; the native JavaScript and browser integration suites still run. On `main`, a cache miss can reuse the addon and far peer from a successful pull-request CI run in this repository with the same workflow, source identity, build recipe, toolchain and runner image. The existing artifacts carry the full SHA-256 of that cache key in their names. Expired or incomplete artifacts fall back to a fresh build and Rust checks; every restored addon is restaged and qualified again on Node, Bun and Chrome.
 
 Linux x64 has a reproducible container build from the package source, with Rust 1.90, the package-owned LLVM 21 recipe and `@napi-rs/cli`. It runs the Rust formatting check, tests, clippy and rustdoc, and exports only the addon and its declarations, which the script then stages. It requires an explicit Docker context, so the script never changes the caller's active context:
 
@@ -167,7 +167,7 @@ Local qualification is credential-free:
 bun run native:test # sh packages/native/scripts/test.sh
 ```
 
-The script checks Rust formatting, then runs the Rust tests, clippy with the crate's lint set, and rustdoc, all with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged addon twice, on Node and on Bun. The Rust tests drive the peer handle the binding wraps: loopback tests negotiate with a second local peer on the shared factory, and exercise real libwebrtc ICE/DTLS/SCTP, ordered binary messages on both channels, video encode/decode with per-frame metadata, PCM audio, statistics and the close fence. Other tests cover queue accounting under seeded random operations, direction and bitrate controls, readiness coalescing, call admission, callback quiescence and idempotent shutdown. None of it contacts Reactor or generates paid media.
+The script checks Rust formatting, then runs the Rust tests, clippy with the crate's lint set, and rustdoc, all with warnings denied, and builds the test far peer. It then runs the JavaScript suite in `packages/native/test` against the staged addon twice, on Node and then on Bun. `sh scripts/test.sh rust` stops before the JavaScript suite: CI builds and checks each platform's addon once, then runs the suite on Node and on Bun in jobs of their own, each on its own runner, against that staged addon and far peer. `sh scripts/test.sh node` runs the same Rust checks and far-peer build, then the JavaScript suite on Node only. From the workspace root, `bun run verify --profile native-local` also builds, stages and runs browser integration for that local iteration tier. The full `native` profile keeps Node and Bun qualification and remains the required gate for native changes. Native addons and far-peer CI artifacts are retained for three days. The Rust tests drive the peer handle the binding wraps: loopback tests negotiate with a second local peer on the shared factory, and exercise real libwebrtc ICE/DTLS/SCTP, ordered binary messages on both channels, video encode/decode with per-frame metadata, PCM audio, statistics and the close fence. Other tests cover queue accounting under seeded random operations, direction and bitrate controls, readiness coalescing, call admission, callback quiescence and idempotent shutdown. None of it contacts Reactor or generates paid media.
 
 The media load tests receive from `rust/examples/far_peer/`, a libwebrtc sender on the same pinned reactor-webrtc that sends 1344x768 BGRA at 24 fps with per-frame metadata, plus 48 kHz PCM, and echoes both channels. It holds its congestion controller at 8 Mbps: on loopback the estimate follows only how promptly the host schedules both processes, and on a busy runner it backs off until the encoder drops most frames.
 

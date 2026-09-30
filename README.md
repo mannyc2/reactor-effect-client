@@ -2,11 +2,11 @@
 
 An independent Effect SDK for Reactor's real-time video models: scoped sessions, the H3 provider, a playout that airs a keyed schedule across renewing sessions, and Reactor simulated in memory for tests. One Bun workspace publishes it as three packages, the native one with an addon package for each supported platform.
 
-| Package                                        | Purpose                                                                                                                   | Runs in                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `Coordinator`, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`, the `Peer` port | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the built-in `RTCPeerConnection`, and `BrowserMedia` for the session's DOM tracks and their playback     | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon: decoded media, in process or in a child process; the addon ships per platform | Node and Bun           |
+| Package                                        | Purpose                                                                                                                         | Runs in                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient`, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`, the `Peer` port | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the built-in `RTCPeerConnection`, and `BrowserMedia` for the session's DOM tracks and their playback           | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon: decoded media, in process or in a child process; the addon ships per platform       | Node and Bun           |
 
 One `Session` owns each allocation or attachment: its commands, connection generations and cleanup evidence. A host package binds the session's `Peer` port and nothing more. `H3` reads that same session, and `Playout` gets its sessions from a source, `H3Source` for paid H3 or `LocalSource` for a local renderer, and never allocates around one. `ReactorTest` stands in for Reactor at the network edge, so the same application runs offline on the Effect clock.
 
@@ -27,12 +27,12 @@ npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.11
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```
@@ -77,11 +77,13 @@ bun run verify --profile portable   # wire check, format, build, lint, typecheck
 | `bun run generate:wire`               | Regenerates the wire codec with `buf`; `generate:check` fails on any difference                        |
 | `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                          |
 
-`bun run verify` runs the same profiles CI uses (`portable`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged addon can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
+`bun run verify` runs the same profiles CI uses (`portable`, `shared`, `runtime`, `native`, `package`, `release`, `full`); see [`scripts/README.md`](./scripts/README.md). Hosts without a staged addon can still validate packaging with `bun --no-env-file scripts/pack.ts --portable`.
 
 ## Continuous integration
 
-The [CI workflow](./.github/workflows/ci.yml) runs the portable verification once, the portable runtime tests on an OS/Node matrix, and the native qualification per platform. On pull requests the native job keys a cache of the staged addon on the native source identity that `packages/native/scripts/stage.mjs --source-hash` computes, together with the build recipe, toolchain and runner image; when none of those changed it restores the qualified addon and the test far peer, restages it against the sources, runs only the JavaScript native tests (on Node and on Bun) and the integration tests, and skips the Rust toolchain entirely. A run on `main` always builds the addon it qualifies. The package job then installs the five archives, the two platform packages among them, into isolated consumers and uploads the validated tarballs; on `main` it also stamps `qualification.json`, binding the five archives to that commit, tree, run and attempt, and uploads them together with `package-identity.json` as the flat `npm-package` artifact.
+The [CI workflow](./.github/workflows/ci.yml) runs the shared portable verification once, the portable runtime tests on an OS/Node matrix, and native qualification per platform and runtime. Every branch can restore a staged addon qualified for the exact native source identity, build recipe, toolchain and runner image from its accessible cache; restaging rejects an identity that differs from the checked-out sources. On `main`, a cache miss can also reuse artifacts from a successful pull-request CI run whose source repository, workflow and full native cache key match. If no complete, unexpired pair of addon and far-peer artifacts matches, it builds the addon and runs the Rust checks. Every restored or built addon still runs the native JavaScript suite on Node and Bun, and browser integration on Node. Native addons and test far peers remain downloadable for three days so delayed job reruns can use them.
+
+The package job starts after both native builds, alongside their runtime tests. It installs all five archives into isolated consumers running concurrently, validates them and uploads the tarballs with `package-identity.json`. On `main`, a separate qualification job waits for every verification and package job, re-hashes the retained tarballs and stamps `qualification.json` with the exact commit, tree, run and successful attempt. It uploads those same bytes and both identity files as the flat `npm-package` artifact.
 
 ## Releases
 

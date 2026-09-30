@@ -48,7 +48,7 @@ const round = (value: number) => Math.round(value * 10) / 10;
 
 /** The client's spans the evidence keeps: its operations, a command's execution and a source's. */
 const clientSpans =
-  /^(?:Reactor\.|Session\.|Coordinator\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$)/;
+  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$)/;
 
 export const make = Effect.fnUntraced(function* (initial: Evidence, file: string) {
   const origin = yield* Clock.currentTimeMillis;

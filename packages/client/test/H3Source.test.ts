@@ -15,7 +15,7 @@ import {
   Stream,
   Tracer,
 } from "effect";
-import { Coordinator, H3Source, Reactor, ReactorTest } from "../src/index.js";
+import { CoordinatorClient, H3Source, Reactor, ReactorTest } from "../src/index.js";
 import { PeerFactory } from "../src/Peer.js";
 import type { Source, SourceEvent } from "../src/Playout.js";
 import { ReactorError } from "../src/ReactorError.js";
@@ -303,7 +303,7 @@ layer(
 /** The simulated Reactor, its peers' decoded video replaced by `video`, as a host's might be. */
 const hostVideo = (video: Stream.Stream<never, ReactorError>) =>
   Reactor.layer().pipe(
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(
       Layer.effect(
         PeerFactory,

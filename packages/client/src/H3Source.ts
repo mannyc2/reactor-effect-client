@@ -25,7 +25,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
-import type { TokenGrant, Tokens } from "./Coordinator.js";
+import type { TokenGrant, Tokens } from "./CoordinatorClient.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
 import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";

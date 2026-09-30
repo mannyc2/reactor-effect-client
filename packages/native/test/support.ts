@@ -26,9 +26,9 @@ import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
-import * as Coordinator from "reactor-effect-client/Coordinator";
-import { IceCandidate } from "reactor-effect-client/Coordinator";
-import type { Track } from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
+import { IceCandidate } from "reactor-effect-client/Peer";
+import type { Track } from "reactor-effect-client/Peer";
 import type { DecodedMedia } from "reactor-effect-client/Media";
 import type { Peer } from "reactor-effect-client/Peer";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -119,13 +119,13 @@ export const nativePeer = (
  */
 export const nativeClient = (
   input: {
-    readonly settings?: Coordinator.Options & Reactor.Options;
+    readonly settings?: CoordinatorClient.Options & Reactor.Options;
     readonly options?: NativePeer.Options;
   } = {},
 ) =>
-  Layer.build(Layer.merge(NativePeer.layer(input.options), Coordinator.layer(input.settings))).pipe(
-    Effect.flatMap((services) => Reactor.make(input.settings).pipe(Effect.provide(services))),
-  );
+  Layer.build(
+    Layer.merge(NativePeer.layer(input.options), CoordinatorClient.layer(input.settings)),
+  ).pipe(Effect.flatMap((services) => Reactor.make(input.settings).pipe(Effect.provide(services))));
 
 /** A reply the coordinator stand-in sends: a status, and JSON when there is a body. */
 interface Reply {

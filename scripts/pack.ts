@@ -357,7 +357,6 @@ const program = Effect.gen(function* () {
   const stack = yield* selectStack(workspace, yield* fs.readFile(path.join(root, "bun.lock")));
   const { requirements, selected } = stack;
   const workspaceResolution = yield* resolveWorkspaceStack(root, stack);
-  const consumers: Array<ConsumerResolution> = [];
 
   // TypeScript 7 ships its compiler as an optional platform package. Install that
   // exact tool explicitly so --omit=optional can still prove the SDK works without
@@ -685,8 +684,8 @@ const program = Effect.gen(function* () {
     return paths;
   });
 
-  // The complete checks remain independent, but need not retain their installed
-  // trees concurrently. Only this run's successful consumer is removed.
+  // Consumers run independently and concurrently. Remove each successful installation
+  // as soon as its checks finish; the scope cleans up interrupted consumers.
   const releaseConsumer = (directory: string) =>
     keep ? Effect.void : fs.remove(directory, { recursive: true, force: true });
 
@@ -977,182 +976,189 @@ const program = Effect.gen(function* () {
   const browserArchive = archives.get("browser");
   if (browserArchive === undefined) return yield* failure("browser archive was not produced");
 
-  // What an application's own `npm install reactor-effect-client` resolves. The other consumers
-  // install the selected Effect by name; this one names no Effect version and sets no override,
-  // so npm takes Effect from the registry through the archive's peer, whatever PACK_INSTALLER
-  // says, and every module of the client must then import on Node.
-  const fresh = yield* initConsumer("fresh-node");
-  const freshInstall = yield* execute(
-    "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-package-lock",
-      "--no-audit",
-      "--no-fund",
-      "--prefer-online",
-      client.tarball,
-    ],
-    fresh,
-  );
-  yield* fs.writeFileString(
-    path.join(packDirectory, "install-fresh-node.log"),
-    `${freshInstall.stdout}${freshInstall.stderr}`,
-  );
-  if (freshInstall.status !== exited)
-    return yield* failure(
-      `npm install failed in ${fresh}\n${freshInstall.stdout}${freshInstall.stderr}`,
+  const checkFresh = Effect.gen(function* () {
+    // What an application's own `npm install reactor-effect-client` resolves. The other consumers
+    // install the selected Effect by name; this one names no Effect version and sets no override,
+    // so npm takes Effect from the registry through the archive's peer, whatever PACK_INSTALLER
+    // says, and every module of the client must then import on Node.
+    const fresh = yield* initConsumer("fresh-node");
+    const freshInstall = yield* execute(
+      "npm",
+      [
+        "install",
+        "--ignore-scripts",
+        "--no-package-lock",
+        "--no-audit",
+        "--no-fund",
+        "--prefer-online",
+        client.tarball,
+      ],
+      fresh,
     );
-  yield* verifyInstalledArchive(fresh, {
-    name: client.manifest.name,
-    version: client.manifest.version,
-    specifier: client.tarball,
-    fileSha256: client.fileSha256,
+    yield* fs.writeFileString(
+      path.join(packDirectory, "install-fresh-node.log"),
+      `${freshInstall.stdout}${freshInstall.stderr}`,
+    );
+    if (freshInstall.status !== exited)
+      return yield* failure(
+        `npm install failed in ${fresh}\n${freshInstall.stdout}${freshInstall.stderr}`,
+      );
+    yield* verifyInstalledArchive(fresh, {
+      name: client.manifest.name,
+      version: client.manifest.version,
+      specifier: client.tarball,
+      fileSha256: client.fileSha256,
+    });
+    yield* fs.copyFile(fixture("portable-import.mjs"), path.join(fresh, "portable-import.mjs"));
+    const freshOutput = yield* run(
+      node,
+      ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
+      fresh,
+      guarded(fresh, true),
+    );
+    if (!freshOutput.includes("portable-import-ok"))
+      return yield* failure("fresh install import smoke did not complete");
+    // npm ls fails on a peer npm had to override to finish the install.
+    yield* fs.writeFileString(
+      path.join(packDirectory, "fresh-node-dependencies.json"),
+      yield* run("npm", ["ls", "--all", "--json"], fresh),
+    );
+    const freshEffect = yield* resolveStackPackage(
+      path.join(fresh, "node_modules", client.manifest.name, "package.json"),
+      "effect",
+      stack,
+    );
+    yield* Console.log(
+      `fresh-install-ok ${client.manifest.name}@${client.manifest.version} effect@${freshEffect.version}`,
+    );
+    yield* releaseConsumer(fresh);
   });
-  yield* fs.copyFile(fixture("portable-import.mjs"), path.join(fresh, "portable-import.mjs"));
-  const freshOutput = yield* run(
-    node,
-    ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
-    fresh,
-    guarded(fresh, true),
-  );
-  if (!freshOutput.includes("portable-import-ok"))
-    return yield* failure("fresh install import smoke did not complete");
-  // npm ls fails on a peer npm had to override to finish the install.
-  yield* fs.writeFileString(
-    path.join(packDirectory, "fresh-node-dependencies.json"),
-    yield* run("npm", ["ls", "--all", "--json"], fresh),
-  );
-  const freshEffect = yield* resolveStackPackage(
-    path.join(fresh, "node_modules", client.manifest.name, "package.json"),
-    "effect",
-    stack,
-  );
-  yield* Console.log(
-    `fresh-install-ok ${client.manifest.name}@${client.manifest.version} effect@${freshEffect.version}`,
-  );
-  yield* releaseConsumer(fresh);
 
-  const portable = yield* initConsumer("portable-node");
-  yield* install(
-    portable,
-    [client],
-    [`effect@${selected.effect}`, ...compilerPackages, `@types/node@${nodeTypesVersion}`],
-    true,
-  );
-  const portableStack = yield* checkConsumerStack(portable, "portable-node");
-  yield* fs.copyFile(fixture("portable-import.mjs"), path.join(portable, "portable-import.mjs"));
-  const portableOutput = yield* run(
-    node,
-    ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
-    portable,
-    guarded(portable, true),
-  );
-  if (!portableOutput.includes("portable-import-ok"))
-    return yield* failure("portable import smoke did not complete");
-  yield* checkRuntimeFixtures(portable, ["portable-import.mjs", "resolution-guard.mjs"], "node");
-  yield* typecheck(
-    portable,
-    "node-consumer.mts",
-    nodeCompilerOptions,
-    true,
-    yield* stageExamples(portable, exampleSources.portable),
-  );
-  yield* fs.copyFile(fixture("rundown-smoke.mjs"), path.join(portable, "example-smoke.mjs"));
-  const rundownExample = path.join(
-    portable,
-    "compiled-examples/packages/client/examples/src/Rundown.js",
-  );
-  for (const [runtime, command, runtimeArgs] of [
-    ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
-    ["Bun", bun, ["--no-env-file"]],
-  ] as const) {
-    const output = yield* run(
-      command,
-      [...runtimeArgs, "example-smoke.mjs", rundownExample],
+  const checkPortable = Effect.gen(function* () {
+    const portable = yield* initConsumer("portable-node");
+    yield* install(
+      portable,
+      [client],
+      [`effect@${selected.effect}`, ...compilerPackages, `@types/node@${nodeTypesVersion}`],
+      true,
+    );
+    const portableStack = yield* checkConsumerStack(portable, "portable-node");
+    yield* fs.copyFile(fixture("portable-import.mjs"), path.join(portable, "portable-import.mjs"));
+    const portableOutput = yield* run(
+      node,
+      ["--experimental-loader", "./resolution-guard.mjs", "portable-import.mjs"],
       portable,
       guarded(portable, true),
     );
-    if (!output.includes("compiled-example-ok"))
-      return yield* failure(`${runtime} installed example did not complete`);
-    yield* Console.log(`${runtime} ${output.trim()}`);
-  }
-  yield* checkRuntimeFixtures(portable, ["example-smoke.mjs"], "node");
-  yield* fs.copyFile(
-    fixture("browser-bundle-smoke.mjs"),
-    path.join(portable, "browser-bundle-smoke.mjs"),
-  );
-  yield* checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"], "node");
-  consumers.push(portableStack);
-  yield* releaseConsumer(portable);
+    if (!portableOutput.includes("portable-import-ok"))
+      return yield* failure("portable import smoke did not complete");
+    yield* checkRuntimeFixtures(portable, ["portable-import.mjs", "resolution-guard.mjs"], "node");
+    yield* typecheck(
+      portable,
+      "node-consumer.mts",
+      nodeCompilerOptions,
+      true,
+      yield* stageExamples(portable, exampleSources.portable),
+    );
+    yield* fs.copyFile(fixture("rundown-smoke.mjs"), path.join(portable, "example-smoke.mjs"));
+    const rundownExample = path.join(
+      portable,
+      "compiled-examples/packages/client/examples/src/Rundown.js",
+    );
+    for (const [runtime, command, runtimeArgs] of [
+      ["Node", node, ["--experimental-loader", "./resolution-guard.mjs"]],
+      ["Bun", bun, ["--no-env-file"]],
+    ] as const) {
+      const output = yield* run(
+        command,
+        [...runtimeArgs, "example-smoke.mjs", rundownExample],
+        portable,
+        guarded(portable, true),
+      );
+      if (!output.includes("compiled-example-ok"))
+        return yield* failure(`${runtime} installed example did not complete`);
+      yield* Console.log(`${runtime} ${output.trim()}`);
+    }
+    yield* checkRuntimeFixtures(portable, ["example-smoke.mjs"], "node");
+    yield* fs.copyFile(
+      fixture("browser-bundle-smoke.mjs"),
+      path.join(portable, "browser-bundle-smoke.mjs"),
+    );
+    yield* checkRuntimeFixtures(portable, ["browser-bundle-smoke.mjs"], "node");
+    yield* releaseConsumer(portable);
+    return portableStack;
+  });
 
-  const browser = yield* initConsumer("browser");
-  yield* install(
-    browser,
-    [client, browserArchive],
-    [`effect@${selected.effect}`, ...compilerPackages],
-    true,
-  );
-  const browserStack = yield* checkConsumerStack(browser, "browser");
-  yield* fs.copyFile(fixture("browser-import.mjs"), path.join(browser, "browser-import.mjs"));
-  const browserOutput = yield* run(
-    node,
-    ["--experimental-loader", "./resolution-guard.mjs", "browser-import.mjs"],
-    browser,
-    guarded(browser, true),
-  );
-  if (!browserOutput.includes("browser-import-ok"))
-    return yield* failure("browser import smoke did not complete");
-  yield* checkRuntimeFixtures(browser, ["browser-import.mjs"], "browser");
-  yield* run(
-    bun,
-    [
-      "--no-env-file",
-      "build",
-      "browser-import.mjs",
-      "--target=browser",
-      "--outfile=browser-bundle.js",
-    ],
-    browser,
-  );
-  const browserBundle = yield* fs.readFileString(path.join(browser, "browser-bundle.js"));
-  if (/reactor-effect-native|takeVideo|buildIdentity/.test(browserBundle))
-    return yield* failure("installed browser bundle includes a native implementation");
-  yield* fs.copyFile(
-    fixture("browser-bundle-smoke.mjs"),
-    path.join(browser, "browser-bundle-smoke.mjs"),
-  );
-  const hostlessOutput = yield* run(
-    node,
-    ["browser-bundle-smoke.mjs", path.join(browser, "browser-bundle.js")],
-    browser,
-    { NODE_PATH: "" },
-  );
-  if (!hostlessOutput.includes("browser-import-ok"))
-    return yield* failure("installed browser bundle requires Node Buffer or did not complete");
-  yield* typecheck(
-    browser,
-    "browser-consumer.mts",
-    {
-      target: "ES2022",
-      module: "NodeNext",
-      moduleResolution: "NodeNext",
-      lib: ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
-      strict: true,
-      skipLibCheck: false,
-      exactOptionalPropertyTypes: true,
-      noUncheckedIndexedAccess: true,
-      types: [],
-      ...exampleCompilerOptions,
-    },
-    false,
-    yield* stageExamples(browser, exampleSources.browser),
-  );
-  consumers.push(browserStack);
-  yield* releaseConsumer(browser);
+  const checkBrowser = Effect.gen(function* () {
+    const browser = yield* initConsumer("browser");
+    yield* install(
+      browser,
+      [client, browserArchive],
+      [`effect@${selected.effect}`, ...compilerPackages],
+      true,
+    );
+    const browserStack = yield* checkConsumerStack(browser, "browser");
+    yield* fs.copyFile(fixture("browser-import.mjs"), path.join(browser, "browser-import.mjs"));
+    const browserOutput = yield* run(
+      node,
+      ["--experimental-loader", "./resolution-guard.mjs", "browser-import.mjs"],
+      browser,
+      guarded(browser, true),
+    );
+    if (!browserOutput.includes("browser-import-ok"))
+      return yield* failure("browser import smoke did not complete");
+    yield* checkRuntimeFixtures(browser, ["browser-import.mjs"], "browser");
+    yield* run(
+      bun,
+      [
+        "--no-env-file",
+        "build",
+        "browser-import.mjs",
+        "--target=browser",
+        "--outfile=browser-bundle.js",
+      ],
+      browser,
+    );
+    const browserBundle = yield* fs.readFileString(path.join(browser, "browser-bundle.js"));
+    if (/reactor-effect-native|takeVideo|buildIdentity/.test(browserBundle))
+      return yield* failure("installed browser bundle includes a native implementation");
+    yield* fs.copyFile(
+      fixture("browser-bundle-smoke.mjs"),
+      path.join(browser, "browser-bundle-smoke.mjs"),
+    );
+    const hostlessOutput = yield* run(
+      node,
+      ["browser-bundle-smoke.mjs", path.join(browser, "browser-bundle.js")],
+      browser,
+      { NODE_PATH: "" },
+    );
+    if (!hostlessOutput.includes("browser-import-ok"))
+      return yield* failure("installed browser bundle requires Node Buffer or did not complete");
+    yield* typecheck(
+      browser,
+      "browser-consumer.mts",
+      {
+        target: "ES2022",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        lib: ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
+        strict: true,
+        skipLibCheck: false,
+        exactOptionalPropertyTypes: true,
+        noUncheckedIndexedAccess: true,
+        types: [],
+        ...exampleCompilerOptions,
+      },
+      false,
+      yield* stageExamples(browser, exampleSources.browser),
+    );
+    yield* releaseConsumer(browser);
+    return browserStack;
+  });
 
-  const nativeArchive = archives.get("native");
-  if (nativeArchive !== undefined) {
+  const checkNative = Effect.gen(function* () {
+    const nativeArchive = archives.get("native");
+    if (nativeArchive === undefined) return;
     const addonArchive = archives.get(`native/npm/${hostAddon}`);
     if (addonArchive === undefined) return yield* failure("no addon archive for this host");
     const hostIdentity = identities.get(hostAddon ?? "");
@@ -1191,9 +1197,16 @@ const program = Effect.gen(function* () {
       true,
       yield* stageExamples(native, exampleSources.node),
     );
-    consumers.push(nativeStack);
     yield* releaseConsumer(native);
-  }
+    return nativeStack;
+  });
+
+  const [, portableStack, browserStack, nativeStack] = yield* Effect.all(
+    [checkFresh, checkPortable, checkBrowser, checkNative],
+    { concurrency: "unbounded" },
+  );
+  const consumers = [portableStack, browserStack];
+  if (nativeStack !== undefined) consumers.push(nativeStack);
 
   const nativeSource = identities.size > 0 ? checkedOutSource : undefined;
   const identityPath = path.join(packDirectory, "package-identity.json");

@@ -41,7 +41,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { Pieces } from "../Checks.js";
@@ -83,7 +83,7 @@ const endBeforeMs = 3 * 6_000 + 2 * 2_000 + 3_000;
  * timeline with what its DELETE and its read met; a save that fails there
  * stops no try.
  */
-const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: string) =>
+const endWithKey = (inspector: CoordinatorClient.CoordinatorClient["Service"], sessionId: string) =>
   Effect.flatMap(Run, (run) =>
     inspector.terminate(sessionId).pipe(
       Effect.tap((termination) =>
@@ -104,7 +104,7 @@ const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: st
     ),
   );
 
-type Answered = Result.Result<Coordinator.Allocation, ReactorError>;
+type Answered = Result.Result<CoordinatorClient.Allocation, ReactorError>;
 
 /**
  * Creates a session on the token's signaling, records it unless it is one
@@ -116,9 +116,9 @@ type Answered = Result.Result<Coordinator.Allocation, ReactorError>;
  */
 const allocate = Effect.fnUntraced(function* (
   pieces: Pieces,
-  signaling: Coordinator.Signaling,
-  grant: Coordinator.TokenGrant,
-  grants: Map<string, Coordinator.TokenGrant>,
+  signaling: CoordinatorClient.Signaling,
+  grant: CoordinatorClient.TokenGrant,
+  grants: Map<string, CoordinatorClient.TokenGrant>,
   answered: (answer: Answered) => Effect.Effect<void>,
 ) {
   const answer = yield* signaling.create({ name: H3.modelName }).pipe(recorded, Effect.result);
@@ -136,7 +136,7 @@ type SpentToken = NonNullable<UnconnectedRecord["spentToken"]>;
 type Held = NonNullable<SpentToken["held"]>[number];
 
 /** The SDK connects once a session publishes its capabilities and a transport. */
-const connectable = (inspection: Coordinator.Inspection) =>
+const connectable = (inspection: CoordinatorClient.Inspection) =>
   inspection.hasCapabilities && inspection.selectedTransport !== null;
 
 /** The states read so far, and one more read: the last state runs on, or a new one begins. */
@@ -157,7 +157,7 @@ const withRead = (states: States, state: string, atMs: number): States => {
  */
 const holdAndEnd = Effect.fnUntraced(function* (
   pieces: Pieces,
-  inspector: Coordinator.Coordinator["Service"],
+  inspector: CoordinatorClient.CoordinatorClient["Service"],
   sessionId: string,
   latestMs: number,
   change: (sessionId: string, change: (held: Held) => Held) => Effect.Effect<void>,
@@ -175,7 +175,7 @@ const holdAndEnd = Effect.fnUntraced(function* (
       ? Probes.keptText(read.success.state)
       : pieces.failedRead(read.failure);
     yield* change(sessionId, (held) => ({ ...held, states: withRead(held.states, state, atMs) }));
-    if (Coordinator.isTerminal(state)) {
+    if (CoordinatorClient.isTerminal(state)) {
       heldFromMs = undefined;
       break;
     }
@@ -259,8 +259,8 @@ const failedWith = (answer: {
 export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
   const run = yield* Run;
   const target = yield* Target;
-  const coordinator = yield* Coordinator.Coordinator;
-  const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const keyed = CoordinatorClient.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
   const instant = (atMs: number) => DateTime.formatIso(DateTime.makeUnsafe(run.origin + atMs));
   // A token each, both minted before anything is allocated. The watched session's is used for
   // nothing else, so no create on the other can end it.
@@ -321,10 +321,10 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
             yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
             if (state !== last?.state) yield* run.mark(`read ${state}`);
             last = { state, known: Result.isSuccess(read) || state === "gone" };
-            if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) goneMs = undefined;
+            if (Result.isSuccess(read) && !CoordinatorClient.isTerminal(state)) goneMs = undefined;
             if (Result.isSuccess(read) && connectable(read.success))
               yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
-            if (Coordinator.isTerminal(state)) {
+            if (CoordinatorClient.isTerminal(state)) {
               endedMs = goneMs ?? atMs;
               break;
             }
@@ -353,7 +353,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           // before the key tried to. Found gone, it ended only if the watch's last read found it
           // gone too: one 404 may be the coordinator's slip here as in the watch. Found running,
           // no end the watch found holds.
-          const readClosed = read.state !== undefined && Coordinator.isTerminal(read.state);
+          const readClosed = read.state !== undefined && CoordinatorClient.isTerminal(read.state);
           const readGone = read.status === 404;
           const readRunning = read.status === 200 && !readClosed;
           if (endedMs === undefined && (readClosed || (readGone && goneMs !== undefined)))

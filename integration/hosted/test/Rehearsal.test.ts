@@ -641,7 +641,9 @@ rehearse("unconnected holds a spent token's session 10 s past a wait it never be
     const spending = evidence.sessions[1];
     assert.isUndefined(held?.connectableMs);
     assert.deepStrictEqual([...new Set(held?.states.map((entry) => entry.state))], ["PENDING"]);
-    assert.isAtLeast((held?.heldFromMs ?? 0) - (spent?.second?.answeredMs ?? Infinity), 5_000);
+    // Compared as the check computes it: a difference of times with a fraction of a millisecond,
+    // which a loaded machine's test clock reaches, can fall short of 5 s by a rounding error.
+    assert.isAtLeast(held?.heldFromMs ?? 0, (spent?.second?.answeredMs ?? Infinity) + 5_000);
     assert.strictEqual((held?.endsMs ?? 0) - (held?.heldFromMs ?? Infinity), 10_000);
     assert.isAtLeast(spending?.close?.requestedMs ?? 0, held?.endsMs ?? Infinity);
     assert.include(summarize([evidence]), " | 10.00 s past the wait | ");

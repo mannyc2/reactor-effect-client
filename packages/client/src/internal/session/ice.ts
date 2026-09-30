@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type { IceCandidate } from "../../Coordinator.js";
+import type { IceCandidate } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
 import { take } from "../queue.js";
 import type { Generation } from "./generation.js";

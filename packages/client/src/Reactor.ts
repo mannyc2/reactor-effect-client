@@ -13,8 +13,8 @@ import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import type * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import { Coordinator, notTerminated } from "./Coordinator.js";
-import type { Tokens } from "./Coordinator.js";
+import { CoordinatorClient, notTerminated } from "./CoordinatorClient.js";
+import type { Tokens } from "./CoordinatorClient.js";
 import * as Internal from "./internal/session.js";
 import { PeerFactory } from "./Peer.js";
 import { AcquisitionFailure, isReactorFailure, ReactorError } from "./ReactorError.js";
@@ -199,9 +199,9 @@ const count = (value: number | undefined, fallback: number, maximum: number, nam
     ? Effect.succeed(value ?? fallback)
     : Effect.fail(invalid(`${name} must be an integer in 1..${String(maximum)}`));
 
-/** A Reactor over the current Coordinator and host. No session is allocated until `create`. */
+/** A Reactor over the current CoordinatorClient and host. No session is allocated until `create`. */
 export const make = Effect.fnUntraced(function* (options: Options = {}) {
-  const coordinator = yield* Coordinator;
+  const coordinator = yield* CoordinatorClient;
   const peers = yield* PeerFactory;
   const settings = {
     replyTimeout: yield* bounded(options.replyTimeout, "10 seconds", "reply timeout"),
@@ -365,8 +365,8 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   });
 });
 
-/** The Reactor service over a Coordinator and a host's `PeerFactory`. */
+/** The Reactor service over a CoordinatorClient and a host's `PeerFactory`. */
 export const layer = (
   options: Options = {},
-): Layer.Layer<Reactor, ReactorError, Coordinator | PeerFactory> =>
+): Layer.Layer<Reactor, ReactorError, CoordinatorClient | PeerFactory> =>
   Layer.effect(Reactor, make(options));

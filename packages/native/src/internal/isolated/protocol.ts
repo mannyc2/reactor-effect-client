@@ -15,7 +15,7 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { IceServer, Track } from "reactor-effect-client/Coordinator";
+import { IceServer, Track } from "reactor-effect-client/Peer";
 import { DataChannel, Prepared } from "reactor-effect-client/Peer";
 import type * as Binding from "../binding.js";
 

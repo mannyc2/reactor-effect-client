@@ -50,7 +50,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import type * as H3 from "reactor-effect-client/H3";
 import * as Playout from "reactor-effect-client/Playout";
 import { isReactorFailure } from "reactor-effect-client/ReactorError";
@@ -894,7 +894,7 @@ export const show = (pieces: Pieces) =>
                 by === "moderation"
                   ? undefined
                   : yield* Effect.flatMap(
-                      Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey }),
+                      CoordinatorClient.make({ apiUrl: target.apiUrl, apiKey: target.apiKey }),
                       (keyed) => keyed.terminate(lostId ?? ""),
                     );
               if (termination !== undefined)

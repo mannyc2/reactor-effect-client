@@ -25,12 +25,13 @@ import type * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as Recording from "./internal/recording.js";
+import { IceCandidate, IceServer, Mapping, Track } from "./Peer.js";
 import type { ClipReady } from "./Session.js";
 import { FailureSummary, Http, ReactorError, summarize } from "./ReactorError.js";
 
 export const defaultApiUrl = "https://api.reactor.inc";
 
-const clientInfo = { sdk_version: "0.8.0", sdk_type: "typescript-effect-independent" } as const;
+const clientInfo = { sdk_version: "0.9.0", sdk_type: "typescript-effect-independent" } as const;
 
 /** A field the provider sends as `null` or omits for the same fact decodes as absent. */
 const NullAsAbsent = <S extends Schema.Top>(schema: S) =>
@@ -47,17 +48,6 @@ const NullAsAbsent = <S extends Schema.Top>(schema: S) =>
   );
 const Uint32 = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 0xffffffff }));
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
-
-export const Track = Schema.Struct({
-  name: Schema.NonEmptyString,
-  kind: Schema.Literals(["audio", "video"]),
-  direction: Schema.Literals(["recvonly", "sendonly"]),
-});
-export type Track = typeof Track.Type;
-
-/** A track and the media section a host negotiated for it. */
-export const Mapping = Schema.Struct({ ...Track.fields, mid: Schema.String });
-export type Mapping = typeof Mapping.Type;
 
 export const Capabilities = Schema.Struct({
   protocol_version: Schema.NonEmptyString,
@@ -101,13 +91,6 @@ export type Descriptor = typeof Descriptor.Type;
  */
 export const isTerminal = (state: string): boolean => state === "CLOSED";
 
-export const IceServer = Schema.Struct({
-  urls: Schema.Array(Schema.NonEmptyString),
-  username: Schema.optionalKey(Schema.String),
-  credential: Schema.optionalKey(Schema.String),
-});
-export type IceServer = typeof IceServer.Type;
-
 /** The coordinator's ICE server list, as it sends it. */
 export const IceServersReply = Schema.Struct({
   ice_servers: Schema.Array(
@@ -119,13 +102,6 @@ export const IceServersReply = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(64)),
 });
-
-export const IceCandidate = Schema.Struct({
-  candidate: Schema.String,
-  sdp_mid: Schema.optionalKey(Schema.String),
-  sdp_mline_index: Schema.optionalKey(Schema.Int),
-});
-export type IceCandidate = typeof IceCandidate.Type;
 
 const Allocated = Schema.Struct({ session_id: Schema.NonEmptyString });
 export const Registered = Schema.Struct({ connection_id: Uint32 });
@@ -490,8 +466,8 @@ export interface Options {
   readonly credential?: Effect.Effect<Redacted.Redacted<string>, ReactorError> | undefined;
 }
 
-export class Coordinator extends Context.Service<
-  Coordinator,
+export class CoordinatorClient extends Context.Service<
+  CoordinatorClient,
   {
     readonly apiUrl: string;
     /** The pricing catalog, as the provider publishes it. */
@@ -522,7 +498,7 @@ export class Coordinator extends Context.Service<
      */
     readonly signaling: (credential: Credential) => Signaling;
   }
->()("reactor-effect-client/Coordinator") {}
+>()("reactor-effect-client/CoordinatorClient") {}
 
 /** A session's token, when it has one; failing or late, the request is never sent. */
 type Credential = Effect.Effect<Redacted.Redacted<string> | undefined, ReactorError>;
@@ -703,7 +679,7 @@ const iceBody = withBody(IceBody, "ICE candidates");
 const uploadBody = withBody(UploadBody, "allocate upload");
 const tokenBody = withBody(TokenRequestBody, "token");
 
-/** A Coordinator over the current `HttpClient`. No request runs while it is built. */
+/** A CoordinatorClient over the current `HttpClient`. No request runs while it is built. */
 export const make = Effect.fnUntraced(function* (options: Options = {}) {
   const base = yield* checkedUrl(options.apiUrl ?? defaultApiUrl).pipe(
     Effect.filterOrFail(
@@ -895,7 +871,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         }),
       ),
       Effect.withSpan(
-        "Coordinator.terminate",
+        "CoordinatorClient.terminate",
         (sessionId) => ({ kind: "client", attributes: { "reactor.session.id": sessionId } }),
         { captureStackTrace: false },
       ),
@@ -1073,7 +1049,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           ...downloadOptions,
         }).pipe(
           Effect.withSpan(
-            "Coordinator.downloadClip",
+            "CoordinatorClient.downloadClip",
             { kind: "client", attributes: { "reactor.session.id": clip.sessionId } },
             { captureStackTrace: false },
           ),
@@ -1203,10 +1179,14 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         ...(granted === undefined ? {} : { granted }),
       } satisfies TokenGrant;
     },
-    Effect.withSpan("Coordinator.mintToken", { kind: "client" }, { captureStackTrace: false }),
+    Effect.withSpan(
+      "CoordinatorClient.mintToken",
+      { kind: "client" },
+      { captureStackTrace: false },
+    ),
   );
 
-  return Coordinator.of({
+  return CoordinatorClient.of({
     apiUrl,
     signaling,
     mintToken,
@@ -1227,7 +1207,11 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
       timeout: "8 seconds",
     }).pipe(
       Effect.flatMap(decodeReply(Schema.Json, "pricing")),
-      Effect.withSpan("Coordinator.pricing", { kind: "client" }, { captureStackTrace: false }),
+      Effect.withSpan(
+        "CoordinatorClient.pricing",
+        { kind: "client" },
+        { captureStackTrace: false },
+      ),
     ),
     inspect: Effect.fnUntraced(
       function* (sessionId: string) {
@@ -1252,7 +1236,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         } satisfies Inspection;
       },
       Effect.withSpan(
-        "Coordinator.inspect",
+        "CoordinatorClient.inspect",
         (sessionId) => ({ kind: "client", attributes: { "reactor.session.id": sessionId } }),
         { captureStackTrace: false },
       ),
@@ -1262,23 +1246,23 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   });
 });
 
-/** A Coordinator service over the application's `HttpClient`. */
+/** A CoordinatorClient service over the application's `HttpClient`. */
 export const layer = (
   options: Options = {},
-): Layer.Layer<Coordinator, ReactorError, HttpClient.HttpClient> =>
-  Layer.effect(Coordinator, make(options));
+): Layer.Layer<CoordinatorClient, ReactorError, HttpClient.HttpClient> =>
+  Layer.effect(CoordinatorClient, make(options));
 
 /**
- * A Coordinator configured from the environment: `REACTOR_API_URL` (optional)
+ * A CoordinatorClient configured from the environment: `REACTOR_API_URL` (optional)
  * and `REACTOR_API_KEY` (optional, for `mintToken`, `inspect`, `terminate`
  * and `downloadClip`).
  */
 export const layerConfig: Layer.Layer<
-  Coordinator,
+  CoordinatorClient,
   ReactorError | Config.ConfigError,
   HttpClient.HttpClient
 > = Layer.effect(
-  Coordinator,
+  CoordinatorClient,
   Effect.gen(function* () {
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(Config.withDefault(defaultApiUrl));
     const apiKey = yield* Config.Redacted("REACTOR_API_KEY").pipe(Config.option);

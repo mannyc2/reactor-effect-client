@@ -13,7 +13,7 @@ import {
 } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import * as Reactor from "reactor-effect-client/Reactor";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import { NativePeer } from "reactor-effect-native";
 import { toMp4 } from "./Recording.ts";
@@ -34,7 +34,7 @@ const billedSeconds = Math.ceil(sessionSeconds / 60) * 60;
  * it terminates the paid session and reports whether that was confirmed.
  */
 const record = Effect.fn("record")(function* (options: {
-  readonly grant: Coordinator.TokenGrant;
+  readonly grant: CoordinatorClient.TokenGrant;
   readonly prompt: string;
   readonly seconds: number;
   readonly references: ReadonlyArray<H3.Reference>;
@@ -44,7 +44,7 @@ const record = Effect.fn("record")(function* (options: {
   // The token outlives the one-minute session, so it is never refreshed.
   const session = yield* reactor.create({
     model: H3.modelName,
-    tokens: Coordinator.fixedTokens(options.grant),
+    tokens: CoordinatorClient.fixedTokens(options.grant),
   });
   yield* Console.log(`session ${session.id} connected`);
   // However the capture ends (done, failed or interrupted), close the session
@@ -132,8 +132,8 @@ const capture = Command.make(
   },
   Effect.fn(function* ({ prompt, seconds, reference, out }) {
     const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
-    const coordinator = yield* Coordinator.Coordinator;
-    const rate = yield* Coordinator.modelRate(yield* coordinator.pricing, H3.modelName);
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
+    const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
     yield* Console.log(
       `at most ${((billedSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
         `the session is capped at ${sessionSeconds} seconds, billed as ${billedSeconds / 60} minutes`,
@@ -160,7 +160,7 @@ const capture = Command.make(
         Config.String("REACTOR_API_URL").pipe(Config.withDefault("https://api.reactor.inc")),
         (apiUrl) =>
           Reactor.layer().pipe(
-            Layer.provideMerge(Coordinator.layer({ apiUrl })),
+            Layer.provideMerge(CoordinatorClient.layer({ apiUrl })),
             Layer.provide(isolated ? NativePeer.layerIsolated() : NativePeer.layer()),
           ),
       ),
@@ -170,7 +170,7 @@ const capture = Command.make(
 );
 
 capture.pipe(
-  Command.run({ version: "0.8.0" }),
+  Command.run({ version: "0.9.0" }),
   // The program's entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
