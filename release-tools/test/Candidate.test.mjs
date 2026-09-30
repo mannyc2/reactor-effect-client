@@ -119,7 +119,7 @@ test("qualification stack metadata survives candidate retention as exact raw ide
     }),
   ));
 
-test("prepare and load retain the exact qualified archives, both native identities and three dependent npm operations", () =>
+test("prepare and load retain the exact qualified archives, both native identities and five dependent npm operations", () =>
   runTest(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

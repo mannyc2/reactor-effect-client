@@ -19,7 +19,7 @@ on:
         required: false
         type: string
       confirm:
-        description: For publish only, enter the exact "publish <name>@<version> ..." line printed by the preparation run (all three workspace packages)
+        description: For publish only, enter the exact "publish <name>@<version> ..." line printed by the preparation run (all five packages)
         required: false
         type: string
 
