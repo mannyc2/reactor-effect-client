@@ -1,7 +1,25 @@
 {
   "name": "reactor-effect-client",
   "version": "0.9.0",
-  "description": "Scoped Reactor sessions, H3 provider state and explicit orchestration over Effect",
+  "description": "Effect SDK for Reactor's real-time video models: sessions and tokens, the H3 provider, a playout that keeps a channel on air across session caps, and Reactor simulated in memory for offline tests",
+  "keywords": [
+    "reactor",
+    "reactor.inc",
+    "effect",
+    "effect-ts",
+    "real-time video",
+    "world models",
+    "generative video",
+    "h3",
+    "webrtc",
+    "livestream",
+    "playout",
+    "sdk"
+  ],
+  "homepage": "https://mannyc2.github.io/reactor-effect-client/",
+  "bugs": {
+    "url": "https://github.com/mannyc2/reactor-effect-client/issues"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

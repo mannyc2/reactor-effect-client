@@ -1,7 +1,21 @@
 {
   "name": "reactor-effect-browser",
   "version": "0.9.0",
-  "description": "Browser WebRTC host for reactor-effect-client: the Peer port on RTCPeerConnection, and local playback of session tracks",
+  "description": "Reactor sessions in the browser for reactor-effect-client: the session transport on RTCPeerConnection and playback of its tracks",
+  "keywords": [
+    "reactor",
+    "reactor.inc",
+    "effect",
+    "effect-ts",
+    "webrtc",
+    "browser",
+    "real-time video",
+    "generative video"
+  ],
+  "homepage": "https://mannyc2.github.io/reactor-effect-client/",
+  "bugs": {
+    "url": "https://github.com/mannyc2/reactor-effect-client/issues"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
