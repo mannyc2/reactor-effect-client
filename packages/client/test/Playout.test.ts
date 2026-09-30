@@ -813,7 +813,7 @@ layer(seamed)("follows", (it) => {
       yield* playout.submit({
         key: key("x"),
         lane: "line",
-        request: clip("x"),
+        request: clip("x", 15),
         start: { _tag: "At", time: now + 40_000, late: { _tag: "nextBoundary" } },
       });
       yield* Effect.sleep("3 seconds");
@@ -970,18 +970,22 @@ const forecast = (
     ];
   }).pipe(Effect.scoped);
 
-// The seam is the walk's own, the hosted median, so what is left of the error is event latency.
+// The fixed seam is the walk's own; the error includes event latency and a guarded start's
+// provider command round trip.
 layer(seamed, { timeout: "10 minutes" })("place", (it) => {
-  it.effect("with nothing submitted after it, the clip airs where and when it said", () =>
-    Effect.gen(function* () {
-      const problems: Array<string> = [];
-      for (let seed = 1; seed <= 8; seed++)
-        problems.push(...(yield* forecast(seed, "30 minutes", 60)));
-      // With a 5 s floor, the filler clip it follows may not be built yet.
-      for (let seed = 1; seed <= 16; seed++)
-        problems.push(...(yield* forecast(seed, "30 minutes", 60, "5 seconds")));
-      assert.deepStrictEqual(problems, []);
-    }),
+  it.effect(
+    "with nothing submitted after it, the clip airs where and when it said",
+    () =>
+      Effect.gen(function* () {
+        const problems: Array<string> = [];
+        for (let seed = 1; seed <= 8; seed++)
+          problems.push(...(yield* forecast(seed, "30 minutes", 100)));
+        // With a 5 s floor, the filler clip it follows may not be built yet.
+        for (let seed = 1; seed <= 16; seed++)
+          problems.push(...(yield* forecast(seed, "30 minutes", 100, "5 seconds")));
+        assert.deepStrictEqual(problems, []);
+      }),
+    { timeout: 60_000 },
   );
 
   // Every call falls near a renewal. The replacement's opening and its first start are only

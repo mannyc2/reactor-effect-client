@@ -132,7 +132,8 @@ export interface PlaceProbe {
  * A clip not built yet counts at the length the last clip that asked for as
  * much aired at, else at the median ratio of aired to requested length, so
  * `startsAt` may be off by up to a step of the provider's grid (0.7 s on H3)
- * for each clip ahead at a length not asked for before.
+ * for each clip ahead at a length not asked for before. A guarded start can
+ * also wait for a provider command, whose latency is not projected.
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -180,10 +181,10 @@ export interface ItemSpec extends ClipSpec {
    * unable to be Ready by that clip's end, or once it is Ready and would air
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
-   * are measured once that clip is Ready ahead of it. A clip ahead that ends
-   * early, or a build far slower than its median, can still leave it Ready
-   * with nothing on air, and the provider starts it after one seam, before
-   * its removal lands. It gets no filler cover; with
+   * are measured once that clip is Ready ahead of it. Autoplay is fenced
+   * before its build, so an early end cannot air it before that clip. If it
+   * is not Ready when that clip ends, it is dropped as `displaced`. A guarded
+   * start can wait for one provider command. It gets no filler cover; with
    * `continuity`, it builds independent rather than miss; a replacement keeps
    * it. A firm window on it is checked against a projection that puts it
    * behind everything queued, so it is likely refused. It is refused with
@@ -223,10 +224,10 @@ export interface InsertSpec extends ClipSpec {
    * unable to be Ready by that clip's end, or once it is Ready and would air
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
-   * are measured once that clip is Ready ahead of it. A clip ahead that ends
-   * early, or a build far slower than its median, can still leave it Ready
-   * with nothing on air, and the provider starts it after one seam, before
-   * its removal lands. It gets no filler cover; with
+   * are measured once that clip is Ready ahead of it. Autoplay is fenced
+   * before its build, so an early end cannot air it before that clip. If it
+   * is not Ready when that clip ends, it is dropped as `displaced`. A guarded
+   * start can wait for one provider command. It gets no filler cover; with
    * `continuity`, it builds independent rather than miss; a replacement keeps
    * it. A firm window on it is checked against a projection that puts it
    * behind everything queued, so it is likely refused. It is refused with

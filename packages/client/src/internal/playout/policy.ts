@@ -320,6 +320,10 @@ interface Session {
    * waits; a change the other way goes at once.
    */
   readonly autoplayRetry: { readonly enabled: boolean; readonly at: number } | undefined;
+  /** A selected follower fences autoplay before its enqueue is sent. */
+  readonly guardItem?: ItemKey | undefined;
+  /** A failed explicit start is retried only after its queues change or a second passes. */
+  readonly playRetry?: { readonly signature: string; readonly at: number } | undefined;
   readonly retiring: boolean;
   /**
    * The clip that last left the air here, and when on the monotonic clock. Its source may go on
@@ -1565,6 +1569,18 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     });
   const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
     const { clip } = event;
+    // A follower not Ready at this boundary has missed the place it was written for. Keeping
+    // autoplay fenced lets its removal finish even when its build completes during the command.
+    for (const item of [...items.values()])
+      if (
+        item.spec.follows !== undefined &&
+        sameClip(item.spec.follows, clip.tag) &&
+        live(item) &&
+        item.phase !== "Ready" &&
+        item.phase !== "Started" &&
+        item.withdraw === undefined
+      )
+        withdraw(item.spec.key, "displaced");
     updateSession(sessionId, {
       lastEnded: { clipId: clip.clipId, at: now.mono },
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
@@ -2036,7 +2052,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           state = { ...state, cutting: { ...state.cutting, stage: "stopped" } };
         return;
       case "Play":
-        if (result._tag !== "Done") return cutFailed(sessionId);
+        if (result._tag !== "Done") {
+          if (state.cutting?.sessionId !== sessionId)
+            updateSession(sessionId, {
+              playRetry: { signature: signature(session(sessionId)), at: now.mono + retryDelayMs },
+            });
+          return cutFailed(sessionId);
+        }
+        updateSession(sessionId, { playRetry: undefined });
         if (state.cutting?.sessionId === sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
@@ -2526,7 +2549,30 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (value === undefined || value.busy !== undefined) return;
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
-    const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id;
+    const selected = value.guardItem === undefined ? undefined : items.get(value.guardItem);
+    if (
+      value.guardItem !== undefined &&
+      (selected?.phase !== "Accepted" || selected.spec.follows === undefined)
+    )
+      updateSession(value.id, { guardItem: undefined });
+    const guarded =
+      (live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined) ||
+      [...items.values()].some(
+        (item) =>
+          item.spec.follows !== undefined &&
+          item.sessionId === value.id &&
+          live(item) &&
+          item.phase !== "Started" &&
+          !(
+            item.phase === "Ready" &&
+            item.withdraw === undefined &&
+            readyOf(value)[0]?.clipId === item.clipId &&
+            sameClip(item.spec.follows, value.source?.playing?.tag)
+          ),
+      );
+    if (!guarded && value.playRetry !== undefined)
+      updateSession(value.id, { playRetry: undefined });
+    const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id && !guarded;
     if (value.source?.available === true && value.autoplay !== autoplay) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
@@ -2659,6 +2705,23 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
       }
     }
+    // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
+    // can make it next before its removal lands. Start only the Ready head the plan can honour.
+    const head = actual[0];
+    const headItem = itemOf(head);
+    const retry = value.playRetry;
+    if (
+      guarded &&
+      value.id === state.air &&
+      value.source?.available === true &&
+      value.source.playing === undefined &&
+      state.cutting === undefined &&
+      head !== undefined &&
+      airs(head) &&
+      (headItem === undefined || (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
+      (retry === undefined || retry.signature !== signature(value) || now.mono >= retry.at)
+    )
+      return queueCommand(value.id, { _tag: "Play", clipId: head.clipId });
     // Build, on the session that takes new work: the first eligible item by build order, else
     // filler below its floor.
     const target = preferred();
@@ -2687,6 +2750,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         : { _tag: "from" as const, clipId: undefined, follows: undefined };
       if (from._tag === "wait") continue;
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
+      if (item.spec.follows !== undefined && value.autoplay !== false) {
+        updateSession(value.id, { guardItem: item.spec.key });
+        return queueCommand(value.id, { _tag: "Autoplay", enabled: false });
+      }
+      updateSession(value.id, { guardItem: undefined });
       set(item.spec.key, {
         phase: "Building",
         sessionId: target.id,
@@ -4103,6 +4171,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       later(value.openedAt + value.lifetimeMs);
       if (value.lastEnded !== undefined) later(value.lastEnded.at + config.graceMs);
       later(value.autoplayRetry?.at);
+      later(value.playRetry?.at);
       later(value.moveRetryAt);
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
