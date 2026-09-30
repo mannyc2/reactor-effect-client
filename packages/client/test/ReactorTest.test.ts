@@ -302,6 +302,39 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
       }),
     );
 
+    it.effect("takes a clip popped in its seam off the air, and arms the next in its place", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow());
+        const { provider } = yield* watch;
+        yield* provider.setAutoplay(true);
+        const first = (yield* provider.enqueue({ prompt: "first", seconds: 5 })).clip.clip_id;
+        const second = (yield* provider.enqueue({ prompt: "second", seconds: 5 })).clip.clip_id;
+        const third = (yield* provider.enqueue({ prompt: "third", seconds: 5 })).clip.clip_id;
+        const reached = (clipId: string, lifecycle: string) =>
+          provider.changes.pipe(
+            Stream.filter((snapshot) =>
+              snapshot.clips.some(
+                (entry) => entry.clip.clip_id === clipId && entry.lifecycle === lifecycle,
+              ),
+            ),
+            Stream.runHead,
+          );
+        // As the first finishes, the second is armed for its 1 s seam, and popped inside it.
+        yield* reached(first, "clip_finished");
+        yield* provider.pop(second);
+        const popped = yield* provider.snapshot;
+        assert.strictEqual(popped._tag, "Ready");
+        if (popped._tag === "Ready") assert.notStrictEqual(popped.state.playing_clip_id, second);
+        yield* reached(third, "clip_finished");
+        assert.deepStrictEqual(
+          (yield* logged(provider.sessionId, "message", "clip_started")).map(
+            (entry) => entry.clipId,
+          ),
+          [first, third],
+        );
+      }),
+    );
+
     it.effect("fails a clip whose prompt is past the model's text budget when it would build", () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow());
