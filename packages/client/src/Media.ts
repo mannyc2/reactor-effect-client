@@ -6,7 +6,7 @@
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { Track } from "./Coordinator.js";
+import type { Track } from "./Peer.js";
 import type { MediaTrack } from "./Peer.js";
 import type { ReactorError } from "./ReactorError.js";
 

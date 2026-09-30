@@ -1,12 +1,12 @@
 /**
  * `tour`: one session on the native host through the raw API, a phase at a
- * time, so hosted Reactor sees each interaction `Coordinator`, `Reactor`,
+ * time, so hosted Reactor sees each interaction `CoordinatorClient`, `Reactor`,
  * `Session`, `Media` and `H3` make, once. A phase judges what Reactor or the
  * SDK documents and records what they leave open. It runs within its own time
  * limit, and a failure it meets becomes a failed criterion named after it
  * before the tour goes on.
  *
- * The session's tokens come from `Coordinator.tokens` and live 30 s, so it
+ * The session's tokens come from `CoordinatorClient.tokens` and live 30 s, so it
  * refreshes one to a token bound to itself while it runs. From allocation A,
  * at the timing paid runs measured (connected in about 2.7 s, a 5 s clip built
  * in about 2.2 s, 0.44 s per requested second):
@@ -50,7 +50,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import type { AudioFrame, DecodedMedia, Recorded, VideoFrame } from "reactor-effect-client/Media";
 import * as Reactor from "reactor-effect-client/Reactor";
@@ -187,7 +187,7 @@ export const tour = (pieces: Pieces) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const target = yield* Target;
-    const coordinator = yield* Coordinator.Coordinator;
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
     const reactor = yield* Reactor.Reactor;
     const marker = `hosted-qualification:${run.runId}:tour`;
     const record = (change: (tour: TourRecord) => TourRecord) =>
@@ -195,7 +195,7 @@ export const tour = (pieces: Pieces) =>
         ...evidence,
         tour: change(evidence.tour ?? { mints: [], freeMints: [] }),
       }));
-    const keyed = Coordinator.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+    const keyed = CoordinatorClient.make({ apiUrl: target.apiUrl, apiKey: target.apiKey });
     let deadline = Number.POSITIVE_INFINITY;
 
     /** Runs a phase within `seconds` and the work deadline; a failure it meets is its criterion. */
@@ -286,19 +286,23 @@ export const tour = (pieces: Pieces) =>
           });
           let created:
             | {
-                readonly grant: Coordinator.TokenGrant;
+                readonly grant: CoordinatorClient.TokenGrant;
                 readonly sentAt: number;
                 readonly cap: number;
               }
             | undefined;
           /** The session's latest grant, for the calls made on its behalf and after its end. */
-          let latest: Coordinator.TokenGrant | undefined;
+          let latest: CoordinatorClient.TokenGrant | undefined;
           /**
            * Proves, accepts and records a grant; `bound` is the session a bind is for. A grant
            * refused is recorded with its refusal, and never used.
            */
           const admit = Effect.fnUntraced(
-            function* (grant: Coordinator.TokenGrant, sentAt: number, bound: string | undefined) {
+            function* (
+              grant: CoordinatorClient.TokenGrant,
+              sentAt: number,
+              bound: string | undefined,
+            ) {
               yield* run.secret(grant.jwt);
               const proven = yield* Effect.result(
                 Effect.gen(function* () {
@@ -349,7 +353,7 @@ export const tour = (pieces: Pieces) =>
             },
             Effect.mapError((error) => ReactorError.fromCode("InvalidState", error.message)),
           );
-          const sessionTokens: Coordinator.Tokens = {
+          const sessionTokens: CoordinatorClient.Tokens = {
             create: Effect.gen(function* () {
               const sentAt = yield* Clock.currentTimeMillis;
               const grant = yield* tokens.create;
@@ -1483,7 +1487,10 @@ export const tour = (pieces: Pieces) =>
                   "the session's end was not confirmed",
                 );
               const attached = yield* Effect.scoped(
-                reactor.attach({ sessionId: session.id, tokens: Coordinator.fixedTokens(grant()) }),
+                reactor.attach({
+                  sessionId: session.id,
+                  tokens: CoordinatorClient.fixedTokens(grant()),
+                }),
               ).pipe(
                 Effect.as("attached"),
                 Effect.catch((error) => Effect.succeed(error)),

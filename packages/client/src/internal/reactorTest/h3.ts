@@ -616,6 +616,10 @@ export const step = ({
       generation: s.generation.filter((entry) => entry !== clip),
       playout: s.playout.filter((entry) => entry !== clip),
       dropped: adding(s.dropped, [clip.clip_id]),
+      // An armed clip popped in its seam never starts: unlike a stopped one it is not counted as
+      // played, and nothing plays, as after a boundary, until the next Ready clip is armed and
+      // waits out a seam of its own.
+      ...(s.arming?.clipId === clip.clip_id ? { arming: undefined } : {}),
       ...(s.building?.clipId === clip.clip_id
         ? { building: { ...s.building, discarded: true } }
         : {}),
@@ -623,6 +627,7 @@ export const step = ({
     reply(id, { type: "clip_popped", data: { clip } });
     changed();
     build();
+    arm();
   };
 
   const play = (id: string, args: Schema.JsonObject): void => {

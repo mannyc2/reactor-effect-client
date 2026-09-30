@@ -18,15 +18,17 @@ import {
 } from "effect";
 import type { Scope } from "effect";
 import * as H3 from "../src/H3.js";
-import { Coordinator, ReactorTest } from "../src/index.js";
+import { CoordinatorClient, ReactorTest } from "../src/index.js";
 import { Http, ReactorError } from "../src/ReactorError.js";
 import { connect, environment, tokens } from "./fixtures/Simulated.js";
 
 const timing = ReactorTest.Timing.fixed({ buildSpeed: 2.4 });
 
-/** The simulated coordinator alone, with the client's Coordinator over it. */
+/** The simulated coordinator alone, with the client's CoordinatorClient over it. */
 const coordinator = (faults: ReadonlyArray<ReactorTest.Fault> = []) =>
-  Coordinator.layer().pipe(Layer.provideMerge(ReactorTest.layerCoordinator({ timing, faults })));
+  CoordinatorClient.layer().pipe(
+    Layer.provideMerge(ReactorTest.layerCoordinator({ timing, faults })),
+  );
 
 /** The requests the simulated coordinator and its storage served, as path and bearer. */
 const requests = Effect.map(
@@ -49,7 +51,7 @@ const alone = <E>(
 /** Tokens from the simulated key, and a session one of them created, with no connection. */
 const created = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
-  const service = yield* Coordinator.Coordinator;
+  const service = yield* CoordinatorClient.CoordinatorClient;
   const minted = service.tokens({
     apiKey: test.apiKey,
     modelName: H3.modelName,
@@ -73,13 +75,13 @@ describe("playlists", () => {
   ].join("\n");
   const base = "https://api.fixture/clips/c.m3u8";
   const refusal = (text: string, maxSegments?: number) => {
-    const parsed = Coordinator.parsePlaylist({ text, baseUrl: base, maxSegments });
+    const parsed = CoordinatorClient.parsePlaylist({ text, baseUrl: base, maxSegments });
     return Result.isFailure(parsed) ? parsed.failure.reason._tag : "parsed";
   };
 
   it("resolves an fMP4 playlist's init and media segments against its URL", () => {
     assert.deepStrictEqual(
-      Coordinator.parsePlaylist({ text: playlist, baseUrl: base }),
+      CoordinatorClient.parsePlaylist({ text: playlist, baseUrl: base }),
       Result.succeed([
         { kind: "init", url: "https://api.fixture/clips/init.mp4" },
         { kind: "media", url: "https://api.fixture/clips/seg-0.m4s" },
@@ -104,11 +106,11 @@ describe("playlists", () => {
   });
 });
 
-/** A Coordinator whose downloads carry a token bound to `sessionId`, minted now. */
+/** A CoordinatorClient whose downloads carry a token bound to `sessionId`, minted now. */
 const downloader = (sessionId: string) =>
   Effect.gen(function* () {
     const grant = yield* (yield* tokens).bind(sessionId);
-    return yield* Coordinator.make({ credential: Effect.succeed(grant.jwt) });
+    return yield* CoordinatorClient.make({ credential: Effect.succeed(grant.jwt) });
   });
 
 const recorder = (faults: ReadonlyArray<ReactorTest.Fault>) =>
@@ -265,7 +267,7 @@ alone("a request whose token comes too late, or not at all, was never sent", () 
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());
     const test = yield* ReactorTest.ReactorTest;
-    const service = yield* Coordinator.Coordinator;
+    const service = yield* CoordinatorClient.CoordinatorClient;
     const { id } = yield* created;
     const before = (yield* requests).length;
     const slow = service.signaling(
@@ -301,7 +303,7 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
       [true, "terminal", 200, "CLOSED"],
     );
     // Paid run tokens 7bc779d4: ending a session the account does not have answers 404.
-    const server = yield* Coordinator.make({ apiKey: test.apiKey });
+    const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
     const absent = yield* server.terminate("sess_unknown");
     assert.deepStrictEqual(
       [absent.confirmed, absent.evidence, absent.deleteStatus],
@@ -315,12 +317,12 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
 );
 
 // A server that holds only the key can ask whether a session it recorded still runs, and not end it.
-alone("a Coordinator with only the key inspects a session with the key", () =>
+alone("a CoordinatorClient with only the key inspects a session with the key", () =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());
     const test = yield* ReactorTest.ReactorTest;
     const { id } = yield* created;
-    const server = yield* Coordinator.make({ apiKey: test.apiKey });
+    const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
     yield* server.inspect(id);
     assert.deepStrictEqual((yield* requests).at(-1), [`/sessions/${id}`, "key"]);
   }),
@@ -358,7 +360,7 @@ layer(
         Stream.filter((snapshot) => snapshot.status === "disconnected"),
         Stream.runHead,
       );
-      const server = yield* Coordinator.make({ apiKey: test.apiKey });
+      const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
       const dropped = yield* server.terminate(session.id);
       assert.deepStrictEqual([dropped.confirmed, dropped.state], [false, "INACTIVE"]);
     }),
@@ -367,10 +369,10 @@ layer(
 
 layer(coordinator())("tokens", (it) => {
   const request = { modelName: H3.modelName, maxSessionDuration: "60 seconds" } as const;
-  const mint = (options: Omit<Coordinator.TokenOptions, "modelName">) =>
+  const mint = (options: Omit<CoordinatorClient.TokenOptions, "modelName">) =>
     Effect.gen(function* () {
       const test = yield* ReactorTest.ReactorTest;
-      const service = yield* Coordinator.Coordinator;
+      const service = yield* CoordinatorClient.CoordinatorClient;
       return yield* service.mintToken({ ...request, apiKey: test.apiKey, ...options });
     });
 
@@ -439,7 +441,7 @@ layer(coordinator())("tokens", (it) => {
       const { id, tokens: minted } = yield* created;
       const bound = yield* minted.bind(id);
       assert.deepStrictEqual([bound.granted?.bound, bound.granted?.maxSessions], [[id], 1]);
-      const service = yield* Coordinator.Coordinator;
+      const service = yield* CoordinatorClient.CoordinatorClient;
       const refused = yield* Effect.flip(
         service.signaling(Effect.succeed(bound.jwt)).create({ name: H3.modelName }),
       );
@@ -516,7 +518,7 @@ alone(
       yield* Effect.forkScoped(ReactorTest.flow());
       const test = yield* ReactorTest.ReactorTest;
       const { id } = yield* created;
-      const server = yield* Coordinator.make({ apiKey: test.apiKey });
+      const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
       const lost = yield* Effect.flip(server.inspect(id));
       assert.deepStrictEqual(
         [lost.reason._tag, lost.reason._tag === "Http" ? lost.reason.status : undefined],
@@ -535,11 +537,11 @@ it.effect("reads a model's rate in the unit its pricing states it", () =>
       models: [{ name: "h3-reference-to-video-turbo-realtime", rate }],
     });
     const model = "reactor/h3-reference-to-video-turbo-realtime";
-    const perSecond = yield* Coordinator.modelRate(
+    const perSecond = yield* CoordinatorClient.modelRate(
       pricing({ amount_per_sec: 125, unit: "credits", denomination: "second" }),
       model,
     );
-    const perMinute = yield* Coordinator.modelRate(
+    const perMinute = yield* CoordinatorClient.modelRate(
       pricing({ amount_per_min: 7_500, unit: "credits", denomination: "minute" }),
       model,
     );

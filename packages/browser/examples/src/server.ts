@@ -6,7 +6,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, FileSystem, Layer, Path, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import { Api, TokenUnavailable } from "./Api.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -27,7 +27,7 @@ const SessionHandlers = HttpApiBuilder.group(
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
       Config.withDefault("https://api.reactor.inc"),
     );
-    const coordinator = yield* Coordinator.make({ apiUrl });
+    const coordinator = yield* CoordinatorClient.make({ apiUrl });
     const tokens = coordinator.tokens({
       apiKey,
       modelName: H3.modelName,

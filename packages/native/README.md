@@ -17,12 +17,12 @@ npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```
@@ -51,12 +51,12 @@ The current public native peer accepts at most one incoming video track and one 
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layerIsolated())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layerIsolated())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```

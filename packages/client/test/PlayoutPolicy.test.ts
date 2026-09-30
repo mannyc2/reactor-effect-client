@@ -22,6 +22,11 @@ const config: Policy.Config = {
 };
 
 const key = (value: string) => ItemKey.make(value);
+/** Whether two tags name one clip. */
+const sameClip = (a: ClipTag, b: ClipTag): boolean =>
+  a._tag === "Item"
+    ? b._tag === "Item" && a.key === b.key
+    : b._tag === "Filler" && a.index === b.index;
 const spec = (name: string, lane = 1, seconds = 5): Policy.Spec => ({
   key: key(name),
   lane,
@@ -1082,7 +1087,7 @@ describe("PlayoutPolicy, lanes", () => {
 /** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
 const measured: Policy.State = {
   ...Policy.initial,
-  samples: { build: [0.4, 0.4, 0.4], continued: [], length: [] },
+  samples: { build: [0.4, 0.4, 0.4], continued: [], length: [], aired: [] },
 };
 /** Filler with a floor and twice that as its target, asking for the length the plan wants. */
 const protecting = (
@@ -1141,7 +1146,10 @@ describe("PlayoutPolicy, air before queue order", () => {
   // At 0.8 s a second, covering the 3 s missing takes more than a 15 s clip, whose build alone
   // outlasts the air; one airing while the item builds, 8 s, leaves the air dark least.
   it("sends a filler clip that airs no longer than the item takes to build", () => {
-    const slow = { ...measured, samples: { build: [0.8, 0.8, 0.8], continued: [], length: [] } };
+    const slow = {
+      ...measured,
+      samples: { build: [0.8, 0.8, 0.8], continued: [], length: [], aired: [] },
+    };
     const { policy } = airing(protecting("air"), 6, slow);
     policy.submit(spec("ten", 1, 10));
     assert.strictEqual(sent(policy.busy()), "filler of 8.00 s");
@@ -2311,10 +2319,34 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   let failures = 0;
   const aired = new Set<string>();
   const enqueued = new Set<string>();
+  /** Keys submitted to follow a clip, and the clip each follows. */
+  const paired = new Map<string, ClipTag>();
+  /**
+   * Each clip that started, the clip its item was accepted to follow, and whether the plan had
+   * asked for its removal by then.
+   */
+  const starts: Array<{
+    readonly tag: ClipTag | undefined;
+    readonly follows: ClipTag | undefined;
+    readonly removalAsked: boolean;
+  }> = [];
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
     inputs.push(input);
+    if (input._tag === "Source" && input.event._tag === "Started") {
+      const { clipId, tag } = input.event.clip;
+      starts.push({
+        tag,
+        follows: tag?._tag === "Item" ? state.items.get(tag.key)?.spec.follows : undefined,
+        removalAsked: actions.some(
+          (action) =>
+            action._tag === "Command" &&
+            action.command._tag === "Remove" &&
+            action.command.clipId === clipId,
+        ),
+      });
+    }
     if (input._tag === "OpenFailed") {
       if (input.retryAfterMs !== undefined) retryAfter = { at, until: at + input.retryAfterMs };
       const air = sessions.get(state.air ?? "");
@@ -2650,23 +2682,50 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     switch (step) {
       case "submit":
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
-      case "urgent":
+      case "urgent": {
+        // Some wait to air right after the next filler clip, or the one after it, submitted as
+        // `place` answers after filler: `Asap`, in the lowest lane.
+        if (index % 4 === 0) {
+          const follows: ClipTag = {
+            _tag: "Filler",
+            index: state.filler.index + (index % 8 === 0 ? 1 : 0),
+          };
+          const urgent = cued(`u${String(index)}`, 1, index);
+          paired.set(urgent.key, follows);
+          return edit(index, [
+            { _tag: "Submit", spec: { ...urgent, start: { _tag: "Asap" }, follows } },
+          ]);
+        }
         return edit(index, [{ _tag: "Submit", spec: cued(`u${String(index)}`, 0, index) }]);
+      }
       case "withdraw":
         return edit(index, [{ _tag: "Withdraw", key: key(name) }]);
-      case "replace":
-        return edit(index, [
-          { _tag: "Replace", key: key(name), spec: cued(`r${String(index)}`, 1, index) },
-        ]);
-      case "insert":
+      case "replace": {
+        // A replacement follows what the item it replaces follows.
+        const replacement = cued(`r${String(index)}`, 1, index);
+        const follows = paired.get(name);
+        if (follows !== undefined) paired.set(replacement.key, follows);
+        return edit(index, [{ _tag: "Replace", key: key(name), spec: replacement }]);
+      }
+      case "insert": {
+        // Some inserts after an item must air right after it.
+        const inserted = cued(`i${String(index)}`, 1, index);
+        const pair = index % 2 === 0 && index % 3 === 0;
+        if (pair) paired.set(inserted.key, { _tag: "Item", key: key(name) });
         return edit(index, [
           {
             _tag: "Insert",
-            spec: cued(`i${String(index)}`, 1, index),
+            spec: pair
+              ? {
+                  ...inserted,
+                  follows: { _tag: "Item", key: key(name) },
+                }
+              : inserted,
             anchor: key(name),
             side: index % 2 === 0 ? "after" : "before",
           },
         ]);
+      }
       case "batch":
         return edit(
           index,
@@ -2789,7 +2848,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     }
   });
   send({ _tag: "Close" });
-  return { actions, inputs, edits, drains, problems, groups, named, replaced };
+  return { actions, inputs, edits, drains, problems, groups, named, replaced, paired, starts };
 };
 
 /**
@@ -2813,7 +2872,7 @@ const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
   }
 };
 const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
-  const { actions, edits, drains, problems, groups, named, replaced } = simulate(
+  const { actions, edits, drains, problems, groups, named, replaced, paired, starts } = simulate(
     script,
     from,
     lifetimes,
@@ -2952,6 +3011,28 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     for (const name of history.keys())
       if (reasons(name).includes("withdrawn"))
         assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
+  }
+  // Only an item that follows a clip is dropped as displaced.
+  for (const name of history.keys()) {
+    const displaced = (history.get(name) ?? []).some(
+      (action) =>
+        action.event._tag === "AsRun" &&
+        action.event.event.status._tag === "Dropped" &&
+        action.event.event.status.reason === "displaced",
+    );
+    if (displaced) assert.isTrue(paired.has(name), `${name} was displaced but follows nothing`);
+  }
+  // An item that follows a clip starts right after it. The simulated provider ends a clip whenever
+  // the script says and starts the next at once, where H3 waits out a seam that no removal lands
+  // within: a start the plan had asked to remove is excused. The Playout tests own that race.
+  for (const [index, start] of starts.entries()) {
+    const follows = start.follows;
+    if (follows === undefined || start.removalAsked) continue;
+    const previous = starts[index - 1]?.tag;
+    assert.isTrue(
+      previous !== undefined && sameClip(follows, previous),
+      `${start.tag?._tag === "Item" ? start.tag.key : ""} started after ${JSON.stringify(previous)}, not ${JSON.stringify(follows)}`,
+    );
   }
   // An item and its replacement never both air.
   for (const [next, old] of replaced)

@@ -37,7 +37,8 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
+import * as Peer from "reactor-effect-client/Peer";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { SessionEvent } from "reactor-effect-client/Session";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
@@ -390,12 +391,12 @@ const sourceTracks: Effect.Effect<SourceTracks, Failed, Scope.Scope> = Effect.al
 // --- The local BrowserPeer check ----------------------------------------------------------------
 
 /** The canonical factory over the browser peer, its host layer built in the caller's scope. */
-const browserClient = (settings: Coordinator.Options & Reactor.Options) =>
-  Layer.build(Layer.merge(BrowserPeer.layer, Coordinator.layer(settings))).pipe(
+const browserClient = (settings: CoordinatorClient.Options & Reactor.Options) =>
+  Layer.build(Layer.merge(BrowserPeer.layer, CoordinatorClient.layer(settings))).pipe(
     Effect.flatMap((services) => Reactor.make(settings).pipe(Effect.provide(services))),
   );
 
-const localTracks: ReadonlyArray<Coordinator.Track> = [
+const localTracks: ReadonlyArray<Peer.Track> = [
   { name: "browser_video", kind: "video", direction: "recvonly" },
   { name: "browser_audio", kind: "audio", direction: "recvonly" },
   { name: "input_audio", kind: "audio", direction: "sendonly" },
@@ -414,9 +415,9 @@ interface Fake {
 
 const Offer = Schema.Struct({
   sdp_offer: Schema.String,
-  track_mapping: Schema.Array(Coordinator.Mapping),
+  track_mapping: Schema.Array(Peer.Mapping),
 });
-const IceBatch = Schema.Struct({ candidates: Schema.Array(Coordinator.IceCandidate) });
+const IceBatch = Schema.Struct({ candidates: Schema.Array(Peer.IceCandidate) });
 
 const bodyText = (request: HttpClientRequest.HttpClientRequest): string => {
   const body = request.body;
@@ -436,7 +437,7 @@ const requestBody = <A>(
     ),
   );
 
-const iceInit = (candidate: Coordinator.IceCandidate): RTCIceCandidateInit => ({
+const iceInit = (candidate: Peer.IceCandidate): RTCIceCandidateInit => ({
   candidate: candidate.candidate,
   ...(candidate.sdp_mid === undefined ? {} : { sdpMid: candidate.sdp_mid }),
   ...(candidate.sdp_mline_index === undefined ? {} : { sdpMLineIndex: candidate.sdp_mline_index }),
@@ -459,7 +460,7 @@ const coordinatorFake = (
   const descriptor = (failed: boolean) =>
     Ref.get(fake).pipe(
       Effect.flatMap((state) =>
-        reply(Coordinator.Descriptor, {
+        reply(CoordinatorClient.Descriptor, {
           session_id: failed ? "sess_browser_failure" : "sess_browser_local",
           state: (failed ? state.failedClosed : state.closed) ? "CLOSED" : "ACTIVE",
           capabilities: {
@@ -545,9 +546,9 @@ const coordinatorFake = (
       return HttpServerResponse.empty({ status: 202 });
     }
     if (path.endsWith("/ice_servers"))
-      return yield* reply(Coordinator.IceServersReply, { ice_servers: [] });
+      return yield* reply(CoordinatorClient.IceServersReply, { ice_servers: [] });
     if (path.endsWith("/connections"))
-      return yield* reply(Coordinator.Registered, { connection_id: 1001 });
+      return yield* reply(CoordinatorClient.Registered, { connection_id: 1001 });
     if (path.endsWith("/ice_candidates")) {
       if (!failed) yield* candidates(request);
       return HttpServerResponse.empty({ status: 204 });
@@ -557,7 +558,7 @@ const coordinatorFake = (
         const { answer } = yield* Ref.get(fake);
         if (!failed && answer === undefined)
           return yield* Failed.make({ message: "browser fixture has no answer yet" });
-        return yield* reply(Coordinator.SdpAnswer, {
+        return yield* reply(CoordinatorClient.SdpAnswer, {
           sdp_answer: failed || answer === undefined ? "fixture deliberately invalid SDP" : answer,
         });
       }
@@ -762,7 +763,7 @@ const localBrowserPeerCheck = Effect.gen(function* () {
 
 const NativeOffer = Schema.Struct({
   sdp: Schema.String,
-  mapping: Schema.Array(Coordinator.Mapping),
+  mapping: Schema.Array(Peer.Mapping),
   fixture: Schema.Struct({
     forceRelay: Schema.Boolean,
     iceServers: Schema.Array(

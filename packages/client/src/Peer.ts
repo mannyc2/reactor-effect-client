@@ -10,11 +10,34 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { IceCandidate, Mapping } from "./Coordinator.js";
 import * as Hub from "./internal/hub.js";
-import type { IceServer, Track } from "./Coordinator.js";
 import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
 import { ReactorError } from "./ReactorError.js";
+
+export const Track = Schema.Struct({
+  name: Schema.NonEmptyString,
+  kind: Schema.Literals(["audio", "video"]),
+  direction: Schema.Literals(["recvonly", "sendonly"]),
+});
+export type Track = typeof Track.Type;
+
+/** A track and the media section a host negotiated for it. */
+export const Mapping = Schema.Struct({ ...Track.fields, mid: Schema.String });
+export type Mapping = typeof Mapping.Type;
+
+export const IceServer = Schema.Struct({
+  urls: Schema.Array(Schema.NonEmptyString),
+  username: Schema.optionalKey(Schema.String),
+  credential: Schema.optionalKey(Schema.String),
+});
+export type IceServer = typeof IceServer.Type;
+
+export const IceCandidate = Schema.Struct({
+  candidate: Schema.String,
+  sdp_mid: Schema.optionalKey(Schema.String),
+  sdp_mline_index: Schema.optionalKey(Schema.Int),
+});
+export type IceCandidate = typeof IceCandidate.Type;
 
 export const DataChannel = Schema.Literals(["control", "data"]);
 export type DataChannel = typeof DataChannel.Type;

@@ -10,7 +10,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
@@ -247,7 +247,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
  */
 const clientOver = (addon: FakeAddon) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(Coordinator.layer(settings));
+    const services = yield* Layer.build(CoordinatorClient.layer(settings));
     return yield* Reactor.make({ reconnect: false }).pipe(
       Effect.provide(services),
       Effect.provideService(

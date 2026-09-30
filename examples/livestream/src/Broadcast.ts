@@ -207,18 +207,14 @@ export class Broadcast extends Context.Service<
           const failed = yield* Deferred.make<never, BroadcastError>();
           const fail = (message: string) =>
             Deferred.fail(failed, BroadcastError.make({ message })).pipe(Effect.asVoid);
-          // The writers are detached, not scoped. Effect's Node spawner leaves
-          // the child's stdin, and any input fd, with no error listener once
-          // its writer is interrupted, so a write still buffered when the
-          // encoder is killed would surface as an uncaught EPIPE and end the
-          // process. Instead the finalizer below
-          // ends their queues before the kill: a writer then flushes and ends
-          // its pipe, or fails on the EPIPE with its own listener in place.
+          // End the inputs before closing the encoder. The scoped writers stop
+          // with this run, and the process adapter keeps its pipe error listeners
+          // through teardown even after a writer has finished.
           const write = (queue: Queue.Queue<Uint8Array, Cause.Done>, pipe: typeof encoder.stdin) =>
             Stream.fromQueue(queue).pipe(
               Stream.run(pipe),
               Effect.catch(() => fail("the encoder stopped reading")),
-              Effect.forkDetach,
+              Effect.forkScoped,
             );
           yield* write(video, encoder.stdin);
           yield* write(audio, encoder.getInputFd(3));

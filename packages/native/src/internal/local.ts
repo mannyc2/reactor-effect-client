@@ -9,7 +9,7 @@ import * as FiberSet from "effect/FiberSet";
 import * as Latch from "effect/Latch";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import type { IceServer, Track } from "reactor-effect-client/Coordinator";
+import type { IceServer, Track } from "reactor-effect-client/Peer";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import type { Addon } from "./addon.js";
 import type * as Binding from "./binding.js";

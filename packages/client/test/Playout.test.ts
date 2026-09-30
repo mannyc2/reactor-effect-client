@@ -10,13 +10,14 @@ import {
   Exit,
   Fiber,
   Option,
+  Random,
   Redacted,
   Ref,
   Result,
   Scope,
   Stream,
 } from "effect";
-import * as Coordinator from "../src/Coordinator.js";
+import * as CoordinatorClient from "../src/CoordinatorClient.js";
 import * as H3 from "../src/H3.js";
 import {
   H3Source,
@@ -35,7 +36,7 @@ const clip = (prompt: string, seconds = 5): H3.Request => ({ prompt, seconds });
 const tokens = (maxSessionDuration: Duration.Input) =>
   Effect.gen(function* () {
     const test = yield* ReactorTest.ReactorTest;
-    const coordinator = yield* Coordinator.Coordinator;
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
     return coordinator.tokens({
       apiKey: test.apiKey,
       modelName: H3.modelName,
@@ -304,6 +305,33 @@ layer(hosted)("edits", (it) => {
     }),
   );
 
+  it.effect("an insert after an At item takes its time, but not its staleness", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const first = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* first.started;
+      // Due now, but skipped once a second late: it can only start when a ends, 10 s on.
+      const stale = yield* playout.submit({
+        key: key("line"),
+        lane: "line",
+        request: clip("line"),
+        start: {
+          _tag: "At",
+          time: yield* Clock.currentTimeMillis,
+          late: { _tag: "skipIfLaterThan", by: "1 second" },
+        },
+      });
+      const after = yield* playout.insert({
+        key: key("after"),
+        request: clip("after"),
+        after: key("line"),
+      });
+      assert.deepStrictEqual(yield* stale.outcome, { _tag: "Dropped", reason: "late" });
+      assert.strictEqual((yield* after.outcome)._tag, "Ended");
+      assert.deepStrictEqual(yield* starts, ["a", "after"]);
+    }),
+  );
+
   it.effect("applies a batch together once everything it adds is Ready", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start();
@@ -395,6 +423,19 @@ layer(hosted)("edits", (it) => {
         playout.submit({ key: key("c"), lane: "nowhere", request: clip("c") }),
       );
       assert.strictEqual(unknown._tag, "InvalidItem");
+    }),
+  );
+
+  // A caller retrying an insert whose first attempt landed gets that insert, not a refusal.
+  it.effect("answers an insert made again once its anchor has aired with its own handle", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const insert = { key: key("u"), request: clip("u"), after: key("a") };
+      const once = yield* playout.insert(insert);
+      yield* once.started;
+      const again = yield* playout.insert(insert);
+      assert.strictEqual(again.key, once.key);
     }),
   );
 });
@@ -653,6 +694,308 @@ layer(hosted)("time", (it) => {
         lengths.map(() => true),
         `dropped late by ${late.map((ms) => ms.toFixed(6)).join(", ")} ms`,
       );
+    }),
+  );
+
+  it.effect("keeps a firm item due within a clip's length of that clip's end", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const [, , last] = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* last?.started ?? Effect.die("no third item");
+      // The last clip ends 5.2 s from now, with nothing behind it. The firm item may build from
+      // 5.5 s, is Ready about 2.2 s later and airs at once, well before its 9 s deadline, which
+      // falls within that clip's length of its end.
+      const firm = yield* playout.submit({
+        key: key("firm"),
+        lane: "line",
+        request: clip("firm"),
+        window: { notBefore: "5500 millis", startBy: "9 seconds", firm: true },
+      });
+      const started = yield* firm.started;
+      assert.deepStrictEqual(
+        started._tag === "Started" ? started.lateByMillis : started,
+        undefined,
+      );
+    }),
+  );
+});
+
+/** Hosted timing at the hosted median seam, which a Ready clip on a dark air starts after. */
+const seamed = environment({
+  timing: ReactorTest.Timing.fixed({
+    buildSpeed: 2.4,
+    seam: "40 millis",
+    http: "40 millis",
+    channel: "20 millis",
+  }),
+});
+
+layer(seamed)("follows", (it) => {
+  it.effect("drops an item as displaced once it can't be Ready by the end of what it follows", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      // Three builds measured, so the plan projects a build from the median.
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* measured[2]!.started;
+      // About a second of c is left, and a 5 s clip takes over 2 s to build.
+      yield* Effect.sleep("4 seconds");
+      const late = yield* playout.insert({
+        key: key("late"),
+        request: clip("late"),
+        after: key("c"),
+        follows: { _tag: "Item", key: key("c") },
+      });
+      const next = yield* playout.submit({ key: key("d"), lane: "line", request: clip("d") });
+      assert.deepStrictEqual(yield* late.outcome, { _tag: "Dropped", reason: "displaced" });
+      yield* next.started;
+      assert.deepStrictEqual(yield* starts, ["a", "b", "c", "d"]);
+    }),
+  );
+
+  // Ready with nothing on air, it would start after one seam, before its removal could land.
+  it.effect("keeps an item that follows a clip unbuilt on a dark air, until that clip airs", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* measured[2]!.outcome;
+      yield* playout.submit({
+        key: key("x"),
+        lane: "line",
+        request: clip("x"),
+        start: { _tag: "Manual" },
+      });
+      const after = yield* playout.submit({
+        key: key("after"),
+        lane: "line",
+        request: clip("after"),
+        start: { _tag: "Asap" },
+        follows: { _tag: "Item", key: key("x") },
+      });
+      yield* Effect.sleep("6 seconds");
+      yield* playout.release(key("x"));
+      yield* after.outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "b", "c", "x", "after"]);
+    }),
+  );
+
+  it.effect("never advises a submission that a lane would refuse", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const playing = yield* playout.submit({
+        key: key("c"),
+        lane: "line",
+        request: clip("c", 15),
+      });
+      yield* playing.started;
+      // x cuts in once Ready: an insert after it would take its cutting lane.
+      yield* playout.submit({ key: key("x"), lane: "urgent", request: clip("x") });
+      const placement = yield* playout.place({ key: key("u") });
+      if (placement === null) return;
+      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
+      yield* placement.anchor === "next"
+        ? playout.submit({ ...spec, lane: "quiet", start: { _tag: "Asap" } })
+        : playout.insert({ ...spec, after: placement.anchor });
+    }),
+  );
+
+  it.effect("before builds are measured, builds an item once the clip it follows is Ready", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const now = yield* Clock.currentTimeMillis;
+      yield* playout.submit({ key: key("p"), lane: "line", request: clip("p") });
+      yield* playout.submit({
+        key: key("x"),
+        lane: "line",
+        request: clip("x", 15),
+        start: { _tag: "At", time: now + 40_000, late: { _tag: "nextBoundary" } },
+      });
+      yield* Effect.sleep("3 seconds");
+      // Its build could outlast the 2 s of p left.
+      const after = yield* playout.submit({
+        key: key("after"),
+        lane: "line",
+        request: clip("after", 15),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      yield* after.outcome;
+      assert.deepStrictEqual(yield* starts, ["p", "x", "after"]);
+    }),
+  );
+
+  it.effect("holds an insert after the item it follows while that item's enqueue is unknown", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const test = yield* ReactorTest.ReactorTest;
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* a.started;
+      // The reply to x's enqueue is lost, and x never made.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1, applied: false });
+      yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+      yield* Effect.sleep("500 millis");
+      const after = yield* playout.insert({
+        key: key("after"),
+        request: clip("after"),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
+      assert.deepStrictEqual(yield* starts, ["a"]);
+    }),
+  );
+});
+
+/** A length on H3's grid: 124 frames at 24 fps, then steps of 17 frames. */
+const grid = (steps: number) => (124 + 17 * steps) / 24;
+
+type Aired =
+  | { readonly _tag: "Item"; readonly key: string }
+  | { readonly _tag: "Filler"; readonly index: number };
+
+const sameClip = (tag: Playout.ClipTag | null, aired: Aired | undefined): boolean => {
+  if (tag === null || aired === undefined) return tag === null && aired === undefined;
+  return tag._tag === "Item"
+    ? aired._tag === "Item" && aired.key === tag.key
+    : aired._tag === "Filler" && aired.index === tag.index;
+};
+
+/**
+ * Lines of one to three beats on H3's grid, each `At` its frame and the first skipped once 20 s
+ * late, over `floor` of filler; then `place` is asked once and its clip submitted as it says. Nothing
+ * else is submitted after the call, so the plan knows the whole future: the clip must start right
+ * after `after`, be followed by `before`, and start within `toleranceMs` of `startsAt`. Returns
+ * what went wrong.
+ */
+const forecast = (
+  seed: number,
+  lifetime: Duration.Input,
+  toleranceMs: number,
+  floor: Duration.Input = "15 seconds",
+) =>
+  Effect.gen(function* () {
+    const draws = yield* Effect.replicateEffect(Random.next, 64).pipe(Random.withSeed(seed));
+    const draw = () => draws.pop() ?? 0;
+    yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
+    const test = yield* ReactorTest.ReactorTest;
+    yield* test.inject({ _tag: "Video", video: "absent" });
+    yield* test.inject({ _tag: "NoAudio" });
+    const playout = yield* Playout.make({
+      open: H3Source.open({ tokens: yield* tokens(lifetime) }),
+      ...Playout.lineup({
+        runway: { floor, target: floor },
+        clip: ({ index }) => clip(`idle ${index}`, grid(0)),
+        lengths: { min: grid(0), max: grid(0) },
+      }),
+      renewal: { lead: "40 seconds", grace: "100 millis" },
+    });
+    const aired = yield* Ref.make<ReadonlyArray<Aired>>([]);
+    yield* playout.events.pipe(
+      Stream.runForEach((event) => {
+        if (event._tag === "Filler" && event.phase === "Started")
+          return Ref.update(aired, (all): ReadonlyArray<Aired> => [
+            ...all,
+            { _tag: "Filler", index: event.index },
+          ]);
+        if (event._tag === "AsRun" && event.event.status._tag === "Started") {
+          const started = event.event.key;
+          return Ref.update(aired, (all): ReadonlyArray<Aired> => [
+            ...all,
+            { _tag: "Item", key: started },
+          ]);
+        }
+        return Effect.void;
+      }),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    let anchor = 0;
+    const lines = 3 + Math.floor(draw() * 4);
+    for (let line = 0; line < lines; line++) {
+      const now = yield* Clock.currentTimeMillis;
+      const frame = now - 1000 - Math.floor(draw() * 7000);
+      anchor = Math.max(frame, anchor);
+      const beats = 1 + Math.floor(draw() * 3);
+      for (let beat = 0; beat < beats; beat++)
+        yield* playout.submit({
+          key: key(`L${line}#${beat}`),
+          lane: "line",
+          request: clip(`L${line}#${beat}`, grid(Math.floor(draw() * 9))),
+          start: {
+            _tag: "At",
+            time: anchor,
+            late:
+              beat === 0
+                ? { _tag: "skipIfLaterThan", by: Duration.millis(20_000 - (anchor - frame)) }
+                : { _tag: "nextBoundary" },
+          },
+        });
+      // Now and then a pause long enough for filler to take the air.
+      const pause = (draw() < 0.2 ? 15_000 : 2000) + Math.floor(draw() * 8000);
+      yield* Effect.sleep(Duration.millis(pause));
+    }
+    const writing = Duration.millis(Math.floor(draw() * 8000));
+    const placement = yield* playout.place({ key: key("u"), submitIn: writing });
+    if (placement === null) return [`seed ${seed}: no placement`];
+    yield* Effect.sleep(writing);
+    const spec = { key: key("u"), request: clip("u"), follows: placement.after };
+    const u =
+      placement.anchor === "next"
+        ? yield* playout.submit({ ...spec, lane: "line", start: { _tag: "Asap" } })
+        : yield* playout.insert({ ...spec, after: placement.anchor });
+    const started = yield* u.started;
+    if (started._tag !== "Started") {
+      const outcome = yield* u.outcome;
+      return outcome._tag === "Dropped" && outcome.reason === "displaced"
+        ? [`seed ${seed}: displaced`]
+        : [`seed ${seed}: ${outcome._tag}`];
+    }
+    // Long enough for the clip after it to start.
+    yield* Effect.sleep("8 seconds");
+    const all = yield* Ref.get(aired);
+    const index = all.findIndex((entry) => entry._tag === "Item" && entry.key === "u");
+    const errorMs = started.at - placement.startsAt;
+    return [
+      ...(sameClip(placement.after, all[index - 1]) ? [] : [`seed ${seed}: after another clip`]),
+      ...(placement.before === null || sameClip(placement.before, all[index + 1])
+        ? []
+        : [`seed ${seed}: before another clip`]),
+      ...(Math.abs(errorMs) < toleranceMs
+        ? []
+        : [`seed ${seed}: started ${errorMs.toFixed(0)} ms off`]),
+    ];
+  }).pipe(Effect.scoped);
+
+// The fixed seam is the walk's own; the error includes event latency and a guarded start's
+// provider command round trip.
+layer(seamed, { timeout: "10 minutes" })("place", (it) => {
+  it.effect(
+    "with nothing submitted after it, the clip airs where and when it said",
+    () =>
+      Effect.gen(function* () {
+        const problems: Array<string> = [];
+        for (let seed = 1; seed <= 8; seed++)
+          problems.push(...(yield* forecast(seed, "30 minutes", 100)));
+        // With a 5 s floor, the filler clip it follows may not be built yet.
+        for (let seed = 1; seed <= 16; seed++)
+          problems.push(...(yield* forecast(seed, "30 minutes", 100, "5 seconds")));
+        assert.deepStrictEqual(problems, []);
+      }),
+    { timeout: 60_000 },
+  );
+
+  // Every call falls near a renewal. The replacement's opening and its first start are only
+  // projected, so a clip placed across the switch may start up to about 0.1 s off.
+  it.effect("across a renewal, the clip airs where it said", () =>
+    Effect.gen(function* () {
+      const problems: Array<string> = [];
+      for (let seed = 1; seed <= 8; seed++)
+        problems.push(...(yield* forecast(seed, "75 seconds", 150)));
+      assert.deepStrictEqual(problems, []);
     }),
   );
 });
@@ -1971,7 +2314,7 @@ layer(hosted)("resume after the owner's token expired", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      const coordinator = yield* Coordinator.Coordinator;
+      const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const sessionTokens = coordinator.tokens({
         apiKey: test.apiKey,
         modelName: H3.modelName,

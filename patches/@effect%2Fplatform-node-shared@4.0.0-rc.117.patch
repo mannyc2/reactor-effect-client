@@ -1,0 +1,43 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 732c8483d89c7b0cc7c2d2b91202f6062f05a1cb..07a5aa519abce2ec3e29dfb204150b4b245f5d60 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -170,6 +170,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+             // Create a sink to write to for input file descriptors
+             let sink = Sink.drain;
+             if (nodeStream && "write" in nodeStream) {
++              nodeStream.on("error", () => {});
+               sink = NodeSink.fromWritable({
+                 evaluate: () => nodeStream,
+                 onError: error => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
+@@ -214,6 +215,7 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+     // sink that will attached to the process handle
+     let sink = Sink.drain;
+     if (Predicate.isNotNull(childProcess.stdin)) {
++      childProcess.stdin.on("error", () => {});
+       sink = NodeSink.fromWritable({
+         evaluate: () => childProcess.stdin,
+         onError: error => toPlatformError("fromWritable(stdin)", toError(error), command),
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index 588f9891cbd1b1b613503a0978bd2b1dc943087f..b9cebefd97f2803947b57cdcf6f72707114e3662 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -243,6 +243,9 @@ const make = Effect.gen(function*() {
+           // Create a sink to write to for input file descriptors
+           let sink: Sink.Sink<void, Uint8Array, never, PlatformError.PlatformError> = Sink.drain
+           if (nodeStream && "write" in nodeStream) {
++            // A pipe can reset after its sink finishes. Active writes still
++            // report errors through NodeSink's own listener.
++            nodeStream.on("error", () => {})
+             sink = NodeSink.fromWritable({
+               evaluate: () => nodeStream,
+               onError: (error) => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
+@@ -299,6 +302,8 @@ const make = Effect.gen(function*() {
+       // sink that will attached to the process handle
+       let sink: Sink.Sink<void, unknown, never, PlatformError.PlatformError> = Sink.drain
+       if (Predicate.isNotNull(childProcess.stdin)) {
++        // Keep an error listener through process teardown, after a writer ends.
++        childProcess.stdin.on("error", () => {})
+         sink = NodeSink.fromWritable({
+           evaluate: () => childProcess.stdin!,
+           onError: (error) => toPlatformError("fromWritable(stdin)", toError(error), command),

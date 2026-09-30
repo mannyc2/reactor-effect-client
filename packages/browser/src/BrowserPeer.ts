@@ -6,7 +6,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import type { IceServer, Track } from "reactor-effect-client/Coordinator";
+import type { IceServer, Track } from "reactor-effect-client/Peer";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import type {
   DataChannel,

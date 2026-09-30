@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Ref from "effect/Ref";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type { Track } from "../../Coordinator.js";
+import type { Track } from "../../Peer.js";
 import type { DecodedMedia, TrackMedia } from "../../Media.js";
 import type { MediaTrack } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
