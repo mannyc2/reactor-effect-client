@@ -71,11 +71,11 @@ scenario("records an H3 refusal after the transport successfully delivered its r
     const transport = spans.find((span) => span.name === "Session.command");
     assert.isDefined(operation);
     assert.isDefined(transport);
-    assert.strictEqual(operation?.status._tag, "Ended");
-    assert.strictEqual(transport?.status._tag, "Ended");
-    if (operation?.status._tag === "Ended")
+    assert.strictEqual(operation.status._tag, "Ended");
+    assert.strictEqual(transport.status._tag, "Ended");
+    if (operation.status._tag === "Ended")
       assert.strictEqual(operation.status.exit._tag, "Failure");
-    if (transport?.status._tag === "Ended")
+    if (transport.status._tag === "Ended")
       assert.strictEqual(transport.status.exit._tag, "Success");
   }),
 );
