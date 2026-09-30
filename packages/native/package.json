@@ -59,6 +59,7 @@
     "test": "vitest run",
     "native:build": "sh scripts/build.sh",
     "native:test": "sh scripts/test.sh",
+    "native:test:node": "sh scripts/test.sh node",
     "native:linux-x64": "sh scripts/linux-x64.sh"
   },
   "publishConfig": {

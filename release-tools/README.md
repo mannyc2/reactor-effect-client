@@ -79,7 +79,10 @@ billing settings and branch protection are not changed by this tooling.
 
 First obtain a **successful CI run on this repository's main branch**. CI runs
 the portable, native and isolated-package checks, including the pack smoke for
-all five packages. Its package job stamps `qualification.json` and uploads one
+all five packages. The package job can finish before the runtime checks and
+retains the archives with `package-identity.json` as `npm-unstamped`. A separate
+qualification job waits for every verification and package job, downloads those
+same archives, re-hashes them, stamps `qualification.json` and uploads one
 flat `npm-package` artifact containing:
 
 ```text
@@ -94,10 +97,11 @@ qualification.json
 
 Qualification binds all five archives to the exact main commit, source tree, CI
 run and attempt. Pull-request and fork artifacts are ineligible. So is a run
-whose package job did not execute in its latest attempt: **Re-run failed jobs**
-keeps the artifact stamped with the earlier attempt and preparation rejects it.
-Use **Re-run all jobs**, which packs, stamps and replaces the artifact under the
-new attempt, or push a new commit to `main`.
+whose qualification job did not execute in its latest attempt. After a failed
+prerequisite, **Re-run failed jobs** re-runs the qualification barrier and stamps
+the already validated archives with the successful attempt, without repacking.
+If a selective rerun leaves qualification from an earlier attempt, preparation
+rejects it; use **Re-run all jobs** or push a new commit to `main`.
 
 Manually run **Release npm with ts-release** on `main` with `mode=prepare` and
 that successful `ci_run_id`. Main must still point to its commit. This run

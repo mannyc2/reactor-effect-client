@@ -248,7 +248,9 @@ on Bun at once, and print each run's output whole, with its time, when it ends. 
 profile: `shared`, the checks no host changes, runs once, and `runtime`, the build, import guards
 and `test:portable`, runs on each host. The native profile runs one command at a time: it builds,
 then `native:build` stages the addon into its platform package, `native:test` runs the Rust checks
-and the native suites, and `test:integration` runs real Chrome against it. `--list` prints a
+and the native suites, and `test:integration` runs real Chrome against it. `native-local` uses the same build, Rust
+checks and browser integration but runs the native JavaScript suite on Node only; use it for
+local iteration, then the full `native` profile before submitting native changes. `--list` prints a
 profile's stages. Inside a package, `node node_modules/vitest/vitest.mjs run <file>` runs one suite
 on Node and `bun --bun node_modules/vitest/vitest.mjs run <file>` on Bun. Report checks that
 couldn't run, and why.

@@ -188,13 +188,11 @@ jobs:
       - name: Build workspace packages
         run: bun run build
 
-      # The staged addon embeds the SHA-256 of every native build input. On a
-      # pull request, an addon qualified for the same inputs, build recipe,
-      # toolchain and runner image is reused; restaging it rejects an addon
-      # whose identity differs from the checked-out sources. A main run always
-      # builds the addon it qualifies. The test far peer the media load tests
-      # receive from is cached beside it: it is built from the same pinned
-      # reactor-webrtc and needs only the C runtime.
+      # The staged addon embeds the SHA-256 of every native build input. An
+      # addon qualified for the same inputs, build recipe, toolchain and runner
+      # image is reused; restaging rejects an identity that differs from the
+      # checked-out sources. The media tests' far peer is cached beside it:
+      # it uses the same pinned reactor-webrtc and needs only the C runtime.
       - name: Compute native cache key
         id: identity
         shell: bash
@@ -205,7 +203,6 @@ jobs:
 
       - name: Restore qualified native addon
         id: staged
-        if: github.ref != 'refs/heads/main'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -280,7 +277,7 @@ jobs:
           path: packages/native/npm/${{ matrix.platform }}/
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 3
 
       - name: Upload the test far peer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -289,7 +286,7 @@ jobs:
           path: packages/native/rust/target/release/examples/far_peer
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 3
 
   native:
     name: Native (${{ matrix.platform }}, ${{ matrix.runtime }})
@@ -379,12 +376,11 @@ jobs:
         if: matrix.runtime == 'node'
         run: bun run test:integration
 
-  # It waits for every other job, so re-running a failed one on main re-runs it
-  # too, and qualification.json names the attempt in which the run passed.
+  # Packing needs both staged addons, but can overlap their runtime checks.
   package:
     name: Pack/install smoke
     runs-on: ubuntu-24.04
-    needs: [check, test, native]
+    needs: native-build
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -428,17 +424,6 @@ jobs:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64-gnu,darwin-arm64
         run: bun run verify --profile package
 
-      - name: Install isolated release tooling
-        if: github.ref == 'refs/heads/main'
-        run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
-
-      - name: Bind qualified archives to this main CI run
-        id: qualification
-        if: github.ref == 'refs/heads/main'
-        env:
-          PACKAGE_IDENTITY: ${{ steps.package.outputs.identity }}
-        run: node release-tools/ci.mjs stamp "$PACKAGE_IDENTITY" .release/qualified/qualification.json
-
       - name: Stage a flat artifact without changing package bytes
         env:
           PACKAGE_DIRECTORY: ${{ steps.package.outputs.directory }}
@@ -451,6 +436,50 @@ jobs:
           cp "$PACKAGE_IDENTITY" .release/qualified/
 
       - name: Upload validated npm packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.ref == 'refs/heads/main' && 'npm-unstamped' || 'npm-package' }}
+          path: .release/qualified/
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  # This barrier re-runs after a failed prerequisite is re-run on main. It
+  # stamps the exact packed bytes with the attempt in which every check passed.
+  qualification:
+    name: Qualify main packages
+    if: github.ref == 'refs/heads/main'
+    needs: [check, test, native, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install isolated release tooling
+        run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
+
+      - name: Download validated npm packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: npm-unstamped
+          path: .release/qualified
+
+      - name: Bind qualified archives to this main CI run
+        run: node release-tools/ci.mjs stamp .release/qualified/package-identity.json .release/qualified/qualification.json
+
+      - name: Upload qualified npm packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-package

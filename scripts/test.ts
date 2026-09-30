@@ -1,8 +1,8 @@
 /**
  * Runtime projects discover their own files; there is no test filename registry.
  *   portable    Vitest in packages/client, packages/browser and integration/hosted, each on Node
- *               and on Bun, and the scripts' own tests on Bun, side by side: as many at once as
- *               half the cores, and at least two, as each spreads its files over the cores itself
+ *               and on Bun, and the scripts' own tests on Bun; concurrent suites divide the
+ *               available workers, and hosts with fewer than four cores run one suite at a time
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  *
@@ -76,28 +76,33 @@ const program = Effect.gen(function* () {
       { discard: true },
     );
   switch (project) {
-    case "portable":
+    case "portable": {
       // The suites share no port or file, so they run side by side, the longest first. The first
       // to fail stops the rest.
+      const steps = [
+        ...nodeAndBun("client", path.join(packages, "client")),
+        ...nodeAndBun("browser", path.join(packages, "browser")),
+        // The hosted qualification's gates, ledger and a rehearsal of every check.
+        ...nodeAndBun("hosted", integration, ["--root", "hosted"]),
+        // pack runs on Bun and reads bun.lock with Bun.JSONC, so its tests run there.
+        {
+          label: "scripts on Bun",
+          command: bun,
+          args: ["--bun", vitest(root), "run", "--root", "scripts"],
+          cwd: root,
+          env,
+          limit,
+        },
+      ];
+      const cores = availableParallelism();
+      const concurrency = cores < 4 ? 1 : Math.min(steps.length, Math.floor(cores / 2));
+      const workers = String(Math.max(1, Math.floor(cores / concurrency)));
       return yield* Effect.forEach(
-        [
-          ...nodeAndBun("client", path.join(packages, "client")),
-          ...nodeAndBun("browser", path.join(packages, "browser")),
-          // The hosted qualification's gates, ledger and a rehearsal of every check.
-          ...nodeAndBun("hosted", integration, ["--root", "hosted"]),
-          // pack runs on Bun and reads bun.lock with Bun.JSONC, so its tests run there.
-          {
-            label: "scripts on Bun",
-            command: bun,
-            args: ["--bun", vitest(root), "run", "--root", "scripts"],
-            cwd: root,
-            env,
-            limit,
-          },
-        ],
+        steps.map((step) => ({ ...step, args: [...step.args, "--maxWorkers", workers] })),
         runStep,
-        { concurrency: Math.max(2, Math.floor(availableParallelism() / 2)), discard: true },
+        { concurrency, discard: true },
       );
+    }
     case "native":
       // The media load tests measure the bridge, so nothing runs beside them.
       return yield* inTurn(nodeAndBun("native", path.join(packages, "native")));

@@ -43,6 +43,13 @@ const native: Stages = [
   ["native:test"],
   ["test:integration"],
 ];
+const nativeLocal: Stages = [
+  ["build"],
+  ["imports"],
+  ["native:build"],
+  ["native:test:node"],
+  ["test:integration"],
+];
 const runtime: Stages = [["build"], ["imports", "test:portable"]];
 const packaging: Stages = [["test:pack"]];
 const profiles: Readonly<Record<string, Stages>> = {
@@ -50,6 +57,7 @@ const profiles: Readonly<Record<string, Stages>> = {
   shared,
   runtime,
   native,
+  "native-local": nativeLocal,
   package: packaging,
   release: [...portable, ...packaging],
   full: [...portable, ...native, ...packaging],

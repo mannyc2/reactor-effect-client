@@ -4,6 +4,15 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+case "${1:-}" in
+  ""|rust|node) ;;
+  *) echo "usage: test.sh [rust|node]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: test.sh [rust|node]" >&2
+  exit 2
+fi
+
 if [ "$(uname -s)" = Linux ]; then
   cc=${CC:-clang-21}
   cxx=${CXX:-clang++-21}
@@ -35,6 +44,10 @@ fi
 REACTOR_NATIVE_FAR_PEER="${CARGO_TARGET_DIR:-$root/rust/target}/release/examples/far_peer"
 export REACTOR_NATIVE_FAR_PEER
 # The preceding native:build owns staging; the tests load the staged addon.
-# Bun has its own Node-API implementation, so the suite runs on both runtimes.
+# The full gate also checks Bun's Node-API implementation; the local Node tier
+# stops after the first runtime.
 "${NODE_BINARY:-node}" node_modules/vitest/vitest.mjs run
+if [ "${1:-}" = node ]; then
+  exit 0
+fi
 "${BUN_BINARY:-bun}" --bun node_modules/vitest/vitest.mjs run
