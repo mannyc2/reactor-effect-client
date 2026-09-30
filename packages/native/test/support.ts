@@ -26,7 +26,7 @@ import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
-import * as CoordinatorClient from "reactor-effect-client/Peer";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import { IceCandidate } from "reactor-effect-client/Peer";
 import type { Track } from "reactor-effect-client/Peer";
 import type { DecodedMedia } from "reactor-effect-client/Media";

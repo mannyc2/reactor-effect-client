@@ -44,6 +44,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
+import * as Peer from "reactor-effect-client/Peer";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
@@ -164,10 +165,10 @@ const RelayPair = Schema.Struct({
 
 const Offer = Schema.Struct({
   sdp_offer: Schema.String,
-  track_mapping: Schema.Array(CoordinatorClient.Mapping),
+  track_mapping: Schema.Array(Peer.Mapping),
 });
 const IceBatch = Schema.Struct({
-  candidates: Schema.Array(CoordinatorClient.IceCandidate),
+  candidates: Schema.Array(Peer.IceCandidate),
   is_final: Schema.optionalKey(Schema.Boolean),
 });
 const Answer = Schema.Struct({ sdp: Schema.String });
@@ -193,7 +194,7 @@ const PageIceServer = Schema.Struct({
 });
 const NativeOffer = Schema.Struct({
   sdp: Schema.String,
-  mapping: Schema.Array(CoordinatorClient.Mapping),
+  mapping: Schema.Array(Peer.Mapping),
   fixture: Schema.Struct({ forceRelay: Schema.Boolean, iceServers: Schema.Array(PageIceServer) }),
 });
 const PageCandidate = Schema.Struct({
@@ -294,7 +295,7 @@ const enoughMedia = (tally: Tally): boolean =>
 // --- The coordinator and the page's endpoints ---------------------------------------------------
 
 const sessionId = "sess_native_browser_fixture";
-const tracks: ReadonlyArray<CoordinatorClient.Track> = [
+const tracks: ReadonlyArray<Peer.Track> = [
   { name: "browser_video", kind: "video", direction: "recvonly" },
   { name: "browser_audio", kind: "audio", direction: "recvonly" },
 ];
@@ -556,7 +557,7 @@ const routes = (fixture: Fixture) => {
   ];
 };
 
-const pageCandidate = (candidate: CoordinatorClient.IceCandidate): PageCandidate => ({
+const pageCandidate = (candidate: Peer.IceCandidate): PageCandidate => ({
   candidate: candidate.candidate,
   ...(candidate.sdp_mid === undefined ? {} : { sdpMid: candidate.sdp_mid }),
   ...(candidate.sdp_mline_index === undefined ? {} : { sdpMLineIndex: candidate.sdp_mline_index }),
