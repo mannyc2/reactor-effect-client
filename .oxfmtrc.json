@@ -24,6 +24,8 @@
     "integration/hosted/evidence/**/*.json",
     "release-tools/node_modules/**",
     "release-tools/bun.lock",
+    "website/bun.lock",
+    "website/.astro/**",
     ".release/**"
   ]
 }
