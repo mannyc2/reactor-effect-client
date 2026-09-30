@@ -89,6 +89,22 @@ describe("the spending gates", () => {
     }),
   );
 
+  // dropped's session has no cap, and the key ends it 80 s after its allocation at most.
+  it.effect("an uncapped session reserves its hold: $1.00 at the per-second rate", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        [Spend.ceilingFor("dropped"), Spend.tokenSecondsFor("dropped")],
+        [1.5, 140],
+      );
+      const authorization = { check: "dropped", budgetUsd: 1, totalUsd: 1 } as const;
+      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 1);
+      yield* refused(
+        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 0.99 }, reservedUsd: 0 }),
+      );
+      yield* refused(Spend.admit({ rate, authorization, reservedUsd: 0.0125 }));
+    }),
+  );
+
   it("a reservation rounds up to four decimals, and a started unit of the rate bills whole", () => {
     assert.strictEqual(Spend.reservationUsd(0.7500000000000001), 0.75);
     assert.strictEqual(Spend.reservationUsd(0.75001), 0.7501);
@@ -121,6 +137,20 @@ describe("the spending gates", () => {
       }),
   );
 
+  it.effect("only an uncapped check takes an uncapped grant, and it takes nothing else", () =>
+    Effect.gen(function* () {
+      const uncapped = { maxSessions: 1, maxSessionSeconds: "unlimited" } as const;
+      yield* Spend.acceptGrant({ check: "dropped", granted: uncapped });
+      yield* refused(Spend.acceptGrant({ check: "vertical", granted: uncapped }));
+      yield* refused(
+        Spend.acceptGrant({ check: "dropped", granted: { maxSessions: 1, maxSessionSeconds: 50 } }),
+      );
+      yield* refused(
+        Spend.acceptGrant({ check: "dropped", granted: { ...uncapped, maxSessions: 2 } }),
+      );
+    }),
+  );
+
   it.effect("a grant is proven by Reactor's echo, else by the token's claims, or refused", () =>
     Effect.gen(function* () {
       const claims = yield* Schema.encodeEffect(
@@ -143,11 +173,26 @@ describe("the spending gates", () => {
         ],
       );
       yield* refused(Spend.provenGrant({ jwt: "e30.e30.sig" }));
-      yield* refused(
-        Spend.provenGrant({
-          jwt: "e30.e30.sig",
-          granted: { maxSessions: 1, maxSessionSeconds: "unlimited" },
-        }),
+      // Hosted Reactor's echo of an uncapped token leaves its cap out, which says nothing: the
+      // claims decide, and a cap they leave out is none.
+      const uncappedClaims = yield* Schema.encodeEffect(
+        Schema.StringFromBase64Url.pipe(Schema.decodeTo(Schema.fromJsonString(Schema.Unknown))),
+      )({ authorization_details: [{ constraints: { max_sessions: 1 } }] });
+      assert.deepStrictEqual(
+        [
+          yield* Spend.provenGrant({
+            jwt: "e30.e30.sig",
+            granted: { maxSessions: 1, maxSessionSeconds: "unlimited" },
+          }),
+          yield* Spend.provenGrant({
+            jwt: `e30.${uncappedClaims}.sig`,
+            granted: { maxSessions: 1, maxSessionSeconds: undefined },
+          }),
+        ],
+        [
+          { maxSessions: 1, maxSessionSeconds: "unlimited" },
+          { maxSessions: 1, maxSessionSeconds: "unlimited" },
+        ],
       );
     }),
   );

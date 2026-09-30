@@ -11,8 +11,9 @@ import * as Schema from "effect/Schema";
  * owner's session), `queue` (H3's own move and pop near a boundary), the
  * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
  * token that created it). `tour` then walks the raw API through one longer
- * session. `unconnected` asks Reactor a question instead: what becomes of a
- * session nothing connects to.
+ * session. `unconnected` and `dropped` ask Reactor a question instead: what
+ * becomes of a session nothing connects to, and of one whose connection is
+ * gone for good.
  */
 export const checks = [
   "vertical",
@@ -29,6 +30,7 @@ export const checks = [
   "adoption",
   "show",
   "unconnected",
+  "dropped",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -38,7 +40,7 @@ export type Check = typeof Check.Type;
  * seconds, which its token sets server-side. A check that renews rests its
  * timing on full grants, so a shorter grant cannot qualify it.
  */
-export interface Plan {
+interface Capped {
   readonly sessions: number;
   readonly seconds: number;
   readonly renews?: true;
@@ -49,11 +51,23 @@ export interface Plan {
   readonly holds?: ReadonlyArray<number>;
 }
 
+/**
+ * A check whose sessions have no cap, as an application's may: only the key
+ * ends them, so each one's hold is what it may be billed for.
+ */
+interface Uncapped {
+  readonly sessions: number;
+  readonly seconds: "unlimited";
+  readonly holds: ReadonlyArray<number>;
+}
+
+export type Plan = Capped | Uncapped;
+
 /** One 50-second session, which every check held before the longer runs. */
 export const sessionSeconds = 50;
-const single: Plan = { sessions: 1, seconds: sessionSeconds };
+const single = { sessions: 1, seconds: sessionSeconds } satisfies Plan;
 
-export const plans: { readonly [C in Check]: Plan } = {
+export const plans = {
   vertical: single,
   takeover: single,
   turn: single,
@@ -72,16 +86,30 @@ export const plans: { readonly [C in Check]: Plan } = {
   // 59 s of its request, and a third if that token's second create allocates again, ended
   // within 56 s of that create. Each short one stays within a started minute.
   unconnected: { sessions: 3, seconds: 60, holds: [155, 59, 56] },
-};
+  // One uncapped session, which only the key ends: 1 s for its owner to report it, the watch's
+  // end 67 s after its allocation at the latest and that last read's 1 s, and the key's first two
+  // tries, 11 s to the second DELETE's answer, make 80 s.
+  dropped: { sessions: 1, seconds: "unlimited", holds: [80] },
+} satisfies { readonly [C in Check]: Plan };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
-export const holdsFor = (check: Check): ReadonlyArray<number> =>
-  plans[check].holds ?? Array.from({ length: plans[check].sessions }, () => plans[check].seconds);
+export const holdsFor = (check: Check): ReadonlyArray<number> => {
+  const plan: Plan = plans[check];
+  if (plan.seconds === "unlimited") return plan.holds;
+  const cap = plan.seconds;
+  return plan.holds ?? Array.from({ length: plan.sessions }, () => cap);
+};
 
 /** A check's tokens outlive its sessions by a minute, so cleanup still holds a valid one. */
 export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(check)) + 60;
-/** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
-export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
+/**
+ * A check's work ends this long after allocation, so a slow step fails it
+ * before the cap does, or before the hold runs out for a session with none.
+ */
+export const workSecondsFor = (check: Check): number => {
+  const plan: Plan = plans[check];
+  return (plan.seconds === "unlimited" ? Math.max(...plan.holds) : plan.seconds) - 10;
+};
 
 /**
  * The most a check may spend: every started minute of each of its sessions,
@@ -186,7 +214,7 @@ const Claims = Schema.StringFromBase64Url.pipe(
           Schema.Struct({
             constraints: Schema.Struct({
               max_sessions: Schema.Int,
-              max_session_duration_seconds: Schema.Int,
+              max_session_duration_seconds: Schema.Int.pipe(Schema.NullOr, Schema.optionalKey),
             }),
           }),
         ]),
@@ -198,7 +226,10 @@ const Claims = Schema.StringFromBase64Url.pipe(
 /**
  * What a token provably grants: Reactor's echo of the grant, else the token's
  * own claims. The SDK reads only the echo; a paid check needs its cap proven
- * either way, so a token that proves neither is refused before anything is allocated.
+ * either way, so a token that proves neither is refused before anything is
+ * allocated. A cap the echo states as none, or the claims leave out, is
+ * `unlimited`: hosted Reactor's echo of an uncapped token leaves its cap out
+ * (September 28, 2026), which says nothing, so its claims decide.
  */
 export const provenGrant = (grant: {
   readonly jwt: string;
@@ -209,21 +240,25 @@ export const provenGrant = (grant: {
       }
     | undefined;
 }): Effect.Effect<
-  { readonly maxSessions: number; readonly maxSessionSeconds: number },
+  { readonly maxSessions: number; readonly maxSessionSeconds: number | "unlimited" },
   Refused
 > => {
   const echoed = grant.granted;
-  if (echoed?.maxSessions !== undefined && typeof echoed.maxSessionSeconds === "number")
+  if (echoed?.maxSessions !== undefined && echoed.maxSessionSeconds !== undefined)
     return Effect.succeed({
       maxSessions: echoed.maxSessions,
       maxSessionSeconds: echoed.maxSessionSeconds,
     });
   const payload = grant.jwt.split(".")[1] ?? "";
   return Schema.decodeEffect(Claims)(payload).pipe(
-    Effect.map(({ authorization_details: [entry] }) => ({
-      maxSessions: entry.constraints.max_sessions,
-      maxSessionSeconds: entry.constraints.max_session_duration_seconds,
-    })),
+    Effect.map(
+      ({
+        authorization_details: [entry],
+      }): { readonly maxSessions: number; readonly maxSessionSeconds: number | "unlimited" } => ({
+        maxSessions: entry.constraints.max_sessions,
+        maxSessionSeconds: entry.constraints.max_session_duration_seconds ?? "unlimited",
+      }),
+    ),
     Effect.catch(() => refuse("the token proves neither its session count nor its cap")),
   );
 };
@@ -237,12 +272,12 @@ export const provenGrant = (grant: {
 export const provenBind = (input: {
   readonly sessionId: string;
   /** The bound session's cap, as its creating token proved it. */
-  readonly sessionSeconds: number;
+  readonly sessionSeconds: number | "unlimited";
   readonly granted?:
     | { readonly maxSessions: number | undefined; readonly bound: ReadonlyArray<string> }
     | undefined;
 }): Effect.Effect<
-  { readonly maxSessions: number; readonly maxSessionSeconds: number },
+  { readonly maxSessions: number; readonly maxSessionSeconds: number | "unlimited" },
   Refused
 > => {
   const echoed = input.granted;
@@ -256,14 +291,29 @@ export const provenBind = (input: {
   });
 };
 
-/** Refuses a token granting more than one session, or a longer one than a check may hold. */
+/**
+ * Refuses a token granting more than one session, or a longer one than a check
+ * may hold. A check whose sessions have no cap takes only an uncapped grant:
+ * a cap would answer another question.
+ */
 export const acceptGrant = (input: {
   readonly check: Check;
-  readonly granted: { readonly maxSessions: number; readonly maxSessionSeconds: number };
+  readonly granted: {
+    readonly maxSessions: number;
+    readonly maxSessionSeconds: number | "unlimited";
+  };
 }): Effect.Effect<void, Refused> => {
   const { check, granted } = input;
-  const plan = plans[check];
-  if (granted.maxSessions !== 1 || granted.maxSessionSeconds > plan.seconds)
+  const plan: Plan = plans[check];
+  if (plan.seconds === "unlimited")
+    return granted.maxSessions === 1 && granted.maxSessionSeconds === "unlimited"
+      ? Effect.void
+      : refuse(`${check} needs a token for one uncapped session`);
+  if (
+    granted.maxSessions !== 1 ||
+    granted.maxSessionSeconds === "unlimited" ||
+    granted.maxSessionSeconds > plan.seconds
+  )
     return refuse("the token grants more than one session of at most the capped length");
   if (plan.renews === true && granted.maxSessionSeconds !== plan.seconds)
     return refuse(`${check} needs the full ${plan.seconds}-second grant`);

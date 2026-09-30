@@ -851,6 +851,82 @@ rehearse("unconnected credits Reactor with an end only its read at the end found
   },
 });
 
+/** Where a `dropped` run left its session: allocated, killed, and closed, from the run's start. */
+const droppedTimes = (evidence: Evidence) => {
+  const session = evidence.sessions[0];
+  return {
+    allocatedMs: session?.allocatedMs ?? Infinity,
+    killedMs: evidence.dropped?.killedMs ?? Infinity,
+    reportedMs: session?.close?.reportedMs ?? Infinity,
+  };
+};
+
+// ReactorTest reads a session INACTIVE once its last connection drops and ends it 30 s later, as
+// Reactor documents. Whether hosted Reactor does, for a session that has no cap, is what dropped
+// asks.
+rehearse("dropped credits Reactor with ending an uncapped session 30 s after its owner died", {
+  check: "dropped",
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.dropped;
+    const { killedMs } = droppedTimes(evidence);
+    assert.deepStrictEqual(evidence.grants[0]?.maxSessionSeconds, "unlimited");
+    assert.isUndefined(evidence.sessions[0]?.capEndsAt);
+    assert.deepStrictEqual(
+      probe?.states.map((entry) => entry.state),
+      ["INACTIVE", "CLOSED"],
+    );
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    const endedAfter = (probe?.ended?.atMs ?? Infinity) - killedMs;
+    assert.isAtLeast(endedAfter, 30_000);
+    assert.isAtMost(endedAfter, 32_500);
+    assert.strictEqual(probe?.read?.state, "CLOSED");
+    assert.match(
+      summarize([evidence]),
+      /^- \*\*Answer:\*\* ended by Reactor between \d+\.\d\d s and \d+\.\d\d s after the kill; the first read that found it INACTIVE came \d+\.\d\d s after the kill$/m,
+    );
+  },
+});
+
+// With nothing ending it, the key does once the window closes, 60 s after the kill, and within the
+// hold the session is reserved for.
+rehearse("dropped ends with the key an uncapped session Reactor keeps", {
+  check: "dropped",
+  faults: [{ _tag: "IgnoreDrop" }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.dropped;
+    const { allocatedMs, killedMs, reportedMs } = droppedTimes(evidence);
+    assert.strictEqual(probe?.states.at(-1)?.state, "INACTIVE");
+    assert.strictEqual(probe?.ended?.by, "key");
+    assert.strictEqual((probe?.windowEndsMs ?? 0) - killedMs, 60_000);
+    assert.isAtMost(reportedMs - allocatedMs, (holdsFor("dropped")[0] ?? 0) * 1000);
+    assert.include(summarize([evidence]), "not ended by Reactor within 60.00 s of the kill");
+  },
+});
+
+rehearse("dropped ends with the key the session of an owner that cannot connect", {
+  check: "dropped",
+  faults: [{ _tag: "RefuseConnect" }],
+  judge: (evidence) => {
+    failed("the owner connected")(evidence);
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed, evidence.reasons.join("; "));
+  },
+});
+
+// Nothing caps the session, so a run that cannot end it says to end it now.
+rehearse("dropped fails, and says to end the session now, when the key cannot end it", {
+  check: "dropped",
+  faults: [{ _tag: "IgnoreDrop" }, { _tag: "IgnoreDelete" }],
+  judge: (evidence) => {
+    failed("confirmed termination")(evidence);
+    const instructions = cleanupInstructions(evidence);
+    assert.lengthOf(instructions, 1);
+    assert.include(instructions[0] ?? "", "nothing caps it");
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

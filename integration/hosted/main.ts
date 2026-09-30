@@ -220,6 +220,17 @@ const preflight = Command.make(
     });
     yield* Spend.acceptGrant({ check: "vertical", granted });
     yield* Console.log(`a token grants one session of ${granted.maxSessionSeconds} s`);
+    // dropped's session has no cap, so its token must prove one session and no cap.
+    const uncapped = yield* coordinator.mintToken({
+      modelName: H3.modelName,
+      maxSessionDuration: "unlimited",
+      expiresAfter: `${Spend.tokenSecondsFor("dropped")} seconds`,
+    });
+    yield* Spend.provenGrant({
+      jwt: Redacted.value(uncapped.jwt),
+      granted: uncapped.granted,
+    }).pipe(Effect.flatMap((proven) => Spend.acceptGrant({ check: "dropped", granted: proven })));
+    yield* Console.log("an uncapped token grants one session with no cap");
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);
     yield* Console.log("the native library loads");
@@ -246,7 +257,7 @@ const preflight = Command.make(
     ),
   ),
   Command.withDescription(
-    "Check the rate, the ledger, a token, the native library and adoption's owner, for free",
+    "Check the rate, the ledger, the tokens, the native library and adoption's owner, for free",
   ),
 );
 
@@ -279,6 +290,10 @@ const owner = Command.make(
       Flag.withDescription("how long the clip queued behind the 15 s one asks for"),
       Flag.optional,
     ),
+    idle: Flag.Boolean("idle").pipe(
+      Flag.withDescription("report once the session is connected, and play nothing"),
+      Flag.withDefault(false),
+    ),
   },
   Effect.fnUntraced(function* (input) {
     const stdio = yield* Stdio.Stdio;
@@ -289,6 +304,7 @@ const owner = Command.make(
       lines: stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines),
       host: `${runtime}, ${input.isolated ? "the isolated native peer" : "the native peer in process"}`,
       queuedSeconds: Option.getOrUndefined(input.queuedSeconds),
+      idle: input.idle,
     });
   }),
 ).pipe(

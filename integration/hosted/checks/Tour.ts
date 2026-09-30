@@ -288,7 +288,7 @@ export const tour = (pieces: Pieces) =>
             | {
                 readonly grant: Coordinator.TokenGrant;
                 readonly sentAt: number;
-                readonly cap: number;
+                readonly cap: number | "unlimited";
               }
             | undefined;
           /** The session's latest grant, for the calls made on its behalf and after its end. */

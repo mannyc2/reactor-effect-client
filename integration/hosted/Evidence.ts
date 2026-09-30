@@ -152,8 +152,8 @@ export type Span = typeof Span.Type;
 export const SessionRecord = Schema.Struct({
   id: Schema.String,
   allocatedMs: Ms,
-  /** When the grant's cap ends it at the latest, ISO. */
-  capEndsAt: Schema.String,
+  /** When the grant's cap ends it at the latest, ISO; absent when nothing caps it. */
+  capEndsAt: Schema.optionalKey(Schema.String),
   close: Schema.optionalKey(
     Schema.Struct({
       requestedMs: Ms,
@@ -817,9 +817,10 @@ const Answer = {
  * that found it. A read answered 404 is `gone`; one that failed otherwise is
  * its HTTP status or its reason's tag.
  */
-const StateReads = Schema.Array(
+export const StateReads = Schema.Array(
   Schema.Struct({ state: Schema.String, firstMs: Ms, lastMs: Ms, reads: Schema.Int }),
 );
+export type StateReads = typeof StateReads.Type;
 
 /**
  * `unconnected`: a session allocated and never connected, on a token used for
@@ -913,6 +914,47 @@ export const UnconnectedRecord = Schema.Struct({
 });
 export type UnconnectedRecord = typeof UnconnectedRecord.Type;
 
+/**
+ * `dropped`: an uncapped session its owner connected, and then lost for good
+ * when the owner was killed as a crashed application dies, read with the API
+ * key from the kill until it ended or its window closed. The instants let a
+ * person set the dashboard's charge beside the times the evidence records.
+ */
+export const DroppedRecord = Schema.Struct({
+  /** When the owner was started: any session it made was created after this. */
+  startedMs: Ms,
+  startedAt: Schema.String,
+  /** Where the owner ran, as it reported it: its runtime and native peer. */
+  ownerHost: Schema.optionalKey(Schema.String),
+  /** The session the owner reported as soon as it allocated it, and when, as an instant. */
+  sessionId: Schema.optionalKey(Schema.String),
+  allocatedAt: Schema.optionalKey(Schema.String),
+  /** When the owner reported its session connected and set up. */
+  connectedMs: Schema.optionalKey(Ms),
+  /** When the owner was sent SIGKILL. */
+  killedMs: Schema.optionalKey(Ms),
+  killedAt: Schema.optionalKey(Schema.String),
+  /**
+   * When the reads were to stop at the latest: 60 s after the kill, or 67 s
+   * after the allocation if that is sooner, so the session's hold holds.
+   */
+  windowEndsMs: Schema.optionalKey(Ms),
+  /** Each state the key's reads found from the kill. */
+  states: StateReads,
+  /** The coordinator's read once the watch found the session `CLOSED`: status, key names, state and codes. */
+  read: Schema.optionalKey(SessionRead),
+  /**
+   * Its end, once confirmed: by Reactor at the first read that found it
+   * `CLOSED`, or the first of two in a row that found it gone; or by the key,
+   * once the window closed on it running. The session's `close.requestedMs` is
+   * the key's first DELETE.
+   */
+  ended: Schema.optionalKey(
+    Schema.Struct({ by: Schema.Literals(["reactor", "key"]), atMs: Ms, at: Schema.String }),
+  ),
+});
+export type DroppedRecord = typeof DroppedRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -951,7 +993,7 @@ export const Evidence = Schema.Struct({
   grants: Schema.Array(
     Schema.Struct({
       maxSessions: Schema.Int,
-      maxSessionSeconds: Schema.Int,
+      maxSessionSeconds: Schema.Union([Schema.Int, Schema.Literal("unlimited")]),
       expiresAt: Schema.Finite,
     }),
   ),
@@ -1114,6 +1156,7 @@ export const Evidence = Schema.Struct({
   adoption: Schema.optionalKey(AdoptionRecord),
   show: Schema.optionalKey(ShowRecord),
   unconnected: Schema.optionalKey(UnconnectedRecord),
+  dropped: Schema.optionalKey(DroppedRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1138,6 +1181,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   adoption: ["adoption"],
   show: ["playout", "show"],
   unconnected: ["unconnected"],
+  dropped: ["dropped"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
@@ -1229,23 +1273,41 @@ const unknownCreates = (evidence: Evidence): ReadonlyArray<string> => {
 };
 
 /**
+ * `dropped`'s owner reports its session as soon as it allocates it. One that
+ * stopped between the allocation and its report, or a run that stopped there,
+ * leaves a session the run never learned of, and nothing caps it.
+ */
+const unreportedSession = (evidence: Evidence): ReadonlyArray<string> => {
+  const probe = evidence.dropped;
+  if (evidence.check !== "dropped" || probe === undefined || probe.sessionId !== undefined)
+    return [];
+  return [
+    `The owner reported no session, so it may have allocated one the run never learned of, after ${probe.startedAt}, and nothing caps it. Look for one in the Reactor dashboard, end it, and note what it cost.`,
+  ];
+};
+
+/**
  * What a person must confirm in the Reactor dashboard: sessions whose end the
  * run could not confirm. Nothing connected to `unconnected`'s sessions, and
  * whether a cap ends such a session is what that check asks, so its
  * instructions promise no end, and name any create that may have allocated
- * one unseen.
+ * one unseen. Nothing caps `dropped`'s session, so it bills until someone ends it.
  */
 export const cleanupInstructions = (evidence: Evidence): ReadonlyArray<string> => [
-  ...evidence.sessions.flatMap((session) =>
-    session.close?.confirmed === true
-      ? []
-      : [
-          evidence.check === "unconnected"
-            ? `Session ${session.id} was not confirmed ended, and nothing connected to it, so its cap at ${session.capEndsAt} may not end it. End it in the Reactor dashboard, and note what it cost.`
-            : `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
-        ],
-  ),
+  ...evidence.sessions.flatMap((session) => {
+    if (session.close?.confirmed === true) return [];
+    if (session.capEndsAt === undefined)
+      return [
+        `Session ${session.id} was not confirmed ended, and nothing caps it, so it bills until it is ended. End it in the Reactor dashboard now, and note what it cost.`,
+      ];
+    return [
+      evidence.check === "unconnected"
+        ? `Session ${session.id} was not confirmed ended, and nothing connected to it, so its cap at ${session.capEndsAt} may not end it. End it in the Reactor dashboard, and note what it cost.`
+        : `Session ${session.id} was not confirmed ended; its cap ends it by ${session.capEndsAt}. Confirm in the Reactor dashboard that it ended, and what it cost.`,
+    ];
+  }),
   ...unknownCreates(evidence),
+  ...unreportedSession(evidence),
 ];
 
 /** Evidence as a file holds it: indented, so a ledger reads well in review. */

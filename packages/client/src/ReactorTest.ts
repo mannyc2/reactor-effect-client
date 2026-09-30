@@ -107,6 +107,11 @@ export const Fault = Schema.Union([
    * session nothing ever connected to at its cap is unobserved.
    */
   Schema.TaggedStruct("IgnoreCap", {}),
+  /**
+   * No session ends 30 s after its last connection drops: it reads INACTIVE
+   * until it is terminated, a connection returns, or its grant's cap ends it.
+   */
+  Schema.TaggedStruct("IgnoreDrop", {}),
   /** DELETE is accepted and the session reads STOPPING this long before it closes. */
   Schema.TaggedStruct("SlowDelete", { for: Schema.Duration }),
   /** DELETE is accepted and the session runs on until its grant ends. */

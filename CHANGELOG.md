@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `ReactorTest`'s `IgnoreDrop` fault: a session whose last connection dropped reads `INACTIVE` until it is terminated, a connection returns or its cap ends it, instead of ending 30 s later.
+
 ## [0.8.0] - 2026-09-29
 
 0.8.0 rebuilds the SDK the way Effect's own packages are built, and breaks the 0.7 API throughout, so a `^0.7.0` range does not include it. The client is flat modules, each exported as a namespace from the root and as its own subpath: `Reactor`, `Session`, `Coordinator`, `H3`, `Playout`, `H3Source`, `LocalSource`, `Media`, `Peer`, `ReactorError` and `ReactorTest`. One `Playout` service replaces the orchestration engine, renewal and scheduler, which each held part of one plan. `ReactorTest`, Reactor simulated in memory at the network edge and driven by the Effect clock, replaces the simulation, `test-kit`, the loopback twin and the test fixtures. The browser and native packages only bind the client's `Peer` port, and the native addon is a napi-rs module shipped in one package per platform.

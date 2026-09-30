@@ -292,6 +292,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return [next.drops, next] as const;
       });
       if (drops === undefined) return;
+      if ((yield* faults.standing((fault) => fault._tag === "IgnoreDrop")) !== undefined) return;
       yield* later(
         reconnectWindowMs,
         Effect.flatMap(Ref.get(session.state), (state) =>

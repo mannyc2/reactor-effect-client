@@ -14,6 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -32,12 +33,13 @@ import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
+import { dropped } from "./checks/Dropped.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
 import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
-import type { Item, Seam, StatsSample } from "./Evidence.js";
+import type { Item, Seam, StateReads, StatsSample } from "./Evidence.js";
 import * as Media from "./Media.js";
 import * as Probes from "./Probes.js";
 import { recorded, Run } from "./Run.js";
@@ -202,7 +204,10 @@ const withToken = (jwt: Redacted.Redacted<string>) =>
     Coordinator.make({ apiUrl: target.apiUrl, credential: Effect.succeed(jwt) }),
   );
 
-/** Mints one session's token: its grant goes into the evidence, its JWT never does. */
+/**
+ * Mints one session's token, capped as its check's plan says, or uncapped: its
+ * grant goes into the evidence, its JWT never does.
+ */
 const mint = Effect.fnUntraced(function* (
   check: Check,
   expiresAfterSeconds = tokenSecondsFor(check),
@@ -210,10 +215,11 @@ const mint = Effect.fnUntraced(function* (
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* Coordinator.Coordinator;
+  const cap = plans[check].seconds;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
     modelName: H3.modelName,
-    maxSessionDuration: `${plans[check].seconds} seconds`,
+    maxSessionDuration: cap === "unlimited" ? cap : `${cap} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
   yield* run.secret(grant.jwt);
@@ -260,11 +266,14 @@ type Grants = Map<string, Coordinator.TokenGrant>;
 /** A grant's session cap, which the grant was proven not to exceed, in milliseconds. */
 const capMs = (grant: Coordinator.TokenGrant) => (grant.maxSessionSeconds ?? sessionSeconds) * 1000;
 
-/** Records a session the check holds from `allocatedAt` until its cap ends it at `capEndsAt`; its work deadline. */
+/**
+ * Records a session the check holds from `allocatedAt` until its cap ends it
+ * at `capEndsAt`, or with no cap; its work deadline.
+ */
 const holding = Effect.fnUntraced(function* (
   sessionId: string,
   allocatedAt: number,
-  capEndsAt: number,
+  capEndsAt: number | undefined,
 ) {
   const run = yield* Run;
   yield* run.update((evidence) => ({
@@ -274,7 +283,9 @@ const holding = Effect.fnUntraced(function* (
       {
         id: sessionId,
         allocatedMs: allocatedAt - run.origin,
-        capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(capEndsAt)),
+        ...(capEndsAt === undefined
+          ? {}
+          : { capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(capEndsAt)) }),
         trail: [],
       },
     ],
@@ -361,6 +372,98 @@ const owned = Effect.fnUntraced(function* (
   const endsAt = owner.allocation.endsAt ?? ((yield* Clock.currentTimeMillis) + cap) / 1000;
   const deadline = yield* holding(sessionId, endsAt * 1000 - cap, endsAt * 1000);
   return { owner, sessionId, deadline };
+});
+
+/**
+ * Ends a session with the key, and again, twice at most and 2 s apart, while
+ * its end is unconfirmed: nothing here trusts a cap to end it. Each try, a
+ * DELETE and a read, takes up to 6 s. Each unconfirmed one goes in the
+ * timeline with what its DELETE and its read met; a save that fails there
+ * stops no try.
+ */
+const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: string) =>
+  Effect.flatMap(Run, (run) =>
+    inspector.terminate(sessionId).pipe(
+      Effect.tap((termination) =>
+        termination.confirmed
+          ? Effect.void
+          : run
+              .mark(
+                "end unconfirmed",
+                `${sessionId}: DELETE ${termination.deleteStatus ?? "unanswered"}, then ${termination.state === null ? "no state" : Probes.keptText(termination.state)}`,
+              )
+              .pipe(Effect.ignore),
+      ),
+      Effect.repeat({
+        schedule: Schedule.spaced("2 seconds"),
+        until: (termination) => termination.confirmed,
+        times: 2,
+      }),
+    ),
+  );
+
+/** The states read so far, and one more read: the last state runs on, or a new one begins. */
+const withRead = (states: StateReads, state: string, atMs: number): StateReads => {
+  const last = states.at(-1);
+  return last?.state === state
+    ? [...states.slice(0, -1), { ...last, lastMs: atMs, reads: last.reads + 1 }]
+    : [...states, { state, firstMs: atMs, lastMs: atMs, reads: 1 }];
+};
+
+/** How often the key reads a session it watches for its end. */
+const watchEveryMs = 2_000;
+
+/**
+ * Reads a session with the key every 2 s from `fromAt` until a read finds it
+ * `CLOSED`, or the second in a row finds it gone, since one read answered 404
+ * may be the coordinator's slip; or until the read at `endsAt`, both Clock
+ * times. `each` records every read, with its state as the evidence keeps it,
+ * and each new state goes in the timeline. An end is timed at the read that
+ * found the session `CLOSED`, or at the first of the reads in a row that found
+ * it gone; `goneMs` is that first read while the last read found it gone.
+ */
+const watchForEnd = Effect.fnUntraced(function* <E>(
+  inspector: Coordinator.Coordinator["Service"],
+  sessionId: string,
+  fromAt: number,
+  endsAt: number,
+  each: (
+    read: Result.Result<Coordinator.Inspection, ReactorError>,
+    state: string,
+    atMs: number,
+  ) => Effect.Effect<void, E>,
+) {
+  const run = yield* Run;
+  let readAt = fromAt;
+  let last: { readonly state: string; readonly known: boolean } | undefined;
+  let goneMs: number | undefined;
+  let endedMs: number | undefined;
+  for (;;) {
+    yield* sleepUntil(readAt - run.origin, endsAt);
+    const read = yield* Effect.result(inspector.inspect(sessionId));
+    const atMs = yield* run.now;
+    const state = Result.isSuccess(read)
+      ? Probes.keptText(read.success.state)
+      : failedRead(read.failure);
+    yield* each(read, state, atMs);
+    if (state !== last?.state) yield* run.mark(`read ${state}`);
+    last = { state, known: Result.isSuccess(read) || state === "gone" };
+    if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) goneMs = undefined;
+    if (Coordinator.isTerminal(state)) {
+      endedMs = goneMs ?? atMs;
+      break;
+    }
+    if (state === "gone") {
+      if (goneMs !== undefined) {
+        endedMs = goneMs;
+        break;
+      }
+      goneMs = atMs;
+    }
+    if (readAt >= endsAt) break;
+    readAt = Math.min(readAt + watchEveryMs, endsAt);
+  }
+  return { last, goneMs, endedMs };
 });
 
 /**
@@ -2246,6 +2349,7 @@ const pieces = {
   commandsSince,
   contractTally,
   endHeld,
+  endWithKey,
   factsOf,
   failedRead,
   holding,
@@ -2265,7 +2369,9 @@ const pieces = {
   until,
   waitFor,
   watch,
+  watchForEnd,
   window,
+  withRead,
   withReferences,
   withSessions,
   withToken,
@@ -2287,6 +2393,7 @@ const all = {
   adoption: adoption(pieces),
   show: show(pieces),
   unconnected: unconnected(pieces),
+  dropped: dropped(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

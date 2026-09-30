@@ -39,7 +39,6 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Coordinator from "reactor-effect-client/Coordinator";
 import * as H3 from "reactor-effect-client/H3";
@@ -51,8 +50,6 @@ import { recorded, Run } from "../Run.js";
 import { holdsFor, plans } from "../Spend.js";
 import { Target } from "../Target.js";
 
-/** How often the API key reads the watched session. */
-const readEveryMs = 2_000;
 /**
  * How long after the request the window allows for allocation, `ACTIVE` and
  * ready to come in: the create's own limit. Every paid run that timed it so
@@ -76,34 +73,6 @@ const heldPastMs = 10_000;
  * wait may run 1 s past it.
  */
 const endBeforeMs = 3 * 6_000 + 2 * 2_000 + 3_000;
-/**
- * Ends a session with the key, and again, twice at most and 2 s apart, while
- * its end is unconfirmed: nothing here trusts the cap to end it. Each try, a
- * DELETE and a read, takes up to 6 s. Each unconfirmed one goes in the
- * timeline with what its DELETE and its read met; a save that fails there
- * stops no try.
- */
-const endWithKey = (inspector: Coordinator.Coordinator["Service"], sessionId: string) =>
-  Effect.flatMap(Run, (run) =>
-    inspector.terminate(sessionId).pipe(
-      Effect.tap((termination) =>
-        termination.confirmed
-          ? Effect.void
-          : run
-              .mark(
-                "end unconfirmed",
-                `${sessionId}: DELETE ${termination.deleteStatus ?? "unanswered"}, then ${termination.state === null ? "no state" : Probes.keptText(termination.state)}`,
-              )
-              .pipe(Effect.ignore),
-      ),
-      Effect.repeat({
-        schedule: Schedule.spaced("2 seconds"),
-        until: (termination) => termination.confirmed,
-        times: 2,
-      }),
-    ),
-  );
-
 type Answered = Result.Result<Coordinator.Allocation, ReactorError>;
 
 /**
@@ -131,21 +100,12 @@ const allocate = Effect.fnUntraced(function* (
   return answer;
 }, Effect.uninterruptible);
 
-type States = UnconnectedRecord["states"];
 type SpentToken = NonNullable<UnconnectedRecord["spentToken"]>;
 type Held = NonNullable<SpentToken["held"]>[number];
 
 /** The SDK connects once a session publishes its capabilities and a transport. */
 const connectable = (inspection: Coordinator.Inspection) =>
   inspection.hasCapabilities && inspection.selectedTransport !== null;
-
-/** The states read so far, and one more read: the last state runs on, or a new one begins. */
-const withRead = (states: States, state: string, atMs: number): States => {
-  const last = states.at(-1);
-  return last?.state === state
-    ? [...states.slice(0, -1), { ...last, lastMs: atMs, reads: last.reads + 1 }]
-    : [...states, { state, firstMs: atMs, lastMs: atMs, reads: 1 }];
-};
 
 /**
  * Reads a spent token's session with the key every 0.5 s until a read finds
@@ -174,7 +134,10 @@ const holdAndEnd = Effect.fnUntraced(function* (
     const state = Result.isSuccess(read)
       ? Probes.keptText(read.success.state)
       : pieces.failedRead(read.failure);
-    yield* change(sessionId, (held) => ({ ...held, states: withRead(held.states, state, atMs) }));
+    yield* change(sessionId, (held) => ({
+      ...held,
+      states: pieces.withRead(held.states, state, atMs),
+    }));
     if (Coordinator.isTerminal(state)) {
       heldFromMs = undefined;
       break;
@@ -195,7 +158,7 @@ const holdAndEnd = Effect.fnUntraced(function* (
     yield* pieces.sleepUntil(endsMs, Number.POSITIVE_INFINITY);
   }
   const requestedMs = yield* run.now;
-  const termination = yield* endWithKey(inspector, sessionId);
+  const termination = yield* pieces.endWithKey(inspector, sessionId);
   return { sessionId, requestedMs, reportedMs: yield* run.now, termination };
 });
 
@@ -305,41 +268,29 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
         const watching = Effect.gen(function* () {
           const windowEndsMs = requestedMs + startsWithinMs + capMs + graceMs + spareMs;
           yield* record((probe) => ({ ...probe, windowEndsMs }));
-          const windowEndsAt = run.origin + windowEndsMs;
-          let readAt = yield* Clock.currentTimeMillis;
-          let last: { readonly state: string; readonly known: boolean } | undefined;
-          // The first of the reads in a row that found the session gone.
-          let goneMs: number | undefined;
-          let endedMs: number | undefined;
-          for (;;) {
-            yield* pieces.sleepUntil(readAt - run.origin, windowEndsAt);
-            const read = yield* Effect.result(inspector.inspect(sessionId));
-            const atMs = yield* run.now;
-            const state = Result.isSuccess(read)
-              ? Probes.keptText(read.success.state)
-              : pieces.failedRead(read.failure);
-            yield* record((probe) => ({ ...probe, states: withRead(probe.states, state, atMs) }));
-            if (state !== last?.state) yield* run.mark(`read ${state}`);
-            last = { state, known: Result.isSuccess(read) || state === "gone" };
-            if (Result.isSuccess(read) && !Coordinator.isTerminal(state)) goneMs = undefined;
-            if (Result.isSuccess(read) && connectable(read.success))
-              yield* record((probe) => ({ ...probe, connectableMs: probe.connectableMs ?? atMs }));
-            if (Coordinator.isTerminal(state)) {
-              endedMs = goneMs ?? atMs;
-              break;
-            }
-            // One read answered 404 may be the coordinator's slip: a second in a row, or the read
-            // at the end, tells.
-            if (state === "gone") {
-              if (goneMs !== undefined) {
-                endedMs = goneMs;
-                break;
-              }
-              goneMs = atMs;
-            }
-            if (readAt >= windowEndsAt) break;
-            readAt = Math.min(readAt + readEveryMs, windowEndsAt);
-          }
+          const {
+            last,
+            goneMs,
+            endedMs: watched,
+          } = yield* pieces.watchForEnd(
+            inspector,
+            sessionId,
+            yield* Clock.currentTimeMillis,
+            run.origin + windowEndsMs,
+            (read, state, atMs) =>
+              Effect.gen(function* () {
+                yield* record((probe) => ({
+                  ...probe,
+                  states: pieces.withRead(probe.states, state, atMs),
+                }));
+                if (Result.isSuccess(read) && connectable(read.success))
+                  yield* record((probe) => ({
+                    ...probe,
+                    connectableMs: probe.connectableMs ?? atMs,
+                  }));
+              }),
+          );
+          let endedMs = watched;
 
           // What the coordinator says of the session now: why it ended, if it says.
           const read = yield* Probes.readSession({
@@ -368,7 +319,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
           // The key ends the session whether or not Reactor did, so its end is confirmed as
           // every check confirms one. Ending a session Reactor has closed ends nothing more.
           const endRequestedMs = yield* run.now;
-          const termination = yield* endWithKey(inspector, sessionId);
+          const termination = yield* pieces.endWithKey(inspector, sessionId);
           const terminatedMs = yield* run.now;
           yield* pieces.closedWith(sessionId, endRequestedMs, { termination });
           if (endedMs !== undefined)
@@ -500,7 +451,7 @@ export const unconnected = Effect.fnUntraced(function* (pieces: Pieces) {
       Effect.map(keyed, (coordinator) => ({
         ...coordinator,
         terminate: (sessionId: string) =>
-          endWithKey(coordinator, sessionId).pipe(Effect.provideService(Run, run)),
+          pieces.endWithKey(coordinator, sessionId).pipe(Effect.provideService(Run, run)),
       })),
     ),
   );
