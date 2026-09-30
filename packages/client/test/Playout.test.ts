@@ -655,6 +655,31 @@ layer(hosted)("time", (it) => {
       );
     }),
   );
+
+  it.effect("keeps a firm item due within a clip's length of that clip's end", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const [, , last] = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* last?.started ?? Effect.die("no third item");
+      // The last clip ends 5.2 s from now, with nothing behind it. The firm item may build from
+      // 5.5 s, is Ready about 2.2 s later and airs at once, well before its 9 s deadline, which
+      // falls within that clip's length of its end.
+      const firm = yield* playout.submit({
+        key: key("firm"),
+        lane: "line",
+        request: clip("firm"),
+        window: { notBefore: "5500 millis", startBy: "9 seconds", firm: true },
+      });
+      const started = yield* firm.started;
+      assert.deepStrictEqual(
+        started._tag === "Started" ? started.lateByMillis : started,
+        undefined,
+      );
+    }),
+  );
 });
 
 layer(hosted)("uncertainty", (it) => {

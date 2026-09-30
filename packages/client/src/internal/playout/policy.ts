@@ -304,7 +304,12 @@ interface Session {
    */
   readonly autoplayRetry: { readonly enabled: boolean; readonly at: number } | undefined;
   readonly retiring: boolean;
-  readonly lastEndedAt: number | undefined;
+  /**
+   * The clip that last left the air here, and when on the monotonic clock. Its source may go on
+   * naming it playing for a while: H3 answers an end with the facts it held before it until its
+   * next state and queue reads agree.
+   */
+  readonly lastEnded: { readonly clipId: string; readonly at: number } | undefined;
   readonly startedAny: boolean;
   /** An enqueue here stayed unknown past the deadline: new work goes elsewhere, and a replacement takes over. */
   readonly indeterminate: boolean;
@@ -566,10 +571,12 @@ const playingEndOf = (value: Session | undefined): number | undefined => {
 /**
  * What is left of `value`'s playing clip at `mono`, counted from its observed start. A clip
  * of unknown length may end at any moment, so nothing is counted for it and the plan builds ahead.
+ * Nothing is left of a clip seen to end, though the source may still name it: counted whole
+ * again, it would put what airs next a clip too late.
  */
 const playingRestOf = (value: Session | undefined, mono: number): number => {
   const playing = value?.source?.playing;
-  if (playing?.seconds === undefined) return 0;
+  if (playing?.seconds === undefined || playing.clipId === value?.lastEnded?.clipId) return 0;
   const end = playingEndOf(value);
   return end === undefined ? playing.seconds * 1000 : Math.max(0, end - mono);
 };
@@ -1315,7 +1322,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
     const { clip } = event;
     updateSession(sessionId, {
-      lastEndedAt: now.mono,
+      lastEnded: { clipId: clip.clipId, at: now.mono },
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
     });
     if (clip.tag?._tag === "Filler") {
@@ -1403,7 +1410,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const { clip } = event;
     // A clip that fails on air leaves it as an ended one does, and the switch's grace counts from now.
     const onAir = session(sessionId)?.playing?.clipId === clip.clipId;
-    if (onAir) updateSession(sessionId, { lastEndedAt: now.mono, playing: undefined });
+    if (onAir)
+      updateSession(sessionId, {
+        lastEnded: { clipId: clip.clipId, at: now.mono },
+        playing: undefined,
+      });
     if (clip.tag?._tag === "Filler") {
       if (onAir)
         emit({
@@ -1834,7 +1845,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             wantAutoplay: first,
             autoplayRetry: undefined,
             retiring: false,
-            lastEndedAt: undefined,
+            lastEnded: undefined,
             startedAny: false,
             indeterminate: false,
             unknownFiller: [],
@@ -2089,7 +2100,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       ) &&
       current.unknownFiller.every((entry) => expired(entry.since));
     const graceOver =
-      current.lastEndedAt !== undefined && now.mono >= current.lastEndedAt + config.graceMs;
+      current.lastEnded !== undefined && now.mono >= current.lastEnded.at + config.graceMs;
     if (idle && (!current.startedAny || graceOver)) {
       state = { ...state, air: next.id };
       updateSession(next.id, { wantAutoplay: true });
@@ -2791,7 +2802,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
-      if (value.lastEndedAt !== undefined) later(value.lastEndedAt + config.graceMs);
+      if (value.lastEnded !== undefined) later(value.lastEnded.at + config.graceMs);
       later(value.autoplayRetry?.at);
       later(value.moveRetryAt);
       for (const [index, clip] of readyOf(value).entries()) {
