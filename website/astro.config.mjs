@@ -8,6 +8,8 @@ const repository = "https://github.com/mannyc2/reactor-effect-client";
 export default defineConfig({
   site: "https://mannyc2.github.io",
   base: "/reactor-effect-client",
+  // The pages show the repository's examples by importing their sources.
+  vite: { server: { fs: { allow: [".."] } } },
   integrations: [
     starlight({
       title: "reactor-effect",

@@ -26,6 +26,7 @@
     "release-tools/bun.lock",
     "website/bun.lock",
     "website/.astro/**",
+    "website/src/content/**/*.mdx",
     ".release/**"
   ]
 }
