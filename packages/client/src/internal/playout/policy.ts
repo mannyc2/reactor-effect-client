@@ -2547,6 +2547,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   function decideCommand(sessionId: string): void {
     const value = session(sessionId);
     if (value === undefined || value.busy !== undefined) return;
+    const actual = readyOf(value);
+    const desired = [...actual].sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
     const selected = value.guardItem === undefined ? undefined : items.get(value.guardItem);
@@ -2566,7 +2568,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           !(
             item.phase === "Ready" &&
             item.withdraw === undefined &&
-            readyOf(value)[0]?.clipId === item.clipId &&
+            actual[0]?.clipId === item.clipId &&
+            // Fence before moving another clip ahead: it may start and end while the Move
+            // reply is pending, leaving this clip after a different predecessor.
+            desired[0]?.clipId === item.clipId &&
             sameClip(item.spec.follows, value.source?.playing?.tag)
           ),
       );
@@ -2626,8 +2631,6 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         if (fillerRemovable(value, clip))
           return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
     // Order its Ready clips by rank. A move never ranks across sessions.
-    const actual = readyOf(value);
-    const desired = [...actual].sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     const moved = actual.findIndex((clip, index) => clip.clipId !== desired[index]!.clipId);
     const misplaced = moved < 0 ? undefined : desired[moved];
     if (
