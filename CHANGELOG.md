@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A firm item was dropped `late` at a boundary although it would have started before its `startBy`. Right after a clip ends, H3 answers the end with the facts it held before it, still naming that clip as playing, until its next state and queue reads agree. Meanwhile the playout counted the ended clip's whole length again, so it projected what airs next a clip too late: a firm item waiting to build was dropped, and a firm submission could be refused with `WouldMissDeadline`. In a simulated run of an application's programme, 26 of 589 firm submissions were dropped this way, each exactly on a boundary. A clip seen to end, or to fail on air, now leaves nothing to count. The runway in `state.runwaySeconds`, filler, what fits before a session's cap and cuts read the same count: before, a cut-lane item Ready in the last second of a lower-lane clip started a cut of that clip once it had ended, turning autoplay off at the boundary.
+- `ReactorTest`'s H3 went on naming a clip popped in its seam, armed but not yet started, as playing. With no other clip Ready, the seam's end started nothing and sent no state, so a playout took the popped clip as playing for good, and during a renewal the air stayed dark until the retiring session's cap. Popping an armed clip now leaves the air as a boundary does: the state names nothing playing, and the next Ready clip is armed and starts after a seam of its own.
+
 ## [0.8.0] - 2026-09-29
 
 0.8.0 rebuilds the SDK the way Effect's own packages are built, and breaks the 0.7 API throughout, so a `^0.7.0` range does not include it. The client is flat modules, each exported as a namespace from the root and as its own subpath: `Reactor`, `Session`, `Coordinator`, `H3`, `Playout`, `H3Source`, `LocalSource`, `Media`, `Peer`, `ReactorError` and `ReactorTest`. One `Playout` service replaces the orchestration engine, renewal and scheduler, which each held part of one plan. `ReactorTest`, Reactor simulated in memory at the network edge and driven by the Effect clock, replaces the simulation, `test-kit`, the loopback twin and the test fixtures. The browser and native packages only bind the client's `Peer` port, and the native addon is a napi-rs module shipped in one package per platform.
