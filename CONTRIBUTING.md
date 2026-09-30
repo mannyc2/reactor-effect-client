@@ -45,7 +45,8 @@ or host `protoc` is needed. Node 22.18 strips types, so the examples and the int
 from their TypeScript sources. The `prepare` script patches the installed `typescript` with
 `@effect/tsgo`, and every rule of its Effect language service is an error in `tsconfig.base.json`,
 so `tsc` fails on any finding. `tsc --version` ends in `+effect-tsgo` when the patch is in place; an
-install that skipped lifecycle scripts needs `bunx effect-tsgo patch --typescript`. Native
+install that skipped lifecycle scripts needs `bunx effect-tsgo patch --typescript`. Bun also applies the pinned Node process adapter patch in `patches/`, which keeps
+input-pipe error listeners through teardown after their writers finish. Native
 prerequisites are in [packages/native/README.md](packages/native/README.md); ordinary builds never
 install system packages.
 
