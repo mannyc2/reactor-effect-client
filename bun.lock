@@ -36,6 +36,19 @@
         "vitest": "catalog:",
       },
     },
+    "examples/quickstart": {
+      "name": "reactor-effect-example-quickstart",
+      "version": "0.8.0",
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "effect": "catalog:",
+        "reactor-effect-client": "workspace:*",
+        "reactor-effect-native": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+      },
+    },
     "integration": {
       "name": "reactor-effect-integration",
       "version": "0.9.0",
@@ -696,6 +709,8 @@
     "reactor-effect-client-examples": ["reactor-effect-client-examples@workspace:packages/client/examples"],
 
     "reactor-effect-example-livestream": ["reactor-effect-example-livestream@workspace:examples/livestream"],
+
+    "reactor-effect-example-quickstart": ["reactor-effect-example-quickstart@workspace:examples/quickstart"],
 
     "reactor-effect-integration": ["reactor-effect-integration@workspace:integration"],
 
