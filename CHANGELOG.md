@@ -6,9 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-30
+
+0.9.0 lets a caller ask where a clip would air before writing it, and hold the clip to that place: `Playout.place` projects the boundary a clip submitted after the caller's own work would make, and `follows` keeps an item right after the clip it was written to follow, or drops it as `displaced`. The coordinator's HTTP client is renamed `CoordinatorClient`, and the transport schemas move to `Peer`, so a host implements the transport without importing the HTTP client. It breaks the 0.8 API, so a `^0.8.0` range does not include it. The native Rust sources are unchanged.
+
 Upgrading from 0.8.0:
 
-| 0.8.0                                                                                                | Next breaking release                                                                                                  |
+| 0.8.0                                                                                                | 0.9.0                                                                                                                  |
 | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `reactor-effect-client/Coordinator` and the root `Coordinator` namespace                             | `reactor-effect-client/CoordinatorClient` and `CoordinatorClient`                                                      |
 | `Coordinator.Coordinator` service and `reactor-effect-client/Coordinator` key                        | `CoordinatorClient.CoordinatorClient` and `reactor-effect-client/CoordinatorClient`                                    |
@@ -22,6 +26,8 @@ Upgrading from 0.8.0:
 - A hand-written `Playout` service needs `place`.
 - An insert after an `At` item no longer takes that item's `late`: past the anchor's time it airs at the next boundary, where before it was dropped with the anchor.
 
+Qualification: the main CI run that built these archives passed every job: the shared portable checks, the portable suites on Ubuntu with Node 22 and 24 and on macOS with Node 24, the native addon on linux-x64 and on darwin-arm64 with its suites on Node and on Bun and the Chrome browser/native WebRTC test on Node, and the pack/install smoke of all five archives. No paid hosted run has exercised 0.9.0: `place` and `follows` were measured only on `ReactorTest`, Reactor simulated in memory, so the figures under Added come from a simulation of the-show's air, not from hosted H3. A provider `Started` event is not proof of encoded output.
+
 ### Added
 
 - `Playout.place({ key, seconds, continuity, submitIn })` projects where a clip would land if the caller submits it `submitIn` from now, before the caller writes it: the clip it would follow, the clip projected after it, when it would start, how to submit it, and whether that rests on clips already Ready, on projected builds, or on no measured build. It runs the plan forward at the median build rates, from what is queued, building and Ready, the build slot, filler refills and a renewal, and answers the first boundary the clip could make whose submission its lane would take without dropping one made already. With nothing submitted after the call, the clip airs where `place` said, and on the simulated Reactor with fixed build times it starts within 100 ms of `startsAt`, or 150 ms across a renewal, when the lengths ahead were asked for before; else up to a step of H3's grid (0.7 s) more for each clip ahead at a length not asked for before. `PlaceProbe` and `Placement` are exported, and the `Playout` service gains `place`.
@@ -30,7 +36,6 @@ Upgrading from 0.8.0:
 ### Changed
 
 - The coordinator HTTP client is named `CoordinatorClient`, and transport schemas `Track`, `Mapping`, `IceServer` and `IceCandidate` belong to `Peer`, so browser and native hosts implement the transport without importing the HTTP client.
-
 - An insert after an `At` item takes its time but not its `late`: past that time it airs at the next boundary. Before, a clip inserted after the first beat of a line was dropped when that line's staleness bound passed, though it was not that line. An insert before an `At` item still takes both, since it airs no later than that item.
 
 ### Fixed
@@ -555,7 +560,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/82acb6dc0ad6b445812795d7776c6324603733ab...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/3bc69234ecd4b0d934fa8c381180165f022ae704...main
+[0.9.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.0
 [0.8.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.8.0
 [0.7.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.1
 [0.7.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.0
