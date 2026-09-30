@@ -14,25 +14,28 @@ npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
 
 ## Usage
 
-`BrowserPeer.layer` supplies the `PeerFactory` for `Reactor.layer()`. Building it checks for `RTCPeerConnection` and `MediaStream`, and fails with `UnsupportedHost` without them, before any session is allocated. The HTTP client stays explicit. The page never holds the API key: its `Coordinator.Tokens` ask the application's server for a token that creates the session and then, before each expires, for one bound to it.
+`BrowserPeer.layer` supplies the `PeerFactory` for `Reactor.layer()`. Building it checks for `RTCPeerConnection` and `MediaStream`, and fails with `UnsupportedHost` without them, before any session is allocated. The HTTP client stays explicit. The page never holds the API key: its `CoordinatorClient.Tokens` ask the application's server for a token that creates the session and then, before each expires, for one bound to it.
 
 ```ts
 import { Effect, Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 
 const reactorLayer = Reactor.layer().pipe(
   Layer.provide(
-    Layer.mergeAll(Coordinator.layer({ apiUrl: "https://api.reactor.inc" }), BrowserPeer.layer),
+    Layer.mergeAll(
+      CoordinatorClient.layer({ apiUrl: "https://api.reactor.inc" }),
+      BrowserPeer.layer,
+    ),
   ),
   Layer.provide(FetchHttpClient.layer),
 );
 
 // The tokens come from the application's server, which holds the API key.
-const watch = (element: HTMLVideoElement, tokens: Coordinator.Tokens) =>
+const watch = (element: HTMLVideoElement, tokens: CoordinatorClient.Tokens) =>
   Effect.gen(function* () {
     const reactor = yield* Reactor.Reactor;
     const session = yield* reactor.create({ model: H3.modelName, tokens });

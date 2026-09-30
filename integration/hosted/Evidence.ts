@@ -7,7 +7,7 @@
 import * as Schema from "effect/Schema";
 import type { FailureReason } from "reactor-effect-client/Playout";
 import { CloseReport } from "reactor-effect-client/Session";
-import { Termination } from "reactor-effect-client/Coordinator";
+import { Termination } from "reactor-effect-client/CoordinatorClient";
 import { Check } from "./Spend.js";
 
 export const format = "reactor-hosted-qualification/v2";

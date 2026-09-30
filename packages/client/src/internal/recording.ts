@@ -12,7 +12,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { ReactorError } from "../ReactorError.js";
 import * as Deadline from "./deadline.js";
-import type { Descriptor } from "../Coordinator.js";
+import type { Descriptor } from "../CoordinatorClient.js";
 import type { ClipReady } from "../Session.js";
 
 export interface Segment {
@@ -170,7 +170,7 @@ export const download = Effect.fnUntraced(function* (
   const ended = Effect.gen(function* () {
     const descriptor = yield* fetcher.read(clip.sessionId);
     const due = Number(clip.predictedReadyAtMs) + finishingGraceMs;
-    // Only CLOSED has ended (Coordinator.isTerminal, which imports this module): an
+    // Only CLOSED has ended (CoordinatorClient.isTerminal, which imports this module): an
     // INACTIVE session lost its connection and may still be reconnected.
     if (descriptor.state === "CLOSED" && (yield* Clock.currentTimeMillis) > due)
       return yield* ReactorError.fromCode(

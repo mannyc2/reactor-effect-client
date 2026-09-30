@@ -12,7 +12,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { IceServer, Track } from "reactor-effect-client/Coordinator";
+import type { IceServer, Track } from "reactor-effect-client/Peer";
 import type { AudioFrame, MediaPressure, VideoFrame } from "reactor-effect-client/Media";
 import { PeerState, trackFeed } from "reactor-effect-client/Peer";
 import type { DataChannel, Peer, PeerEvent, Prepared, TrackFeed } from "reactor-effect-client/Peer";

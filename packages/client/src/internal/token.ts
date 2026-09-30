@@ -8,7 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import type { TokenGrant, Tokens } from "../Coordinator.js";
+import type { TokenGrant, Tokens } from "../CoordinatorClient.js";
 import { ReactorError } from "../ReactorError.js";
 
 /**

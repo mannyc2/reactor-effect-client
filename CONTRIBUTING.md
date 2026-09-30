@@ -75,7 +75,7 @@ install system packages.
 ## Where code lives
 
 - `packages/<name>/src/` holds one module per concept, named for it in PascalCase (`Session.ts`,
-  `Coordinator.ts`, `Playout.ts`) and exported as a namespace from `src/index.ts`. Implementation
+  `CoordinatorClient.ts`, `Playout.ts`) and exported as a namespace from `src/index.ts`. Implementation
   detail goes in `src/internal/`, which the export map closes. There are no `utils/`, `common/`,
   `shared/` or layer folders: they hide who owns what.
 - A module lives with its owner, not with one of its readers. A type lives beside the code that

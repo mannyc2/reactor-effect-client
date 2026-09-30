@@ -2,11 +2,11 @@
 
 An independent Effect SDK for Reactor's real-time video models: scoped sessions, the H3 provider, a playout that airs a keyed schedule across renewing sessions, and Reactor simulated in memory for tests. One Bun workspace publishes it as three packages, the native one with an addon package for each supported platform.
 
-| Package                                        | Purpose                                                                                                                   | Runs in                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `Coordinator`, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`, the `Peer` port | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the built-in `RTCPeerConnection`, and `BrowserMedia` for the session's DOM tracks and their playback     | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon: decoded media, in process or in a child process; the addon ships per platform | Node and Bun           |
+| Package                                        | Purpose                                                                                                                         | Runs in                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient`, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`, the `Peer` port | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the built-in `RTCPeerConnection`, and `BrowserMedia` for the session's DOM tracks and their playback           | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a libwebrtc Node-API addon: decoded media, in process or in a child process; the addon ships per platform       | Node and Bun           |
 
 One `Session` owns each allocation or attachment: its commands, connection generations and cleanup evidence. A host package binds the session's `Peer` port and nothing more. `H3` reads that same session, and `Playout` gets its sessions from a source, `H3Source` for paid H3 or `LocalSource` for a local renderer, and never allocates around one. `ReactorTest` stands in for Reactor at the network edge, so the same application runs offline on the Effect clock.
 
@@ -27,12 +27,12 @@ npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.11
 ```ts
 import { Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
 
 const reactorLayer = Reactor.layer().pipe(
-  Layer.provide(Layer.mergeAll(Coordinator.layerConfig, NativePeer.layer())),
+  Layer.provide(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
   Layer.provide(FetchHttpClient.layer),
 );
 ```

@@ -24,7 +24,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import type { Peer, PeerEvent } from "reactor-effect-client/Peer";
@@ -110,7 +110,7 @@ export class Target extends Context.Service<
     readonly adoptAfterMs: number | undefined;
     /** Starts the takeover's owner on the grant; it returns once the owner streams. */
     readonly owner: (
-      grant: Coordinator.TokenGrant,
+      grant: CoordinatorClient.TokenGrant,
       marker: string,
       options?: OwnerOptions,
     ) => Effect.Effect<Owner, OwnerFailed, Scope.Scope | Crypto.Crypto>;
@@ -247,7 +247,7 @@ export const probeOwner = Effect.fnUntraced(function* (script: string) {
  * killed. It holds the grant, never the API key.
  */
 export const own = (input: {
-  readonly grant: Coordinator.TokenGrant;
+  readonly grant: CoordinatorClient.TokenGrant;
   readonly marker: string;
   readonly queuedSeconds?: number | undefined;
   readonly allocated?: ((allocation: H3Source.Allocation) => Effect.Effect<void>) | undefined;
@@ -258,7 +258,7 @@ export const own = (input: {
       const { grant, marker, announce } = input;
       const recorded = yield* Deferred.make<H3Source.Allocation>();
       const source = yield* H3Source.open({
-        tokens: Coordinator.fixedTokens(grant),
+        tokens: CoordinatorClient.fixedTokens(grant),
         onAllocated: ({ allocation }) =>
           Deferred.succeed(recorded, allocation).pipe(
             Effect.andThen(input.allocated?.(allocation) ?? Effect.void),
@@ -375,7 +375,7 @@ export const paid = (input: {
     }),
   ).pipe(
     Layer.provideMerge(Reactor.layer()),
-    Layer.provideMerge(Coordinator.layer({ apiUrl: input.apiUrl, apiKey: input.apiKey })),
+    Layer.provideMerge(CoordinatorClient.layer({ apiUrl: input.apiUrl, apiKey: input.apiKey })),
     Layer.provideMerge(severable),
     Layer.provideMerge(NativePeer.layer()),
     Layer.provideMerge(FetchHttpClient.layer),
@@ -402,7 +402,7 @@ export const ownerProcess = <E>(input: {
     const owned = yield* Schema.decodeEffect(Schema.fromJsonString(OwnerGrant))(
       Option.getOrElse(first, () => ""),
     );
-    const grant: Coordinator.TokenGrant = {
+    const grant: CoordinatorClient.TokenGrant = {
       jwt: Redacted.make(owned.jwt),
       expiresAt: owned.expiresAt,
       maxSessionSeconds: owned.maxSessionSeconds,
@@ -444,7 +444,7 @@ export const rehearsal = (input: {
       return Target.of({
         mode: "rehearsal",
         apiKey: test.apiKey,
-        apiUrl: Coordinator.defaultApiUrl,
+        apiUrl: CoordinatorClient.defaultApiUrl,
         network: "rehearsal against ReactorTest",
         adoptAfterMs: input.adoptAfterMs,
         seams: undefined,
@@ -480,12 +480,12 @@ export const rehearsal = (input: {
                   ),
               })),
             });
-            const coordinator = yield* Coordinator.make().pipe(
+            const coordinator = yield* CoordinatorClient.make().pipe(
               Effect.provideService(HttpClient.HttpClient, client),
               Effect.mapError((error) => OwnerFailed.make({ message: error.message })),
             );
             const reactor = yield* Reactor.make().pipe(
-              Effect.provideService(Coordinator.Coordinator, coordinator),
+              Effect.provideService(CoordinatorClient.CoordinatorClient, coordinator),
               Effect.provideService(PeerFactory, factory),
               Effect.mapError((error) => OwnerFailed.make({ message: error.message })),
             );
@@ -515,7 +515,7 @@ export const rehearsal = (input: {
     }),
   ).pipe(
     Layer.provideMerge(Reactor.layer()),
-    Layer.provideMerge(Coordinator.layer()),
+    Layer.provideMerge(CoordinatorClient.layer()),
     Layer.provideMerge(severable),
     Layer.provideMerge(
       ReactorTest.layer({

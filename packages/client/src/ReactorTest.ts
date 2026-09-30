@@ -21,7 +21,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as Coordinator from "./internal/reactorTest/coordinator.js";
+import * as CoordinatorClient from "./internal/reactorTest/coordinator.js";
 import { clipId } from "./internal/reactorTest/h3.js";
 import * as Media from "./internal/reactorTest/media.js";
 import * as Peer from "./internal/reactorTest/peer.js";
@@ -419,7 +419,7 @@ const simulate = Effect.fnUntraced(function* (input: Input) {
       log: sessions.log,
       inject: sessions.inject,
     }),
-  ).pipe(Context.add(HttpClient.HttpClient, Coordinator.client(sessions)));
+  ).pipe(Context.add(HttpClient.HttpClient, CoordinatorClient.client(sessions)));
   return { sessions, context };
 });
 

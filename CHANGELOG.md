@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Upgrading from 0.8.0:
 
+| 0.8.0                                                                                                | Next breaking release                                                                                                  |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `reactor-effect-client/Coordinator` and the root `Coordinator` namespace                             | `reactor-effect-client/CoordinatorClient` and `CoordinatorClient`                                                      |
+| `Coordinator.Coordinator` service and `reactor-effect-client/Coordinator/Coordinator` key            | `CoordinatorClient.CoordinatorClient` and `reactor-effect-client/CoordinatorClient/CoordinatorClient`                  |
+| `Coordinator.Track`                                                                                  | `Peer.Track`                                                                                                           |
+| `Coordinator.Mapping`                                                                                | `Peer.Mapping`                                                                                                         |
+| `Coordinator.IceServer`                                                                              | `Peer.IceServer`                                                                                                       |
+| `Coordinator.IceCandidate`                                                                           | `Peer.IceCandidate`                                                                                                    |
+| `Coordinator.mintToken`, `Coordinator.pricing`, `Coordinator.inspect`, `Coordinator.terminate` spans | `CoordinatorClient.mintToken`, `CoordinatorClient.pricing`, `CoordinatorClient.inspect`, `CoordinatorClient.terminate` |
+
 - An exhaustive switch over `AsRunStatus` must handle `Dropped` with reason `displaced`.
 - A hand-written `Playout` service needs `place`.
 - An insert after an `At` item no longer takes that item's `late`: past the anchor's time it airs at the next boundary, where before it was dropped with the anchor.
@@ -18,6 +28,8 @@ Upgrading from 0.8.0:
 - `follows` on `ItemSpec` and `InsertSpec` names the clip, an item or a filler clip by its index, that the item must start right after, across a renewal too. The item waits, not airing, until that clip has aired, and is built only while the air ahead of it outlasts its build, or before builds are measured once that clip is Ready ahead of it; autoplay is fenced before its build, so an early end cannot air it before its predecessor, and one not Ready when that clip ends is dropped as `displaced`. A guarded start can wait for one provider command, whose latency `startsAt` does not project. It is dropped with the new `Dropped` reason `displaced` once that clip goes without airing, once another clip starts after it first, as soon as it is projected unable to be Ready by that clip's end, or once it is Ready and would air before that clip. It gets no filler cover, builds independent rather than miss when it continues a clip, and a replacement keeps it. A cutting lane refuses it, as does a `follows` naming the item's own key, a group key, or filler on a playout without filler. In a simulation of the-show's air on the prototype this was built from, 12 shows of 31 minutes with acknowledgements every 45 s on average and writing times from its writer test, `place` with `follows` aired 69% [65-73] of acknowledgements right between the clips they were written for, and none after another clip, against 43% for an estimate from `state` with a firm window, both with this release's fixes. The clip after one stayed a guess: in a quarter to a third of cases it was a line queued after the call.
 
 ### Changed
+
+- The coordinator HTTP client is named `CoordinatorClient`, and transport schemas `Track`, `Mapping`, `IceServer` and `IceCandidate` belong to `Peer`, so browser and native hosts implement the transport without importing the HTTP client.
 
 - An insert after an `At` item takes its time but not its `late`: past that time it airs at the next boundary. Before, a clip inserted after the first beat of a line was dropped when that line's staleness bound passed, though it was not that line. An insert before an `At` item still takes both, since it airs no later than that item.
 

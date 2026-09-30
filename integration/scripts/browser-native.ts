@@ -43,7 +43,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import * as Coordinator from "reactor-effect-client/Coordinator";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
@@ -164,10 +164,10 @@ const RelayPair = Schema.Struct({
 
 const Offer = Schema.Struct({
   sdp_offer: Schema.String,
-  track_mapping: Schema.Array(Coordinator.Mapping),
+  track_mapping: Schema.Array(CoordinatorClient.Mapping),
 });
 const IceBatch = Schema.Struct({
-  candidates: Schema.Array(Coordinator.IceCandidate),
+  candidates: Schema.Array(CoordinatorClient.IceCandidate),
   is_final: Schema.optionalKey(Schema.Boolean),
 });
 const Answer = Schema.Struct({ sdp: Schema.String });
@@ -193,7 +193,7 @@ const PageIceServer = Schema.Struct({
 });
 const NativeOffer = Schema.Struct({
   sdp: Schema.String,
-  mapping: Schema.Array(Coordinator.Mapping),
+  mapping: Schema.Array(CoordinatorClient.Mapping),
   fixture: Schema.Struct({ forceRelay: Schema.Boolean, iceServers: Schema.Array(PageIceServer) }),
 });
 const PageCandidate = Schema.Struct({
@@ -294,7 +294,7 @@ const enoughMedia = (tally: Tally): boolean =>
 // --- The coordinator and the page's endpoints ---------------------------------------------------
 
 const sessionId = "sess_native_browser_fixture";
-const tracks: ReadonlyArray<Coordinator.Track> = [
+const tracks: ReadonlyArray<CoordinatorClient.Track> = [
   { name: "browser_video", kind: "video", direction: "recvonly" },
   { name: "browser_audio", kind: "audio", direction: "recvonly" },
 ];
@@ -363,7 +363,7 @@ const routes = (fixture: Fixture) => {
   }));
   const describe = (status: number) =>
     descriptor.pipe(
-      Effect.flatMap((value) => coordinatorReply(Coordinator.Descriptor)(value, status)),
+      Effect.flatMap((value) => coordinatorReply(CoordinatorClient.Descriptor)(value, status)),
     );
   const transport = `/sessions/${sessionId}/transport/webrtc`;
   const connection = `${transport}/connections/:connection`;
@@ -423,7 +423,7 @@ const routes = (fixture: Fixture) => {
       "GET",
       `${transport}/ice_servers`,
       answered(
-        coordinatorReply(Coordinator.IceServersReply)({
+        coordinatorReply(CoordinatorClient.IceServersReply)({
           ice_servers: settings.forceRelay
             ? [
                 {
@@ -441,7 +441,7 @@ const routes = (fixture: Fixture) => {
     HttpRouter.route(
       "POST",
       `${transport}/connections`,
-      answered(coordinatorReply(Coordinator.Registered)({ connection_id: 1001 })),
+      answered(coordinatorReply(CoordinatorClient.Registered)({ connection_id: 1001 })),
     ),
     HttpRouter.route("POST", `${connection}/sdp_params`, offered),
     HttpRouter.route("PUT", `${connection}/sdp_params`, offered),
@@ -455,7 +455,7 @@ const routes = (fixture: Fixture) => {
             return json({ error: "browser fixture failed before answering" }, 500);
           const answer = yield* Ref.get(fixture.answer);
           if (answer === undefined) return json({}, 202);
-          return yield* coordinatorReply(Coordinator.SdpAnswer)({ sdp_answer: answer });
+          return yield* coordinatorReply(CoordinatorClient.SdpAnswer)({ sdp_answer: answer });
         }),
       ),
     ),
@@ -556,7 +556,7 @@ const routes = (fixture: Fixture) => {
   ];
 };
 
-const pageCandidate = (candidate: Coordinator.IceCandidate): PageCandidate => ({
+const pageCandidate = (candidate: CoordinatorClient.IceCandidate): PageCandidate => ({
   candidate: candidate.candidate,
   ...(candidate.sdp_mid === undefined ? {} : { sdpMid: candidate.sdp_mid }),
   ...(candidate.sdp_mline_index === undefined ? {} : { sdpMLineIndex: candidate.sdp_mline_index }),
@@ -682,7 +682,7 @@ const nativeSession = Effect.fnUntraced(function* (
   chromeExited: Deferred.Deferred<void>,
 ) {
   const services = yield* Layer.build(
-    Layer.merge(NativePeer.layer(), Coordinator.layer({ apiUrl: url })),
+    Layer.merge(NativePeer.layer(), CoordinatorClient.layer({ apiUrl: url })),
   );
   const factory = yield* Reactor.make({
     connectTimeout: "45 seconds",

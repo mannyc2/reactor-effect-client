@@ -17,7 +17,7 @@ import {
   Scope,
   Stream,
 } from "effect";
-import * as Coordinator from "../src/Coordinator.js";
+import * as CoordinatorClient from "../src/CoordinatorClient.js";
 import * as H3 from "../src/H3.js";
 import {
   H3Source,
@@ -36,7 +36,7 @@ const clip = (prompt: string, seconds = 5): H3.Request => ({ prompt, seconds });
 const tokens = (maxSessionDuration: Duration.Input) =>
   Effect.gen(function* () {
     const test = yield* ReactorTest.ReactorTest;
-    const coordinator = yield* Coordinator.Coordinator;
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
     return coordinator.tokens({
       apiKey: test.apiKey,
       modelName: H3.modelName,
@@ -2314,7 +2314,7 @@ layer(hosted)("resume after the owner's token expired", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
-      const coordinator = yield* Coordinator.Coordinator;
+      const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const sessionTokens = coordinator.tokens({
         apiKey: test.apiKey,
         modelName: H3.modelName,

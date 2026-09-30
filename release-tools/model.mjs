@@ -36,7 +36,7 @@ export const packages = Object.freeze([
     name: "reactor-effect-client",
     exports: [
       ".",
-      "./Coordinator",
+      "./CoordinatorClient",
       "./H3",
       "./H3Source",
       "./LocalSource",

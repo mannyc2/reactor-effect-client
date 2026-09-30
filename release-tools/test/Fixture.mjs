@@ -138,7 +138,7 @@ const workspace = {
       ".": entry("index"),
       ...Object.fromEntries(
         [
-          "Coordinator",
+          "CoordinatorClient",
           "H3",
           "H3Source",
           "LocalSource",
