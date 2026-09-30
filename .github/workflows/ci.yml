@@ -105,6 +105,12 @@ jobs:
           - os: macos-15
             node: "24.15.0"
     steps:
+      # Spotlight indexes every file the job checks out and installs; on the
+      # 3-core runner it takes about a core from the suites.
+      - name: Stop Spotlight indexing
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
