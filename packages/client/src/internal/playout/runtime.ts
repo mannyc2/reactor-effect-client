@@ -9,6 +9,7 @@
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -25,6 +26,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as Tracer from "effect/Tracer";
 import type * as Playout from "../../Playout.js";
 import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
@@ -55,6 +57,22 @@ type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
 type Command = Extract<Policy.Action, { _tag: "Command" }>;
+type Input = { readonly input: Policy.Input; readonly parent?: Tracer.ExternalSpan | undefined };
+type QueuedCommand = {
+  readonly action: Command;
+  readonly parent: Tracer.ExternalSpan | undefined;
+};
+
+// Queued work keeps only trace identity, rather than the caller's mutable span and services.
+const currentParent = Effect.map(Effect.serviceOption(Tracer.ParentSpan), (parent) => {
+  let span = Option.getOrUndefined(parent);
+  // Match Effect's parent selection: disabled spans are skipped, never exported as "noop" IDs.
+  while (span !== undefined && Context.get(span.annotations, Tracer.DisablePropagation))
+    span = span._tag === "Span" ? Option.getOrUndefined(span.parent) : undefined;
+  return span === undefined
+    ? undefined
+    : Tracer.externalSpan({ traceId: span.traceId, spanId: span.spanId, sampled: span.sampled });
+});
 
 /** Close reports kept beyond the unconfirmed ones. */
 const retainedReports = 8;
@@ -180,7 +198,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const openTimeout = options.renewal?.openTimeout ?? "3 minutes";
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<R>();
-  const inbox = yield* Queue.unbounded<Policy.Input>();
+  const acquisition = yield* currentParent;
+  const inbox = yield* Queue.unbounded<Input>();
   const events = yield* PubSub.unbounded<Playout.Event>();
   const state = yield* Ref.make(Policy.initial);
   const ids = yield* Ref.make(0);
@@ -193,6 +212,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   );
   const drains = yield* Ref.make(new Map<number, Deferred.Deferred<void>>());
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
+  const parents = yield* Ref.make(new Map<ItemKey, Tracer.ExternalSpan | undefined>());
   // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
     new Map<
@@ -200,7 +220,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       {
         readonly source: Playout.Source;
         readonly scope: Scope.Closeable;
-        readonly lane: Queue.Queue<Command>;
+        readonly lane: Queue.Queue<QueuedCommand>;
       }
     >(),
   );
@@ -221,7 +241,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
   const nextId = Ref.modify(ids, (id) => [id + 1, id + 1] as const);
-  const offer = (input: Policy.Input) => Queue.offer(inbox, input);
+  const offer = (input: Policy.Input, parent?: Tracer.ExternalSpan) =>
+    Queue.offer(inbox, { input, parent });
+  const links = (parent?: Tracer.ExternalSpan): ReadonlyArray<Tracer.SpanLink> =>
+    acquisition === undefined ||
+    (parent?.traceId === acquisition.traceId && parent.spanId === acquisition.spanId)
+      ? []
+      : [{ span: acquisition, attributes: {} }];
 
   const handle = (key: ItemKey): Effect.Effect<Handle> =>
     Effect.gen(function* () {
@@ -307,7 +333,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     }),
   });
 
-  const run = (action: Command): Effect.Effect<Policy.CommandResult> =>
+  const run = ({ action, parent }: QueuedCommand): Effect.Effect<Policy.CommandResult> =>
     Effect.gen(function* () {
       const entry = (yield* Ref.get(sources)).get(action.sessionId);
       if (entry === undefined) return gone(action.command);
@@ -331,7 +357,24 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             return source.play(command.clipId);
         }
       });
-      const exit = yield* Effect.exit(result);
+      const exit = yield* result.pipe(
+        Effect.withSpan(
+          "Playout.command",
+          {
+            parent,
+            root: parent === undefined,
+            links: links(parent),
+            attributes: {
+              "reactor.playout.command": command._tag,
+              "reactor.playout.command.id": action.id,
+              "reactor.session.id": action.sessionId,
+              ...(action.key === undefined ? {} : { "reactor.playout.item.key": action.key }),
+            },
+          },
+          { captureStackTrace: false },
+        ),
+        Effect.exit,
+      );
       if (Exit.isSuccess(exit))
         return {
           _tag: "Done",
@@ -355,6 +398,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         orElse: () =>
           Effect.fail(ReactorError.fromCode("Timeout", "opening a session took too long")),
       }),
+      Effect.withSpan("Playout.open", { root: true, links: links() }, { captureStackTrace: false }),
       Scope.provide(child),
       Effect.provide(context),
       Effect.exit,
@@ -400,10 +444,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     yield* Ref.set(lastOpenError, undefined);
     // The session's commands, one at a time and in order. Its worker lives in the session's
     // scope, so the lane ends with the session.
-    const lane = yield* Queue.unbounded<Command>();
+    const lane = yield* Queue.unbounded<QueuedCommand>();
     yield* Effect.forever(
-      Effect.flatMap(take(lane), (action) =>
-        Effect.flatMap(run(action), (result) => offer({ _tag: "Result", id: action.id, result })),
+      Effect.flatMap(take(lane), (queued) =>
+        Effect.flatMap(run(queued), (result) =>
+          offer({ _tag: "Result", id: queued.action.id, result }),
+        ),
       ),
     ).pipe(Effect.forkIn(child));
     yield* Ref.update(sources, (all) =>
@@ -471,7 +517,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       switch (action._tag) {
         case "Command": {
           const entry = (yield* Ref.get(sources)).get(action.sessionId);
-          if (entry !== undefined) return yield* Queue.offer(entry.lane, action);
+          if (entry !== undefined) {
+            const parent =
+              action.key === undefined ? undefined : (yield* Ref.get(parents)).get(action.key);
+            return yield* Queue.offer(entry.lane, { action, parent });
+          }
           return yield* offer({ _tag: "Result", id: action.id, result: gone(action.command) });
         }
         case "Open":
@@ -526,6 +576,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           return;
         }
         case "Forget":
+          yield* Ref.update(parents, (all) => {
+            const next = new Map(all);
+            for (const key of action.keys) next.delete(key);
+            return next;
+          });
           return yield* Ref.update(handles, (all) => {
             const next = new Map(all);
             for (const key of action.keys) next.delete(key);
@@ -545,10 +600,28 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       }
     });
 
-  const apply = (input: Policy.Input): Effect.Effect<number | undefined> =>
+  const apply = (
+    input: Policy.Input,
+    parent?: Tracer.ExternalSpan,
+  ): Effect.Effect<number | undefined> =>
     Effect.gen(function* () {
       const result = Policy.step(config, yield* Ref.get(state), input, yield* now);
       yield* Ref.set(state, result.state);
+      // A step can both accept and dispatch, or even forget, an item. Register ownership
+      // before carrying out its actions; a duplicate admission keeps the original owner.
+      if (input._tag === "Edit")
+        yield* Ref.update(parents, (all) => {
+          const next = new Map(all);
+          for (const action of result.actions)
+            if (
+              action._tag === "Emit" &&
+              action.event._tag === "AsRun" &&
+              action.event.event.status._tag === "Accepted" &&
+              !next.has(action.event.event.key)
+            )
+              next.set(action.event.event.key, parent);
+          return next;
+        });
       yield* Effect.forEach(result.actions, act, { discard: true });
       return result.wake;
     });
@@ -589,7 +662,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       // Nothing falls due before the wake: a wait that ends short of it, on a clock coarser than
       // the wake, waits on.
       if (Option.isNone(input) && wake !== undefined && (yield* monotonic) < wake) continue;
-      wake = yield* apply(Option.getOrElse(input, (): Policy.Input => ({ _tag: "Tick" })));
+      const received = Option.getOrElse(input, (): Input => ({ input: { _tag: "Tick" } }));
+      wake = yield* apply(received.input, received.parent);
     }
   }).pipe(
     Effect.catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause), crashed),
@@ -724,7 +798,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         (index) => claim(withdrawals, `${id}:${index}`),
         { discard: true },
       ).pipe(Effect.andThen(claim(commits, id)));
-      yield* offer({ _tag: "Edit", id, edits, batch });
+      yield* offer({ _tag: "Edit", id, edits, batch }, yield* currentParent);
       const answer = yield* unlessStopped(reply, closed).pipe(
         Effect.ensuring(claim(replies, id)),
         Effect.onError(() => forget),
