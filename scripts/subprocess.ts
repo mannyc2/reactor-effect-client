@@ -101,8 +101,9 @@ const monotonicSeconds = Clock.clockWith((clock) => clock.monotonicTimeNanos).pi
 /**
  * Runs `step` with its stdout and stderr collected rather than streamed, and prints them whole
  * under its label and time once it ends, so steps running side by side don't interleave. A step
- * ended early, because another failed, prints only that it stopped. The child leads its own process
- * group, so ending it ends everything it started.
+ * ended early, because another failed, prints only that it stopped, and its child is sent SIGTERM,
+ * then SIGKILL 5 s later. Like `runInherited`'s, the child stays in this process group, so an
+ * interrupt typed at the terminal reaches it and everything it started.
  */
 export const runStep = Effect.fnUntraced(function* (step: Step) {
   const command = [step.command, ...step.args].join(" ");
@@ -128,6 +129,7 @@ export const runStep = Effect.fnUntraced(function* (step: Step) {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      detached: false,
       forceKillAfter: "5 seconds",
     });
     const [, status] = yield* Effect.all(
