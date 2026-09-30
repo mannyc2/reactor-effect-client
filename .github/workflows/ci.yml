@@ -54,13 +54,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
 
       # Generation, format, lint, dependency-ordered build, every workspace's
-      # typecheck, the examples' offline tests and browser
-      # bundle, portable tests and the Node/Bun import guards. Runs once;
-      # nothing here varies by host.
+      # typecheck and the examples' offline tests and browser bundle. Runs
+      # once; nothing here varies by host. The rest of the portable profile,
+      # the import guards and the portable tests, runs in the runtime jobs,
+      # one of which has this job's OS, Node and Bun.
       - name: Shared portable verification
         env:
           EXAMPLES_REQUIRE_FFMPEG: "1"
-        run: bun run verify --profile portable
+        run: bun run verify --profile shared
 
       - name: Install isolated release tooling
         run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts

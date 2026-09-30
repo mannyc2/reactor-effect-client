@@ -28,6 +28,12 @@ const portable: Stages = [
   ["generate:check", "format:check", "build"],
   ["imports", "lint", "typecheck", "check:examples", "test:portable"],
 ];
+// The portable checks whose outcome can't depend on the host, which CI runs
+// once; `runtime` runs the rest on each host.
+const shared: Stages = [
+  ["generate:check", "format:check", "build"],
+  ["lint", "typecheck", "check:examples"],
+];
 // Native and integration tests import the built client package, and nothing
 // runs beside them: the media load tests measure the bridge, not contention.
 const native: Stages = [
@@ -41,6 +47,7 @@ const runtime: Stages = [["build"], ["imports", "test:portable"]];
 const packaging: Stages = [["test:pack"]];
 const profiles: Readonly<Record<string, Stages>> = {
   portable,
+  shared,
   runtime,
   native,
   package: packaging,

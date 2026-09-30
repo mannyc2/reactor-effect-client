@@ -240,16 +240,17 @@ typechecking, linting or running examples.
 | `release-tools/`                | `bun install --cwd release-tools --frozen-lockfile`, `bun run check:release` |
 | Documentation only              | `bun run format:check` and `git diff --check`                                |
 
-The portable profile runs `generate:check`, `format:check` and `build` side by side, then the
-import guards, `lint`, `typecheck`, `check:examples` and `test:portable` side by side. The last two
-run every example's tests and every Vitest project (client, browser, the hosted rehearsals) on Node
-and on Bun at once, and print each run's output whole, with its time, when it ends. The native
-profile runs one command at a time: it builds, then `native:build` stages the addon into its
-platform package, `native:test` runs the Rust checks and the native suites, and
-`test:integration` runs real Chrome against it. `--list` prints a profile's stages. Inside a
-package, `node node_modules/vitest/vitest.mjs run <file>` runs one suite on Node and
-`bun --bun node_modules/vitest/vitest.mjs run <file>` on Bun. Report checks that couldn't run, and
-why.
+The portable profile runs `generate:check`, `format:check` and `build` side by side, then the import
+guards, `lint`, `typecheck`, `check:examples` and `test:portable` side by side. The last two run
+every example's tests and every Vitest project (client, browser, the hosted rehearsals) on Node and
+on Bun at once, and print each run's output whole, with its time, when it ends. CI splits the
+profile: `shared`, the checks no host changes, runs once, and `runtime`, the build, import guards
+and `test:portable`, runs on each host. The native profile runs one command at a time: it builds,
+then `native:build` stages the addon into its platform package, `native:test` runs the Rust checks
+and the native suites, and `test:integration` runs real Chrome against it. `--list` prints a
+profile's stages. Inside a package, `node node_modules/vitest/vitest.mjs run <file>` runs one suite
+on Node and `bun --bun node_modules/vitest/vitest.mjs run <file>` on Bun. Report checks that
+couldn't run, and why.
 
 ## Dependencies and notices
 
