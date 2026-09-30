@@ -192,6 +192,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     new Map<string, Deferred.Deferred<Playout.WithdrawOutcome>>(),
   );
   const drains = yield* Ref.make(new Map<number, Deferred.Deferred<void>>());
+  const placements = yield* Ref.make(
+    new Map<number, Deferred.Deferred<Playout.Placement | null>>(),
+  );
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
   // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
@@ -525,6 +528,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           if (drain !== undefined) yield* Deferred.succeed(drain, undefined);
           return;
         }
+        case "Placed": {
+          const placed = yield* claim(placements, action.id);
+          if (placed !== undefined) yield* Deferred.succeed(placed, action.placement);
+          return;
+        }
         case "Forget":
           return yield* Ref.update(handles, (all) => {
             const next = new Map(all);
@@ -631,6 +639,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       readonly continuity?: "previous" | undefined;
       readonly window?: Playout.Window | undefined;
       readonly start?: Playout.Start | undefined;
+      readonly follows?: Playout.ClipTag | undefined;
     },
     laneIndex: number,
   ): Effect.Effect<Policy.Spec, InvalidItem> =>
@@ -690,11 +699,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           input.continuity,
           window,
           normalized,
+          input.follows,
         ]),
         cues,
         continuity: input.continuity === "previous",
         ...(window === undefined ? {} : { window }),
         start: normalized,
+        ...(input.follows === undefined ? {} : { follows: input.follows }),
       };
       return result;
     });
@@ -883,6 +894,36 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           key,
           message: answer.refusal._tag === "InvalidItem" ? answer.refusal.message : "not released",
         });
+    }),
+    place: Effect.fn("Playout.place")(function* (probe: Playout.PlaceProbe) {
+      const key = yield* itemKey(probe.key);
+      const seconds = probe.seconds ?? requestSeconds.min;
+      if (!Number.isFinite(seconds) || seconds < requestSeconds.min || seconds > requestSeconds.max)
+        return yield* InvalidItem.make({
+          key,
+          message: `seconds must be from ${requestSeconds.min} to ${requestSeconds.max}`,
+        });
+      const submitIn =
+        probe.submitIn === undefined
+          ? Option.some(0)
+          : Option.map(Duration.fromInput(probe.submitIn), Duration.toMillis);
+      if (Option.isNone(submitIn) || !Number.isFinite(submitIn.value))
+        return yield* InvalidItem.make({ key, message: "submitIn must be a finite duration" });
+      const id = yield* nextId;
+      const reply = yield* Deferred.make<Playout.Placement | null>();
+      yield* register(placements, id, reply);
+      yield* offer({
+        _tag: "Place",
+        id,
+        probe: {
+          seconds,
+          continuity: probe.continuity === "previous",
+          submitInMs: submitIn.value,
+        },
+      });
+      return yield* unlessStopped(reply, Effect.succeed(null)).pipe(
+        Effect.ensuring(claim(placements, id)),
+      );
     }),
     withdraw: Effect.fn("Playout.withdraw")(function* (key: ItemKey) {
       const none = Effect.succeed({ results: [] as ReadonlyArray<Playout.EditResult> });

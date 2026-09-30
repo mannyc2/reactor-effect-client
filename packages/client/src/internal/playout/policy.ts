@@ -21,6 +21,7 @@ import type {
   Event,
   FillContext,
   NotStarted,
+  Placement,
   PlayingClip,
   Settled,
   SourceClip,
@@ -30,7 +31,7 @@ import type {
   WithdrawOutcome,
 } from "../../Playout.js";
 import { requestSeconds } from "../h3/profile.js";
-import type { ItemKey } from "./errors.js";
+import { ItemKey } from "./errors.js";
 
 export type Late = "nextBoundary" | "drop" | { readonly skipAfterMs: number };
 
@@ -55,6 +56,16 @@ export interface Spec {
   readonly start:
     | { readonly _tag: "Follow" | "Asap" | "Manual" }
     | { readonly _tag: "At"; readonly time: number; readonly late: Late };
+  /** The clip it airs right after, or it is dropped as `displaced`. */
+  readonly follows?: ClipTag;
+}
+
+/** `place`'s question, as the runtime normalized it. */
+export interface Probe {
+  readonly seconds: number;
+  readonly continuity: boolean;
+  /** How long until the caller submits the clip. */
+  readonly submitInMs: number;
 }
 
 export type EditInput =
@@ -133,7 +144,9 @@ export type Input =
   | { readonly _tag: "Lost"; readonly sessionId: string; readonly reason: string }
   | { readonly _tag: "Result"; readonly id: number; readonly result: CommandResult }
   | { readonly _tag: "Tick" }
-  | { readonly _tag: "Close" };
+  | { readonly _tag: "Close" }
+  /** Where a clip like `probe` would land. */
+  | { readonly _tag: "Place"; readonly id: number; readonly probe: Probe };
 
 export type Refusal =
   | { readonly _tag: "KeyMismatch"; readonly key: ItemKey }
@@ -168,6 +181,8 @@ export type Action =
       readonly outcome: WithdrawOutcome;
     }
   | { readonly _tag: "Drained"; readonly id: number }
+  /** The answer to a `Place`. */
+  | { readonly _tag: "Placed"; readonly id: number; readonly placement: Placement | null }
   /**
    * The playout fails for good: `open` when sessions could not be opened, `lost`
    * when they were lost before playing, `moderation` when content moderation
@@ -224,7 +239,7 @@ export interface Now {
 }
 
 type Phase = "Accepted" | "Building" | "Ready" | "Started" | "Settled" | "Unknown";
-type DropReason = "late" | "withdrawn" | "replaced";
+type DropReason = "late" | "withdrawn" | "replaced" | "displaced";
 
 interface Item {
   readonly spec: Spec;
@@ -285,6 +300,8 @@ interface Item {
   readonly discarded?: { readonly sessionId: string; readonly clipId: string } | undefined;
   /** The provider's length for its clip, once it started. */
   readonly airSeconds?: number | undefined;
+  /** The clip it `follows` has been on air while it waited. */
+  readonly followsAired?: boolean | undefined;
 }
 
 interface Session {
@@ -447,6 +464,10 @@ export interface State {
     | undefined;
   readonly starving: boolean;
   readonly starved: number;
+  /** The clip that last started on air, on any session: an item admitted now may follow it. */
+  readonly lastOnAir:
+    | { readonly sessionId: string; readonly clipId: string; readonly tag: ClipTag | undefined }
+    | undefined;
 }
 
 export interface Step {
@@ -490,6 +511,7 @@ export const initial: State = {
   cutting: undefined,
   starving: false,
   starved: 0,
+  lastOnAir: undefined,
 };
 
 const retryDelayMs = 1_000;
@@ -502,6 +524,17 @@ const setupDelayMs = (config: Config, consecutive: number): number =>
 const cutMarginMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
+/**
+ * How long before a boundary a clip must be Ready to air there ahead of the clips queued: H3 arms
+ * its queue's head as a clip ends, so the plan must have seen the clip Ready and its move must
+ * have landed. A state read and a move take 0.1 to 0.2 s on hosted H3, and a command already in
+ * flight on the session holds the move up to 0.1 s more.
+ */
+const readinessMarginMs = 250;
+/** A clip's end to the next one's start: hosted median 36 ms, n = 44. */
+const seamMs = 40;
+/** The key the clip `place` asks about goes by in a forward run; no item's. */
+const probeKey = ItemKey.make("\u0000placement probe");
 /**
  * Looks one step takes at most. None in the property's scripts decided anything past its
  * second look: the bound only keeps a fault from spinning the loop.
@@ -581,6 +614,49 @@ const playingRestOf = (value: Session | undefined, mono: number): number => {
   return end === undefined ? playing.seconds * 1000 : Math.max(0, end - mono);
 };
 
+/** Whether `tag` is the clip `named`; a clip this playout did not enqueue is none. */
+const sameClip = (named: ClipTag, tag: ClipTag | undefined): boolean => {
+  if (tag === undefined) return false;
+  switch (named._tag) {
+    case "Item":
+      return tag._tag === "Item" && tag.key === named.key;
+    case "Filler":
+      return tag._tag === "Filler" && tag.index === named.index;
+  }
+};
+/**
+ * Whether an item that `follows` a clip must still wait, not airing, for that clip to air. One
+ * inserted right after the very item it follows is kept behind it by rank already, unless that
+ * item waits too.
+ */
+const followHeld = (
+  item: Item,
+  aired: (item: Item) => boolean,
+  itemOf: (key: ItemKey) => Item | undefined,
+): boolean => {
+  const follows = item.spec.follows;
+  if (follows === undefined || aired(item)) return false;
+  const anchor =
+    item.inserted &&
+    item.anchor?.side === "after" &&
+    follows._tag === "Item" &&
+    follows.key === item.anchor.key
+      ? itemOf(item.anchor.key)
+      : undefined;
+  return anchor === undefined || followHeld(anchor, aired, itemOf);
+};
+const followsAiredOf = (item: Item): boolean => item.followsAired === true;
+/**
+ * The start an insert takes from its anchor. A playing anchor's is spent, so the insert follows it
+ * at the next boundary. An `At` anchor's lateness belongs to the anchor's content: past its time
+ * the insert airs at the next boundary.
+ */
+const insertStart = (anchor: Item): Spec["start"] => {
+  if (anchor.phase === "Started") return { _tag: "Follow" };
+  const start = anchor.spec.start;
+  return start._tag === "At" ? { ...start, late: "nextBoundary" } : start;
+};
+
 /**
  * Whether a Ready clip airs when its turn comes: it isn't held, waiting on its
  * batch or an anchor still ahead, or withdrawn. A clip that is no item's airs.
@@ -594,7 +670,8 @@ const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): 
     item.mode !== "held" &&
     item.batch === undefined &&
     (at === undefined || at <= now.mono) &&
-    item.withdraw === undefined
+    item.withdraw === undefined &&
+    !followHeld(item, followsAiredOf, (key) => items.get(key))
   );
 };
 
@@ -629,6 +706,53 @@ const fateOf = (item: Item): WithdrawOutcome => {
     item.startedAt !== undefined || item.phase === "Started" || item.status?._tag === "Ended";
   return started ? "already-started" : "not-found";
 };
+
+/** A clip in a forward run of the plan. */
+interface Projected {
+  /** Undefined for a clip this playout did not enqueue. */
+  readonly tag: ClipTag | undefined;
+  /** The item it is for; the probed clip's is never put in the plan. */
+  readonly item: Item | undefined;
+  readonly sessionId: string;
+  readonly clipId: string | undefined;
+  /** How long it airs. */
+  readonly seconds: number;
+  /** Monotonic milliseconds when it is Ready; now for a clip Ready when the run starts. */
+  readonly readyAt: number;
+  /** A build still to finish when the run starts. */
+  readonly projected: boolean;
+  readonly continued: boolean;
+}
+
+/** The clip `place` asks about, submitted at `submitAt`. */
+interface Hypothesis {
+  readonly item: Item;
+  readonly submitAt: number;
+  readonly anchor: ItemKey | "next";
+}
+
+/** A build in flight when a forward run starts. */
+interface Flight {
+  readonly at: number;
+  readonly seconds: number;
+  readonly continued: boolean;
+  readonly tag: ClipTag | undefined;
+  readonly item: Item | undefined;
+  readonly clipId: string | undefined;
+}
+
+/** What a forward run aired, from the clip on air, and what became of the clip `place` asks about. */
+interface Run {
+  readonly aired: ReadonlyArray<{ readonly clip: Projected; readonly start: number }>;
+  readonly probe:
+    | {
+        readonly readyAt: number | undefined;
+        readonly continued: boolean;
+        /** Its place in `aired`, if it aired. */
+        readonly index: number | undefined;
+      }
+    | undefined;
+}
 
 /** One look at the plan: applies the input, then decides what is due at `now`. */
 const decide = (config: Config, previous: State, input: Input, now: Now): Step => {
@@ -782,8 +906,19 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
   const rankItem = (item: Item): Rank => {
     const at = atMono(item);
-    if (item.mode === "held" || (at !== undefined && now.mono < at) || item.batch !== undefined)
+    if (
+      item.mode === "held" ||
+      (at !== undefined && now.mono < at) ||
+      item.batch !== undefined ||
+      heldForFollows(item)
+    )
       return [lanes + 1, 1, item.order, item.generation];
+    return airRank(item);
+  };
+  const heldForFollows = (item: Item): boolean =>
+    followHeld(item, followsAiredOf, (key) => items.get(key));
+  /** `rankItem` once nothing holds the item back. */
+  const airRank = (item: Item): Rank => {
     // Its build continues the Ready clip it follows on its session, so it airs right behind that
     // clip until that clip starts. An item accepted again for a rebuild follows nothing yet.
     const followed =
@@ -1030,6 +1165,24 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             message: "a held Manual item cannot anchor an insert",
           });
       }
+      // A cut airs when its clip is Ready, not at a boundary, so it can't follow a clip.
+      const lane =
+        edit._tag === "Submit"
+          ? edit.spec.lane
+          : edit._tag === "Insert"
+            ? (items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side))?.spec.lane
+            : undefined;
+      if (
+        (edit._tag === "Submit" || edit._tag === "Insert") &&
+        edit.spec.follows !== undefined &&
+        lane !== undefined &&
+        config.lanes[lane]?.cut === true
+      )
+        return refuse({
+          _tag: "InvalidItem",
+          key: edit.spec.key,
+          message: "an item in a cutting lane cannot follow a clip",
+        });
       if (edit._tag === "Replace" && !live(items.get(edit.key)) && !items.has(edit.spec.key))
         return refuse({
           _tag: "InvalidItem",
@@ -1113,15 +1266,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
               edit.side === "before"
                 ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
                 : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
-            // A playing anchor's start is spent: the insert follows it at the next boundary.
             const playing = anchor.phase === "Started";
             put(
               newItem(
-                {
-                  ...edit.spec,
-                  lane: anchor.spec.lane,
-                  start: playing ? { _tag: "Follow" } : anchor.spec.start,
-                },
+                { ...edit.spec, lane: anchor.spec.lane, start: insertStart(anchor) },
                 {
                   order: (anchor.order + neighbour) / 2,
                   group:
@@ -1224,6 +1372,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const pending = batched && (adds.length > 0 || targets.length > 0);
     for (const key of adds) {
       set(key, { batch: pending && batched ? id : undefined });
+      // A clip it follows that was the last on air has aired; one that aired before that is gone,
+      // and the sweep drops the item at once.
+      const follows = items.get(key)?.spec.follows;
+      if (follows !== undefined)
+        set(key, { followsAired: sameClip(follows, state.lastOnAir?.tag) });
       asRun(key, { _tag: "Accepted" });
     }
     actions.push({ _tag: "Accepted", id, results });
@@ -1273,6 +1426,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       startedAny: true,
       playing: { ...clip, at: now.mono, wall: now.wall },
     });
+    onAirChanged(sessionId, clip);
     if (clip.tag?._tag === "Filler")
       emit({
         _tag: "Filler",
@@ -1281,6 +1435,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         at: now.wall,
         seconds: clip.seconds,
       });
+  };
+  /**
+   * Records the clip now on air. The clip an item follows starting has aired; once it has, any
+   * other clip starting before the item displaces it.
+   */
+  const onAirChanged = (sessionId: string, clip: PlayingClip): void => {
+    state = { ...state, lastOnAir: { sessionId, clipId: clip.clipId, tag: clip.tag } };
+    for (const item of [...items.values()]) {
+      const follows = item.spec.follows;
+      if (follows === undefined || !live(item) || item.phase === "Started") continue;
+      if (item.withdraw !== undefined) continue;
+      if (clip.tag?._tag === "Item" && clip.tag.key === item.spec.key) continue;
+      if (sameClip(follows, clip.tag)) set(item.spec.key, { followsAired: true });
+      else if (item.followsAired === true) withdraw(item.spec.key, "displaced");
+    }
   };
   const started = (sessionId: string, clip: PlayingClip): void => {
     nowPlaying(sessionId, clip);
@@ -1952,6 +2121,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       applyResult(input.id, input.result);
       break;
     case "Tick":
+    // Answered at the end of the step, from the plan the step leaves.
+    case "Place":
       break;
     case "Close": {
       state = { ...state, accepting: false, closed: true };
@@ -1979,7 +2150,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       break;
     }
   }
-  if (state.closed) return { state: { ...state, items }, actions, wake: undefined };
+  if (state.closed) {
+    if (input._tag === "Place") actions.push({ _tag: "Placed", id: input.id, placement: null });
+    return { state: { ...state, items }, actions, wake: undefined };
+  }
 
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
   // is late from the instant its deadline falls due, where the wake is.
@@ -1999,6 +2173,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     )
       withdraw(item.spec.key, "late");
     else if (lateWhenProjected(item) && misses(item, item.startBy)) withdraw(item.spec.key, "late");
+  }
+  // An item that follows a clip goes once that clip can no longer air right before it, or, not
+  // sent yet, once it is projected unable to be Ready by that clip's end.
+  for (const item of [...items.values()]) {
+    if (item.spec.follows === undefined || !live(item) || item.phase === "Started") continue;
+    if (item.withdraw !== undefined) continue;
+    if (followsGone(item) || (projectedLate(item)?.due ?? Infinity) <= now.mono)
+      withdraw(item.spec.key, "displaced");
   }
   // A replacement takes the place once Ready, or at once if nothing was built for what it
   // replaces; if what it replaces starts first, the replacement goes instead.
@@ -2185,6 +2367,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   // Each session's commands go one at a time on a lane of its own.
   endCut();
   for (const value of state.sessions) decideCommand(value.id);
+  if (input._tag === "Place")
+    actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
   // History: settled keys past the bound are forgotten, oldest first.
   if (state.settled.length > config.maxHistory) {
@@ -2372,10 +2556,19 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       const readyMs = readyAheadMs(value, index);
       const aheadMs = playingRestMs(value) + readyMs;
       const at = atMono(item);
+      // An item waiting for the clip it follows would air before that clip.
+      const pair = heldForFollows(item);
       const exposed =
         item.mode === "held"
           ? aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity)
-          : at !== undefined && at > now.mono && aheadMs < at - now.mono;
+          : pair
+            ? pairAheadMs(value, readyMs) < exposureMarginMs ||
+              now.mono >= (pairExposedAt(value, readyMs) ?? Infinity)
+            : at !== undefined && at > now.mono && aheadMs < at - now.mono;
+      if (exposed && pair && item.withdraw === undefined) {
+        withdraw(item.spec.key, "displaced");
+        return decideCommand(sessionId);
+      }
       if (exposed && value.source?.available === true) {
         // A withdrawal waiting on its session's queues to change is due now: its removal is asked
         // again, once, and drops the item. Refused again, it waits for a change after all.
@@ -2520,7 +2713,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       item.startBy === undefined &&
       item.spec.start._tag !== "At" &&
       item.mode !== "asap" &&
-      config.lanes[item.spec.lane]?.cut !== true
+      config.lanes[item.spec.lane]?.cut !== true &&
+      // A cover would air between it and the clip it follows.
+      item.spec.follows === undefined
     );
   }
   /**
@@ -2627,6 +2822,22 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       : end + aheadMs - exposureMarginMs;
   }
   /**
+   * How soon an item waiting for the clip it follows, Ready on `value` behind `readyMs` of Ready
+   * air there, would air: on the session on air, after what plays; on the replacement, after all
+   * the session on air has left, since the switch starts the replacement's queue at its head.
+   */
+  function pairAheadMs(value: Session, readyMs: number): number {
+    if (value.id === state.air) return playingRestMs(value) + readyMs;
+    const air = session(state.air);
+    return playingRestMs(air) + (air === undefined ? 0 : readyAheadMs(air, Infinity)) + readyMs;
+  }
+  /** When `pairAheadMs` falls within the margin, as the clip on air plays. */
+  function pairExposedAt(value: Session, readyMs: number): number | undefined {
+    if (value.id === state.air) return exposedAt(value, readyMs);
+    const air = session(state.air);
+    return air === undefined ? undefined : exposedAt(air, readyAheadMs(air, Infinity) + readyMs);
+  }
+  /**
    * Whether a clip of `seconds` built on `target` now would finish airing before
    * the session's cap, counting everything that airs ahead of it there: the
    * playing clip's rest, its Ready clips, its builds in flight and, for a
@@ -2697,6 +2908,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         readonly clipId: string | undefined;
         readonly follows?: string | undefined;
       } {
+    if (item.spec.follows !== undefined)
+      return followContinuation(item.spec.follows, target, item.spec.seconds);
     const place = rankItem(item);
     const before = (rank: Rank) => compareRank(rank, place) < 0;
     let best: { readonly rank: Rank; readonly clipId: string | undefined } | undefined;
@@ -2732,6 +2945,147 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return target.source?.continuable.includes(from.clipId) === true
       ? { _tag: "from", ...from }
       : { _tag: "from", clipId: undefined };
+  }
+  /**
+   * What an item continues from when it follows a clip: that clip, playing or Ready on the same
+   * session, never a clip after it, since that would air between. It waits while that clip is an
+   * item not built yet. If the continued build is projected Ready only after that clip ends, as
+   * `airsBefore` projects it, it builds independent: keeping its place matters more than the join.
+   */
+  function followContinuation(
+    follows: ClipTag,
+    target: Session,
+    seconds: number,
+  ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
+    const onAir = target.id === state.air ? target.source?.playing : undefined;
+    const playing = onAir !== undefined && sameClip(follows, onAir.tag);
+    const queued = readyOf(target)
+      .filter(airs)
+      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    const index = playing ? -1 : queued.findIndex((clip) => sameClip(follows, clip.tag));
+    const predecessor = playing ? onAir.clipId : queued[index]?.clipId;
+    if (predecessor === undefined) {
+      const other = follows._tag === "Item" ? items.get(follows.key) : undefined;
+      const unbuilt =
+        other?.phase === "Accepted" || other?.phase === "Building" || other?.phase === "Unknown";
+      return unbuilt ? { _tag: "wait" } : { _tag: "from", clipId: undefined };
+    }
+    if (target.source?.continuable.includes(predecessor) !== true)
+      return { _tag: "from", clipId: undefined };
+    const rate = continuedBuildRate(state.samples);
+    if (rate === undefined) return { _tag: "from", clipId: predecessor };
+    const readyAt = now.mono + (rate * seconds + lookaheadMarginSeconds) * 1000;
+    const end =
+      now.mono +
+      (onAir === undefined ? 0 : playingRestMs(target)) +
+      queued.slice(0, index + 1).reduce((total, clip) => total + clip.seconds * 1000, 0);
+    return { _tag: "from", clipId: readyAt <= end ? predecessor : undefined };
+  }
+  /**
+   * Whether the clip an item follows, not on air while the item waited, can no longer air before
+   * it: an item settled, started or withdrawn, or a filler clip no session lists and none will
+   * send again.
+   */
+  function followsGone(item: Item): boolean {
+    const follows = item.spec.follows;
+    if (follows === undefined || item.followsAired === true) return false;
+    if (follows._tag === "Item") {
+      const other = items.get(follows.key);
+      return (
+        other === undefined ||
+        other.phase === "Settled" ||
+        other.startedAt !== undefined ||
+        other.withdraw !== undefined
+      );
+    }
+    const index = follows.index;
+    const listed = state.sessions.some(
+      (value) =>
+        [...value.fillers.values()].some((owner) => owner.index === index) ||
+        value.unknownFiller.some((entry) => entry.index === index) ||
+        (value.busy?.command._tag === "Enqueue" &&
+          value.busy.command.tag._tag === "Filler" &&
+          value.busy.command.tag.index === index) ||
+        (value.playing?.tag?._tag === "Filler" && value.playing.tag.index === index),
+    );
+    const again = state.filler.retries.some((retry) => retry.index === index);
+    return !listed && !again && index < state.filler.index;
+  }
+  /**
+   * When the clip an item follows ends, once that is fixed: it plays on air, or is Ready there
+   * behind the clip on air, whose end is known. Undefined otherwise.
+   */
+  function followsEnd(item: Item): number | undefined {
+    const follows = item.spec.follows;
+    const air = session(state.air);
+    const playing = air?.playing;
+    if (follows === undefined || air === undefined || playing?.seconds === undefined)
+      return undefined;
+    const playingEnd = playing.at + playing.seconds * 1000;
+    if (sameClip(follows, playing.tag)) return playingEnd;
+    if (item.followsAired === true) return undefined;
+    const queued = readyOf(air)
+      .filter((clip) => clip.clipId !== playing.clipId && airs(clip))
+      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    const index = queued.findIndex((clip) => sameClip(follows, clip.tag));
+    if (index < 0) return undefined;
+    return (
+      playingEnd +
+      queued.slice(0, index + 1).reduce((total, clip) => total + clip.seconds * 1000, 0)
+    );
+  }
+  /**
+   * When an item that follows a clip, not sent yet, is projected, at the median, unable to be
+   * Ready a readiness margin before that clip ends: as `projection` does, from the builds in
+   * flight and those ahead of it in build order, at the continued rate for continued ones. Its own
+   * build counts as independent, since a continued one that would miss falls back to that. The
+   * projection grows with the time once nothing holds it, as `misses` has it.
+   */
+  function projectedLate(item: Item): { readonly due: number } | undefined {
+    const perSecond = estimates().build?.median;
+    if (
+      item.spec.follows === undefined ||
+      item.phase !== "Accepted" ||
+      item.dispatchedAt !== undefined ||
+      perSecond === undefined
+    )
+      return undefined;
+    const end = followsEnd(item);
+    if (end === undefined) return undefined;
+    const continued = estimates().continuedBuild?.median ?? perSecond * continuedBuildFactor;
+    const buildMs = (seconds: number, again: boolean) =>
+      seconds * (again ? continued : perSecond) * 1000;
+    const target = preferred() ?? session(state.air);
+    const inFlight = [
+      ...[...items.values()].flatMap((other) =>
+        other.phase === "Building" &&
+        other.dispatchedAt !== undefined &&
+        other.spec.key !== item.spec.key
+          ? [other.dispatchedAt + buildMs(other.spec.seconds, other.continued === true)]
+          : [],
+      ),
+      ...(target?.fillerSent === undefined
+        ? []
+        : [target.fillerSent.at + buildMs(target.fillerSent.seconds, false)]),
+    ];
+    const first = [...items.values()]
+      .filter(
+        (other) =>
+          other.phase === "Accepted" &&
+          other.spec.key !== item.spec.key &&
+          other.withdraw === undefined &&
+          other.mode !== "held" &&
+          (atMono(other) ?? -Infinity) <= now.mono &&
+          (other.notBefore ?? -Infinity) <= now.mono &&
+          previousAdmitted(other) &&
+          buildOrder(other, item) < 0,
+      )
+      .reduce((total, other) => total + buildMs(other.spec.seconds, other.spec.continuity), 0);
+    const after = first + buildMs(item.spec.seconds, false);
+    const from = Math.max(-Infinity, ...inFlight) + after;
+    return {
+      due: from + readinessMarginMs >= end ? now.mono : end - readinessMarginMs - after,
+    };
   }
   /**
    * The clip that airs just before `item` if its continued build starts now:
@@ -2771,6 +3125,735 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
     return { clipId: predecessor };
   }
+  /**
+   * Where a clip like `probe` would land: the first clip of the projected air order it can follow.
+   * After an item, it goes as an insert after that item; after a filler clip, as an `Asap` item that
+   * waits for that clip. A boundary counts when a forward run with the clip submitted there airs it
+   * right after that clip, Ready a readiness margin before the boundary. A clip this playout did not
+   * enqueue can't be followed.
+   */
+  function place(probe: Probe): Placement | null {
+    const air = session(state.air);
+    if (air === undefined) return null;
+    const unmeasured = estimates().build === undefined;
+    const last = state.lastOnAir;
+    const base = forward(undefined, 40);
+    // With nothing on air, the clip that aired last may still be followed, across the gap.
+    const lastClip: Projected | undefined =
+      air.playing !== undefined || last === undefined
+        ? undefined
+        : {
+            tag: last.tag,
+            item: undefined,
+            sessionId: last.sessionId,
+            clipId: last.clipId,
+            seconds: 0,
+            readyAt: -Infinity,
+            projected: false,
+            continued: false,
+          };
+    const candidates = [
+      ...(lastClip === undefined ? [] : [{ clip: lastClip, aired: true }]),
+      ...base.aired.map((entry, index) => ({
+        clip: entry.clip,
+        aired: index === 0 && air.playing !== undefined,
+      })),
+    ];
+    for (const candidate of candidates) {
+      const tag = candidate.clip.tag;
+      if (tag === undefined) continue;
+      const hypothesis = hypothesize(candidate.clip, tag, candidate.aired, probe);
+      const run = forward(hypothesis, 0);
+      const index = run.probe?.index;
+      if (run.probe === undefined || index === undefined) continue;
+      const before = index === 0 ? undefined : run.aired[index - 1];
+      const previous = before === undefined ? lastClip?.tag : before.clip.tag;
+      if (!sameClip(tag, previous)) continue;
+      // Ready a margin before the boundary, not after a gap, which the projected drop would not
+      // wait for. With nothing on air, the first clip Ready airs at once.
+      const boundary = before === undefined ? Infinity : before.start + before.clip.seconds * 1000;
+      const readyAt = run.probe.readyAt ?? now.mono;
+      if (readyAt + readinessMarginMs > boundary) continue;
+      const start = run.aired[index]?.start ?? now.mono;
+      const next = run.aired[index + 1]?.clip;
+      const built =
+        run.aired.slice(0, index).every((entry) => !entry.clip.projected) &&
+        next?.projected !== true;
+      return {
+        after: tag,
+        before: next?.tag ?? null,
+        anchor: hypothesis.anchor,
+        startsAt: now.wall + (start - now.mono),
+        basis: unmeasured ? "unmeasured" : built ? "ready" : "projected",
+        continues: run.probe.continued,
+      };
+    }
+    return null;
+  }
+  /**
+   * The clip `place` asks about, as an edit would admit it right after `clip`: an insert after a
+   * waiting or playing item, which takes its lane, place, group and start, or else an `Asap` item;
+   * either way following `clip`.
+   */
+  function hypothesize(clip: Projected, tag: ClipTag, aired: boolean, probe: Probe): Hypothesis {
+    const anchor =
+      clip.item !== undefined && live(clip.item) && clip.item.mode !== "held"
+        ? clip.item
+        : undefined;
+    const spec: Spec = {
+      key: probeKey,
+      lane: anchor?.spec.lane ?? lanes - 1,
+      request: { prompt: "placement probe", seconds: probe.seconds },
+      seconds: probe.seconds,
+      fingerprint: "",
+      cues: [],
+      continuity: probe.continuity,
+      start: anchor === undefined ? { _tag: "Asap" } : insertStart(anchor),
+      follows: tag,
+    };
+    const submitAt = now.mono + probe.submitInMs;
+    if (anchor === undefined)
+      return { item: { ...newItem(spec), followsAired: aired }, submitAt, anchor: "next" };
+    const neighbour = Math.min(
+      anchor.order + 1,
+      ...[...items.values()]
+        .filter((other) => other.spec.lane === anchor.spec.lane && other !== anchor)
+        .map((other) => other.order)
+        .filter((order) => order > anchor.order),
+    );
+    const playing = anchor.phase === "Started";
+    return {
+      item: newItem(spec, {
+        order: (anchor.order + neighbour) / 2,
+        group: anchor.group,
+        inserted: true,
+        anchor: { key: anchor.spec.key, side: "after" },
+        mode: playing ? "follow" : anchor.mode,
+        followsAired: aired,
+      }),
+      submitAt,
+      anchor: anchor.spec.key,
+    };
+  }
+  /**
+   * The plan run forward from now at the median build rates. Builds go one at a time in H3's
+   * order: those in flight, then what the plan would send as each slot frees, the best eligible
+   * item by build order, else a filler refill below the floor. At each boundary the best clip by
+   * rank airs among those Ready a readiness margin before it, or else the first Ready; with nothing
+   * Ready the air goes dark until something is. Items that follow a clip keep to it. New work goes
+   * to the replacement once one is open, or from the lead before the cap, when the plan opens one;
+   * until then what cannot air before the cap waits for it, and the air moves to it once the
+   * session on air has nothing left. With `hypothesis`, the run ends once it aired and a clip after
+   * it did, or once it is gone; without, after `limit` clips.
+   */
+  function forward(hypothesis: Hypothesis | undefined, limit: number): Run {
+    const air = session(state.air);
+    const target = preferred() ?? air;
+    if (air === undefined || target === undefined) return { aired: [], probe: undefined };
+    // New work goes to the replacement from `opensAt` on: one opening now, or the one the plan
+    // opens its lead before the cap of the session on air, taken to open at once.
+    const replacement = state.sessions.find((value) => value.id !== air.id && !value.retiring);
+    const opensAt =
+      target.id !== air.id
+        ? undefined
+        : replacement !== undefined
+          ? now.mono
+          : air.lifetimeMs === Infinity
+            ? undefined
+            : Math.max(now.mono, air.openedAt + air.lifetimeMs - config.leadMs);
+    const replacementId = replacement?.id ?? "\u0000replacement";
+    let targetId = target.id;
+    const measured = estimates();
+    const perSecond = measured.build?.median;
+    const continuedPerSecond = measured.continuedBuild?.median;
+    // Under three builds nothing is known of the build: none is counted.
+    const buildMs = (seconds: number, continued: boolean): number => {
+      if (perSecond === undefined) return 0;
+      const rate = continued ? (continuedPerSecond ?? perSecond * continuedBuildFactor) : perSecond;
+      return seconds * rate * 1000;
+    };
+    const ratio = measured.length;
+    const filler = config.filler;
+    const floorSeconds = fillerFloor();
+    const targetSeconds = Math.max(filler?.target ?? 0, floorSeconds);
+    const horizon = now.mono + 600_000;
+
+    const pool: Array<Projected> = [];
+    const gone = new Set<Item>();
+    const done = new Set<Item>();
+    const dispatched = new Set<Item>();
+    const followsAired = new Map<Item, boolean>();
+    const free = new Map<string, number>();
+    const aired: Array<{ readonly clip: Projected; readonly start: number }> = [];
+    let retries = [...state.filler.retries];
+    let nextIndex = state.filler.index;
+    let refilling = state.filler.refilling;
+    let probeReady: number | undefined;
+    let probeContinued = false;
+
+    const pending = [...items.values()].filter(
+      (item) => item.phase === "Accepted" && item.withdraw === undefined && item.mode !== "held",
+    );
+    if (hypothesis !== undefined) pending.push(hypothesis.item);
+    const ordered = [
+      ...[...items.values()].filter(live),
+      ...(hypothesis === undefined ? [] : [hypothesis.item]),
+    ];
+    const followed = ordered.filter(
+      (item) => item.phase !== "Started" && item.withdraw === undefined,
+    );
+    for (const item of followed)
+      if (item.spec.follows !== undefined) followsAired.set(item, item.followsAired === true);
+
+    // Ready now on the session on air and on the one taking new work; the clip on air is not.
+    const sessions = target.id === air.id ? [air] : [air, target];
+    for (const value of sessions)
+      for (const clip of readyOf(value)) {
+        const item = itemOf(clip);
+        if (clip.clipId === value.playing?.clipId) continue;
+        if (
+          item !== undefined &&
+          (!live(item) || item.startedAt !== undefined || item.withdraw !== undefined)
+        )
+          continue;
+        pool.push({
+          tag: clip.tag,
+          item,
+          sessionId: value.id,
+          clipId: clip.clipId,
+          seconds: clip.seconds,
+          readyAt: now.mono,
+          projected: false,
+          continued: false,
+        });
+      }
+    // Builds in flight, in the order H3 takes them, each once the one before it is done.
+    for (const value of sessions) {
+      const busy = value.busy?.command;
+      const flights: Array<Flight> = [
+        ...[...items.values()].flatMap((item): ReadonlyArray<Flight> =>
+          item.phase === "Building" && item.sessionId === value.id && item.withdraw === undefined
+            ? [
+                {
+                  at: item.dispatchedAt ?? now.mono,
+                  seconds: item.spec.seconds,
+                  continued: item.continued === true,
+                  tag: { _tag: "Item", key: item.spec.key },
+                  item,
+                  clipId: item.clipId,
+                },
+              ]
+            : [],
+        ),
+        ...[...value.fillers].flatMap(([clipId, owner]): ReadonlyArray<Flight> =>
+          owner.build === undefined
+            ? []
+            : [
+                {
+                  at: owner.build.dispatchedAt,
+                  seconds: owner.build.seconds,
+                  continued: false,
+                  tag: { _tag: "Filler", index: owner.index },
+                  item: undefined,
+                  clipId,
+                },
+              ],
+        ),
+        ...(busy?._tag === "Enqueue" && busy.tag._tag === "Filler"
+          ? [
+              {
+                at: value.fillerSent?.at ?? now.mono,
+                seconds: value.fillerSent?.seconds ?? requestSeconds.min,
+                continued: false,
+                tag: busy.tag,
+                item: undefined,
+                clipId: undefined,
+              },
+            ]
+          : []),
+      ].sort((a, b) => a.at - b.at);
+      let readyAt = -Infinity;
+      for (const flight of flights) {
+        readyAt = Math.max(
+          now.mono,
+          Math.max(readyAt, flight.at) + buildMs(flight.seconds, flight.continued),
+        );
+        pool.push({
+          tag: flight.tag,
+          item: flight.item,
+          sessionId: value.id,
+          clipId: flight.clipId,
+          seconds: flight.seconds * ratio,
+          readyAt,
+          projected: true,
+          continued: flight.continued,
+        });
+        if (flight.item !== undefined) dispatched.add(flight.item);
+      }
+      free.set(value.id, Math.max(now.mono, readyAt));
+    }
+
+    let onAir = air.id;
+    const playing = air.playing;
+    // A clip of unknown length may end at any moment.
+    let t =
+      playing?.seconds === undefined
+        ? now.mono
+        : Math.max(now.mono, playing.at + playing.seconds * 1000);
+    let current = playing !== undefined;
+    if (playing !== undefined)
+      aired.push({
+        clip: {
+          tag: playing.tag,
+          item: itemOf(playing),
+          sessionId: air.id,
+          clipId: playing.clipId,
+          seconds: playing.seconds ?? 0,
+          readyAt: -Infinity,
+          projected: false,
+          continued: false,
+        },
+        start: playing.at,
+      });
+
+    const deadline = (item: Item): number => {
+      const at = atMono(item);
+      const late = item.spec.start._tag === "At" ? item.spec.start.late : "nextBoundary";
+      const own =
+        at === undefined || late === "nextBoundary"
+          ? Infinity
+          : late === "drop"
+            ? at
+            : at + late.skipAfterMs;
+      const firm =
+        item.spec.window?.firm === true && item.startBy !== undefined ? item.startBy : Infinity;
+      return Math.min(own, firm);
+    };
+    const readyBy = (item: Item, time: number): boolean =>
+      item.phase === "Ready" ||
+      item.phase === "Started" ||
+      item.phase === "Settled" ||
+      done.has(item) ||
+      gone.has(item) ||
+      pool.some((clip) => clip.item === item && clip.readyAt <= time);
+    // A pending batch holds what it adds until all of it is Ready.
+    const open = (id: number | undefined, time: number): boolean => {
+      const batch = id === undefined ? undefined : state.batches.find((value) => value.id === id);
+      return (
+        batch?.adds.some((key) => {
+          const add = items.get(key);
+          return add !== undefined && !readyBy(add, time);
+        }) === true
+      );
+    };
+    const held = (item: Item): boolean =>
+      followHeld(
+        item,
+        (other) => followsAired.get(other) ?? other.followsAired === true,
+        (key) => items.get(key),
+      );
+    const airsAt = (clip: Projected, time: number): boolean => {
+      const item = clip.item;
+      if (item === undefined) return true;
+      const at = atMono(item);
+      return (
+        !gone.has(item) &&
+        item.mode !== "held" &&
+        (at === undefined || at <= time) &&
+        !open(item.batch, time) &&
+        !held(item)
+      );
+    };
+    const rankIn = (clip: Projected): Rank => {
+      const item = clip.item;
+      if (item === undefined)
+        return clip.tag?._tag === "Filler" ? [lanes, 1, clip.tag.index, 0] : [-1, 0, 0, 0];
+      const behind =
+        item.follows === undefined || item.phase === "Accepted"
+          ? undefined
+          : pool.find(
+              (other) => other.clipId === item.follows && other.sessionId === clip.sessionId,
+            );
+      if (behind !== undefined) {
+        const rank = rankIn(behind);
+        return [rank[0], rank[1], rank[2], rank[3] + 0.5];
+      }
+      if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
+      return [
+        item.spec.lane,
+        superseded.has(item.spec.key) ? 2 : begun(item) ? 0 : 1,
+        item.order,
+        item.generation,
+      ];
+    };
+    const byRank = (a: Projected, b: Projected): number => compareRank(rankIn(a), rankIn(b));
+    /** Seconds of air secured on the session taking new work, as `runway` counts them at `time`. */
+    const runwayAt = (time: number): number => {
+      const rest = targetId === onAir && current ? Math.max(0, t - time) : 0;
+      const ready = pool
+        .filter((clip) => clip.sessionId === targetId && clip.readyAt <= time && airsAt(clip, time))
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      return (rest + ready) / 1000;
+    };
+    const gapAt = (time: number): number =>
+      Math.max(
+        0,
+        ...followed.flatMap((item) => {
+          const at = atMono(item);
+          return !gone.has(item) && !done.has(item) && at !== undefined && at > time
+            ? [(at - time) / 1000]
+            : [];
+        }),
+      );
+    const pendingIn = (item: Item): boolean =>
+      item.phase === "Accepted" && !dispatched.has(item) && !gone.has(item);
+    // As `previousAdmitted`, against what the run has sent.
+    const admitted = (item: Item): boolean => {
+      if (item.inserted) {
+        const before = ordered
+          .filter(
+            (other) =>
+              other !== item &&
+              !gone.has(other) &&
+              other.spec.lane === item.spec.lane &&
+              other.order < item.order,
+          )
+          .sort((a, b) => b.order - a.order)[0];
+        return before === undefined || !pendingIn(before);
+      }
+      if (item.group === undefined) return true;
+      const index = item.group.index;
+      return !(groups.get(item.group.key)?.parts ?? []).some((part) => {
+        const other = items.get(part);
+        return (
+          other?.group !== undefined &&
+          !other.inserted &&
+          other.group.index === index - 1 &&
+          pendingIn(other)
+        );
+      });
+    };
+    // A continuing item waits for the item it follows to be built.
+    const followsUnbuilt = (item: Item, time: number): boolean => {
+      const follows = item.spec.follows;
+      if (!item.spec.continuity || follows?._tag !== "Item") return false;
+      const other = items.get(follows.key);
+      return (
+        other !== undefined &&
+        (other.phase === "Accepted" || other.phase === "Building") &&
+        !readyBy(other, time)
+      );
+    };
+    const eligibleAt = (item: Item, time: number): boolean => {
+      if (!pendingIn(item)) return false;
+      if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
+      if ((item.notBefore ?? -Infinity) > time) return false;
+      if (time >= deadline(item)) {
+        gone.add(item);
+        return false;
+      }
+      const at = atMono(item);
+      if (at !== undefined && at > time && time + runwayAt(time) * 1000 < at) return false;
+      return admitted(item) && !followsUnbuilt(item, time);
+    };
+    /** When `tag` ends, as `followContinuation` projects it at `time`: on air, or Ready behind what airs first. */
+    const endOf = (tag: ClipTag, time: number): number | undefined => {
+      const onTarget = targetId === onAir && current;
+      const last = aired.at(-1)?.clip;
+      if (onTarget && last !== undefined && sameClip(tag, last.tag)) return t;
+      const queued = pool
+        .filter((clip) => clip.sessionId === targetId && clip.readyAt <= time && airsAt(clip, time))
+        .sort(byRank);
+      const index = queued.findIndex((clip) => sameClip(tag, clip.tag));
+      if (index < 0) return undefined;
+      return (
+        (onTarget ? Math.max(t, time) : time) +
+        queued.slice(0, index + 1).reduce((total, clip) => total + clip.seconds * 1000, 0)
+      );
+    };
+    // As `followContinuation` decides at dispatch; any other continuing item is taken to continue.
+    const continues = (item: Item, time: number): boolean => {
+      if (!item.spec.continuity) return false;
+      const follows = item.spec.follows;
+      if (follows === undefined) return true;
+      const end = endOf(follows, time);
+      if (end === undefined) return false;
+      const rate = continuedBuildRate(state.samples);
+      return (
+        rate === undefined ||
+        time + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000 <= end
+      );
+    };
+    const build = (clip: Omit<Projected, "readyAt">, seconds: number, time: number): number => {
+      const start = Math.max(free.get(targetId) ?? -Infinity, time);
+      const readyAt = start + buildMs(seconds, clip.continued);
+      free.set(targetId, readyAt);
+      pool.push({ ...clip, readyAt });
+      return readyAt;
+    };
+    const launch = (item: Item, time: number): void => {
+      const decision = continues(item, time);
+      dispatched.add(item);
+      const readyAt = build(
+        {
+          tag: { _tag: "Item", key: item.spec.key },
+          item,
+          sessionId: targetId,
+          clipId: undefined,
+          seconds: item.spec.seconds * ratio,
+          projected: true,
+          continued: decision,
+        },
+        item.spec.seconds,
+        time,
+      );
+      if (item === hypothesis?.item) {
+        probeReady = readyAt;
+        probeContinued = decision;
+      }
+    };
+    /** As `fits`: what the session on air builds must finish airing before its cap. */
+    const fitsAt = (seconds: number, time: number): boolean => {
+      if (targetId !== air.id || air.lifetimeMs === Infinity) return true;
+      const lengthMs = seconds * ratio * 1000;
+      const marginMs = lookaheadMarginSeconds * 1000;
+      if (lengthMs > air.lifetimeMs - marginMs) return true;
+      const startsAt = onAir === air.id && current ? Math.max(t, time) : time;
+      const queuedMs = pool
+        .filter(
+          (clip) => clip.sessionId === air.id && (clip.item === undefined || !gone.has(clip.item)),
+        )
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      return startsAt + queuedMs + lengthMs <= air.openedAt + air.lifetimeMs - marginMs;
+    };
+    // As the plan refills below the floor, up to its target, or to tile the gap before an `At` anchor.
+    const refill = (time: number): boolean => {
+      if (filler === undefined || time < state.filler.retryAt) return false;
+      const room = runwayAt(time);
+      const gap = gapAt(time);
+      // As `below`: under `seconds`, or at the instant the clip on air brings it there.
+      const below = (seconds: number): boolean => {
+        if (room < seconds) return true;
+        if (targetId !== onAir || !current) return false;
+        const ready = room - Math.max(0, t - time) / 1000;
+        return seconds > ready && time >= t - (seconds - ready) * 1000;
+      };
+      refilling = gap > room || (refilling ? below(targetSeconds) : below(floorSeconds));
+      if (!refilling || (!below(targetSeconds) && room >= gap)) return false;
+      const [retry, ...rest] = retries;
+      const seconds =
+        retry === undefined
+          ? fillLength(gap - room, filler.lengths, ratio)
+          : (retry.request.seconds ?? requestSeconds.min);
+      if (!fitsAt(seconds, time)) return false;
+      const index = retry?.index ?? nextIndex;
+      if (retry === undefined) nextIndex++;
+      else retries = rest;
+      build(
+        {
+          tag: { _tag: "Filler", index },
+          item: undefined,
+          sessionId: targetId,
+          clipId: undefined,
+          seconds: seconds * ratio,
+          projected: true,
+          continued: false,
+        },
+        seconds,
+        time,
+      );
+      return true;
+    };
+    const dispatch = (time: number): void => {
+      if (opensAt !== undefined && targetId !== replacementId && time >= opensAt) {
+        targetId = replacementId;
+        free.set(replacementId, Math.max(free.get(replacementId) ?? -Infinity, time));
+      }
+      // As the plan sweeps each step: what went late meanwhile no longer counts as air.
+      purge(time);
+      for (let sent = 0; sent < 64; sent++) {
+        const inFlight = pool.filter(
+          (clip) =>
+            clip.sessionId === targetId &&
+            clip.projected &&
+            clip.readyAt > time &&
+            (clip.item === undefined || !gone.has(clip.item)),
+        ).length;
+        if (inFlight >= config.maxBuildsInFlight) return;
+        const next = pending.filter((item) => eligibleAt(item, time)).sort(buildOrder)[0];
+        // What cannot air before the cap of the session on air waits for the replacement.
+        if (next !== undefined && fitsAt(next.spec.seconds, time)) launch(next, time);
+        else if (!refill(time)) return;
+      }
+    };
+    /** When the runway on the session taking new work falls to the refill threshold, as a clip there plays. */
+    const refillAt = (time: number): number | undefined => {
+      if (filler === undefined || targetId !== onAir || !current) return undefined;
+      const threshold = refilling ? targetSeconds : floorSeconds;
+      const ready = runwayAt(time) - Math.max(0, t - time) / 1000;
+      const at = t - (threshold - ready) * 1000;
+      return at > time && at < t ? at : undefined;
+    };
+    const nextDispatch = (time: number): number | undefined => {
+      const times = [
+        ...pool.flatMap((clip) =>
+          clip.item === undefined || gone.has(clip.item)
+            ? [clip.readyAt]
+            : [clip.readyAt, deadline(clip.item)],
+        ),
+        ...pending.flatMap((item) =>
+          pendingIn(item)
+            ? [
+                item.notBefore,
+                atMono(item),
+                item === hypothesis?.item ? hypothesis.submitAt : undefined,
+              ]
+            : [],
+        ),
+        refillAt(time),
+        state.filler.retryAt,
+        targetId === replacementId ? undefined : opensAt,
+      ].filter((at): at is number => at !== undefined && at > time && Number.isFinite(at));
+      return times.length === 0 ? undefined : Math.min(...times);
+    };
+    const remove = (clip: Projected): void => {
+      const index = pool.indexOf(clip);
+      if (index >= 0) pool.splice(index, 1);
+    };
+    // What a deadline drops, a batch commit withdraws, or a Ready replacement displaces.
+    const purge = (time: number): void => {
+      for (const clip of pool) {
+        const item = clip.item;
+        if (item === undefined || gone.has(item)) continue;
+        const batch = state.batches.find((value) =>
+          value.targets.some((entry) => entry.key === item.spec.key),
+        );
+        const replaced = pool.some(
+          (other) =>
+            other.item !== undefined &&
+            !gone.has(other.item) &&
+            other.item.replaces === item.spec.key &&
+            other.readyAt <= time &&
+            !open(other.item.batch, time),
+        );
+        if (time >= deadline(item) || (batch !== undefined && !open(batch.id, time)) || replaced)
+          gone.add(item);
+      }
+    };
+    /** The next clip at the boundary `t`, or false once nothing more can air. */
+    const boundary = (clock: number): boolean => {
+      purge(t);
+      // The replacement takes the air once the session on air has nothing left, after the grace.
+      if (onAir !== targetId) {
+        if (
+          pool.some(
+            (clip) => clip.sessionId === targetId && clip.item !== undefined && clip.readyAt <= t,
+          )
+        )
+          for (const clip of [...pool])
+            if (clip.sessionId === onAir && clip.tag?._tag === "Filler") remove(clip);
+        const left = pool.some(
+          (clip) => clip.sessionId === onAir && (clip.item === undefined || !gone.has(clip.item)),
+        );
+        if (!left) {
+          onAir = targetId;
+          // The grace, then the replacement's first clip after a seam.
+          t += (current ? config.graceMs : 0) + seamMs;
+          current = false;
+        }
+      }
+      const queued = pool.filter(
+        (clip) => clip.sessionId === onAir && clip.readyAt <= t && airsAt(clip, t),
+      );
+      const moved = queued.filter(
+        (clip) => !clip.projected || clip.readyAt + readinessMarginMs <= t,
+      );
+      const head =
+        moved.length > 0 ? moved.sort(byRank)[0] : queued.sort((a, b) => a.readyAt - b.readyAt)[0];
+      if (head === undefined) {
+        // The plan takes back a clip waiting for the clip it follows rather than let it air first.
+        for (const clip of pool)
+          if (
+            clip.sessionId === onAir &&
+            clip.item !== undefined &&
+            clip.readyAt <= t &&
+            held(clip.item)
+          )
+            gone.add(clip.item);
+        const upcoming = pool
+          .filter(
+            (clip) => clip.sessionId === onAir && (clip.item === undefined || !gone.has(clip.item)),
+          )
+          .map((clip) =>
+            Math.max(
+              clip.readyAt,
+              clip.item === undefined ? -Infinity : (atMono(clip.item) ?? -Infinity),
+            ),
+          )
+          .filter((at) => at > t);
+        const soonest = Math.min(...upcoming, nextDispatch(clock) ?? Infinity);
+        if (!Number.isFinite(soonest)) return false;
+        // The air is dark until then; nothing airs between the last clip and the next.
+        t = soonest;
+        current = false;
+        return true;
+      }
+      const start = current ? t + seamMs : t;
+      aired.push({ clip: head, start });
+      remove(head);
+      const item = head.item;
+      if (item !== undefined) done.add(item);
+      // As `onAirChanged`: the clip an item follows has aired, and another clip after it displaces
+      // the item.
+      for (const other of followed) {
+        const follows = other.spec.follows;
+        if (follows === undefined || other === item || gone.has(other) || done.has(other)) continue;
+        if (sameClip(follows, head.tag)) followsAired.set(other, true);
+        else if (followsAired.get(other) === true) gone.add(other);
+      }
+      // What it replaces, or what replaces it, goes.
+      if (item !== undefined)
+        for (const other of followed)
+          if (other.replaces === item.spec.key || item.replaces === other.spec.key) gone.add(other);
+      t = start + head.seconds * 1000;
+      current = true;
+      return true;
+    };
+    const finished = (): boolean => {
+      if (hypothesis === undefined) return aired.length >= limit;
+      if (gone.has(hypothesis.item)) return true;
+      const index = aired.findIndex((entry) => entry.clip.item === hypothesis.item);
+      return index >= 0 && aired.length > index + 1;
+    };
+
+    let clock = now.mono;
+    dispatch(clock);
+    for (let look = 0; look < 4000 && !finished() && t <= horizon; look++) {
+      const soon = nextDispatch(clock);
+      if (soon !== undefined && soon <= t) {
+        clock = soon;
+        dispatch(clock);
+        continue;
+      }
+      clock = Math.max(clock, t);
+      if (!boundary(clock)) break;
+    }
+    const index =
+      hypothesis === undefined
+        ? -1
+        : aired.findIndex((entry) => entry.clip.item === hypothesis.item);
+    return {
+      aired,
+      probe:
+        hypothesis === undefined
+          ? undefined
+          : {
+              readyAt: probeReady,
+              continued: probeContinued,
+              index: index < 0 ? undefined : index,
+            },
+    };
+  }
   function wake(): number | undefined {
     const times: Array<number> = [];
     const later = (at: number | undefined) => {
@@ -2797,6 +3880,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           if (!item.fired.includes(index)) later(cueAt(item, cue));
       if (item.phase === "Accepted") later(coveredAt(item));
       if (lateWhenProjected(item)) later(item.startBy - projection(item).after);
+      later(projectedLate(item)?.due);
     }
     for (const value of state.sessions) {
       for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
@@ -2809,6 +3893,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         const item = itemOf(clip);
         if (item?.phase === "Ready" && item.mode === "held")
           later(exposedAt(value, readyAheadMs(value, index)));
+        else if (item?.phase === "Ready" && heldForFollows(item))
+          later(pairExposedAt(value, readyAheadMs(value, index)));
       }
     }
     if (!state.openingPaused) later(state.openRetryAt);

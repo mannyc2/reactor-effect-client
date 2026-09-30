@@ -2311,6 +2311,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   let failures = 0;
   const aired = new Set<string>();
   const enqueued = new Set<string>();
+  /** Keys submitted to follow a clip. */
+  const paired = new Set<string>();
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
@@ -2650,23 +2652,43 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     switch (step) {
       case "submit":
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
-      case "urgent":
-        return edit(index, [{ _tag: "Submit", spec: cued(`u${String(index)}`, 0, index) }]);
+      case "urgent": {
+        // Some wait to air right after the next filler clip, or the one after it.
+        const follows: Policy.Spec["follows"] = {
+          _tag: "Filler",
+          index: state.filler.index + (index % 8 === 0 ? 1 : 0),
+        };
+        const urgent = cued(`u${String(index)}`, 0, index);
+        if (index % 4 === 0) paired.add(urgent.key);
+        return edit(index, [
+          { _tag: "Submit", spec: index % 4 === 0 ? { ...urgent, follows } : urgent },
+        ]);
+      }
       case "withdraw":
         return edit(index, [{ _tag: "Withdraw", key: key(name) }]);
       case "replace":
         return edit(index, [
           { _tag: "Replace", key: key(name), spec: cued(`r${String(index)}`, 1, index) },
         ]);
-      case "insert":
+      case "insert": {
+        // Some inserts after an item must air right after it.
+        const inserted = cued(`i${String(index)}`, 1, index);
+        const pair = index % 2 === 0 && index % 3 === 0;
+        if (pair) paired.add(inserted.key);
         return edit(index, [
           {
             _tag: "Insert",
-            spec: cued(`i${String(index)}`, 1, index),
+            spec: pair
+              ? {
+                  ...inserted,
+                  follows: { _tag: "Item", key: key(name) },
+                }
+              : inserted,
             anchor: key(name),
             side: index % 2 === 0 ? "after" : "before",
           },
         ]);
+      }
       case "batch":
         return edit(
           index,
@@ -2789,7 +2811,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     }
   });
   send({ _tag: "Close" });
-  return { actions, inputs, edits, drains, problems, groups, named, replaced };
+  return { actions, inputs, edits, drains, problems, groups, named, replaced, paired };
 };
 
 /**
@@ -2813,7 +2835,7 @@ const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
   }
 };
 const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
-  const { actions, edits, drains, problems, groups, named, replaced } = simulate(
+  const { actions, edits, drains, problems, groups, named, replaced, paired } = simulate(
     script,
     from,
     lifetimes,
@@ -2952,6 +2974,16 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     for (const name of history.keys())
       if (reasons(name).includes("withdrawn"))
         assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
+  }
+  // Only an item that follows a clip is dropped as displaced.
+  for (const name of history.keys()) {
+    const displaced = (history.get(name) ?? []).some(
+      (action) =>
+        action.event._tag === "AsRun" &&
+        action.event.event.status._tag === "Dropped" &&
+        action.event.event.status.reason === "displaced",
+    );
+    if (displaced) assert.isTrue(paired.has(name), `${name} was displaced but follows nothing`);
   }
   // An item and its replacement never both air.
   for (const [next, old] of replaced)

@@ -109,10 +109,66 @@ interface ClipSpec {
   readonly continuity?: "previous" | undefined;
 }
 
+/** The clip `place` asks about. */
+export interface PlaceProbe {
+  /** The key it will be submitted under; a refusal names it. */
+  readonly key: ItemKey;
+  /** The requested length; 5 seconds when absent. */
+  readonly seconds?: number | undefined;
+  readonly continuity?: "previous" | undefined;
+  /**
+   * How long until the caller submits it, from this call on the monotonic
+   * clock: the caller's own work, such as writing it; none when absent. The
+   * playout adds the wait for a build slot and the build.
+   */
+  readonly submitIn?: Duration.Input | undefined;
+}
+
+/**
+ * Where a clip submitted to follow `after` would land. It projects the plan as
+ * it is at the call, at the median build rates, and reserves nothing: a clip
+ * submitted later may still come between the call and the clip, or after it.
+ */
+export interface Placement {
+  /** The clip it would follow: pass it as `follows`. */
+  readonly after: ClipTag;
+  /**
+   * The clip projected to follow it, from what is queued now; null when
+   * nothing this playout enqueued is. It is not enforced.
+   */
+  readonly before: ClipTag | null;
+  /**
+   * How to submit it: `insert` after this item, or, for `"next"`, `submit`
+   * to the lowest lane with an `Asap` start, which waits for `after` to air.
+   */
+  readonly anchor: ItemKey | "next";
+  /** When it would start, in epoch milliseconds. */
+  readonly startsAt: number;
+  /**
+   * `ready`: every clip through `after`, and `before`, is on air or Ready, so
+   * only its own build is projected. `projected`: a build ahead of it, or a
+   * filler clip not yet sent, is projected too; after such a filler clip it
+   * airs only at the next gap in what ranks above filler. `unmeasured`: fewer
+   * than three builds are measured, so no build time is counted.
+   */
+  readonly basis: "ready" | "projected" | "unmeasured";
+  /** Whether it would be built continuing from `after`. */
+  readonly continues: boolean;
+}
+
 export interface ItemSpec extends ClipSpec {
   readonly lane: string;
   readonly window?: Window | undefined;
   readonly start?: Start | undefined;
+  /**
+   * The clip it must start right after, on the session on air, or it is
+   * dropped as `displaced`: once that clip goes without airing, once another
+   * clip, filler included, starts after it first, or once the item is
+   * projected unable to be Ready by its end. It waits, not airing, until that
+   * clip has aired, and gets no filler cover; with `continuity`, it builds
+   * independent rather than miss. A cutting lane refuses it.
+   */
+  readonly follows?: ClipTag | undefined;
 }
 
 export type GroupPart = ClipSpec;
@@ -129,11 +185,22 @@ export interface GroupSpec {
 /**
  * A clip that airs immediately before or after an anchor. Give exactly one of the two.
  * `after` an item already playing airs at the next boundary; `before` one refuses.
+ * It takes the anchor's lane, place, group and start, but not an `At` start's
+ * `late`: past the anchor's time it airs at the next boundary.
  */
 export interface InsertSpec extends ClipSpec {
   readonly before?: ItemKey | undefined;
   readonly after?: ItemKey | undefined;
   readonly window?: Window | undefined;
+  /**
+   * The clip it must start right after, on the session on air, or it is
+   * dropped as `displaced`: once that clip goes without airing, once another
+   * clip, filler included, starts after it first, or once the item is
+   * projected unable to be Ready by its end. It waits, not airing, until that
+   * clip has aired, and gets no filler cover; with `continuity`, it builds
+   * independent rather than miss. A cutting lane refuses it.
+   */
+  readonly follows?: ClipTag | undefined;
 }
 
 /** The clip that takes a queued item's place, under a key of its own. */
@@ -202,7 +269,11 @@ export type AsRunStatus =
       readonly termination: "finished" | "stopped";
       readonly airedSeconds: number;
     }
-  | { readonly _tag: "Dropped"; readonly reason: "late" | "withdrawn" | "replaced" }
+  | {
+      readonly _tag: "Dropped";
+      /** `displaced`: the clip it `follows` could not air right before it. */
+      readonly reason: "late" | "withdrawn" | "replaced" | "displaced";
+    }
   | { readonly _tag: "Failed"; readonly reason: FailureReason }
   | { readonly _tag: "Unobserved" }
   | {
@@ -645,6 +716,14 @@ export class Playout extends Context.Service<
     readonly edit: (edits: ReadonlyArray<Edit>) => Effect.Effect<EditHandle, SubmitError>;
     /** Releases a held `Manual` item to air at the next boundary. */
     readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
+    /**
+     * Where a clip like `probe` would land: at the first boundary of the
+     * projected air order it could make, submitted `submitIn` from now to
+     * follow the clip before that boundary. Null once the playout has stopped,
+     * or with no session on air. A clip that cannot air before the cap of the
+     * session on air is placed on its replacement.
+     */
+    readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
     /**
      * A group key withdraws its unstarted parts, and answers `withdrawn` if any
      * part was, else `already-started` if any started; a part key withdraws that

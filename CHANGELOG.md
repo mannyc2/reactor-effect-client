@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+Upgrading from 0.8.0:
+
+- An exhaustive switch over `AsRunStatus` must handle `Dropped` with reason `displaced`.
+- A hand-written `Playout` service needs `place`.
+- An insert after an `At` item no longer takes that item's `late`: past the anchor's time it airs at the next boundary, where before it was dropped with the anchor.
+
+### Added
+
+- `Playout.place({ key, seconds, continuity, submitIn })` projects where a clip would land if the caller submits it `submitIn` from now, before the caller writes it: the clip it would follow, the clip projected after it, when it would start, how to submit it, and whether that rests on clips already Ready, on projected builds, or on no measured build. It runs the plan forward at the median build rates, from what is queued, building and Ready, the build slot, filler refills and a renewal, and answers the first boundary the clip could make. With nothing submitted after the call, the clip airs where and when `place` said: within 60 ms on the simulated Reactor. `PlaceProbe` and `Placement` are exported, and the `Playout` service gains `place`.
+- `follows` on `ItemSpec` and `InsertSpec` names the clip, an item or a filler clip by its index, that the item must start right after. The item waits, not airing, until that clip has aired, and is dropped with the new `Dropped` reason `displaced` once that clip goes without airing, once another clip starts after it first, or as soon as it is projected unable to be Ready by that clip's end. It gets no filler cover, builds independent rather than miss when it continues a clip, and a cutting lane refuses it. In a simulation of the-show's air, 12 shows of 31 minutes with acknowledgements every 45 s on average and writing times from its writer test, `place` with `follows` aired 69-71% of acknowledgements right between the clips they were written for, and none after another clip, against 39-43% for an estimate from `state` with a firm window. The clip after one stayed a guess: in a quarter to a third of cases it was a line queued after the call.
+
+### Changed
+
+- An insert takes its `At` anchor's time but not its `late`: past that time it airs at the next boundary. Before, a clip inserted after the first beat of a line was dropped when that line's staleness bound passed, though it was not that line.
+
 ### Fixed
 
 - A firm item was dropped `late` at a boundary although it would have started before its `startBy`. Right after a clip ends, H3 answers the end with the facts it held before it, still naming that clip as playing, until its next state and queue reads agree. Meanwhile the playout counted the ended clip's whole length again, so it projected what airs next a clip too late: a firm item waiting to build was dropped, and a firm submission could be refused with `WouldMissDeadline`. In a simulated run of an application's programme, 26 of 589 firm submissions were dropped this way, each exactly on a boundary. A clip seen to end, or to fail on air, now leaves nothing to count. The runway in `state.runwaySeconds`, filler, what fits before a session's cap and cuts read the same count: before, a cut-lane item Ready in the last second of a lower-lane clip started a cut of that clip once it had ended, turning autoplay off at the boundary.
