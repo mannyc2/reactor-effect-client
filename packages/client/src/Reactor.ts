@@ -307,7 +307,11 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   return Reactor.of({
     create: (input) =>
       input.model.length === 0
-        ? Effect.fail(AcquisitionFailure.from(invalid("a session needs a model"), noAcquisition))
+        ? Effect.fail(
+            AcquisitionFailure.from(invalid("a session needs a model"), noAcquisition),
+          ).pipe(
+            Effect.withSpan("Reactor.create", { kind: "client" }, { captureStackTrace: false }),
+          )
         : acquire(
             {
               _tag: "Create",
@@ -333,6 +337,18 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             AcquisitionFailure.from(
               invalid("an attach needs a session id and a uint32 connection id"),
               noAcquisition,
+            ),
+          ).pipe(
+            Effect.withSpan(
+              "Reactor.attach",
+              {
+                kind: "client",
+                attributes: {
+                  "reactor.session.id": input.sessionId,
+                  "reactor.session.adopt": input.adopt === true,
+                },
+              },
+              { captureStackTrace: false },
             ),
           )
         : acquire(

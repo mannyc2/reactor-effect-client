@@ -28,6 +28,8 @@ export const make = ({
 
   return Effect.fnUntraced(
     function* (name: string, mimeType: string, bytes: Uint8Array, options: UploadOptions = {}) {
+      const known = (yield* SubscriptionRef.get(state)).remote;
+      if (isKnown(known)) yield* Effect.annotateCurrentSpan("reactor.session.id", known.id);
       const progress = yield* Ref.make<UploadProgress>({
         allocation: "not-requested",
         transfer: "not-requested",
@@ -37,7 +39,6 @@ export const make = ({
         Ref.update(progress, (p): UploadProgress => ({ ...p, ...patch }));
       const operation = Effect.gen(function* () {
         const { c } = yield* currentReady;
-        const known = (yield* SubscriptionRef.get(state)).remote;
         if (!isKnown(known))
           return yield* ReactorError.fromCode("InvalidState", "no known session id");
         if (
@@ -103,7 +104,7 @@ export const make = ({
         ),
       );
     },
-    // The MIME type and size only: never the name or the bytes.
+    // File metadata excludes the name and bytes.
     Effect.withSpan(
       "Session.upload",
       (_name, mimeType, bytes) => ({

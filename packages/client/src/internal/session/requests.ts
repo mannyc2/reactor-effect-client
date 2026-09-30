@@ -12,6 +12,7 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { CommandContext } from "../../ReactorError.js";
 import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
 import type { ClipReady, CommandOptions, UploadReference } from "../../Session.js";
@@ -20,7 +21,7 @@ import * as Deadline from "../deadline.js";
 import * as Wire from "../wire.js";
 import type { Generation } from "./generation.js";
 import type { Connection, ControlPayload, Core, Link } from "./model.js";
-import { timedOut, withoutKey } from "./model.js";
+import { isKnown, timedOut, withoutKey } from "./model.js";
 
 const UploadReference = Schema.Struct({
   uploadId: Schema.NonEmptyString,
@@ -88,8 +89,36 @@ export const make = ({
   /** Where a clip's relative playlist URL resolves. */
   readonly apiUrl: string;
 }) => {
-  const { settings, data, control } = core;
+  const { settings, data, control, state } = core;
   const { current, currentReady, guard } = generation;
+
+  // Only refusal reporting is timed here; admitted work keeps its owned execution span.
+  const refuse = Effect.fnUntraced(function* (
+    operation: string,
+    channel: "control" | "data",
+    error: ReactorError,
+  ) {
+    const session = yield* SubscriptionRef.get(state);
+    return yield* Effect.fail(error).pipe(
+      Effect.withSpan(
+        channel === "data" ? "Session.command" : "Session.control",
+        {
+          kind: "client",
+          attributes: {
+            "reactor.operation": operation,
+            "reactor.command.outcome": "not-submitted",
+            "error.type": error.reason._tag,
+            ...(isKnown(session.remote) ? { "reactor.session.id": session.remote.id } : {}),
+            ...(error.context.requestId === undefined
+              ? {}
+              : { "reactor.request.id": error.context.requestId }),
+            "reactor.connection.generation": error.context.generation ?? session.generation,
+          },
+        },
+        { captureStackTrace: false },
+      ),
+    );
+  });
 
   const request = <A>(spec: {
     readonly c: Connection;
@@ -160,6 +189,7 @@ export const make = ({
             }),
           ),
         );
+        const remote = (yield* SubscriptionRef.get(state)).remote;
         const execution = Effect.gen(function* () {
           // The reply can precede the transport's acknowledgement of the send.
           yield* Effect.forkIn(sending, yield* Effect.scope, { startImmediately: true });
@@ -189,35 +219,46 @@ export const make = ({
                 "reactor.operation": operation,
                 "reactor.request.id": pending.id,
                 "reactor.connection.generation": c.generation,
+                ...(isKnown(remote) ? { "reactor.session.id": remote.id } : {}),
               },
             },
             { captureStackTrace: false },
           ),
         );
-        const owner = yield* Effect.forkIn(execution, c.scope, { startImmediately: true });
-        return yield* restore(Fiber.join(owner));
-      }),
+        return { execution, scope: c.scope };
+      }).pipe(
+        Effect.catch((error) => refuse(spec.operation, spec.channel, error)),
+        Effect.flatMap(({ execution, scope }) =>
+          Effect.gen(function* () {
+            const owner = yield* Effect.forkIn(execution, scope, { startImmediately: true });
+            return yield* restore(Fiber.join(owner));
+          }),
+        ),
+      ),
     );
 
   const command = Effect.fnUntraced(
     function* (name: string, input: unknown, options: CommandOptions = {}) {
-      const { c } = yield* currentReady;
-      const payload = yield* Schema.decodeUnknownEffect(CommandInput)({
-        name,
-        data: input,
-        uploads: options.uploads ?? new Map<string, UploadReference>(),
-      }).pipe(
-        Effect.mapError((cause) =>
-          ReactorError.fromCode("InvalidInput", "invalid command", {
-            operation: name,
-            outcome: "not-submitted",
-            detail: cause,
-          }),
-        ),
-      );
-      const wait = yield* Deadline.decode("replyTimeout")(
-        options.replyTimeout ?? settings.replyTimeout,
-      );
+      const { c, payload, wait } = yield* Effect.gen(function* () {
+        const { c } = yield* currentReady;
+        const payload = yield* Schema.decodeUnknownEffect(CommandInput)({
+          name,
+          data: input,
+          uploads: options.uploads ?? new Map<string, UploadReference>(),
+        }).pipe(
+          Effect.mapError((cause) =>
+            ReactorError.fromCode("InvalidInput", "invalid command", {
+              operation: name,
+              outcome: "not-submitted",
+              detail: cause,
+            }),
+          ),
+        );
+        const wait = yield* Deadline.decode("replyTimeout")(
+          options.replyTimeout ?? settings.replyTimeout,
+        );
+        return { c, payload, wait };
+      }).pipe(Effect.catch((error) => refuse(name, "data", error)));
       return yield* request({
         c,
         correlator: data,
@@ -248,8 +289,11 @@ export const make = ({
     payload: ControlPayload,
     expected?: Connection,
   ) {
-    const c = expected ?? (yield* currentReady).c;
-    yield* current(c);
+    const c = yield* Effect.gen(function* () {
+      const c = expected ?? (yield* currentReady).c;
+      yield* current(c);
+      return c;
+    }).pipe(Effect.catch((error) => refuse(operation, "control", error)));
     return yield* request({
       c,
       correlator: control,
