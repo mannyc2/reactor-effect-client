@@ -20,5 +20,8 @@
 
 | Session | Connected | Killed | First INACTIVE read | Window closed | Ended by | Ended | Killed to ended | Dashboard duration | Dashboard charge |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 8de21707-9d81-4ca2-9b52-3e2e16a0fd52 | 2.66 s | 2.66 s | 8.88 s | 62.66 s | the key | 62.88–63.30 s | 60.21–60.64 s |  |  |
+| 8de21707-9d81-4ca2-9b52-3e2e16a0fd52 | 2.66 s | 2.66 s | 8.88 s | 62.66 s | the key | 62.88–63.30 s | 60.21–60.64 s | 1m 3s | not shown |
 
+## The dashboard
+
+Read on September 30, 2026. The Usage page lists the session `CLOSED`, at **1m 3s**, which matches the 62.88–63.30 s from allocation to the key's end. So Reactor bills the time a session reads `INACTIVE` after its owner dies, not only the time something is connected. The page shows no charge per session. The balance read $9.24, against $9.32 on September 29 at about 14:15 UTC, before this run and the 0.8.0-rc `show` charges. Those charges have not posted, so what Reactor charged for them is still open.
