@@ -785,6 +785,26 @@ layer(seamed)("follows", (it) => {
     }),
   );
 
+  it.effect("never advises a submission that a lane would refuse", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const playing = yield* playout.submit({
+        key: key("c"),
+        lane: "line",
+        request: clip("c", 15),
+      });
+      yield* playing.started;
+      // x cuts in once Ready: an insert after it would take its cutting lane.
+      yield* playout.submit({ key: key("x"), lane: "urgent", request: clip("x") });
+      const placement = yield* playout.place({ key: key("u") });
+      if (placement === null) return;
+      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
+      yield* placement.anchor === "next"
+        ? playout.submit({ ...spec, lane: "quiet", start: { _tag: "Asap" } })
+        : playout.insert({ ...spec, after: placement.anchor });
+    }),
+  );
+
   it.effect("before builds are measured, builds an item once the clip it follows is Ready", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start();
@@ -859,7 +879,7 @@ const forecast = (
   floor: Duration.Input = "15 seconds",
 ) =>
   Effect.gen(function* () {
-    const draws = yield* Effect.replicateEffect(Random.next, 40).pipe(Random.withSeed(seed));
+    const draws = yield* Effect.replicateEffect(Random.next, 64).pipe(Random.withSeed(seed));
     const draw = () => draws.pop() ?? 0;
     yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
     const test = yield* ReactorTest.ReactorTest;

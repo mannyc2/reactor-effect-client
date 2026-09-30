@@ -131,8 +131,8 @@ export interface PlaceProbe {
  * submitted later may still come between the call and the clip, or after it.
  * A clip not built yet counts at the length the last clip that asked for as
  * much aired at, else at the median ratio of aired to requested length, so
- * behind a length not asked for before, `startsAt` may be off by up to a step
- * of the provider's grid (0.7 s on H3).
+ * `startsAt` may be off by up to a step of the provider's grid (0.7 s on H3)
+ * for each clip ahead at a length not asked for before.
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -753,8 +753,8 @@ export class Playout extends Context.Service<
     /**
      * Where a clip like `probe` would land: at the first boundary of the
      * projected air order it could make, submitted `submitIn` from now to
-     * follow the clip before that boundary, without dropping or displacing
-     * anything submitted already. A clip that cannot air before the cap of the
+     * follow the clip before that boundary, as a submission its lane would
+     * take, without dropping or displacing anything submitted already. A clip that cannot air before the cap of the
      * session on air is placed on its replacement. It never answers after a
      * clip this playout did not enqueue, nor after a cut not yet on air, which
      * it does not project. Null once the playout has stopped, with no session
