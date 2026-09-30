@@ -785,6 +785,30 @@ layer(seamed)("follows", (it) => {
     }),
   );
 
+  it.effect("before builds are measured, builds an item once the clip it follows is Ready", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const now = yield* Clock.currentTimeMillis;
+      yield* playout.submit({ key: key("p"), lane: "line", request: clip("p") });
+      yield* playout.submit({
+        key: key("x"),
+        lane: "line",
+        request: clip("x"),
+        start: { _tag: "At", time: now + 40_000, late: { _tag: "nextBoundary" } },
+      });
+      yield* Effect.sleep("3 seconds");
+      // Its build could outlast the 2 s of p left.
+      const after = yield* playout.submit({
+        key: key("after"),
+        lane: "line",
+        request: clip("after", 15),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      yield* after.outcome;
+      assert.deepStrictEqual(yield* starts, ["p", "x", "after"]);
+    }),
+  );
+
   it.effect("holds an insert after the item it follows while that item's enqueue is unknown", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start();

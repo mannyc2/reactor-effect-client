@@ -2877,8 +2877,22 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * ahead of it, and ends before it does (`followContinuation`).
    */
   function followCovered(item: Item): boolean {
+    // Before three builds are measured its build may outlast any air ahead: it goes once the clip
+    // it follows is Ready ahead of it, which airs first.
+    if (estimates().build === undefined) return followedReady(item);
     const slack = followSlackMs(item);
     return slack !== undefined && slack > 0;
+  }
+  /** Whether the clip `item` follows is Ready and queued to air where it would air before it. */
+  function followedReady(item: Item): boolean {
+    const follows = item.spec.follows;
+    if (follows === undefined) return false;
+    return [session(state.air), preferred()].some((value) =>
+      (value === undefined ? [] : readyOf(value)).some((clip) => {
+        const other = itemOf(clip);
+        return sameClip(follows, clip.tag) && (other === undefined || queuedToAir(items, other));
+      }),
+    );
   }
   /**
    * By how much the air ahead of `item`, as `followCovered` counts it, outlasts its build and the
@@ -2903,6 +2917,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /** When `followCovered` stops holding for `item` as the clip on air plays; undefined if not. */
   function followUncoveredAt(item: Item): number | undefined {
+    if (estimates().build === undefined) return undefined;
     const slack = followSlackMs(item);
     const end = playingEndOf(session(state.air));
     if (slack === undefined || slack <= 0 || end === undefined) return undefined;
@@ -3662,6 +3677,22 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
       return (rest + ready) / 1000;
     };
+    /** As `followCovered`, at `time`. */
+    const coveredFor = (item: Item, time: number): boolean => {
+      const follows = item.spec.follows;
+      if (perSecond === undefined)
+        return (
+          follows !== undefined &&
+          pool.some(
+            (clip) =>
+              (clip.sessionId === onAir || clip.sessionId === targetId) &&
+              clip.readyAt <= time &&
+              sameClip(follows, clip.tag) &&
+              (clip.item === undefined || queuedAt(clip.item, time)),
+          )
+        );
+      return aheadAt(time) > buildMs(item.spec.seconds, false) + exposureMarginMs;
+    };
     /** As `followCovered` counts the air ahead of a clip sent at `time`. */
     const aheadAt = (time: number): number => {
       const readyOn = (id: string): number =>
@@ -3735,9 +3766,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
       const at = atMono(item);
       if (at !== undefined && at > time && time + runwayAt(time) * 1000 < at) return false;
-      // As `followCovered`.
-      if (held(item, time) && aheadAt(time) <= buildMs(item.spec.seconds, false) + exposureMarginMs)
-        return false;
+      if (held(item, time) && !coveredFor(item, time)) return false;
       return admitted(item) && !followsUnbuilt(item, time);
     };
     /** When `tag` ends, as `followContinuation` projects it at `time`: on air, or Ready behind what airs first. */

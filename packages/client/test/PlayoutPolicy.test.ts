@@ -3022,8 +3022,9 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     );
     if (displaced) assert.isTrue(paired.has(name), `${name} was displaced but follows nothing`);
   }
-  // An item that follows a clip starts right after it. The simulated provider starts a Ready clip
-  // at once, where H3 waits out a seam, so a start its removal was already asked for is excused.
+  // An item that follows a clip starts right after it. The simulated provider ends a clip whenever
+  // the script says and starts the next at once, where H3 waits out a seam that no removal lands
+  // within: a start the plan had asked to remove is excused. The Playout tests own that race.
   for (const [index, start] of starts.entries()) {
     const follows = start.follows;
     if (follows === undefined || start.removalAsked) continue;
