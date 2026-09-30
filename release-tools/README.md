@@ -1,7 +1,9 @@
 # Release the qualified workspace packages with ts-release
 
 The release workflow promotes already qualified npm archives: one for each of
-`reactor-effect-client`, `reactor-effect-browser` and `reactor-effect-native`,
+`reactor-effect-client`, `reactor-effect-browser`, `reactor-effect-native` and
+the native package's two platform addon packages,
+`reactor-effect-native-linux-x64-gnu` and `reactor-effect-native-darwin-arm64`,
 all carrying one release version. It does not compile the SDK, rebuild native
 libraries, repack downloaded bytes, or create a Docker image. CI produces and
 tests the five archives once; preparation and publication consume those exact
@@ -33,15 +35,14 @@ npm's staged publishing flow. No npm token or repository Actions secret is used,
 and token fallback is not supported.
 
 npm requires a package to exist before its trusted publisher can be configured.
-The client, browser and native packages were each created once through
-interactive npm authentication with a `0.0.0-reserved.0` placeholder that
-carries no SDK code, then given this trusted publisher, and 0.2.0 of all three
-has been published through this workflow. The two platform packages,
-`reactor-effect-native-linux-x64-gnu` and `reactor-effect-native-darwin-arm64`,
-still need that bootstrap before the first release that includes them. A new package name needs the same bootstrap before its
-first publish run: the client is published first, so a host package whose
-trusted publisher is missing fails its credential exchange only after the client
-publication has been dispatched. Rerunning `publish` with the same candidate
+Each of the five packages was created once through interactive npm
+authentication with a `0.0.0-reserved.0` placeholder that carries no SDK code,
+then given this trusted publisher. This workflow first published the client,
+browser and native packages at 0.2.0, and the two platform packages at 0.8.0.
+A new package name needs the same bootstrap before its first publish run: the
+client is published first, so a host package whose trusted publisher is missing
+fails its credential exchange only after the client publication has been
+dispatched. Rerunning `publish` with the same candidate
 resumes only a host publication whose dispatch was never recorded (a refused
 credential exchange sends no bytes) or one the registry already shows at the
 exact version; a host request that reached npm and was answered without
@@ -55,7 +56,7 @@ remote. Only the publish/observe job receives `contents: write`. Both prepare an
 publish receive `id-token: write`: prepare uses it to sign exact provenance for
 each archive through Sigstore; publish exchanges its identity for a
 package-scoped npm token as each publication is dispatched, and only for the
-three package names admitted from the retained Plan. Observe mode never requests
+five package names admitted from the retained Plan. Observe mode never requests
 npm credentials or dispatches publication. Dependency installs use the isolated
 lockfile with `--ignore-scripts`.
 
@@ -84,6 +85,8 @@ flat `npm-package` artifact containing:
 ```text
 reactor-effect-client-<version>.tgz
 reactor-effect-browser-<version>.tgz
+reactor-effect-native-linux-x64-gnu-<version>.tgz
+reactor-effect-native-darwin-arm64-<version>.tgz
 reactor-effect-native-<version>.tgz
 package-identity.json
 qualification.json
@@ -98,12 +101,13 @@ new attempt, or push a new commit to `main`.
 
 Manually run **Release npm with ts-release** on `main` with `mode=prepare` and
 that successful `ci_run_id`. Main must still point to its commit. This run
-validates the qualification and every archive hash, checks that the three
+validates the qualification and every archive hash, checks that the five
 packages share one version, that their export maps and file inventories are the
-expected ones, that only the native package carries `lib/` files, and that both
-native platform identities match; it signs provenance for each archive,
-exercises the actual npm request encoder for each publication without sending
-it, and retains `ts-release-candidate` containing:
+expected ones, that only the two platform packages carry `.node` addons, and
+that each platform package's addon matches its native identity, both built
+from one native source and one libwebrtc prebuilt; it signs provenance for each
+archive, exercises the actual npm request encoder for each publication without
+sending it, and retains `ts-release-candidate` containing:
 
 ```text
 identity.json
@@ -120,7 +124,7 @@ credential. Then start a separate manual run with `mode=publish`, the **same**
 exact confirmation:
 
 ```text
-publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native@0.2.0
+publish reactor-effect-client@0.2.0 reactor-effect-browser@0.2.0 reactor-effect-native-linux-x64-gnu@0.2.0 reactor-effect-native-darwin-arm64@0.2.0 reactor-effect-native@0.2.0
 ```
 
 Use the candidate's exact version for every package, in this order, as printed
@@ -130,11 +134,15 @@ by the preparation run. Stable versions target `latest`; prereleases target
 host supplies the application, locked dependencies and pinned Action; it has no
 arbitrary-ref input. It admits
 the original Bundle, Plan, qualification and all five archives before
-credentials or journal access. The Plan holds exactly three permitted npm
-publications to `https://registry.npmjs.org/`: `reactor-effect-client` first,
-then `reactor-effect-browser` and `reactor-effect-native`, each depending on the
-client's publication because both pin it as an exact peer. That order guarantees
-the peer exists when a host package is published.
+credentials or journal access. The Plan holds exactly five permitted npm
+publications to `https://registry.npmjs.org/`, in this order:
+`reactor-effect-client`, `reactor-effect-browser`,
+`reactor-effect-native-linux-x64-gnu`, `reactor-effect-native-darwin-arm64` and
+`reactor-effect-native`. Every later publication depends on the client's, which
+the browser and native packages pin as an exact peer. The native publication
+also depends on both platform publications, because it pins them as exact
+optional dependencies. That order guarantees every pinned package exists when a
+package that pins it is published.
 
 The candidate's `applicationCommit` continues to mean its **original preparation
 application commit**, which must equal its original CI source and signed
@@ -154,7 +162,7 @@ observation-only retries. No retry in that verifier sends an npm PUT.
 ## Recovery and retained evidence
 
 The journal ID is stable for this repository and version: one journal covers the
-three package publications of a version. The fixed remote is this repository;
+five package publications of a version. The fixed remote is this repository;
 ts-release stores its CAS history beneath `refs/heads/ts-release-journal/`. CI
 only responds to pushes on `main`, so journal updates do not trigger native
 builds.
