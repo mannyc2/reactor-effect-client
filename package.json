@@ -69,5 +69,8 @@
     "native:test": "bun run --filter reactor-effect-native native:test",
     "native:linux-x64": "bun run --filter reactor-effect-native native:linux-x64",
     "check:release": "tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings --report-unused-disable-directives-severity=error release-tools && cd release-tools && bun --no-env-file test ./test"
+  },
+  "patchedDependencies": {
+    "@effect/platform-node-shared@4.0.0-rc.117": "patches/@effect%2Fplatform-node-shared@4.0.0-rc.117.patch"
   }
 }

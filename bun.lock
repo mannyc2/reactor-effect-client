@@ -160,6 +160,9 @@
       "version": "0.8.0",
     },
   },
+  "patchedDependencies": {
+    "@effect/platform-node-shared@4.0.0-rc.117": "patches/@effect%2Fplatform-node-shared@4.0.0-rc.117.patch",
+  },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-rc.117",
   },
