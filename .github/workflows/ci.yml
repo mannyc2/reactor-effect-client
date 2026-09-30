@@ -140,8 +140,11 @@ jobs:
       - name: Portable runtime verification
         run: bun run verify --profile runtime
 
-  native:
-    name: Native (${{ matrix.platform }})
+  # Each platform's addon is built or restored once, then checked on Node and
+  # on Bun in jobs of their own, side by side: the media load tests take about
+  # a minute a runtime, and nothing may run beside them on one runner.
+  native-build:
+    name: Native build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -152,9 +155,8 @@ jobs:
           - os: macos-15
             platform: darwin-arm64
     steps:
-      # Spotlight indexes every file the job checks out, restores and builds;
-      # on the 3-core runner it took about a core while the media load tests
-      # ran. The job searches none of it.
+      # Spotlight indexes every file the job checks out, restores and builds.
+      # The job searches none of it.
       - name: Stop Spotlight indexing
         if: runner.os == 'macOS'
         run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
@@ -250,14 +252,18 @@ jobs:
           restore-keys: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-
 
       # Building regenerates the binding's declarations from rust/src/binding.rs;
-      # the committed copy must be what this build declares.
-      - name: Build, stage and qualify the native addon
+      # the committed copy must be what this build declares. The Rust checks
+      # and the far peer's build run here; the native jobs run the JavaScript
+      # suite.
+      - name: Build, stage and check the native addon
         if: steps.staged.outputs.cache-hit != 'true'
         run: |
           bun run native:build
           git diff --exit-code packages/native/src/internal/binding.ts
-          bun run native:test
+          sh packages/native/scripts/test.sh rust
 
+      # Only an addon whose Rust checks passed is cached. The JavaScript suite
+      # runs on every addon, restored or built.
       - name: Save qualified native addon
         if: steps.staged.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -267,18 +273,6 @@ jobs:
             packages/native/rust/target/release/examples/far_peer
           key: ${{ steps.identity.outputs.key }}
 
-      # The TypeScript host is not part of the cache key, so a restored addon
-      # still runs the whole suite, media load tests included, on both runtimes.
-      - name: Check the restored addon against the current sources
-        if: steps.staged.outputs.cache-hit == 'true'
-        working-directory: packages/native
-        run: |
-          node node_modules/vitest/vitest.mjs run
-          bun --bun node_modules/vitest/vitest.mjs run
-
-      - name: Public browser/native WebRTC verification
-        run: bun run test:integration
-
       - name: Upload native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -287,6 +281,103 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 1
+
+      - name: Upload the test far peer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: far-peer-${{ matrix.platform }}
+          path: packages/native/rust/target/release/examples/far_peer
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  native:
+    name: Native (${{ matrix.platform }}, ${{ matrix.runtime }})
+    needs: native-build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64-gnu
+            runtime: node
+          - os: ubuntu-24.04
+            platform: linux-x64-gnu
+            runtime: bun
+          - os: macos-15
+            platform: darwin-arm64
+            runtime: node
+          - os: macos-15
+            platform: darwin-arm64
+            runtime: bun
+    steps:
+      # Spotlight indexes every file the job checks out, restores and builds;
+      # on the 3-core runner it took about a core while the media load tests
+      # ran. The job searches none of it.
+      - name: Stop Spotlight indexing
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      # The isolated host's child entry and the client are the built ones.
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Download the staged addon
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: native-${{ matrix.platform }}
+          path: packages/native/npm/${{ matrix.platform }}
+
+      - name: Download the test far peer
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: far-peer-${{ matrix.platform }}
+          path: packages/native/rust/target/release/examples
+
+      # An artifact keeps no file modes.
+      - name: Make the far peer executable
+        run: chmod +x packages/native/rust/target/release/examples/far_peer
+
+      # The TypeScript host is not part of the build's cache key, so a restored
+      # addon still runs the whole suite, media load tests included.
+      - name: Check the staged addon on Node
+        if: matrix.runtime == 'node'
+        working-directory: packages/native
+        run: node node_modules/vitest/vitest.mjs run
+
+      - name: Check the staged addon on Bun
+        if: matrix.runtime == 'bun'
+        working-directory: packages/native
+        run: bun --bun node_modules/vitest/vitest.mjs run
+
+      - name: Public browser/native WebRTC verification
+        if: matrix.runtime == 'node'
+        run: bun run test:integration
 
   package:
     name: Pack/install smoke

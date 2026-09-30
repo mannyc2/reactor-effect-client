@@ -27,6 +27,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --config rust/.cargo/config.toml --locked -
 # The media load tests receive from a libwebrtc far peer on the same pinned
 # reactor-webrtc. It is a Cargo example, so it never enters the staged library.
 cargo build --config rust/.cargo/config.toml --locked --manifest-path rust/Cargo.toml --release --example far_peer
+# `test.sh rust` stops here, for CI, which runs the suite below on each runtime
+# in a job of its own against the addon this build staged.
+if [ "${1:-}" = rust ]; then
+  exit 0
+fi
 REACTOR_NATIVE_FAR_PEER="${CARGO_TARGET_DIR:-$root/rust/target}/release/examples/far_peer"
 export REACTOR_NATIVE_FAR_PEER
 # The preceding native:build owns staging; the tests load the staged addon.
