@@ -425,6 +425,19 @@ layer(hosted)("edits", (it) => {
       assert.strictEqual(unknown._tag, "InvalidItem");
     }),
   );
+
+  // A caller retrying an insert whose first attempt landed gets that insert, not a refusal.
+  it.effect("answers an insert made again once its anchor has aired with its own handle", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      const insert = { key: key("u"), request: clip("u"), after: key("a") };
+      const once = yield* playout.insert(insert);
+      yield* once.started;
+      const again = yield* playout.insert(insert);
+      assert.strictEqual(again.key, once.key);
+    }),
+  );
 });
 
 layer(hosted)("cuts", (it) => {

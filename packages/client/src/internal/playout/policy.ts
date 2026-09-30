@@ -1216,7 +1216,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         )
           return refuse({ _tag: "KeyMismatch", key: key });
       }
-      if (edit._tag === "Insert") {
+      // An insert already admitted under this key, spec and anchor is answered as it is.
+      if (edit._tag === "Insert" && !items.has(edit.spec.key)) {
         const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side);
         // After the playing item is the next boundary; before it is already past.
         if (!live(anchor) || (anchor.phase === "Started" && edit.side === "before"))
