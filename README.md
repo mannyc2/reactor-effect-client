@@ -136,7 +136,8 @@ lists every run with its date, commit and spend, and what has not run on hosted 
 ## Status
 
 reactor-effect is an independent project, not an official Reactor SDK. It supports H3 Reference
-Turbo Realtime today. It is at 0.x, so a minor release can still change the API; the
+Turbo Realtime today. [Limits and support](https://mannyc2.github.io/reactor-effect-client/reference/limits/) says which
+platforms it runs on and what has not been exercised on hosted Reactor yet. It is at 0.x, so a minor release can still change the API; the
 [changelog](./CHANGELOG.md) says what changed and how to upgrade. Every version is published to npm
 with provenance by the [release workflow](./.github/workflows/release.yml). Protocol material and
 native WebRTC dependencies are attributed in [NOTICE](./NOTICE).

@@ -55,3 +55,19 @@ Bun does not write the local-tarball provenance metadata that npm uses to valida
 Each platform archive's `native-identity.json` must name its platform and addon, and the addon must match both that identity's SHA-256 and the staged file; every identity must have been built from the checked-out native sources (`stage.mjs --source-hash`). The installed native preflight checks the installed platform package against the qualified identity byte for byte, refuses an absent addon before anything could be allocated, and negotiates an offer through the installed addon. `PACK_EXPECT_NATIVE_PLATFORMS` lists the platforms whose staged addons must be present.
 
 `native:build` is the staging entry point. `native:test` checks that staged artifact and does not silently build a second copy. The `native` verification profile runs them in that order. The public integration uses real Chrome WebRTC with local provider and media fixtures. It exercises public Browser and Native owners, ACK versus model replies, generation attribution, owned decoded bytes and media leases, failure cleanup and joined shutdown. It contacts no live Reactor session. TURN relay qualification remains an explicit separate opt-in using the existing integration environment settings.
+
+## Commands
+
+| Command                               | What it does                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                   |
+| `bun run typecheck`                   | Checks every workspace's sources, tests and tooling against the built declarations                     |
+| `bun run lint`                        | oxlint with the type-aware rules; unused suppressions fail                                             |
+| `bun run test`                        | The client, browser and hosted-rehearsal Vitest suites on Node and on Bun, then the scripts' own tests |
+| `bun run check:examples`              | Each example's offline tests on Node and Bun, and the browser bundles                                  |
+| `bun run test:native`                 | Vitest in `packages/native` against the staged addon, on Node and then on Bun                          |
+| `bun run test:integration`            | A real local browser/native session through the public packages                                        |
+| `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                   |
+| `bun run native:build`                | Builds the addon for the current host and stages it into its package under `packages/native/npm/`      |
+| `bun run generate:wire`               | Regenerates the wire codec with `buf`; `generate:check` fails on any difference                        |
+| `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                          |
