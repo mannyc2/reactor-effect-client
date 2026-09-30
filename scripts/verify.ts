@@ -1,6 +1,7 @@
 /**
- * Runs a verification profile's workspace commands in order; the first that fails ends the
- * profile with its exit status. `--list` prints the commands without running them.
+ * Runs a verification profile's stages in order, and each stage's workspace commands side by side;
+ * the first that fails ends the profile with its exit status. `--list` prints the stages without
+ * running them.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
-import { environment, runInherited, runtimes } from "./subprocess.js";
+import { environment, runInherited, runSteps, runtimes, type Step } from "./subprocess.js";
 
 class VerifyError extends Schema.TaggedError<VerifyError>(
   "reactor-effect/scripts/verify/VerifyError",
@@ -17,26 +18,46 @@ class VerifyError extends Schema.TaggedError<VerifyError>(
 
 // CI/release and local callers share exactly these workspace commands. Runtime
 // test discovery lives in bunfig/Vitest projects, not in this orchestration.
-// `build` precedes `lint` and `typecheck` because dependent packages and
-// examples resolve their workspace dependencies through the built declarations,
-// and type-aware lint rules need those types too.
-const portable = [
-  "generate:check",
-  "format:check",
-  "build",
-  "lint",
-  "typecheck",
-  "check:examples",
-  "test:portable",
+// A stage's commands run side by side, and a stage starts once the one before it
+// has passed. `build` comes first because dependent packages and examples
+// resolve their workspace dependencies through the built declarations, and
+// type-aware lint rules need those types too. `imports` is the Node and Bun
+// portable runtime import guards, which load that build.
+type Stages = ReadonlyArray<ReadonlyArray<string>>;
+const portable: Stages = [
+  ["generate:check", "format:check", "build"],
+  ["imports", "lint", "typecheck", "check:examples", "test:portable"],
 ];
-// Native and integration tests import the built client package.
-const native = ["build", "native:build", "native:test", "test:integration"];
-const runtime = ["build", "test:portable"];
-const packaging = ["test:pack"];
-const profiles: Readonly<Record<string, ReadonlyArray<string>>> = {
+// The portable checks whose outcome can't depend on the host, which CI runs
+// once; `runtime` runs the rest on each host.
+const shared: Stages = [
+  ["generate:check", "format:check", "build"],
+  ["lint", "typecheck", "check:examples"],
+];
+// Native and integration tests import the built client package, and nothing
+// runs beside them: the media load tests measure the bridge, not contention.
+const native: Stages = [
+  ["build"],
+  ["imports"],
+  ["native:build"],
+  ["native:test"],
+  ["test:integration"],
+];
+const nativeLocal: Stages = [
+  ["build"],
+  ["imports"],
+  ["native:build"],
+  ["native:test:node"],
+  ["test:integration"],
+];
+const runtime: Stages = [["build"], ["imports", "test:portable"]];
+const packaging: Stages = [["test:pack"]];
+const profiles: Readonly<Record<string, Stages>> = {
   portable,
+  shared,
   runtime,
   native,
+  "native-local": nativeLocal,
   package: packaging,
   release: [...portable, ...packaging],
   full: [...portable, ...native, ...packaging],
@@ -57,38 +78,54 @@ const program = Effect.gen(function* () {
     }
     return yield* VerifyError.make({ message: `unknown verification argument: ${arg}` });
   }
-  const commands = profile === undefined ? undefined : profiles[profile];
-  if (commands === undefined)
+  const stages = profile === undefined ? undefined : profiles[profile];
+  if (stages === undefined)
     return yield* VerifyError.make({
       message: `unknown verification profile ${profile}; use ${Object.keys(profiles).join(", ")}`,
     });
   const root = yield* path.fromFileUrl(new URL("../", import.meta.url));
   const { node, bun } = yield* runtimes;
   const env = { ...(yield* environment), BUN_BINARY: bun };
-  const execute = (
-    command: string,
-    commandArgs: ReadonlyArray<string>,
-    overrides: Readonly<Record<string, string>> = {},
-  ) =>
-    listOnly
-      ? Effect.void
-      : runInherited(command, commandArgs, { cwd: root, env: { ...env, ...overrides } });
-  for (const command of commands) {
-    yield* Console.log(`verify ${profile}: bun run ${command}`);
-    yield* execute(bun, ["--no-env-file", "run", command]);
-    if (command === "build") {
-      yield* Console.log(`verify ${profile}: Node and Bun portable runtime imports`);
-      yield* execute(
-        node,
-        [
-          "--experimental-loader",
-          "./scripts/pack/resolution-guard.mjs",
-          "scripts/portable-import.mjs",
-        ],
-        { PACK_CONSUMER_ROOT: root, PACK_DENY_NATIVE: "1" },
-      );
-      yield* execute(bun, ["--no-env-file", "scripts/portable-import.mjs"]);
-    }
+  const stepsOf = (command: string): ReadonlyArray<Step> =>
+    command === "imports"
+      ? [
+          {
+            label: "Node portable runtime imports",
+            command: node,
+            args: [
+              "--experimental-loader",
+              "./scripts/pack/resolution-guard.mjs",
+              "scripts/portable-import.mjs",
+            ],
+            cwd: root,
+            env: { ...env, PACK_CONSUMER_ROOT: root, PACK_DENY_NATIVE: "1" },
+          },
+          {
+            label: "Bun portable runtime imports",
+            command: bun,
+            args: ["--no-env-file", "scripts/portable-import.mjs"],
+            cwd: root,
+            env,
+          },
+        ]
+      : [
+          {
+            label: `bun run ${command}`,
+            command: bun,
+            args: ["--no-env-file", "run", command],
+            cwd: root,
+            env,
+          },
+        ];
+  for (const stage of stages) {
+    yield* Console.log(`verify ${profile}: ${stage.join(", ")}`);
+    if (listOnly) continue;
+    const steps = stage.flatMap(stepsOf);
+    const [only] = steps;
+    // A stage of one command keeps this terminal, so its output streams live.
+    if (steps.length === 1 && only !== undefined)
+      yield* runInherited(only.command, only.args, { cwd: only.cwd, env: only.env });
+    else yield* runSteps(steps);
   }
 });
 

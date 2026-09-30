@@ -46,9 +46,12 @@ const tokens = (maxSessionDuration: Duration.Input) =>
   });
 
 /** A playout on paid-shaped H3 sessions, with its events recorded from the start. */
-const start = (options: Partial<Options<never>> & { readonly lifetime?: Duration.Input } = {}) =>
+const start = (
+  options: Partial<Options<never>> & { readonly lifetime?: Duration.Input } = {},
+  step: Duration.Input = "20 millis",
+) =>
   Effect.gen(function* () {
-    yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+    yield* Effect.forkScoped(ReactorTest.flow(step));
     const playout = yield* Playout.make({
       open: H3Source.open({ tokens: yield* tokens(options.lifetime ?? "10 minutes") }),
       lanes: [{ name: "urgent", cut: true }, { name: "line" }, { name: "quiet", conflict: "skip" }],
@@ -877,11 +880,12 @@ const forecast = (
   lifetime: Duration.Input,
   toleranceMs: number,
   floor: Duration.Input = "15 seconds",
+  step: Duration.Input = "10 millis",
 ) =>
   Effect.gen(function* () {
     const draws = yield* Effect.replicateEffect(Random.next, 64).pipe(Random.withSeed(seed));
     const draw = () => draws.pop() ?? 0;
-    yield* Effect.forkScoped(ReactorTest.flow("10 millis"));
+    yield* Effect.forkScoped(ReactorTest.flow(step));
     const test = yield* ReactorTest.ReactorTest;
     yield* test.inject({ _tag: "Video", video: "absent" });
     yield* test.inject({ _tag: "NoAudio" });
@@ -996,7 +1000,7 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
       Effect.gen(function* () {
         const problems: Array<string> = [];
         for (let seed = 1; seed <= 8; seed++)
-          problems.push(...(yield* forecast(seed, "75 seconds", 150)));
+          problems.push(...(yield* forecast(seed, "75 seconds", 150, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),
     { timeout: 60_000 },
@@ -1182,10 +1186,13 @@ layer(hosted)("renewal", (it) => {
     "opens a replacement before the lifetime ends and switches at a boundary, in order",
     () =>
       Effect.gen(function* () {
-        const { playout, starts, events } = yield* start({
-          lifetime: "90 seconds",
-          renewal: { lead: "40 seconds" },
-        });
+        const { playout, starts, events } = yield* start(
+          {
+            lifetime: "90 seconds",
+            renewal: { lead: "40 seconds" },
+          },
+          "50 millis",
+        );
         const handles = yield* Effect.forEach(
           Array.from({ length: 16 }, (_, index) => `n${index}`),
           (name) => playout.submit({ key: key(name), lane: "line", request: clip(name) }),
@@ -1214,14 +1221,17 @@ layer(hosted)("renewal", (it) => {
     () =>
       Effect.gen(function* () {
         const test = yield* ReactorTest.ReactorTest;
-        const { playout, events } = yield* start({
-          lifetime: "90 seconds",
-          renewal: { lead: "30 seconds" },
-          filler: {
-            runway: { floor: "5 seconds", target: "10 seconds" },
-            clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+        const { playout, events } = yield* start(
+          {
+            lifetime: "90 seconds",
+            renewal: { lead: "30 seconds" },
+            filler: {
+              runway: { floor: "5 seconds", target: "10 seconds" },
+              clip: ({ index, seconds }) => clip(`filler ${index}`, seconds),
+            },
           },
-        });
+          "50 millis",
+        );
         const handles = yield* Effect.forEach(
           Array.from({ length: 30 }, (_, index) => `n${index}`),
           (name) => playout.submit({ key: key(name), lane: "line", request: clip(name) }),
@@ -1286,10 +1296,13 @@ layer(hosted)("renewal", (it) => {
     "a backlog longer than the cap airs whole and in order across the replacement",
     () =>
       Effect.gen(function* () {
-        const { playout, starts } = yield* start({
-          lifetime: "60 seconds",
-          renewal: { lead: "10 seconds" },
-        });
+        const { playout, starts } = yield* start(
+          {
+            lifetime: "60 seconds",
+            renewal: { lead: "10 seconds" },
+          },
+          "50 millis",
+        );
         const names = Array.from({ length: 14 }, (_, index) => `n${index}`);
         const handles = yield* Effect.forEach(names, (name) =>
           playout.submit({ key: key(name), lane: "line", request: clip(name) }),

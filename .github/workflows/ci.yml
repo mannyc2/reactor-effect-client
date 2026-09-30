@@ -54,13 +54,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
 
       # Generation, format, lint, dependency-ordered build, every workspace's
-      # typecheck, the examples' offline tests and browser
-      # bundle, portable tests and the Node/Bun import guards. Runs once;
-      # nothing here varies by host.
+      # typecheck and the examples' offline tests and browser bundle. Runs
+      # once; nothing here varies by host. The rest of the portable profile,
+      # the import guards and the portable tests, runs in the runtime jobs,
+      # one of which has this job's OS, Node and Bun.
       - name: Shared portable verification
         env:
           EXAMPLES_REQUIRE_FFMPEG: "1"
-        run: bun run verify --profile portable
+        run: bun run verify --profile shared
 
       - name: Install isolated release tooling
         run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
@@ -104,6 +105,12 @@ jobs:
           - os: macos-15
             node: "24.15.0"
     steps:
+      # Spotlight indexes every file the job checks out and installs; on the
+      # 3-core runner it takes about a core from the suites.
+      - name: Stop Spotlight indexing
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -133,9 +140,18 @@ jobs:
       - name: Portable runtime verification
         run: bun run verify --profile runtime
 
-  native:
-    name: Native (${{ matrix.platform }})
+  # Each platform's addon is built or restored once, then checked on Node and
+  # on Bun in jobs of their own, side by side: the media load tests take about
+  # a minute a runtime, and nothing may run beside them on one runner.
+  native-build:
+    name: Native build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      linux-x64-gnu: ${{ steps.identity.outputs.linux-x64-gnu }}
+      darwin-arm64: ${{ steps.identity.outputs.darwin-arm64 }}
     strategy:
       fail-fast: false
       matrix:
@@ -145,9 +161,8 @@ jobs:
           - os: macos-15
             platform: darwin-arm64
     steps:
-      # Spotlight indexes every file the job checks out, restores and builds;
-      # on the 3-core runner it took about a core while the media load tests
-      # ran. The job searches none of it.
+      # Spotlight indexes every file the job checks out, restores and builds.
+      # The job searches none of it.
       - name: Stop Spotlight indexing
         if: runner.os == 'macOS'
         run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
@@ -179,24 +194,25 @@ jobs:
       - name: Build workspace packages
         run: bun run build
 
-      # The staged addon embeds the SHA-256 of every native build input. On a
-      # pull request, an addon qualified for the same inputs, build recipe,
-      # toolchain and runner image is reused; restaging it rejects an addon
-      # whose identity differs from the checked-out sources. A main run always
-      # builds the addon it qualifies. The test far peer the media load tests
-      # receive from is cached beside it: it is built from the same pinned
-      # reactor-webrtc and needs only the C runtime.
+      # The staged addon embeds the SHA-256 of every native build input. An
+      # addon qualified for the same inputs, build recipe, toolchain and runner
+      # image is reused; restaging rejects an identity that differs from the
+      # checked-out sources. The media tests' far peer is cached beside it:
+      # it uses the same pinned reactor-webrtc and needs only the C runtime.
       - name: Compute native cache key
         id: identity
         shell: bash
         run: |
           source=$(node packages/native/scripts/stage.mjs --source-hash)
-          recipe='${{ hashFiles('packages/native/scripts/build.sh', 'packages/native/scripts/stage.mjs', 'packages/native/package.json', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/scripts/test.sh', 'packages/native/Dockerfile', 'packages/native/rust-toolchain.toml', 'packages/native/rust/clippy.toml', 'packages/native/rust/examples/**') }}'
-          echo "key=native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-image${ImageVersion:-unknown}-source${source}-recipe${recipe}" >> "$GITHUB_OUTPUT"
+          recipe='${{ hashFiles('.github/workflows/ci.yml', 'packages/native/scripts/build.sh', 'packages/native/scripts/stage.mjs', 'packages/native/package.json', 'packages/native/scripts/install-linux-toolchain.sh', 'packages/native/scripts/test.sh', 'packages/native/Dockerfile', 'packages/native/rust-toolchain.toml', 'packages/native/rust/clippy.toml', 'packages/native/rust/examples/**') }}'
+          key="native-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-image${ImageVersion:-unknown}-source${source}-recipe${recipe}"
+          digest=$(node --input-type=module -e 'import { createHash } from "node:crypto"; process.stdout.write(createHash("sha256").update(process.argv[1]).digest("hex"));' "$key")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.platform }}=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Restore qualified native addon
         id: staged
-        if: github.ref != 'refs/heads/main'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -204,15 +220,66 @@ jobs:
             packages/native/rust/target/release/examples/far_peer
           key: ${{ steps.identity.outputs.key }}
 
+      # A pull request's cache is private to its merge ref. Main can instead
+      # reuse exact-input artifacts from a successful CI run in this repository.
+      - name: Reuse an addon qualified by a pull request
+        id: reused
+        if: github.ref == 'refs/heads/main' && steps.staged.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
+          NATIVE_DIGEST: ${{ steps.identity.outputs.digest }}
+        shell: bash
+        run: |
+          addon="native-$PLATFORM-$NATIVE_DIGEST"
+          far_peer="far-peer-$PLATFORM-$NATIVE_DIGEST"
+          workflow=$(git hash-object .github/workflows/ci.yml)
+          if ! runs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" -f "name=$addon" -f per_page=100 --jq '.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id) | .workflow_run.id'); then
+            exit 0
+          fi
+          scratch=".check/native-reuse-$PLATFORM"
+          for run in $runs; do
+            if ! source=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq 'select(.status == "completed" and .conclusion == "success" and .event == "pull_request" and .path == ".github/workflows/ci.yml" and .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha'); then
+              continue
+            fi
+            if [ -z "$source" ]; then
+              continue
+            fi
+            if ! previous_workflow=$(gh api --method GET "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ci.yml" -f "ref=$source" --jq '.sha'); then
+              continue
+            fi
+            if [ "$previous_workflow" != "$workflow" ]; then
+              continue
+            fi
+            if ! available=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" -f "name=$far_peer" --jq '.artifacts | any(.expired == false)'); then
+              continue
+            fi
+            if [ "$available" != true ]; then
+              continue
+            fi
+            rm -rf "$scratch"
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$addon" --dir "$scratch/addon" && gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$far_peer" --dir "$scratch/far-peer" && [ -f "$scratch/far-peer/far_peer" ] && [ -f "$scratch/addon/reactor-effect-native.$PLATFORM.node" ] && [ -f "$scratch/addon/native-identity.json" ]; then
+              cp -a "$scratch/addon/." "packages/native/npm/$PLATFORM/"
+              mkdir -p packages/native/rust/target/release/examples
+              cp "$scratch/far-peer/far_peer" packages/native/rust/target/release/examples/far_peer
+              chmod +x packages/native/rust/target/release/examples/far_peer
+              echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+              echo "Reusing native artifacts from successful pull request CI run $run"
+              rm -rf "$scratch"
+              exit 0
+            fi
+            rm -rf "$scratch"
+          done
+
       # Restaging checks the cached addon's embedded identity against the
       # checked-out sources and writes its identity and notices again.
       - name: Restage the restored addon
-        if: steps.staged.outputs.cache-hit == 'true'
+        if: steps.staged.outputs.cache-hit == 'true' || steps.reused.outputs.cache-hit == 'true'
         working-directory: packages/native
         run: node scripts/stage.mjs npm/${{ matrix.platform }}/reactor-effect-native.${{ matrix.platform }}.node ${{ matrix.platform }}
 
       - name: Set up Rust
-        if: steps.staged.outputs.cache-hit != 'true'
+        if: steps.staged.outputs.cache-hit != 'true' && steps.reused.outputs.cache-hit != 'true'
         shell: bash
         run: |
           rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component clippy --component rustfmt
@@ -221,18 +288,18 @@ jobs:
           cargo --version
 
       - name: Install Linux LLVM 21 native toolchain
-        if: steps.staged.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        if: steps.staged.outputs.cache-hit != 'true' && steps.reused.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
           sudo ./packages/native/scripts/install-linux-toolchain.sh
           sudo apt-get install -y --no-install-recommends zstd
 
       - name: Ensure macOS zstd is available
-        if: steps.staged.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        if: steps.staged.outputs.cache-hit != 'true' && steps.reused.outputs.cache-hit != 'true' && runner.os == 'macOS'
         shell: bash
         run: command -v zstd >/dev/null || brew install zstd
 
       - name: Cache Cargo registry and build outputs
-        if: steps.staged.outputs.cache-hit != 'true'
+        if: steps.staged.outputs.cache-hit != 'true' && steps.reused.outputs.cache-hit != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -243,14 +310,18 @@ jobs:
           restore-keys: cargo-${{ matrix.platform }}-rust${{ env.RUST_VERSION }}-
 
       # Building regenerates the binding's declarations from rust/src/binding.rs;
-      # the committed copy must be what this build declares.
-      - name: Build, stage and qualify the native addon
-        if: steps.staged.outputs.cache-hit != 'true'
+      # the committed copy must be what this build declares. The Rust checks
+      # and the far peer's build run here; the native jobs run the JavaScript
+      # suite.
+      - name: Build, stage and check the native addon
+        if: steps.staged.outputs.cache-hit != 'true' && steps.reused.outputs.cache-hit != 'true'
         run: |
           bun run native:build
           git diff --exit-code packages/native/src/internal/binding.ts
-          bun run native:test
+          sh packages/native/scripts/test.sh rust
 
+      # Only an addon whose Rust checks passed is cached. The JavaScript suite
+      # runs on every addon, restored or built.
       - name: Save qualified native addon
         if: steps.staged.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -260,31 +331,117 @@ jobs:
             packages/native/rust/target/release/examples/far_peer
           key: ${{ steps.identity.outputs.key }}
 
-      # The TypeScript host is not part of the cache key, so a restored addon
-      # still runs the whole suite, media load tests included, on both runtimes.
-      - name: Check the restored addon against the current sources
-        if: steps.staged.outputs.cache-hit == 'true'
-        working-directory: packages/native
-        run: |
-          node node_modules/vitest/vitest.mjs run
-          bun --bun node_modules/vitest/vitest.mjs run
-
-      - name: Public browser/native WebRTC verification
-        run: bun run test:integration
-
       - name: Upload native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-${{ matrix.platform }}
+          name: native-${{ matrix.platform }}-${{ steps.identity.outputs.digest }}
           path: packages/native/npm/${{ matrix.platform }}/
           if-no-files-found: error
           overwrite: true
-          retention-days: 1
+          retention-days: 3
 
+      - name: Upload the test far peer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: far-peer-${{ matrix.platform }}-${{ steps.identity.outputs.digest }}
+          path: packages/native/rust/target/release/examples/far_peer
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
+
+  native:
+    name: Native (${{ matrix.platform }}, ${{ matrix.runtime }})
+    needs: native-build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64-gnu
+            runtime: node
+          - os: ubuntu-24.04
+            platform: linux-x64-gnu
+            runtime: bun
+          - os: macos-15
+            platform: darwin-arm64
+            runtime: node
+          - os: macos-15
+            platform: darwin-arm64
+            runtime: bun
+    steps:
+      # Spotlight indexes every file the job checks out, installs and
+      # downloads; on the 3-core runner it took about a core while the media
+      # load tests ran. The job searches none of it.
+      - name: Stop Spotlight indexing
+        if: runner.os == 'macOS'
+        run: sudo mdutil -a -i off || echo "::warning::Spotlight indexing could not be stopped"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun package downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      # The isolated host's child entry and the client are the built ones.
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Download the staged addon
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: native-${{ matrix.platform }}-${{ needs.native-build.outputs[matrix.platform] }}
+          path: packages/native/npm/${{ matrix.platform }}
+
+      - name: Download the test far peer
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: far-peer-${{ matrix.platform }}-${{ needs.native-build.outputs[matrix.platform] }}
+          path: packages/native/rust/target/release/examples
+
+      # An artifact keeps no file modes.
+      - name: Make the far peer executable
+        run: chmod +x packages/native/rust/target/release/examples/far_peer
+
+      # The TypeScript host is not part of the build's cache key, so a restored
+      # addon still runs the whole suite, media load tests included.
+      - name: Check the staged addon on Node
+        if: matrix.runtime == 'node'
+        working-directory: packages/native
+        run: node node_modules/vitest/vitest.mjs run
+
+      - name: Check the staged addon on Bun
+        if: matrix.runtime == 'bun'
+        working-directory: packages/native
+        run: bun --bun node_modules/vitest/vitest.mjs run
+
+      - name: Public browser/native WebRTC verification
+        if: matrix.runtime == 'node'
+        run: bun run test:integration
+
+  # Packing needs both staged addons, but can overlap their runtime checks.
   package:
     name: Pack/install smoke
     runs-on: ubuntu-24.04
-    needs: [check, native]
+    needs: native-build
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -313,13 +470,13 @@ jobs:
       - name: Download Linux native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: native-linux-x64-gnu
+          name: native-linux-x64-gnu-${{ needs.native-build.outputs.linux-x64-gnu }}
           path: packages/native/npm/linux-x64-gnu
 
       - name: Download macOS native artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: native-darwin-arm64
+          name: native-darwin-arm64-${{ needs.native-build.outputs.darwin-arm64 }}
           path: packages/native/npm/darwin-arm64
 
       - name: Clean pack/install validation
@@ -327,17 +484,6 @@ jobs:
         env:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64-gnu,darwin-arm64
         run: bun run verify --profile package
-
-      - name: Install isolated release tooling
-        if: github.ref == 'refs/heads/main'
-        run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
-
-      - name: Bind qualified archives to this main CI run
-        id: qualification
-        if: github.ref == 'refs/heads/main'
-        env:
-          PACKAGE_IDENTITY: ${{ steps.package.outputs.identity }}
-        run: node release-tools/ci.mjs stamp "$PACKAGE_IDENTITY" .release/qualified/qualification.json
 
       - name: Stage a flat artifact without changing package bytes
         env:
@@ -351,6 +497,50 @@ jobs:
           cp "$PACKAGE_IDENTITY" .release/qualified/
 
       - name: Upload validated npm packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ github.ref == 'refs/heads/main' && 'npm-unstamped' || 'npm-package' }}
+          path: .release/qualified/
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  # This barrier re-runs after a failed prerequisite is re-run on main. It
+  # stamps the exact packed bytes with the attempt in which every check passed.
+  qualification:
+    name: Qualify main packages
+    if: github.ref == 'refs/heads/main'
+    needs: [check, test, native, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install isolated release tooling
+        run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
+
+      - name: Download validated npm packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: npm-unstamped
+          path: .release/qualified
+
+      - name: Bind qualified archives to this main CI run
+        run: node release-tools/ci.mjs stamp .release/qualified/package-identity.json .release/qualified/qualification.json
+
+      - name: Upload qualified npm packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-package
