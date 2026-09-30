@@ -2565,24 +2565,26 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (selected?.phase !== "Accepted" || selected.spec.follows === undefined)
     )
       updateSession(value.id, { guardItem: undefined });
-    const guarded =
-      (live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined) ||
-      [...items.values()].some(
-        (item) =>
-          item.spec.follows !== undefined &&
-          item.sessionId === value.id &&
-          live(item) &&
-          item.phase !== "Started" &&
-          !(
-            item.phase === "Ready" &&
-            item.withdraw === undefined &&
-            actual[0]?.clipId === item.clipId &&
-            // Fence before moving another clip ahead: it may start and end while the Move
-            // reply is pending, leaving this clip after a different predecessor.
-            desired[0]?.clipId === item.clipId &&
-            sameClip(item.spec.follows, value.source?.playing?.tag)
-          ),
-      );
+    const guarding =
+      live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined
+        ? selected
+        : [...items.values()].find(
+            (item) =>
+              item.spec.follows !== undefined &&
+              item.sessionId === value.id &&
+              live(item) &&
+              item.phase !== "Started" &&
+              !(
+                item.phase === "Ready" &&
+                item.withdraw === undefined &&
+                actual[0]?.clipId === item.clipId &&
+                // Fence before moving another clip ahead: it may start and end while the Move
+                // reply is pending, leaving this clip after a different predecessor.
+                desired[0]?.clipId === item.clipId &&
+                sameClip(item.spec.follows, value.source?.playing?.tag)
+              ),
+          );
+    const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
     const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id && !guarded;
@@ -2593,7 +2595,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         queueCommand(
           value.id,
           { _tag: "Autoplay", enabled: autoplay },
-          state.cutting?.sessionId === value.id ? itemOf(cutterOf().cutter)?.spec.key : undefined,
+          state.cutting?.sessionId === value.id
+            ? itemOf(cutterOf().cutter)?.spec.key
+            : guarding?.spec.key,
         );
       return;
     }
@@ -2748,7 +2752,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (headItem === undefined || (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
       (retry === undefined || retry.signature !== signature(value) || now.mono >= retry.at)
     )
-      return queueCommand(value.id, { _tag: "Play", clipId: head.clipId });
+      return queueCommand(value.id, { _tag: "Play", clipId: head.clipId }, headItem?.spec.key);
     // Build, on the session that takes new work: the first eligible item by build order, else
     // filler below its floor.
     const target = preferred();
@@ -2779,7 +2783,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
       if (item.spec.follows !== undefined && value.autoplay !== false) {
         updateSession(value.id, { guardItem: item.spec.key });
-        return queueCommand(value.id, { _tag: "Autoplay", enabled: false });
+        return queueCommand(value.id, { _tag: "Autoplay", enabled: false }, item.spec.key);
       }
       updateSession(value.id, { guardItem: undefined });
       set(item.spec.key, {
