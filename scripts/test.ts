@@ -1,26 +1,29 @@
 /**
  * Runtime projects discover their own files; there is no test filename registry.
- *   portable    Vitest in packages/client, packages/browser and integration/hosted,
- *               each on Node then Bun, then the scripts' own tests on Bun
+ *   portable    Vitest in packages/client, packages/browser and integration/hosted, each on Node
+ *               and on Bun, and the scripts' own tests on Bun, side by side: as many at once as
+ *               half the cores, and at least two, as each spreads its files over the cores itself
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  *
  * Each run has 180 seconds, and the first that fails ends the project with its exit status.
  */
+import { availableParallelism } from "node:os";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
-import { environment, runInherited, runtimes } from "./subprocess.js";
+import { environment, runInherited, runStep, runtimes, type Step } from "./subprocess.js";
 
 class TestError extends Schema.TaggedError<TestError>("reactor-effect/scripts/test/TestError")(
   "TestError",
   { message: Schema.String },
 ) {}
 
-type Run = readonly [command: string, args: ReadonlyArray<string>, cwd: string];
+const limit: Duration.Input = "180 seconds";
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -29,50 +32,90 @@ const program = Effect.gen(function* () {
   const { node, bun } = yield* runtimes;
   const env = yield* environment;
   const vitest = (directory: string) => path.join(directory, "node_modules/vitest/vitest.mjs");
-  /** A Vitest project runs on Node, which the engines declare, and then on Bun. */
-  const nodeAndBun = (directory: string): ReadonlyArray<Run> => [
-    [node, [vitest(directory), "run"], directory],
-    [bun, ["--bun", vitest(directory), "run"], directory],
-  ];
   const packages = path.join(root, "packages");
   const integration = path.join(root, "integration");
-  const runsOf = (name: string): ReadonlyArray<Run> | undefined => {
-    switch (name) {
-      case "portable":
-        return [
-          ...nodeAndBun(path.join(packages, "client")),
-          ...nodeAndBun(path.join(packages, "browser")),
-          // The hosted qualification's gates, ledger and a rehearsal of every check.
-          [node, [vitest(integration), "run", "--root", "hosted"], integration],
-          [bun, ["--bun", vitest(integration), "run", "--root", "hosted"], integration],
-          // pack runs on Bun and reads bun.lock with Bun.JSONC, so its tests run there.
-          [bun, ["--bun", vitest(root), "run", "--root", "scripts"], root],
-        ];
-      case "native":
-        return nodeAndBun(path.join(packages, "native"));
-      case "integration":
-        return [[node, [vitest(integration), "run"], integration]];
-      default:
-        return undefined;
-    }
-  };
-  const runs = runsOf(project);
-  if (runs === undefined)
-    return yield* TestError.make({
-      message: `unknown test project ${project}; use portable, native or integration`,
-    });
-  for (const [command, args, cwd] of runs)
-    yield* runInherited(command, args, { cwd, env }).pipe(
-      Effect.timeoutOrElse({
-        duration: "180 seconds",
-        orElse: () =>
-          Effect.fail(
-            TestError.make({
-              message: `${command} ${args.join(" ")} did not finish within 180 seconds`,
-            }),
-          ),
-      }),
+  /** A Vitest project runs on Node, which the engines declare, and on Bun. */
+  const nodeAndBun = (
+    name: string,
+    directory: string,
+    args: ReadonlyArray<string> = [],
+  ): ReadonlyArray<Step> => [
+    {
+      label: `${name} on Node`,
+      command: node,
+      args: [vitest(directory), "run", ...args],
+      cwd: directory,
+      env,
+      limit,
+    },
+    {
+      label: `${name} on Bun`,
+      command: bun,
+      args: ["--bun", vitest(directory), "run", ...args],
+      cwd: directory,
+      env,
+      limit,
+    },
+  ];
+  /** Runs one at a time, each with this process's terminal. */
+  const inTurn = (steps: ReadonlyArray<Step>) =>
+    Effect.forEach(
+      steps,
+      (step) =>
+        runInherited(step.command, step.args, { cwd: step.cwd, env: step.env }).pipe(
+          Effect.timeoutOrElse({
+            duration: limit,
+            orElse: () =>
+              Effect.fail(
+                TestError.make({
+                  message: `${step.command} ${step.args.join(" ")} did not finish within 180 seconds`,
+                }),
+              ),
+          }),
+        ),
+      { discard: true },
     );
+  switch (project) {
+    case "portable":
+      // The suites share no port or file, so they run side by side, the longest first. The first
+      // to fail stops the rest.
+      return yield* Effect.forEach(
+        [
+          ...nodeAndBun("client", path.join(packages, "client")),
+          ...nodeAndBun("browser", path.join(packages, "browser")),
+          // The hosted qualification's gates, ledger and a rehearsal of every check.
+          ...nodeAndBun("hosted", integration, ["--root", "hosted"]),
+          // pack runs on Bun and reads bun.lock with Bun.JSONC, so its tests run there.
+          {
+            label: "scripts on Bun",
+            command: bun,
+            args: ["--bun", vitest(root), "run", "--root", "scripts"],
+            cwd: root,
+            env,
+            limit,
+          },
+        ],
+        runStep,
+        { concurrency: Math.max(2, Math.floor(availableParallelism() / 2)), discard: true },
+      );
+    case "native":
+      // The media load tests measure the bridge, so nothing runs beside them.
+      return yield* inTurn(nodeAndBun("native", path.join(packages, "native")));
+    case "integration":
+      return yield* inTurn([
+        {
+          label: "integration on Node",
+          command: node,
+          args: [vitest(integration), "run"],
+          cwd: integration,
+          env,
+        },
+      ]);
+    default:
+      return yield* TestError.make({
+        message: `unknown test project ${project}; use portable, native or integration`,
+      });
+  }
 });
 
 program.pipe(

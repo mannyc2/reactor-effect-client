@@ -1,9 +1,9 @@
 /**
  * Checks the examples past their typecheck, which `bun run typecheck` runs in
- * every example workspace: each example's offline tests under Node and then
- * Bun, and each browser bundle an example builds. Nothing here contacts
- * Reactor. Credential-like environment variables are removed, and the
- * examples that need a paid session are compiled, never run.
+ * every example workspace: each example's offline tests under Node and under
+ * Bun, and each browser bundle an example builds, all side by side. Nothing
+ * here contacts Reactor. Credential-like environment variables are removed,
+ * and the examples that need a paid session are compiled, never run.
  *
  * Tests that drive a real ffmpeg skip themselves when it is not on PATH;
  * EXAMPLES_REQUIRE_FFMPEG=1, which CI sets, makes its absence a failure.
@@ -18,7 +18,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-import { environment, runInherited, runtimes } from "./subprocess.js";
+import { environment, runStep, runtimes, type Step } from "./subprocess.js";
 
 class ExamplesError extends Schema.TaggedError<ExamplesError>(
   "reactor-effect/scripts/examples/ExamplesError",
@@ -45,31 +45,12 @@ const program = Effect.gen(function* () {
   const env = yield* environment;
   const { node, bun } = yield* runtimes;
 
-  const run = Effect.fnUntraced(function* (
+  const step = (
+    label: string,
     command: string,
     args: ReadonlyArray<string>,
     cwd: string,
-  ) {
-    const where = `${command} ${args.join(" ")}`;
-    yield* runInherited(command, args, { cwd, env }).pipe(
-      Effect.timeoutOrElse({
-        duration: "240 seconds",
-        orElse: () =>
-          Effect.fail(
-            ExamplesError.make({
-              message: `${where} did not finish within 240 seconds in ${path.relative(root, cwd)}`,
-            }),
-          ),
-      }),
-      Effect.catchTag("ChildFailed", (failed) =>
-        Effect.fail(
-          ExamplesError.make({
-            message: `${where} exited ${failed.status} in ${path.relative(root, cwd)}`,
-          }),
-        ),
-      ),
-    );
-  });
+  ): Step => ({ label, command, args, cwd, env, limit: "240 seconds" });
 
   /** Every example workspace: examples/<name> and packages/<package>/examples. */
   const candidates = [
@@ -110,32 +91,46 @@ const program = Effect.gen(function* () {
     );
   }
 
-  for (const directory of workspaces) {
+  /** A workspace's tests on Node and on Bun, and its bundle, side by side. */
+  const check = Effect.fnUntraced(function* (directory: string) {
     const manifest = yield* Schema.decodeEffect(Manifest)(
       yield* fs.readFileString(path.join(directory, "package.json")),
     );
-    if (manifest.scripts?.test !== undefined) {
-      const vitest = path.join(directory, "node_modules/vitest/vitest.mjs");
-      yield* run(node, [vitest, "run"], directory);
-      yield* run(bun, ["--bun", vitest, "run"], directory);
-      yield* Console.log(`examples-tested ${manifest.name} node bun`);
-    }
-    if (manifest.scripts?.build !== undefined) {
-      const dist = path.join(directory, "dist");
-      yield* fs.remove(dist, { recursive: true, force: true });
-      yield* run(bun, ["--no-env-file", "run", "build"], directory);
-      // A page's bundle must reach neither Node nor the native host.
-      const bundles = (yield* fs.readDirectory(dist)).filter((name) => name.endsWith(".js"));
-      for (const file of bundles) {
-        const bundle = yield* fs.readFileString(path.join(dist, file));
-        if (/reactor-effect-native|takeVideo|["']node:/.test(bundle))
-          return yield* ExamplesError.make({
-            message: `${manifest.name} bundle ${file} reaches Node or native code`,
+    const where = path.relative(root, directory);
+    const vitest = path.join(directory, "node_modules/vitest/vitest.mjs");
+    const tests =
+      manifest.scripts?.test === undefined
+        ? Effect.void
+        : Effect.all(
+            [
+              runStep(step(`${where} tests on Node`, node, [vitest, "run"], directory)),
+              runStep(step(`${where} tests on Bun`, bun, ["--bun", vitest, "run"], directory)),
+            ],
+            { concurrency: 2, discard: true },
+          ).pipe(Effect.andThen(Console.log(`examples-tested ${manifest.name} node bun`)));
+    const dist = path.join(directory, "dist");
+    const bundle =
+      manifest.scripts?.build === undefined
+        ? Effect.void
+        : Effect.gen(function* () {
+            yield* fs.remove(dist, { recursive: true, force: true });
+            yield* runStep(
+              step(`${where} bundle`, bun, ["--no-env-file", "run", "build"], directory),
+            );
+            // A page's bundle must reach neither Node nor the native host.
+            const bundles = (yield* fs.readDirectory(dist)).filter((name) => name.endsWith(".js"));
+            for (const file of bundles) {
+              const text = yield* fs.readFileString(path.join(dist, file));
+              if (/reactor-effect-native|takeVideo|["']node:/.test(text))
+                return yield* ExamplesError.make({
+                  message: `${manifest.name} bundle ${file} reaches Node or native code`,
+                });
+            }
+            yield* Console.log(`examples-bundled ${manifest.name}`);
           });
-      }
-      yield* Console.log(`examples-bundled ${manifest.name}`);
-    }
-  }
+    yield* Effect.all([tests, bundle], { concurrency: 2, discard: true });
+  });
+  yield* Effect.forEach(workspaces, check, { concurrency: "unbounded", discard: true });
   yield* Console.log(`examples-ok ${workspaces.length} workspaces`);
 });
 
