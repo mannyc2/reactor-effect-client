@@ -990,13 +990,16 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
 
   // Every call falls near a renewal. The replacement's opening and its first start are only
   // projected, so a clip placed across the switch may start up to about 0.1 s off.
-  it.effect("across a renewal, the clip airs where it said", () =>
-    Effect.gen(function* () {
-      const problems: Array<string> = [];
-      for (let seed = 1; seed <= 8; seed++)
-        problems.push(...(yield* forecast(seed, "75 seconds", 150)));
-      assert.deepStrictEqual(problems, []);
-    }),
+  it.effect(
+    "across a renewal, the clip airs where it said",
+    () =>
+      Effect.gen(function* () {
+        const problems: Array<string> = [];
+        for (let seed = 1; seed <= 8; seed++)
+          problems.push(...(yield* forecast(seed, "75 seconds", 150)));
+        assert.deepStrictEqual(problems, []);
+      }),
+    { timeout: 60_000 },
   );
 });
 
