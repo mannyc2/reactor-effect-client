@@ -1223,6 +1223,47 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
   );
 });
 
+// Sessions of 50 s renewed 40 s before their cap: a replacement has little of its cap left by
+// the time it takes the air.
+layer(seamed)("place across short sessions", (it) => {
+  it.effect("answers only a boundary the replacement can air before its cap", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start(
+        {
+          lifetime: "50 seconds",
+          renewal: { lead: "40 seconds", grace: "100 millis" },
+          ...Playout.lineup({
+            runway: { floor: "15 seconds", target: "15 seconds" },
+            clip: ({ index }) => clip(`idle ${index}`, grid(0)),
+            lengths: { min: grid(0), max: grid(0) },
+          }),
+        },
+        "10 millis",
+      );
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* measured[2]!.outcome;
+      const line = yield* playout.submit({
+        key: key("line"),
+        lane: "line",
+        request: clip("line", 10),
+      });
+      yield* playout.submit({ key: key("next"), lane: "line", request: clip("next") });
+      yield* line.started;
+      yield* Effect.sleep("6 seconds");
+      const placement = yield* playout.place({ key: key("u") });
+      if (placement === null) return;
+      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
+      const u =
+        placement.anchor === "next"
+          ? yield* playout.submit({ ...spec, lane: "line", start: { _tag: "Asap" } })
+          : yield* playout.insert({ ...spec, after: placement.anchor });
+      assert.strictEqual((yield* u.started)._tag, "Started");
+    }),
+  );
+});
+
 layer(hosted)("uncertainty", (it) => {
   it.effect("never sends an enqueue again after its reply was lost", () =>
     Effect.gen(function* () {

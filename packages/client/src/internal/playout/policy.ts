@@ -4012,19 +4012,28 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         probeContinued = decision;
       }
     };
-    /** As `fits`: what the session on air builds must finish airing before its cap. */
+    /**
+     * As `fits`: what the session taking new work builds must finish airing before its cap, after
+     * what airs ahead of it there and, on the replacement, what the session on air has left. One
+     * not open yet is taken to open at `opensAt` with the lifetime of the session on air.
+     */
     const fitsAt = (seconds: number, time: number): boolean => {
-      if (targetId !== air.id || air.lifetimeMs === Infinity) return true;
+      const lifetimeMs = targetId === air.id ? air.lifetimeMs : (replacement ?? air).lifetimeMs;
+      const openedAt =
+        targetId === air.id ? air.openedAt : (replacement?.openedAt ?? opensAt ?? now.mono);
+      if (lifetimeMs === Infinity) return true;
       const lengthMs = seconds * ratio * 1000;
       const marginMs = lookaheadMarginSeconds * 1000;
-      if (lengthMs > air.lifetimeMs - marginMs) return true;
-      const startsAt = onAir === air.id && current ? Math.max(t, time) : time;
-      const queuedMs = pool
-        .filter(
-          (clip) => clip.sessionId === air.id && (clip.item === undefined || !gone.has(clip.item)),
-        )
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
-      return startsAt + queuedMs + lengthMs <= air.openedAt + air.lifetimeMs - marginMs;
+      if (lengthMs > lifetimeMs - marginMs) return true;
+      const queuedMs = (id: string): number =>
+        pool
+          .filter(
+            (clip) => clip.sessionId === id && (clip.item === undefined || !gone.has(clip.item)),
+          )
+          .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      const rest = current ? Math.max(t, time) : time;
+      const startsAt = onAir === targetId ? rest : rest + queuedMs(onAir);
+      return startsAt + queuedMs(targetId) + lengthMs <= openedAt + lifetimeMs - marginMs;
     };
     // As the plan refills below the floor, up to its target, or to tile the gap before an `At` anchor.
     const refill = (time: number): boolean => {
