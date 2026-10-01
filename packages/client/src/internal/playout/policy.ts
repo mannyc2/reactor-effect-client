@@ -1569,20 +1569,26 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     updateSession(sessionId, {
       fillers: new Map([...(session(sessionId)?.fillers ?? [])].filter(([id]) => id !== clipId)),
     });
-  const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
-    const { clip } = event;
-    // A follower not Ready at this boundary has missed the place it was written for. Keeping
-    // autoplay fenced lets its removal finish even when its build completes during the command.
+  /**
+   * A follower not Ready as the clip it follows leaves the air has missed the place it was written
+   * for. Keeping autoplay fenced lets its removal finish even when its build completes during the
+   * command.
+   */
+  const missed = (tag: ClipTag | undefined): void => {
     for (const item of [...items.values()])
       if (
         item.spec.follows !== undefined &&
-        sameClip(item.spec.follows, clip.tag) &&
+        sameClip(item.spec.follows, tag) &&
         live(item) &&
         item.phase !== "Ready" &&
         item.phase !== "Started" &&
         item.withdraw === undefined
       )
         withdraw(item.spec.key, "displaced");
+  };
+  const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
+    const { clip } = event;
+    missed(clip.tag);
     updateSession(sessionId, {
       lastEnded: { clipId: clip.clipId, at: now.mono },
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
@@ -1672,11 +1678,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const { clip } = event;
     // A clip that fails on air leaves it as an ended one does, and the switch's grace counts from now.
     const onAir = session(sessionId)?.playing?.clipId === clip.clipId;
-    if (onAir)
+    if (onAir) {
+      missed(clip.tag);
       updateSession(sessionId, {
         lastEnded: { clipId: clip.clipId, at: now.mono },
         playing: undefined,
       });
+    }
     if (clip.tag?._tag === "Filler") {
       if (onAir)
         emit({
@@ -1838,6 +1846,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const lost = session(sessionId);
     if (lost === undefined) return;
     actions.push({ _tag: "Close", sessionId });
+    // Lost unplanned, the clip on air leaves the air with its session. What follows that clip starts
+    // right after it only if Ready on another session: carried, it would air seconds later.
+    const left =
+      !planned && state.lastOnAir?.sessionId === sessionId ? state.lastOnAir.tag : undefined;
     let carried = 0;
     for (const item of items.values()) {
       if (item.sessionId !== sessionId || item.phase === "Settled") continue;
@@ -1846,6 +1858,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       else if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
       else if (item.withdraw !== undefined)
         settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
+      else if (item.spec.follows !== undefined && sameClip(item.spec.follows, left))
+        settle(item.spec.key, { _tag: "Dropped", reason: "displaced" });
       else if (!planned && item.phase === "Building" && item.unbuiltLosses + 1 >= 2)
         settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else {
@@ -1863,6 +1877,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         asRun(item.spec.key, { _tag: "Accepted", carried: { sessionId } });
       }
     }
+    missed(left);
     // A filler enqueue in flight there made no clip that can still air: it is asked for again.
     const lostCommand = lost.busy?.command;
     if (lostCommand?._tag === "Enqueue" && lostCommand.tag._tag === "Filler")

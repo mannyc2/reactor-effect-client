@@ -973,6 +973,34 @@ layer(hosted)("follows inside a boundary, read mid-seam", (it) => {
   );
 });
 
+// Its own block: the session's early end stays armed for the rest of a block.
+layer(hosted)("follows across a lost session", (it) => {
+  it.effect("drops a follower whose clip is lost with its session, rather than air it later", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      // The session ends 16 s after it becomes active, while x plays.
+      yield* test.inject({ _tag: "Expire", after: Duration.seconds(16) });
+      const { playout, starts, statuses } = yield* start();
+      const p = yield* playout.submit({ key: key("p"), lane: "line", request: clip("p", 10) });
+      yield* p.started;
+      const x = yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+      const u = yield* playout.insert({
+        key: key("u"),
+        request: clip("u", 15),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      const y = yield* playout.submit({ key: key("y"), lane: "line", request: clip("y") });
+      assert.strictEqual((yield* x.outcome)._tag, "Failed");
+      assert.strictEqual((yield* y.outcome)._tag, "Ended");
+      assert.deepStrictEqual(yield* u.outcome, { _tag: "Dropped", reason: "displaced" });
+      // Ready on the lost session, it is dropped with x rather than carried and built again.
+      assert.deepStrictEqual(yield* statuses("u"), ["Accepted", "Building", "Ready", "Dropped"]);
+      assert.deepStrictEqual(yield* starts, ["p", "x", "y"]);
+    }),
+  );
+});
+
 /** A length on H3's grid: 124 frames at 24 fps, then steps of 17 frames. */
 const grid = (steps: number) => (124 + 17 * steps) / 24;
 
@@ -1762,6 +1790,41 @@ layer(hosted)("local renderer", (it) => {
         stopped._tag === "Ended" ? stopped.termination : stopped._tag,
         "stopped",
       );
+    }),
+  );
+
+  it.effect("drops a follower not Ready when the clip it follows fails on air", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: Effect.fnUntraced(function* (local) {
+            yield* Effect.sleep(local.request.prompt === "u" ? "3 seconds" : "500 millis");
+            return { value: undefined };
+          }),
+          present: (local) =>
+            local.request.prompt === "x"
+              ? Effect.andThen(Effect.sleep("1 second"), Effect.fail("the speaker failed"))
+              : Effect.sleep(Duration.seconds(local.seconds)),
+        }),
+        lanes: [{ name: "speech" }],
+      });
+      const submit = (name: string, seconds = 5) =>
+        playout.submit({ key: key(name), lane: "speech", request: clip(name, seconds) });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) => submit(name));
+      for (const handle of measured) yield* handle.outcome;
+      yield* (yield* submit("p", 8)).started;
+      const x = yield* submit("x");
+      yield* x.started;
+      // u takes 3 s to build, and x fails a second in.
+      const u = yield* playout.insert({
+        key: key("u"),
+        request: clip("u"),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      assert.strictEqual((yield* x.outcome)._tag, "Failed");
+      assert.deepStrictEqual(yield* u.outcome, { _tag: "Dropped", reason: "displaced" });
     }),
   );
 
