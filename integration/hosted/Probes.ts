@@ -29,7 +29,7 @@ const probeSeconds = 15;
  * host name or port has that shape. A bare name such as `gpu-7` still does:
  * only its key tells it for a host.
  */
-const isCode = (text: string) =>
+export const isCode = (text: string) =>
   /^[\w-]{1,40}$/.test(text) &&
   !/\d{1,3}(?:[-_]\d{1,3}){3}/.test(text) &&
   !/[-_]{2}/.test(text) &&
@@ -69,7 +69,7 @@ const wordsOf = (key: string) =>
  * Whether a value may be read under a key: one that is a code and names no
  * address or secret, in the singular or the plural.
  */
-const readable = (key: string) =>
+export const readable = (key: string) =>
   isCode(key) &&
   !wordsOf(key).some(
     (word) =>

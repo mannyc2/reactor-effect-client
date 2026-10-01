@@ -91,6 +91,30 @@ describe("the spending gates", () => {
     }),
   );
 
+  // Vidu S2-Avatar's published rate: 70 credits a second, stated per second, on October 1, 2026.
+  // avatar's one session is capped at 120 s, two whole minutes, so either unit reserves $0.84.
+  it.effect("avatar reserves its session at Vidu's rate, and H3's checks keep theirs", () =>
+    Effect.gen(function* () {
+      const vidu = { creditsPerSecond: 70, creditsPerDollar: 10_000, per: "second" } as const;
+      assert.strictEqual(Spend.plans.avatar.model.name, "reactor/vidu-s2-avatar");
+      assert.strictEqual(Spend.ceilingFor("avatar"), 0.84);
+      const authorization = { check: "avatar", budgetUsd: 0.84, totalUsd: 2 } as const;
+      yield* Spend.authorize(authorization);
+      yield* refused(Spend.authorize({ ...authorization, budgetUsd: 0.85 }));
+      assert.strictEqual(yield* Spend.admit({ rate: vidu, authorization, reservedUsd: 0 }), 0.84);
+      assert.strictEqual(
+        yield* Spend.admit({ rate: { ...vidu, per: "minute" }, authorization, reservedUsd: 0 }),
+        0.84,
+      );
+      // Priced at H3's rate, the same session would cost five times its budget.
+      yield* refused(Spend.admit({ rate, authorization, reservedUsd: 0 }));
+      assert.deepStrictEqual(
+        [Spend.ceilingFor("vertical"), Spend.ceilingFor("tour"), Spend.ceilingFor("showreel")],
+        [2.1, 4.2, 4.2],
+      );
+    }),
+  );
+
   it("a reservation rounds up to four decimals, and a started unit of the rate bills whole", () => {
     assert.strictEqual(Spend.reservationUsd(0.7500000000000001), 0.75);
     assert.strictEqual(Spend.reservationUsd(0.75001), 0.7501);

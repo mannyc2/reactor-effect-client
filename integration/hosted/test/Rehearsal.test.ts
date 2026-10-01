@@ -915,6 +915,96 @@ rehearse("unconnected credits Reactor with an end only its read at the end found
   },
 });
 
+// ReactorTest answers a payload its schema refuses with an error frame, and what its model refuses
+// with a command_error broadcast before the acknowledgement; hosted Vidu's answers are what avatar
+// asks. The record keeps codes and lengths: no transcript, persona, URL or voice description.
+rehearse("avatar judges both calls and keeps what each refused command met, and no text", {
+  check: "avatar",
+  judge: (evidence) => {
+    passes(evidence);
+    assert.includeMembers(
+      evidence.criteria.map((criterion) => criterion.name),
+      [
+        "the session's first snapshot arrived",
+        "the avatar became ready",
+        "the first call went live",
+        "character video arrived during the first call",
+        "character audio arrived during the first call",
+        "end_call was answered with call_ended",
+        "the second call went live with video",
+        "confirmed termination",
+      ],
+    );
+    const avatar = evidence.avatar;
+    assert.deepStrictEqual(
+      avatar?.refusals.map((refusal) => [
+        refusal.command,
+        refusal.wire,
+        refusal.code ?? refusal.commandError?.code,
+        refusal.commandError?.beforeAnswer,
+      ]),
+      [
+        ["clone_voice", "error", "invalid_command", undefined],
+        ["say", "ack", "NOT_LIVE", true],
+        ["update_call", "ack", "INVALID_INPUT", true],
+        ["say", "error", "invalid_command", undefined],
+        ["update_call", "ack", undefined, undefined],
+      ],
+    );
+    assert.deepStrictEqual(avatar?.refusals.at(-1)?.changed, []);
+    // The snapshot sent on connect is heard, though it comes before any command.
+    assert.isBelow(avatar?.first?.atMs ?? Infinity, avatar?.getState?.sentMs ?? 0);
+    assert.deepStrictEqual(
+      avatar?.calls.map((call) => [call.reconnect, call.end?.type]),
+      [
+        [undefined, "call_ended"],
+        [undefined, "call_ended"],
+      ],
+    );
+    const kept = JSON.stringify(evidence);
+    for (const text of [
+      "You are Probe",
+      "count slowly",
+      "Greeting 1",
+      "example.invalid",
+      "adult male",
+    ])
+      assert.notInclude(kept, text);
+    assert.match(summarize([evidence]), /^\| say before any call \| ack \| [\d.]+ s \| NOT_LIVE /m);
+  },
+});
+
+// With no picture at all, each call reconnects once for it and finds none either: the video
+// criteria fail, the rest is still asked, and the session still ends.
+rehearse("avatar fails without the character's picture, and still ends its session", {
+  check: "avatar",
+  faults: [{ _tag: "Video", video: "absent" }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    const passed = (name: string) =>
+      evidence.criteria.find((criterion) => criterion.name === name)?.passed;
+    assert.deepStrictEqual(
+      [
+        passed("character video arrived during the first call"),
+        passed("the second call went live with video"),
+        passed("the first call went live"),
+        passed("character audio arrived during the first call"),
+        passed("end_call was answered with call_ended"),
+        passed("confirmed termination"),
+      ],
+      [false, false, true, true, true, true],
+      evidence.reasons.join("; "),
+    );
+    const calls = evidence.avatar?.calls ?? [];
+    assert.lengthOf(calls, 2);
+    for (const call of calls) {
+      assert.isDefined(call.reconnect?.readyMs, JSON.stringify(call.reconnect));
+      assert.isUndefined(call.reconnect.firstFrameMs);
+    }
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

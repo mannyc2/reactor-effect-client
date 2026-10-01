@@ -3,11 +3,12 @@
  * gathers, and why.
  *
  *   bun integration/hosted/main.ts rehearse <check> [--faults '<json>'] [--ledger <dir>] \
- *     [--moderation-prompt-file <path>]
- *   bun integration/hosted/main.ts preflight --total-budget-usd 3.50 --ledger <dir>
+ *     [--moderation-prompt-file <path>] [--avatar-image <path>]
+ *   bun integration/hosted/main.ts preflight [--check <check>] --total-budget-usd 3.50 \
+ *     --ledger <dir>
  *   bun integration/hosted/main.ts run <check> --budget-usd 1.75 --total-budget-usd 3.50 \
  *     --ledger <dir> --network "<where, without addresses>" --i-authorize-paid-sessions \
- *     [--moderation-prompt-file <path>]
+ *     [--moderation-prompt-file <path>] [--avatar-image <path>]
  *   bun integration/hosted/main.ts summarize <file or ledger>...
  *
  * A run exits 0 when it passes, 1 when it fails, and 2 when it refused before
@@ -33,10 +34,10 @@ import * as Command from "effect/cli/Command";
 import * as Flag from "effect/cli/Flag";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
+import * as Avatar from "./checks/Avatar.js";
 import type { Evidence } from "./Evidence.js";
 import { EvidenceJson, Probe } from "./Evidence.js";
 import * as Ledger from "./Ledger.js";
@@ -80,6 +81,39 @@ const moderationPrompt = (file: Option.Option<string>) =>
     return Redacted.make(prompt);
   });
 
+const avatarImage = Flag.String("avatar-image").pipe(
+  Flag.withDescription(
+    "a photo of one person, a PNG, JPEG or WebP under 20 MB, that `avatar` makes its avatar from",
+  ),
+  Flag.optional,
+);
+
+/**
+ * The photo `avatar` makes its avatar from, read from the operator's file: refused unless it
+ * is one Vidu S2-Avatar takes, by its size and its first bytes. Neither it nor its path is
+ * ever in a message.
+ */
+const photo = (file: Option.Option<string>) =>
+  Effect.gen(function* () {
+    if (Option.isNone(file)) return undefined;
+    const fs = yield* FileSystem.FileSystem;
+    const unreadable = () => Spend.Refused.make({ message: "the avatar image cannot be read" });
+    const info = yield* fs.stat(file.value).pipe(Effect.mapError(unreadable));
+    if (info.type !== "File") return yield* unreadable();
+    const size = Number(info.size);
+    if (size >= Avatar.maxPhotoBytes)
+      return yield* Spend.Refused.make({
+        message: `the avatar image is ${size} bytes; Vidu S2-Avatar takes one under ${Avatar.maxPhotoBytes}`,
+      });
+    const bytes = yield* fs.readFile(file.value).pipe(Effect.mapError(unreadable));
+    const type = Avatar.photoType(bytes);
+    if (type === undefined)
+      return yield* Spend.Refused.make({
+        message: "the avatar image is not a PNG, JPEG or WebP by its first bytes",
+      });
+    return { bytes, type } satisfies Target.Photo;
+  });
+
 const report = Effect.fnUntraced(function* (evidence: Evidence) {
   yield* Console.log(summarize([evidence]));
   if (evidence.verdict !== "pass")
@@ -104,6 +138,7 @@ const rehearse = Command.make(
       Flag.optional,
     ),
     moderationPromptFile,
+    avatarImage,
   },
   Effect.fnUntraced(function* (input) {
     const directory = Option.isSome(input.ledger)
@@ -135,6 +170,7 @@ const rehearse = Command.make(
               : [...faults, { _tag: "Moderate", prompt: Redacted.value(prompt) }],
           candidate: input.check === "turn" ? "relay" : "host",
           moderationPrompt: prompt,
+          photo: yield* photo(input.avatarImage),
         }).pipe(Layer.provideMerge(Target.movingClock));
       }),
     ),
@@ -155,6 +191,7 @@ const paid = Command.make(
     ),
     authorized: Flag.Boolean("i-authorize-paid-sessions").pipe(Flag.withDefault(false)),
     moderationPromptFile,
+    avatarImage,
   },
   Effect.fnUntraced(function* (input) {
     const authorization = yield* Spend.authorize({
@@ -183,6 +220,7 @@ const paid = Command.make(
           seams: yield* fs.makeTempDirectory({ prefix: "reactor-seams-" }),
           script: yield* path.fromFileUrl(new URL(import.meta.url)),
           moderationPrompt: yield* moderationPrompt(input.moderationPromptFile),
+          photo: yield* photo(input.avatarImage),
         });
       }),
     ),
@@ -192,35 +230,40 @@ const paid = Command.make(
 
 const preflight = Command.make(
   "preflight",
-  { ledger, total: Flag.Finite("total-budget-usd") },
+  {
+    check: Flag.Literals("check", Spend.checks).pipe(
+      Flag.withDescription("the check whose model's rate and token are read"),
+      Flag.withDefault("vertical"),
+    ),
+    ledger,
+    total: Flag.Finite("total-budget-usd"),
+  },
   Effect.fnUntraced(function* (input) {
+    const { check } = input;
+    const model = Spend.plans[check].model.name;
     const earlier = yield* Ledger.entries(input.ledger);
     const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);
     const coordinator = yield* CoordinatorClient.CoordinatorClient;
-    const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
+    const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, model);
     const worst = yield* Spend.admit({
       rate,
-      authorization: {
-        check: "vertical",
-        budgetUsd: Spend.ceilingFor("vertical"),
-        totalUsd: input.total,
-      },
+      authorization: { check, budgetUsd: Spend.ceilingFor(check), totalUsd: input.total },
       reservedUsd,
     });
     yield* Console.log(
-      `rate ${rate.creditsPerSecond} credits/s, billed per ${rate.per}, at ${rate.creditsPerDollar} credits/$: a capped session bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
+      `${model}: rate ${rate.creditsPerSecond} credits/s, billed per ${rate.per}, at ${rate.creditsPerDollar} credits/$: ${check} bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
     );
     // Minting allocates nothing; a token that grants more than asked refuses here.
     const grant = yield* coordinator.mintToken({
-      modelName: H3.modelName,
-      maxSessionDuration: `${Spend.plans.vertical.seconds} seconds`,
-      expiresAfter: `${Spend.tokenSecondsFor("vertical")} seconds`,
+      modelName: model,
+      maxSessionDuration: `${Spend.plans[check].seconds} seconds`,
+      expiresAfter: `${Spend.tokenSecondsFor(check)} seconds`,
     });
     const granted = yield* Spend.provenGrant({
       jwt: Redacted.value(grant.jwt),
       granted: grant.granted,
     });
-    yield* Spend.acceptGrant({ check: "vertical", granted });
+    yield* Spend.acceptGrant({ check, granted });
     yield* Console.log(`a token grants one session of ${granted.maxSessionSeconds} s`);
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);

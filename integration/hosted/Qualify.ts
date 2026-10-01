@@ -16,14 +16,13 @@ import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as H3 from "reactor-effect-client/H3";
 import { checks } from "./Checks.js";
 import type { Evidence } from "./Evidence.js";
 import { format, judged } from "./Evidence.js";
 import * as Ledger from "./Ledger.js";
 import * as Run from "./Run.js";
 import type { Authorization } from "./Spend.js";
-import { admit, admitRelay, Refused } from "./Spend.js";
+import { admit, admitRelay, plans, Refused } from "./Spend.js";
 import { Target } from "./Target.js";
 
 const Manifest = Schema.fromJsonString(
@@ -193,9 +192,16 @@ export const execute = (input: {
         if (unable !== undefined && target.mode === "paid")
           return yield* Refused.make({ message: `showreel records with ffmpeg, and ${unable}` });
       }
+      // The avatar's call starts from a photo of a person: without one, a paid run buys nothing.
+      if (authorization.check === "avatar" && target.mode === "paid" && target.photo === undefined)
+        return yield* Refused.make({
+          message: "avatar makes its avatar from a photo: give one with --avatar-image <file>",
+        });
       const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const rate = yield* coordinator.pricing.pipe(
-        Effect.flatMap((pricing) => CoordinatorClient.modelRate(pricing, H3.modelName)),
+        Effect.flatMap((pricing) =>
+          CoordinatorClient.modelRate(pricing, plans[authorization.check].model.name),
+        ),
         Effect.mapError((error) => Refused.make({ message: `pricing: ${error.message}` })),
       );
       const worstCaseUsd = yield* admit({ rate, authorization, reservedUsd });
