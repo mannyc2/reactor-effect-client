@@ -115,7 +115,8 @@ export interface PrepareHooks<E = never> {
  * needs current facts therefore waits, within `replyTimeout`, for a
  * synchronizing provider before it sends, and after its reply for the
  * broadcasts the reply implies, so its caller reads its own effects.
- * `getState` and `getQueue` never wait.
+ * `getState` and `getQueue` never wait. Each deadline is a finite, non-negative
+ * `Duration.Input`; any other value fails `make` with `InvalidInput`.
  */
 export interface Options {
   /** Each command through the observation of its reply; 15 seconds by default. */

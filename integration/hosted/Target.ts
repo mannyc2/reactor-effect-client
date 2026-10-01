@@ -520,6 +520,9 @@ export const rehearsal = (input: {
     Layer.provideMerge(
       ReactorTest.layer({
         timing: input.timing ?? ReactorTest.Timing.hosted,
+        // The rate `Spend.ts`'s ceilings were reviewed at, $0.75 a minute, until they are
+        // reviewed at today's price, so a rehearsal admits each check as those ceilings do.
+        creditsPerSecond: 125,
         faults: input.faults,
         candidate: input.candidate,
         recorder: input.recorder === true,
