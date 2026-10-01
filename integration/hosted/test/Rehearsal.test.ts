@@ -79,23 +79,27 @@ const failed = (criterion: string) => (evidence: Evidence) => {
 
 for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
 
-const hasFfmpeg = ["ffmpeg", "ffprobe"].every((tool) => spawnSync(tool, ["-version"]).status === 0);
+const hasFfprobe = spawnSync("ffprobe", ["-version"]).status === 0;
 
-// The rehearsal's simulated picture and sound go through a real ffmpeg wherever one is installed;
-// CI's runtime jobs have none, and the check then says why it recorded nothing.
+// The rehearsal's simulated picture and sound go through a real ffmpeg wherever one can record
+// them; CI's runtime jobs have none, and the check then says why it recorded nothing.
 rehearse("showreel records its reel, poster and loop when ffmpeg can", {
   check: "showreel",
   judge: (evidence, ledger) => {
     passes(evidence);
     const showreel = evidence.showreel;
-    if (!hasFfmpeg) {
-      assert.isDefined(showreel?.notRecorded);
-      return;
-    }
+    if (showreel?.notRecorded !== undefined) return;
     assert.deepStrictEqual(
       showreel?.files.map((file) => file.name),
       ["reel.mp4", "poster.png", "loop.gif"],
     );
+    const span = showreel?.reel;
+    assert.closeTo(
+      ((showreel?.recording?.frames ?? 0) * 1000) / 24,
+      (span?.toMs ?? 0) - (span?.fromMs ?? 0),
+      1000 / 24,
+    );
+    if (!hasFfprobe) return;
     const directory = readdirSync(ledger).find((name) => name.endsWith(evidence.runId));
     assert.isDefined(directory);
     const counted = spawnSync("ffprobe", [
@@ -103,14 +107,8 @@ rehearse("showreel records its reel, poster and loop when ffmpeg can", {
       ...["-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"],
       join(ledger, directory, "reel.mp4"),
     ]);
-    // Every frame the recorder wrote, a frame each 1/24 s of the scenes on air.
+    // The file holds every frame the recorder wrote.
     assert.strictEqual(Number(counted.stdout.toString().trim()), showreel?.recording?.frames);
-    const span = showreel?.reel;
-    assert.closeTo(
-      ((showreel?.recording?.frames ?? 0) * 1000) / 24,
-      (span?.toMs ?? 0) - (span?.fromMs ?? 0),
-      1000 / 24,
-    );
   },
 });
 
@@ -202,6 +200,24 @@ rehearse("tour downloads the recording clip when the deployment records", {
       ["clip", "ClipReady", "downloaded"],
     );
     assert.isAbove(clip?.download?.segments ?? 0, 0);
+  },
+});
+
+// The opening scene's build fails, so it never starts: the check must judge that and close its
+// session, rather than wait for the start with no deadline while the session runs to its cap.
+rehearse("showreel fails, and ends its session, when its first scene never starts", {
+  check: "showreel",
+  faults: [{ _tag: "FailBuild", nth: 1 }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.isFalse(
+      evidence.criteria.find(
+        (criterion) => criterion.name === "every scene accepted, built, started and ended",
+      )?.passed ?? true,
+      evidence.reasons.join("; "),
+    );
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed, evidence.reasons.join("; "));
   },
 });
 

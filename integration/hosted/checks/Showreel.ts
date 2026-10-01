@@ -32,11 +32,10 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type { Pieces } from "../Checks.js";
+import type { Air, Pieces } from "../Checks.js";
 import type * as Evidence from "../Evidence.js";
 import * as Media from "../Media.js";
 import { Run } from "../Run.js";
-import { Refused } from "../Spend.js";
 import { Target } from "../Target.js";
 
 /** Each scene's length: built in about 3.5 s, one is Ready long before the one before it ends. */
@@ -102,6 +101,36 @@ const recordReel = (fields: Partial<Evidence.ShowreelRecord>) =>
     })),
   );
 
+/** When a scene reached the moment waited for, from the run's start, or why it never will. */
+type Reached = { readonly atMs: number } | { readonly missed: string };
+
+/**
+ * Waits for scene `key` to start or end (`moment`), or for it to settle
+ * without doing so: it failed or was dropped, the playout stopped, or the
+ * work deadline passed once the session was allocated. Before the allocation
+ * the library's own deadlines bound opening the session, and an open that
+ * fails stops the playout.
+ */
+const reach = (pieces: Pieces, air: Air, key: string, moment: "startedMs" | "endedMs") => {
+  const late: Reached = { missed: `${key} did not by the work deadline` };
+  return Effect.raceAll([
+    air
+      .when((all): Reached | undefined => {
+        const item = all.get(key);
+        const atMs = item?.[moment];
+        if (atMs !== undefined) return { atMs };
+        if (item?.failed !== undefined) return { missed: `${key} failed: ${item.failed.reason}` };
+        if (item?.dropped !== undefined) return { missed: `${key} was dropped: ${item.dropped}` };
+        return undefined;
+      })
+      .pipe(Effect.orElseSucceed(() => late)),
+    air.allocated.pipe(Effect.flatMap(pieces.until), Effect.flatMap(Effect.sleep), Effect.as(late)),
+    Effect.map(air.playout.failure, (failure): Reached => ({
+      missed: `the playout stopped: ${failure._tag}`,
+    })),
+  ]);
+};
+
 /** `value`, kept from `low` to `high`. */
 const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 
@@ -121,14 +150,15 @@ export const showreel = (pieces: Pieces) =>
         scenes: scenes.map(({ key }) => ({ key, seconds: sceneSeconds })),
         ...(unable === undefined ? {} : { notRecorded: unable }),
       });
-      if (unable === undefined)
-        yield* fs
-          .makeDirectory(directory, { recursive: true })
-          .pipe(
-            Effect.mapError(() =>
-              Refused.make({ message: "the directory beside the evidence cannot be made" }),
-            ),
-          );
+      // Nothing is opened, and so nothing spent, without a place for the footage.
+      if (
+        unable === undefined &&
+        Option.isNone(yield* fs.makeDirectory(directory, { recursive: true }).pipe(Effect.option))
+      )
+        return yield* pieces.judge("the reel was recorded", [
+          false,
+          "the directory beside the evidence cannot be made",
+        ]);
       const recorder = yield* Ref.make<Media.Recorder | undefined>(undefined);
       /** The centre scene's start on air, from the run's start. */
       const centreStart = yield* Ref.make<number | undefined>(undefined);
@@ -153,7 +183,13 @@ export const showreel = (pieces: Pieces) =>
             for (const { key, scene } of scenes)
               yield* air.submit(key, "reel", { prompt: `${scene} ${look}`, seconds: sceneSeconds });
             yield* run.mark("scenes submitted");
-            const fromMs = yield* air.when((all) => all.get(opening.key)?.startedMs);
+            const started = yield* reach(pieces, air, opening.key, "startedMs");
+            if ("missed" in started)
+              return yield* pieces.judge("every scene accepted, built, started and ended", [
+                false,
+                `the first scene never started: ${started.missed}`,
+              ]);
+            const fromMs = started.atMs;
             if (unable === undefined) {
               const recording = yield* Media.record({
                 file: at(files.reel),
@@ -165,8 +201,9 @@ export const showreel = (pieces: Pieces) =>
               yield* Ref.set(recorder, recording);
               yield* run.mark("recording");
             }
-            const toMs = yield* air.when((all) => all.get(closing.key)?.endedMs);
+            const last = yield* reach(pieces, air, closing.key, "endedMs");
             yield* Deferred.succeed(ended, undefined);
+            const toMs = "atMs" in last ? last.atMs : undefined;
             yield* run.mark("reel ended");
             yield* air.playout
               .drain({ finish: "accepted" })
@@ -191,7 +228,11 @@ export const showreel = (pieces: Pieces) =>
                     },
                   ],
             );
-            yield* recordReel({ gaps, readerOverflows: [...overflows], reel: { fromMs, toMs } });
+            yield* recordReel({
+              gaps,
+              readerOverflows: [...overflows],
+              reel: { fromMs, ...(toMs === undefined ? {} : { toMs }) },
+            });
             const order = air.starts();
             const unfinished = keys.filter((key) => {
               const scene = all.get(key);
@@ -199,7 +240,10 @@ export const showreel = (pieces: Pieces) =>
             });
             yield* pieces.judge(
               "every scene accepted, built, started and ended",
-              [unfinished.length === 0, `${unfinished.join(", ")} did not build, air and finish`],
+              [
+                unfinished.length === 0,
+                `${unfinished.join(", ")} did not build, air and finish${"missed" in last ? `: ${last.missed}` : ""}`,
+              ],
               [order.join(",") === keys.join(","), `started in the order ${order.join(", ")}`],
             );
             yield* pieces.judge("every seam measured", [

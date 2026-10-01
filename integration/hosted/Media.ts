@@ -473,12 +473,22 @@ interface Counts {
   frames: number;
   repeated: number;
   superseded: number;
+  mismatched: number;
   blocks: number;
   /** Samples of silence written, a channel's worth each. */
   silence: number;
 }
 
+/** A picture's size and pixel format, which raw video holds to throughout. */
+interface Shape {
+  readonly width: number;
+  readonly height: number;
+  readonly format: VideoFormat;
+}
+
 interface Slots {
+  /** The first frame's size and format, which every frame written keeps. */
+  readonly shape: Shape | undefined;
   /** The latest frame to arrive, and whether it is yet to be written. */
   readonly last: VideoFrame | undefined;
   readonly fresh: boolean;
@@ -491,12 +501,28 @@ interface Slots {
  * written is the latest to have arrived by the middle of its time, so a held
  * frame at a seam, or frames the host dropped, last as long in the file as
  * they did on air. The first frame also stands for the time before it, back
- * to `fromMs`.
+ * to `fromMs`. A frame of another size or format than the first is dropped
+ * and counted: hosted H3 has changed a session's size mid-session, and raw
+ * video cannot.
  */
 const resample = (fromMs: number, counts: Counts) =>
   Stream.mapAccum(
-    (): Slots => ({ last: undefined, fresh: false, slot: 0 }),
+    (): Slots => ({ shape: undefined, last: undefined, fresh: false, slot: 0 }),
     (state, arrival: Arrival<VideoFrame>): readonly [Slots, ReadonlyArray<VideoFrame>] => {
+      const frame = arrival.element;
+      const shape = state.shape ?? {
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+      };
+      if (
+        frame.width !== shape.width ||
+        frame.height !== shape.height ||
+        frame.format !== shape.format
+      ) {
+        counts.mismatched++;
+        return [state, []];
+      }
       const written: Array<VideoFrame> = [];
       let { fresh, slot } = state;
       if (state.last !== undefined) {
@@ -508,7 +534,7 @@ const resample = (fromMs: number, counts: Counts) =>
         }
         if (fresh) counts.superseded++;
       }
-      return [{ last: arrival.element, fresh: true, slot }, written];
+      return [{ shape, last: frame, fresh: true, slot }, written];
     },
     { onHalt: (state) => (state.last !== undefined && state.fresh ? [state.last] : []) },
   );
@@ -578,7 +604,14 @@ export const record = Effect.fnUntraced(function* <E, E2>(input: {
   readonly until: Effect.Effect<unknown>;
 }) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const counts: Counts = { frames: 0, repeated: 0, superseded: 0, blocks: 0, silence: 0 };
+  const counts: Counts = {
+    frames: 0,
+    repeated: 0,
+    superseded: 0,
+    mismatched: 0,
+    blocks: 0,
+    silence: 0,
+  };
   const picture = yield* Deferred.make<
     { readonly width: number; readonly height: number; readonly format: VideoFormat } | undefined
   >();
@@ -695,27 +728,38 @@ const frameCounts = (counts: Counts) => ({
   frames: counts.frames,
   repeated: counts.repeated,
   superseded: counts.superseded,
+  mismatched: counts.mismatched,
 });
+
+/** The encoders and filters a reel, its poster and its loop need, by how ffmpeg lists each kind. */
+const needs = [
+  { list: "-encoders", flags: 6, names: ["libx264", "aac", "png", "gif"] },
+  { list: "-filters", flags: 3, names: ["fps", "scale", "split", "palettegen", "paletteuse"] },
+] as const;
 
 /**
  * Why this machine cannot record a reel, or undefined when it can: ffmpeg must
- * run from the PATH with the libx264 and aac encoders.
+ * run from the PATH with the encoders and filters that the reel, its poster
+ * and its loop use.
  */
 export const cannotRecord = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const listed = yield* spawner
-    .string(
-      ChildProcess.make("ffmpeg", ["-hide_banner", "-encoders"], {
-        stdin: "ignore",
-        stderr: "ignore",
-      }),
-    )
-    .pipe(Effect.option);
-  if (Option.isNone(listed)) return "no ffmpeg runs from the PATH";
-  const lacking = ["libx264", "aac"].filter(
-    (name) => !new RegExp(`^ [A-Z.]{6} ${name} `, "m").test(listed.value),
-  );
-  return lacking.length === 0 ? undefined : `ffmpeg lacks ${lacking.join(" and ")}`;
+  const lacking: Array<string> = [];
+  for (const need of needs) {
+    const listed = yield* spawner
+      .string(
+        ChildProcess.make("ffmpeg", ["-hide_banner", need.list], {
+          stdin: "ignore",
+          stderr: "ignore",
+        }),
+      )
+      .pipe(Effect.option);
+    if (Option.isNone(listed)) return "no ffmpeg runs from the PATH";
+    for (const name of need.names)
+      if (!new RegExp(`^ [A-Z.]{${need.flags}} ${name} `, "m").test(listed.value))
+        lacking.push(name);
+  }
+  return lacking.length === 0 ? undefined : `ffmpeg lacks ${lacking.join(", ")}`;
 });
 
 /** ffmpeg on files, with no input from this process: its exit code, undefined when it cannot run. */

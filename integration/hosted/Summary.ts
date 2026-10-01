@@ -283,7 +283,7 @@ const showreelLines = (showreel: NonNullable<Evidence["showreel"]>): ReadonlyArr
   const recording = showreel.recording;
   if (recording !== undefined)
     lines.push(
-      `**Reel:** ${recording.frames} frames of ${recording.width}x${recording.height} at 24 fps (${seconds((recording.frames * 1000) / 24)}), ${recording.repeated} repeated, ${recording.superseded} superseded; ${recording.audio === undefined ? "no sound" : `sound ${recording.audio.blocks} blocks at ${recording.audio.sampleRate} Hz, ${recording.audio.silenceMs} ms of silence added`}; ${recording.failure ?? `ffmpeg exited ${String(recording.exitCode)}`}`,
+      `**Reel:** ${recording.frames} frames of ${recording.width}x${recording.height} at 24 fps (${seconds((recording.frames * 1000) / 24)}), ${recording.repeated} repeated, ${recording.superseded} superseded, ${recording.mismatched} of another size dropped; ${recording.audio === undefined ? "no sound" : `sound ${recording.audio.blocks} blocks at ${recording.audio.sampleRate} Hz, ${recording.audio.silenceMs} ms of silence added`}; ${recording.failure ?? `ffmpeg exited ${String(recording.exitCode)}`}`,
     );
   if (showreel.files.length > 0)
     lines.push(

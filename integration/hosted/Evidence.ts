@@ -807,6 +807,8 @@ export const Recording = Schema.Struct({
   repeated: Schema.Int,
   /** Frames that arrived but were not written, a later one arriving within the same frame's time. */
   superseded: Schema.Int,
+  /** Frames dropped for a size or format other than the first frame's, which raw video keeps. */
+  mismatched: Schema.Int,
   audio: Schema.optionalKey(
     Schema.Struct({
       sampleRate: Schema.Int,
