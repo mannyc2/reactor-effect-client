@@ -26,6 +26,6 @@ Start opens a paid session of at most five minutes (the creating token's cap), S
 | `src/Api.ts`       | The token endpoint's contract, shared by the server and the page                       |
 | `src/server.ts`    | Mints tokens and serves the page (Node, `@effect/platform-node`)                       |
 | `src/app.ts`       | The page's code: DOM types only, bundled by `bun build`                                |
-| `src/WebCrypto.ts` | Effect's `Crypto` over Web Crypto; the pinned Effect stack has no browser layer for it |
+| `src/WebCrypto.ts` | Effect's `Crypto` over Web Crypto, like `BrowserCrypto.layer`, but without its package |
 
 It is compiled and bundled by the checks, never run by them: it needs a paid session. `bun run check:examples` fails if the bundle reaches Node or native code, and `bun run test:pack` compiles the page against the installed archives with DOM types and no Node types.
