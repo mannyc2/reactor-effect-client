@@ -125,7 +125,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(`**Builds:** ${queue.builds.map((ms) => seconds(ms)).join(", ")}`);
     for (const [index, boundary] of queue.boundaries.entries())
       lines.push(
-        `**Boundary ${index + 1}:** ${boundary.edit} ${boundary.aimMs} ms before the end${boundary.refused === true ? " (refused)" : ""}; next ${boundary.nextClipId === boundary.expectedClipId || boundary.expectedClipId === undefined ? "as expected" : "unexpected"}${boundary.pause === undefined ? "" : `; pause ${boundary.pause.durationMs} ms (${boundary.pause.frames} frames, ${boundary.pause.dark} dark)`}`,
+        `**Boundary ${index + 1}:** ${boundary.edit} ${boundary.aimMs} ms before the end${boundary.refused === true ? " (refused)" : ""}; next ${boundary.nextClipId === boundary.expectedClipId || boundary.expectedClipId === undefined ? "as expected" : "unexpected"}${boundary.pause === undefined ? "" : `; pause ${Math.round(boundary.pause.durationMs)} ms (${boundary.pause.frames} frames, ${boundary.pause.dark} dark)`}`,
       );
   }
   const playout = evidence.playout;
@@ -133,7 +133,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(`**Order:** started ${playout.startOrder.join(", ")}`);
     for (const seam of playout.seams)
       lines.push(
-        `**Seam ${seam.ending} to ${seam.next}${seam.continued ? " (continued)" : ""}:** ${seam.pause === undefined ? "no pause measured" : `pause ${seam.pause.durationMs} ms (${seam.pause.frames} frames, ${seam.pause.dark} dark)`}; ${seam.darkFrames ?? 0} dark frames${seam.jump === undefined ? "" : `; join change ${seam.jump.change} against ${seam.jump.typical} (×${seam.jump.ratio})`}`,
+        `**Seam ${seam.ending} to ${seam.next}${seam.continued ? " (continued)" : ""}:** ${seam.pause === undefined ? "no pause measured" : `pause ${Math.round(seam.pause.durationMs)} ms (${seam.pause.frames} frames, ${seam.pause.dark} dark)`}; ${seam.darkFrames ?? 0} dark frames${seam.jump === undefined ? "" : `; join change ${seam.jump.change} against ${seam.jump.typical} (×${seam.jump.ratio})`}`,
       );
     if (playout.batch !== undefined)
       lines.push(
