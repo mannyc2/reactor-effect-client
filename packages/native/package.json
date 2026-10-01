@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-native",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Native WebRTC host for reactor-effect-client: the Peer port on a libwebrtc Node-API addon, in process or isolated per connection",
   "type": "module",
   "license": "Apache-2.0",
