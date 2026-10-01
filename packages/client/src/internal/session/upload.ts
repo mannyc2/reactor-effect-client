@@ -104,7 +104,7 @@ export const make = ({
         ),
       );
     },
-    // File metadata excludes the name and bytes.
+    // The MIME type and size only: never the name or the bytes.
     Effect.withSpan(
       "Session.upload",
       (_name, mimeType, bytes) => ({

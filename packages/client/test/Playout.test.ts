@@ -196,7 +196,6 @@ layer(hosted)("order", (it) => {
 });
 
 layer(hosted)("tracing queued items", (it) => {
-  // 43d582ed and 0c1a24ab left deferred commands parented by the playout's acquisition.
   it.effect(
     "keeps each admission's trace through waiting, duplicate submission and renewal",
     () => {

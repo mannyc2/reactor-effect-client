@@ -92,7 +92,8 @@ export const make = ({
   const { settings, data, control, state } = core;
   const { current, currentReady, guard } = generation;
 
-  // Only refusal reporting is timed here; admitted work keeps its owned execution span.
+  // A request refused before it is sent has no owned execution to carry its span, so its refusal
+  // is traced here; a sent request's span is on its owned execution.
   const refuse = Effect.fnUntraced(function* (
     operation: string,
     channel: "control" | "data",
