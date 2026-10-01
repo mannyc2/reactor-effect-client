@@ -1084,8 +1084,8 @@ const sameClip = (tag: Playout.ClipTag | null, aired: Aired | undefined): boolea
  * Lines of one to three beats on H3's grid, each `At` its frame and the first skipped once 20 s
  * late, over `floor` of filler; then `place` is asked once and its clip submitted as it says. Nothing
  * else is submitted after the call, so the plan knows the whole future: the clip must start right
- * after `after`, be followed by `before`, and start within `toleranceMs` of `startsAt`. Returns
- * what went wrong.
+ * after `after`, be followed by `before` (any filler clip for a filler one once a replacement
+ * opens), and start within `toleranceMs` of `startsAt`. Returns what went wrong.
  */
 const forecast = (
   seed: number,
@@ -1111,8 +1111,14 @@ const forecast = (
       renewal: { lead: "40 seconds", grace: "100 millis" },
     });
     const aired = yield* Ref.make<ReadonlyArray<Aired>>([]);
+    const renewals = yield* Ref.make(0);
     yield* playout.events.pipe(
       Stream.runForEach((event) => {
+        if (
+          event._tag === "Session" &&
+          (event.event._tag === "Opened" || event.event._tag === "Switched")
+        )
+          return Ref.update(renewals, (count) => count + 1);
         if (event._tag === "Filler" && event.phase === "Started")
           return Ref.update(aired, (all): ReadonlyArray<Aired> => [
             ...all,
@@ -1155,6 +1161,7 @@ const forecast = (
       yield* Effect.sleep(Duration.millis(pause));
     }
     const writing = Duration.millis(Math.floor(draw() * 8000));
+    const renewed = yield* Ref.get(renewals);
     const placement = yield* playout.place({ key: key("u"), submitIn: writing });
     if (placement === null) return [`seed ${seed}: no placement`];
     yield* Effect.sleep(writing);
@@ -1175,9 +1182,16 @@ const forecast = (
     const all = yield* Ref.get(aired);
     const index = all.findIndex((entry) => entry._tag === "Item" && entry.key === "u");
     const errorMs = started.at - placement.startsAt;
+    // Once a replacement opens, a filler index goes to whichever session asks for it first, so the
+    // filler clip after the placed one may carry another.
+    const before = placement.before;
+    const next = all[index + 1];
+    const renewing = (yield* Ref.get(renewals)) > renewed;
     return [
       ...(sameClip(placement.after, all[index - 1]) ? [] : [`seed ${seed}: after another clip`]),
-      ...(placement.before === null || sameClip(placement.before, all[index + 1])
+      ...(before === null ||
+      sameClip(before, next) ||
+      (renewing && before._tag === "Filler" && next?._tag === "Filler")
         ? []
         : [`seed ${seed}: before another clip`]),
       ...(Math.abs(errorMs) < toleranceMs
@@ -1207,7 +1221,8 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
   );
 
   // Every call falls near a renewal. The replacement's opening and its first start are only
-  // projected, so a clip placed across the switch may start up to about 0.1 s off.
+  // projected: these seeds start within 30 ms of their forecast, and 399 of seeds 1-400 within
+  // 0.1 s, so the tolerance still sees the walk forget the switch's grace.
   it.effect(
     "across a renewal, the clip airs where it said",
     () =>
@@ -1216,7 +1231,7 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
         // Seed 13 places a clip whose slack the fence before its build would take, and seed 49
         // one after a clip whose guarded start is under way as its deadline passes.
         for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49])
-          problems.push(...(yield* forecast(seed, "75 seconds", 150, "15 seconds", "20 millis")));
+          problems.push(...(yield* forecast(seed, "75 seconds", 100, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),
     { timeout: 60_000 },
@@ -1454,7 +1469,11 @@ layer(hosted)("renewal", (it) => {
           Array.from({ length: 16 }, (_, index) => `n${index}`),
           (name) => playout.submit({ key: key(name), lane: "line", request: clip(name) }),
         );
-        for (const handle of handles) yield* handle.outcome;
+        const outcomes = yield* Effect.forEach(handles, (handle) => handle.outcome);
+        assert.deepStrictEqual(
+          outcomes.map((status) => status._tag),
+          handles.map(() => "Ended"),
+        );
         assert.deepStrictEqual(
           yield* starts,
           Array.from({ length: 16 }, (_, index) => `n${index}`),
