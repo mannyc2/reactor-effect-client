@@ -140,7 +140,7 @@
     ".check/**",
     "packages/native/rust/**",
     "release-tools/node_modules/**",
-    "website/.astro/**",
+    "website/**",
     ".release/**"
   ]
 }
