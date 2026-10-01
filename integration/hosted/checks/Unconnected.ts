@@ -42,7 +42,6 @@ import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as H3 from "reactor-effect-client/H3";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { Pieces } from "../Checks.js";
 import type { UnconnectedRecord } from "../Evidence.js";
@@ -121,7 +120,9 @@ const allocate = Effect.fnUntraced(function* (
   grants: Map<string, CoordinatorClient.TokenGrant>,
   answered: (answer: Answered) => Effect.Effect<void>,
 ) {
-  const answer = yield* signaling.create({ name: H3.modelName }).pipe(recorded, Effect.result);
+  const answer = yield* signaling
+    .create({ name: plans.unconnected.model.name })
+    .pipe(recorded, Effect.result);
   if (Result.isSuccess(answer) && !grants.has(answer.success.sessionId)) {
     const allocatedAt = yield* Clock.currentTimeMillis;
     grants.set(answer.success.sessionId, grant);

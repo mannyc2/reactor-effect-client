@@ -230,7 +230,7 @@ export const tour = (pieces: Pieces) =>
           const minted = yield* Effect.result(
             coordinator.mintToken({
               apiKey: target.apiKey,
-              modelName: H3.modelName,
+              modelName: plans.tour.model.name,
               expiresAfter: `${freeSeconds} seconds`,
               ...options,
             }),
@@ -280,7 +280,7 @@ export const tour = (pieces: Pieces) =>
           // The session's own tokens, from the SDK: every grant is proven before it is used.
           const tokens = coordinator.tokens({
             apiKey: target.apiKey,
-            modelName: H3.modelName,
+            modelName: plans.tour.model.name,
             maxSessionDuration: `${plans.tour.seconds} seconds`,
             expiresAfter: `${tokenSeconds} seconds`,
           });
@@ -376,7 +376,7 @@ export const tour = (pieces: Pieces) =>
             Effect.gen(function* () {
               const session = yield* recorded(
                 reactor.create({
-                  model: H3.modelName,
+                  model: plans.tour.model.name,
                   tokens: sessionTokens,
                   onAllocated: (allocated) =>
                     Effect.gen(function* () {
