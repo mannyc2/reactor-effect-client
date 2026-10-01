@@ -33,6 +33,7 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
+import * as Media from "./Media.js";
 import { Refused, sessionSeconds } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
@@ -102,6 +103,12 @@ export class Target extends Context.Service<
      * operator names; `cut` then ends with it. Never logged or saved.
      */
     readonly moderationPrompt: Redacted.Redacted<string> | undefined;
+    /**
+     * Why this machine cannot record a showreel, or undefined when its ffmpeg
+     * can: asked once, by the run before its clock starts, since a rehearsal's
+     * clock runs ahead while a process does.
+     */
+    readonly cannotRecord: Effect.Effect<string | undefined>;
     /**
      * How long after the owner is killed the adopter starts (takeover, resume,
      * tokens), when a rehearsal sets it; otherwise at once, or for `tokens` once
@@ -308,6 +315,13 @@ export const paid = (input: {
         adoptAfterMs: undefined,
         seams: input.seams,
         moderationPrompt: input.moderationPrompt,
+        cannotRecord: yield* Effect.cached(
+          Effect.provideService(
+            Media.cannotRecord,
+            ChildProcessSpawner.ChildProcessSpawner,
+            spawner,
+          ),
+        ),
         sever: (yield* Severable).sever,
         // The owner is a child process, so killing it is a real crash. It gets the grant on
         // its stdin and never the API key.
@@ -441,6 +455,7 @@ export const rehearsal = (input: {
       const test = yield* ReactorTest.ReactorTest;
       const http = yield* HttpClient.HttpClient;
       const peers = yield* PeerFactory;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       return Target.of({
         mode: "rehearsal",
         apiKey: test.apiKey,
@@ -449,6 +464,13 @@ export const rehearsal = (input: {
         adoptAfterMs: input.adoptAfterMs,
         seams: undefined,
         moderationPrompt: input.moderationPrompt,
+        cannotRecord: yield* Effect.cached(
+          Effect.provideService(
+            Media.cannotRecord,
+            ChildProcessSpawner.ChildProcessSpawner,
+            spawner,
+          ),
+        ),
         sever: (yield* Severable).sever,
         owner: (grant, marker, options) =>
           Effect.gen(function* () {

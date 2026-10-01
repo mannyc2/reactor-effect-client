@@ -1,0 +1,3 @@
+# A showreel's footage, written beside its evidence file in a directory of the same name:
+# generated media stays out of Git, while the evidence file itself is committed.
+evidence/**/*-showreel-*/

@@ -12,7 +12,8 @@ import * as Schema from "effect/Schema";
  * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
  * token that created it). `tour` then walks the raw API through one longer
  * session. `unconnected` asks Reactor a question instead: what becomes of a
- * session nothing connects to.
+ * session nothing connects to. `showreel` records footage rather than
+ * qualifying anything: the playout's picture and sound, to an MP4.
  */
 export const checks = [
   "vertical",
@@ -29,6 +30,7 @@ export const checks = [
   "adoption",
   "show",
   "unconnected",
+  "showreel",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -72,6 +74,9 @@ export const plans: { readonly [C in Check]: Plan } = {
   // 59 s of its request, and a third if that token's second create allocates again, ended
   // within 56 s of that create. Each short one stays within a started minute.
   unconnected: { sessions: 3, seconds: 60, holds: [155, 59, 56] },
+  // Five 8 s scenes air from about 7 s in and end about 47 s in; the cap leaves room for a
+  // slower build and the close. $2.45 at most at 350 credits a second.
+  showreel: { sessions: 1, seconds: 70 },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */

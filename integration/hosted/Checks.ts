@@ -34,6 +34,7 @@ import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
+import { showreel } from "./checks/Showreel.js";
 import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
@@ -2294,6 +2295,7 @@ const all = {
   adoption: adoption(pieces),
   show: show(pieces),
   unconnected: unconnected(pieces),
+  showreel: showreel(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

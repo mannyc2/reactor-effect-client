@@ -186,6 +186,13 @@ export const execute = (input: {
             run.mode === "paid" && run.network?.pair !== undefined ? [run.network.pair] : [],
           ),
         );
+      // The showreel is paid for its footage: without an ffmpeg that can record it, it buys
+      // nothing. Asked here, before the run's clock starts, so the check finds the answer.
+      if (authorization.check === "showreel") {
+        const unable = yield* target.cannotRecord;
+        if (unable !== undefined && target.mode === "paid")
+          return yield* Refused.make({ message: `showreel records with ffmpeg, and ${unable}` });
+      }
       const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const rate = yield* coordinator.pricing.pipe(
         Effect.flatMap((pricing) => CoordinatorClient.modelRate(pricing, H3.modelName)),
