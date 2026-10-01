@@ -1,80 +1,94 @@
 # Live channel
 
-A server that runs one Reactor H3 playout and broadcasts it to any number of browsers. The server holds the API key, opens and renews the sessions, reads the decoded media, encodes it once and streams it to every viewer as fragmented MP4. Viewers send prompts to the server; they never talk to Reactor. By default it runs offline on the SDK's simulated Reactor, so it costs nothing to try.
+Your own 24/7 AI TV channel on Reactor's H3. Viewers send prompts, a house rotation fills the gaps, and sessions renew before their cap with no dark air. Any number of viewers watch one paid session, and the program can also go to Twitch, YouTube or X. It is a Node server of a few hundred lines with no headless browser: `reactor-effect-native` hands the server decoded frames and audio, and ffmpeg encodes them once.
 
-It uses `reactor-effect-client` (`Playout` with `H3Source`, session tokens, `ReactorTest`, the owner record and close report schemas) with `reactor-effect-native` (decoded frames and audio on the server, the isolated host), in an Effect application: services and layers, an `HttpApi` served by `@effect/platform-node`, `Stream.share` for fan-out and a child process for the encoder.
+The page shows the program with a LIVE badge, what is on air and who asked for it, what the playout has lined up next, the session on air with its cap and renewal countdown, and an as-run log of what aired and how each clip ended. A prompt that can't start in time is refused with how long to wait.
 
-## Run it
+## Run it offline
 
-Needs Node 22.18 or newer (it runs the TypeScript sources directly) and `ffmpeg` on `PATH`. From the repository root:
-
-```sh
-bun install
-bun run build
-cd examples/livestream
-node src/main.ts            # http://127.0.0.1:3000
-```
-
-The page plays the channel and has a prompt box and an event log; `/docs` describes the API and `/openapi.json` is its OpenAPI document. Each simulated session lasts two minutes, so 75 seconds in the log shows its replacement opening (`renewal Opened`), and once the first session has played what it holds, `renewal Switched`, while the video carries on.
-
-### Live
+Needs Node 22.18 or newer and `ffmpeg` on `PATH`. From the repository root:
 
 ```sh
-CHANNEL_MODE=live REACTOR_API_KEY=… node src/main.ts
+bun install && bun run build
+node examples/livestream/src/main.ts      # http://127.0.0.1:3000
 ```
 
-Live mode opens paid H3 sessions. Each starts on a token the server mints, capped at `CHANNEL_SESSION_LENGTH`, and carries on with tokens bound to it; the playout renews sessions before their cap ends. The channel opens at most `CHANNEL_MAX_SESSIONS`: past that its open fails, and after three failed opens in a row the playout airs its last session until its cap ends, tries once more, fails, and the channel goes off air. Every session's owner record is written before it connects, and on shutdown (Ctrl-C) the sessions are terminated and the cleanup report is written. Live mode uses the isolated native host, which needs Node; the offline mode also runs on Bun.
+Offline, the channel runs on `ReactorTest`, the SDK's simulated Reactor, at the timing paid H3 runs measured. It costs nothing. The scheduling, renewal and as-run reports are the real playout; the picture is the simulator's flat colour per clip with a tone. Sessions last two minutes, so the first renewal comes about 75 seconds in. `/docs` describes the API.
 
-| Variable                 | Default                        | Meaning                                                       |
-| ------------------------ | ------------------------------ | ------------------------------------------------------------- |
-| `CHANNEL_MODE`           | `simulated`                    | `simulated` (offline, unpaid) or `live` (paid H3 sessions)    |
-| `REACTOR_API_KEY`        |                                | Live only; stays on the server                                |
-| `REACTOR_API_URL`        | `https://api.reactor.inc`      | Live only                                                     |
-| `CHANNEL_SESSION_LENGTH` | `10 minutes` live, `2 minutes` | How long each session lives before its replacement takes over |
-| `CHANNEL_RENEWAL_LEAD`   | `45 seconds`                   | How long before a session ends its replacement is opened      |
-| `CHANNEL_CLIP_SECONDS`   | `8`                            | The length of every clip, within H3's 5 to 15.084 seconds     |
-| `CHANNEL_MAX_SESSIONS`   | `3`                            | Live only; sessions opened over the channel's life            |
-| `CHANNEL_EVIDENCE_DIR`   | `.channel`                     | Where `allocations.jsonl` and `cleanup.jsonl` are appended    |
-| `HOST`, `PORT`           | `127.0.0.1`, `3000`            | Anyone who can reach the server can watch and use the session |
+## Go live
+
+```sh
+CHANNEL_MODE=live REACTOR_API_KEY=rk_… node examples/livestream/src/main.ts
+```
+
+The API key stays on the server. Each session starts on a token the server mints for it, capped at `CHANNEL_SESSION_LENGTH` (10 minutes), and the playout opens its replacement 45 seconds before the cap. `CHANNEL_MAX_SESSIONS` (3) is how many sessions a run may open; after the last one's cap the channel goes off air. Live mode needs the native addon: npm ships it prebuilt for linux-x64 and darwin-arm64, and in this repository you build it first ([packages/native](../../packages/native/README.md)).
+
+H3 costs $0.035 a second from `ready` until the session ends: $2.10 a minute, $126 an hour on air. Each renewal adds up to 45 seconds of a second session, about $1.58. With the defaults a run is at most three 10-minute sessions, $63. For a channel that runs all day, raise both settings: with 6-hour sessions, renewals add about $6 a day.
+
+A crash can't run up an open-ended bill. Every session is created capped, so Reactor ends it by its cap whatever happens to the server (a paid probe saw a 60-second session ended 60.09 s after allocation: `integration/hosted/evidence/0.8.0-probe/summary.md`). A crash costs at most the two sessions open during a renewal, $42 at the defaults, and `allocations.jsonl` names each session before it connects. On Ctrl-C the server terminates its sessions and writes their close reports to `cleanup.jsonl`.
+
+This example's live mode has not run on hosted Reactor. The playout it uses has: three 75-second sessions, a dropped connection and a moderated session, 20 clips with 53–169 ms seams and no dark frame (`integration/hosted/evidence/0.8.0-api/summary.md`).
+
+## Restream to Twitch, YouTube or X
+
+```sh
+CHANNEL_RTMP_URL=rtmp://live.twitch.tv/app/<stream key> node examples/livestream/src/main.ts
+```
+
+Take the ingest URL and stream key from the platform's stream settings; `rtmp://` and `rtmps://` both work. The encoder then runs whether or not a browser watches, and the same encode goes to the ingest as FLV. If the ingest refuses or drops the connection, ffmpeg connects again every 5 seconds and resumes at a keyframe; if it falls behind, it loses its own packets and the browsers never wait for it. The stream key is cut out of every log line. To try it offline, listen with ffmpeg and point the channel at it:
+
+```sh
+ffmpeg -listen 1 -i rtmp://127.0.0.1:1935/live/test -c copy out.flv &
+CHANNEL_RTMP_URL=rtmp://127.0.0.1:1935/live/test node examples/livestream/src/main.ts
+```
+
+## Settings
+
+| Variable                 | Default                        | Meaning                                                          |
+| ------------------------ | ------------------------------ | ---------------------------------------------------------------- |
+| `CHANNEL_MODE`           | `simulated`                    | `simulated` (offline, unpaid) or `live` (paid H3 sessions)       |
+| `REACTOR_API_KEY`        |                                | Live only; stays on the server                                   |
+| `REACTOR_API_URL`        | `https://api.reactor.inc`      | Live only                                                        |
+| `CHANNEL_NAME`           | `Slow TV`                      | The name on the page                                             |
+| `CHANNEL_SESSION_LENGTH` | `10 minutes` live, `2 minutes` | Each session's cap                                               |
+| `CHANNEL_RENEWAL_LEAD`   | `45 seconds`                   | How long before the cap the replacement opens                    |
+| `CHANNEL_CLIP_SECONDS`   | `8`                            | Every clip's length, within H3's 5 to 15.084 seconds             |
+| `CHANNEL_MAX_SESSIONS`   | `3`                            | Live only; sessions a run may open                               |
+| `CHANNEL_RTMP_URL`       |                                | An `rtmp://` or `rtmps://` ingest that also receives the program |
+| `CHANNEL_EVIDENCE_DIR`   | `.channel`                     | Where `allocations.jsonl` and `cleanup.jsonl` are appended       |
+| `HOST`, `PORT`           | `127.0.0.1`, `3000`            | Anyone who can reach the server can watch and send prompts       |
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  subgraph Playout
-    S1[session 1] --> O[video and audio]
-    S2[session 2, renewal] --> O
+  P[POST /api/prompts] --> G[Programme] --> PO
+  subgraph PO[Playout]
+    S1[session on air] -.renewal.-> S2[replacement]
   end
-  O -- one reader each --> D[newest frame, PCM buffer]
-  D --> C[24 fps clock] --> F[ffmpeg: H.264 + AAC, fragmented MP4]
-  F --> SH[Stream.share] --> V1[viewer] & V2[viewer]
-  P[POST /api/prompts] --> E[Programme] --> Playout
-  Playout -- playout.events --> EV[GET /api/events]
+  PO -- video, audio --> B[Broadcast: 24 fps clock] --> F[ffmpeg, one encode]
+  F -- fragmented MP4 --> V[every browser]
+  F -- FLV --> R[RTMP ingest]
+  PO -- events, state --> M[Monitor] --> E[GET /api/events]
 ```
 
-| File               | What it does                                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/Api.ts`       | The `HttpApi` contract: prompts, status, the Server-Sent Events feed and the MP4 stream, with their schemas and errors |
-| `src/Channel.ts`   | The playout: `H3Source.open` over the native host when live, over `ReactorTest` offline, and the house filler          |
-| `src/Programme.ts` | Admission: a viewer's prompt as a keyed item with a firm deadline, and its refusals as the API's errors                |
-| `src/Broadcast.ts` | Reads the playout's media, re-times it for the encoder, runs ffmpeg and shares the result among viewers                |
-| `src/Ledger.ts`    | The durable evidence: owner records and the cleanup report                                                             |
-| `src/Http.ts`      | The handlers, and the page                                                                                             |
-| `src/App.ts`       | The layers, and the shutdown order                                                                                     |
+- **One `Playout`** (`src/Channel.ts`) holds a `viewer` lane for prompts and the house rotation as its `filler`, which keeps 8 to 16 seconds of air secured whenever no viewer has asked for anything.
+- **Sessions** come from `H3Source.open`: it mints the session's token with `coordinator.tokens`, allocates, records the owner through `onAllocated`, and only then connects. Live, the connection runs on `NativePeer.layerIsolated()`, each peer in a child process of its own, so a crash in libwebrtc ends one connection, not the server. Offline the same code runs on `ReactorTest.layer`.
+- **Renewal** is the playout's: `renewal.lead` before a session's cap it opens the replacement, builds new clips there, and switches the air at a clip boundary once the old session has played what it holds.
+- **Admission** (`src/Programme.ts`): a prompt joins the end of the viewer lane, so it is taken only if the rest of the clip on air and the viewer prompts already lined up leave it room to start within the renewal lead less one clip. Otherwise the reply is `429` with `retryAfterSeconds`. The prompt goes in with a firm window, and the playout drops one that still can't start in time as `late`.
+- **The broadcast** (`src/Broadcast.ts`) reads `playout.video` and `playout.audio`, which continue across renewals, and feeds ffmpeg a steady 24 frames a second. ffmpeg's tee muxer writes the one encode as fragmented MP4 for the browsers, which `Stream.share` fans out, and as FLV to the ingest.
+- **The monitor** (`src/Monitor.ts`) folds `playout.events` into the as-run log and the sessions' history, and reads `playout.state` for what is on air and lined up. `GET /api/events` sends that status first and again at every change. A clip on air shows as "Starting" until the broadcast has received a frame after the session reported its start.
 
-**Sessions and renewal.** `Channel.layer` provides one `Playout`, chosen by `Layer.unwrap` from the settings. Live, each session comes from `H3Source.open` over `Reactor.layer()` and `NativePeer.layerIsolated()`: it mints the session's token with the key held here (`coordinator.tokens`), allocates the session, calls `onAllocated` (the ledger writes the owner record) and only then connects. A session's lifetime is what remains of its token's cap once it is open; `renewal.lead` before it ends the playout opens the replacement, builds new clips there, and switches the air over at a boundary once the old session has played what it holds. Offline, the same plan runs on `ReactorTest.layer` at `Timing.hosted`, the timing paid runs measured, with its simulated key minting the tokens.
-
-**Filling the air.** Viewers' prompts go into one `viewer` lane. When none is waiting, the house rotation is the playout's filler: it keeps between one and two clips of air secured ahead, so the channel does not run dry.
-
-**Reading the media.** The playout's `video` and `audio` continue across renewals. `Broadcast` reads both for the channel's whole life, whether anyone is watching or not, into the newest frame and a 200 ms PCM buffer, so the encoder always has something current. When either ends or fails, the channel is off air and `/live.mp4` answers `503`.
-
-**Encoding and fan-out.** A 24 fps clock samples the newest frame (repeating it between clips) and one frame's worth of audio (silence when there is none), so ffmpeg sees steady input whatever the model's timing, and the two inputs stay in step. ffmpeg writes fragmented MP4 with a keyframe every second; `Fmp4.ts` cuts it into an initialization segment and fragments, and `Stream.share` gives every viewer the init segment and then the fragments from the next keyframe. An encoder run starts with the first viewer and stops 30 seconds after the last; a viewer that falls eight fragments behind loses the oldest, and no viewer slows another. A run that ends (ffmpeg failed, or the frame format changed) ends its viewers' responses, and the page reconnects. A shared stream does not replay its end to a viewer who joins after it, so `Broadcast` keeps the current run in a `SynchronizedRef` and replaces a finished one, rather than handing it to the next viewer.
-
-**Admission.** A prompt is submitted with a firm deadline of the renewal lead less one clip, so a session being retired holds no more than it can play before it ends. The playout refuses one that could not start by then (`WouldMissDeadline`), and refusals map onto the HTTP contract: `WouldMissDeadline` and `LaneBusy` are `429` with a retry delay, `InvalidItem` is `422`, and a closed playout `503`. Ordering, retries and never resending an enqueue whose outcome is unknown are the playout's.
-
-**Events.** `GET /api/events` is `playout.events` from the moment the feed opens, as Server-Sent Events: each clip's as-run phase with the prompt it was submitted with, each session event (`Opened`, `SetupFailed`, `Switched`, `Replaced`, `Moderated`), a session's dropped connection and its return as `Media` `Recovering` and `Ready`, and each time the air ran dry. It carries identities and phases, never provider text. `GET /api/status` gives the on-air session and what is playing and queued.
-
-**Evidence and shutdown.** Everything that can fail without cost (the settings, the evidence directory, the check for ffmpeg) is built before the playout, which in live mode opens a paid session. `NodeRuntime.runMain` turns Ctrl-C into interruption and the layers release in reverse. The HTTP server goes first and does not wait for open responses: the video and the event feed never end on their own, and waiting for them would only keep paid sessions running. Then the broadcast stops, and the playout closes, terminating every session. Its `Playout.Cleanup` (the close reports it kept, encoded with `Schema.toCodecJson`) is appended to `cleanup.jsonl` once it has closed, and a session that may still be billing (`Session.mayStillBill`) is named in the log.
+| File               | What it does                                                                    |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `src/Api.ts`       | The `HttpApi` contract: prompts, the status and its event feed, the MP4 stream  |
+| `src/Channel.ts`   | The playout over `H3Source`, live or on `ReactorTest`, and the house rotation   |
+| `src/Programme.ts` | Viewers' prompts as keyed items with a firm window, and their refusals          |
+| `src/Broadcast.ts` | The frame clock, the encoder, the fan-out to browsers and the ingest            |
+| `src/Monitor.ts`   | What is on air, lined up and aired, and the sessions carrying it                |
+| `src/Ledger.ts`    | Owner records and the cleanup report                                            |
+| `src/Settings.ts`  | The settings above, checked before any session opens                            |
+| `src/App.ts`       | The layers, built so that what fails for free fails before a paid session opens |
 
 ## Test
 
@@ -82,15 +96,14 @@ flowchart LR
 bun run check:examples     # from the root; or `npx vitest run` here
 ```
 
-`test/livestream.test.ts` serves the whole channel offline on an ephemeral port (`NodeHttpServer.layerTest`) with 30-second sessions and drives it through the typed client derived from `Api`: a prompt is accepted and starts on the event stream, and a viewer connected before a renewal receives its next fragment after the switch. `test/Broadcast.test.ts` changes the frame format under a viewer and checks that the next viewer gets a new run. Both need ffmpeg and skip without it, except in CI.
+`test/livestream.test.ts` serves the whole channel offline with 30-second sessions and drives it through the typed client derived from `Api`: a prompt is taken and airs with its words, and a viewer's MP4 carries on across a session switch. `test/Broadcast.test.ts` changes the frame format under a viewer and checks that the next viewer gets a new encoder run. Both need ffmpeg and skip without it, except in CI.
 
-## Deviations and limits
+## Limits
 
-- **ffmpeg is an external program**, not an npm dependency. The server checks for it at startup, before any session is opened.
-- **The frame clock is application policy.** It repeats the newest frame and pads audio with silence to give the encoder constant-rate input; it is not an SDK feature, and frames that arrive faster than 24 per second are not all encoded.
+- **What a viewer sees is not proven.** A clip's start is the session's report, and the page waits for the broadcast to receive a frame after it; whether a viewer's screen showed it is their player's business.
+- **The ingest's state is in the server log only.** ffmpeg reports a failed connection there; the page does not show the restream.
+- **Prompts are public.** Anyone who can reach the server shares the channel; a real deployment authenticates viewers and moderates prompts before Reactor's own moderation does.
+- **Clip failure reasons stay private.** An H3 `clip_failed` reason is provider text, so the as-run log says only `Failed · Clip`.
 - **The encoder stops with its run.** Its input queues end before shutdown, and its writers belong to that run's scope. In this repository Bun patches the pinned Node process adapter (`patches/`) to keep input-pipe error listeners through teardown, so a pipe reset after writing ended cannot crash the channel. An application built from this example installs the unpatched adapter, where a reset at that moment can still end the process until Effect fixes it; ending the inputs first makes it rare. ffmpeg is killed with `SIGKILL`: it catches `SIGTERM` and can remain blocked reading an input pipe.
-- **One format per encoder run.** The encoder takes its size and pixel format from the first frame; a frame of another format (a canvas change) ends the run, viewers reconnect, and the next run starts with the new format. Audio must be 48 kHz; stereo is mixed down to mono.
-- **Open responses are cut at shutdown**, not drained: a viewer's video and event feed end when the server stops.
-- **Clip failure reasons are not forwarded.** An H3 `clip_failed` reason is provider text, so the event feed reports only that the clip failed.
-- **Viewers are played with a plain `<video src>`**, tested in Chrome. Browsers that cannot play fragmented MP4 progressively (Safari) need MSE or HLS in front of the same segments.
-- **The page's prompts are public.** Everyone who can reach the server shares the channel; a real deployment authenticates viewers and moderates prompts.
+- **One picture format per encoder run.** A canvas change restarts the encoder and viewers reconnect. Audio is mixed down to 48 kHz mono.
+- **Safari** can't play fragmented MP4 progressively from a `<video>` tag; it needs MSE or HLS in front of the same segments.
