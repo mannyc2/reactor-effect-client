@@ -75,6 +75,26 @@ export class Remote extends Schema.Error<Remote>("reactor-effect-client/ReactorE
   body: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
 }) {}
 
+/**
+ * The model refused a command, or failed what one started, with a code it
+ * documents as stable: route on `code`. Its sentence is provider text and
+ * stays redacted.
+ */
+export class Refused extends Schema.Error<Refused>("reactor-effect-client/ReactorError/Refused")({
+  _tag: Schema.tag("Refused"),
+  message: Schema.String,
+  /** The model's documented code, such as Vidu S2-Avatar's `NOT_LIVE`. */
+  code: Schema.String,
+  /** Whose fault the model says it is, such as `request`, `state`, `upstream` or `platform`. */
+  origin: Schema.String,
+  /** The model says the same command may succeed if it is sent again later. */
+  retryable: Schema.Boolean,
+  /** The model's trace of the failure, to quote when reporting it. */
+  traceId: Schema.optionalKey(Schema.String),
+  /** The model's sentence, for explicit inspection only. */
+  body: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
+}) {}
+
 /** A failure of the native WebRTC addon or its host process. */
 export class Native extends Schema.Error<Native>("reactor-effect-client/ReactorError/Native")({
   _tag: Schema.tag("Native"),
@@ -120,6 +140,7 @@ export const ReactorErrorReason = Schema.Union([
   Failure,
   Http,
   Remote,
+  Refused,
   Native,
   IceFailed,
   TransportFailed,
@@ -129,7 +150,10 @@ export type ReactorErrorReason = typeof ReactorErrorReason.Type;
 /** Every reason tag. */
 export type ErrorCode = ReactorErrorReason["_tag"];
 /** The codes a reason can be built from with a message alone. */
-export type MessageCode = Exclude<ErrorCode, "IceFailed" | "TransportFailed" | "ClipEnded">;
+export type MessageCode = Exclude<
+  ErrorCode,
+  "IceFailed" | "TransportFailed" | "ClipEnded" | "Refused"
+>;
 
 /** Whether a remote mutation may have happened: never sent, maybe sent, or answered. */
 export const RemoteOutcome = Schema.Literals(["not-submitted", "unknown", "replied"]);
@@ -211,6 +235,8 @@ const retryable = (reason: ReactorErrorReason, outcome: RemoteOutcome | undefine
     case "Disconnected":
     case "ChannelClosed":
       return true;
+    case "Refused":
+      return reason.retryable;
     case "Http":
       // Reactor classes a server error as recoverable; a refusal of authority or a conflict is not.
       return (
