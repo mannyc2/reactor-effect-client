@@ -2110,10 +2110,11 @@ describe("PlayoutPolicy, wakes", () => {
     const policy = drive({ from: measured });
     policy.tick(0);
     policy.open();
-    // a builds from 10 ms to 2,010: b, 2 s of build after it, could start by 4,010.
+    // a builds from 10 ms to 2,010. b, on the lane that cuts, airs once Ready, not after a: with
+    // 2 s of build after a's, it could start by 4,010.
     policy.submit(spec("a"), 10);
     policy.reply({ _tag: "Done", clipId: "c-a" }, 11);
-    const firm = { ...spec("b"), window: { startByMs: 4_000, firm: true } };
+    const firm = { ...spec("b", 0), window: { startByMs: 4_000, firm: true } };
     // Past 2,010 its projection grows with the time, and reaches 4,020 at 2,020.
     assert.strictEqual(policy.submit(firm, 20).wake, 2_020);
     assert.deepStrictEqual(statuses(policy.tick(2_019).actions, "b"), []);
@@ -2209,6 +2210,98 @@ describe("PlayoutPolicy, wakes", () => {
     assert.deepStrictEqual(statuses(policy.actions, "u"), ["Accepted", "Ready", "Dropped"]);
     // Its clip is gone, though no read has shown it yet; its time comes and cuts nothing.
     assert.deepStrictEqual(commands(policy.tick(5_000).actions), []);
+  });
+
+  // s1 airs a clip of its own to 55 s, and s2, its replacement, must have aired what it builds by
+  // 64 s, its cap less the margin; a is due at 40 s. The 9.98 s that tile the gap to a would end
+  // past that, and the tile shrinks to the 9 s that fit at 31 s, with nothing to wake the plan
+  // then: it asks for those 9 s at once.
+  it("asks a replacement at once for the filler that airs before its cap", () => {
+    const policy = drive({ config: protecting("air") });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 60_000 }, 10);
+    const x = clip("x", undefined, 55);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit({ ...spec("a"), start: { _tag: "At", time: 40_000, late: "nextBoundary" } }, 30);
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 35_000 }, 30_020);
+    policy.observe({}, "s2");
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), {
+      _tag: "Enqueue",
+      request: { prompt: "filler 0", seconds: 9 },
+      tag: { _tag: "Filler", index: 0 },
+    });
+  });
+
+  // u, which follows filler 0, raised its fence with time to spare, and s1 refused it at 9 s, to
+  // be asked again at 10 s. x ends at 10,020: the fence comes down 250 ms before, and filler 0,
+  // which the air needs, goes then.
+  it("wakes as the clip on air falls to the readiness margin, where a fence comes down", () => {
+    const policy = drive({ config: protecting("air"), from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 }, 10);
+    const x = clip("x", undefined, 10);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    const follower = {
+      ...spec("u", 1, 1),
+      start: { _tag: "Asap" },
+      follows: { _tag: "Filler", index: 0 },
+    } as const;
+    policy.submit(follower, 3_000);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+    assert.strictEqual(policy.reply(failed("replied"), 9_000).wake, 9_770);
+    assert.deepStrictEqual(commands(policy.tick(9_769).actions), []);
+    assert.deepStrictEqual(enqueued(policy.tick(9_770).actions), ["filler"]);
+  });
+
+  // u follows a, which holds the build slot. x's rest outlasts u's 0.4 s build by the 1.5 s
+  // margin until 1.9 s before x ends at 7,996.3. Counted on from the time rather than back from
+  // that end, the instant came out an ulp apart when the plan looked halfway there.
+  it("names one wake for a follower's cover, whenever it looks", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 }, 10);
+    const x = clip("x", undefined, 7.986);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10.3);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit(spec("a"));
+    policy.reply({ _tag: "Done", clipId: "ca" });
+    policy.observe({ playing: x, building: [clip("ca", item("a"))] });
+    assert.strictEqual(policy.submit({ ...spec("u", 1, 1), follows: item("a") }, 40).wake, 6_096.3);
+    assert.strictEqual(policy.tick(3_068.15).wake, 6_096.3);
+  });
+
+  // x, a clip of its own, has ended with k Ready behind it, and f, which follows k, holds the
+  // build turn until k starts. p's enqueue reply was lost, so x2, which continues from p, waits
+  // ahead of f; it fits before s1's cap only until 34,010, and with a 1 s lead no replacement
+  // opens first. Nothing builds ahead of f after that either, filler included, until an input or
+  // the wake.
+  it("holds a follower's turn though a build ahead of it stops fitting before the cap", () => {
+    const policy = drive({ config: { ...protecting("air"), leadMs: 1_000 }, from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 60_000 }, 10);
+    const x = clip("x", undefined, 20);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit(spec("k"), 30);
+    policy.reply({ _tag: "Done", clipId: "ck" });
+    const ready = [clip("ck", item("k"))];
+    policy.observe({ playing: x, ready, continuable: ["ck"] });
+    policy.submit(spec("p"));
+    policy.submit({ ...spec("x2", 1, 15), continuity: true });
+    policy.submit({ ...spec("f", 1, 1), follows: item("k") });
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" });
+    policy.observe({ ready, continuable: ["ck"] });
+    policy.reply(failed("unknown"));
+    assert.strictEqual(policy.tick(1_000).wake, 59_010);
+    assert.deepStrictEqual(commands(policy.tick(34_011).actions), []);
   });
 });
 

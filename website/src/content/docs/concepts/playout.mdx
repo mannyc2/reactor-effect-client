@@ -133,7 +133,9 @@ and the Ready clips that will air after it, on the session on air and then on it
   `seconds` to ask for. Keep it pure. A request outside H3's limits fails the playout with
   `InvalidFiller`, since asking again would get the same request.
 - `lengths`: the lengths a filler clip may take, H3's request range by default. Before an `At`
-  item, filler tiles the gap in equal clips. H3 aligns each up to its frame grid, so the `At` item
+  item, filler tiles the gap in equal clips. Where a tile would air past a capped session's cap,
+  the playout asks for the longest clip that airs before it, if `lengths.min` fits.
+  H3 aligns each up to its frame grid, so the `At` item
   may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the
   `seconds` it asks `clip` for, so a callback that returns another length moves the tiling, and
   `place`'s `startsAt`, by the difference.

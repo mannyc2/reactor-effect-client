@@ -66,7 +66,12 @@ export type Start =
   | { readonly _tag: "Follow" }
   /** The next boundary, ahead of everything waiting in every lane. */
   | { readonly _tag: "Asap" }
-  /** Built ahead and held until `release(key)`, then as `Asap`. */
+  /**
+   * Held until `release(key)`, then as `Asap`. It is built ahead only while
+   * filler keeps the runway at its floor, and taken back to be built again
+   * if it would air next before then; otherwise it is built once released,
+   * as always on a playout without filler.
+   */
   | { readonly _tag: "Manual" }
   | {
       readonly _tag: "At";
@@ -93,16 +98,22 @@ export interface Window {
   readonly notBefore?: Duration.Input | undefined;
   readonly startBy?: Duration.Input | undefined;
   /**
-   * A firm item is dropped at `startBy`; a soft one may still air, recorded as late. A start
-   * already under way at that instant, a clip the provider holds armed for its seam or a `play` of
-   * it in flight, may still land, up to a command's round trip past it.
+   * A firm item is refused with `WouldMissDeadline` when the plan, at the
+   * median build rates, projects it to start no earlier than `startBy`:
+   * every clip queued to air ahead of it airs first, at its own length,
+   * built or not, and a boundary the next of them is not Ready for goes to
+   * whichever clip is, filler included. Admitted, it is dropped as `late`
+   * at `startBy`, or before it is sent once even its earliest start is past
+   * it. A start already under way at `startBy`, a clip the provider holds
+   * armed for its seam or a `play` of it in flight, may still land, up to a
+   * command's round trip past it. A soft one may still air, recorded as late.
    */
   readonly firm: boolean;
 }
 
 interface ClipSpec {
   readonly key: ItemKey;
-  /** `request.seconds` is the requested length; 5 seconds when absent. */
+  /** `request.seconds` is the requested length; the playout asks for 5 seconds without it. */
   readonly request: Request;
   readonly cues?: ReadonlyArray<Cue> | undefined;
   /**
@@ -650,11 +661,13 @@ export interface FillContext {
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
    * equal clips that tile the uncovered gap, none asking for less than its
-   * share; ahead of an item whose build it covers (`filler.protect`), as long
-   * as that takes; otherwise the shortest, which keeps boundaries, and so
-   * reactions, frequent. The playout plans with this length: the tiling
-   * before an `At` anchor and `place`'s `startsAt` count a filler clip not yet
-   * sent at it, so a request for another length moves them by the difference.
+   * share, or, where such a clip would air past a capped session's cap, the
+   * longest that airs before it; ahead of an item whose build it covers
+   * (`filler.protect`), as long as that takes; otherwise the shortest, which
+   * keeps boundaries, and so reactions, frequent. The playout plans with this
+   * length: the tiling before an `At` anchor and `place`'s `startsAt` count a
+   * filler clip not yet sent at it, so a request for another length moves them
+   * by the difference.
    */
   readonly seconds: number;
 }
@@ -670,7 +683,8 @@ export interface Options<R = never> {
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
         /**
          * Called once per clip, as it is first asked for; keep it pure. A request
-         * outside H3's documented limits fails the playout with `InvalidFiller`.
+         * without `seconds` asks for the context's `seconds`. A request outside
+         * H3's documented limits fails the playout with `InvalidFiller`.
          */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */

@@ -667,6 +667,18 @@ const playingRestOf = (value: Session | undefined, mono: number): number => {
   return end === undefined ? playing.seconds * 1000 : Math.max(0, end - mono);
 };
 
+/**
+ * When what is left of `value`'s playing clip, as `playingRestOf` counts it, falls to `ms`;
+ * undefined while it holds still. It counts back from the clip's end rather than on from the
+ * time, so every look before then names the same instant.
+ */
+const playingRestFallsTo = (value: Session | undefined, ms: number): number | undefined => {
+  const end = playingEndOf(value);
+  return end === undefined || value?.source?.playing?.clipId === value?.lastEnded?.clipId
+    ? undefined
+    : end - ms;
+};
+
 /** Whether `tag` is the clip `named`; a clip this playout did not enqueue is none. */
 const sameClip = (named: ClipTag, tag: ClipTag | undefined): boolean => {
   if (tag === undefined) return false;
@@ -776,6 +788,17 @@ const securedOf = (state: Pick<State, "items" | "sessions" | "air">, now: Now): 
 type Rank = readonly [number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
   a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
+
+/**
+ * What the projections taken in one look share while the plan holds still: each item's rank, its
+ * projection, and whether the plan keeps it to air or drops it as late.
+ */
+interface Memo {
+  readonly ranks: Map<Item, Rank>;
+  readonly projections: Map<Item, { readonly from: number; readonly after: number }>;
+  readonly kept: Map<Item, boolean>;
+}
+const emptyMemo = (): Memo => ({ ranks: new Map(), projections: new Map(), kept: new Map() });
 
 /** A group's answer from its parts': `withdrawn` if any was, else `already-started` if any started. */
 const combined = (outcomes: ReadonlyArray<WithdrawOutcome>): WithdrawOutcome => {
@@ -1125,16 +1148,39 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * The earliest a clip in `item`'s place could start, optimistically, as the time passes: at
    * `time` it is `Math.max(from, time + after)`. The end of the clip on air and the builds in
    * flight fix `from`; the air ahead and the builds it waits for add `after` to the time, as
-   * they do once that clip is over.
+   * they do once that clip is over. The air ahead is every clip the plan keeps queued to air
+   * before it on the session taking new work, built or not, and the first of those not built
+   * yet airs only once it is. `memo` holds what is known already of the items ahead.
    */
-  const projection = (item: Item): { readonly from: number; readonly after: number } => {
+  const project = (item: Item, memo: Memo): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
-    const rank = rankItem(item);
-    const aheadMs = waitingOf(target)
-      .filter(
-        (clip) => compareRank(rankClip(clip), rank) < 0 && itemOf(clip)?.withdraw === undefined,
-      )
+    const rank = rankOf(item, memo);
+    const readyMs = waitingOf(target)
+      .filter((clip) => {
+        const other = itemOf(clip);
+        return (
+          compareRank(other === undefined ? rankClip(clip) : rankOf(other, memo), rank) < 0 &&
+          other?.withdraw === undefined &&
+          (other === undefined || keeps(other, memo))
+        );
+      })
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
+    const unbuilt = [...items.values()].filter(
+      (other) =>
+        other.spec.key !== item.spec.key &&
+        (other.phase === "Accepted" ||
+          (other.phase === "Building" && other.sessionId === target?.id)) &&
+        airsItem(items, other, now) &&
+        // A replacement and what it replaces take one place, which airs once.
+        (other.replaces === undefined || !live(replacedOf(other))) &&
+        compareRank(rankOf(other, memo), rank) < 0 &&
+        keeps(other, memo),
+    );
+    const unbuiltMs = unbuilt.reduce(
+      (total, other) => total + airedLengthOf(state.samples, other.spec.seconds) * 1000,
+      0,
+    );
+    const aheadMs = readyMs + unbuiltMs;
     const air = session(state.air);
     const end = playingEndOf(air);
     const playable = {
@@ -1170,19 +1216,86 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       )
       .reduce((total, other) => total + buildMs(other.spec.seconds), 0);
     const waits = first + buildMs(item.spec.seconds);
-    return {
-      from: Math.max(playable.from, Math.max(...inFlight) + waits),
-      after: Math.max(playable.after, waits),
-    };
+    let from = Math.max(playable.from, Math.max(...inFlight) + waits);
+    let after = Math.max(playable.after, waits);
+    // The clips ahead still to build air once the first of them is Ready: one in flight as its
+    // build ends, else one sent once the builds in flight are done.
+    const building = unbuilt.filter((other) => other.phase === "Building");
+    if (building.length > 0) {
+      const ready = building.map(
+        (other) => (other.dispatchedAt ?? now.mono) + buildMs(other.spec.seconds),
+      );
+      from = Math.max(from, Math.min(...ready) + unbuiltMs);
+    } else if (unbuilt.length > 0) {
+      const shortest = Math.min(...unbuilt.map((other) => buildMs(other.spec.seconds)));
+      from = Math.max(from, Math.max(...inFlight) + shortest + unbuiltMs);
+      after = Math.max(after, shortest + unbuiltMs);
+    }
+    return { from, after };
+  };
+  /** `project`, as `memo` holds it. */
+  const projection = (
+    item: Item,
+    memo: Memo = emptyMemo(),
+  ): { readonly from: number; readonly after: number } => {
+    const known = memo.projections.get(item);
+    if (known !== undefined) return known;
+    const value = project(item, memo);
+    memo.projections.set(item, value);
+    return value;
   };
   /**
    * Whether a clip in `item`'s place could not start before `startBy`, as projected. Once
    * nothing holds it, the projection grows with the time: it misses from `startBy - after` on.
    */
-  const misses = (item: Item, startBy: number): boolean => {
-    const { from, after } = projection(item);
+  const misses = (item: Item, startBy: number, memo: Memo = emptyMemo()): boolean => {
+    const { from, after } = projection(item, memo);
     return Math.max(from, now.mono + after) >= startBy || now.mono >= startBy - after;
   };
+  /**
+   * Whether a forward run of the plan, taken only if needed, starts `item` before `startBy`: it
+   * airs it in time, or stopped short of both the item and `startBy`, and so cannot tell. Two are
+   * left to `misses`: an item in a lane that cuts, which airs once Ready rather than at a
+   * boundary, and the run projects no cut; and one that follows a clip, which `misses` puts behind
+   * everything queued, since until it is admitted nothing records whether that clip has aired.
+   */
+  const startsBefore = (item: Item, startBy: number, forwardRun: () => Run): boolean => {
+    if (cuts(item) || item.spec.follows !== undefined) return true;
+    const run = forwardRun();
+    if (run.gone.has(item)) return false;
+    const aired = run.aired.find((entry) => entry.clip.item === item);
+    if (aired !== undefined) return aired.start < startBy;
+    const last = run.aired.at(-1);
+    return last === undefined || last.start + last.clip.seconds * 1000 < startBy;
+  };
+  /** `item`'s rank, as `memo` holds it. */
+  const rankOf = (item: Item, memo: Memo): Rank => {
+    const known = memo.ranks.get(item);
+    if (known !== undefined) return known;
+    const rank = rankItem(item);
+    memo.ranks.set(item, rank);
+    return rank;
+  };
+  /**
+   * Whether the plan keeps `item` to air rather than drop it as late: past its firm `startBy`, or
+   * its `At` time's lateness, or not sent and projected to miss its `startBy`. The sweep drops
+   * what it does not keep, and a projection counts only what it keeps ahead. Only items ahead
+   * decide that, so `memo` gathers each once.
+   */
+  function keeps(item: Item, memo: Memo): boolean {
+    const known = memo.kept.get(item);
+    if (known !== undefined) return known;
+    const at = atMono(item);
+    const value = !(
+      (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
+      (at !== undefined &&
+        item.spec.start._tag === "At" &&
+        now.mono >= lateAt(at, item.spec.start.late)) ||
+      (lateWhenProjected(item) && misses(item, item.startBy, memo))
+    );
+    memo.kept.set(item, value);
+    return value;
+  }
   /** Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. */
   const lateWhenProjected = (item: Item): item is Item & { readonly startBy: number } =>
     item.phase === "Accepted" &&
@@ -1452,6 +1565,23 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         }
       }
     }
+    const deadlines = adds.flatMap((key) => {
+      const item = items.get(key)!;
+      return item.spec.window?.firm === true && item.startBy !== undefined ? [item.startBy] : [];
+    });
+    // A clip not Ready a margin before its boundary gives that boundary to the next one Ready,
+    // filler included, which only a forward run projects. It runs on until about a clip a second
+    // has aired up to the last deadline, so each item has aired or gone by then; it is taken once,
+    // for the first item the projection does not refuse.
+    let run: Run | undefined;
+    const forwardRun = (): Run =>
+      (run ??= forward(
+        undefined,
+        [...items.values()].filter(live).length +
+          Math.ceil((Math.max(...deadlines) - now.mono) / 1000) +
+          1,
+      ));
+    const memo = emptyMemo();
     for (const key of adds) {
       const item = items.get(key)!;
       if (
@@ -1464,7 +1594,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        misses(item, item.startBy)
+        (misses(item, item.startBy, memo) || !startsBefore(item, item.startBy, forwardRun))
       ) {
         items.clear();
         for (const [other, value] of saved.items) items.set(other, value);
@@ -2312,12 +2442,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
 
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
-  // is late from the instant its deadline falls due, where the wake is.
-  const boundaryLate = (item: Item): boolean => {
-    const at = atMono(item);
-    if (at === undefined || item.spec.start._tag !== "At") return false;
-    return now.mono >= lateAt(at, item.spec.start.late);
-  };
+  // is late from the instant its deadline falls due, where the wake is. Projections share what
+  // they know until a withdrawal changes what they rest on.
+  let projected = emptyMemo();
   for (const item of [...items.values()]) {
     if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
     // A play of its clip in flight starts it or is refused within the round trip, and the start of
@@ -2331,12 +2458,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         (played?.clipId === item.clipId && played.signature === signature(lane)))
     )
       continue;
-    if (
-      (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
-      boundaryLate(item)
-    )
-      withdraw(item.spec.key, "late");
-    else if (lateWhenProjected(item) && misses(item, item.startBy)) withdraw(item.spec.key, "late");
+    if (keeps(item, projected)) continue;
+    withdraw(item.spec.key, "late");
+    projected = emptyMemo();
   }
   // An item that follows a clip goes once that clip can no longer air right before it, or, not
   // sent yet, once it is projected unable to be Ready by that clip's end.
@@ -2664,12 +2788,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // Inside a boundary H3 holds the next clip armed, names it playing, and turning autoplay off
     // then leaves it unstarted: on air the fence goes up only while a clip seen to start plays with
     // more left than the readiness margin, so the command lands before it ends, or stays as it is.
+    // It stops at the instant the plan wakes for, whatever rounding gives there.
     const fenceable =
       value.id !== state.air ||
       value.autoplay === false ||
       (value.source?.playing !== undefined &&
         value.startSeen === value.source.playing.clipId &&
-        playingRestMs(value) > readinessMarginMs);
+        playingRestMs(value) > readinessMarginMs &&
+        now.mono < (playingRestFallsTo(value, readinessMarginMs) ?? Infinity));
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
@@ -2872,15 +2998,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       updateSession(value.id, { guardItem: undefined });
       released.add(value.id);
     }
-    for (const item of eligible(floorSeconds)) {
+    // A follower's fence goes up once a clip plays here with time to spare. While the next clip is
+    // about to start, nothing playing or the clip on air ending within the margin, nothing builds
+    // ahead of it. A clip of unknown length may play for a while: what else can air goes.
+    const starting =
+      playing === undefined ||
+      (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
+    const held = !fenceable && starting && readyOf(value).length > 0;
+    const candidates = eligible(floorSeconds);
+    for (const item of candidates) {
       const fenced = item.spec.follows === undefined || value.autoplay === false;
-      // A follower's fence goes up once a clip plays here with time to spare. While the next clip
-      // is about to start, nothing playing or the clip on air ending within the margin, nothing
-      // builds ahead of it. A clip of unknown length may play for a while: what else can air goes.
-      const starting =
-        playing === undefined ||
-        (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
-      if (!fenced && !fenceable && starting && readyOf(value).length > 0) return;
+      if (!fenced && held) return;
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;
@@ -2915,6 +3043,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         item.spec.key,
       );
     }
+    // Filler waits for a held follower too, though a build ahead of it ended the turn as it would
+    // air past the cap: a build stops fitting as the time passes, with nothing to wake the plan.
+    if (held && candidates.some((item) => item.spec.follows !== undefined)) return;
     const filler = config.filler;
     if (filler === undefined || !fillerFree()) return;
     const anchorGap = Math.max(
@@ -2930,8 +3061,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     state = { ...state, filler: { ...state.filler, refilling } };
     if (!refilling || (!below(targetSeconds) && room >= anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
-    if (!fits(target, fillerLength(seconds))) return;
-    sendFiller(filler, target, seconds, room);
+    if (fits(target, fillerLength(seconds))) return sendFiller(filler, target, seconds, room);
+    // The gap a clip tiles shrinks with the time, while what airs ahead of it may not: a tile too
+    // long to air before the cap would come to fit with nothing to wake the plan. A new clip asks
+    // instead for what airs before the cap, if the shortest the filler takes does.
+    if (state.filler.retries.length > 0 || !fits(target, filler.lengths.min)) return;
+    sendFiller(filler, target, Math.max(filler.lengths.min, longestFit(target)), room);
   }
   /**
    * `item`'s p95 build in seconds, at the continued rate if it continues a
@@ -3093,8 +3228,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     // Before three builds are measured its build may outlast any air ahead: it goes once the clip
     // it follows is Ready ahead of it, which airs first.
     if (estimates().build === undefined) return followedReady(item);
-    const slack = followSlackMs(item);
-    return slack !== undefined && slack > 0;
+    const spare = followSpareMs(item);
+    // It stops at the instant `followUncoveredAt` wakes for, whatever rounding gives there.
+    return (
+      spare !== undefined &&
+      playingRestMs(session(state.air)) + spare > 0 &&
+      now.mono < (followUncoveredAt(item) ?? Infinity)
+    );
   }
   /** Whether the clip `item` follows is Ready and queued to air where it would air before it. */
   function followedReady(item: Item): boolean {
@@ -3109,9 +3249,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /**
    * By how much the air ahead of `item`, as `followCovered` counts it, outlasts its build and the
-   * margin; it falls as the clip on air plays. Undefined with no session taking new work.
+   * margin, before what is left of the clip on air adds to it. Undefined with no session taking
+   * new work.
    */
-  function followSlackMs(item: Item): number | undefined {
+  function followSpareMs(item: Item): number | undefined {
     const target = preferred();
     if (target === undefined) return undefined;
     const air = session(state.air);
@@ -3123,18 +3264,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           return other === undefined || queuedToAir(items, other);
         })
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    const aheadMs =
-      playingRestMs(air) + queuedMs(air) + (target.id === air?.id ? 0 : queuedMs(target));
+    const aheadMs = queuedMs(air) + (target.id === air?.id ? 0 : queuedMs(target));
     const buildMs = item.spec.seconds * (estimates().build?.median ?? 0) * 1000;
     return aheadMs - buildMs - exposureMarginMs;
   }
   /** When `followCovered` stops holding for `item` as the clip on air plays; undefined if not. */
   function followUncoveredAt(item: Item): number | undefined {
     if (estimates().build === undefined) return undefined;
-    const slack = followSlackMs(item);
-    const end = playingEndOf(session(state.air));
-    if (slack === undefined || slack <= 0 || end === undefined) return undefined;
-    return now.mono + slack < end ? now.mono + slack : undefined;
+    const spare = followSpareMs(item);
+    return spare === undefined || spare > 0
+      ? undefined
+      : playingRestFallsTo(session(state.air), -spare);
   }
   function coveredAt(item: Item): number | undefined {
     const at = atMono(item);
@@ -3200,10 +3340,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    */
   function fits(target: Session, seconds: number): boolean {
     if (target.lifetimeMs === Infinity) return true;
+    const lengthMs = seconds * estimates().length * 1000;
+    if (lengthMs > target.lifetimeMs - lookaheadMarginSeconds * 1000) return true;
+    return airedAheadAt(target) + lengthMs <= capOf(target);
+  }
+  /** The most seconds a clip built on `target` now may ask for and still air before its cap. */
+  function longestFit(target: Session): number {
+    return (capOf(target) - airedAheadAt(target)) / (estimates().length * 1000);
+  }
+  /** When a clip built on `target` must have aired by: its cap, less the margin. */
+  function capOf(target: Session): number {
+    return target.openedAt + target.lifetimeMs - lookaheadMarginSeconds * 1000;
+  }
+  /** When all that airs ahead of a clip built on `target` now has aired. */
+  function airedAheadAt(target: Session): number {
     const ratio = estimates().length;
-    const lengthMs = seconds * ratio * 1000;
-    const marginMs = lookaheadMarginSeconds * 1000;
-    if (lengthMs > target.lifetimeMs - marginMs) return true;
     const queuedMs = (value: Session): number =>
       waitingOf(value)
         .filter(airs)
@@ -3223,10 +3374,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (target.source?.building ?? [])
         .filter((clip) => clip.tag?._tag === "Filler")
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    return (
-      startsAt + queuedMs(target) + buildingMs + lengthMs <=
-      target.openedAt + target.lifetimeMs - marginMs
-    );
+    return startsAt + queuedMs(target) + buildingMs;
   }
   /** The runway filler refills below; protecting the air, it covers the next item's build too. */
   function fillerFloor(): number {
@@ -4298,6 +4446,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const later = (at: number | undefined) => {
       if (at !== undefined && at > now.mono && Number.isFinite(at)) times.push(at);
     };
+    const memo = emptyMemo();
     for (const item of items.values()) {
       const at = atMono(item);
       // A settled item's clip may still be listed Ready until a read shows it gone: its time
@@ -4318,11 +4467,18 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         for (const [index, cue] of item.spec.cues.entries())
           if (!item.fired.includes(index)) later(cueAt(item, cue));
       if (item.phase === "Accepted") later(coveredAt(item));
-      if (lateWhenProjected(item)) later(item.startBy - projection(item).after);
+      if (lateWhenProjected(item)) later(item.startBy - projection(item, memo).after);
       later(projectedLate(item)?.due);
       if (item.phase === "Accepted" && heldForFollows(item)) later(followUncoveredAt(item));
     }
+    const following = [...items.values()].some(
+      (item) => item.spec.follows !== undefined && live(item) && item.phase !== "Started",
+    );
     for (const value of state.sessions) {
+      // On air a fence goes up only while the clip playing has more than the readiness margin
+      // left: as it falls there, a follower's guard stops holding autoplay off.
+      if (following && value.id === state.air && value.autoplay !== false)
+        later(playingRestFallsTo(value, readinessMarginMs));
       for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);
