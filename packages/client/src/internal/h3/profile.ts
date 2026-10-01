@@ -74,7 +74,10 @@ export interface ModelProfile {
   /** Requested lengths the provider accepts before aligning them up to the grid. */
   readonly requestSeconds: { readonly min: number; readonly max: number };
   readonly prompt: {
-    /** A character ceiling for a caller's own checks; the SDK enforces no character bound. */
+    /**
+     * Not enforced, and no safe check: a prompt within it can still exceed `maxTokens`. Compare
+     * `estimateTokens` with `maxTokens` instead, or rely on the clip failing at build.
+     */
     readonly maxChars: number;
     /** The provider's text budget; its tokenizer, not this estimate, is authoritative. */
     readonly maxTokens: number;
@@ -126,7 +129,8 @@ export const h3ReferenceTurboRealtime: ModelProfile = {
   requestSeconds,
   // H3 documents no character limit. Its text budget is about 2,000 tokens, roughly 8,000
   // characters of English prose, and `enqueue` accepts a longer prompt whose clip then fails at
-  // build. Nothing enforces maxChars: a request's only local bound is 1 MiB of UTF-8.
+  // build. Nothing enforces maxChars, which is above that budget and kept for compatibility: a
+  // request's only local bound is 1 MiB of UTF-8.
   prompt: { maxChars: 12_000, maxTokens: 2_000, charsPerTokenEstimate: 3.5 },
   references: {
     min: 0,

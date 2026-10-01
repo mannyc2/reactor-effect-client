@@ -43,9 +43,11 @@ export interface OperationFacts {
  * provider retires before evidence decides it. If the provider fails for good
  * first, as it does once its session ends (`TerminalSession`, `Moderated`) or
  * closes, what evidence did not decide fails with the provider's `failure`.
- * Every fact fails with the enqueue's own failure when that failure was
- * definite. Evidence from a later transport generation of the same session
- * still resolves the operation.
+ * A session with `reconnect: false` never reads that Reactor ended it, so
+ * there only a moderation verdict or a close ends the wait before the provider
+ * does. Every fact fails with the enqueue's own failure when that failure was
+ * definite, unless the provider failed first. Evidence from a later transport
+ * generation of the same session still resolves the operation.
  */
 export interface ClipOperation {
   readonly submissionId: string;
