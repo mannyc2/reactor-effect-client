@@ -20,6 +20,11 @@ import { PeerFactory } from "./Peer.js";
 import { AcquisitionFailure, isReactorFailure, ReactorError } from "./ReactorError.js";
 import type { CloseReport, Session } from "./Session.js";
 
+/**
+ * Each deadline is a `Duration.Input`, a bare number being milliseconds, that is positive and at
+ * most 10 minutes; `heartbeatInterval` may also be `"Infinity"`. Any other value fails `make`, and
+ * so the layer, with `InvalidInput`, not submitted.
+ */
 export interface Options {
   /** How long a command or control request waits for its reply; 10 seconds by default. */
   readonly replyTimeout?: Duration.Input | undefined;
@@ -164,8 +169,11 @@ const bounded = (
   const value = Duration.fromInput(input ?? fallback);
   if (value._tag === "None") return Effect.fail(invalid(`${name} is not a duration`));
   const duration = value.value;
-  if (!Duration.isFinite(duration))
-    return infinite ? Effect.succeed(duration) : Effect.fail(invalid(`${name} must be finite`));
+  if (!Duration.isFinite(duration)) {
+    if (!infinite) return Effect.fail(invalid(`${name} must be finite`));
+    if (Duration.isNegative(duration)) return Effect.fail(invalid(`${name} must be positive`));
+    return Effect.succeed(duration);
+  }
   if (!Duration.isPositive(duration) || Duration.isGreaterThan(duration, Duration.minutes(10)))
     return Effect.fail(invalid(`${name} must be positive and at most 10 minutes`));
   return Effect.succeed(duration);

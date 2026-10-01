@@ -133,7 +133,9 @@ and the Ready clips that will air after it, on the session on air and then on it
   `InvalidFiller`, since asking again would get the same request.
 - `lengths`: the lengths a filler clip may take, H3's request range by default. Before an `At`
   item, filler tiles the gap in equal clips. H3 aligns each up to its frame grid, so the `At` item
-  may air up to 0.7 s late for each tile.
+  may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the
+  `seconds` it asks `clip` for, so a callback that returns another length moves the tiling, and
+  `place`'s `startsAt`, by the difference.
 - `protect`: what goes first when an item's build would outlast the air secured. With `"air"`, the
   default, once three builds are measured, such an item waits for one filler clip that builds
   sooner and covers the rest. An item with a time to meet (an `At` start, a `startBy`, an `Asap`
@@ -155,7 +157,8 @@ An item's `start` says when it may air. Only `Follow` keeps its lane's order.
 duration, or `drop`. A `window` adds `notBefore` and `startBy`, measured from submission on the
 monotonic clock. A `firm` item is dropped at `startBy` with reason `late`, and refused up front
 with `WouldMissDeadline` when the plan cannot make it; a soft one may still air, with
-`lateByMillis` on its start.
+`lateByMillis` on its start. A start already under way at a deadline, a clip H3 holds armed for
+its seam or a `play` of it in flight, may still land, up to a command's round trip past it.
 
 ```ts
 import { Clock, Effect } from "effect";
@@ -286,8 +289,9 @@ export const correct = Effect.fn("correct")(function* (
 });
 ```
 
-A batch holds everything it adds until all of it is Ready, and a replacement builds ahead of
-every other item waiting in its lane except an `Asap` one. Send an urgent insert alone, and a
+A batch holds what it adds behind the clips queued until all of it is Ready, though with nothing
+else to air H3 may start one first, and a replacement builds ahead of every other item waiting in
+its lane except an `Asap` one. Send an urgent insert alone, and a
 replacement meant to air after it as a second edit once the insert is `Building`.
 
 In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
@@ -345,6 +349,16 @@ not enforced, since a clip submitted after the call may come between. A clip not
 counts at the length the last clip that asked for as much aired at, so `startsAt` may be off by
 up to 0.7 s for each clip ahead at a length not asked for before. A `follows` clip gets no filler
 cover, and a cutting lane refuses it.
+
+While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
+on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
+on a session still open, when that clip ends, fails on air or is lost on air with its session, is
+dropped as `displaced`; a planned switch keeps it. While it waits, its session starts each clip
+with a provider command, a round trip after the boundary that `startsAt` does not project, so a
+command whose outcome is unknown can hold the air dark there until H3's reply deadline. A follower
+of an item in a pending batch may be built and then dropped before the batch commits. `place`
+answers a boundary only with a clip projected Ready a readiness margin and one provider command
+before it, and on a replacement only if it airs there before that session's cap.
 
 ## Renewal across sessions
 

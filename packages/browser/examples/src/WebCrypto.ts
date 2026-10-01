@@ -2,9 +2,9 @@ import { Crypto, Effect, Layer, PlatformError } from "effect";
 
 /**
  * Effect's `Crypto` service over Web Crypto, which the client needs for
- * request identities. The pinned Effect stack has no browser platform layer
- * that provides it, so the page builds one; secure contexts all have
- * `crypto.getRandomValues` and `crypto.subtle`.
+ * request identities. `@effect/platform-browser`'s `BrowserCrypto.layer`
+ * provides one too; the page builds its own to do without that dependency.
+ * Secure contexts all have `crypto.getRandomValues` and `crypto.subtle`.
  */
 export const WebCrypto = Layer.sync(Crypto.Crypto, () =>
   Crypto.make({

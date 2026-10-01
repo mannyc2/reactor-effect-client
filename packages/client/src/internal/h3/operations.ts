@@ -31,7 +31,7 @@ export interface OperationFacts {
   readonly generated?: ClipFact;
   readonly started?: ClipFact;
   readonly ended?: ClipFact;
-  /** The provider retired before evidence decided the rest. */
+  /** The provider retired, or failed for good, before evidence decided the rest. */
   readonly indeterminate: boolean;
 }
 
@@ -40,9 +40,14 @@ export interface OperationFacts {
  * provider's own evidence, and a phase only once the acceptance is decided. A
  * phase completes when it or a later one is observed, fails with `ClipEnded`
  * when the clip failed or was popped first, and fails `Indeterminate` if the
- * provider retires before evidence decides it. Every fact fails with the
- * enqueue's own failure when that failure was definite. Evidence from a later
- * transport generation of the same session still resolves the operation.
+ * provider retires before evidence decides it. If the provider fails for good
+ * first, as it does once its session ends (`TerminalSession`, `Moderated`) or
+ * closes, what evidence did not decide fails with the provider's `failure`.
+ * A session with `reconnect: false` never reads that Reactor ended it, so
+ * there only a moderation verdict or a close ends the wait before the provider
+ * does. Every fact fails with the enqueue's own failure when that failure was
+ * definite, unless the provider failed first. Evidence from a later transport
+ * generation of the same session still resolves the operation.
  */
 export interface ClipOperation {
   readonly submissionId: string;
@@ -380,25 +385,23 @@ export const observe = ({
   }
 };
 
-/** The provider retired: what evidence did not decide is `Indeterminate`. */
-export const retire = (table: Table): Step => {
-  const indeterminate = ReactorError.fromCode(
-    "Indeterminate",
-    "H3 provider retired before the clip's evidence",
-    { operation: "clip operation" },
-  );
+/**
+ * No more evidence can come: what it did not decide fails with `error`. A retiring provider also
+ * lets go of the operations nobody holds.
+ */
+const strand = (table: Table, error: ReactorError, retiring: boolean): Step => {
   let next = table;
   const effects: Array<Effect.Effect<void>> = [];
   for (const operation of table.operations.values()) {
     const { waiters } = operation;
     effects.push(
-      fail(waiters.accepted, indeterminate),
-      fail(waiters.generated, indeterminate),
-      fail(waiters.started, indeterminate),
-      fail(waiters.finished, indeterminate),
+      fail(waiters.accepted, error),
+      fail(waiters.generated, error),
+      fail(waiters.started, error),
+      fail(waiters.finished, error),
     );
     next =
-      operation.holders === 0
+      retiring && operation.holders === 0
         ? remove(next, operation.identity.id)
         : put(next, {
             ...operation,
@@ -407,6 +410,28 @@ export const retire = (table: Table): Step => {
   }
   return [next, effects];
 };
+
+/**
+ * The provider failed for good, so it reads no more evidence: what evidence did not decide fails
+ * with the provider's failure.
+ */
+export const failUndecided = ({
+  table,
+  error,
+}: {
+  readonly table: Table;
+  readonly error: ReactorError;
+}): Step => strand(table, error, false);
+
+/** The provider retired: what evidence did not decide is `Indeterminate`. */
+export const retire = (table: Table): Step =>
+  strand(
+    table,
+    ReactorError.fromCode("Indeterminate", "H3 provider retired before the clip's evidence", {
+      operation: "clip operation",
+    }),
+    true,
+  );
 
 /** A holder of an operation; releasing the last holder acknowledges it and frees its slot. */
 export const hold = ({

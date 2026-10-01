@@ -110,11 +110,15 @@ export type CommandResult =
 
 /**
  * Whether a command was refused unsent because its session was not in a state
- * to take it, as when its connection drops before its source can say so. Only a
- * change in what the session reports can mend that, so it waits for one.
+ * to take it, as when its connection drops, or Reactor or its moderation ends
+ * the session, before its source can say so. Only a change in what the session
+ * reports can mend that, so it waits for one.
  */
 const unready = (cause: CommandFailure): boolean =>
-  cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState";
+  cause.context.outcome === "not-submitted" &&
+  (cause.reason._tag === "InvalidState" ||
+    cause.reason._tag === "TerminalSession" ||
+    cause.reason._tag === "Moderated");
 
 /** Whether a command that failed may have taken effect unseen. */
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
@@ -324,8 +328,21 @@ interface Session {
   readonly autoplayRetry: { readonly enabled: boolean; readonly at: number } | undefined;
   /** A selected follower fences autoplay before its enqueue is sent. */
   readonly guardItem?: ItemKey | undefined;
-  /** A failed explicit start is retried only after its queues change or a second passes. */
+  /**
+   * The clip whose start a `Started` event last reported here. A state read alone may name a clip
+   * H3 still holds armed through its seam.
+   */
+  readonly startSeen?: string | undefined;
+  /**
+   * An explicit start goes again only after its queues change or a second passes: one that
+   * failed, or one that succeeded while its start is not seen yet.
+   */
   readonly playRetry?: { readonly signature: string; readonly at: number } | undefined;
+  /**
+   * The clip of the last play that succeeded, and its queues then: until they change, its start is
+   * on its way, and the clip is not withdrawn as late.
+   */
+  readonly played?: { readonly clipId: string; readonly signature: string } | undefined;
   readonly retiring: boolean;
   /**
    * The clip that last left the air here, and when on the monotonic clock. Its source may go on
@@ -539,6 +556,12 @@ const lookaheadMarginSeconds = 1;
  * flight on the session holds the move up to 0.1 s more.
  */
 const readinessMarginMs = 250;
+/**
+ * One command and the state read after it, which `place` leaves room for beyond the readiness
+ * margin: a command already queued when the build slot frees, such as the move a clip's Ready asks
+ * for, goes before a follower's enqueue. They take 0.1 to 0.2 s on hosted H3.
+ */
+const commandMs = 200;
 /** A clip's end to the next one's start: hosted median 36 ms, n = 44. */
 const seamMs = 40;
 /** The key the clip `place` asks about goes by in a forward run; no item's. */
@@ -728,6 +751,15 @@ const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): 
 };
 
 /**
+ * A session's Ready clips but the one it plays. H3 reports the clip it holds armed through its
+ * seam as playing, and may still list it Ready: counted in both, its length would count twice.
+ */
+const waitingOf = (value: Session | undefined): ReadonlyArray<SourceClip> => {
+  const playing = value?.source?.playing?.clipId;
+  return (value?.source?.ready ?? []).filter((clip) => clip.clipId !== playing);
+};
+
+/**
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
  * air from the session on air and from its replacement once that takes over.
  */
@@ -735,7 +767,7 @@ const securedOf = (state: Pick<State, "items" | "sessions" | "air">, now: Now): 
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
   const ready = (value: Session | undefined): number =>
-    (value?.source?.ready ?? [])
+    waitingOf(value)
       .filter((clip) => airsOf(state.items, clip, now))
       .reduce((total, clip) => total + clip.seconds, 0);
   return playingRestOf(air, now.mono) / 1000 + ready(air) + ready(replacement);
@@ -1069,7 +1101,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (target === undefined) return { end: -Infinity, seconds: 0 };
     const onAir = target.id === state.air;
     const end = onAir ? playingEndOf(target) : undefined;
-    const ready = readyOf(target)
+    const ready = waitingOf(target)
       .filter(airs)
       .reduce((total, clip) => total + clip.seconds, 0);
     return end === undefined
@@ -1098,7 +1130,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   const projection = (item: Item): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankItem(item);
-    const aheadMs = (target === undefined ? [] : readyOf(target))
+    const aheadMs = waitingOf(target)
       .filter(
         (clip) => compareRank(rankClip(clip), rank) < 0 && itemOf(clip)?.withdraw === undefined,
       )
@@ -1569,20 +1601,26 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     updateSession(sessionId, {
       fillers: new Map([...(session(sessionId)?.fillers ?? [])].filter(([id]) => id !== clipId)),
     });
-  const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
-    const { clip } = event;
-    // A follower not Ready at this boundary has missed the place it was written for. Keeping
-    // autoplay fenced lets its removal finish even when its build completes during the command.
+  /**
+   * A follower not Ready as the clip it follows leaves the air has missed the place it was written
+   * for. Keeping autoplay fenced lets its removal finish even when its build completes during the
+   * command.
+   */
+  const missed = (tag: ClipTag | undefined): void => {
     for (const item of [...items.values()])
       if (
         item.spec.follows !== undefined &&
-        sameClip(item.spec.follows, clip.tag) &&
+        sameClip(item.spec.follows, tag) &&
         live(item) &&
         item.phase !== "Ready" &&
         item.phase !== "Started" &&
         item.withdraw === undefined
       )
         withdraw(item.spec.key, "displaced");
+  };
+  const ended = (sessionId: string, event: Extract<SourceEvent, { _tag: "Ended" }>): void => {
+    const { clip } = event;
+    missed(clip.tag);
     updateSession(sessionId, {
       lastEnded: { clipId: clip.clipId, at: now.mono },
       ...(session(sessionId)?.playing?.clipId === clip.clipId ? { playing: undefined } : {}),
@@ -1672,11 +1710,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const { clip } = event;
     // A clip that fails on air leaves it as an ended one does, and the switch's grace counts from now.
     const onAir = session(sessionId)?.playing?.clipId === clip.clipId;
-    if (onAir)
+    if (onAir) {
+      missed(clip.tag);
       updateSession(sessionId, {
         lastEnded: { clipId: clip.clipId, at: now.mono },
         playing: undefined,
       });
+    }
     if (clip.tag?._tag === "Filler") {
       if (onAir)
         emit({
@@ -1838,6 +1878,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const lost = session(sessionId);
     if (lost === undefined) return;
     actions.push({ _tag: "Close", sessionId });
+    // Lost unplanned, the clip on air leaves the air with its session. What follows that clip starts
+    // right after it only if Ready on another session: carried, it would air seconds later.
+    const left =
+      !planned && state.lastOnAir?.sessionId === sessionId ? state.lastOnAir.tag : undefined;
     let carried = 0;
     for (const item of items.values()) {
       if (item.sessionId !== sessionId || item.phase === "Settled") continue;
@@ -1846,6 +1890,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       else if (item.phase === "Unknown") settle(item.spec.key, { _tag: "Unknown", terminal: true });
       else if (item.withdraw !== undefined)
         settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
+      else if (item.spec.follows !== undefined && sameClip(item.spec.follows, left))
+        settle(item.spec.key, { _tag: "Dropped", reason: "displaced" });
       else if (!planned && item.phase === "Building" && item.unbuiltLosses + 1 >= 2)
         settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Lost", sessionId } });
       else {
@@ -1863,6 +1909,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         asRun(item.spec.key, { _tag: "Accepted", carried: { sessionId } });
       }
     }
+    missed(left);
     // A filler enqueue in flight there made no clip that can still air: it is asked for again.
     const lostCommand = lost.busy?.command;
     if (lostCommand?._tag === "Enqueue" && lostCommand.tag._tag === "Filler")
@@ -2061,7 +2108,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             });
           return cutFailed(sessionId);
         }
-        updateSession(sessionId, { playRetry: undefined });
+        // Its clip's start reaches the plan after this reply: until the queues change, nothing is
+        // played again.
+        updateSession(sessionId, {
+          playRetry: { signature: signature(session(sessionId)), at: now.mono + retryDelayMs },
+          played: { clipId: command.clipId, signature: signature(session(sessionId)) },
+        });
         if (state.cutting?.sessionId === sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
@@ -2178,6 +2230,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           break;
         case "Started":
           started(input.sessionId, event.clip);
+          updateSession(input.sessionId, { startSeen: event.clip.clipId });
           break;
         case "Ended":
           ended(input.sessionId, event);
@@ -2267,6 +2320,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
   for (const item of [...items.values()]) {
     if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
+    // A play of its clip in flight starts it or is refused within the round trip, and the start of
+    // one that succeeded comes before its queues change: the next look decides then.
+    const lane = session(item.sessionId);
+    const busy = lane?.busy?.command;
+    const played = lane?.played;
+    if (
+      item.clipId !== undefined &&
+      ((busy?._tag === "Play" && busy.clipId === item.clipId) ||
+        (played?.clipId === item.clipId && played.signature === signature(lane)))
+    )
+      continue;
     if (
       (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
       boundaryLate(item)
@@ -2464,9 +2528,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
   }
 
-  // Each session's commands go one at a time on a lane of its own.
+  // Each session's commands go one at a time on a lane of its own. A session whose follower did
+  // not go on to its build once its fence was up looks again, so the fence comes down now.
+  const released = new Set<string>();
   endCut();
-  for (const value of state.sessions) decideCommand(value.id);
+  for (const value of state.sessions) {
+    decideCommand(value.id);
+    if (released.has(value.id) && session(value.id)?.busy === undefined) decideCommand(value.id);
+  }
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
@@ -2565,6 +2634,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (selected?.phase !== "Accepted" || selected.spec.follows === undefined)
     )
       updateSession(value.id, { guardItem: undefined });
+    // The clip on air here, or with none, the one that left it last: a follower Ready right behind
+    // it is next by every rule, and autoplay starts it.
+    const lastHere =
+      value.source?.playing?.tag ??
+      (state.lastOnAir?.sessionId === value.id ? state.lastOnAir.tag : undefined);
     const guarding =
       live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined
         ? selected
@@ -2581,13 +2655,23 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
                 // Fence before moving another clip ahead: it may start and end while the Move
                 // reply is pending, leaving this clip after a different predecessor.
                 desired[0]?.clipId === item.clipId &&
-                sameClip(item.spec.follows, value.source?.playing?.tag)
+                sameClip(item.spec.follows, lastHere)
               ),
           );
     const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
-    const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id && !guarded;
+    // Inside a boundary H3 holds the next clip armed, names it playing, and turning autoplay off
+    // then leaves it unstarted: on air the fence goes up only while a clip seen to start plays with
+    // more left than the readiness margin, so the command lands before it ends, or stays as it is.
+    const fenceable =
+      value.id !== state.air ||
+      value.autoplay === false ||
+      (value.source?.playing !== undefined &&
+        value.startSeen === value.source.playing.clipId &&
+        playingRestMs(value) > readinessMarginMs);
+    const autoplay =
+      value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
@@ -2737,19 +2821,29 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
-    // can make it next before its removal lands. Start only the Ready head the plan can honour.
+    // can make it next before its removal lands. With autoplay off, start only the Ready head the
+    // plan can honour; with it still on, the provider starts the head itself.
     const head = actual[0];
     const headItem = itemOf(head);
     const retry = value.playRetry;
+    // A clip reported playing while it waited out its seam, then held there as autoplay went off,
+    // still heads the queue though it never started: it is played as a Ready one is.
+    const stranded =
+      headItem?.phase === "Started" &&
+      headItem.sessionId === value.id &&
+      headItem.clipId === head?.clipId;
     if (
       guarded &&
+      value.autoplay === false &&
       value.id === state.air &&
       value.source?.available === true &&
       value.source.playing === undefined &&
       state.cutting === undefined &&
       head !== undefined &&
       airs(head) &&
-      (headItem === undefined || (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
+      (headItem === undefined ||
+        stranded ||
+        (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
       (retry === undefined || retry.signature !== signature(value) || now.mono >= retry.at)
     )
       return queueCommand(value.id, { _tag: "Play", clipId: head.clipId }, headItem?.spec.key);
@@ -2772,7 +2866,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const room = runway();
     const floorSeconds = fillerFloor();
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
+    // A fence raised for a follower is up: its build goes now, or the follower no longer holds the
+    // fence, nor waits out its projected lateness, as one about to be sent.
+    if (value.guardItem !== undefined && value.autoplay === false) {
+      updateSession(value.id, { guardItem: undefined });
+      released.add(value.id);
+    }
     for (const item of eligible(floorSeconds)) {
+      const fenced = item.spec.follows === undefined || value.autoplay === false;
+      // A follower's fence goes up once a clip plays here with time to spare. While the next clip
+      // is about to start, nothing playing or the clip on air ending within the margin, nothing
+      // builds ahead of it. A clip of unknown length may play for a while: what else can air goes.
+      const starting =
+        playing === undefined ||
+        (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
+      if (!fenced && !fenceable && starting && readyOf(value).length > 0) return;
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;
@@ -2781,7 +2889,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         : { _tag: "from" as const, clipId: undefined, follows: undefined };
       if (from._tag === "wait") continue;
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
-      if (item.spec.follows !== undefined && value.autoplay !== false) {
+      if (!fenced) {
+        // With nothing to start next, what else can air goes first.
+        if (!fenceable) continue;
         updateSession(value.id, { guardItem: item.spec.key });
         return queueCommand(value.id, { _tag: "Autoplay", enabled: false }, item.spec.key);
       }
@@ -3007,7 +3117,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const air = session(state.air);
     // An `At` clip kept Ready airs at its time, which the air ahead of it reaches.
     const queuedMs = (value: Session | undefined): number =>
-      (value === undefined ? [] : readyOf(value))
+      waitingOf(value)
         .filter((clip) => {
           const other = itemOf(clip);
           return other === undefined || queuedToAir(items, other);
@@ -3049,9 +3159,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /** Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays. */
   function readyAheadMs(value: Session, index: number): number {
+    const waiting = waitingOf(value);
     return readyOf(value)
       .slice(0, index)
-      .filter(airs)
+      .filter((other) => waiting.includes(other) && airs(other))
       .reduce((total, other) => total + other.seconds * 1000, 0);
   }
   /**
@@ -3094,7 +3205,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const marginMs = lookaheadMarginSeconds * 1000;
     if (lengthMs > target.lifetimeMs - marginMs) return true;
     const queuedMs = (value: Session): number =>
-      readyOf(value)
+      waitingOf(value)
         .filter(airs)
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const onAir = session(state.air);
@@ -3202,7 +3313,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const playing = onAir !== undefined && sameClip(follows, onAir.tag);
-    const queued = readyOf(target)
+    const queued = waitingOf(target)
       .filter(airs)
       .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     const index = playing ? -1 : queued.findIndex((clip) => sameClip(follows, clip.tag));
@@ -3301,7 +3412,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       item.spec.follows === undefined ||
       item.phase !== "Accepted" ||
       item.dispatchedAt !== undefined ||
-      perSecond === undefined
+      perSecond === undefined ||
+      // Its enqueue goes out once the fence raised for it is up.
+      state.sessions.some((value) => value.guardItem === item.spec.key)
     )
       return undefined;
     const end = followsEnd(item);
@@ -3358,7 +3471,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (rate === undefined) return { clipId: predecessor };
     const readyAt = now.mono + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000;
     const onAir = target.id === state.air ? target.source?.playing : undefined;
-    const queued = readyOf(target)
+    const queued = waitingOf(target)
       .filter(airs)
       .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     const after =
@@ -3444,7 +3557,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       // wait for. With nothing on air, the first clip Ready airs at once.
       const boundary = before === undefined ? Infinity : before.start + before.clip.seconds * 1000;
       const readyAt = run.probe.readyAt ?? now.mono;
-      if (readyAt + readinessMarginMs > boundary) continue;
+      if (readyAt + readinessMarginMs + commandMs > boundary) continue;
       const start = run.aired[index]?.start ?? now.mono;
       const next = run.aired[index + 1]?.clip;
       const built =
@@ -3928,19 +4041,28 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         probeContinued = decision;
       }
     };
-    /** As `fits`: what the session on air builds must finish airing before its cap. */
+    /**
+     * As `fits`: what the session taking new work builds must finish airing before its cap, after
+     * what airs ahead of it there and, on the replacement, what the session on air has left. One
+     * not open yet is taken to open at `opensAt` with the lifetime of the session on air.
+     */
     const fitsAt = (seconds: number, time: number): boolean => {
-      if (targetId !== air.id || air.lifetimeMs === Infinity) return true;
+      const lifetimeMs = targetId === air.id ? air.lifetimeMs : (replacement ?? air).lifetimeMs;
+      const openedAt =
+        targetId === air.id ? air.openedAt : (replacement?.openedAt ?? opensAt ?? now.mono);
+      if (lifetimeMs === Infinity) return true;
       const lengthMs = seconds * ratio * 1000;
       const marginMs = lookaheadMarginSeconds * 1000;
-      if (lengthMs > air.lifetimeMs - marginMs) return true;
-      const startsAt = onAir === air.id && current ? Math.max(t, time) : time;
-      const queuedMs = pool
-        .filter(
-          (clip) => clip.sessionId === air.id && (clip.item === undefined || !gone.has(clip.item)),
-        )
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
-      return startsAt + queuedMs + lengthMs <= air.openedAt + air.lifetimeMs - marginMs;
+      if (lengthMs > lifetimeMs - marginMs) return true;
+      const queuedMs = (id: string): number =>
+        pool
+          .filter(
+            (clip) => clip.sessionId === id && (clip.item === undefined || !gone.has(clip.item)),
+          )
+          .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      const rest = current ? Math.max(t, time) : time;
+      const startsAt = onAir === targetId ? rest : rest + queuedMs(onAir);
+      return startsAt + queuedMs(targetId) + lengthMs <= openedAt + lifetimeMs - marginMs;
     };
     // As the plan refills below the floor, up to its target, or to tile the gap before an `At` anchor.
     const refill = (time: number): boolean => {

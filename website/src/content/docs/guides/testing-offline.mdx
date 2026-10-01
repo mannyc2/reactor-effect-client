@@ -251,8 +251,8 @@ A test that never reads media can arm `{ _tag: "Video", video: "absent" }` and
   Vitest's timeout.
 - **Assert on fixed timing.** `Timing.hosted` and `Timing.random` draw from ranges; a scenario that
   depends on a delay names it in `Timing.fixed`.
-- **Today's rate.** `creditsPerSecond` defaults to 125, the rate Reactor's pricing stated during the
-  paid runs. Pass 350 for the rate published on 2026-09-30.
+- **Today's rate.** `creditsPerSecond` defaults to 350, H3's rate on Reactor's pricing endpoint on
+  2026-09-30, so a simulated bill matches what a paid session would cost today.
 - **The account's limits apply.** A test that opens more than five sessions at once, or creates
   them faster than ten a minute of virtual time (three back to back), gets `429`, as it would on
   Reactor.
