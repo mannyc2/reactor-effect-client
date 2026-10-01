@@ -13,6 +13,8 @@ on:
       - "examples/**"
       - "packages/**"
       - "skills/**"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
@@ -20,15 +22,18 @@ on:
       - "examples/**"
       - "packages/**"
       - "skills/**"
+      - "package.json"
+      - "bun.lock"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its build; on main a deploy is never cancelled midway.
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   BUN_VERSION: 1.4.2

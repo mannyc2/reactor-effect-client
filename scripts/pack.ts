@@ -335,6 +335,10 @@ const program = Effect.gen(function* () {
       "packages/browser/examples/src/server.ts",
       "packages/native/examples/src/Recording.ts",
       "packages/native/examples/src/capture.ts",
+      "examples/quickstart/src/main.ts",
+      "examples/terminal/src/Picture.ts",
+      "examples/terminal/src/Screen.ts",
+      "examples/terminal/src/main.ts",
       ...(yield* fs.readDirectory(path.join(root, "examples/livestream/src")))
         .filter((name) => name.endsWith(".ts"))
         .map((name) => `examples/livestream/src/${name}`),
