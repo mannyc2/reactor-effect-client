@@ -4,12 +4,17 @@ All notable changes to `reactor-effect-client`, `reactor-effect-browser` and `re
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.2] - 2026-10-01
+
+0.9.2 fixes planned clip lengths, firm admission and follower wakes near session caps, and adds the documentation site and offline examples. The five packages share version 0.9.2; public modules and exports are unchanged.
+
+Qualification: portable Node and Bun suites, policy properties, native CI and installed-package checks. No paid hosted run exercised 0.9.2. Firm admission projects measured timings: slower builds, seams and later edits can still put an admitted item past its deadline.
 
 ### Added
 
 - A documentation site, [mannyc2.github.io/reactor-effect-client](https://mannyc2.github.io/reactor-effect-client/), with concept pages, guides, the hosted evidence, `llms.txt` and `llms-full.txt` for coding agents, and a playground that runs H3 Studio on `ReactorTest` in the browser.
 - An Agent Skill, `skills/reactor-effect`, installable with `npx skills add mannyc2/reactor-effect-client`.
+- A prompt-to-end quickstart and a terminal video viewer, both running offline on `ReactorTest` without an API key and using the same application with hosted layers.
 
 ### Changed
 
@@ -599,7 +604,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/7e46b84145b960c08f55b82cb35682ea425cfb52...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/2418ac1f5ebbf86f38c2cda2c622bf79aec77a31...main
+[0.9.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.2
 [0.9.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.1
 [0.9.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.0
 [0.8.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.8.0
