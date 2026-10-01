@@ -73,7 +73,14 @@ export default defineConfig({
         },
         {
           label: "Examples",
-          items: [{ slug: "examples" }],
+          items: [
+            { slug: "examples" },
+            {
+              label: "Playground: H3 Studio offline",
+              link: "/playground/",
+              attrs: { target: "_blank" },
+            },
+          ],
         },
         {
           label: "Reference",

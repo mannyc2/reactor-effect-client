@@ -320,7 +320,13 @@ const program = Effect.gen(function* () {
       "packages/client/examples/src/Rundown.ts",
       "packages/browser/examples/src/Api.ts",
       "packages/browser/examples/src/WebCrypto.ts",
+      "packages/browser/examples/src/Stage.ts",
+      "packages/browser/examples/src/Page.ts",
+      "packages/browser/examples/src/Studio.ts",
+      "packages/browser/examples/src/Live.ts",
+      "packages/browser/examples/src/Offline.ts",
       "packages/browser/examples/src/app.ts",
+      "packages/browser/examples/src/playground.ts",
     ],
     node: [
       "packages/client/examples/src/Rundown.ts",

@@ -61,7 +61,12 @@ The peer opens the control channel before the data channel. It fails the connect
 
 ## Example
 
-[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples) is a page that runs its own session over the browser's WebRTC, with a server that only mints short tokens: `ManagedRuntime` behind ordinary DOM code, a session held in a scope until Stop, and a clip followed through its operation facts.
+[H3 Studio](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples)
+is a page that runs its own session: H3's queue live with its play, move, pop and stop controls,
+reference images validated once and reused, each clip's lifecycle, and failures shown with their
+dispatch outcome. With an API key on its server it runs on hosted H3 over `BrowserPeer`; without one
+it runs on `ReactorTest` in the tab. The offline build is the
+[playground](https://mannyc2.github.io/reactor-effect-client/playground/) on the documentation site.
 
 ## Development
 
