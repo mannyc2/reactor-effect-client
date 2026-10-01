@@ -3,4 +3,263 @@ title: Sources
 description: "Where a playout's sessions come from: H3Source for paid H3, LocalSource for a renderer of your own."
 ---
 
-This page is being written.
+import { Aside, CardGrid, LinkCard, Steps } from "@astrojs/starlight/components";
+
+A playout gets its sessions from an `open` effect, which it calls for the first session and for
+each replacement. `H3Source.open` opens a paid H3 session, and `LocalSource.open` renders clips
+in your own process. Both return a `Playout.Source`, so the same programme runs on either.
+
+```ts
+import { Effect, FileSystem, Schema } from "effect";
+import {
+  CoordinatorClient,
+  H3,
+  H3Source,
+  Playout,
+} from "reactor-effect-client";
+
+const encodeOwner = Schema.encodeEffect(
+  Schema.fromJsonString(H3Source.Allocation),
+);
+
+export const recordedChannel = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const fs = yield* FileSystem.FileSystem;
+  return yield* Playout.make({
+    open: H3Source.open({
+      tokens: coordinator.tokens({
+        modelName: H3.modelName,
+        maxSessionDuration: "1 hour",
+      }),
+      canvas: "16:9",
+      // Runs before the session connects, so no session goes unrecorded.
+      onAllocated: ({ allocation }) =>
+        encodeOwner(allocation).pipe(
+          Effect.flatMap((json) =>
+            fs.writeFileString(
+              `owners/${allocation.sessionId}.json`,
+              json,
+            ),
+          ),
+        ),
+    }),
+    lanes: [{ name: "show" }],
+  });
+});
+```
+
+## `H3Source.open`
+
+<Steps>
+
+1. Mints the creating token from `tokens.create`.
+2. Allocates the session, then runs `onAllocated` with the session, the grant and the owner
+   record, before the session connects.
+3. Connects and sets H3 up: autoplay off until the playout turns it on, the last frame held
+   between clips, and the canvas set before the first enqueue.
+4. Returns a `Source` whose `lifetime` is what remains of the token's cap, counted from the
+   allocation request, so the playout never plans past the session's end.
+
+</Steps>
+
+| Option          | Default    | What it does                                                         |
+| --------------- | ---------- | -------------------------------------------------------------------- |
+| `tokens`        | required   | The session's `Tokens`; the API key never reaches the opener        |
+| `onAllocated`   | none       | Records the owner after allocation and before connecting             |
+| `canvas`        | as H3 has it | `16:9`, `1:1`, `9:16` or `4:3`, set before the first enqueue       |
+| `holdLastFrame` | `true`     | Holds the last frame between clips; `false` flushes to black         |
+| `recovery`      | 20 seconds | How long a dropped connection may take to come back                  |
+| `provider`      | defaults   | The [H3 provider's options](/reactor-effect-client/concepts/h3/)    |
+| `create`        | none       | Other `reactor.create` options, such as `resumeTracks`               |
+
+An uncapped session has no end the playout can plan for: it is replaced only when it is lost. If
+`onAllocated` fails, the session is closed and `open` fails with an `AcquisitionFailure` carrying
+its close report, as any failure after allocation does.
+
+The session reconnects a dropped connection itself. The source reports `Reconnecting`, then
+`Reconnected` with how long it took, and gives the session `recovery` to be ready again and H3 to
+be read afresh. Past that, or at once for a session that will not come back (reconnect turned
+off, ended by moderation, or no longer trying), the source counts the session lost and the
+playout replaces it. The playout sends the session nothing meanwhile.
+
+## Owner records
+
+`onAllocated` receives an `H3Source.Allocation`: the owner record of the session, without a
+token. It is a Schema, so it encodes to JSON and decodes back.
+
+| Field       | What it is                                                                    |
+| ----------- | ----------------------------------------------------------------------------- |
+| `sessionId` | The session's id                                                              |
+| `ownership` | `owned` or `attached`                                                         |
+| `model`     | The model, `H3.modelName`                                                     |
+| `endsAt`    | When the session's cap ends, in seconds since the epoch, counted from the allocation request; absent for an uncapped session |
+
+The cap starts no earlier than the request, so the cap cannot end the session before `endsAt`.
+With the record, a process that takes over can find the session again, adopt it with a token
+bound to it, or end it with the API key:
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient } from "reactor-effect-client";
+import type { H3Source } from "reactor-effect-client";
+
+// Ends an orphaned session; true once a read confirmed the end.
+export const endOrphan = Effect.fn("endOrphan")(function* (
+  allocation: H3Source.Allocation,
+) {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const verdict = yield* coordinator.terminate(allocation.sessionId);
+  return verdict.confirmed;
+});
+```
+
+## `H3Source.resume`
+
+`H3Source.resume({ allocation, tokens })` adopts a session `open` allocated, after its owner
+died. This process then owns its remote lifetime. The session keeps its canvas, queue and
+playback, and a session its owner already set up gets only reads. Its `lifetime` is what remains
+until the record's `endsAt`.
+
+```ts
+import { Effect, Schema } from "effect";
+import { CoordinatorClient, H3, H3Source } from "reactor-effect-client";
+
+const decodeOwner = Schema.decodeEffect(
+  Schema.fromJsonString(H3Source.Allocation),
+);
+
+export const takeOver = Effect.fn("takeOver")(function* (
+  record: string,
+) {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const allocation = yield* decodeOwner(record);
+  return yield* H3Source.resume({
+    allocation,
+    // H3 takes no other token for a session not created here.
+    tokens: {
+      bind: (id) =>
+        coordinator.mintToken({ modelName: H3.modelName, bind: [id] }),
+    },
+  });
+});
+```
+
+`resume` refuses, as `InvalidInput`, a record of another model or one whose `endsAt` has passed.
+A resume that fails ends the session it adopted.
+
+On hosted Reactor, an owner was killed 12.7 s into its session. `H3Source.resume` started 0.57 s
+after the creating token had expired, was ready 2.71 s later on the owner's playing clip, and
+enqueued a clip with an image and an audio reference on a refreshed 12 s bound token
+([0.8.0-api `adoption`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## `LocalSource`
+
+`LocalSource.open` renders clips in this process instead of on Reactor, with H3's autoplay
+semantics: one build slot and a playout queue. Use it for material you render yourself, such as
+speech or stills, and for demos. It costs nothing, and closing it ends no paid session.
+
+```ts
+import { Effect } from "effect";
+import { LocalSource, Playout } from "reactor-effect-client";
+
+/** Your speech engine: 48 kHz mono PCM for a line of text. */
+declare const synthesize: (
+  text: string,
+) => Effect.Effect<Int16Array<ArrayBuffer>>;
+
+const block = 480; // 10 ms at 48 kHz
+
+export const announcer = Playout.make({
+  open: LocalSource.open({
+    // Renders a clip before it is Ready, and says how long it really is.
+    build: (clip) =>
+      Effect.map(synthesize(clip.request.prompt), (pcm) => ({
+        value: pcm,
+        seconds: pcm.length / 48_000,
+      })),
+    // Plays it into the source's audio, in real time. The clip ends
+    // when this completes.
+    present: (_clip, pcm, sink) =>
+      Effect.forEach(
+        Array.from(
+          { length: Math.ceil(pcm.length / block) },
+          (_, index) => index,
+        ),
+        (index) =>
+          sink
+            .audio({
+              _tag: "AudioFrame",
+              track: "main_audio",
+              sampleRate: 48_000,
+              channels: 1,
+              sequence: BigInt(index),
+              samples: pcm.slice(index * block, (index + 1) * block),
+            })
+            .pipe(Effect.andThen(Effect.sleep("10 millis"))),
+        { discard: true },
+      ),
+  }),
+  lanes: [{ name: "line" }],
+});
+```
+
+| Option       | What it does                                                                    |
+| ------------ | ------------------------------------------------------------------------------- |
+| `build`      | Makes a clip's value, and its built length when that differs (`seconds`)        |
+| `present`    | Plays the value through the `sink`'s `video` and `audio`; without it, a clip plays for its length |
+| `lifetime`   | Caps the session, as a paid session's cap does, so the playout renews it; unending by default |
+| `buildRatio` | Without hooks: a stand-in whose clips build for this share of their length and play for their length |
+
+`build` and `present` run in a scope the clip owns, which closes once the clip leaves the source,
+so a finalizer releases what they made. A hook that fails with your own error fails that clip
+alone: `Failed` with reason `Clip`, your error pretty-printed and `Redacted` in `provider`. A hook
+that dies stops the source, and the playout replaces its session. A clip's request still goes
+through H3's documented limits, since the playout checks every request against them.
+
+<Aside>
+`LocalSource.open({ buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
+included, with no model at all: a quick way to see what your schedule does.
+</Aside>
+
+## Writing a source
+
+`Playout.Source` is an interface: a `sessionId`, a `lifetime`, `events`, the commands `enqueue`,
+`remove`, `move`, `setAutoplay`, `stop` and `play`, the `video` and `audio` streams, and `close`.
+Its doc comment lists what the playout relies on, such as `events` starting with a `State` and
+reporting a clip's start or end before the `State` that shows it. Write one only for a model or
+renderer the SDK does not cover.
+
+## Limits
+
+- `H3Source` drives H3 Reference Turbo Realtime only; `resume` refuses a record of another
+  model.
+- A `LocalSource` renders in your process: its builds and presentations use your CPU, and one
+  slow build holds its one build slot.
+- The playout validates a `LocalSource` clip's request against H3's limits too, so `seconds` is
+  still 5 to 15.084.
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Playout"
+    description="Lanes, filler, renewal and as-run evidence."
+    href="/reactor-effect-client/concepts/playout/"
+  />
+  <LinkCard
+    title="Sessions and tokens"
+    description="Tokens, adoption and what a close report says."
+    href="/reactor-effect-client/concepts/sessions/"
+  />
+  <LinkCard
+    title="Media"
+    description="The frames and sound a source plays."
+    href="/reactor-effect-client/concepts/media/"
+  />
+  <LinkCard
+    title="Run a 24/7 channel"
+    description="Owner records and renewal in a real server."
+    href="/reactor-effect-client/guides/channel/"
+  />
+</CardGrid>

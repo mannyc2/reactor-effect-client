@@ -3,4 +3,157 @@ title: Modules
 description: "Every public module of the three packages, what it owns and where its contracts live."
 ---
 
-This page is being written.
+Three packages make up reactor-effect, released together under one version. Each module is its
+own subpath, and each package's root exports every module as a namespace:
+
+```ts
+import { H3, Playout, Reactor } from "reactor-effect-client";
+import * as Session from "reactor-effect-client/Session";
+```
+
+The packages are ES modules with no side effects on import. Their export maps open `.` and
+`./<Module>` and close `./internal/*`, so nothing internal is reachable. Each module's doc
+comments state every option's default and bound; this page is the map.
+
+## `reactor-effect-client`
+
+The portable core: the coordinator's HTTP API, sessions, the wire protocol, the H3 provider, the
+playout and the simulated Reactor. It runs on Node, Bun and browsers, and importing it selects no
+host and loads no native code.
+
+| Module              | What it is                                                                     |
+| ------------------- | ------------------------------------------------------------------------------ |
+| `Reactor`           | The service that acquires sessions: `create` allocates one, `attach` joins one |
+| `Session`           | One session: its status, events, commands, uploads, recordings, media and close report |
+| `CoordinatorClient` | Reactor's HTTP API: tokens, pricing, inspection, termination and recordings    |
+| `H3`                | The H3 Reference Turbo Realtime provider over a session                        |
+| `Playout`           | A keyed schedule in priority lanes, aired across sessions it renews            |
+| `H3Source`          | A paid H3 session as a playout source                                          |
+| `LocalSource`       | A playout source rendered in this process by your own hooks                    |
+| `Media`             | Decoded frames and platform tracks of one connection generation                |
+| `Peer`              | The transport port a host implements                                           |
+| `ReactorError`      | Every failure the client raises, its reason and its dispatch outcome           |
+| `ReactorTest`       | Reactor simulated in memory, on the Effect clock                               |
+
+### `Reactor`
+
+`reactor-effect-client/Reactor`. The `Reactor` service (`create`, `attach`), `layer(options)` and
+`make`, `Options` (the session deadlines and `reconnect` schedule), `CreateOptions`,
+`AttachOptions`, and `noAcquisition`, the close report of an acquisition that allocated nothing.
+See [Sessions and tokens](/reactor-effect-client/concepts/sessions/).
+
+### `Session`
+
+`reactor-effect-client/Session`. The `Session` interface, `Snapshot` and `Status`, `CloseReport`
+(a Schema) and `mayStillBill`, `CommandReply` and `CommandOptions`, `SessionEvent`,
+`Observation`, `ClipReady` and `ControlMessage` (Schemas), `UploadReference`, `Statistics`.
+
+### `CoordinatorClient`
+
+`reactor-effect-client/CoordinatorClient`. The `CoordinatorClient` service (`tokens`,
+`mintToken`, `pricing`, `inspect`, `terminate`, `downloadClip`, `signaling`), `layer(options)`,
+`layerConfig` (`REACTOR_API_URL`, `REACTOR_API_KEY`) and `make`; `Tokens`, `TokenGrant`,
+`TokenOptions`, `Granted` and `fixedTokens`; `modelRate` and `Rate`; `isTerminal`,
+`Termination` and `Inspection`; `defaultApiUrl`.
+
+### `H3`
+
+`reactor-effect-client/H3`. `make` and the `Provider` interface; `Request` and `Reference`
+(Schemas), `validateReference` and `validateAudioReference`; the model's profile: `modelName`,
+`documentedVersion`, `requestSeconds`, `referenceLimits`, `audioReferenceLimits`, `canvases`,
+`h3ReferenceTurboRealtime`, `alignFrames`, `isRequestableSeconds`, `estimateTokens`; H3's
+`Clip`, `Queue` and `State` Schemas; `Acceptance`, `Submission`, `ClipOperation` and
+`ProviderSnapshot`. See [The H3 provider](/reactor-effect-client/concepts/h3/).
+
+### `Playout`
+
+`reactor-effect-client/Playout`. The `Playout` service, `make`, `layer` and `lineup`; `Options`;
+the item specs `ItemSpec`, `GroupSpec`, `InsertSpec`, `Edit`, `LaneSpec`, `Start`, `Window`,
+`Cue`, `PlaceProbe` and `Placement`; `ItemKey` (a branded Schema); the evidence `AsRunStatus`,
+`AsRunEvent`, `Settled`, `Event`, `SessionEvent` and `State`; the source contract `Source`,
+`SourceEvent` and `SourceState`; `Cleanup`; and the errors `InvalidItem`, `KeyMismatch`,
+`LaneBusy`, `WouldMissDeadline`, `PlayoutClosed` and `InvalidFiller`. See
+[Playout](/reactor-effect-client/concepts/playout/).
+
+### `H3Source` and `LocalSource`
+
+`reactor-effect-client/H3Source`: `open`, `resume`, the owner record `Allocation` (a Schema),
+`Allocated`, `OpenOptions` and `ResumeOptions`. `reactor-effect-client/LocalSource`: `open`,
+`Options`, `LocalClip`, `Rendered` and `Sink`. See
+[Sources](/reactor-effect-client/concepts/sources/).
+
+### `Media`
+
+`reactor-effect-client/Media`. `DecodedMedia`, `TrackMedia`, `VideoFrame`, `AudioFrame`,
+`VideoFormat`, `MediaPressure`, and `recorder` with its `Recorded` view. See
+[Media](/reactor-effect-client/concepts/media/).
+
+### `Peer`
+
+`reactor-effect-client/Peer`. The `PeerFactory` service and the `Peer` interface a host
+implements, `PeerMedia`, `trackFeed` for a host's received tracks, `MediaTrack`, and the
+transport Schemas `Track`, `Mapping`, `IceServer`, `IceCandidate`, `PeerEvent`, `PeerState` and
+`DataChannel`. An application needs it only to write a host of its own.
+
+### `ReactorError`
+
+`reactor-effect-client/ReactorError`. The classes `ReactorError`, `CommandFailure` and
+`AcquisitionFailure`, the union `ReactorFailure` and `isReactorFailure`; the reasons `Failure`
+(with its `FailureCode`), `Http`, `Remote`, `Native`, `IceFailed`, `TransportFailed` and
+`ClipEnded`; `RemoteOutcome`, `ErrorContext` and `CommandContext`; `FailureSummary` and
+`summarize`. See [Errors](/reactor-effect-client/concepts/errors/).
+
+### `ReactorTest`
+
+`reactor-effect-client/ReactorTest`. `layer` (the simulated coordinator and host) and
+`layerCoordinator` (the coordinator alone); the `ReactorTest` service (`apiKey`, `sessions`,
+`billing`, `log`, `inject`); `Timing` (`fixed`, `random`, `hosted`); `Fault`; `Options`; `flow`
+for `TestClock`; `frameOf`; `pngBytes` and `wavBytes`. See
+[Test offline](/reactor-effect-client/guides/testing-offline/).
+
+## `reactor-effect-browser`
+
+The browser host. It binds the `Peer` port to `RTCPeerConnection` and plays the session's own
+tracks. It has no Node dependency.
+
+| Module         | What it is                                                                      |
+| -------------- | ------------------------------------------------------------------------------- |
+| `BrowserPeer`  | `layer`, the `PeerFactory` over the browser's WebRTC; building it checks for `RTCPeerConnection` and `MediaStream` |
+| `BrowserMedia` | `tracks(session)`, the generation's tracks as DOM `MediaStreamTrack`s, and `play(track, element)` |
+
+## `reactor-effect-native`
+
+The native host. It binds the `Peer` port to a libwebrtc Node-API addon and delivers decoded media
+in Node and Bun.
+
+| Module       | What it is                                                                         |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `NativePeer` | `layer(options)` in process, and `layerIsolated(options)` with a child process per connection; `Options` (`addon`, `shutdownTimeout`) |
+
+Each platform's addon ships in its own package, which `reactor-effect-native` lists as an
+exact-version optional dependency, so a package manager installs only the one the host can run.
+Importing `NativePeer` loads no addon: building its layer does.
+
+## Versions and platforms
+
+| Package                      | Peer dependencies, all exact                                              | Runs on |
+| ---------------------------- | ------------------------------------------------------------------------- | ------- |
+| `reactor-effect-client`      | `effect` 4.0.0-rc.117                                                      | Node 22 or newer, Bun, browsers |
+| `reactor-effect-browser`     | `effect` 4.0.0-rc.117, `reactor-effect-client` at the same version         | Browsers with WebRTC |
+| `reactor-effect-native`      | `effect`, `@effect/platform-node` and `@effect/platform-node-shared` 4.0.0-rc.117, `reactor-effect-client` at the same version | Node 22 or newer and Bun |
+
+| Addon package                         | Platform                                              |
+| ------------------------------------- | ----------------------------------------------------- |
+| `reactor-effect-native-linux-x64-gnu` | Linux x64 with glibc                                  |
+| `reactor-effect-native-darwin-arm64`  | macOS on Apple silicon, macOS 13 or later             |
+
+| Host                          | Media                              | Runtime                         |
+| ----------------------------- | ---------------------------------- | ------------------------------- |
+| `NativePeer.layer()`          | Decoded BGRA frames and PCM        | Node and Bun, in process        |
+| `NativePeer.layerIsolated()`  | Decoded, from a child per connection | Node only                     |
+| `BrowserPeer.layer`           | The browser's own tracks           | Any browser with WebRTC         |
+| `ReactorTest.layer`           | Decoded synthetic frames           | Anywhere the client runs        |
+
+Effect is pinned exactly because its release candidates can move modules: a later `4.0.0-rc`
+needs a new release of these packages. See
+[Installation](/reactor-effect-client/start/installation/) for the install lines.

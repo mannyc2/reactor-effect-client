@@ -3,4 +3,233 @@ title: Media
 description: "Decoded frames and PCM from the native and simulated hosts, and platform tracks in the browser."
 ---
 
-This page is being written.
+import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+A connected session carries the media of its current connection generation. The native host and
+the simulated Reactor decode it into owned frames and PCM, which `session.decoded` reads in
+Node or Bun with no browser. A browser host hands you its own `MediaStreamTrack`s instead,
+through `session.tracks`.
+
+```ts
+import { Console, Effect, Stream } from "effect";
+import { Media } from "reactor-effect-client";
+import type { Session } from "reactor-effect-client";
+
+/** Your encoder: takes one BGRA frame. */
+declare const encode: (frame: Media.VideoFrame) => Effect.Effect<void>;
+
+// Each frame of H3's picture, and each run the host dropped, in order.
+export const record = Effect.fn("record")(function* (
+  session: Session.Session,
+) {
+  const media = yield* session.decoded;
+  yield* Media.recorder(media.video("main_video")).pipe(
+    Stream.runForEach((entry) =>
+      entry._tag === "Frame"
+        ? encode(entry.frame)
+        : Console.log(
+            `dropped ${entry.count} frames after ${entry.after}`,
+          ),
+    ),
+  );
+});
+```
+
+H3 names its tracks `main_video` and `main_audio`; `media.tracks` lists what the session
+negotiated.
+
+## Decoded media
+
+`session.decoded` returns the current generation's `DecodedMedia`: `video(name)` and
+`audio(name)` streams, `pressure`, the negotiated `tracks`, and `generation`.
+
+| `VideoFrame`      | What it is                                                                     |
+| ----------------- | ------------------------------------------------------------------------------ |
+| `width`, `height` | The frame's size; hosted H3 sends 1344×768 on its default canvas               |
+| `format`          | `BGRA` from the native and simulated hosts, or `RGBA` from a renderer of your own; four bytes a pixel, rows packed |
+| `data`            | `width * height * 4` bytes, the whole of an `ArrayBuffer` of their own          |
+| `sequence`        | The frame's admission number on its track, taken before any queue could drop it |
+| `frameId`, `timestampMicros` | The sender's frame identity and clock, `bigint`; zero when absent  |
+
+| `AudioFrame`              | What it is                                                             |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `sampleRate`, `channels`  | 48 kHz mono from hosted H3                                             |
+| `samples`                 | Interleaved signed 16-bit PCM, an `Int16Array` of its own              |
+| `sequence`                | The block's admission number on its track                              |
+
+Every reader of a track receives the same frames, so treat their bytes as read-only and copy
+before changing them. Holding a frame holds its bytes: about 4 MB for a 1344×768 frame.
+
+On hosted H3, the native host received all 124 frames of a 5 s clip, 1344×768 BGRA at
+24.1–24.2 fps, and its 48 kHz mono audio, with nothing lost, over a direct path at 7.2–8.3 Mbps
+([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+2026-09-24). A playout's reader took 2,372 frames over three sessions without falling behind
+([0.8.0-api `show`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## Bounds, pressure and `Lost` gaps
+
+Media is bounded at every step, so a slow reader never holds up the host or the session. On the
+native host, libwebrtc's callbacks copy each frame into a queue of 8 video frames (333 ms at
+24 fps) and 256 PCM blocks (2.56 s of 10 ms blocks); a full queue evicts its oldest item and
+counts it. Each reader then holds at most 24 video frames (a second at 24 fps) or 128 PCM blocks.
+A reader that falls further behind fails alone with `Overflow`.
+
+`media.pressure` reports what the generation dropped, delivered and still holds:
+`droppedVideo`, `droppedAudio`, `deliveredVideo`, `deliveredAudio`, the queued counts and bytes,
+`pendingRequests`, and `readerOverflows`, the readers that fell behind.
+
+Because a frame's `sequence` is taken before any queue could drop it, a dropped frame is a gap in
+the sequences a reader sees. `Media.recorder(stream)` makes the gaps explicit: it yields
+`{ _tag: "Frame", frame }` for each frame and `{ _tag: "Lost", after, count }` wherever frames
+were dropped, so a recording can fill the gap instead of drifting out of sync. A sequence that
+goes back starts a new run, as a new generation does.
+
+## A preview that never falls behind
+
+A live preview wants the newest frame, not every frame. Keep one with a sliding buffer, and the
+reader never overflows however slowly it draws:
+
+```ts
+import { Effect, Stream } from "effect";
+import type { Media, Session } from "reactor-effect-client";
+
+export const preview = Effect.fn("preview")(function* (
+  session: Session.Session,
+  draw: (frame: Media.VideoFrame) => Effect.Effect<void>,
+) {
+  const media = yield* session.decoded;
+  yield* media
+    .video("main_video")
+    .pipe(
+      Stream.buffer({ capacity: 1, strategy: "sliding" }),
+      Stream.runForEach(draw),
+    );
+});
+```
+
+## Generations
+
+Every media value belongs to one connection generation. A reconnect makes a new generation and
+ends the old one's readers, which fail with that generation's failure. To follow the picture
+across reconnects, read `session.decoded` again each time the session is ready on a new
+generation:
+
+```ts
+import { Effect, Option, Stream } from "effect";
+import type { Session } from "reactor-effect-client";
+
+export const picture = (session: Session.Session) =>
+  session.changes.pipe(
+    Stream.filter((snapshot) => snapshot.status === "ready"),
+    Stream.map((snapshot) => snapshot.generation),
+    Stream.changes,
+    Stream.switchMap((generation) =>
+      Stream.unwrap(
+        Effect.map(session.decoded, (media) =>
+          media.video("main_video"),
+        ),
+      ).pipe(
+        // A retired generation's reader fails, and a newer one takes
+        // over. Other failures stand.
+        Stream.catch((error) =>
+          Stream.unwrap(
+            Effect.map(Effect.option(session.ready), (ready) =>
+              Option.isSome(ready) &&
+              ready.value.generation === generation
+                ? Stream.fail(error)
+                : Stream.empty,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+```
+
+`playout.video` and `playout.audio` already do this, and continue across renewals too.
+
+## Tracks in the browser
+
+A browser host has no decoded frames: `session.decoded` fails there with
+`UnsupportedCapability`. `session.tracks` returns the generation's `TrackMedia` instead, and
+`BrowserMedia.tracks(session)` types it with the DOM's `MediaStreamTrack`:
+
+```ts
+import { Effect } from "effect";
+import { BrowserMedia } from "reactor-effect-browser";
+import type { Session } from "reactor-effect-client";
+
+export const watch = Effect.fn("watch")(function* (
+  session: Session.Session,
+  video: HTMLVideoElement,
+) {
+  const tracks = yield* BrowserMedia.tracks(session);
+  // A clone of the received track, playing until the scope closes.
+  yield* BrowserMedia.play(yield* tracks.track("main_video"), video);
+});
+```
+
+| `TrackMedia`                    | What it does                                                         |
+| ------------------------------- | -------------------------------------------------------------------- |
+| `track(name)`                   | Leases a clone of a received track, stopped when your scope closes   |
+| `publish(name, track)`          | Sends a local track on a send-only track the model declares          |
+| `unpublish(name)`               | Stops sending it                                                     |
+| `setTrackActive(name, active)`  | Pauses or resumes a track, here and at Reactor                       |
+| `setMaxBitrate(name, bits)`     | Caps a sent track's bitrate                                          |
+
+`BrowserMedia.play(track, element, { playTimeout })` refuses a track that is not live and an
+element that already has a source, and fails when playback takes longer than `playTimeout`
+(10 seconds) to start. A reconnect makes new tracks: follow `session.changes` to the next ready
+generation and lease them again.
+
+Reactor sends a connection no media until its receive-only tracks are resumed. `create` and
+`attach` resume them as each connection becomes ready, unless you pass `resumeTracks: false`.
+
+## Which host gives what
+
+| Host                          | Media                                                        | Runs on                                    |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------ |
+| `NativePeer.layer()`          | Decoded BGRA frames and 16-bit PCM, in process               | Node and Bun on linux-x64 (glibc) and darwin-arm64 |
+| `NativePeer.layerIsolated()`  | The same, from a child process per connection                | Node on the same platforms                 |
+| `BrowserPeer.layer`           | The browser's own tracks                                     | Browsers with WebRTC                       |
+| `ReactorTest.layer`           | Decoded synthetic frames (16×16 by default) and a tone       | Anywhere                                   |
+
+The isolated host keeps a crash inside libwebrtc to one connection. Each child takes about half a
+second to start, which overlaps allocation, and every frame is copied across the process boundary.
+The simulated frames carry their clip and index, which `ReactorTest.frameOf(frame)` reads back
+in tests.
+
+## Limits
+
+- The native peer accepts at most one incoming video track and one incoming audio track.
+- Decode failures are not reported: the pinned `reactor-webrtc` surfaces no decoder errors.
+- Starting playback in a browser does not establish that anyone saw it, and a decoded frame does
+  not establish that it was shown or encoded.
+- The browser host has no hosted run yet, and the native host has run on hosted Reactor only on
+  linux-x64.
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Frames in Node and Bun"
+    description="The native host, in process or isolated."
+    href="/reactor-effect-client/guides/native/"
+  />
+  <LinkCard
+    title="Sessions in the browser"
+    description="A page that runs its own session."
+    href="/reactor-effect-client/guides/browser/"
+  />
+  <LinkCard
+    title="Playout"
+    description="The on-air picture and sound across renewals."
+    href="/reactor-effect-client/concepts/playout/"
+  />
+  <LinkCard
+    title="Sessions and tokens"
+    description="Generations, reconnects and close reports."
+    href="/reactor-effect-client/concepts/sessions/"
+  />
+</CardGrid>

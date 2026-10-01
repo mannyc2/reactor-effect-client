@@ -3,4 +3,309 @@ title: The H3 provider
 description: "H3 Reference Turbo Realtime over a session: requests, references, the queue, and each clip's operation facts."
 ---
 
-This page is being written.
+import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+`H3.make(session)` is the provider for H3 Reference Turbo Realtime
+(`reactor/h3-reference-to-video-turbo-realtime`) over a connected session. It gives you H3's
+state and queue as the model reports them, its commands, and evidence of what became of each
+clip. It observes a session it neither allocates nor closes.
+
+```ts
+import { Console, Effect } from "effect";
+import { H3 } from "reactor-effect-client";
+import type { Session } from "reactor-effect-client";
+
+export const playOne = Effect.fn("playOne")(function* (
+  session: Session.Session,
+) {
+  const h3 = yield* H3.make(session);
+  yield* h3.setAutoplay(true); // H3 plays nothing on its own
+  const submission = yield* h3.prepare({
+    prompt: "A paper boat on a rain-soaked street",
+    seconds: 5,
+  });
+  const acceptance = yield* submission.submit;
+  const clip = yield* h3.operation(submission);
+  yield* clip.reached("started");
+  const end = yield* clip.ended;
+  yield* Console.log(
+    `${acceptance.clip.clip_id} ended by ${end.message}`,
+  );
+}, Effect.scoped);
+```
+
+Create the session with `model: H3.modelName`, as on
+[Sessions and tokens](/reactor-effect-client/concepts/sessions/). `H3.make` needs Effect's
+`Crypto` service, which `NodeServices.layer` and `BunServices.layer` provide (in a page, build
+one over Web Crypto); it hashes references so each is uploaded once.
+
+## Setting up
+
+`H3.make` reads the deployment's OpenAPI document, then H3's first state and queue. It needs only
+`enqueue`, `get_state` and `get_queue` to start. Any other command the deployment lacks fails as
+`UnsupportedCapability` before it is sent, and `provider.contract` says what was found: the
+commands offered, whether `enqueue` takes reference audio, and the deployment's own title and
+version.
+
+| `H3.make` option  | Default    | Bounds                                                       |
+| ----------------- | ---------- | ------------------------------------------------------------ |
+| `replyTimeout`    | 15 seconds | Each command, through the observation of its reply           |
+| `uploadTimeout`   | 60 seconds | Each reference upload                                        |
+| `setupTimeout`    | 60 seconds | Reading the schema, then the first state and queue, each     |
+| `reconcileWindow` | 5 seconds  | How long an enqueue's held evidence or lost reply waits      |
+
+The provider targets H3's documented `0.5.5` schema (`H3.documentedVersion`).
+
+## Requests
+
+A clip is an `H3.Request`. A request H3 would refuse is refused locally as `InvalidInput`, with
+outcome `not-submitted`, before anything is uploaded.
+
+| Field          | Bounds                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `prompt`       | Required text, well-formed, at most 1 MiB. H3's budget is about 2,000 tokens; a longer prompt fails its clip as it builds |
+| `seconds`      | 5 to 15.084. H3 aligns it up to its frame grid: 124 frames, then steps of 17, at 24 fps (5.167 s to 15.083 s) |
+| `references`   | Up to 9 images: PNG, JPEG or WebP, each at most 25 MiB and 25 megapixels, between 1:4 and 4:1 |
+| `audio`        | Up to 3 clips, each 2 to 15 s, mono or stereo, at most 25 MiB: WAV, MP3, AAC/M4A, OGG/Opus, FLAC or WebM |
+| `continueFrom` | A clip id to continue from                                                                 |
+| `seed`, `position` | H3's seed, and a place in the build queue                                              |
+| `metadata`     | Your own text, carried with the clip                                                       |
+
+A clip with audio needs an image or a `continueFrom`. A continued clip takes at most two audio
+references, since its continuation spends the third on the previous clip's soundtrack. Images,
+audio and a continuation come to at most twelve. Audio is sent only to a deployment whose
+`enqueue` declares it, and refused as `UnsupportedCapability` otherwise. Your `metadata` travels
+inside an envelope that also names the provider and the submission; together they must fit H3's
+2,000 characters.
+
+The profile's constants state these bounds in code: `H3.requestSeconds`, `H3.referenceLimits`,
+`H3.audioReferenceLimits` and `H3.canvases`, with `H3.alignFrames` and `H3.estimateTokens` (an
+estimate only; H3's tokenizer decides).
+
+## Validating references once
+
+A reference is `{ _tag: "Bytes", bytes }`, or `{ _tag: "Uploaded", file }` for a file the session
+already holds. `H3.validateReference` reads an image's header once, checks its type, size and
+dimensions, and keeps a private copy of its bytes, so every request can reuse it without checking
+it again. `H3.validateAudioReference` does the same for audio, with the length and channels of a
+WAV or FLAC.
+
+```ts
+import { Effect } from "effect";
+import { H3 } from "reactor-effect-client";
+
+export const twoShots = Effect.fn("twoShots")(function* (
+  h3: H3.Provider,
+  still: Uint8Array<ArrayBuffer>,
+) {
+  const reference = yield* H3.validateReference({
+    _tag: "Bytes",
+    bytes: still,
+  });
+  yield* h3.enqueue({
+    prompt: "The same street at noon",
+    seconds: 5,
+    references: [reference],
+  });
+  // Already uploaded on this connection: nothing is uploaded again.
+  yield* h3.enqueue({
+    prompt: "The same street at dusk",
+    seconds: 5,
+    references: [reference],
+  });
+});
+```
+
+Uploads are keyed by their content within a connection generation. On hosted H3, a second clip
+reused the first clip's image and audio references and uploaded nothing
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28). `ReactorTest.pngBytes` and `ReactorTest.wavBytes` make references that pass these
+checks, for tests.
+
+## The queue and its commands
+
+H3 keeps two queues. The generation queue holds clips waiting to build, the build in flight
+first. The playout queue holds built clips, Ready, in the order they play. H3 documents room for
+20 and 10.
+
+| Method                                 | What it does                                                                |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `enqueue(request)`                     | Adds a clip and waits for its acceptance                                    |
+| `prepare(request)`, then `submit`      | Checks the request first; `submit` uploads and sends it, once               |
+| `pop(clipId)`                          | Removes a clip from either queue, a build in flight included; it never plays |
+| `move(clipId, position)`               | Moves a clip within its queue                                               |
+| `play(clipId?)`                        | While nothing plays, plays the Ready clip named, or the next one            |
+| `stop`                                 | Stops the clip playing; under autoplay the next one starts                  |
+| `setAutoplay(enabled)`                 | Plays each Ready clip in turn. Off when a session starts                    |
+| `setFlushOnClipEnd(enabled)`           | Flushes to black at each clip's end. On by default; off holds the last frame |
+| `setCanvas(aspect)`                    | `16:9` (1344×768), `1:1` (768×768), `9:16` (768×1344) or `4:3` (1024×768)   |
+| `reset`                                | Stops what plays and empties both queues                                    |
+| `getState`, `getQueue`, `refresh`      | Read H3's state and queue afresh                                            |
+
+H3 takes a canvas only while it is idle with both queues empty, so set it before the first
+enqueue. `session.command` sends anything the provider does not wrap, such as `set_seed`.
+
+With autoplay off, you choose when each clip airs:
+
+```ts
+import { Effect } from "effect";
+import type { H3 } from "reactor-effect-client";
+
+export const playWhenBuilt = Effect.fn("playWhenBuilt")(function* (
+  h3: H3.Provider,
+  request: H3.Request,
+) {
+  const submission = yield* h3.prepare(request);
+  const acceptance = yield* submission.submit;
+  const clip = yield* h3.operation(submission);
+  // Built, and waiting in the playout queue.
+  yield* clip.reached("generated");
+  yield* h3.play(acceptance.clip.clip_id);
+  return yield* clip.ended;
+}, Effect.scoped);
+```
+
+On hosted H3, `stop` ended the playing clip 62 ms after it was sent, and `play` started the clip
+it named 52 ms after it was sent
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## Snapshots, changes and events
+
+`h3.snapshot` is H3's state and queue as the model last reported them. Its `_tag` is
+`Synchronizing` while a full state and queue are awaited, `Ready` with `state` and `queue`, or
+`Unavailable` with its `cause`. Every snapshot also lists the clips seen, each with its last
+lifecycle message. `h3.changes` streams a snapshot at every change, `h3.events` streams the
+provider's events, and `h3.observe()` pairs a snapshot with every event after it, with no gap.
+
+```ts
+import { Console, Stream } from "effect";
+import type { H3 } from "reactor-effect-client";
+
+// The clip H3 reports playing, each time it changes.
+export const nowPlaying = (h3: H3.Provider) =>
+  h3.changes.pipe(
+    Stream.map((snapshot) =>
+      snapshot._tag === "Ready" ? snapshot.state.playing_clip_id : null,
+    ),
+    Stream.changes,
+    Stream.runForEach((clipId) =>
+      Console.log(`playing: ${clipId ?? "nothing"}`),
+    ),
+  );
+```
+
+H3 replies to a command before it broadcasts the state and queue the command changed. So a
+command that needs current facts waits for them, within its `replyTimeout`, and resolves only
+once the broadcasts its reply implies have arrived: the caller reads its own effects. `getState`
+and `getQueue` never wait. An acknowledgement (`play` and `stop` return one) proves that H3
+received the command, never that anything changed.
+
+## A clip's operation facts
+
+`h3.operation(submission)` follows one committed clip, for as long as your scope holds it:
+
+| Fact                  | Resolves                                                                  |
+| --------------------- | ------------------------------------------------------------------------- |
+| `accepted`            | With the clip's `Acceptance`                                              |
+| `reached("generated")` | Once the clip is built; fails with `ClipEnded` if it failed or was popped first |
+| `reached("started")`  | Once the clip starts playing, with the same failure                        |
+| `ended`               | With the fact that ended it: `clip_finished`, `clip_stopped`, `clip_failed` or `clip_popped` |
+| `facts`               | Everything established so far                                             |
+
+Each fact names the connection generation of its evidence. Evidence from a later generation of
+the same session still resolves the operation, and if the provider retires before evidence
+decides a fact, it fails with `Indeterminate`.
+
+On hosted H3, a 16,171-character prompt was accepted and then ended by `clip_failed` 2.39 s later,
+as H3's schema documents for a prompt past its budget; the operation reported `ClipEnded`
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## Acceptance, and why a lost reply is never re-sent
+
+An enqueue resolves with an `Acceptance`: the clip as H3 queued it and the evidence that accepted
+it, of `kind` `correlated` or `metadata`.
+
+- **Correlated**: H3's reply to this enqueue's own request.
+- **Metadata**: the clip itself, recognized by the exact prompt and the submission id in its
+  metadata. Hosted H3 broadcasts the queue that lists a new clip before it replies. Evidence that
+  came first decides once the reply has stayed away for `reconcileWindow`.
+
+An enqueue whose reply is lost waits `reconcileWindow` for evidence. If none comes, it fails with
+outcome `unknown`, and it is never sent again: H3 may have queued the clip, and sending it again
+could build and air it twice. Later evidence, within the window or on a later connection
+generation, can still prove the clip and resolve its operation.
+
+```ts
+import { Effect } from "effect";
+import type { H3 } from "reactor-effect-client";
+
+export const enqueueOnce = Effect.fn("enqueueOnce")(
+  function* (h3: H3.Provider, request: H3.Request) {
+    const acceptance = yield* h3.enqueue(request);
+    return acceptance.clip.clip_id;
+  },
+  // Sent, with no reply and no sign of the clip: it may still air.
+  // Never send it again.
+  Effect.catchIf(
+    (failure) => failure.context.outcome === "unknown",
+    () =>
+      Effect.as(
+        Effect.logWarning("enqueue outcome unknown"),
+        undefined,
+      ),
+  ),
+);
+```
+
+`prepare` separates the work that may be retried from the dispatch that may not. It checks the
+request, copies its references and returns an inert `Submission`. Its `submit` uploads the
+references, which an interruption may cut short and a second `submit` runs again, then commits:
+from then on the enqueue runs to its own outcome, and a later `submit` joins it rather than send
+another. `submission.state` says whether it is `Prepared`, `Committed` or `Completed`.
+
+## Limits
+
+- On 2026-09-24 the deployment reported itself as `v0.0.0`, not the documented `0.5.5`
+  ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md)).
+  The provider checks the commands the deployment's schema offers, not its version.
+- An enqueue at position zero went ahead of the build already running, against H3's schema
+  ([0.7.0 `scheduler-cut`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.7.0/summary.md),
+  2026-09-28).
+- H3's refusals are free text with no stable codes. The provider keeps them `Redacted` in the
+  failure's `Remote` reason and routes on nothing in them.
+- A clip asked to continue another may come out independent, and H3 does not say so.
+- `reached("started")` is H3's report that a clip started, not proof that a frame was presented
+  or encoded.
+
+<Aside type="tip">
+To keep H3 playing for longer than one session, with filler, priorities and renewal, use
+[Playout](/reactor-effect-client/concepts/playout/) over `H3Source` instead of driving the
+queue by hand.
+</Aside>
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Playout"
+    description="A keyed schedule that keeps H3 on air across sessions."
+    href="/reactor-effect-client/concepts/playout/"
+  />
+  <LinkCard
+    title="Media"
+    description="Decoded frames and PCM, or browser tracks."
+    href="/reactor-effect-client/concepts/media/"
+  />
+  <LinkCard
+    title="Errors"
+    description="Dispatch evidence and tagged reasons."
+    href="/reactor-effect-client/concepts/errors/"
+  />
+  <LinkCard
+    title="Test offline"
+    description="The same provider against the simulated H3."
+    href="/reactor-effect-client/guides/testing-offline/"
+  />
+</CardGrid>

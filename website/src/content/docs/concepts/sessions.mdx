@@ -3,4 +3,478 @@ title: Sessions and tokens
 description: "One session owns each allocation: its tokens, connection generations, commands and cleanup evidence."
 ---
 
-This page is being written.
+import { Aside, CardGrid, LinkCard, TabItem, Tabs } from "@astrojs/starlight/components";
+
+A session is one model running for you on Reactor's GPUs. The `Reactor` service acquires
+sessions: `create` allocates one that this process owns, and `attach` joins one that is already
+running. Either way the session lives in your scope, connected, and closing the scope closes it.
+
+```ts
+import { Console, Effect, Layer, Redacted } from "effect";
+import {
+  CoordinatorClient,
+  H3,
+  Reactor,
+  ReactorTest,
+  Session,
+} from "reactor-effect-client";
+
+export const program = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  const session = yield* reactor.create({
+    model: H3.modelName,
+    // Tokens that may create one session, capped at two minutes.
+    tokens: coordinator.tokens({
+      modelName: H3.modelName,
+      maxSessionDuration: "2 minutes",
+    }),
+  });
+  const { status, generation } = yield* session.snapshot;
+  yield* Console.log(
+    `${session.id}: ${status}, generation ${generation}`,
+  );
+  const report = yield* session.close;
+  yield* Console.log(
+    `termination confirmed: ${report.remote.confirmed}`,
+  );
+  yield* Console.log(`may still bill: ${Session.mayStillBill(report)}`);
+}).pipe(Effect.scoped);
+
+// Reactor simulated in memory: no key and no native code.
+// The hosted layers are below.
+export const Offline = Reactor.layer().pipe(
+  Layer.provideMerge(
+    CoordinatorClient.layer({ apiKey: Redacted.make("demo") }),
+  ),
+  Layer.provideMerge(
+    ReactorTest.layer({
+      timing: ReactorTest.Timing.hosted,
+      apiKey: "demo",
+    }),
+  ),
+);
+```
+
+Provide the layer once, at your entry point:
+`program.pipe(Effect.provide(Offline), NodeRuntime.runMain)`. The
+[Quickstart](/reactor-effect-client/start/quickstart/) runs a complete program.
+
+## What a session owns
+
+One `Session` owns each allocation or attachment. The H3 provider and the playout build on a
+session and never allocate around it, so every paid second traces back to one session and its
+close report.
+
+| Area                   | Members                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| Identity               | `id`, `ownership` (`"owned"` or `"attached"`)                                    |
+| State and events       | `snapshot`, `changes`, `observe`, `events`, `ready`                              |
+| Commands               | `command`, `upload`, `schema`, `stats`, `requestRecordingClip`, `recording`      |
+| Media                  | `decoded` or `tracks`, for the current connection generation                     |
+| Lifetime and evidence  | `reconnect`, `close` and its `CloseReport`                                       |
+
+## The layers under `Reactor`
+
+`Reactor.layer()` needs a `CoordinatorClient`, which speaks Reactor's HTTP API over an Effect
+`HttpClient`, and a host's `PeerFactory`, which makes each WebRTC connection. Pick the host for
+where the code runs.
+
+<Tabs>
+<TabItem label="Node and Bun">
+
+```ts
+import { Layer } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import { CoordinatorClient, Reactor } from "reactor-effect-client";
+import { NativePeer } from "reactor-effect-native";
+
+// Reads REACTOR_API_KEY, and REACTOR_API_URL if it is set.
+export const Hosted = Reactor.layer().pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer()),
+  ),
+  Layer.provide(FetchHttpClient.layer),
+);
+```
+
+</TabItem>
+<TabItem label="Browser">
+
+```ts
+import { Layer } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import { CoordinatorClient, Reactor } from "reactor-effect-client";
+import { BrowserPeer } from "reactor-effect-browser";
+
+// No API key in the page: each session asks your server for its tokens.
+export const InPage = Reactor.layer().pipe(
+  Layer.provide(
+    Layer.mergeAll(CoordinatorClient.layer(), BrowserPeer.layer),
+  ),
+  Layer.provide(FetchHttpClient.layer),
+);
+```
+
+</TabItem>
+<TabItem label="Offline">
+
+`ReactorTest.layer({ timing })` provides the `HttpClient` and the `PeerFactory` from a simulated
+Reactor, as in the example at the top of this page. See
+[Test offline](/reactor-effect-client/guides/testing-offline/).
+
+</TabItem>
+</Tabs>
+
+Building a host layer is its preflight. `NativePeer.layer()` loads the addon and
+`BrowserPeer.layer` checks for WebRTC, so a host that cannot run fails before anything is
+allocated, and the factory's `check` runs again before every allocation. Over `FetchHttpClient`,
+every coordinator request omits ambient credentials and refuses redirects.
+
+## Tokens
+
+A session never sees your API key. It runs on `Tokens`, two effects you supply:
+
+- `create`: a token that may create one session;
+- `bind(sessionId)`: a fresh token bound to that open session.
+
+`coordinator.tokens({ modelName, maxSessionDuration })` mints both with the key the
+`CoordinatorClient` holds. `maxSessionDuration` is required. It is whole seconds from one second
+to a day, or `"unlimited"`, because an uncapped session bills until something ends it.
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient, H3 } from "reactor-effect-client";
+
+export const channelTokens = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  return coordinator.tokens({
+    modelName: H3.modelName,
+    // Reactor ends each session at its cap.
+    maxSessionDuration: "30 minutes",
+    // Each token's own life.
+    expiresAfter: "1 hour",
+  });
+});
+```
+
+The session keeps one token for all its calls. Before that token expires (a minute before, or a
+quarter of a shorter token's life), the session's next call mints a fresh one with
+`bind(session.id)`, so a session outlives any one token. Reactor keeps a token for an hour by
+default and six hours at most, while a session can run a day or more.
+
+On hosted Reactor, a session created on a 30 s token minted a token bound to itself 22.9 s in,
+and reconnected 2 s after the creating token had expired
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+### Grants
+
+`coordinator.mintToken(options)` mints one token directly. Besides `modelName`,
+`maxSessionDuration` and `expiresAfter`, it takes `maxSessions` (1 to 500; one for a token that
+binds nothing) and `bind`, the open sessions the token acts on besides those it creates. It
+returns a `TokenGrant`:
+
+| Field               | What it is                                                                   |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `jwt`               | The token, `Redacted`                                                        |
+| `expiresAt`         | When it expires, in seconds since the epoch, as Reactor set it               |
+| `maxSessionSeconds` | The cap on each session it creates: as asked, or the narrower cap Reactor states |
+| `granted`           | Reactor's echo of what it granted, when the reply carries one                |
+
+A grant Reactor echoes wider than asked is refused as a `Protocol` failure. A narrower one caps
+each session at what it grants. `CoordinatorClient.fixedTokens(grant)` serves one grant for both
+effects, for a session shorter than its token; that session never refreshes its token.
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient, H3, Reactor } from "reactor-effect-client";
+
+// One token creates the session and carries its every call.
+export const shortSession = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  const grant = yield* coordinator.mintToken({
+    modelName: H3.modelName,
+    maxSessionDuration: "90 seconds",
+    expiresAfter: "150 seconds",
+  });
+  return yield* reactor.create({
+    model: H3.modelName,
+    tokens: CoordinatorClient.fixedTokens(grant),
+  });
+});
+```
+
+### Binding a token to a session
+
+In a browser the page holds no key, so its `Tokens` ask your server: `create` for a token that
+may create one session, and `bind` for one bound to the session the page created. The server
+mints the bound token with `bind: [sessionId]`. A bound token commands, watches and ends its
+session, so bind only sessions the caller created.
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient, H3 } from "reactor-effect-client";
+
+// On your server, after checking that this caller created `sessionId`.
+export const bindToken = Effect.fn("bindToken")(function* (
+  sessionId: string,
+) {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  return yield* coordinator.mintToken({
+    modelName: H3.modelName,
+    bind: [sessionId],
+    expiresAfter: "10 minutes",
+  });
+});
+```
+
+Each call has its own credential. `mintToken` and `tokens` use the API key. `inspect`,
+`terminate` and `downloadClip` use the `CoordinatorClient`'s `credential` option, or the key when
+none is set, so a server that holds the key can read and end any session of its account. A
+session's own calls use its token.
+
+## Create, attach, adopt
+
+| Call                                          | Ownership  | Closing it                         |
+| --------------------------------------------- | ---------- | ---------------------------------- |
+| `reactor.create({ model, tokens })`           | `owned`    | terminates the session             |
+| `reactor.attach({ sessionId, tokens })`       | `attached` | leaves the session running         |
+| `reactor.attach({ sessionId, tokens, adopt: true })` | `owned` | terminates the session       |
+
+`create` takes an `onAllocated` hook that runs after allocation and before connecting, so a
+supervisor can record the owner first. If the hook fails, the session is closed and `create`
+fails with an `AcquisitionFailure` carrying the close report. `attach` needs only tokens bound to
+the session. `adopt: true` takes over the session's remote lifetime, as a process resuming a dead
+owner's session does.
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient, H3, Reactor } from "reactor-effect-client";
+
+// Take over a session whose owner died, from the id it recorded.
+export const adopt = Effect.fn("adopt")(function* (sessionId: string) {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  return yield* reactor.attach({
+    sessionId,
+    tokens: {
+      bind: (id) =>
+        coordinator.mintToken({ modelName: H3.modelName, bind: [id] }),
+    },
+    adopt: true,
+  });
+});
+```
+
+An acquisition resumes the session's receive-only tracks as each connection becomes ready
+(`resumeTracks`, true by default), since Reactor sends a connection no media until it does.
+
+On hosted Reactor, an owner was killed 12.7 s into its session. A plain attach was ready 3.06 s
+after the kill, with fresh frames and nothing enqueued. `H3Source.resume` started 0.57 s after
+the creating token had expired and adopted the session 2.71 s later
+([0.8.0-api `adoption`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## Status and connection generations
+
+`session.snapshot` reads the session's status, and `session.changes` streams a snapshot at every
+change, in order, even to a reader that falls behind.
+
+| `status`       | Meaning                                                                        |
+| -------------- | ------------------------------------------------------------------------------ |
+| `idle`         | Acquired, not yet connecting                                                   |
+| `connecting`   | Allocating, or opening a new connection                                        |
+| `waiting`      | Waiting for the model, then negotiating WebRTC                                 |
+| `ready`        | Connected, with both data channels open                                        |
+| `disconnected` | The connection dropped; `reconnecting` says whether the session is trying again |
+| `closing`      | `close` has begun                                                              |
+| `closed`       | Closed                                                                         |
+
+Each connection is a generation, numbered in `snapshot.generation`. A reconnect makes a new
+generation of the same session: it allocates nothing and never replays a command. Each
+generation's media and replies belong to it. A reconnect ends the old generation's readers, and
+a reply that arrives late from an old generation is published with the correlation
+`stale-generation`. `session.observe()` pairs a snapshot with every event after it, with no gap.
+
+## Reconnecting
+
+A session reconnects a dropped connection on its own, owned or attached. It tries again at once,
+then on its `reconnect` schedule: 250 ms after the first failure, doubling to at most 4 s,
+jittered, and never sooner than a refusal's `Retry-After`. It stops once a connection has stayed
+ready for 10 seconds, when Reactor or its moderation ended the session, when Reactor refuses this
+client's protocol (`VersionMismatch`), or once `reconnectTimeout` (30 seconds) has passed since
+the drop.
+
+Meanwhile the status goes `disconnected`, then `connecting`, `waiting` and `ready` on the new
+generation, and the snapshot's `reconnecting` is true until a connection is ready or the session
+stops trying. `disconnected` without `reconnecting` is lasting, and `lastError` says why. Each
+failed attempt is a `Diagnostic` event.
+
+- `Reactor.layer({ reconnect: false })` leaves a dropped connection down; Reactor then ends the
+  session 30 seconds after its last connection dropped.
+- `session.reconnect` opens a new generation now, from a ready connection or a lasting drop.
+  While the session reconnects on its own, it joins that reconnect instead of starting another.
+
+On hosted H3, a playout's connection was cut with 8.07 s of air secured. It was ready again
+1.64 s later, and its picture resumed 1.82 s after the drop, on the same session
+([0.8.0-api `show`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+<Aside type="caution" title="Reconnecting keeps a session billing">
+A session keeps billing through its drops. An owned session your application never closed, or
+one a viewer holds after its owner has gone, runs for as long as the process holding it does, to
+its cap if it has one.
+</Aside>
+
+## Commands
+
+`session.command(name, data)` sends one model command and resolves with its `CommandReply`: the
+reply's `kind` (`ack` or `message`, with its `type` and `data`), and its attribution: `requestId`,
+`sequence`, `generation` and `correlation`. The [H3 provider](/reactor-effect-client/concepts/h3/)
+wraps these for H3; `command` is the escape hatch for anything it does not cover.
+
+`replyTimeout` is the library's own deadline for a reply, not your wait. Once the command has
+been sent, its expiry fails with `Timeout` and outcome `unknown`, since Reactor may have applied
+it. To stop waiting without abandoning a command, fork it and bound the join:
+
+```ts
+import { Effect, Fiber } from "effect";
+import type { Session } from "reactor-effect-client";
+
+export const setSeed = Effect.fn("setSeed")(function* (
+  session: Session.Session,
+) {
+  const fiber = yield* Effect.forkScoped(
+    session.command("set_seed", { seed: 1 }),
+  );
+  // Fiber.await(fiber) still reads the command's own outcome later.
+  return yield* Fiber.join(fiber).pipe(Effect.timeout("2 seconds"));
+});
+```
+
+The session also carries uploads (`upload`), the deployment's OpenAPI document (`schema`),
+connection statistics (`stats`) and recordings (`requestRecordingClip` and `recording`, then
+`coordinator.downloadClip`).
+
+## Deadlines
+
+`Reactor.layer(options)` sets every session's deadlines. Each duration is a `Duration.Input`; a
+bare number is milliseconds, so write the unit. A deadline must be positive and at most ten
+minutes, or the layer fails with `InvalidInput`.
+
+| Option              | Default                           | Bounds                                                  |
+| ------------------- | --------------------------------- | ------------------------------------------------------- |
+| `replyTimeout`      | 10 seconds                        | A command's or control request's reply                  |
+| `uploadTimeout`     | 60 seconds                        | An upload, in all                                       |
+| `connectTimeout`    | 3 minutes                         | Allocation and negotiation, the wait for a GPU included |
+| `reconnectTimeout`  | 30 seconds                        | A reconnect, from the drop                              |
+| `readyTimeout`      | 30 seconds                        | The peer and both channels, after the answer            |
+| `heartbeatInterval` | 10 seconds                        | Between heartbeats; `"Infinity"` for none               |
+| `reconnect`         | 250 ms doubling to 4 s, jittered  | A session's own reconnect, a `Schedule`, or `false`     |
+| `maxPending`        | 128, at most 4,096                | Requests awaiting a reply, per channel                  |
+| `maxUploadBytes`    | 16 MiB, at most 64 MiB            | The largest upload                                      |
+
+Waiting for a GPU is not billed.
+
+## Closing, and what may still bill
+
+`session.close` is idempotent. For a session this process owns, it asks Reactor to terminate it
+and then confirms the end with an independent read, since a `DELETE` response alone proves
+nothing. It returns a `CloseReport`, a Schema you can persist:
+
+| Field                                         | What it says                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| `allocation`                                  | `none`, `known` (with `sessionId` and `ownership`) or `unknown`     |
+| `remote`                                      | The termination verdict: `attempted`, `confirmed`, `evidence` (`absent` or `terminal`), `deleteStatus`, `state` |
+| `localClosed`, `localErrors`                  | Whether local cleanup succeeded, and every cleanup failure          |
+| `unpublishSubmitted`, `unresolvedPublications` | Published tracks the close released, and those it could not settle |
+
+`Session.mayStillBill(report)` is true for a session this process owned that no read confirmed
+ended, and for an allocation whose outcome, and so whose id, never arrived. Nothing can confirm
+the second ended; its token's cap bounds it.
+
+```ts
+import { Effect, Schema } from "effect";
+import { Session } from "reactor-effect-client";
+
+const encodeReport = Schema.encodeEffect(
+  Schema.toCodecJson(Session.CloseReport),
+);
+
+export const closeAndRecord = Effect.fn("closeAndRecord")(function* (
+  session: Session.Session,
+) {
+  const report = yield* session.close;
+  if (Session.mayStillBill(report))
+    yield* Effect.logWarning("a session may still be billing");
+  // JSON to keep with your own records.
+  return yield* encodeReport(report);
+});
+```
+
+In 21 paid runs from 2026-09-24 to 2026-09-29, all 27 sessions ended with their termination
+confirmed. Where it was timed, the confirming read found `CLOSED` 0.63–0.86 s after the request
+([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)).
+
+## `CoordinatorClient`, the HTTP API
+
+`CoordinatorClient` is Reactor's HTTP API over your `HttpClient`. Building it makes no request.
+
+| Member                      | What it does                                                               |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `tokens`, `mintToken`       | Mint session tokens with the API key                                       |
+| `pricing`                   | The pricing catalog; `CoordinatorClient.modelRate` reads one model's rate  |
+| `inspect(sessionId)`        | Reactor's view of a session: its `state`, cluster, zone and server version |
+| `terminate(sessionId)`      | End a session; returns a verdict and never fails                           |
+| `downloadClip(clip)`        | Download a recording a session prepared                                    |
+
+`CoordinatorClient.layer({ apiUrl, apiKey, credential })` takes its settings directly, and
+`CoordinatorClient.layerConfig` reads `REACTOR_API_URL` (by default `https://api.reactor.inc`)
+and `REACTOR_API_KEY` from the environment. A session's create and signaling requests name this
+SDK in their `client_info`, as `sdk_type: "typescript-effect-independent"`.
+
+`CoordinatorClient.isTerminal(state)` is true only for `CLOSED`. Reactor reads `INACTIVE` for a
+session whose last connection has gone, and that session is still live and billed until Reactor
+ends it 30 seconds later, unless a connection returns.
+
+## Limits
+
+- Reactor's account quotas apply: by default five sessions at once and ten created a minute,
+  refused with `429` beyond that.
+- A token lives at most six hours, and a capped session at most a day. A channel that runs past
+  its session's cap renews the session, which [Playout](/reactor-effect-client/concepts/playout/)
+  does for you.
+- The library keeps no pool of sessions. Effect's `Pool.makeWithTTL` over `reactor.create`, with
+  `min: 0` and a short `timeToLive`, closes a session left idle.
+- Reactor bills a session from `ready` until it ends. On 2026-09-30 Reactor's pricing listed H3
+  at 350 credits a second (10,000 credits to the dollar): $0.035 a second, or $2.10 a minute.
+- On hosted Reactor, a session read `ACTIVE`, not `INACTIVE`, for about 2 seconds after its last
+  connection closed ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+  2026-09-28).
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="The H3 provider"
+    description="Prompt H3 over a session and follow each clip."
+    href="/reactor-effect-client/concepts/h3/"
+  />
+  <LinkCard
+    title="Errors"
+    description="Tagged reasons, and whether a failed command reached Reactor."
+    href="/reactor-effect-client/concepts/errors/"
+  />
+  <LinkCard
+    title="Cost control"
+    description="Caps, confirmed termination and budgets."
+    href="/reactor-effect-client/guides/cost-control/"
+  />
+  <LinkCard
+    title="Going live"
+    description="From the simulated Reactor to a paid session."
+    href="/reactor-effect-client/start/going-live/"
+  />
+</CardGrid>
