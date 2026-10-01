@@ -2177,6 +2177,74 @@ describe("PlayoutPolicy, wakes", () => {
       tag: { _tag: "Filler", index: 0 },
     });
   });
+
+  // u, which follows filler 0, raised its fence with time to spare, and s1 refused it at 9 s, to
+  // be asked again at 10 s. x ends at 10,020: the fence comes down 250 ms before, and filler 0,
+  // which the air needs, goes then.
+  it("wakes as the clip on air falls to the readiness margin, where a fence comes down", () => {
+    const policy = drive({ config: protecting("air"), from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 }, 10);
+    const x = clip("x", undefined, 10);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    const follower = {
+      ...spec("u", 1, 1),
+      start: { _tag: "Asap" },
+      follows: { _tag: "Filler", index: 0 },
+    } as const;
+    policy.submit(follower, 3_000);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+    assert.strictEqual(policy.reply(failed("replied"), 9_000).wake, 9_770);
+    assert.deepStrictEqual(commands(policy.tick(9_769).actions), []);
+    assert.deepStrictEqual(enqueued(policy.tick(9_770).actions), ["filler"]);
+  });
+
+  // u follows a, which holds the build slot. x's rest outlasts u's 0.4 s build by the 1.5 s
+  // margin until 1.9 s before x ends at 7,996.3. Counted on from the time rather than back from
+  // that end, the instant came out an ulp apart when the plan looked halfway there.
+  it("names one wake for a follower's cover, whenever it looks", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 }, 10);
+    const x = clip("x", undefined, 7.986);
+    policy.event({ _tag: "Started", clip: x }, "s1", 10.3);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit(spec("a"));
+    policy.reply({ _tag: "Done", clipId: "ca" });
+    policy.observe({ playing: x, building: [clip("ca", item("a"))] });
+    assert.strictEqual(policy.submit({ ...spec("u", 1, 1), follows: item("a") }, 40).wake, 6_096.3);
+    assert.strictEqual(policy.tick(3_068.15).wake, 6_096.3);
+  });
+
+  // x, a clip of its own, has ended with k Ready behind it, and f, which follows k, holds the
+  // build turn until k starts. p's enqueue reply was lost, so x2, which continues from p, waits
+  // ahead of f; it fits before s1's cap only until 34,010, and with a 1 s lead no replacement
+  // opens first. Nothing builds ahead of f after that either, filler included, until an input or
+  // the wake.
+  it("holds a follower's turn though a build ahead of it stops fitting before the cap", () => {
+    const policy = drive({ config: { ...protecting("air"), leadMs: 1_000 }, from: measured });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 60_000 }, 10);
+    const x = clip("x", undefined, 20);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit(spec("k"), 30);
+    policy.reply({ _tag: "Done", clipId: "ck" });
+    const ready = [clip("ck", item("k"))];
+    policy.observe({ playing: x, ready, continuable: ["ck"] });
+    policy.submit(spec("p"));
+    policy.submit({ ...spec("x2", 1, 15), continuity: true });
+    policy.submit({ ...spec("f", 1, 1), follows: item("k") });
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" });
+    policy.observe({ ready, continuable: ["ck"] });
+    policy.reply(failed("unknown"));
+    assert.strictEqual(policy.tick(1_000).wake, 59_010);
+    assert.deepStrictEqual(commands(policy.tick(34_011).actions), []);
+  });
 });
 
 describe("PlayoutPolicy, any script", () => {
