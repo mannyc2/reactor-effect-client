@@ -59,8 +59,8 @@ per model. Use them when you want Reactor's own client in a browser, a game engi
 reactor-effect is independent and complementary. It is for TypeScript applications that are
 written with Effect, or that need what Effect's structure gives a long-running media service:
 resources tied to scopes, errors in the type, streams with back-pressure, and a clock you can
-control in tests. It speaks Reactor's public coordinator API and wire protocol, and marks every
-request with its own `sdk_type`, so Reactor can tell its sessions apart.
+control in tests. It speaks Reactor's public coordinator API and wire protocol, and the requests
+that create and connect a session carry its own `sdk_type`, so Reactor can tell its sessions apart.
 
 <Aside>
   reactor-effect supports **H3 Reference Turbo Realtime** today. Reactor's other models share the
