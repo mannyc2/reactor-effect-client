@@ -170,7 +170,7 @@ const capture = Command.make(
 );
 
 capture.pipe(
-  Command.run({ version: "0.9.0" }),
+  Command.run({ version: "0.9.1" }),
   // The program's entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
