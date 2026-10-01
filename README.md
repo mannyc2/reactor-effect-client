@@ -29,7 +29,7 @@ and run the whole application offline before it spends a cent.
 
 ```sh
 git clone https://github.com/mannyc2/reactor-effect-client && cd reactor-effect-client
-bun install
+bun install && bun run build
 node examples/quickstart/src/main.ts
 ```
 
@@ -70,8 +70,7 @@ const firstClip = Effect.gen(function* () {
   sessions 420–432 ms.
 - **Frames in Node and Bun, no browser.** `reactor-effect-native` binds libwebrtc through Node-API
   and hands your process owned BGRA frames and PCM, in process or in a child process per
-  connection. Reactor's own TypeScript livestream starter launches headless Chromium to reach the
-  media; this does not. On hosted H3: 1344×768 at about 24 fps, no frame lost.
+  connection, with no browser in between. On hosted H3: 1344×768 at about 24 fps, no frame lost.
 - **Build and test offline.** `ReactorTest` speaks the real wire protocol in memory, with H3's
   timing measured on paid runs and 23 faults to inject, from a failed build to a lost reply or a
   moderation verdict. On `TestClock`, an hour of programme with six renewals runs in about 20

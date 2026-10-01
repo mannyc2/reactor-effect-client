@@ -8,7 +8,7 @@ import { Aside, Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 [Reactor](https://reactor.inc) serves real-time video models over WebRTC: you open a session, send
 the model commands, and receive its video and audio as they are generated. reactor-effect is an
 [Effect](https://effect.website) SDK for building applications on it, from a page that plays one
-clip to a channel that stays on air for days.
+clip to a channel that renews its sessions to stay on air.
 
 It is built for the parts of a Reactor application that outlive a single request. A session bills
 by the second until it ends, its token expires, its connection drops, its owner process crashes,
@@ -36,9 +36,9 @@ runs in a browser, on a server, or on `ReactorTest` with no transport at all.
     clip boundary, and reports what actually aired.
   </Card>
   <Card title="Decoded media without a browser" icon="laptop">
-    Reactor's JavaScript SDK runs in a browser context, and its own TypeScript livestream starter
-    launches headless Chromium to reach the media. `reactor-effect-native` hands Node and Bun the
-    frames directly.
+    Reactor's JavaScript SDK targets a browser context. On a server, `reactor-effect-native`
+    complements it: Node and Bun receive the session's decoded frames and PCM directly, with no
+    browser in between.
   </Card>
   <Card title="Reactor, offline" icon="setting">
     `ReactorTest` speaks the real wire protocol in memory, with H3's timing measured on paid runs

@@ -87,6 +87,10 @@ import { H3, Reactor, ReactorTest } from "reactor-effect-client";
 Subpath imports resolve through the packages' export maps, so TypeScript needs `moduleResolution`
 set to `NodeNext` or `Bundler`.
 
+The packages are ES modules only. A Node project runs them from `"type": "module"`, which npm 11's
+`npm init` does not set (it writes `"commonjs"`): run `npm pkg set type=module`, or name your files
+`.mts`.
+
 ## The native addon
 
 `reactor-effect-native` lists one addon package per platform as an exact-version optional

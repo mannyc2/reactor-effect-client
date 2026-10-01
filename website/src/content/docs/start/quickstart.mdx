@@ -13,7 +13,15 @@ hosted H3.
 
 <Steps>
 
-1. Install the client, the native host and Effect, pinned exactly:
+1. Start an ES module project. npm 11's `npm init` writes `"type": "commonjs"`, under which Node
+   cannot run this program's `import` statements, so set it to `module`:
+
+   ```sh
+   mkdir reactor-quickstart && cd reactor-quickstart
+   npm init -y && npm pkg set type=module
+   ```
+
+2. Install the client, the native host and Effect, pinned exactly:
 
    <Tabs syncKey="pm">
      <TabItem label="npm">
@@ -39,12 +47,12 @@ hosted H3.
    for pnpm); npm needs none here, since `reactor-effect-native` pins it. [Installation](/reactor-effect-client/start/installation/) covers
    other hosts.
 
-2. Save this as `main.ts`. It is `examples/quickstart/src/main.ts` in the repository, which CI
+3. Save this as `main.ts`. It is `examples/quickstart/src/main.ts` in the repository, which CI
    typechecks against every change.
 
    <Code code={quickstart} lang="ts" title="main.ts" />
 
-3. Run it offline. Node 22.18 and later run TypeScript directly, and so does Bun:
+4. Run it offline. Node 22.18 and later run TypeScript directly, and so does Bun:
 
    ```sh
    node main.ts
@@ -64,7 +72,7 @@ hosted H3.
    About 12 seconds pass: the simulated build takes as long as H3's did on hosted runs, then the
    5-second clip plays.
 
-4. Run it on hosted H3. Create a key in [Reactor's dashboard](https://reactor.inc/dashboard) and:
+5. Run it on hosted H3. Create a key in [Reactor's dashboard](https://reactor.inc/dashboard) and:
 
    ```sh
    REACTOR_API_KEY=rk_... node main.ts

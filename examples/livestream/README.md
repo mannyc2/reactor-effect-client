@@ -35,7 +35,7 @@ This example's live mode has not run on hosted Reactor. The playout it uses has:
 CHANNEL_RTMP_URL=rtmp://live.twitch.tv/app/<stream key> node examples/livestream/src/main.ts
 ```
 
-Take the ingest URL and stream key from the platform's stream settings; `rtmp://` and `rtmps://` both work. The encoder then runs whether or not a browser watches, and the same encode goes to the ingest as FLV. If the ingest refuses or drops the connection, ffmpeg connects again every 5 seconds and resumes at a keyframe; if it falls behind, it loses its own packets and the browsers never wait for it. The stream key is cut out of every log line. To try it offline, listen with ffmpeg and point the channel at it:
+Take the ingest URL and stream key from the platform's stream settings; the URL may be `rtmp://` or `rtmps://`. So far the restream has run only against a local `rtmp://` listener, not a platform's ingest. The encoder then runs whether or not a browser watches, and the same encode goes to the ingest as FLV. If the ingest refuses or drops the connection, ffmpeg connects again every 5 seconds and resumes at a keyframe; if it falls behind, it loses its own packets and the browsers never wait for it. The stream key is cut out of every log line. To try it offline, listen with ffmpeg and point the channel at it:
 
 ```sh
 ffmpeg -listen 1 -i rtmp://127.0.0.1:1935/live/test -c copy out.flv &

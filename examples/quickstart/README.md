@@ -6,7 +6,7 @@ nothing native is loaded. With `REACTOR_API_KEY` set, the same program runs on h
 layer changes.
 
 ```sh
-bun install                       # at the repository root
+bun install && bun run build      # at the repository root
 node examples/quickstart/src/main.ts
 ```
 
