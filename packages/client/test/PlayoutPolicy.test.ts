@@ -2110,10 +2110,11 @@ describe("PlayoutPolicy, wakes", () => {
     const policy = drive({ from: measured });
     policy.tick(0);
     policy.open();
-    // a builds from 10 ms to 2,010: b, 2 s of build after it, could start by 4,010.
+    // a builds from 10 ms to 2,010. b, on the lane that cuts, airs once Ready, not after a: with
+    // 2 s of build after a's, it could start by 4,010.
     policy.submit(spec("a"), 10);
     policy.reply({ _tag: "Done", clipId: "c-a" }, 11);
-    const firm = { ...spec("b"), window: { startByMs: 4_000, firm: true } };
+    const firm = { ...spec("b", 0), window: { startByMs: 4_000, firm: true } };
     // Past 2,010 its projection grows with the time, and reaches 4,020 at 2,020.
     assert.strictEqual(policy.submit(firm, 20).wake, 2_020);
     assert.deepStrictEqual(statuses(policy.tick(2_019).actions, "b"), []);
