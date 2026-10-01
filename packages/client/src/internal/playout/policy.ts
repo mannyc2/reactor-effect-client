@@ -547,6 +547,12 @@ const lookaheadMarginSeconds = 1;
  * flight on the session holds the move up to 0.1 s more.
  */
 const readinessMarginMs = 250;
+/**
+ * One command and the state read after it, which `place` leaves room for beyond the readiness
+ * margin: a command already queued when the build slot frees, such as the move a clip's Ready asks
+ * for, goes before a follower's enqueue. They take 0.1 to 0.2 s on hosted H3.
+ */
+const commandMs = 200;
 /** A clip's end to the next one's start: hosted median 36 ms, n = 44. */
 const seamMs = 40;
 /** The key the clip `place` asks about goes by in a forward run; no item's. */
@@ -3377,7 +3383,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       item.spec.follows === undefined ||
       item.phase !== "Accepted" ||
       item.dispatchedAt !== undefined ||
-      perSecond === undefined
+      perSecond === undefined ||
+      // Its enqueue goes out once the fence raised for it is up.
+      state.sessions.some((value) => value.guardItem === item.spec.key)
     )
       return undefined;
     const end = followsEnd(item);
@@ -3520,7 +3528,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       // wait for. With nothing on air, the first clip Ready airs at once.
       const boundary = before === undefined ? Infinity : before.start + before.clip.seconds * 1000;
       const readyAt = run.probe.readyAt ?? now.mono;
-      if (readyAt + readinessMarginMs > boundary) continue;
+      if (readyAt + readinessMarginMs + commandMs > boundary) continue;
       const start = run.aired[index]?.start ?? now.mono;
       const next = run.aired[index + 1]?.clip;
       const built =

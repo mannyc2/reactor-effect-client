@@ -909,6 +909,34 @@ layer(seamed)("follows", (it) => {
     }),
   );
 
+  it.effect("answers no boundary its clip could not be Ready a margin before", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      yield* measured[2]!.outcome;
+      const line = yield* playout.submit({
+        key: key("line"),
+        lane: "line",
+        request: clip("line", 10),
+      });
+      yield* line.started;
+      // 2 s of it is left with nothing queued, and a 5 s clip takes over 2 s to build.
+      yield* Effect.sleep("8 seconds");
+      const placement = yield* playout.place({ key: key("u") });
+      if (placement === null) return;
+      const u = yield* playout.insert({
+        key: key("u"),
+        request: clip("u"),
+        after: key("line"),
+        follows: placement.after,
+      });
+      assert.strictEqual((yield* u.started)._tag, "Started");
+      assert.deepStrictEqual((yield* starts).slice(-2), ["line", "u"]);
+    }),
+  );
+
   it.effect("before builds are measured, builds an item once the clip it follows is Ready", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start();
@@ -1166,7 +1194,9 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
     () =>
       Effect.gen(function* () {
         const problems: Array<string> = [];
-        for (let seed = 1; seed <= 8; seed++)
+        // Seeds 21 and 169 place a clip whose slack a command queued ahead of it, or the fence
+        // before its build, would take.
+        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 21, 169])
           problems.push(...(yield* forecast(seed, "30 minutes", 100)));
         // With a 5 s floor, the filler clip it follows may not be built yet.
         for (let seed = 1; seed <= 16; seed++)
@@ -1183,8 +1213,9 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
     () =>
       Effect.gen(function* () {
         const problems: Array<string> = [];
-        // Seed 49 places a clip after one whose guarded start is under way as its deadline passes.
-        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 49])
+        // Seed 13 places a clip whose slack the fence before its build would take, and seed 49
+        // one after a clip whose guarded start is under way as its deadline passes.
+        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49])
           problems.push(...(yield* forecast(seed, "75 seconds", 150, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),
