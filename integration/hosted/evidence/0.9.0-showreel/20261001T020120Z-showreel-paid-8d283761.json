@@ -1,0 +1,750 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "8d283761",
+  "check": "showreel",
+  "mode": "paid",
+  "startedAt": "2026-10-01T02:01:20.733Z",
+  "finishedAt": "2026-10-01T02:02:10.539Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "d013d0091098df7b86f117ab25cf6b96788185bd",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.9.0",
+      "reactor-effect-native": "0.9.0",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux workstation, no VPN, outbound UDP open",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 2.45,
+    "totalUsd": 2.45,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 350,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 2.45,
+    "estimatedUsd": 1.68
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 70,
+      "expiresAt": 1790820210
+    }
+  ],
+  "sessions": [
+    {
+      "id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+      "allocatedMs": 684,
+      "capEndsAt": "2026-10-01T02:02:31.452Z",
+      "close": {
+        "requestedMs": 47843,
+        "reportedMs": 47843,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 48090,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 48090
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $2.4500"
+    },
+    {
+      "atMs": 7,
+      "step": "opened"
+    },
+    {
+      "atMs": 22,
+      "step": "scenes submitted"
+    },
+    {
+      "atMs": 226,
+      "step": "minted"
+    },
+    {
+      "atMs": 684,
+      "step": "allocated",
+      "detail": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+    },
+    {
+      "atMs": 7073,
+      "step": "recording"
+    },
+    {
+      "atMs": 46963,
+      "step": "reel ended"
+    },
+    {
+      "atMs": 47193,
+      "step": "showreel observed"
+    },
+    {
+      "atMs": 47843,
+      "step": "closed",
+      "detail": "1f7d4d96-ab51-43b2-8b72-52176276017b confirmed"
+    },
+    {
+      "atMs": 48091,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "every scene accepted, built, started and ended",
+      "passed": true
+    },
+    {
+      "name": "every seam measured",
+      "passed": true
+    },
+    {
+      "name": "no gap on air between scenes",
+      "passed": true
+    },
+    {
+      "name": "the reel's readers keep up",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    },
+    {
+      "name": "the reel was recorded",
+      "passed": true
+    },
+    {
+      "name": "the poster and the loop were made after the session closed",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 12.6,
+      "durationMs": 212.5,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 226.1,
+      "durationMs": 3559.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 226.7,
+      "durationMs": 3298.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 684.4,
+      "durationMs": 2840.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      }
+    },
+    {
+      "name": "Session.control",
+      "startMs": 3528.7,
+      "durationMs": 119,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_fc7da4ee56e374e1d14516932ce0c596_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3649.7,
+      "durationMs": 34.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3685.3,
+      "durationMs": 36.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3723.5,
+      "durationMs": 61,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3789.3,
+      "durationMs": 57.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 3851.7,
+      "durationMs": 88.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "bd99cbf4f46aee384d8ca8cc18a1e400:1",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3852.6,
+      "durationMs": 86.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 3940.2,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 7073.3,
+      "durationMs": 99.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "bd99cbf4f46aee384d8ca8cc18a1e400:2",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 7073.6,
+      "durationMs": 98.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_6",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 7173,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 10412.3,
+      "durationMs": 45.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "bd99cbf4f46aee384d8ca8cc18a1e400:3",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 10412.6,
+      "durationMs": 44.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_7",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 10458.1,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 13799,
+      "durationMs": 52.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "bd99cbf4f46aee384d8ca8cc18a1e400:4",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13799.2,
+      "durationMs": 50.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_8",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 13851,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 17165.6,
+      "durationMs": 131.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "bd99cbf4f46aee384d8ca8cc18a1e400:5",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 17166,
+      "durationMs": 129.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_fc7da4ee56e374e1d14516932ce0c596_9",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 17296.7,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.close",
+      "startMs": 47195.9,
+      "durationMs": 645.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 47203.3,
+      "durationMs": 638.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 47844.7,
+      "durationMs": 245.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      }
+    }
+  ],
+  "playout": {
+    "items": [
+      {
+        "key": "salt-flat",
+        "submittedMs": 15,
+        "readyMs": 7070,
+        "startedMs": 7072,
+        "endedMs": 14959,
+        "seconds": 8,
+        "airedSeconds": 8,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      },
+      {
+        "key": "chrome",
+        "submittedMs": 20,
+        "readyMs": 10412,
+        "startedMs": 14961,
+        "endedMs": 22950,
+        "seconds": 8,
+        "airedSeconds": 8,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      },
+      {
+        "key": "canyon",
+        "submittedMs": 20,
+        "readyMs": 13798,
+        "startedMs": 23017,
+        "endedMs": 30950,
+        "seconds": 8,
+        "airedSeconds": 8,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      },
+      {
+        "key": "coast",
+        "submittedMs": 21,
+        "readyMs": 17164,
+        "startedMs": 31013,
+        "endedMs": 38951,
+        "seconds": 8,
+        "airedSeconds": 8,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      },
+      {
+        "key": "horizon",
+        "submittedMs": 21,
+        "readyMs": 20539,
+        "startedMs": 39008,
+        "endedMs": 46960,
+        "seconds": 8,
+        "airedSeconds": 8,
+        "termination": "finished",
+        "last": "Ended",
+        "sessionId": "1f7d4d96-ab51-43b2-8b72-52176276017b"
+      }
+    ],
+    "startOrder": [
+      "salt-flat",
+      "chrome",
+      "canyon",
+      "coast",
+      "horizon"
+    ],
+    "seams": [
+      {
+        "ending": "salt-flat",
+        "next": "chrome",
+        "continued": false,
+        "endedMs": 14959,
+        "startedMs": 14961,
+        "pause": {
+          "lastNewFrameMs": 14591,
+          "firstNewFrameMs": 14680,
+          "durationMs": 89,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 15241,
+          "change": 66.55,
+          "typical": 1.28,
+          "ratio": 51.87
+        },
+        "frames": [
+          "8d283761-salt-flat-chrome-before.png",
+          "8d283761-salt-flat-chrome-after.png"
+        ]
+      },
+      {
+        "ending": "chrome",
+        "next": "canyon",
+        "continued": false,
+        "endedMs": 22950,
+        "startedMs": 23017,
+        "pause": {
+          "lastNewFrameMs": 22994,
+          "firstNewFrameMs": 23095,
+          "durationMs": 101,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 23162,
+          "change": 58.75,
+          "typical": 2.48,
+          "ratio": 23.71
+        },
+        "frames": [
+          "8d283761-chrome-canyon-before.png",
+          "8d283761-chrome-canyon-after.png"
+        ]
+      },
+      {
+        "ending": "canyon",
+        "next": "coast",
+        "continued": false,
+        "endedMs": 30950,
+        "startedMs": 31013,
+        "pause": {
+          "lastNewFrameMs": 31240,
+          "firstNewFrameMs": 31360,
+          "durationMs": 120,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 31198,
+          "change": 39.12,
+          "typical": 4.95,
+          "ratio": 7.9
+        },
+        "frames": [
+          "8d283761-canyon-coast-before.png",
+          "8d283761-canyon-coast-after.png"
+        ]
+      },
+      {
+        "ending": "coast",
+        "next": "horizon",
+        "continued": false,
+        "endedMs": 38951,
+        "startedMs": 39008,
+        "pause": {
+          "lastNewFrameMs": 38977,
+          "firstNewFrameMs": 39071,
+          "durationMs": 94,
+          "frames": 0,
+          "dark": 0
+        },
+        "darkFrames": 0,
+        "jump": {
+          "atMs": 39145,
+          "change": 40.81,
+          "typical": 3.98,
+          "ratio": 10.26
+        },
+        "frames": [
+          "8d283761-coast-horizon-before.png",
+          "8d283761-coast-horizon-after.png"
+        ]
+      }
+    ],
+    "estimates": {
+      "buildMedian": 0.421,
+      "buildP95": 0.423,
+      "length": 1
+    },
+    "video": {
+      "frames": 960,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "1344x768"
+      ],
+      "firstFrameMs": 7181,
+      "fps": 24,
+      "interval": {
+        "p50": 42,
+        "p95": 45,
+        "max": 144
+      },
+      "lit": 960,
+      "distinct": 960,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 4328,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "peakRms": 0.4673,
+      "lost": 0
+    }
+  },
+  "showreel": {
+    "scenes": [
+      {
+        "key": "salt-flat",
+        "seconds": 8
+      },
+      {
+        "key": "chrome",
+        "seconds": 8
+      },
+      {
+        "key": "canyon",
+        "seconds": 8
+      },
+      {
+        "key": "coast",
+        "seconds": 8
+      },
+      {
+        "key": "horizon",
+        "seconds": 8
+      }
+    ],
+    "gaps": [
+      {
+        "ending": "salt-flat",
+        "next": "chrome",
+        "fromMs": 14959,
+        "toMs": 14961
+      },
+      {
+        "ending": "chrome",
+        "next": "canyon",
+        "fromMs": 22950,
+        "toMs": 23017
+      },
+      {
+        "ending": "canyon",
+        "next": "coast",
+        "fromMs": 30950,
+        "toMs": 31013
+      },
+      {
+        "ending": "coast",
+        "next": "horizon",
+        "fromMs": 38951,
+        "toMs": 39008
+      }
+    ],
+    "readerOverflows": [],
+    "reel": {
+      "fromMs": 7072,
+      "toMs": 46960
+    },
+    "recording": {
+      "width": 1344,
+      "height": 768,
+      "frames": 958,
+      "repeated": 25,
+      "superseded": 24,
+      "mismatched": 0,
+      "audio": {
+        "sampleRate": 48000,
+        "channels": 1,
+        "blocks": 3988,
+        "silenceMs": 0
+      },
+      "exitCode": 0
+    },
+    "files": [
+      {
+        "name": "reel.mp4",
+        "bytes": 20111026
+      },
+      {
+        "name": "poster.png",
+        "bytes": 452926
+      },
+      {
+        "name": "loop.gif",
+        "bytes": 10345319
+      }
+    ],
+    "poster": {
+      "atSeconds": 19.945
+    },
+    "loop": {
+      "fromSeconds": 11.945,
+      "seconds": 8
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
