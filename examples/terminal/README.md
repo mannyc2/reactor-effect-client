@@ -1,6 +1,6 @@
 # Watch Reactor in your terminal
 
-One H3 session plays a short playlist, and its video is drawn right in the terminal: each frame is decoded in this process and shown as 24-bit colour text, about ten times a second. Every clip is followed through the facts H3 reports about it (accepted, generated, playing, ended), and when the playlist is over the session is closed and the program says whether Reactor confirmed its end.
+One H3 session plays a short playlist, and its video is drawn right in the terminal: each frame is decoded in this process and shown as 24-bit colour text, about twelve times a second. Every clip is followed through the facts H3 reports about it (accepted, generated, playing, ended), and when the playlist is over the session is closed and the program says whether Reactor confirmed its end.
 
 It runs offline by default, on the SDK's simulated Reactor, so trying it costs nothing. With an API key the same program runs on hosted Reactor; only the layer beneath it changes.
 
@@ -16,7 +16,7 @@ node src/main.ts "A paper boat on a rain-soaked street" "A red kite over a green
 node src/main.ts --help
 ```
 
-Offline, Reactor is simulated in memory at the timing paid runs measured on hosted H3. Its frames are a flat colour per clip at 320x180, so the picture changes from clip to clip; the model's own video appears only live. On 2026-10-01 the simulated session connected about 4 seconds after launch and the four-clip playlist ended 41 seconds after it, under Node and under Bun.
+Offline, Reactor is simulated in memory at the timing paid runs measured on hosted H3. Its frames are a flat colour per clip at 320x180, so the picture changes from clip to clip; the model's own video appears only live. On 2026-10-01 the simulated session connected about 5 seconds after launch, the first picture came at about 8 seconds, the screen was redrawn 11 to 12 times a second while clips played, and the four-clip playlist ended 41 seconds after launch, under Node and under Bun.
 
 When standard output is not a terminal (a pipe, a CI log), nothing is drawn and each step is a line:
 
@@ -70,4 +70,4 @@ Live mode needs the native addon for the machine: the platform package npm insta
 
 - The picture follows the connection the session had when the show began. If the connection drops and the session reconnects, the clips and the status carry on and the picture keeps its last frame.
 - Each redraw waits until the terminal has taken the one before, so a slow terminal shows fewer frames, never older ones. A 200-column picture of a 1344x768 frame is up to 400 KiB of text a redraw.
-- A playlist still playing when the session reaches its cap ends with the session, and the program fails with the reason.
+- If Reactor ends the session before the playlist is over, at its cap or on a moderation verdict, the show ends with it: H3 then reports nothing more about any clip, so the program watches `session.changes` for a connection that will not come back, and fails with the reason.

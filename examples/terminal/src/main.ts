@@ -5,10 +5,17 @@
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Layer, Option, Redacted } from "effect";
+import { Config, Console, Effect, FileSystem, Layer, Option, Redacted, Stream } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { CoordinatorClient, H3, Reactor, ReactorTest, Session } from "reactor-effect-client";
+import {
+  CoordinatorClient,
+  H3,
+  Reactor,
+  ReactorError,
+  ReactorTest,
+  Session,
+} from "reactor-effect-client";
 import { NativePeer } from "reactor-effect-native";
 import * as Screen from "./Screen.ts";
 
@@ -79,6 +86,23 @@ const follow = Effect.fn("follow")(
     ),
 );
 
+/**
+ * Fails, with the reason, once the session cannot come back: Reactor ended it (at its cap, or on
+ * a moderation verdict) or it stopped reconnecting. H3 then reports nothing more about any clip,
+ * so whatever waits on one waits on this too.
+ */
+const lost = (session: Session.Session): Effect.Effect<never, ReactorError.ReactorError> =>
+  session.changes.pipe(
+    Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+    Stream.runHead,
+    Effect.flatMap((snapshot) =>
+      Effect.fail(
+        Option.getOrUndefined(snapshot)?.lastError ??
+          ReactorError.ReactorError.fromCode("Disconnected", "the session's connection is gone"),
+      ),
+    ),
+  );
+
 /** The show: one H3 session plays the prompts in order, and its video is drawn here. */
 const watch = Effect.fn("watch")(function* (
   prompts: ReadonlyArray<string>,
@@ -113,14 +137,17 @@ const watch = Effect.fn("watch")(function* (
   const media = yield* session.decoded;
   yield* screen.show(media.video("main_video"));
 
-  // Sent one after another, so that H3's queue keeps the playlist's order.
-  const clips = yield* Effect.forEach(prompts, (prompt, index) =>
-    send(h3, screen, index, { prompt, seconds: clipSeconds, references }),
-  );
-  yield* Effect.forEach(clips, (clip, index) => follow(screen, index, clip), {
-    concurrency: "unbounded",
-    discard: true,
+  const play = Effect.gen(function* () {
+    // Sent one after another, so that H3's queue keeps the playlist's order.
+    const clips = yield* Effect.forEach(prompts, (prompt, index) =>
+      send(h3, screen, index, { prompt, seconds: clipSeconds, references }),
+    );
+    yield* Effect.forEach(clips, (clip, index) => follow(screen, index, clip), {
+      concurrency: "unbounded",
+      discard: true,
+    });
   });
+  yield* play.pipe(Effect.raceFirst(lost(session)));
 }, Effect.scoped);
 
 /**
