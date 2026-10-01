@@ -788,6 +788,43 @@ layer(hosted)("time", (it) => {
       );
     }),
   );
+
+  it.effect(
+    "counts the clip H3 holds armed in its seam once, and keeps a firm item due after it",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({
+          ...Playout.lineup({
+            runway: { floor: "15 seconds", target: "15 seconds" },
+            clip: ({ index }) => clip(`idle ${index}`),
+          }),
+        });
+        yield* Effect.sleep("30 seconds");
+        const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+        const started = yield* a.started;
+        if (started._tag !== "Started") return yield* Effect.die("a never started");
+        yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+        const end = started.at + started.seconds * 1000;
+        yield* Effect.sleep(Duration.millis(end - 1000 - (yield* Clock.currentTimeMillis)));
+        // Built once b airs, it starts about 5 s before its deadline.
+        const now = yield* Clock.currentTimeMillis;
+        const firm = yield* playout.submit({
+          key: key("firm"),
+          lane: "line",
+          request: clip("firm"),
+          window: {
+            notBefore: Duration.millis(end + 300 - now),
+            startBy: Duration.millis(end + 7000 - now),
+            firm: true,
+          },
+        });
+        // x's enqueue lands in b's seam, and the state read after it names b playing while H3
+        // still lists it Ready.
+        yield* Effect.sleep(Duration.millis(end - 20 - (yield* Clock.currentTimeMillis)));
+        yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+        assert.strictEqual((yield* firm.started)._tag, "Started");
+      }),
+  );
 });
 
 /** Hosted timing at the hosted median seam, which a Ready clip on a dark air starts after. */

@@ -731,6 +731,15 @@ const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): 
 };
 
 /**
+ * A session's Ready clips but the one it plays. H3 reports the clip it holds armed through its
+ * seam as playing, and may still list it Ready: counted in both, its length would count twice.
+ */
+const waitingOf = (value: Session | undefined): ReadonlyArray<SourceClip> => {
+  const playing = value?.source?.playing?.clipId;
+  return (value?.source?.ready ?? []).filter((clip) => clip.clipId !== playing);
+};
+
+/**
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
  * air from the session on air and from its replacement once that takes over.
  */
@@ -738,7 +747,7 @@ const securedOf = (state: Pick<State, "items" | "sessions" | "air">, now: Now): 
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
   const ready = (value: Session | undefined): number =>
-    (value?.source?.ready ?? [])
+    waitingOf(value)
       .filter((clip) => airsOf(state.items, clip, now))
       .reduce((total, clip) => total + clip.seconds, 0);
   return playingRestOf(air, now.mono) / 1000 + ready(air) + ready(replacement);
@@ -1072,7 +1081,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (target === undefined) return { end: -Infinity, seconds: 0 };
     const onAir = target.id === state.air;
     const end = onAir ? playingEndOf(target) : undefined;
-    const ready = readyOf(target)
+    const ready = waitingOf(target)
       .filter(airs)
       .reduce((total, clip) => total + clip.seconds, 0);
     return end === undefined
@@ -1101,7 +1110,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   const projection = (item: Item): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankItem(item);
-    const aheadMs = (target === undefined ? [] : readyOf(target))
+    const aheadMs = waitingOf(target)
       .filter(
         (clip) => compareRank(rankClip(clip), rank) < 0 && itemOf(clip)?.withdraw === undefined,
       )
@@ -3052,7 +3061,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const air = session(state.air);
     // An `At` clip kept Ready airs at its time, which the air ahead of it reaches.
     const queuedMs = (value: Session | undefined): number =>
-      (value === undefined ? [] : readyOf(value))
+      waitingOf(value)
         .filter((clip) => {
           const other = itemOf(clip);
           return other === undefined || queuedToAir(items, other);
@@ -3094,9 +3103,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
   /** Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays. */
   function readyAheadMs(value: Session, index: number): number {
+    const waiting = waitingOf(value);
     return readyOf(value)
       .slice(0, index)
-      .filter(airs)
+      .filter((other) => waiting.includes(other) && airs(other))
       .reduce((total, other) => total + other.seconds * 1000, 0);
   }
   /**
@@ -3139,7 +3149,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const marginMs = lookaheadMarginSeconds * 1000;
     if (lengthMs > target.lifetimeMs - marginMs) return true;
     const queuedMs = (value: Session): number =>
-      readyOf(value)
+      waitingOf(value)
         .filter(airs)
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const onAir = session(state.air);
@@ -3247,7 +3257,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const playing = onAir !== undefined && sameClip(follows, onAir.tag);
-    const queued = readyOf(target)
+    const queued = waitingOf(target)
       .filter(airs)
       .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     const index = playing ? -1 : queued.findIndex((clip) => sameClip(follows, clip.tag));
@@ -3403,7 +3413,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (rate === undefined) return { clipId: predecessor };
     const readyAt = now.mono + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000;
     const onAir = target.id === state.air ? target.source?.playing : undefined;
-    const queued = readyOf(target)
+    const queued = waitingOf(target)
       .filter(airs)
       .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
     const after =

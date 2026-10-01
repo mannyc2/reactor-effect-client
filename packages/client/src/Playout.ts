@@ -506,7 +506,11 @@ export interface SourceState {
   readonly available: boolean;
   /** Waiting to build, the build in flight first, in the provider's order. */
   readonly building: ReadonlyArray<SourceClip>;
-  /** Built and waiting to play, in playout order. */
+  /**
+   * Built and waiting to play, in playout order; a `move` position counts from its head. It may
+   * still list the clip named `playing`, as H3 does for a clip armed through its seam, and the
+   * playout counts that clip's length once.
+   */
   readonly ready: ReadonlyArray<SourceClip>;
   readonly playing: PlayingClip | undefined;
   /** Clips a new build can continue from. */
